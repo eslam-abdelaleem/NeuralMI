@@ -80,8 +80,9 @@ class Results:
                 raise ValueError("Cannot plot, results do not contain a DataFrame.")
 
             sweep_var = self.params.get('sweep_var')
+            # For dimensionality analysis, the swept variable is always 'embedding_dim'.
             if not sweep_var and self.mode == 'dimensionality':
-                sweep_var = 'embedding_dim' # Default for dimensionality
+                sweep_var = 'embedding_dim'
 
             if not sweep_var:
                 raise ValueError("Cannot determine sweep variable for plotting. Was this a single run?")
@@ -92,11 +93,11 @@ class Results:
             if self.dataframe is None or self.details is None:
                  raise ValueError("Rigorous results are incomplete and cannot be plotted.")
 
+            # The `details` attribute holds the dictionary of corrected results,
+            # which is what the plotting function expects.
             plot_bias_correction_fit(
-                self.dataframe,
-                mi_corrected=self.mi_estimate,
-                mi_error=self.details.get('mi_error'),
-                slope=self.details.get('slope')
+                raw_results_df=self.dataframe,
+                corrected_result=self.details
             )
         else:
             print(f"Plotting is not implemented for mode: '{self.mode}'")

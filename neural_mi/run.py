@@ -5,6 +5,18 @@ import numpy as np
 import warnings
 import torch
 from typing import Union
+import multiprocessing
+import platform
+
+# Set the multiprocessing start method to 'spawn' on macOS systems.
+# This is necessary to prevent potential deadlocks when using PyTorch
+# with multiprocessing, ensuring stability in modes like 'sweep' and 'rigorous'.
+try:
+    if platform.system() == "Darwin":
+        multiprocessing.set_start_method("spawn", force=True)
+except RuntimeError:
+    # The start method can only be set once, so we pass if it's already been set.
+    pass
 
 from .analysis.workflow import AnalysisWorkflow
 from .analysis.dimensionality import run_dimensionality_analysis
@@ -159,12 +171,27 @@ def run(
     from .analysis.sweep import ParameterSweep
 
     if mode == 'sweep':
-        if sweep_grid is None: raise ValueError("A 'sweep_grid' must be provided for mode 'sweep'.")
+        if sweep_grid is None:
+            raise ValueError("A 'sweep_grid' must be provided for mode 'sweep'.")
+
+        sweep_var = list(sweep_grid.keys())[0] if sweep_grid else None
+        if not sweep_var:
+            raise ValueError("Could not determine the sweep variable from the 'sweep_grid'.")
+        run_params['sweep_var'] = sweep_var
+
         sweep = ParameterSweep(x_data=x_data, y_data=y_data, base_params=base_params, **init_kwargs)
         results_list = sweep.run(sweep_grid=sweep_grid, **analysis_kwargs)
-        results_df = _convert_mi_units(pd.DataFrame(results_list), to_bits)
-        run_params['sweep_var'] = list(sweep_grid.keys())[0] if sweep_grid else None
-        return Results(mode=mode, dataframe=results_df, params=run_params)
+        raw_results_df = pd.DataFrame(results_list)
+
+        # Aggregate sweep results for plotting. The plot function expects mean and std.
+        agg_df = raw_results_df.groupby(sweep_var)['test_mi'].agg(['mean', 'std']).reset_index()
+        agg_df = agg_df.rename(columns={'mean': 'mi_mean', 'std': 'mi_std'})
+        agg_df['mi_std'] = agg_df['mi_std'].fillna(0)  # Std is NaN for single runs, replace with 0.
+
+        # Convert units after aggregation
+        agg_df = _convert_mi_units(agg_df, to_bits)
+
+        return Results(mode=mode, dataframe=agg_df, params=run_params, details={'raw_results': raw_results_df})
 
     elif mode == 'estimate':
         sweep = ParameterSweep(x_data=x_data, y_data=y_data, base_params=base_params, **init_kwargs)
@@ -176,10 +203,31 @@ def run(
     elif mode == 'dimensionality':
         if sweep_grid is None or 'embedding_dim' not in sweep_grid:
             raise ValueError("A 'sweep_grid' with 'embedding_dim' is required for mode 'dimensionality'.")
-        results_df = run_dimensionality_analysis(x_data=x_data, base_params=base_params, sweep_grid=sweep_grid, **analysis_kwargs)
-        results_df = _convert_mi_units(results_df, to_bits)
+
+        from .utils import find_saturation_point
+
+        # This function returns a DataFrame that is already aggregated.
+        agg_df = run_dimensionality_analysis(
+            x_data=x_data, base_params=base_params,
+            sweep_grid=sweep_grid, **analysis_kwargs
+        )
+
+        agg_df = _convert_mi_units(agg_df, to_bits)
         run_params['sweep_var'] = 'embedding_dim'
-        return Results(mode=mode, dataframe=results_df, params=run_params)
+
+        # Automatically find the saturation point and store it in the details
+        strictness = analysis_kwargs.get('strictness', [0.1, 1.0, 15.0])
+        estimated_dims = find_saturation_point(
+            summary_df=agg_df,
+            param_col='embedding_dim',
+            mean_col='mi_mean',
+            std_col='mi_std',
+            strictness=strictness
+        )
+        # Note: raw_results are not available here as they are aggregated within the analysis function.
+        details = {'estimated_dims': estimated_dims}
+
+        return Results(mode=mode, dataframe=agg_df, params=run_params, details=details)
 
     elif mode == 'rigorous':
         workflow = AnalysisWorkflow(x_data=x_data, y_data=y_data, base_params=base_params, **init_kwargs)

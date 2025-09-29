@@ -26,12 +26,13 @@ def _find_max_events_in_window(event_times: np.ndarray, window_size: float) -> i
 
 class SpikeProcessor(BaseProcessor):
     """Processes raw spike time data into windowed tensors."""
-    def __init__(self, window_size: float = 0.1, step_size: float = 0.01, max_spikes_per_window: int = None):
+    def __init__(self, window_size: float = 0.1, step_size: float = 0.01, n_seconds: float = None, max_spikes_per_window: int = None):
         super().__init__()
         if window_size <= 0 or step_size <= 0:
             raise ValueError("window_size and step_size must be positive.")
         self.window_size = window_size
         self.step_size = step_size
+        self.n_seconds = n_seconds
         self.max_spikes = max_spikes_per_window
         self._is_fitted = self.max_spikes is not None
 
@@ -47,10 +48,23 @@ class SpikeProcessor(BaseProcessor):
         global_first_spike = min([ch[0] for ch in raw_data if len(ch) > 0], default=0)
         global_last_spike = max([ch[-1] for ch in raw_data if len(ch) > 0], default=self.window_size)
         
-        t_start = t_start if t_start is not None else global_first_spike
-        t_end = t_end if t_end is not None else global_last_spike
+        # Determine the effective start and end times for the analysis window
+        t_start_eff = t_start if t_start is not None else global_first_spike
         
-        window_starts = np.arange(t_start, t_end - self.window_size + self.step_size, self.step_size)
+        if t_end is not None:
+            # Explicit t_end from the user call overrides other settings
+            t_end_eff = t_end
+        elif self.n_seconds is not None:
+            # If n_seconds is provided in constructor, the analysis duration is fixed
+            t_end_eff = t_start_eff + self.n_seconds
+        else:
+            # Otherwise, use the full extent of the data by default
+            t_end_eff = global_last_spike
+
+        # Ensure the analysis window does not extend beyond the actual data
+        t_end_eff = min(t_end_eff, global_last_spike)
+
+        window_starts = np.arange(t_start_eff, t_end_eff - self.window_size + self.step_size, self.step_size)
         num_windows = len(window_starts)
 
         # Select channels AFTER defining the time grid
