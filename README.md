@@ -32,36 +32,42 @@ For developers who want to edit the code, install it in "editable" mode:
 pip install -e .
 ```
 
-Quickstart
-Here is a simple example of estimating the MI between two correlated Gaussian variables:
+## Quickstart
 
-```bash
+Here is a simple example of estimating the MI between two correlated Gaussian variables. This demonstrates how to use the built-in continuous data processor to automatically handle windowing.
+
+```python
 import torch
 import neural_mi as nmi
 
-# 1. Generate data with a known MI of 2.0 bits
-x_data, y_data = nmi.datasets.generate_correlated_gaussians(
+# 1. Generate raw 2D data (e.g., 5 channels over 5000 timepoints)
+x_raw, y_raw = nmi.datasets.generate_correlated_gaussians(
     n_samples=5000, 
     dim=5, 
     mi=2.0
 )
-x_data = x_data.reshape(5000, 1, 5)
-y_data = y_data.reshape(5000, 1, 5)
 
-# 2. Define basic model and training parameters
+# 2. Define processing and model parameters
+# The processor will window the raw data into 3D tensors automatically.
+processor_params = {'window_size': 10, 'step_size': 1}
+
+# Basic model and training parameters
 base_params = {
     'n_epochs': 50, 'learning_rate': 1e-3, 'batch_size': 128,
     'patience': 5, 'embedding_dim': 16, 'hidden_dim': 64, 'n_layers': 2
 }
 
-# 3. Run the estimation
-estimated_mi = nmi.run(
-    x_data=x_data,
-    y_data=y_data,
+# 3. Run the estimation directly on raw data
+results = nmi.run(
+    x_data=x_raw,
+    y_data=y_raw,
     mode='estimate',
+    processor_type='continuous',
+    processor_params=processor_params,
     base_params=base_params
 )
 
-print(f"Estimated MI: {estimated_mi:.3f} bits")
+# 4. Access the result from the standardized Results object
+print(f"Estimated MI: {results.mi_estimate:.3f} bits")
 ```
 

@@ -1,0 +1,68 @@
+import torch.optim as optim
+
+from neural_mi.models.embeddings import MLP, VarMLP, BaseEmbedding
+from neural_mi.models.critics import SeparableCritic, ConcatCritic
+from neural_mi.training.trainer import Trainer
+
+
+def build_critic(critic_type, embedding_params, use_variational=False, custom_embedding_model=None):
+    """
+    Dynamically builds a critic model based on the specified type.
+
+    This is a shared utility function to ensure critics are built consistently.
+    """
+    input_dim_x = embedding_params['input_dim_x']
+    input_dim_y = embedding_params['input_dim_y']
+    hidden_dim = embedding_params['hidden_dim']
+    n_layers = embedding_params['n_layers']
+
+    # Use custom model if provided, otherwise default to MLP/VarMLP
+    if custom_embedding_model:
+        if not issubclass(custom_embedding_model, BaseEmbedding):
+            raise TypeError("custom_embedding_model must be a subclass of models.BaseEmbedding")
+        EmbeddingModel = custom_embedding_model
+    else:
+        EmbeddingModel = VarMLP if use_variational else MLP
+
+    if critic_type == 'separable':
+        embed_dim = embedding_params['embedding_dim']
+        embedding_net_x = EmbeddingModel(input_dim_x, hidden_dim, embed_dim, n_layers)
+        embedding_net_y = EmbeddingModel(input_dim_y, hidden_dim, embed_dim, n_layers)
+        return SeparableCritic(embedding_net_x, embedding_net_y)
+    elif critic_type == 'concat':
+        concat_input_dim = input_dim_x + input_dim_y
+        embedding_net = EmbeddingModel(concat_input_dim, hidden_dim, 1, n_layers)
+        return ConcatCritic(embedding_net)
+    else:
+        raise ValueError(f"Unknown critic_type: {critic_type}")
+
+
+def run_training_task(args):
+    """
+    A top-level function that can be pickled for multiprocessing.
+
+    This function wraps the training process for a single set of parameters.
+    """
+    x_data, y_data, params, run_id = args
+    use_variational = params.get('use_variational', False)
+
+    custom_model = params.get('custom_embedding_model')
+    critic = build_critic(
+        params['critic_type'],
+        params,
+        use_variational=use_variational,
+        custom_embedding_model=custom_model
+    )
+
+    optimizer = optim.Adam(critic.parameters(), lr=params['learning_rate'])
+
+    trainer = Trainer(
+        model=critic, estimator_fn=params['estimator_fn'], optimizer=optimizer,
+        use_variational=use_variational, beta=params.get('beta', 1.0)
+    )
+
+    results = trainer.train(
+        x_data=x_data, y_data=y_data, n_epochs=params['n_epochs'],
+        batch_size=params['batch_size'], patience=params['patience'], run_id=run_id
+    )
+    return {**params, **results}

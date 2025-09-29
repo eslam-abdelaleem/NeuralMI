@@ -1,7 +1,6 @@
 # neural_mi/analysis/workflow.py
 
 import torch
-import torch.optim as optim
 import numpy as np
 import pandas as pd
 import itertools
@@ -11,36 +10,110 @@ from multiprocessing import Pool, cpu_count
 import statsmodels.api as sm
 from collections import Counter
 
-from neural_mi.models.embeddings import MLP, VarMLP
-from neural_mi.models.critics import SeparableCritic, ConcatCritic
-from neural_mi.training.trainer import Trainer
 from neural_mi.estimators import bounds
+from neural_mi.utils import run_training_task
 
-# _build_critic and _run_training_task functions remain the same
-def _build_critic(critic_type, embedding_params, use_variational=False):
-    input_dim_x = embedding_params['input_dim_x']; input_dim_y = embedding_params['input_dim_y']
-    hidden_dim = embedding_params['hidden_dim']; n_layers = embedding_params['n_layers']
-    EmbeddingModel = VarMLP if use_variational else MLP
-    if critic_type == 'separable':
-        embed_dim = embedding_params['embedding_dim']
-        embedding_net_x = EmbeddingModel(input_dim_x, hidden_dim, embed_dim, n_layers)
-        embedding_net_y = EmbeddingModel(input_dim_y, hidden_dim, embed_dim, n_layers)
-        return SeparableCritic(embedding_net_x, embedding_net_y)
-    elif critic_type == 'concat':
-        embedding_net = EmbeddingModel(input_dim_x + input_dim_y, hidden_dim, 1, n_layers)
-        return ConcatCritic(embedding_net)
-    else: raise ValueError(f"Unknown critic_type: {critic_type}")
 
-def _run_training_task(args):
-    x_data, y_data, params, run_id = args
-    use_variational = params.get('use_variational', False)
-    critic = _build_critic(params['critic_type'], params, use_variational=use_variational)
-    optimizer = optim.Adam(critic.parameters(), lr=params['learning_rate'])
-    trainer = Trainer(model=critic, estimator_fn=params['estimator_fn'], optimizer=optimizer,
-                      use_variational=use_variational, beta=params.get('beta', 1.0))
-    results = trainer.train(x_data=x_data, y_data=y_data, n_epochs=params['n_epochs'],
-                            batch_size=params['batch_size'], patience=params['patience'], run_id=run_id)
-    return {**params, **results}
+def __find_linear_region(group, delta_threshold, min_gamma_points, verbose):
+    """
+    Iteratively prunes gamma values to find the linear region of the bias curve.
+    """
+    gammas_to_fit = sorted(group['gamma'].unique())
+    final_delta = float('inf')
+
+    while len(gammas_to_fit) >= min_gamma_points:
+        subset = group[group['gamma'].isin(gammas_to_fit)]
+        if len(subset) < 3:
+            break  # Not enough points for a quadratic fit
+
+        gamma_counts = subset['gamma'].value_counts()
+        weights = subset['gamma'].map(lambda g: 1 / gamma_counts[g])
+        if verbose:
+            print(f'Total number of successful used runs: {len(weights)}')
+            print(f'Quadratic fit weights: {weights}')
+
+        X_quad = sm.add_constant(np.vstack([subset['gamma'], subset['gamma']**2]).T)
+
+        model_quad = sm.WLS(subset['test_mi'], X_quad, weights=weights).fit()
+        _, a1, a2 = model_quad.params
+        final_delta = abs(a2 / a1) if a1 != 0 else float('inf')
+
+        if verbose:
+            print(f"  Fitting gammas {gammas_to_fit}: delta = {final_delta:.4f}")
+
+        if final_delta < delta_threshold:
+            if verbose:
+                print(f"  Delta ({final_delta:.4f}) < threshold ({delta_threshold}). Stopping pruning.")
+            break
+        else:
+            pruned_gamma = gammas_to_fit.pop(-1)
+            if verbose:
+                print(f"  Delta > threshold. Pruning gamma = {pruned_gamma}.")
+
+    return gammas_to_fit, final_delta
+
+
+def __extrapolate_mi(group, gammas_to_fit, confidence_level, verbose):
+    """
+    Performs the final WLS linear fit to extrapolate the MI estimate.
+    """
+    final_subset = group[group['gamma'].isin(gammas_to_fit)]
+
+    if len(final_subset) < 2:
+        warnings.warn("Not enough points for even an unreliable linear fit. Returning NaN.")
+        return float('nan'), float('nan'), float('nan')
+
+    final_gamma_counts = final_subset['gamma'].value_counts()
+    final_weights = final_subset['gamma'].map(lambda g: 1 / final_gamma_counts[g])
+    if verbose:
+        print(f'Total number of successful used runs: {len(final_weights)}')
+        print(f'Linear fit weights: {final_weights}')
+
+    X_linear = sm.add_constant(final_subset['gamma'])
+    fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=final_weights).fit()
+
+    intercept, slope = fit_linear.params
+    alpha = 1 - confidence_level
+    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=alpha)[0]
+    mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
+
+    return intercept, mi_error, slope
+
+
+def _post_process_and_correct(df, delta_threshold, min_gamma_points, confidence_level, verbose):
+    """Performs iterative WLS fitting on all individual points."""
+    df = df.dropna(subset=['gamma', 'test_mi'])
+
+    param_cols = [c for c in df.columns if c not in ['gamma', 'train_mi', 'test_mi', 'best_epoch', 'test_mi_history']]
+
+    corrected_results = []
+    group_keys = [col for col in param_cols if col in df.columns]
+    if not group_keys:
+        df['dummy_group'] = 0
+        group_keys = ['dummy_group']
+
+    for params, group in df.groupby(group_keys):
+        param_dict = dict(zip(group_keys, [params])) if len(group_keys) == 1 and not isinstance(params, tuple) else dict(zip(group_keys, params))
+
+        if verbose:
+            print(f"\n--- Correcting for params: {param_dict} ---")
+
+        gammas_used, final_delta = __find_linear_region(group, delta_threshold, min_gamma_points, verbose)
+
+        is_reliable = True
+        if len(gammas_used) < min_gamma_points:
+            is_reliable = False
+            warnings.warn(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
+
+        mi_corrected, mi_error, slope = __extrapolate_mi(group, gammas_used, confidence_level, verbose)
+
+        param_dict.update({
+            'mi_corrected': mi_corrected, 'mi_error': mi_error, 'slope': slope,
+            'is_reliable': is_reliable, 'gammas_used': gammas_used, 'final_delta': final_delta
+        })
+        corrected_results.append(param_dict)
+
+    return corrected_results
 
 
 class AnalysisWorkflow:
@@ -65,99 +138,17 @@ class AnalysisWorkflow:
         if not tasks: print("No tasks to run."); return []
 
         with Pool(processes=n_workers) as pool:
-            raw_results = list(pool.map(_run_training_task, tasks))
+            raw_results = list(pool.map(run_training_task, tasks))
         
         print("All training tasks finished. Performing bias correction...")
         
-        # --- CHANGE: Return a dictionary with both corrected and raw results ---
         raw_results_df = pd.DataFrame(raw_results)
-        corrected_results = self._post_process_and_correct(raw_results_df, delta_threshold, min_gamma_points, confidence_level, verbose)
+        corrected_results = _post_process_and_correct(raw_results_df, delta_threshold, min_gamma_points, confidence_level, verbose)
         
         return {
             "corrected_results": corrected_results,
             "raw_results_df": raw_results_df
         }
-
-    def _post_process_and_correct(self, df, delta_threshold, min_gamma_points, confidence_level, verbose):
-            """Performs iterative WLS fitting on all individual points."""
-            # --- CHANGE: Now accepts a DataFrame ---
-            df = df[df['test_mi'] >= 0].dropna(subset=['gamma', 'test_mi'])
-    
-            param_cols = [c for c in df.columns if c not in ['gamma', 'train_mi', 'test_mi', 'best_epoch', 'test_mi_history']]
-            
-            corrected_results = []
-            # --- FIX: Ensure groupby works even with no extra params ---
-            group_keys = [col for col in param_cols if col in df.columns]
-            if not group_keys: # If no sweep grid, group all rows together
-                df['dummy_group'] = 0
-                group_keys = ['dummy_group']
-
-            for params, group in df.groupby(group_keys):
-                param_dict = dict(zip(group_keys, [params])) if len(group_keys) == 1 else dict(zip(group_keys, params))
-
-                if verbose: print(f"\n--- Correcting for params: {param_dict} ---")
-                
-                # ... (rest of the function is the same) ...
-                is_reliable = True
-                gammas_to_fit = sorted(group['gamma'].unique())
-                final_delta = float('inf')
-    
-                while len(gammas_to_fit) >= min_gamma_points:
-                    subset = group[group['gamma'].isin(gammas_to_fit)]
-                    if len(subset) < 3: break
-                    
-                    gamma_counts = subset['gamma'].value_counts()
-                    weights = subset['gamma'].map(lambda g: 1 / gamma_counts[g])
-                    if verbose:
-                        print(f'Total number of sucsseful used runs: {len(weights)}')
-                        print(f'Quadratic fit weights: {weights}')
-    
-                    X_quad = sm.add_constant(np.vstack([subset['gamma'], subset['gamma']**2]).T)
-                    
-                    model_quad = sm.WLS(subset['test_mi'], X_quad, weights=weights).fit()
-                    _, a1, a2 = model_quad.params
-                    final_delta = abs(a2 / a1) if a1 != 0 else float('inf')
-                    
-                    if verbose: print(f"  Fitting gammas {gammas_to_fit}: delta = {final_delta:.4f}")
-    
-                    if final_delta < delta_threshold:
-                        if verbose: print(f"  Delta ({final_delta:.4f}) < threshold ({delta_threshold}). Stopping pruning.")
-                        break
-                    else:
-                        pruned_gamma = gammas_to_fit.pop(-1)
-                        if verbose: print(f"  Delta > threshold. Pruning gamma = {pruned_gamma}.")
-                
-                if len(gammas_to_fit) < min_gamma_points:
-                    is_reliable = False
-                    warnings.warn(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
-                
-                final_subset = group[group['gamma'].isin(gammas_to_fit)]
-                    
-                if len(final_subset) < 2:
-                    warnings.warn(f"Not enough points for even an unreliable linear fit for {param_dict}. Returning NaN.")
-                    intercept, slope, mi_error = float('nan'), float('nan'), float('nan')
-                else:
-                    final_gamma_counts = final_subset['gamma'].value_counts()
-                    final_weights = final_subset['gamma'].map(lambda g: 1 / final_gamma_counts[g])
-                    if verbose:
-                        print(f'Total number of sucsseful used runs: {len(final_weights)}')
-                        print(f'Linear fit weights: {final_weights}')
-                    
-                    X_linear = sm.add_constant(final_subset['gamma'])
-                    fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=final_weights).fit()
-                    
-                    intercept, slope = fit_linear.params
-                    alpha = 1 - confidence_level
-                    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=alpha)[0]
-                    mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
-    
-                param_dict.update({
-                    'mi_corrected': intercept, 'mi_error': mi_error, 'slope': slope,
-                    'is_reliable': is_reliable, 'gammas_used': gammas_to_fit, 'final_delta': final_delta
-                })
-                corrected_results.append(param_dict)
-                
-            return corrected_results
 
     def _prepare_tasks(self, param_grid, gamma_range):
         # (This function remains the same)
