@@ -66,3 +66,55 @@ def run_training_task(args):
         batch_size=params['batch_size'], patience=params['patience'], run_id=run_id
     )
     return {**params, **results}
+
+
+def find_saturation_point(summary_df, param_col, mean_col, std_col, strictness=[1.0]):
+    """
+    Naively finds the saturation point of an MI curve.
+
+    This function identifies the "elbow" of a curve, which is taken as the
+    point where the increase in MI begins to level off.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        A DataFrame with columns for the parameter, mean MI, and std MI.
+    param_col : str
+        The name of the column containing the swept parameter.
+    mean_col : str
+        The name of the column containing the mean MI.
+    std_col : str
+        The name of the column containing the std of the MI.
+    strictness : list, optional
+        A list of strictness values to test. A higher value means the
+        saturation point is detected earlier.
+
+    Returns
+    -------
+    dict
+        A dictionary mapping each strictness value to the estimated
+        saturation dimension.
+    """
+    import pandas as pd
+    import numpy as np
+
+    if not isinstance(strictness, list):
+        strictness = [strictness]
+
+    df = summary_df.sort_values(param_col).reset_index()
+    mi_diff = df[mean_col].diff().to_numpy()
+
+    estimated_dims = {}
+    for s in strictness:
+        # Condition: Increase in MI is less than strictness * std of the current point
+        saturation_indices = np.where(mi_diff[1:] < (s * df[std_col].iloc[1:]))[0]
+
+        if len(saturation_indices) > 0:
+            # The first index where this is true corresponds to the saturation dimension
+            saturation_dim = df[param_col].iloc[saturation_indices[0] + 1]
+        else:
+            # If no saturation is found, return the max embedding dim
+            saturation_dim = df[param_col].max()
+        estimated_dims[s] = saturation_dim
+
+    return estimated_dims
