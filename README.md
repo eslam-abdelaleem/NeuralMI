@@ -7,7 +7,6 @@ NeuralMI is a Python library for robust, bias-corrected mutual information estim
 - **Multiple Analysis Modes:** From quick estimates to rigorous, bias-corrected results with error bars.
 - **Data Processors:** Built-in, flexible processors for windowing continuous data and spike trains.
 - **Dimensionality Estimation:** Discover the latent dimensionality of neural populations using internal information.
-- **Flexible and Tested:** Comes with a full suite of tutorials and a `pytest` test suite.
 
 ## Installation
 
