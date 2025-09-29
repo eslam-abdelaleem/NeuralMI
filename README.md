@@ -1,16 +1,26 @@
-# NeuralMI: A Toolbox for Mutual Information Estimation in Neuroscience
+# NeuralMI: A Toolbox for Rigorous Mutual Information Estimation in Neuroscience
 
-NeuralMI is a Python library for robust, bias-corrected mutual information estimation, tailored for neuroscience data like continuous time-series and spike trains.
+**NeuralMI** is a Python library designed to provide a complete, end-to-end workflow for robustly estimating mutual information from neuroscience data. Moving beyond simple point estimates, this toolkit incorporates essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and analysis of intrinsic dimensionality.
 
-## Features
+It is built for neuroscientists who need to analyze complex relationships in continuous time-series (like LFP or EEG) and discrete spike train data, providing the tools to move from raw data to publishable, statistically sound results.
 
-- **Multiple Analysis Modes:** From quick estimates to rigorous, bias-corrected results with error bars.
-- **Data Processors:** Built-in, flexible processors for windowing continuous data and spike trains.
-- **Dimensionality Estimation:** Discover the latent dimensionality of neural populations using internal information.
+## Key Features
+
+- **Unified & Simple API:** Access all analysis modes through a single, powerful `run()` function.
+- **Multiple Analysis Modes:**
+    - **`estimate`**: Get a quick, single MI estimate for initial exploration.
+    - **`sweep`**: Perform parallelized sweeps over any model or data processing hyperparameter (e.g., `window_size`).
+    - **`dimensionality`**: Characterize the internal complexity of a neural population by finding its latent dimensionality.
+    - **`rigorous`**: The flagship mode that performs automated finite-sampling bias correction via subsampling and extrapolation, providing a debiased MI estimate with a confidence interval.
+- **Neuroscience-Ready Data Processors:**
+    - `ContinuousProcessor`: Seamlessly handle windowing of continuous time-series data.
+    - `SpikeProcessor`: Convert raw spike times into an analyzable format.
+- **Built-in Visualizations:** Generate publication-quality plots for dimensionality curves and bias-correction fits with a single command.
+- **Flexible & Extensible:** Choose from multiple MI estimators (`InfoNCE`, `TUBA`, `NWJ`) and provide your own custom PyTorch embedding models for advanced use cases.
 
 ## Installation
 
-To install the library directly from this repository, run the following command:
+To install the library and its dependencies from this repository, run the following command in the root directory:
 
 ```bash
 pip install .
