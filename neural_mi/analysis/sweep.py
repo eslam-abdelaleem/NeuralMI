@@ -23,10 +23,8 @@ class ParameterSweep:
         self.base_params['critic_type'] = critic_type
         self.base_params['estimator_fn'] = estimator_fn
         self.base_params['use_variational'] = use_variational
-        # We can now reliably calculate input dimensions from the 3D tensor
         self.base_params['input_dim_x'] = x_data.shape[1] * x_data.shape[2]
         self.base_params['input_dim_y'] = y_data.shape[1] * y_data.shape[2]
-        # Pass through any other relevant kwargs from the run() function
         self.base_params.update(kwargs)
 
 

@@ -100,8 +100,19 @@ class DataHandler:
             # Spike processor expects a list of arrays
             x_list = list(self.x_data)
             y_list = list(self.y_data)
-            x_processed = processor.process(x_list)
-            y_processed = processor.process(y_list)
+
+            # Find the global time range across both datasets to ensure
+            # the output tensors have the same number of windows.
+            t_start_x = min([ch[0] for ch in x_list if len(ch) > 0], default=0)
+            t_start_y = min([ch[0] for ch in y_list if len(ch) > 0], default=0)
+            global_t_start = min(t_start_x, t_start_y)
+
+            t_end_x = max([ch[-1] for ch in x_list if len(ch) > 0], default=global_t_start)
+            t_end_y = max([ch[-1] for ch in y_list if len(ch) > 0], default=global_t_start)
+            global_t_end = max(t_end_x, t_end_y)
+
+            x_processed = processor.process(x_list, t_start=global_t_start, t_end=global_t_end)
+            y_processed = processor.process(y_list, t_start=global_t_start, t_end=global_t_end)
         else:
             raise ValueError(f"Unknown processor_type: '{self.processor_type}'")
 

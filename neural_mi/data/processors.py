@@ -13,8 +13,6 @@ class BaseProcessor:
         """Process raw data into windowed tensors."""
         raise NotImplementedError
 
-# --- Spike Data Processor ---
-
 def _find_max_events_in_window(event_times: np.ndarray, window_size: float) -> int:
     """Helper function to find the max number of events in any possible window."""
     if len(event_times) == 0:
@@ -28,7 +26,7 @@ def _find_max_events_in_window(event_times: np.ndarray, window_size: float) -> i
 
 class SpikeProcessor(BaseProcessor):
     """Processes raw spike time data into windowed tensors."""
-    def __init__(self, window_size: float, step_size: float, max_spikes_per_window: int = None):
+    def __init__(self, window_size: float = 0.1, step_size: float = 0.01, max_spikes_per_window: int = None):
         super().__init__()
         if window_size <= 0 or step_size <= 0:
             raise ValueError("window_size and step_size must be positive.")
@@ -45,22 +43,21 @@ class SpikeProcessor(BaseProcessor):
         channels_to_group: List[int] = None
     ) -> torch.Tensor:
         """Transforms a list of spike time arrays into windowed tensors."""
-        # --- 1. Determine time bounds from GLOBAL data before selection ---
+        # Determine time bounds from GLOBAL data before selection
         global_first_spike = min([ch[0] for ch in raw_data if len(ch) > 0], default=0)
         global_last_spike = max([ch[-1] for ch in raw_data if len(ch) > 0], default=self.window_size)
         
         t_start = t_start if t_start is not None else global_first_spike
         t_end = t_end if t_end is not None else global_last_spike
         
-        # CORRECTED window start calculation to be inclusive of the last possible window
         window_starts = np.arange(t_start, t_end - self.window_size + self.step_size, self.step_size)
         num_windows = len(window_starts)
 
-        # --- 2. Select channels AFTER defining the time grid ---
+        # Select channels AFTER defining the time grid
         selected_data = [raw_data[i] for i in channels_to_group] if channels_to_group else raw_data
         num_channels = len(selected_data)
 
-        # --- 3. Fit max_spikes if not already done ---
+        # Fit max_spikes if not already done
         if not self._is_fitted:
             print("`max_spikes_per_window` not provided. Calculating from data...")
             max_spikes_list = [_find_max_events_in_window(ch, self.window_size) for ch in selected_data]
@@ -68,7 +65,7 @@ class SpikeProcessor(BaseProcessor):
             self._is_fitted = True
             print(f"Set `max_spikes_per_window` to {self.max_spikes}.")
 
-        # --- 4. Populate the output tensor ---
+        # Populate the output tensor
         output_tensor = torch.zeros((num_windows, num_channels, self.max_spikes))
         for i_ch, channel_spikes in enumerate(selected_data):
             if len(channel_spikes) == 0: continue
@@ -81,11 +78,9 @@ class SpikeProcessor(BaseProcessor):
                     output_tensor[i_win, i_ch, :n_spikes] = torch.from_numpy(relative_spikes[:n_spikes])
         return output_tensor
 
-# --- Continuous Data Processor ---
-
 class ContinuousProcessor(BaseProcessor):
     """Processes raw continuous time-series data into windowed tensors."""
-    def __init__(self, window_size: int, step_size: int):
+    def __init__(self, window_size: int = 1, step_size: int = 1):
         super().__init__()
         if window_size <= 0 or step_size <= 0:
             raise ValueError("window_size and step_size must be positive integers.")
@@ -107,7 +102,6 @@ class ContinuousProcessor(BaseProcessor):
         if n_samples < self.window_size:
             raise ValueError("Length of data is smaller than the window size.")
 
-        # This calculation is the standard and correct one
         start_indices = np.arange(0, n_samples - self.window_size + 1, self.step_size)
         num_windows = len(start_indices)
 

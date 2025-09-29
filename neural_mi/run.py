@@ -6,7 +6,6 @@ import warnings
 import torch
 from typing import Union
 
-# --- Imports for the worker function ---
 from .analysis.workflow import AnalysisWorkflow
 from .analysis.dimensionality import run_dimensionality_analysis
 from .data.handler import DataHandler
@@ -121,7 +120,6 @@ def run(
         - `plot()`: A method to generate a context-appropriate plot.
 
     """
-    # --- 0. Gather all parameters and validate them ---
     all_params = locals()
     ParameterValidator(all_params).validate()
 
@@ -137,7 +135,6 @@ def run(
         **analysis_kwargs
     }
 
-    # --- 1. Centralized Data Processing ---
     if mode == 'dimensionality':
         if y_data is not None:
             warnings.warn("y_data is ignored for mode 'dimensionality'.")
@@ -149,7 +146,6 @@ def run(
         handler = DataHandler(x_data, y_data, processor_type, processor_params)
         x_data, y_data = handler.process()
 
-    # --- 2. Prepare analysis-specific parameters ---
     init_kwargs = {
         'critic_type': analysis_kwargs.pop('critic_type', 'separable'),
         'estimator_fn': ESTIMATORS[estimator],
@@ -162,7 +158,6 @@ def run(
 
     from .analysis.sweep import ParameterSweep
 
-    # --- 3. Dispatch to the correct analysis mode ---
     if mode == 'sweep':
         if sweep_grid is None: raise ValueError("A 'sweep_grid' must be provided for mode 'sweep'.")
         sweep = ParameterSweep(x_data=x_data, y_data=y_data, base_params=base_params, **init_kwargs)
