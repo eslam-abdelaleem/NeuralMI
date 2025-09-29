@@ -1,6 +1,7 @@
 import torch
 import torch.optim as optim
 
+from neural_mi.estimators import ESTIMATORS
 from neural_mi.models.embeddings import MLP, VarMLP, BaseEmbedding
 from neural_mi.models.critics import SeparableCritic, ConcatCritic
 from neural_mi.training.trainer import Trainer
@@ -58,8 +59,11 @@ def run_training_task(args):
     optimizer = optim.Adam(critic.parameters(), lr=params['learning_rate'])
     device = get_device()
 
+    # Look up the estimator function from its name to avoid pickling issues
+    estimator_fn = ESTIMATORS[params['estimator_name']]
+
     trainer = Trainer(
-        model=critic, estimator_fn=params['estimator_fn'], optimizer=optimizer,
+        model=critic, estimator_fn=estimator_fn, optimizer=optimizer,
         device=device, use_variational=use_variational, beta=params.get('beta', 1.0)
     )
 

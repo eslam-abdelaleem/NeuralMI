@@ -15,14 +15,14 @@ class ParameterSweep:
     Orchestrates a parameter sweep for exploratory analysis.
     This class assumes it receives pre-processed, 3D data.
     """
-    def __init__(self, x_data, y_data, base_params, critic_type='separable', 
-                 estimator_fn=bounds.infonce_lower_bound, use_variational=False, **kwargs):
+    def __init__(self, x_data, y_data, base_params, critic_type='separable',
+                 estimator_name='infonce', use_variational=False, **kwargs):
 
         self.x_data = x_data
         self.y_data = y_data
         self.base_params = base_params
         self.base_params['critic_type'] = critic_type
-        self.base_params['estimator_fn'] = estimator_fn
+        self.base_params['estimator_name'] = estimator_name
         self.base_params['use_variational'] = use_variational
         self.base_params['input_dim_x'] = x_data.shape[1] * x_data.shape[2]
         self.base_params['input_dim_y'] = y_data.shape[1] * y_data.shape[2]

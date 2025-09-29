@@ -126,10 +126,10 @@ class AnalysisWorkflow:
     Orchestrates the full, rigorous MI analysis including iterative bias correction.
     """
     def __init__(self, x_data, y_data, base_params, critic_type='separable',
-                 estimator_fn=bounds.infonce_lower_bound, use_variational=False):
+                 estimator_name='infonce', use_variational=False):
         self.x_data = x_data; self.y_data = y_data; self.base_params = base_params
         self.base_params.update({
-            'critic_type': critic_type, 'estimator_fn': estimator_fn,
+            'critic_type': critic_type, 'estimator_name': estimator_name,
             'use_variational': use_variational,
             'input_dim_x': x_data.shape[1] * x_data.shape[2],
             'input_dim_y': y_data.shape[1] * y_data.shape[2]

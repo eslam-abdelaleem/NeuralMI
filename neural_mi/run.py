@@ -158,9 +158,12 @@ def run(
         handler = DataHandler(x_data, y_data, processor_type, processor_params)
         x_data, y_data = handler.process()
 
+    # Pass the estimator by name (string) instead of the function object
+    # to avoid pickling errors with multiprocessing. The worker process
+    # will be responsible for looking up the function from the name.
     init_kwargs = {
         'critic_type': analysis_kwargs.pop('critic_type', 'separable'),
-        'estimator_fn': ESTIMATORS[estimator],
+        'estimator_name': estimator,
         'use_variational': analysis_kwargs.pop('use_variational', False),
         'custom_embedding_model': custom_embedding_model,
         'save_best_model_path': save_best_model_path
