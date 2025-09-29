@@ -3,7 +3,8 @@
 import torch
 import itertools
 import uuid
-from multiprocessing import Pool, cpu_count
+import multiprocessing
+from multiprocessing import cpu_count
 
 from neural_mi.estimators import bounds
 from neural_mi.utils import run_training_task
@@ -41,7 +42,8 @@ class ParameterSweep:
             print("No tasks to run. Your sweep_grid is empty.")
             return []
 
-        with Pool(processes=n_workers) as pool:
+        # Use get_context("spawn") to create the pool, which is safer for PyTorch.
+        with multiprocessing.get_context("spawn").Pool(processes=n_workers) as pool:
             all_results = list(pool.map(run_training_task, tasks))
         
         print("Parameter sweep finished.")

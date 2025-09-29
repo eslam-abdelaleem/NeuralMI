@@ -6,7 +6,8 @@ import pandas as pd
 import itertools
 import uuid
 import warnings
-from multiprocessing import Pool, cpu_count
+import multiprocessing
+from multiprocessing import cpu_count
 import statsmodels.api as sm
 from collections import Counter
 
@@ -141,7 +142,8 @@ class AnalysisWorkflow:
         tasks = self._prepare_tasks(param_grid, gamma_range)
         if not tasks: print("No tasks to run."); return []
 
-        with Pool(processes=n_workers) as pool:
+        # Use get_context("spawn") to create the pool, which is safer for PyTorch.
+        with multiprocessing.get_context("spawn").Pool(processes=n_workers) as pool:
             raw_results = list(pool.map(run_training_task, tasks))
         
         print("All training tasks finished. Performing bias correction...")
