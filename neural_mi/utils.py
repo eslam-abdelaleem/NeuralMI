@@ -1,3 +1,4 @@
+import torch
 import torch.optim as optim
 
 from neural_mi.models.embeddings import MLP, VarMLP, BaseEmbedding
@@ -55,10 +56,11 @@ def run_training_task(args):
     )
 
     optimizer = optim.Adam(critic.parameters(), lr=params['learning_rate'])
+    device = get_device()
 
     trainer = Trainer(
         model=critic, estimator_fn=params['estimator_fn'], optimizer=optimizer,
-        use_variational=use_variational, beta=params.get('beta', 1.0)
+        device=device, use_variational=use_variational, beta=params.get('beta', 1.0)
     )
 
     results = trainer.train(
@@ -66,6 +68,13 @@ def run_training_task(args):
         batch_size=params['batch_size'], patience=params['patience'], run_id=run_id
     )
     return {**params, **results}
+
+
+def get_device():
+    """
+    Selects the appropriate device (CUDA or CPU) for tensor computations.
+    """
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def find_saturation_point(summary_df, param_col, mean_col, std_col, strictness=[1.0]):
@@ -97,6 +106,7 @@ def find_saturation_point(summary_df, param_col, mean_col, std_col, strictness=[
     """
     import pandas as pd
     import numpy as np
+    import torch
 
     if not isinstance(strictness, list):
         strictness = [strictness]

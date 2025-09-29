@@ -12,6 +12,7 @@ from .analysis.dimensionality import run_dimensionality_analysis
 from .data.handler import DataHandler
 from .estimators import ESTIMATORS
 from .results import Results
+from .validation import ParameterValidator
 
 # _convert_mi_units remains the same...
 def _convert_mi_units(results, to_bits):
@@ -120,10 +121,9 @@ def run(
         - `plot()`: A method to generate a context-appropriate plot.
 
     """
-    if output_units not in ['bits', 'nats']: raise ValueError("output_units must be 'bits' or 'nats'.")
-    if base_params is None: raise ValueError("'base_params' must be provided.")
-    if estimator not in ESTIMATORS:
-        raise ValueError(f"Unknown estimator: '{estimator}'. Must be one of {list(ESTIMATORS.keys())}")
+    # --- 0. Gather all parameters and validate them ---
+    all_params = locals()
+    ParameterValidator(all_params).validate()
 
     # Store all parameters for logging in the Results object
     run_params = {

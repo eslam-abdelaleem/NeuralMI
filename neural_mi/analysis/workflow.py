@@ -61,7 +61,7 @@ def __extrapolate_mi(group, gammas_to_fit, confidence_level, verbose):
 
     if len(final_subset) < 2:
         warnings.warn("Not enough points for even an unreliable linear fit. Returning NaN.")
-        return float('nan'), float('nan'), float('nan')
+        return float('nan'), float('nan'), float('nan'), float('nan')
 
     final_gamma_counts = final_subset['gamma'].value_counts()
     final_weights = final_subset['gamma'].map(lambda g: 1 / final_gamma_counts[g])
@@ -73,11 +73,12 @@ def __extrapolate_mi(group, gammas_to_fit, confidence_level, verbose):
     fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=final_weights).fit()
 
     intercept, slope = fit_linear.params
+    rsquared = fit_linear.rsquared
     alpha = 1 - confidence_level
     conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=alpha)[0]
     mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
 
-    return intercept, mi_error, slope
+    return intercept, mi_error, slope, rsquared
 
 
 def _post_process_and_correct(df, delta_threshold, min_gamma_points, confidence_level, verbose):
@@ -105,11 +106,18 @@ def _post_process_and_correct(df, delta_threshold, min_gamma_points, confidence_
             is_reliable = False
             warnings.warn(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
 
-        mi_corrected, mi_error, slope = __extrapolate_mi(group, gammas_used, confidence_level, verbose)
+        mi_corrected, mi_error, slope, rsquared = __extrapolate_mi(group, gammas_used, confidence_level, verbose)
+
+        if not np.isnan(rsquared) and rsquared < 0.8:
+            warnings.warn(
+                f"R-squared of the bias correction fit is {rsquared:.2f}, "
+                f"which is low. The MI estimate may be unreliable."
+            )
 
         param_dict.update({
             'mi_corrected': mi_corrected, 'mi_error': mi_error, 'slope': slope,
-            'is_reliable': is_reliable, 'gammas_used': gammas_used, 'final_delta': final_delta
+            'is_reliable': is_reliable, 'gammas_used': gammas_used, 'final_delta': final_delta,
+            'rsquared': rsquared
         })
         corrected_results.append(param_dict)
 
