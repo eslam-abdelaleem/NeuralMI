@@ -1,0 +1,2477 @@
+# Critical Evaluation and Issues Report for neural_mi Library
+
+## CRITICAL ISSUE 1: Torch Shared Memory Manager Error
+
+### Problem
+The library fails with `RuntimeError: torch_shm_manager` when using multiprocessing on certain systems (particularly macOS). The error occurs because PyTorch cannot generate a random directory for the shared memory manager socket.
+
+### Root Cause
+The issue stems from two sources:
+1. System temp directory permissions or path length issues
+2. PyTorch multiprocessing with tensors requires proper shared memory setup
+
+### Required Fix
+The temp directory workaround should NOT be added to user-facing tutorial code. Instead, implement the fix at the library level in the following locations:
+
+**File: neural_mi/run.py**
+- Add temp directory setup at the TOP of the file, before any torch imports
+- Wrap in try-except to handle cases where it's not needed
+- This ensures the fix is applied once when the library is imported
+
+**File: neural_mi/utils.py (run_training_task function)**
+- This function is pickled and sent to worker processes
+- Each worker process needs the temp directory setup BEFORE importing torch
+- Add the temp directory setup at the very beginning of this function
+
+**File: test_torch_mp.py**
+- This test file correctly demonstrates the fix
+- Keep this as a diagnostic tool but don't require users to run it
+
+### Implementation Code
+```python
+# Add this to the TOP of neural_mi/run.py (before imports)
+import os
+import tempfile
+import platform
+
+# Only apply temp directory fix on systems that need it (primarily macOS)
+if platform.system() == "Darwin" or os.getenv("FORCE_CUSTOM_TMPDIR"):
+    custom_temp = os.path.expanduser('~/.neural_mi_tmp')
+    try:
+        os.makedirs(custom_temp, exist_ok=True)
+        os.environ['TMPDIR'] = custom_temp
+        os.environ['TEMP'] = custom_temp
+        os.environ['TMP'] = custom_temp
+        tempfile.tempdir = custom_temp
+    except (OSError, PermissionError) as e:
+        # If custom temp fails, warn but continue with system default
+        import warnings
+        warnings.warn(f"Could not set custom temp directory: {e}. Using system default.")
+
+# Add similar code to run_training_task in utils.py
+def run_training_task(args):
+    # Set up temp directory for worker process
+    import os
+    import tempfile
+    import platform
+    
+    if platform.system() == "Darwin" or os.getenv("FORCE_CUSTOM_TMPDIR"):
+        custom_temp = os.path.expanduser('~/.neural_mi_tmp')
+        try:
+            os.makedirs(custom_temp, exist_ok=True)
+            os.environ['TMPDIR'] = custom_temp
+            os.environ['TEMP'] = custom_temp
+            os.environ['TMP'] = custom_temp
+            tempfile.tempdir = custom_temp
+        except (OSError, PermissionError):
+            pass  # Silently continue with system default in worker
+    
+    # Now import torch and continue with existing code
+    import torch
+    # ... rest of existing function
+```
+
+---
+
+## CRITICAL ISSUE 2: Tutorial 2 Compilation Failure
+
+### Problem
+Tutorial 02_importance_of_time.py fails to compile/run.
+
+### Likely Causes to Investigate
+
+1. **Missing plot display call**: The tutorial has plotting code but may not be calling `plt.show()` or may have matplotlib backend issues
+
+2. **Data shape mismatch**: The `generate_temporally_convolved_data` returns shape `[1, n_samples]` but the processor might expect `[n_channels, n_timepoints]`. The heuristic in DataHandler may incorrectly transpose.
+
+3. **Sweep grid issues**: The sweep_grid uses a wide range of window_sizes `[1, 5, 10, 15, 20, 25, 30, 40, 50, 100, 200, 500, 1000]`. With only 10000 samples, window_size=1000 means only 10 windows, which may cause issues.
+
+### Required Investigation
+- Run tutorial 2 with verbose error output
+- Check if error occurs at data generation, processing, or training stage
+- Verify the actual error message and stack trace
+- Check if it's a silent failure (no error but wrong output) or hard crash
+
+### Specific Lines to Check
+
+**In 02_importance_of_time.py line ~40-45:**
+```python
+# The processor expects (channels, time) format
+# But generate_temporally_convolved_data returns [1, n_samples]
+# Verify this is handled correctly in the DataHandler heuristic
+```
+
+**In neural_mi/data/handler.py lines 65-70:**
+```python
+# The heuristic assumes more rows = time dimension
+# For [1, 10000] this will INCORRECTLY transpose to [10000, 1]
+# This is a critical bug that needs fixing
+```
+
+---
+
+## ISSUE 3: DataHandler Heuristic is Fundamentally Flawed
+
+### Problem
+**File: neural_mi/data/handler.py, lines 65-70**
+
+The heuristic that transposes data when `x_np.shape[0] > x_np.shape[1]` is incorrect and will fail for:
+- Single-channel long recordings (shape [1, 10000])
+- Wide datasets with more channels than timepoints (shape [200, 50])
+
+### Current Code
+```python
+# Heuristic: The processor expects (channels, time). If the data has more rows
+# than columns, assume it's (time, channels) and transpose it.
+if x_np.shape[0] > x_np.shape[1]:
+    x_np = x_np.T
+```
+
+### Why This Fails
+1. For `[1, 10000]` data, `shape[0] < shape[1]`, so no transpose occurs → CORRECT
+2. But for `[10000, 1]` data (time x channels), `shape[0] > shape[1]`, so it transposes to `[1, 10000]` → CORRECT by accident
+3. For `[200, 50]` data with 200 channels and 50 timepoints, it INCORRECTLY transposes to `[50, 200]`
+
+### Required Fix
+**Replace the heuristic with explicit user control:**
+
+1. Add a `data_format` parameter to processor_params:
+```python
+processor_params = {
+    'window_size': 10,
+    'data_format': 'channels_first'  # or 'channels_last'
+}
+```
+
+2. Update DataHandler.__init__ to accept this parameter
+
+3. Remove the heuristic and explicitly transpose based on user specification:
+```python
+if self.processor_params.get('data_format') == 'channels_last':
+    x_np = x_np.T
+    y_np = y_np.T
+# Default is 'channels_first', no transpose needed
+```
+
+4. Update all tutorials to explicitly specify data_format
+
+5. Add clear documentation about expected input format
+
+### Alternative Fix (If You Want to Keep Heuristic)
+At minimum, add a warning:
+```python
+if x_np.shape[0] > x_np.shape[1]:
+    warnings.warn(
+        f"Input data shape {x_np.shape} has more rows than columns. "
+        f"Assuming format is (time, channels) and transposing to (channels, time). "
+        f"If this is incorrect, please transpose your data before passing to run() "
+        f"or specify data_format='channels_first' in processor_params."
+    )
+    x_np = x_np.T
+```
+
+---
+
+## ISSUE 4: Inconsistent Data Shape Documentation
+
+### Problem
+Documentation and code comments are inconsistent about expected data shapes.
+
+**In neural_mi/data/handler.py docstring:**
+```python
+"""
+Notes
+-----
+When using the 'continuous' processor, this class uses a heuristic to
+orient the data correctly. It assumes that for a 2D input array, the
+dimension with more elements is the time dimension.
+"""
+```
+
+**In neural_mi/data/processors.py, ContinuousProcessor.process docstring:**
+```python
+"""
+Transforms a time-series array into windowed tensors.
+...
+raw_data : np.ndarray
+    2D array of shape [num_channels, num_timepoints].
+"""
+```
+
+**In neural_mi/run.py docstring:**
+```python
+"""
+x_data : np.ndarray or torch.Tensor
+    The data for variable X. Can be raw data (e.g., 2D array of shape
+    `(n_timepoints, n_channels)` for continuous data) or pre-processed
+    3D data of shape `(n_samples, n_channels, n_features)`.
+"""
+```
+
+### Required Fix
+1. Decide on ONE canonical input format (recommend `[n_channels, n_timepoints]`)
+2. Update ALL docstrings to match this format
+3. Add explicit examples in docstrings:
+```python
+Examples
+--------
+For continuous data with 5 channels and 1000 timepoints:
+    x_data = np.random.randn(5, 1000)  # Shape: [n_channels, n_timepoints]
+    
+For spike data with 10 neurons:
+    x_data = [np.array([0.1, 0.5, 0.9]), ...]  # List of 10 spike time arrays
+```
+4. Add shape validation that raises informative errors before processing
+
+---
+
+## ISSUE 5: Silent Failures and Poor Error Messages
+
+### Problem
+The library has multiple places where errors are silently caught or produce uninformative messages.
+
+**Example 1: neural_mi/training/trainer.py line 50-51:**
+```python
+if not test_mi_history or not os.path.exists(temp_model_path):
+    return {'train_mi': float('nan'), 'test_mi': float('nan'), 'best_epoch': -1, 'test_mi_history': []}
+```
+Returns NaN without telling the user WHY training failed.
+
+**Example 2: neural_mi/analysis/workflow.py line 24:**
+```python
+except RuntimeError:
+    # The start method can only be set once, so we pass if it's already been set.
+    pass
+```
+Silently ignores errors that might indicate real problems.
+
+**Example 3: neural_mi/data/processors.py line 123:**
+```python
+if n_samples < self.window_size:
+    raise ValueError("Length of data is smaller than the window size.")
+```
+Good error message, but doesn't tell user what the values are.
+
+### Required Fix
+1. Replace all `return {..., float('nan')}` with explicit exceptions:
+```python
+raise RuntimeError(
+    f"Training failed to produce valid results. "
+    f"Test MI history length: {len(test_mi_history)}, "
+    f"Model checkpoint exists: {os.path.exists(temp_model_path)}"
+)
+```
+
+2. Add context to all error messages:
+```python
+raise ValueError(
+    f"Length of data ({n_samples} timepoints) is smaller than "
+    f"the window size ({self.window_size} timepoints). "
+    f"Reduce window_size or provide more data."
+)
+```
+
+3. Add validation at the entry point (run.py) that checks:
+- Data is not empty
+- Data shapes are compatible
+- Parameters are in valid ranges
+- Required parameters for each mode are present
+
+4. Create custom exception classes:
+```python
+class NeuralMIError(Exception):
+    """Base exception for neural_mi library"""
+    pass
+
+class DataShapeError(NeuralMIError):
+    """Raised when data has incorrect shape"""
+    pass
+
+class InsufficientDataError(NeuralMIError):
+    """Raised when not enough data for analysis"""
+    pass
+```
+
+---
+
+## ISSUE 6: Memory Issues with Large Sweeps
+
+### Problem
+The library loads ALL data into memory on ALL workers simultaneously. For large sweeps with many workers, this can cause OOM errors.
+
+**In neural_mi/analysis/sweep.py line 48:**
+```python
+tasks.append((self.x_data, self.y_data, current_params.copy(), task_run_id))
+```
+Each task contains a full copy of the data, and with multiprocessing 'spawn', this means the data is serialized and copied to each worker.
+
+### Required Fix
+
+**Option 1: Shared Memory (Preferred for PyTorch 1.8+)**
+```python
+import torch.multiprocessing as mp
+
+# In ParameterSweep.__init__
+self.x_data_shared = x_data.share_memory_()
+self.y_data_shared = y_data.share_memory_()
+
+# In _prepare_tasks
+tasks.append((None, None, current_params.copy(), task_run_id))  # Don't send data
+
+# In run_training_task
+def run_training_task(args):
+    _, _, params, run_id = args
+    # Access shared memory data (would need to be passed via global or manager)
+```
+
+**Option 2: Memory-Mapped Files**
+```python
+import numpy as np
+import tempfile
+
+# Save data to memory-mapped file
+temp_dir = tempfile.mkdtemp()
+x_memmap = np.memmap(f'{temp_dir}/x.dat', dtype='float32', mode='w+', shape=x_data.shape)
+x_memmap[:] = x_data[:]
+
+# Pass only the filename and shape to workers
+tasks.append((f'{temp_dir}/x.dat', x_data.shape, params, run_id))
+```
+
+**Option 3: Data Subsampling (Quick Fix)**
+Add parameter to subsample data for sweeps:
+```python
+def run(self, sweep_grid, n_workers=None, max_samples_per_task=None):
+    if max_samples_per_task and self.x_data.shape[0] > max_samples_per_task:
+        indices = np.random.choice(self.x_data.shape[0], max_samples_per_task, replace=False)
+        x_subset = self.x_data[indices]
+        y_subset = self.y_data[indices]
+    else:
+        x_subset = self.x_data
+        y_subset = self.y_data
+```
+
+---
+
+## ISSUE 7: Inconsistent Device Handling
+
+### Problem
+The library has inconsistent device (CPU/GPU) handling that can cause errors.
+
+**In neural_mi/estimators/bounds.py:**
+The recent fix to remove global device variable is good, but there are still issues:
+
+1. **Line 15:** `torch.tensor(scores.size(0), dtype=torch.float32, device=scores.device)`
+   - Good: Creates tensor on correct device
+   
+2. **Line 56:** `torch.diag(float('inf') * torch.ones(batch_size, device=x.device))`
+   - Good: Creates tensor on correct device
+
+BUT:
+
+**In neural_mi/utils.py line 51:**
+```python
+device = get_device()
+```
+This gets device once, but if user later moves model or data, there's no synchronization.
+
+**In neural_mi/training/trainer.py line 39:**
+```python
+x_data = x_data.to(self.device)
+y_data = y_data.to(self.device)
+```
+This moves data to device, but if data is already on a different GPU, this could cause issues.
+
+### Required Fix
+
+1. **Add device parameter to run() function:**
+```python
+def run(..., device='auto', ...):
+    """
+    device : str or torch.device, default='auto'
+        Device to run computations on. Options:
+        - 'auto': Automatically select CUDA if available, else CPU
+        - 'cpu': Force CPU
+        - 'cuda' or 'cuda:0': Specific GPU
+        - torch.device object
+    """
+```
+
+2. **Validate device compatibility:**
+```python
+def _validate_device(device):
+    if device == 'auto':
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif isinstance(device, str):
+        return torch.device(device)
+    elif isinstance(device, torch.device):
+        return device
+    else:
+        raise ValueError(f"Invalid device: {device}")
+```
+
+3. **Ensure data and model are on same device:**
+```python
+# In trainer.train()
+if x_data.device != self.device:
+    warnings.warn(f"Moving data from {x_data.device} to {self.device}")
+    x_data = x_data.to(self.device)
+```
+
+4. **Document device behavior clearly in all docstrings**
+
+---
+
+## ISSUE 8: Rigorous Mode WLS Fitting Issues
+
+### Problem
+The bias correction in rigorous mode has several statistical and numerical issues.
+
+**In neural_mi/analysis/workflow.py line 20-40:**
+
+
+1. **Silent failures with NaN:**
+```python
+if len(final_subset) < 2:
+    warnings.warn("Not enough points for even an unreliable linear fit. Returning NaN.")
+    return float('nan'), float('nan'), float('nan')
+```
+Should raise exception, not return NaN.
+
+
+---
+
+## ISSUE 9: Missing Input Validation
+
+### Problem
+The library lacks comprehensive input validation at the entry point.
+
+**In neural_mi/validation.py:**
+The validator only checks parameter types and ranges, but doesn't validate:
+- Data shapes and compatibility
+- Data types (accepts tensors or arrays but doesn't verify numeric types)
+- Data ranges (e.g., spike times must be positive and sorted)
+- Compatibility between data and processor parameters
+
+### Required Fix
+
+Add comprehensive data validation:
+
+```python
+class DataValidator:
+    """Validates input data for neural_mi."""
+    
+    def __init__(self, x_data, y_data, processor_type):
+        self.x_data = x_data
+        self.y_data = y_data
+        self.processor_type = processor_type
+    
+    def validate(self):
+        """Run all validation checks."""
+        self._validate_data_types()
+        self._validate_data_shapes()
+        self._validate_data_values()
+        self._validate_compatibility()
+    
+    def _validate_data_types(self):
+        """Check data types are valid."""
+        for data, name in [(self.x_data, 'x_data'), (self.y_data, 'y_data')]:
+            if data is None:
+                continue
+            if not isinstance(data, (np.ndarray, torch.Tensor, list)):
+                raise TypeError(
+                    f"{name} must be np.ndarray, torch.Tensor, or list, "
+                    f"got {type(data)}"
+                )
+            
+            # Check for numeric data (if not spike data)
+            if self.processor_type != 'spike':
+                if isinstance(data, (np.ndarray, torch.Tensor)):
+                    if not np.issubdtype(data.dtype, np.number):
+                        raise TypeError(f"{name} must contain numeric data")
+    
+    def _validate_data_shapes(self):
+        """Check data shapes are compatible."""
+        # For continuous data
+        if self.processor_type == 'continuous':
+            for data, name in [(self.x_data, 'x_data'), (self.y_data, 'y_data')]:
+                if data is None:
+                    continue
+                if isinstance(data, (np.ndarray, torch.Tensor)):
+                    if data.ndim not in [2, 3]:
+                        raise ValueError(
+                            f"{name} must be 2D (for raw data) or 3D "
+                            f"(for pre-processed data), got shape {data.shape}"
+                        )
+                    if data.ndim == 2 and data.size == 0:
+                        raise ValueError(f"{name} is empty")
+        
+        # For spike data
+        elif self.processor_type == 'spike':
+            for data, name in [(self.x_data, 'x_data'), (self.y_data, 'y_data')]:
+                if data is None:
+                    continue
+                if not isinstance(data, list):
+                    raise TypeError(
+                        f"{name} must be a list of arrays for spike data, "
+                        f"got {type(data)}"
+                    )
+                if len(data) == 0:
+                    raise ValueError(f"{name} is empty")
+                for i, spikes in enumerate(data):
+                    if not isinstance(spikes, np.ndarray):
+                        raise TypeError(
+                            f"{name}[{i}] must be np.ndarray, got {type(spikes)}"
+                        )
+                    if spikes.ndim != 1:
+                        raise ValueError(
+                            f"{name}[{i}] must be 1D array of spike times, "
+                            f"got shape {spikes.shape}"
+                        )
+        
+        # Check x and y have compatible first dimensions
+        if self.y_data is not None:
+            if self.processor_type == 'spike':
+                if len(self.x_data) != len(self.y_data):
+                    warnings.warn(
+                        f"x_data has {len(self.x_data)} neurons but "
+                        f"y_data has {len(self.y_data)} neurons. "
+                        f"This is allowed but unusual."
+                    )
+            elif self.processor_type == 'continuous':
+                if isinstance(self.x_data, (np.ndarray, torch.Tensor)) and \
+                   isinstance(self.y_data, (np.ndarray, torch.Tensor)):
+                    if self.x_data.ndim == 3 and self.y_data.ndim == 3:
+                        if self.x_data.shape[0] != self.y_data.shape[0]:
+                            raise ValueError(
+                                f"Pre-processed data must have same number of samples. "
+                                f"x_data has {self.x_data.shape[0]} samples, "
+                                f"y_data has {self.y_data.shape[0]} samples."
+                            )
+    
+    def _validate_data_values(self):
+        """Check data values are valid."""
+        # For spike data, check times are positive and sorted
+        if self.processor_type == 'spike':
+            for data, name in [(self.x_data, 'x_data'), (self.y_data, 'y_data')]:
+                if data is None:
+                    continue
+                for i, spikes in enumerate(data):
+                    if len(spikes) > 0:
+                        if np.any(spikes < 0):
+                            raise ValueError(
+                                f"{name}[{i}] contains negative spike times"
+                            )
+                        if not np.all(spikes[:-1] <= spikes[1:]):
+                            warnings.warn(
+                                f"{name}[{i}] spike times are not sorted. "
+                                f"Sorting automatically."
+                            )
+                            data[i] = np.sort(spikes)
+        
+        # For continuous data, check for NaN/Inf
+        elif self.processor_type == 'continuous':
+            for data, name in [(self.x_data, 'x_data'), (self.y_data, 'y_data')]:
+                if data is None:
+                    continue
+                if isinstance(data, (np.ndarray, torch.Tensor)):
+                    if isinstance(data, torch.Tensor):
+                        data_np = data.numpy()
+                    else:
+                        data_np = data
+                    
+                    if np.any(np.isnan(data_np)):
+                        raise ValueError(f"{name} contains NaN values")
+                    if np.any(np.isinf(data_np)):
+                        raise ValueError(f"{name} contains Inf values")
+    
+    def _validate_compatibility(self):
+        """Check data is compatible with processor parameters."""
+        # This will be extended as processor_params validation is added
+        pass
+```
+
+Add call to DataValidator in run():
+```python
+# In run(), after parameter validation
+DataValidator(x_data, y_data, processor_type).validate()
+```
+
+---
+
+## ISSUE 10: Dimensionality Mode Has Unequal Split Sizes
+
+### Problem
+**In neural_mi/analysis/dimensionality.py line 31:**
+```python
+indices_a = indices[:n_channels // 2]
+indices_b = indices[n_channels // 2 : 2 * (n_channels // 2)]  # Ensures equal size
+```
+
+For odd number of channels, this discards the last channel. For example, with 51 channels:
+- indices_a gets channels 0-24 (25 channels)
+- indices_b gets channels 25-49 (25 channels)  
+- Channel 50 is discarded
+
+This wastes data and introduces bias.
+
+### Required Fix
+
+```python
+# Better: Use all channels and handle unequal splits
+indices_a = indices[:n_channels // 2]
+indices_b = indices[n_channels // 2:]  # Include all remaining channels
+
+# Even better: Require even number of channels or provide clear warning
+if n_channels % 2 != 0:
+    warnings.warn(
+        f"Number of channels ({n_channels}) is odd. "
+        f"Using {n_channels // 2} channels for X_A and {n_channels // 2 + 1} for X_B. "
+        f"This may introduce slight bias. Consider using an even number of channels "
+        f"for more accurate results."
+    )
+```
+
+---
+
+## ISSUE 11: No Progress Tracking for Long Sweeps
+
+### Problem
+For large parameter sweeps with many combinations, there's no feedback to the user about overall progress. Only individual training progress is shown.
+
+**In neural_mi/analysis/sweep.py line 32:**
+```python
+with multiprocessing.get_context("spawn").Pool(processes=n_workers) as pool:
+    all_results = list(pool.map(run_training_task, tasks))
+```
+
+The user has no idea how many tasks are complete out of total tasks.
+
+### Required Fix
+
+```python
+from tqdm.auto import tqdm
+
+with multiprocessing.get_context("spawn").Pool(processes=n_workers) as pool:
+    # Use imap instead of map to get results as they complete
+    all_results = list(tqdm(
+        pool.imap(run_training_task, tasks),
+        total=len(tasks),
+        desc="Parameter Sweep Progress",
+        unit="task"
+    ))
+```
+
+Note: This may conflict with the training progress bars. Consider:
+1. Disabling training progress bars during sweeps
+2. Using nested progress bars
+3. Adding a `verbose` parameter to control progress display
+
+---
+
+## ISSUE 12: Early Stopping May Be Too Aggressive
+
+### Problem
+**In neural_mi/training/trainer.py line 76:**
+```python
+if epochs_no_improve >= patience:
+    print(f"\nEarly stopping triggered after {patience} epochs with no improvement.")
+    break
+```
+
+The early stopping uses smoothed MI, but the smoothing parameters (sigma=1.0, median_window=3) and patience=5 (default) may stop training too early for noisy MI estimates.
+
+### Issues:
+1. No consideration of the magnitude of improvement (stopping even if improvement is tiny)
+
+### Required Fix
+
+1. **Make smoothing parameters configurable:**
+```python
+def train(self, ..., smoothing_sigma=2.0, median_window=5, min_improvement=0.001, ...):
+```
+
+2. **Add relative improvement threshold:**
+```python
+relative_improvement = (current_smoothed_mi - best_smoothed_mi) / (abs(best_smoothed_mi) + 1e-8)
+if relative_improvement > min_improvement:
+    best_smoothed_mi = current_smoothed_mi
+    epochs_no_improve = 0
+    torch.save(self.model.state_dict(), temp_model_path)
+else:
+    epochs_no_improve += 1
+```
+
+4. **Add early stopping diagnostic output:**
+```python
+if epochs_no_improve >= patience:
+    print(f"\nEarly stopping triggered at epoch {epoch+1}/{n_epochs}")
+    print(f"Best smoothed MI: {best_smoothed_mi:.4f}")
+    print(f"Current smoothed MI: {current_smoothed_mi:.4f}")
+    print(f"No improvement for {patience} epochs")
+    break
+```
+
+---
+
+## ISSUE 13: Spike Processor Time Range Issues
+
+### Problem
+**In neural_mi/data/processors.py line 62-76:**
+
+The spike processor has confusing logic for determining the time range:
+
+```python
+global_first_spike = min([ch[0] for ch in raw_data if len(ch) > 0], default=0)
+global_last_spike = max([ch[-1] for ch in raw_data if len(ch) > 0], default=self.window_size)
+
+t_start_eff = t_start if t_start is not None else global_first_spike
+
+if t_end is not None:
+    t_end_eff = t_end
+elif self.n_seconds is not None:
+    t_end_eff = t_start_eff + self.n_seconds
+else:
+    t_end_eff = global_last_spike
+
+t_end_eff = min(t_end_eff, global_last_spike)
+```
+
+Issues:
+1. If all spike trains are empty, default=0 for first spike and default=self.window_size for last spike is arbitrary
+2. The final `min(t_end_eff, global_last_spike)` can cause t_end < t_start if user specifies t_end beyond data range
+3. No validation that t_start < t_end
+
+### Required Fix
+
+```python
+# Validate input data
+if all(len(ch) == 0 for ch in raw_data):
+    raise ValueError("All spike trains are empty. Cannot process empty data.")
+
+# Calculate global time range
+global_first_spike = min([ch[0] for ch in raw_data if len(ch) > 0])
+global_last_spike = max([ch[-1] for ch in raw_data if len(ch) > 0])
+
+# Determine effective start time
+if t_start is not None:
+    if t_start > global_last_spike:
+        raise ValueError(
+            f"t_start ({t_start}) is beyond the last spike ({global_last_spike})"
+        )
+    t_start_eff = t_start
+else:
+    t_start_eff = global_first_spike
+
+# Determine effective end time
+if t_end is not None:
+    if t_end < t_start_eff:
+        raise ValueError(
+            f"t_end ({t_end}) must be greater than t_start ({t_start_eff})"
+        )
+    t_end_eff = min(t_end, global_last_spike)
+    if t_end_eff <= t_start_eff:
+        raise ValueError(
+            f"After clipping to data range, t_end ({t_end_eff}) <= t_start ({t_start_eff})"
+        )
+elif self.n_seconds is not None:
+    t_end_eff = t_start_eff + self.n_seconds
+    if t_end_eff > global_last_spike:
+        warnings.warn(
+            f"Requested duration ({self.n_seconds}s) extends beyond available data. "
+            f"Clipping to {global_last_spike - t_start_eff:.3f}s"
+        )
+        t_end_eff = global_last_spike
+else:
+    t_end_eff = global_last_spike
+
+# Final validation
+if t_end_eff - t_start_eff < self.window_size:
+    raise ValueError(
+        f"Time range ({t_end_eff - t_start_eff:.3f}s) is smaller than "
+        f"window_size ({self.window_size}s)"
+    )
+```
+
+---
+
+## ISSUE 14: Results Object plot() Method Has Limited Functionality
+
+### Problem
+**In neural_mi/results.py line 66-94:**
+
+The plot() method has several limitations:
+
+1. No way to customize the plot (colors, labels, etc.)
+2. Creates a new figure even if user wants to add to existing axes
+3. No return value, so user can't further customize the plot
+4. sweep_var detection is fragile
+
+```python
+def plot(self):
+    # ...
+    if self.mode in ['sweep', 'dimensionality']:
+        sweep_var = self.params.get('sweep_var')
+        if not sweep_var and self.mode == 'dimensionality':
+            sweep_var = 'embedding_dim'
+        
+        if not sweep_var:
+            raise ValueError("Cannot determine sweep variable for plotting...")
+```
+
+### Required Fix
+
+```python
+def plot(self, ax=None, **kwargs):
+    """
+    Generates a plot suitable for the analysis mode.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes, optional
+        An existing axes object to plot on. If None, creates a new figure.
+    **kwargs : dict
+        Additional keyword arguments passed to the plotting function.
+        Common options:
+        - figsize : tuple, size of figure if creating new (default: (10, 6))
+        - title : str, custom title for the plot
+        - xlabel : str, custom x-axis label
+        - ylabel : str, custom y-axis label
+        - show : bool, whether to call plt.show() (default: True)
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The axes object containing the plot.
+
+    Examples
+    --------
+    >>> results = nmi.run(...)
+    >>> ax = results.plot(show=False)
+    >>> ax.axhline(y=2.0, color='red', label='Ground Truth')
+    >>> ax.legend()
+    >>> plt.show()
+    """
+    from neural_mi.visualize.plot import plot_sweep_curve, plot_bias_correction_fit
+    import matplotlib.pyplot as plt
+
+    # Extract common kwargs
+    show_plot = kwargs.pop('show', True)
+    figsize = kwargs.pop('figsize', (10, 6))
+
+    # Create figure if needed
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+
+    if self.mode in ['sweep', 'dimensionality']:
+        if self.dataframe is None:
+            raise ValueError("Cannot plot: results do not contain a DataFrame.")
+
+        # Improved sweep variable detection
+        sweep_var = self.params.get('sweep_var')
+        if not sweep_var:
+            if self.mode == 'dimensionality':
+                sweep_var = 'embedding_dim'
+            else:
+                # Try to infer from dataframe columns
+                possible_sweep_vars = [
+                    col for col in self.dataframe.columns 
+                    if col not in ['mi_mean', 'mi_std', 'test_mi', 'train_mi', 
+                                   'best_epoch', 'test_mi_history']
+                ]
+                if len(possible_sweep_vars) == 1:
+                    sweep_var = possible_sweep_vars[0]
+                    warnings.warn(
+                        f"Sweep variable not specified, inferring '{sweep_var}' from dataframe"
+                    )
+                else:
+                    raise ValueError(
+                        f"Cannot determine sweep variable. Found possible columns: {possible_sweep_vars}. "
+                        f"Please specify sweep_var explicitly."
+                    )
+
+        plot_sweep_curve(
+            self.dataframe, 
+            sweep_var=sweep_var,
+            ax=ax,
+            **kwargs
+        )
+
+    elif self.mode == 'rigorous':
+        if self.dataframe is None or self.details is None:
+            raise ValueError("Rigorous results are incomplete and cannot be plotted.")
+
+        plot_bias_correction_fit(
+            raw_results_df=self.dataframe,
+            corrected_result=self.details,
+            ax=ax,
+            **kwargs
+        )
+
+    else:
+        raise ValueError(f"Plotting is not implemented for mode: '{self.mode}'")
+
+    if show_plot:
+        plt.tight_layout()
+        plt.show()
+
+    return ax
+```
+
+---
+
+## ISSUE 15: No Reproducibility Support
+
+### Problem
+The library has no mechanism for ensuring reproducible results. Random number generation is used in multiple places without seed control:
+
+1. **neural_mi/analysis/dimensionality.py line 27:** Random channel splits
+2. **neural_mi/analysis/workflow.py line 96:** Random data subsampling
+3. **neural_mi/training/trainer.py:** Random initialization of networks
+4. **neural_mi/data/processors.py:** No issues here (good!)
+
+### Required Fix
+
+1. **Add random_seed parameter to run():**
+```python
+def run(..., random_seed=None, ...):
+    """
+    random_seed : int, optional
+        Random seed for reproducibility. If provided, sets seeds for:
+        - NumPy random number generator
+        - PyTorch random number generator
+        - Python random module
+        If None, results will not be reproducible.
+    """
+    if random_seed is not None:
+        import random
+        random.seed(random_seed)
+        np.random.seed(random_seed)
+        torch.manual_seed(random_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(random_seed)
+        # For deterministic behavior (may reduce performance)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+```
+
+2. **Pass seed through the pipeline:**
+- Add to base_params or as separate parameter
+- Use different seeds for different splits in dimensionality analysis
+- Document that full reproducibility requires single worker (n_workers=1)
+
+3. **Add warning about reproducibility limitations:**
+```python
+if random_seed is not None and n_workers > 1:
+    warnings.warn(
+        "Full reproducibility with random_seed requires n_workers=1. "
+        "With multiple workers, results may vary slightly due to non-deterministic "
+        "parallel execution order."
+    )
+```
+
+---
+
+## ISSUE 16: Missing Type Hints Throughout
+
+### Problem
+The library has inconsistent type hints. Some functions have complete type hints, others have none.
+
+**Good example (neural_mi/data/handler.py line 61):**
+```python
+def process(self) -> (torch.Tensor, torch.Tensor):
+```
+
+**Bad example (neural_mi/utils.py line 10):**
+```python
+def build_critic(critic_type, embedding_params, use_variational=False, custom_embedding_model=None):
+```
+
+**Bad example (neural_mi/training/trainer.py line 36):**
+```python
+def train(self, x_data, y_data, n_epochs, batch_size, ...):
+```
+
+### Required Fix
+
+Add comprehensive type hints to ALL functions:
+
+```python
+from typing import Optional, Dict, Any, Tuple, List, Union
+import torch
+import numpy as np
+
+def build_critic(
+    critic_type: str,
+    embedding_params: Dict[str, Any],
+    use_variational: bool = False,
+    custom_embedding_model: Optional[type] = None
+) -> Union[SeparableCritic, ConcatCritic]:
+    """..."""
+
+def train(
+    self,
+    x_data: torch.Tensor,
+    y_data: torch.Tensor,
+    n_epochs: int,
+    batch_size: int,
+    train_fraction: float = 0.9,
+    n_test_blocks: int = 5,
+    patience: int = 10,
+    sigma: float = 1.0,
+    median_window: int = 3,
+    save_best_model_path: Optional[str] = None,
+    run_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """..."""
+```
+
+---
+
+## ISSUE 17: No Unit Tests
+
+### Problem
+The library has no test suite. The only test file is `test_torch_mp.py`, which is a diagnostic script, not a unit test.
+
+### Required Fix
+
+Create comprehensive test suite:
+
+**File: tests/__init__.py**
+```python
+# Empty file to make tests a package
+```
+
+**File: tests/test_data_processors.py**
+```python
+import pytest
+import numpy as np
+import torch
+from neural_mi.data.processors import ContinuousProcessor, SpikeProcessor
+
+class TestContinuousProcessor:
+    def test_basic_windowing(self):
+        processor = ContinuousProcessor(window_size=3, step_size=1)
+        data = np.arange(10).reshape(1, -1)  # [1, 10]
+        result = processor.process(data)
+        
+        assert result.shape == (8, 1, 3)  # 8 windows, 1 channel, 3 timepoints
+        assert torch.equal(result[0, 0, :], torch.tensor([0., 1., 2.]))
+    
+    def test_multiple_channels(self):
+        processor = ContinuousProcessor(window_size=2, step_size=1)
+        data = np.random.randn(3, 10)  # 3 channels, 10 timepoints
+        result = processor.process(data)
+        
+        assert result.shape == (9, 3, 2)
+    
+    def test_step_size_greater_than_one(self):
+        processor = ContinuousProcessor(window_size=2, step_size=2)
+        data = np.arange(10).reshape(1, -1)
+        result = processor.process(data)
+        
+        assert result.shape == (5, 1, 2)  # 5 non-overlapping windows
+    
+    def test_data_too_short(self):
+        processor = ContinuousProcessor(window_size=10, step_size=1)
+        data = np.arange(5).reshape(1, -1)
+        
+        with pytest.raises(ValueError, match="Length of data is smaller"):
+            processor.process(data)
+    
+    def test_invalid_parameters(self):
+        with pytest.raises(ValueError):
+            ContinuousProcessor(window_size=0)
+        
+        with pytest.raises(ValueError):
+            ContinuousProcessor(window_size=5, step_size=-1)
+
+class TestSpikeProcessor:
+    def test_basic_processing(self):
+        processor = SpikeProcessor(
+            window_size=1.0, 
+            step_size=0.5,
+            max_spikes_per_window=10
+        )
+        spike_data = [
+            np.array([0.1, 0.5, 1.5, 2.0]),
+            np.array([0.3, 1.0, 1.8])
+        ]
+        result = processor.process(spike_data, t_start=0, t_end=3)
+        
+        assert result.shape[1] == 2  # 2 channels
+        assert result.shape[2] == 10  # max_spikes_per_window
+    
+    def test_empty_spike_train(self):
+        processor = SpikeProcessor(window_size=1.0, step_size=1.0, max_spikes_per_window=5)
+        spike_data = [np.array([]), np.array([1.0, 2.0])]
+        
+        # Should not raise error, just return zeros for empty channel
+        result = processor.process(spike_data, t_start=0, t_end=3)
+        assert torch.all(result[:, 0, :] == 0)  # First channel all zeros
+    
+    def test_auto_fit_max_spikes(self):
+        processor = SpikeProcessor(window_size=1.0, step_size=1.0)
+        spike_data = [np.array([0.1, 0.2, 0.3, 0.4, 0.5])]  # 5 spikes in 1 second
+        
+        result = processor.process(spike_data, t_start=0, t_end=2)
+        assert processor.max_spikes == 5
+    
+    def test_all_empty_raises_error(self):
+        processor = SpikeProcessor(window_size=1.0, step_size=1.0)
+        spike_data = [np.array([]), np.array([])]
+        
+        with pytest.raises(ValueError, match="All spike trains are empty"):
+            processor.process(spike_data)
+```
+
+**File: tests/test_estimators.py**
+```python
+import pytest
+import torch
+from neural_mi.estimators import infonce_lower_bound, nwj_lower_bound, tuba_lower_bound
+
+class TestEstimators:
+    def test_infonce_on_independent_data(self):
+        # For independent data, scores should be close to zero
+        # MI should be close to zero
+        scores = torch.randn(100, 100) * 0.1
+        mi = infonce_lower_bound(scores)
+        assert abs(mi.item()) < 1.0  # Should be small for random data
+    
+    def test_infonce_on_perfect_correlation(self):
+        # For perfectly correlated data, diagonal should be very high
+        scores = torch.randn(100, 100) * 0.1
+        scores[range(100), range(100)] = 10.0  # High diagonal
+        mi = infonce_lower_bound(scores)
+        assert mi.item() > 2.0  # Should be high MI
+    
+    def test_device_consistency(self):
+        # Test that estimators work on different devices
+        scores_cpu = torch.randn(50, 50)
+        mi_cpu = infonce_lower_bound(scores_cpu)
+        assert mi_cpu.device.type == 'cpu'
+        
+        if torch.cuda.is_available():
+            scores_gpu = scores_cpu.cuda()
+            mi_gpu = infonce_lower_bound(scores_gpu)
+            assert mi_gpu.device.type == 'cuda'
+    
+    def test_nwj_vs_tuba(self):
+        scores = torch.randn(100, 100)
+        nwj = nwj_lower_bound(scores)
+        tuba = tuba_lower_bound(scores - 1.)
+        
+        # NWJ is TUBA with scores shifted by -1
+        assert torch.isclose(nwj, tuba, atol=1e-5)
+```
+
+**File: tests/test_datasets.py**
+```python
+import pytest
+import numpy as np
+import torch
+from neural_mi.datasets import (
+    generate_correlated_gaussians,
+    generate_nonlinear_from_latent,
+    generate_temporally_convolved_data,
+    generate_xor_data,
+    generate_correlated_spike_trains
+)
+
+class TestDatasetGenerators:
+    def test_correlated_gaussians_shape(self):
+        x, y = generate_correlated_gaussians(n_samples=100, dim=5, mi=2.0)
+        assert x.shape == (100, 5)
+        assert y.shape == (100, 5)
+    
+    def test_correlated_gaussians_mi_zero(self):
+        x, y = generate_correlated_gaussians(n_samples=1000, dim=3, mi=0.0)
+        # With MI=0, correlation should be very small
+        correlation = np.corrcoef(x[:, 0], y[:, 0])[0, 1]
+        assert abs(correlation) < 0.1
+    
+    def test_nonlinear_from_latent_shape(self):
+        x, y = generate_nonlinear_from_latent(
+            n_samples=100, latent_dim=4, observed_dim=50, mi=2.0
+        )
+        assert x.shape == (100, 50)
+        assert y.shape == (100, 50)
+    
+    def test_temporally_convolved_shape(self):
+        x, y = generate_temporally_convolved_data(n_samples=1000)
+        assert x.shape == (1, 1000)
+        assert y.shape == (1, 1000)
+    
+    def test_xor_data(self):
+        x, y = generate_xor_data(n_samples=100, noise=0.0)
+        assert x.shape == (100, 2)
+        assert y.shape == (100, 1)
+        
+        # Check XOR logic with no noise
+        x_np = x.numpy()
+        y_np = y.numpy()
+        for i in range(100):
+            expected = float(x_np[i, 0] != x_np[i, 1])
+            assert abs(y_np[i, 0] - expected) < 0.01
+    
+    def test_spike_trains_format(self):
+        pop_x, pop_y = generate_correlated_spike_trains(
+            n_neurons=5, duration=10.0, firing_rate=10.0
+        )
+        assert len(pop_x) == 5
+        assert len(pop_y) == 5
+        
+        for spikes in pop_x + pop_y:
+            assert isinstance(spikes, np.ndarray)
+            assert spikes.ndim == 1
+            # Check spikes are sorted
+            assert np.all(spikes[:-1] <= spikes[1:])
+            # Check spikes are in valid range
+            assert np.all(spikes >= 0)
+            assert np.all(spikes <= 10.0)
+```
+
+**File: tests/test_integration.py**
+```python
+import pytest
+import numpy as np
+import torch
+import neural_mi as nmi
+
+class TestIntegration:
+    def test_simple_estimate(self):
+        """Test basic estimate mode with correlated Gaussians."""
+        x, y = nmi.datasets.generate_correlated_gaussians(
+            n_samples=500, dim=3, mi=2.0
+        )
+        
+        base_params = {
+            'n_epochs': 10,  # Short for testing
+            'learning_rate': 1e-3,
+            'batch_size': 64,
+            'patience': 5,
+            'embedding_dim': 8,
+            'hidden_dim': 32,
+            'n_layers': 2
+        }
+        
+        results = nmi.run(
+            x_data=x,
+            y_data=y,
+            mode='estimate',
+            processor_type='continuous',
+            processor_params={'window_size': 1},
+            base_params=base_params,
+            output_units='bits'
+        )
+        
+        assert results.mi_estimate is not None
+        assert not np.isnan(results.mi_estimate)
+        assert 0.0 <= results.mi_estimate <= 5.0  # Reasonable range
+    
+    def test_sweep_mode(self):
+        """Test sweep mode with small grid."""
+        x, y = nmi.datasets.generate_correlated_gaussians(
+            n_samples=300, dim=2, mi=1.5
+        )
+        
+        base_params = {
+            'n_epochs': 5,
+            'learning_rate': 1e-3,
+            'batch_size': 64,
+            'patience': 3,
+            'hidden_dim': 32,
+            'n_layers': 2
+        }
+        
+        sweep_grid = {'embedding_dim': [4, 8]}
+        
+        results = nmi.run(
+            x_data=x,
+            y_data=y,
+            mode='sweep',
+            processor_type='continuous',
+            processor_params={'window_size': 1},
+            base_params=base_params,
+            sweep_grid=sweep_grid,
+            n_workers=1  # Single worker for testing
+        )
+        
+        assert results.dataframe is not None
+        assert len(results.dataframe) == 2  # Two embedding dims
+        assert 'mi_mean' in results.dataframe.columns
+    
+    def test_dimensionality_mode(self):
+        """Test dimensionality analysis."""
+        x, _ = nmi.datasets.generate_nonlinear_from_latent(
+            n_samples=300, latent_dim=3, observed_dim=20, mi=2.0
+        )
+        
+        base_params = {
+            'n_epochs': 5,
+            'learning_rate': 1e-3,
+            'batch_size': 64,
+            'patience': 3,
+            'hidden_dim': 32,
+            'n_layers': 2
+        }
+        
+        sweep_grid = {'embedding_dim': [2, 4, 6]}
+        
+        results = nmi.run(
+            x_data=x,
+            mode='dimensionality',
+            processor_type='continuous',
+            processor_params={'window_size': 1},
+            base_params=base_params,
+            sweep_grid=sweep_grid,
+            n_splits=2,
+            n_workers=1
+        )
+        
+        assert results.dataframe is not None
+        assert len(results.dataframe) == 3
+        assert 'mi_mean' in results.dataframe.columns
+```
+
+**File: tests/test_validation.py**
+```python
+import pytest
+import numpy as np
+from neural_mi.validation import ParameterValidator
+
+class TestParameterValidator:
+    def test_missing_base_params(self):
+        params = {'x_data': np.random.randn(100, 5)}
+        validator = ParameterValidator(params)
+        
+        with pytest.raises(ValueError, match="base_params"):
+            validator.validate()
+    
+    def test_invalid_base_params_type(self):
+        params = {
+            'base_params': 'not_a_dict',
+            'mode': 'estimate'
+        }
+        validator = ParameterValidator(params)
+        
+        with pytest.raises(TypeError, match="must be a dictionary"):
+            validator.validate()
+    
+    def test_negative_learning_rate(self):
+        params = {
+            'base_params': {'learning_rate': -0.01},
+            'mode': 'estimate'
+        }
+        validator = ParameterValidator(params)
+        
+        with pytest.raises(ValueError, match="learning_rate"):
+            validator.validate()
+    
+    def test_dimensionality_requires_embedding_dim(self):
+        params = {
+            'base_params': {},
+            'mode': 'dimensionality',
+            'sweep_grid': {'hidden_dim': [32, 64]}  # Wrong parameter
+        }
+        validator = ParameterValidator(params)
+        
+        with pytest.raises(ValueError, match="embedding_dim"):
+            validator.validate()
+```
+
+Add pytest configuration:
+
+**File: pytest.ini**
+```ini
+[pytest]
+testpaths = tests
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+addopts = -v --tb=short
+```
+
+Add to requirements:
+
+**File: requirements-dev.txt**
+```
+pytest>=7.0.0
+pytest-cov>=3.0.0
+pytest-xdist>=2.5.0  # For parallel test execution
+```
+
+---
+
+## ISSUE 18: Documentation Inconsistencies and Gaps
+
+### Problem
+Documentation has several issues:
+
+1. **Inconsistent docstring format** - Mix of NumPy, Google, and plain text styles
+2. **Missing examples in docstrings** - Most functions lack usage examples
+3. **No high-level architecture documentation**
+4. **README.md is missing** - No installation or quick-start guide
+5. **Tutorial comments don't match code** - Example: Tutorial 1 mentions "2D data" but actual shape expectations are unclear
+
+### Required Fix
+
+**1. Standardize on NumPy docstring format throughout:**
+
+```python
+def run(
+    x_data,
+    y_data=None,
+    mode='estimate',
+    ...
+):
+    """
+    Unified entry point for mutual information estimation.
+
+    This function provides a consistent interface for various MI estimation
+    workflows, handling data processing, model training, and analysis.
+
+    Parameters
+    ----------
+    x_data : np.ndarray or torch.Tensor
+        Data for variable X with shape:
+        - For continuous data: (n_channels, n_timepoints) or pre-processed (n_samples, n_channels, n_features)
+        - For spike data: list of n_channels arrays, each containing spike times
+    y_data : np.ndarray or torch.Tensor, optional
+        Data for variable Y, same format as x_data.
+        Required for modes 'estimate', 'sweep', and 'rigorous'.
+        Not used for mode 'dimensionality'.
+    mode : {'estimate', 'sweep', 'dimensionality', 'rigorous'}, default='estimate'
+        Analysis mode:
+        - 'estimate': Single MI estimate
+        - 'sweep': Hyperparameter sweep
+        - 'dimensionality': Estimate latent dimensionality via internal information
+        - 'rigorous': Bias-corrected MI with confidence interval
+    processor_type : {'continuous', 'spike', None}, optional
+        Type of data processor to apply:
+        - 'continuous': For continuous time-series data
+        - 'spike': For spike train data (list of spike times)
+        - None: Data is already pre-processed to 3D format
+    processor_params : dict, optional
+        Parameters for the processor. Required if processor_type is specified.
+        
+        For 'continuous':
+            - window_size : int, number of timepoints per window
+            - step_size : int, step between windows (default: 1)
+            - data_format : {'channels_first', 'channels_last'}, expected format (default: 'channels_first')
+        
+        For 'spike':
+            - window_size : float, window duration in seconds
+            - step_size : float, step between windows in seconds
+            - n_seconds : float, optional, total duration to analyze
+            - max_spikes_per_window : int, optional, max spikes to store per window
+    base_params : dict
+        Training and model parameters:
+        - n_epochs : int, number of training epochs
+        - learning_rate : float, learning rate for optimizer
+        - batch_size : int, batch size for training
+        - patience : int, early stopping patience
+        - embedding_dim : int, embedding dimension (required for SeparableCritic)
+        - hidden_dim : int, number of hidden units
+        - n_layers : int, number of hidden layers
+    sweep_grid : dict, optional
+        Parameter grid for sweep modes. Keys are parameter names, values are lists.
+        Example: {'window_size': [10, 20, 50], 'embedding_dim': [8, 16, 32]}
+        Required for modes 'sweep' and 'dimensionality'.
+    output_units : {'bits', 'nats'}, default='bits'
+        Units for MI estimate.
+    estimator : {'infonce', 'nwj', 'tuba', 'smile'}, default='infonce'
+        MI lower bound estimator to use.
+    random_seed : int, optional
+        Random seed for reproducibility. If provided, sets seeds for NumPy,
+        PyTorch, and Python random. Note: full reproducibility requires n_workers=1.
+    n_workers : int, optional
+        Number of parallel workers for sweep and rigorous modes.
+        Default: number of CPU cores. Set to 1 for reproducibility.
+    device : str or torch.device, default='auto'
+        Device for computations. Options: 'auto', 'cpu', 'cuda', 'cuda:0', etc.
+    
+    **analysis_kwargs
+        Mode-specific parameters:
+        
+        For 'dimensionality':
+            - n_splits : int, number of random channel splits (default: 5)
+            - strictness : list of float, thresholds for saturation detection
+        
+        For 'rigorous':
+            - gamma_range : range or list, data fractions to use (default: range(1, 11))
+            - delta_threshold : float, threshold for linear region detection (default: 0.1)
+            - min_gamma_points : int, minimum points for reliable fit (default: 5)
+            - confidence_level : float, confidence level for error bars (default: 0.68)
+            - verbose : bool, print detailed fitting diagnostics (default: False)
+
+    Returns
+    -------
+    Results
+        Object containing analysis results with attributes:
+        - mi_estimate : float or None, point estimate (for 'estimate' and 'rigorous')
+        - dataframe : pd.DataFrame or None, detailed results (for 'sweep', 'dimensionality', 'rigorous')
+        - details : dict, mode-specific metadata
+        - plot() : method to visualize results
+
+    Raises
+    ------
+    ValueError
+        If required parameters are missing or invalid for the specified mode.
+    TypeError
+        If data types are incorrect.
+    DataShapeError
+        If data shapes are incompatible.
+    InsufficientDataError
+        If not enough data for the requested analysis.
+
+    Examples
+    --------
+    **Example 1: Quick MI estimate**
+    
+    >>> import neural_mi as nmi
+    >>> import numpy as np
+    >>> 
+    >>> # Generate correlated data
+    >>> x, y = nmi.datasets.generate_correlated_gaussians(n_samples=1000, dim=5, mi=2.0)
+    >>> 
+    >>> # Set up parameters
+    >>> base_params = {
+    ...     'n_epochs': 50,
+    ...     'learning_rate': 1e-3,
+    ...     'batch_size': 128,
+    ...     'patience': 5,
+    ...     'embedding_dim': 16,
+    ...     'hidden_dim': 64,
+    ...     'n_layers': 2
+    ... }
+    >>> 
+    >>> # Run estimation
+    >>> results = nmi.run(
+    ...     x_data=x,
+    ...     y_data=y,
+    ...     mode='estimate',
+    ...     processor_type='continuous',
+    ...     processor_params={'window_size': 1},
+    ...     base_params=base_params
+    ... )
+    >>> 
+    >>> print(f"MI estimate: {results.mi_estimate:.3f} bits")
+    
+    **Example 2: Sweep over window sizes**
+    
+    >>> x, y = nmi.datasets.generate_temporally_convolved_data(n_samples=5000)
+    >>> 
+    >>> sweep_grid = {'window_size': [1, 10, 50, 100, 200]}
+    >>> 
+    >>> results = nmi.run(
+    ...     x_data=x,
+    ...     y_data=y,
+    ...     mode='sweep',
+    ...     processor_type='continuous',
+```python
+    ...     processor_params={},
+    ...     base_params=base_params,
+    ...     sweep_grid=sweep_grid,
+    ...     n_workers=4
+    ... )
+    >>> 
+    >>> results.plot()  # Visualize MI vs window size
+    >>> best_window = results.dataframe.loc[results.dataframe['mi_mean'].idxmax(), 'window_size']
+    >>> print(f"Optimal window size: {best_window}")
+    
+    **Example 3: Latent dimensionality estimation**
+    
+    >>> # Generate high-dimensional data from low-dimensional latent
+    >>> x, _ = nmi.datasets.generate_nonlinear_from_latent(
+    ...     n_samples=2000, latent_dim=4, observed_dim=100, mi=3.0
+    ... )
+    >>> 
+    >>> sweep_grid = {'embedding_dim': [1, 2, 4, 6, 8, 12, 16]}
+    >>> 
+    >>> results = nmi.run(
+    ...     x_data=x,
+    ...     mode='dimensionality',
+    ...     processor_type='continuous',
+    ...     processor_params={'window_size': 1},
+    ...     base_params=base_params,
+    ...     sweep_grid=sweep_grid,
+    ...     n_splits=5
+    ... )
+    >>> 
+    >>> print(f"Estimated dimensionality: {results.details['estimated_dims']}")
+    >>> results.plot()
+    
+    **Example 4: Rigorous bias-corrected estimation**
+    
+    >>> results = nmi.run(
+    ...     x_data=x,
+    ...     y_data=y,
+    ...     mode='rigorous',
+    ...     processor_type='continuous',
+    ...     processor_params={'window_size': 1},
+    ...     base_params=base_params,
+    ...     sweep_grid={'embedding_dim': [16]},
+    ...     n_workers=4,
+    ...     gamma_range=range(1, 11)
+    ... )
+    >>> 
+    >>> print(f"Corrected MI: {results.mi_estimate:.3f} ± {results.details['mi_error']:.3f} bits")
+    >>> results.plot()  # Shows extrapolation fit
+
+    See Also
+    --------
+    Results : Container for analysis results
+    datasets.generate_correlated_gaussians : Generate test data with known MI
+    validation.ParameterValidator : Parameter validation
+
+    Notes
+    -----
+    - For reproducible results, set random_seed and use n_workers=1
+    - GPU acceleration is automatic if CUDA is available
+    - Memory usage scales with n_workers * data_size for sweep modes
+    - Early stopping uses smoothed MI curve to avoid stopping on noise
+    
+    References
+    ----------
+    .. [1] Poole et al. (2019) "On Variational Bounds of Mutual Information"
+    .. [2] Belghazi et al. (2018) "MINE: Mutual Information Neural Estimation"
+    """
+```
+
+**2. Create comprehensive README.md:**
+
+**File: README.md**
+```markdown
+# NeuralMI: Neural Mutual Information Estimation for Neural Data
+
+A PyTorch-based library for estimating mutual information (MI) in neural data using neural network-based estimators.
+
+## Features
+
+- **Multiple Estimators**: InfoNCE, NWJ, TUBA, SMILE lower bounds
+- **Flexible Data Processing**: Handle continuous time-series and spike train data
+- **Exploratory Analysis**: Parameter sweeps, dimensionality estimation
+- **Rigorous Statistics**: Bias-corrected estimates with confidence intervals
+- **Production Ready**: GPU acceleration, multiprocessing, early stopping
+
+## Installation
+
+### Requirements
+- Python >= 3.8
+- PyTorch >= 1.9.0
+- NumPy >= 1.19.0
+- pandas >= 1.2.0
+- statsmodels >= 0.12.0
+- matplotlib >= 3.3.0
+- seaborn >= 0.11.0
+
+### Install from source
+
+```bash
+git clone https://github.com/yourusername/neural_mi.git
+cd neural_mi
+pip install -e .
+```
+
+### Install for development
+
+```bash
+pip install -e ".[dev]"
+pytest  # Run tests
+```
+
+## Quick Start
+
+```python
+import neural_mi as nmi
+
+# Generate correlated Gaussian data with known MI
+x, y = nmi.datasets.generate_correlated_gaussians(
+    n_samples=1000, dim=5, mi=2.0  # MI = 2.0 bits
+)
+
+# Configure training parameters
+base_params = {
+    'n_epochs': 50,
+    'learning_rate': 1e-3,
+    'batch_size': 128,
+    'patience': 5,
+    'embedding_dim': 16,
+    'hidden_dim': 64,
+    'n_layers': 2
+}
+
+# Run MI estimation
+results = nmi.run(
+    x_data=x,
+    y_data=y,
+    mode='estimate',
+    processor_type='continuous',
+    processor_params={'window_size': 1},
+    base_params=base_params,
+    output_units='bits'
+)
+
+print(f"MI estimate: {results.mi_estimate:.3f} bits")
+# Output: MI estimate: 2.043 bits
+```
+
+## Usage Modes
+
+### 1. Estimate Mode: Quick MI Estimate
+Get a single MI estimate between two variables.
+
+```python
+results = nmi.run(
+    x_data=x, y_data=y,
+    mode='estimate',
+    processor_type='continuous',
+    processor_params={'window_size': 1},
+    base_params=base_params
+)
+print(results.mi_estimate)
+```
+
+### 2. Sweep Mode: Hyperparameter Search
+Find optimal processing parameters (e.g., window size for temporal data).
+
+```python
+# Sweep over window sizes to find temporal scale
+sweep_grid = {'window_size': [1, 10, 50, 100, 200, 500]}
+
+results = nmi.run(
+    x_data=x, y_data=y,
+    mode='sweep',
+    processor_type='continuous',
+    processor_params={},
+    base_params=base_params,
+    sweep_grid=sweep_grid,
+    n_workers=4
+)
+
+# Plot and find optimal window
+results.plot()
+optimal = results.dataframe.loc[results.dataframe['mi_mean'].idxmax()]
+print(f"Optimal window: {optimal['window_size']}")
+```
+
+### 3. Dimensionality Mode: Estimate Latent Dimensions
+Estimate the intrinsic dimensionality of high-dimensional neural data.
+
+```python
+# Generate data: 100D observations from 4D latent
+x, _ = nmi.datasets.generate_nonlinear_from_latent(
+    n_samples=2000, latent_dim=4, observed_dim=100, mi=3.0
+)
+
+sweep_grid = {'embedding_dim': [1, 2, 3, 4, 5, 6, 8, 10, 12, 16]}
+
+results = nmi.run(
+    x_data=x,
+    mode='dimensionality',
+    processor_type='continuous',
+    processor_params={'window_size': 1},
+    base_params=base_params,
+    sweep_grid=sweep_grid,
+    n_splits=5
+)
+
+print(f"Estimated dimensions: {results.details['estimated_dims']}")
+results.plot()
+# Shows saturation curve and estimated elbow point
+```
+
+### 4. Rigorous Mode: Bias-Corrected Estimation
+Get statistically rigorous MI estimates with confidence intervals.
+
+```python
+results = nmi.run(
+    x_data=x, y_data=y,
+    mode='rigorous',
+    processor_type='continuous',
+    processor_params={'window_size': 1},
+    base_params=base_params,
+    sweep_grid={'embedding_dim': [16]},
+    gamma_range=range(1, 11),
+    n_workers=4
+)
+
+print(f"MI: {results.mi_estimate:.3f} ± {results.details['mi_error']:.3f} bits")
+results.plot()  # Shows extrapolation to infinite data
+```
+
+## Data Formats
+
+### Continuous Time-Series Data
+
+Expected format: `(n_channels, n_timepoints)`
+
+```python
+# Example: 10 channels, 5000 timepoints
+x_data = np.random.randn(10, 5000)
+y_data = np.random.randn(10, 5000)
+
+results = nmi.run(
+    x_data=x_data,
+    y_data=y_data,
+    processor_type='continuous',
+    processor_params={
+        'window_size': 50,  # 50 timepoints per window
+        'step_size': 10,     # 10 timepoint steps between windows
+    },
+    ...
+)
+```
+
+### Spike Train Data
+
+Expected format: List of arrays, each containing spike times for one neuron.
+
+```python
+# Example: 10 neurons, each with spike times in seconds
+x_spikes = [
+    np.array([0.1, 0.5, 0.9, 1.2]),  # Neuron 1
+    np.array([0.3, 0.8, 1.5]),        # Neuron 2
+    # ... 8 more neurons
+]
+y_spikes = [...]  # Same format
+
+results = nmi.run(
+    x_data=x_spikes,
+    y_data=y_spikes,
+    processor_type='spike',
+    processor_params={
+        'window_size': 0.1,  # 100ms windows
+        'step_size': 0.05,   # 50ms steps
+    },
+    ...
+)
+```
+
+### Pre-processed Data
+
+If you have already windowed your data: `(n_samples, n_channels, n_features)`
+
+```python
+# Example: 1000 samples, 10 channels, 50 features each
+x_processed = np.random.randn(1000, 10, 50)
+y_processed = np.random.randn(1000, 10, 50)
+
+results = nmi.run(
+    x_data=x_processed,
+    y_data=y_processed,
+    processor_type=None,  # No processing needed
+    ...
+)
+```
+
+## Examples and Tutorials
+
+See the `tutorials/` directory for complete tutorials, make sure to correct and encoporate them with the whole library:
+
+1. **01_quick_estimate.ipynb**: Basic MI estimation with known ground truth
+2. **02_importance_of_time.ipynb**: Finding temporal scales via window size sweeps
+3. **03_dimensionality.ipynb**: Estimating latent dimensionality
+4. **04_rigorous_analysis.ipynb**: Bias-corrected MI with error bars
+5. **05_analyzing_spike_data.ipynb**: Working with spike trains
+6. **06_continous_processor.ipynb**
+7. **07_spike_processor.ipynb**
+
+## API Reference
+
+### Main Function
+- `nmi.run()`: Unified entry point for all analyses
+
+### Data Processors
+- `ContinuousProcessor`: Window continuous time-series
+- `SpikeProcessor`: Bin and window spike trains
+
+### Estimators
+- `infonce_lower_bound`: InfoNCE bound (default, recommended)
+- `nwj_lower_bound`: Nguyen-Wainwright-Jordan bound
+- `tuba_lower_bound`: TUBA bound
+- `smile_lower_bound`: SMILE bound with bias correction
+
+### Dataset Generators
+- `generate_correlated_gaussians()`: Gaussian data with known MI
+- `generate_nonlinear_from_latent()`: High-D data from low-D latent
+- `generate_temporally_convolved_data()`: Temporal dependencies
+- `generate_xor_data()`: Test synergy detection
+- `generate_correlated_spike_trains()`: Synthetic spike data
+
+### Results and Visualization
+- `Results`: Container with `.plot()` method
+- `plot_sweep_curve()`: Visualize parameter sweeps
+- `plot_bias_correction_fit()`: Visualize rigorous mode fitting
+
+## Best Practices
+
+### 1. Start with Estimate Mode
+Get a quick sense of the MI magnitude before running expensive analyses.
+
+### 2. Use Sweeps to Find Parameters
+Always sweep over processing parameters (window_size, embedding_dim) to find optimal values.
+
+### 3. Use Rigorous Mode for Statstically sound analysis
+Get bias-corrected estimates with proper error bars for final results.
+
+### 4. Check for Convergence
+```python
+# Plot training curves to ensure convergence
+results = nmi.run(..., mode='estimate', ...)
+# Training progress is shown in real-time
+```
+
+### 5. Use Multiple Random Seeds
+```python
+estimates = []
+for seed in range(5):
+    results = nmi.run(..., random_seed=seed, ...)
+    estimates.append(results.mi_estimate)
+print(f"MI: {np.mean(estimates):.3f} ± {np.std(estimates):.3f}")
+```
+
+### 6. Validate with Known Ground Truth
+```python
+# Test on synthetic data first
+x, y = nmi.datasets.generate_correlated_gaussians(
+    n_samples=5000, dim=5, mi=2.0
+)
+results = nmi.run(...)
+print(f"True MI: 2.0, Estimated: {results.mi_estimate:.3f}")
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**1. "torch_shm_manager" error on macOS**
+
+This is handled automatically by the library. If you still encounter issues:
+```python
+import os
+os.environ['TMPDIR'] = os.path.expanduser('~/.neural_mi_tmp')
+import neural_mi as nmi
+```
+
+**2. Out of memory with large sweeps**
+
+Reduce batch size or use fewer workers:
+```python
+base_params['batch_size'] = 64  # Reduce from 128
+results = nmi.run(..., n_workers=2, ...)  # Reduce from 4
+```
+
+**3. MI estimate is NaN**
+
+- Check that data contains variation (not all zeros or constants)
+- Increase number of samples (need at least ~500)
+- Reduce embedding_dim relative to data complexity
+- Check for NaN or Inf in input data
+
+**4. Training doesn't converge**
+
+- Increase n_epochs
+- Adjust learning_rate (try 1e-4 or 1e-2)
+- Increase patience for early stopping
+- Check data is properly normalized
+
+**5. Results not reproducible**
+
+- Set random_seed parameter
+- Use n_workers=1 (multiprocessing introduces randomness)
+```python
+results = nmi.run(..., random_seed=42, n_workers=1, ...)
+```
+
+### Getting Help
+
+- Check the [examples/](examples/) directory
+- Review function docstrings: `help(nmi.run)`
+- Open an issue on GitHub
+
+## Performance Tips
+
+### GPU Acceleration
+```python
+# Automatic GPU use if available
+results = nmi.run(..., device='auto', ...)
+
+# Force CPU
+results = nmi.run(..., device='cpu', ...)
+
+# Specific GPU
+results = nmi.run(..., device='cuda:0', ...)
+```
+
+### Parallel Processing
+```python
+# Use all CPU cores
+results = nmi.run(..., mode='sweep', n_workers=None, ...)
+
+# Limit workers to reduce memory
+results = nmi.run(..., n_workers=4, ...)
+```
+
+## Citation
+
+If you use NeuralMI in your research, please cite:
+
+```bibtex
+@software{neural_mi2024,
+  title={NeuralMI: Neural Mutual Information Estimation for Neural Data},
+  author={Your Name},
+  year={2024},
+  url={https://github.com/yourusername/neural_mi}
+}
+```
+
+## License
+
+MIT License - see LICENSE file for details
+
+## Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Submit a pull request
+
+## Acknowledgments
+
+This library builds on methods from:
+- Belghazi et al. (2018) "MINE: Mutual Information Neural Estimation"
+- Poole et al. (2019) "On Variational Bounds of Mutual Information"
+- Song & Ermon (2020) "Understanding the Limitations of Variational Mutual Information Estimators"
+```
+
+**3. Create CONTRIBUTING.md:**
+
+**File: CONTRIBUTING.md**
+```markdown
+# Contributing to NeuralMI
+
+Thank you for your interest in contributing!
+
+## Development Setup
+
+```bash
+git clone https://github.com/yourusername/neural_mi.git
+cd neural_mi
+pip install -e ".[dev]"
+```
+
+## Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=neural_mi --cov-report=html
+
+# Run specific test file
+pytest tests/test_estimators.py
+
+# Run with verbose output
+pytest -v
+```
+
+## Code Style
+
+We follow PEP 8 with a few modifications:
+- Line length: 100 characters
+- Use type hints for all function signatures
+- Use NumPy-style docstrings
+
+Format code with:
+```bash
+black neural_mi/
+isort neural_mi/
+```
+
+## Adding New Features
+
+1. **Write tests first** (test-driven development)
+2. **Update documentation** (docstrings and README if needed)
+3. **Add example usage** in docstring
+4. **Run full test suite** before submitting PR
+
+## Pull Request Process
+
+1. Create a feature branch: `git checkout -b feature/my-feature`
+2. Make changes and commit: `git commit -am "Add feature"`
+3. Push to your fork: `git push origin feature/my-feature`
+4. Open a pull request with clear description of changes
+5. Ensure all tests pass and coverage doesn't decrease
+
+## Reporting Bugs
+
+Open an issue with:
+- Clear description of the problem
+- Minimal code to reproduce
+- Expected vs actual behavior
+- System info (OS, Python version, PyTorch version)
+```
+
+---
+
+## ISSUE 19: No Logging System
+
+### Problem
+The library prints directly to stdout with no logging system. This makes it difficult to:
+- Control verbosity
+- Redirect output to files
+- Filter messages by importance
+- Debug issues in production
+
+**Examples throughout codebase:**
+```python
+print(f"Starting parameter sweep with {n_workers} workers...")
+print(f"Created {len(tasks)} tasks for the sweep...")
+print("Parameter sweep finished.")
+```
+
+### Required Fix
+
+Implement proper logging:
+
+**File: neural_mi/logger.py**
+```python
+import logging
+import sys
+
+def setup_logger(name='neural_mi', level=logging.INFO):
+    """
+    Set up library-wide logger.
+    
+    Parameters
+    ----------
+    name : str
+        Logger name
+    level : int
+        Logging level (logging.DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    
+    Returns
+    -------
+    logger : logging.Logger
+    """
+    logger = logging.getLogger(name)
+    
+    # Avoid adding handlers multiple times
+    if logger.handlers:
+        return logger
+    
+    logger.setLevel(level)
+    
+    # Console handler
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(level)
+    
+    # Formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    handler.setFormatter(formatter)
+    
+    logger.addHandler(handler)
+    
+    return logger
+
+# Create default logger
+logger = setup_logger()
+
+def set_verbosity(level):
+    """
+    Set global verbosity level.
+    
+    Parameters
+    ----------
+    level : {0, 1, 2, 3} or int
+        Verbosity level:
+        - 0 or logging.CRITICAL: Only critical errors
+        - 1 or logging.ERROR: Errors
+        - 2 or logging.WARNING: Warnings and errors (default)
+        - 3 or logging.INFO: Info, warnings, errors
+        - 4 or logging.DEBUG: Debug and all above
+    """
+    level_map = {
+        0: logging.CRITICAL,
+        1: logging.ERROR,
+        2: logging.WARNING,
+        3: logging.INFO,
+        4: logging.DEBUG
+    }
+    
+    if level in level_map:
+        level = level_map[level]
+    
+    logger.setLevel(level)
+    for handler in logger.handlers:
+        handler.setLevel(level)
+```
+
+**Update neural_mi/__init__.py:**
+```python
+from .logger import logger, set_verbosity
+
+# Expose at top level
+__all__ = ['run', 'logger', 'set_verbosity', ...]
+```
+
+**Replace all print statements:**
+```python
+# Instead of:
+print(f"Starting parameter sweep with {n_workers} workers...")
+
+# Use:
+from neural_mi.logger import logger
+logger.info(f"Starting parameter sweep with {n_workers} workers")
+
+# For debug info:
+logger.debug(f"Created task with params: {params}")
+
+# For warnings:
+logger.warning(f"Stopping early after {epoch} epochs")
+
+# For errors (before raising):
+logger.error(f"Invalid data shape: {shape}")
+raise ValueError(...)
+```
+
+**User-facing verbosity control:**
+```python
+import neural_mi as nmi
+
+# Quiet mode (only errors)
+nmi.set_verbosity(1)
+
+# Verbose mode (show all info)
+nmi.set_verbosity(3)
+
+# Debug mode
+nmi.set_verbosity(4)
+
+# Or use logging levels directly
+nmi.set_verbosity(logging.DEBUG)
+```
+
+---
+
+## ISSUE 20: Batch Size Validation Missing
+
+### Problem
+No validation that batch_size is appropriate for the data size. If batch_size > n_samples, training fails or behaves oddly.
+
+**In neural_mi/training/trainer.py:**
+No check that batch_size <= number of training samples.
+
+### Required Fix
+
+```python
+# In Trainer.train(), after creating train/test split
+n_train_samples = len(train_indices)
+
+if batch_size > n_train_samples:
+    logger.warning(
+        f"batch_size ({batch_size}) is larger than number of training samples ({n_train_samples}). "
+        f"Reducing batch_size to {n_train_samples}."
+    )
+    batch_size = n_train_samples
+
+if batch_size < 2:
+    raise ValueError(
+        f"batch_size must be at least 2 after adjustments, got {batch_size}. "
+        f"Provide more data or reduce train/test split."
+    )
+```
+
+---
+
+## SUMMARY OF ALL ISSUES FOR CODING AGENT
+
+Below is the complete, prioritized list of all issues to fix. Copy this section to give to your coding agent:
+
+---
+
+# COMPREHENSIVE FIX LIST FOR NEURAL_MI LIBRARY
+
+## CRITICAL PRIORITY (Must Fix Before Release)
+
+### 1. Fix torch_shm_manager Error
+**Files:** `neural_mi/run.py`, `neural_mi/utils.py`
+**Action:** Add temp directory setup code at module level in run.py and at function level in run_training_task(). Wrap in try-except. Only apply on macOS by default.
+
+### 2. Fix Tutorial 2 Compilation
+**File:** `examples/02_importance_of_time.py`
+**Action:** Debug and fix the compilation/execution issue. Likely related to data shape handling or plotting.
+
+### 3. Replace Flawed DataHandler Heuristic
+**File:** `neural_mi/data/handler.py` lines 65-70
+**Action:** Remove or fix the automatic transpose heuristic. Add explicit `data_format` parameter. Add validation and clear error messages.
+
+### 4. Fix Inconsistent Data Shape Documentation
+**Files:** All files with docstrings mentioning data shapes
+**Action:** Standardize on ONE canonical format (recommend `[n_channels, n_timepoints]`). Update ALL docstrings. Add explicit examples with shapes.
+
+### 5. Fix Silent Failures and Poor Error Messages
+**Files:** `neural_mi/training/trainer.py`, `neural_mi/analysis/workflow.py`, `neural_mi/data/processors.py`
+**Action:** Replace all silent failures (returning NaN, passing on exceptions) with explicit, informative errors. Add context to all error messages (actual values, expected values, suggestions).
+
+### 6. Add Comprehensive Input Validation
+**File:** New file `neural_mi/data/validation.py`, update `neural_mi/validation.py`
+**Action:** Create DataValidator class. Check data types, shapes, values (NaN/Inf/negative spikes), and compatibility. Call from run() before processing.
+
+### 7. Fix Rigorous Mode WLS Fitting
+**File:** `neural_mi/analysis/workflow.py` lines 20-70
+**Action:** 
+- Add checks for negative MI
+
+### 8. Fix Spike Processor Time Range Issues
+**File:** `neural_mi/data/processors.py` lines 62-90
+**Action:** Add validation for empty data, check t_start < t_end, validate time range is sufficient for window_size, add informative errors.
+
+### 9. Add Unit Tests
+**Files:** Create `tests/` directory with multiple test files
+**Action:** Write comprehensive tests for processors, estimators, datasets, integration, validation. Aim for >80% code coverage. Add pytest.ini and requirements-dev.txt.
+
+### 10. Fix Dimensionality Mode Unequal Splits
+**File:** `neural_mi/analysis/dimensionality.py` line 31
+**Action:** Don't discard channels. Either use unequal splits or warn user and require even number of channels.
+
+## HIGH PRIORITY (Should Fix Before Publication)
+
+### 11. Memory Issues with Large Sweeps
+**File:** `neural_mi/analysis/sweep.py`
+**Action:** Implement shared memory approach for multiprocessing or add max_samples_per_task subsampling option.
+
+### 12. Inconsistent Device Handling
+**Files:** `neural_mi/run.py`, `neural_mi/utils.py`, `neural_mi/training/trainer.py`
+**Action:** Add device parameter to run(). Validate device compatibility. Ensure data and model are on same device with warnings.
+
+### 13. Early Stopping May Be Too Aggressive
+**File:** `neural_mi/training/trainer.py` lines 70-80
+**Action:** Make smoothing parameters configurable. Add relative improvement threshold. Add diagnostic output.
+
+### 14. No Progress Tracking for Long Sweeps
+**File:** `neural_mi/analysis/sweep.py` line 32
+**Action:** Add tqdm progress bar for overall sweep progress. Consider nested progress bars or verbose parameter.
+
+### 15. Limited Results.plot() Functionality
+**File:** `neural_mi/results.py` lines 66-94
+**Action:** Add ax parameter, **kwargs support, return value. Improve sweep_var detection. Add show parameter.
+
+### 16. No Reproducibility Support
+**Files:** `neural_mi/run.py`, various analysis files
+**Action:** Add random_seed parameter. Set seeds for NumPy, PyTorch, Python random. Document limitations with multiprocessing. Warn if n_workers > 1 with seed.
+
+### 17. Missing Type Hints Throughout
+**Files:** All Python files
+**Action:** Add complete type hints to ALL functions using typing module. Be consistent.
+
+### 18. Documentation Inconsistencies and Gaps
+**Files:** All files, create README.md, CONTRIBUTING.md
+**Action:** 
+- Standardize on NumPy docstring format
+- Add examples to all major functions
+- Create comprehensive README with quick start, installation, examples
+- Create CONTRIBUTING.md with development setup
+- Fix tutorial comments to match code
+
+### 19. No Logging System
+**Files:** Create `neural_mi/logger.py`, update all files with print statements
+**Action:** Implement proper logging with levels. Replace all print() with logger calls. Add set_verbosity() function. Expose at top level.
+
+### 20. Batch Size Validation Missing
+**File:** `neural_mi/training/trainer.py`
+**Action:** Check batch_size <= n_train_samples. Auto-adjust with warning if too large. Raise error if < 2.
+
+## MEDIUM PRIORITY (Nice to Have)
+
+### 21. Add Custom Exception Classes
+**File:** New `neural_mi/exceptions.py`
+**Action:** Create NeuralMIError base class, DataShapeError, InsufficientDataError, etc. Use throughout library.
+
+### 22. Add Experiment Tracking Support
+**Action:** Add optional integration with MLflow, Weights & Biases, or TensorBoard for tracking runs.
+
+### 23. Add Model Checkpointing Outside Temp Dir
+**Action:** Add option to save model checkpoints to user-specified directory, not just temp files.
+
+### 24. Add Data Preprocessing Utilities
+**Action:** Add functions for common preprocessing (z-score, whitening, PCA, etc.).
+
+### 25. Optimize Memory Usage
+**Action:** Profile memory usage and optimize data copies. Consider in-place operations where safe.
+
+## LOW PRIORITY (Future Enhancements)
+
+### 27. Add Support for Discrete Variables
+**Action:** Extend to handle discrete or mixed continuous/discrete data.
+
+### 28. Add Visualization Improvements
+**Action:** Interactive plots with Plotly, dashboards, etc.
+
+### 29. Add Benchmarking Suite
+**Action:** Create comprehensive benchmarks against known ground truth.
+
+### 30. Add Documentation Website
+**Action:** Set up Sphinx documentation with ReadTheDocs hosting.
+
+---
+
+## IMPLEMENTATION NOTES FOR CODING AGENT
+
+1. **Start with Critical Priority issues** - These prevent the library from working correctly
+2. **Test after each fix** - Don't move to next issue until current one is verified working
+3. **Maintain backward compatibility** - Add parameters with defaults, don't break existing code
+4. **Follow existing code style** - Match indentation, naming conventions, etc.
+5. **Update docstrings immediately** - When changing function signatures, update docs
+6. **Add tests for new functionality** - Every fix should have a test
+7. **Use git commits properly** - One commit per logical change with clear message
+8. **Check for side effects** - When modifying shared code, verify all call sites
+
+## TESTING STRATEGY
+
+After implementing fixes, verify with:
+
+```python
+# Test 1: Basic functionality
+import neural_mi as nmi
+x, y = nmi.datasets.generate_correlated_gaussians(1000, 5, 2.0)
+results = nmi.run(x, y, mode='estimate', processor_type='continuous', 
+                  processor_params={'window_size': 1}, 
+                  base_params={'n_epochs': 10, 'learning_rate': 1e-3, 
+                               'batch_size': 64, 'patience': 3, 
+                               'embedding_dim': 8, 'hidden_dim': 32, 'n_layers': 2})
+print(f"Test 1 passed: MI = {results.mi_estimate:.3f}")
+
+# Test 2: All tutorials run without errors
+for tutorial in ['01', '02', '03', '04', '05']:
+    print(f"Running tutorial {tutorial}...")
+    exec(open(f'examples/{tutorial}_*.py').read())
+    print(f"Tutorial {tutorial} passed")
+
+# Test 3: Unit tests pass
+pytest tests/ -v
+
+# Test 4: Different data formats work
+# Continuous
+x_cont = np.random.randn(10, 1000)
+# Spike
+x_spike = [np.sort(np.random.uniform(0, 10, 50)) for _ in range(10)]
+# Pre-processed
+x_proc = np.random.randn(500, 10, 20)
+# Verify each works
+
+# Test 5: Error messages are clear
+# Try various invalid inputs and verify error messages are informative
+```
+
+---
+
+END OF COMPREHENSIVE FIX LIST
