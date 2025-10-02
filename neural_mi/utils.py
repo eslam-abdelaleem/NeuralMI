@@ -1,5 +1,8 @@
 import torch
 import torch.optim as optim
+from typing import Dict, Any, Optional, Union, Tuple, List
+import pandas as pd
+import numpy as np
 
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.models.embeddings import MLP, VarMLP, BaseEmbedding
@@ -7,7 +10,12 @@ from neural_mi.models.critics import SeparableCritic, ConcatCritic
 from neural_mi.training.trainer import Trainer
 
 
-def build_critic(critic_type, embedding_params, use_variational=False, custom_embedding_model=None):
+def build_critic(
+    critic_type: str,
+    embedding_params: Dict[str, Any],
+    use_variational: bool = False,
+    custom_embedding_model: Optional[type] = None
+) -> Union[SeparableCritic, ConcatCritic]:
     """
     Dynamically builds a critic model based on the specified type.
 
@@ -18,7 +26,6 @@ def build_critic(critic_type, embedding_params, use_variational=False, custom_em
     hidden_dim = embedding_params['hidden_dim']
     n_layers = embedding_params['n_layers']
 
-    # Use custom model if provided, otherwise default to MLP/VarMLP
     if custom_embedding_model:
         if not issubclass(custom_embedding_model, BaseEmbedding):
             raise TypeError("custom_embedding_model must be a subclass of models.BaseEmbedding")
@@ -39,12 +46,31 @@ def build_critic(critic_type, embedding_params, use_variational=False, custom_em
         raise ValueError(f"Unknown critic_type: {critic_type}")
 
 
-def run_training_task(args):
+def run_training_task(args: Tuple[torch.Tensor, torch.Tensor, Dict[str, Any], str]) -> Dict[str, Any]:
     """
     A top-level function that can be pickled for multiprocessing.
 
     This function wraps the training process for a single set of parameters.
     """
+    import os
+    import tempfile
+    import platform
+
+    if platform.system() == "Darwin" or os.getenv("FORCE_CUSTOM_TMPDIR"):
+        custom_temp = os.path.expanduser('~/.neural_mi_tmp')
+        try:
+            os.makedirs(custom_temp, exist_ok=True)
+            os.environ['TMPDIR'] = custom_temp
+            os.environ['TEMP'] = custom_temp
+            os.environ['TMP'] = custom_temp
+            tempfile.tempdir = custom_temp
+        except (OSError, PermissionError):
+            pass
+
+    import torch.optim as optim
+    from neural_mi.estimators import ESTIMATORS
+    from neural_mi.training.trainer import Trainer
+
     x_data, y_data, params, run_id = args
     use_variational = params.get('use_variational', False)
 
@@ -57,9 +83,8 @@ def run_training_task(args):
     )
 
     optimizer = optim.Adam(critic.parameters(), lr=params['learning_rate'])
-    device = get_device()
+    device = params.get('device')
 
-    # Look up the estimator function from its name to avoid pickling issues
     estimator_fn = ESTIMATORS[params['estimator_name']]
 
     trainer = Trainer(
@@ -69,49 +94,42 @@ def run_training_task(args):
 
     results = trainer.train(
         x_data=x_data, y_data=y_data, n_epochs=params['n_epochs'],
-        batch_size=params['batch_size'], patience=params['patience'], run_id=run_id
+        batch_size=params['batch_size'], patience=params['patience'],
+        smoothing_sigma=params.get('smoothing_sigma', 2.0),
+        median_window=params.get('median_window', 5),
+        min_improvement=params.get('min_improvement', 0.001),
+        run_id=run_id
     )
     return {**params, **results}
 
 
-def get_device():
+def _validate_device(device: Union[str, torch.device]) -> torch.device:
     """
-    Selects the appropriate device (CUDA or CPU) for tensor computations.
+    Validates the device parameter and returns a torch.device object.
     """
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if isinstance(device, torch.device):
+        return device
+    if not isinstance(device, str):
+        raise TypeError(f"Device must be a string or torch.device, got {type(device)}")
+
+    if device == 'auto':
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        return torch.device(device)
+    except RuntimeError as e:
+        raise ValueError(f"Invalid device string: '{device}'. PyTorch error: {e}")
 
 
-def find_saturation_point(summary_df, param_col, mean_col, std_col, strictness=[1.0]):
+def find_saturation_point(
+    summary_df: pd.DataFrame,
+    param_col: str,
+    mean_col: str,
+    std_col: str,
+    strictness: List[float] = [1.0]
+) -> Dict[float, Any]:
     """
     Naively finds the saturation point of an MI curve.
-
-    This function identifies the "elbow" of a curve, which is taken as the
-    point where the increase in MI begins to level off.
-
-    Parameters
-    ----------
-    summary_df : pd.DataFrame
-        A DataFrame with columns for the parameter, mean MI, and std MI.
-    param_col : str
-        The name of the column containing the swept parameter.
-    mean_col : str
-        The name of the column containing the mean MI.
-    std_col : str
-        The name of the column containing the std of the MI.
-    strictness : list, optional
-        A list of strictness values to test. A higher value means the
-        saturation point is detected earlier.
-
-    Returns
-    -------
-    dict
-        A dictionary mapping each strictness value to the estimated
-        saturation dimension.
     """
-    import pandas as pd
-    import numpy as np
-    import torch
-
     if not isinstance(strictness, list):
         strictness = [strictness]
 
@@ -120,14 +138,11 @@ def find_saturation_point(summary_df, param_col, mean_col, std_col, strictness=[
 
     estimated_dims = {}
     for s in strictness:
-        # Condition: Increase in MI is less than strictness * std of the current point
         saturation_indices = np.where(mi_diff[1:] < (s * df[std_col].iloc[1:]))[0]
 
         if len(saturation_indices) > 0:
-            # The first index where this is true corresponds to the saturation dimension
             saturation_dim = df[param_col].iloc[saturation_indices[0] + 1]
         else:
-            # If no saturation is found, return the max embedding dim
             saturation_dim = df[param_col].max()
         estimated_dims[s] = saturation_dim
 

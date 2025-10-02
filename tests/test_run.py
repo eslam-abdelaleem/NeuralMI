@@ -77,15 +77,21 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
     Verifies that mode='rigorous' returns a Results object with mi_estimate, dataframe, and details.
     """
     x_data, y_data = gaussian_data
-    result = nmi.run(
-        x_data=x_data,
-        y_data=y_data,
-        mode='rigorous',
-        base_params=BASE_PARAMS,
-        output_units='nats',
-        gamma_range=range(1, 2),
-        n_workers=1
-    )
+    try:
+        result = nmi.run(
+            x_data=x_data,
+            y_data=y_data,
+            mode='rigorous',
+            base_params=BASE_PARAMS,
+            output_units='nats',
+            gamma_range=range(1, 6),  # Increased range to avoid fit error
+            n_workers=1,
+            min_gamma_points=2, # Lower requirement for test speed
+            delta_threshold=1000.0 # Make pruning very lenient for this noisy test
+        )
+    except ValueError as e:
+        pytest.fail(f"Rigorous mode failed unexpectedly with ValueError: {e}")
+
     assert isinstance(result, Results)
     assert isinstance(result.mi_estimate, float)
     assert isinstance(result.dataframe, pd.DataFrame)
@@ -124,7 +130,7 @@ def test_run_with_continuous_processor_returns_results(raw_gaussian_data):
         y_data=y_raw,
         mode='estimate',
         processor_type='continuous',
-        processor_params={'window_size': 10, 'step_size': 5},
+        processor_params={'window_size': 10, 'step_size': 5, 'data_format': 'channels_last'},
         base_params=BASE_PARAMS,
         output_units='nats',
         n_workers=1

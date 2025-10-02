@@ -3,6 +3,8 @@
 import numpy as np
 import torch
 from typing import List
+from neural_mi.logger import logger
+from ..exceptions import ParameterError, DataShapeError, InsufficientDataError
 
 class BaseProcessor:
     """Abstract base class for data processors."""
@@ -29,7 +31,7 @@ class SpikeProcessor(BaseProcessor):
     def __init__(self, window_size: float = 0.1, step_size: float = 0.01, n_seconds: float = None, max_spikes_per_window: int = None):
         super().__init__()
         if window_size <= 0 or step_size <= 0:
-            raise ValueError("window_size and step_size must be positive.")
+            raise ParameterError("window_size and step_size must be positive.")
         self.window_size = window_size
         self.step_size = step_size
         self.n_seconds = n_seconds
@@ -44,48 +46,55 @@ class SpikeProcessor(BaseProcessor):
         channels_to_group: List[int] = None
     ) -> torch.Tensor:
         """Transforms a list of spike time arrays into windowed tensors."""
-        # Determine time bounds from GLOBAL data before selection
-        global_first_spike = min([ch[0] for ch in raw_data if len(ch) > 0], default=0)
-        global_last_spike = max([ch[-1] for ch in raw_data if len(ch) > 0], default=self.window_size)
-        
-        # Determine the effective start and end times for the analysis window
-        t_start_eff = t_start if t_start is not None else global_first_spike
+        if all(len(ch) == 0 for ch in raw_data):
+            raise InsufficientDataError("All spike trains are empty. Cannot process empty data.")
+
+        global_first_spike = min([ch[0] for ch in raw_data if len(ch) > 0])
+        global_last_spike = max([ch[-1] for ch in raw_data if len(ch) > 0])
+
+        if t_start is not None:
+            t_start_eff = t_start
+        else:
+            t_start_eff = global_first_spike
         
         if t_end is not None:
-            # Explicit t_end from the user call overrides other settings
             t_end_eff = t_end
         elif self.n_seconds is not None:
-            # If n_seconds is provided in constructor, the analysis duration is fixed
             t_end_eff = t_start_eff + self.n_seconds
         else:
-            # Otherwise, use the full extent of the data by default
             t_end_eff = global_last_spike
 
-        # Ensure the analysis window does not extend beyond the actual data
-        t_end_eff = min(t_end_eff, global_last_spike)
+        if t_end_eff <= t_start_eff:
+             raise ParameterError(f"Effective end time ({t_end_eff}) must be greater than start time ({t_start_eff}).")
+
+        if t_end_eff - t_start_eff < self.window_size:
+            raise InsufficientDataError(
+                f"Time range ({t_end_eff - t_start_eff:.3f}s) is smaller than "
+                f"window_size ({self.window_size}s)"
+            )
 
         window_starts = np.arange(t_start_eff, t_end_eff - self.window_size + self.step_size, self.step_size)
         num_windows = len(window_starts)
-
-        # Select channels AFTER defining the time grid
         selected_data = [raw_data[i] for i in channels_to_group] if channels_to_group else raw_data
         num_channels = len(selected_data)
 
-        # Fit max_spikes if not already done
         if not self._is_fitted:
-            print("`max_spikes_per_window` not provided. Calculating from data...")
+            logger.info("`max_spikes_per_window` not provided. Calculating from data...")
             max_spikes_list = [_find_max_events_in_window(ch, self.window_size) for ch in selected_data]
             self.max_spikes = max(max_spikes_list) if max_spikes_list else 1
             self._is_fitted = True
-            print(f"Set `max_spikes_per_window` to {self.max_spikes}.")
+            logger.info(f"Set `max_spikes_per_window` to {self.max_spikes}.")
 
-        # Populate the output tensor
         output_tensor = torch.zeros((num_windows, num_channels, self.max_spikes))
         for i_ch, channel_spikes in enumerate(selected_data):
             if len(channel_spikes) == 0: continue
-            spike_indices = np.searchsorted(window_starts, channel_spikes, side='right') - 1
+
+            spikes_in_range = channel_spikes[(channel_spikes >= t_start_eff) & (channel_spikes < t_end_eff)]
+            if len(spikes_in_range) == 0: continue
+
+            spike_indices = np.searchsorted(window_starts, spikes_in_range, side='right') - 1
             for i_win in range(num_windows):
-                win_spikes = channel_spikes[spike_indices == i_win]
+                win_spikes = spikes_in_range[spike_indices == i_win]
                 if len(win_spikes) > 0:
                     relative_spikes = win_spikes - window_starts[i_win]
                     n_spikes = min(len(relative_spikes), self.max_spikes)
@@ -97,7 +106,7 @@ class ContinuousProcessor(BaseProcessor):
     def __init__(self, window_size: int = 1, step_size: int = 1):
         super().__init__()
         if window_size <= 0 or step_size <= 0:
-            raise ValueError("window_size and step_size must be positive integers.")
+            raise ParameterError("window_size and step_size must be positive integers.")
         self.window_size = window_size
         self.step_size = step_size
 
@@ -106,15 +115,19 @@ class ContinuousProcessor(BaseProcessor):
         raw_data: np.ndarray,
         channels_to_group: List[int] = None
     ) -> torch.Tensor:
-        """Transforms a time-series array into windowed tensors."""
+        """Transforms a 2D time-series array into 3D windowed tensors."""
         if raw_data.ndim != 2:
-            raise ValueError("`raw_data` for ContinuousProcessor must be a 2D array of shape [num_channels, num_timepoints].")
+            raise DataShapeError("`raw_data` for ContinuousProcessor must be a 2D array of shape [num_channels, num_timepoints].")
 
         selected_data = raw_data[channels_to_group, :] if channels_to_group else raw_data
         n_channels, n_samples = selected_data.shape
         
         if n_samples < self.window_size:
-            raise ValueError("Length of data is smaller than the window size.")
+            raise InsufficientDataError(
+                f"Length of data ({n_samples} timepoints) is smaller than "
+                f"the window size ({self.window_size} timepoints). "
+                f"Reduce window_size or provide more data."
+            )
 
         start_indices = np.arange(0, n_samples - self.window_size + 1, self.step_size)
         num_windows = len(start_indices)

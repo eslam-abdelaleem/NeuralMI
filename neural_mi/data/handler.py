@@ -23,17 +23,18 @@ class DataHandler:
         The type of processing to apply. If None, data is assumed to be
         pre-processed and 3D.
     processor_params : dict, optional
-        A dictionary of parameters for the chosen processor, e.g.,
-        `{'window_size': 10}`.
+        A dictionary of parameters for the chosen processor.
+        For 'continuous' data, this can include `{'window_size': 10}` and
+        `{'data_format': 'channels_first'}`.
 
     Notes
     -----
-    When using the 'continuous' processor, this class uses a heuristic to
-    orient the data correctly. It assumes that for a 2D input array, the
-    dimension with more elements is the time dimension. If your data has
-    more channels than time points, this heuristic will be incorrect. In
-    such cases, please ensure your data is pre-transposed to the expected
-    `(n_channels, n_timepoints)` format before passing it to the function.
+    The 'continuous' processor expects data in the format `(n_channels, n_timepoints)`.
+    You can specify the format of your input data using the `data_format` key
+    in `processor_params`.
+    - `data_format='channels_first'` (default): Input data is `(n_channels, n_timepoints)`.
+    - `data_format='channels_last'`: Input data is `(n_timepoints, n_channels)`
+      and will be automatically transposed.
 
     """
     def __init__(
@@ -81,17 +82,21 @@ class DataHandler:
 
         # If a processor is specified, apply it
         if self.processor_type == 'continuous':
-            processor = ContinuousProcessor(**self.processor_params)
+            # Pop data_format as it's not a ContinuousProcessor argument
+            proc_params = self.processor_params.copy()
+            data_format = proc_params.pop('data_format', 'channels_first')
+            processor = ContinuousProcessor(**proc_params)
+
             # Ensure data is numpy for the processor
             x_np = self.x_data.numpy() if isinstance(self.x_data, torch.Tensor) else self.x_data
             y_np = self.y_data.numpy() if isinstance(self.y_data, torch.Tensor) else self.y_data
 
-            # Heuristic: The processor expects (channels, time). If the data has more rows
-            # than columns, assume it's (time, channels) and transpose it.
-            if x_np.shape[0] > x_np.shape[1]:
+            # Transpose data if it's in (time, channels) format
+            if data_format == 'channels_last':
                 x_np = x_np.T
-            if y_np.shape[0] > y_np.shape[1]:
                 y_np = y_np.T
+            elif data_format != 'channels_first':
+                raise ValueError(f"Invalid data_format: '{data_format}'. Must be 'channels_first' or 'channels_last'.")
 
             x_processed = processor.process(x_np)
             y_processed = processor.process(y_np)

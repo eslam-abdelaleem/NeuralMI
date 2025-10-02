@@ -11,6 +11,7 @@ from multiprocessing import cpu_count
 import statsmodels.api as sm
 from collections import Counter
 
+from neural_mi.logger import logger
 from neural_mi.estimators import bounds
 from neural_mi.utils import run_training_task
 
@@ -30,8 +31,8 @@ def __find_linear_region(group, delta_threshold, min_gamma_points, verbose):
         gamma_counts = subset['gamma'].value_counts()
         weights = subset['gamma'].map(lambda g: 1 / gamma_counts[g])
         if verbose:
-            print(f'Total number of successful used runs: {len(weights)}')
-            print(f'Quadratic fit weights: {weights}')
+            logger.debug(f'Total number of successful used runs: {len(weights)}')
+            logger.debug(f'Quadratic fit weights: {weights}')
 
         X_quad = sm.add_constant(np.vstack([subset['gamma'], subset['gamma']**2]).T)
 
@@ -40,16 +41,16 @@ def __find_linear_region(group, delta_threshold, min_gamma_points, verbose):
         final_delta = abs(a2 / a1) if a1 != 0 else float('inf')
 
         if verbose:
-            print(f"  Fitting gammas {gammas_to_fit}: delta = {final_delta:.4f}")
+            logger.debug(f"  Fitting gammas {gammas_to_fit}: delta = {final_delta:.4f}")
 
         if final_delta < delta_threshold:
             if verbose:
-                print(f"  Delta ({final_delta:.4f}) < threshold ({delta_threshold}). Stopping pruning.")
+                logger.debug(f"  Delta ({final_delta:.4f}) < threshold ({delta_threshold}). Stopping pruning.")
             break
         else:
             pruned_gamma = gammas_to_fit.pop(-1)
             if verbose:
-                print(f"  Delta > threshold. Pruning gamma = {pruned_gamma}.")
+                logger.debug(f"  Delta > threshold. Pruning gamma = {pruned_gamma}.")
 
     return gammas_to_fit, final_delta
 
@@ -61,14 +62,17 @@ def __extrapolate_mi(group, gammas_to_fit, confidence_level, verbose):
     final_subset = group[group['gamma'].isin(gammas_to_fit)]
 
     if len(final_subset) < 2:
-        warnings.warn("Not enough points for even an unreliable linear fit. Returning NaN.")
-        return float('nan'), float('nan'), float('nan')
+        raise ValueError(
+            f"Cannot perform linear extrapolation with fewer than 2 gamma points. "
+            f"Received {len(final_subset)} points after pruning. Consider providing more data "
+            f"or adjusting the `delta_threshold`."
+        )
 
     final_gamma_counts = final_subset['gamma'].value_counts()
     final_weights = final_subset['gamma'].map(lambda g: 1 / final_gamma_counts[g])
     if verbose:
-        print(f'Total number of successful used runs: {len(final_weights)}')
-        print(f'Linear fit weights: {final_weights}')
+        logger.debug(f'Total number of successful used runs: {len(final_weights)}')
+        logger.debug(f'Linear fit weights: {final_weights}')
 
     X_linear = sm.add_constant(final_subset['gamma'])
     fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=final_weights).fit()
@@ -97,7 +101,7 @@ def _post_process_and_correct(df, delta_threshold, min_gamma_points, confidence_
         param_dict = dict(zip(group_keys, [params])) if len(group_keys) == 1 and not isinstance(params, tuple) else dict(zip(group_keys, params))
 
         if verbose:
-            print(f"\n--- Correcting for params: {param_dict} ---")
+            logger.debug(f"\n--- Correcting for params: {param_dict} ---")
 
         gammas_used, final_delta = __find_linear_region(group, delta_threshold, min_gamma_points, verbose)
 
@@ -107,10 +111,6 @@ def _post_process_and_correct(df, delta_threshold, min_gamma_points, confidence_
             warnings.warn(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
 
         mi_corrected, mi_error, slope = __extrapolate_mi(group, gammas_used, confidence_level, verbose)
-
-        # The R-squared warning was removed to align with the user's preference for the
-        # quadratic pruning (delta-check) method to determine fit reliability.
-        # The `is_reliable` flag, based on having enough points after pruning, is now the primary indicator.
 
         param_dict.update({
             'mi_corrected': mi_corrected, 'mi_error': mi_error, 'slope': slope,
@@ -138,15 +138,17 @@ class AnalysisWorkflow:
     def run(self, param_grid, gamma_range=range(1, 11), n_workers=None,
             delta_threshold=0.1, min_gamma_points=5, confidence_level=0.68, verbose=False):
         if n_workers is None: n_workers = cpu_count()
-        print(f"Starting rigorous analysis with {n_workers} workers...")
+        logger.info(f"Starting rigorous analysis with {n_workers} workers...")
         tasks = self._prepare_tasks(param_grid, gamma_range)
-        if not tasks: print("No tasks to run."); return []
+        if not tasks:
+            logger.info("No tasks to run.")
+            return []
 
         # Use get_context("spawn") to create the pool, which is safer for PyTorch.
         with multiprocessing.get_context("spawn").Pool(processes=n_workers) as pool:
             raw_results = list(pool.map(run_training_task, tasks))
         
-        print("All training tasks finished. Performing bias correction...")
+        logger.info("All training tasks finished. Performing bias correction...")
         
         raw_results_df = pd.DataFrame(raw_results)
         corrected_results = _post_process_and_correct(raw_results_df, delta_threshold, min_gamma_points, confidence_level, verbose)
@@ -173,5 +175,5 @@ class AnalysisWorkflow:
                     x_subset = self.x_data[subset_indices]; y_subset = self.y_data[subset_indices]
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
                     tasks.append((x_subset, y_subset, current_params.copy(), task_run_id))
-        print(f"Created {len(tasks)} tasks to run...")
+        logger.info(f"Created {len(tasks)} tasks to run...")
         return tasks

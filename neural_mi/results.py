@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Optional, Any, Dict, List
 import pandas as pd
+from matplotlib.axes import Axes
 
 @dataclass
 class Results:
@@ -62,42 +63,76 @@ class Results:
         rep_str += ")"
         return rep_str
 
-    def plot(self):
+    def plot(self, ax: Optional[Axes] = None, **kwargs: Any) -> Axes:
         """
         Generates a plot suitable for the analysis mode.
 
-        - For 'sweep' or 'dimensionality', plots the MI curve.
-        - For 'rigorous', plots the bias correction fit.
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            An existing axes object to plot on. If None, creates a new figure.
+        **kwargs : dict
+            Additional keyword arguments passed to the plotting function.
+            Common options:
+            - figsize : tuple, size of figure if creating new (default: (8, 6))
+            - title : str, custom title for the plot
+            - show : bool, whether to call plt.show() (default: True)
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object containing the plot.
         """
-        # We need to import here to avoid circular dependencies
+        import matplotlib.pyplot as plt
+        import warnings
         from neural_mi.visualize.plot import (
             plot_sweep_curve,
             plot_bias_correction_fit,
         )
+
+        show_plot = kwargs.pop('show', True)
+        figsize = kwargs.pop('figsize', (8, 6))
+
+        if ax is None:
+            fig, ax = plt.subplots(1, 1, figsize=figsize)
 
         if self.mode in ['sweep', 'dimensionality']:
             if self.dataframe is None:
                 raise ValueError("Cannot plot, results do not contain a DataFrame.")
 
             sweep_var = self.params.get('sweep_var')
-            # For dimensionality analysis, the swept variable is always 'embedding_dim'.
-            if not sweep_var and self.mode == 'dimensionality':
-                sweep_var = 'embedding_dim'
-
             if not sweep_var:
-                raise ValueError("Cannot determine sweep variable for plotting. Was this a single run?")
+                if self.mode == 'dimensionality':
+                    sweep_var = 'embedding_dim'
+                else:
+                    # Try to infer from dataframe columns
+                    possible_vars = [
+                        col for col in self.dataframe.columns
+                        if col not in ['mi_mean', 'mi_std', 'test_mi', 'train_mi', 'best_epoch']
+                    ]
+                    if len(possible_vars) == 1:
+                        sweep_var = possible_vars[0]
+                        warnings.warn(f"Sweep variable not specified, inferring '{sweep_var}'")
+                    else:
+                        raise ValueError(f"Cannot determine sweep variable. Please specify 'sweep_var' in run() params.")
 
-            plot_sweep_curve(self.dataframe, sweep_var=sweep_var)
+            plot_sweep_curve(self.dataframe, param_col=sweep_var, ax=ax, **kwargs)
 
         elif self.mode == 'rigorous':
             if self.dataframe is None or self.details is None:
                  raise ValueError("Rigorous results are incomplete and cannot be plotted.")
 
-            # The `details` attribute holds the dictionary of corrected results,
-            # which is what the plotting function expects.
             plot_bias_correction_fit(
                 raw_results_df=self.dataframe,
-                corrected_result=self.details
+                corrected_result=self.details,
+                ax=ax,
+                **kwargs
             )
         else:
-            print(f"Plotting is not implemented for mode: '{self.mode}'")
+            raise ValueError(f"Plotting is not implemented for mode: '{self.mode}'")
+
+        if show_plot:
+            plt.tight_layout()
+            plt.show()
+
+        return ax

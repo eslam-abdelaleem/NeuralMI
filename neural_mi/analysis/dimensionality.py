@@ -2,16 +2,21 @@
 
 import numpy as np
 import pandas as pd
+import warnings
+import torch
+from typing import Dict, Any, Optional, List
+
 from .sweep import ParameterSweep
+from ..logger import logger
 
         
 def run_dimensionality_analysis(
-    x_data,
-    base_params,
-    sweep_grid,
-    n_splits=5,
-    n_workers=None
-):
+    x_data: torch.Tensor,
+    base_params: Dict[str, Any],
+    sweep_grid: Dict[str, List[Any]],
+    n_splits: int = 5,
+    n_workers: Optional[int] = None
+) -> pd.DataFrame:
     """
     Estimates the latent dimensionality of a neural population using internal information.
 
@@ -41,18 +46,24 @@ def run_dimensionality_analysis(
 
     all_results = []
     for i in range(n_splits):
-        print(f"\n--- Running Split {i+1}/{n_splits} ---")
+        logger.info(f"--- Running Split {i+1}/{n_splits} ---")
         
         # 1. Create a random split of channel indices
+        if n_channels % 2 != 0:
+            warnings.warn(
+                f"Number of channels ({n_channels}) is odd. "
+                f"Using {n_channels // 2} channels for X_A and {n_channels // 2 + 1} for X_B. "
+                f"This may introduce a slight bias. Consider using an even number of channels."
+            )
+
         indices = np.random.permutation(n_channels)
         indices_a = indices[:n_channels // 2]
-        indices_b = indices[n_channels // 2 : 2 * (n_channels // 2)] # Ensures equal size
+        indices_b = indices[n_channels // 2:] # Use all remaining channels
 
         x_a = x_data[:, indices_a, :]
         x_b = x_data[:, indices_b, :]
         
         # 2. Use the ParameterSweep engine to run the analysis for this split
-        # We assume a separable critic, as it's required for varying embedding_dim
         sweep = ParameterSweep(x_data=x_a, y_data=x_b, base_params=base_params, critic_type='separable')
         
         split_results = sweep.run(sweep_grid=sweep_grid, n_workers=n_workers)
@@ -63,9 +74,8 @@ def run_dimensionality_analysis(
         
     # 3. Aggregate the results
     df = pd.DataFrame(all_results)
-    # Group by embedding dimension and calculate mean and std of the MI
     summary_df = df.groupby('embedding_dim')['test_mi'].agg(['mean', 'std']).reset_index()
     summary_df = summary_df.rename(columns={'mean': 'mi_mean', 'std': 'mi_std'})
     
-    print("\n--- Dimensionality Analysis Complete ---")
+    logger.info("--- Dimensionality Analysis Complete ---")
     return summary_df

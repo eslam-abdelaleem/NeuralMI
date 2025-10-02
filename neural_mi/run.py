@@ -1,29 +1,38 @@
+import os
+import tempfile
+import platform
+
+# Only apply temp directory fix on systems that need it (primarily macOS)
+if platform.system() == "Darwin" or os.getenv("FORCE_CUSTOM_TMPDIR"):
+    custom_temp = os.path.expanduser('~/.neural_mi_tmp')
+    try:
+        os.makedirs(custom_temp, exist_ok=True)
+        os.environ['TMPDIR'] = custom_temp
+        os.environ['TEMP'] = custom_temp
+        os.environ['TMP'] = custom_temp
+        tempfile.tempdir = custom_temp
+    except (OSError, PermissionError) as e:
+        # If custom temp fails, warn but continue with system default
+        import warnings
+        warnings.warn(f"Could not set custom temp directory: {e}. Using system default.")
+
 # neural_mi/run.py
 
 import pandas as pd
 import numpy as np
 import warnings
 import torch
-from typing import Union
+from typing import Union, Dict, Any, Optional, List, Literal
 import multiprocessing
 import platform
-
-# Set the multiprocessing start method to 'spawn' on macOS systems.
-# This is necessary to prevent potential deadlocks when using PyTorch
-# with multiprocessing, ensuring stability in modes like 'sweep' and 'rigorous'.
-try:
-    if platform.system() == "Darwin":
-        multiprocessing.set_start_method("spawn", force=True)
-except RuntimeError:
-    # The start method can only be set once, so we pass if it's already been set.
-    pass
 
 from .analysis.workflow import AnalysisWorkflow
 from .analysis.dimensionality import run_dimensionality_analysis
 from .data.handler import DataHandler
 from .estimators import ESTIMATORS
 from .results import Results
-from .validation import ParameterValidator
+from .validation import ParameterValidator, DataValidator
+from .utils import _validate_device
 
 # _convert_mi_units remains the same...
 def _convert_mi_units(results, to_bits):
@@ -60,18 +69,19 @@ def _convert_mi_units(results, to_bits):
 
 
 def run(
-    x_data: Union[np.ndarray, torch.Tensor],
-    y_data: Union[np.ndarray, torch.Tensor] = None,
-    mode: str = 'estimate',
-    processor_type: str = None,
-    processor_params: dict = None,
-    base_params: dict = None,
-    sweep_grid: dict = None,
-    output_units: str = 'bits',
-    estimator: str = 'infonce',
-    custom_embedding_model=None,
-    save_best_model_path: str = None,
-    **analysis_kwargs
+    x_data: Union[np.ndarray, torch.Tensor, List[np.ndarray]],
+    y_data: Optional[Union[np.ndarray, torch.Tensor, List[np.ndarray]]] = None,
+    mode: Literal['estimate', 'sweep', 'dimensionality', 'rigorous'] = 'estimate',
+    processor_type: Optional[Literal['continuous', 'spike']] = None,
+    processor_params: Optional[Dict[str, Any]] = None,
+    base_params: Optional[Dict[str, Any]] = None,
+    sweep_grid: Optional[Dict[str, List[Any]]] = None,
+    output_units: Literal['bits', 'nats'] = 'bits',
+    estimator: Literal['infonce', 'nwj', 'tuba', 'smile'] = 'infonce',
+    device: Union[str, torch.device] = 'auto',
+    custom_embedding_model: Optional[torch.nn.Module] = None,
+    save_best_model_path: Optional[str] = None,
+    **analysis_kwargs: Any
 ) -> Results:
     """The unified entry point for all analyses in the NeuralMI library.
 
@@ -83,7 +93,7 @@ def run(
     ----------
     x_data : np.ndarray or torch.Tensor
         The data for variable X. Can be raw data (e.g., 2D array of shape
-        `(n_timepoints, n_channels)` for continuous data) or pre-processed
+        `(n_channels, n_timepoints)` for continuous data) or pre-processed
         3D data of shape `(n_samples, n_channels, n_features)`.
     y_data : np.ndarray or torch.Tensor, optional
         The data for variable Y. Required for all modes except 'dimensionality'.
@@ -97,11 +107,13 @@ def run(
     processor_type : {'continuous', 'spike'}, optional
         The type of processing to apply if `x_data` and `y_data` are raw.
         - 'continuous': Treats data as a continuous time-series and applies
-          windowing. Assumes shape `(n_timepoints, n_channels)`.
+          windowing.
         - 'spike': Treats data as spike times.
         If None, data is assumed to be pre-processed (3D).
     processor_params : dict, optional
-        Parameters for the data processor, e.g., `{'window_size': 10}`.
+        Parameters for the data processor. For 'continuous' mode, this includes
+        `{'window_size': 10}` and an optional `{'data_format': 'channels_first'}`
+        or `{'data_format': 'channels_last'}`.
     base_params : dict
         A dictionary of fixed parameters for the MI estimator's trainer, such as
         `n_epochs`, `learning_rate`, `batch_size`, `embedding_dim`, etc.
@@ -134,6 +146,13 @@ def run(
     """
     all_params = locals()
     ParameterValidator(all_params).validate()
+    DataValidator(x_data, y_data, processor_type).validate()
+
+    # Validate device and add it to the base parameters
+    device = _validate_device(device)
+    if base_params is None:
+        base_params = {}
+    base_params['device'] = device
 
     # Store all parameters for logging in the Results object
     run_params = {

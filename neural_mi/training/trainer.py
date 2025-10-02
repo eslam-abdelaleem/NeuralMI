@@ -9,6 +9,9 @@ import uuid
 import warnings
 import tempfile
 from tqdm.auto import tqdm
+from typing import Dict, Any, Optional, Union, Tuple, List, Callable
+
+from neural_mi.logger import logger
 
 def _ranks(sample):
     """Helper function to return the ranks of each element in a sample."""
@@ -25,7 +28,15 @@ class Trainer:
     An advanced trainer for MI estimation with early stopping, model checkpointing,
     and robust smoothing for noisy evaluation curves.
     """
-    def __init__(self, model, estimator_fn, optimizer, device, use_variational=False, beta=1.0):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        estimator_fn: Callable[[torch.Tensor], torch.Tensor],
+        optimizer: torch.optim.Optimizer,
+        device: Union[str, torch.device],
+        use_variational: bool = False,
+        beta: float = 1.0
+    ):
         self.device = device
         self.model = model.to(self.device)
         self.estimator_fn = estimator_fn
@@ -33,26 +44,88 @@ class Trainer:
         self.use_variational = use_variational
         self.beta = beta
 
-    def train(self, x_data, y_data, n_epochs, batch_size,
-              train_fraction=0.9, n_test_blocks=5, patience=10,
-              sigma=1.0, median_window=3,
-              save_best_model_path=None, run_id=None):
-        
+    def train(
+        self,
+        x_data: torch.Tensor,
+        y_data: torch.Tensor,
+        n_epochs: int,
+        batch_size: int,
+        train_fraction: float = 0.9,
+        n_test_blocks: int = 5,
+        patience: int = 10,
+        smoothing_sigma: float = 2.0,
+        median_window: int = 5,
+        min_improvement: float = 0.001,
+        save_best_model_path: Optional[str] = None,
+        run_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Trains the MI estimation model.
+
+        Parameters
+        ----------
+        x_data : torch.Tensor
+            Input data for variable X.
+        y_data : torch.Tensor
+            Input data for variable Y.
+        n_epochs : int
+            Number of epochs to train for.
+        batch_size : int
+            Batch size for training.
+        train_fraction : float, default=0.9
+            Fraction of data to use for training.
+        n_test_blocks : int, default=5
+            Number of contiguous blocks to use for the test set.
+        patience : int, default=10
+            Number of epochs with no improvement to wait before early stopping.
+        smoothing_sigma : float, default=2.0
+            Standard deviation for the Gaussian filter used to smooth the MI curve.
+        median_window : int, default=5
+            Window size for the median filter used to smooth the MI curve.
+        min_improvement : float, default=0.001
+            The minimum relative improvement required to reset the early stopping counter.
+        save_best_model_path : str, optional
+            If provided, the path to save the best-performing model checkpoint.
+        run_id : str, optional
+            An identifier for the run, used for logging.
+
+        Returns
+        -------
+        dict
+            A dictionary containing training results, including 'train_mi',
+            'test_mi', 'best_epoch', and 'test_mi_history'.
+        """
         x_data = x_data.to(self.device)
         y_data = y_data.to(self.device)
         
-        with tempfile.NamedTemporaryFile(suffix=".pt", delete=True) as temp_model_file:
-            temp_model_path = temp_model_file.name
+        checkpoint_path = save_best_model_path
+        temp_model_file = None
+        if checkpoint_path is None:
+            # If no path is provided, create a temporary file for checkpointing.
+            temp_model_file = tempfile.NamedTemporaryFile(suffix=".pt", delete=False)
+            checkpoint_path = temp_model_file.name
 
+        try:
             train_indices, test_indices = self._create_blocked_split(
                 n_samples=x_data.shape[0], train_fraction=train_fraction, n_test_blocks=n_test_blocks)
+
+            n_train_samples = len(train_indices)
+            if n_train_samples > 0 and batch_size > n_train_samples:
+                warnings.warn(
+                    f"batch_size ({batch_size}) is larger than the number of training samples ({n_train_samples}). "
+                    f"Reducing batch_size to {n_train_samples}."
+                )
+                batch_size = n_train_samples
+
+            if n_train_samples > 0 and batch_size < 1:
+                 raise ValueError(f"batch_size must be at least 1, but got {batch_size}.")
 
             train_loader = DataLoader(torch.utils.data.TensorDataset(x_data, y_data),
                                       batch_size=batch_size, sampler=SubsetRandomSampler(train_indices))
             x_train, y_train = x_data[train_indices], y_data[train_indices]
             x_test, y_test = x_data[test_indices], y_data[test_indices]
             
-            test_mi_history = []
+            test_mi_history: List[float] = []
             best_smoothed_mi = -float('inf')
             epochs_no_improve = 0
 
@@ -60,7 +133,6 @@ class Trainer:
 
             for epoch in epoch_pbar:
                 self.model.train()
-
                 for x_batch, y_batch in train_loader:
                     self.optimizer.zero_grad()
                     scores = self.model(x_batch, y_batch)
@@ -80,49 +152,64 @@ class Trainer:
 
                 epoch_pbar.set_description(f"Epoch {epoch+1}/{n_epochs} | Test MI: {test_mi:.4f}")
 
-                current_smoothed_mi = self._smooth(test_mi_history, sigma, median_window)[-1]
-                if not np.isnan(current_smoothed_mi) and current_smoothed_mi > best_smoothed_mi:
+                current_smoothed_mi = self._smooth(test_mi_history, smoothing_sigma, median_window)[-1]
+
+                is_first_improvement = best_smoothed_mi == -float('inf')
+                if is_first_improvement:
+                    is_improvement = not np.isnan(current_smoothed_mi)
+                else:
+                    relative_improvement = (current_smoothed_mi - best_smoothed_mi) / (abs(best_smoothed_mi) + 1e-8)
+                    is_improvement = not np.isnan(current_smoothed_mi) and relative_improvement > min_improvement
+
+                if is_improvement:
                     best_smoothed_mi = current_smoothed_mi
                     epochs_no_improve = 0
-                    torch.save(self.model.state_dict(), temp_model_path)
+                    torch.save(self.model.state_dict(), checkpoint_path)
                 else:
                     epochs_no_improve += 1
 
                 if epochs_no_improve >= patience:
-                    print(f"\nEarly stopping triggered after {patience} epochs with no improvement.")
+                    logger.info(f"Early stopping triggered at epoch {epoch+1}/{n_epochs}")
+                    logger.info(f"  Best smoothed MI:   {best_smoothed_mi:.4f}")
+                    logger.info(f"  Current smoothed MI: {current_smoothed_mi:.4f}")
+                    logger.info(f"  No improvement greater than {min_improvement:.4f} for {patience} epochs.")
                     break
 
-            if not test_mi_history or not os.path.exists(temp_model_path):
-                 return {'train_mi': float('nan'), 'test_mi': float('nan'), 'best_epoch': -1, 'test_mi_history': []}
+            if not test_mi_history or not os.path.exists(checkpoint_path):
+                raise RuntimeError(
+                    f"Training failed to produce valid results. "
+                    f"Test MI history length: {len(test_mi_history)}, "
+                    f"Model checkpoint exists: {os.path.exists(checkpoint_path)}"
+                )
 
-            smoothed_history = self._smooth(test_mi_history, sigma, median_window)
+            smoothed_history = self._smooth(test_mi_history, smoothing_sigma, median_window)
             best_epoch = np.argmax(smoothed_history)
 
-            self.model.load_state_dict(torch.load(temp_model_path, map_location=self.device, weights_only=True))
+            self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device, weights_only=True))
             self.model.eval()
             with torch.no_grad():
                 final_train_mi = self._evaluate_final_mi(x_train, y_train)
                 final_test_mi = self._evaluate_final_mi(x_test, y_test)
             
-            print(f"Best epoch identified (via smoothed curve): {best_epoch + 1} (Final MI: {final_train_mi:.4f})")
-
-            if save_best_model_path:
-                # If the temporary file still exists, move it.
-                if os.path.exists(temp_model_path):
-                    os.rename(temp_model_path, save_best_model_path)
+            logger.info(f"Best epoch identified (via smoothed curve): {best_epoch + 1} (Final MI: {final_train_mi:.4f})")
             
+        finally:
+            # Clean up the temporary file if one was created
+            if temp_model_file is not None and os.path.exists(checkpoint_path):
+                os.remove(checkpoint_path)
+
         return {
             'train_mi': final_train_mi, 'test_mi': final_test_mi,
-            'best_epoch': best_epoch, 'test_mi_history': test_mi_history
+            'best_epoch': int(best_epoch), 'test_mi_history': test_mi_history
         }
 
-    def _evaluate_final_mi(self, x, y):
+    def _evaluate_final_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
         if x.shape[0] < 2:
             return float('nan')
         scores = self.model(x, y)
         return self.estimator_fn(scores).item()
 
-    def _smooth(self, mi_array, sigma, median_window):
+    def _smooth(self, mi_array: List[float], sigma: float, median_window: int) -> np.ndarray:
         history = np.array(mi_array)
         if np.all(np.isnan(history)): return history
         nan_mask = np.isnan(history)
@@ -135,7 +222,7 @@ class Trainer:
             history = gaussian_filter1d(history, sigma=sigma, mode='reflect')
         return history
 
-    def _create_blocked_split(self, n_samples, train_fraction, n_test_blocks):
+    def _create_blocked_split(self, n_samples: int, train_fraction: float, n_test_blocks: int) -> Tuple[np.ndarray, np.ndarray]:
         n_test = int(n_samples * (1 - train_fraction))
         if n_test < n_test_blocks:
             warnings.warn(f"Reducing n_test_blocks to {n_test}.")
