@@ -1,14 +1,12 @@
 # neural_mi/estimators/bounds.py
+# Based on Understanding the Limitations of Variational Mutual Information Estimators (ICLR 2020), On Variational Bounds of Mutual Information (PMLR 2019) and Accurate Estimation of Mutual Information in High Dimensional Data (ArXiv 2025)
 
 import torch
 import torch.nn.functional as F
 from typing import Optional, Union, Tuple
 
 def tuba_lower_bound(scores: torch.Tensor) -> torch.Tensor:
-    """Computes the TUBA (Tilted U-statistic of the B-spline approximation) lower bound for mutual information.
-
-    This estimator is based on the Donsker-Varadhan representation of the KL-divergence.
-    It is known for its low bias but can have high variance.
+    """Computes the TUBA (Tractable Unnormalized version of the Barber and Agakov) lower bound for mutual information.
 
     Parameters
     ----------
@@ -27,9 +25,6 @@ def tuba_lower_bound(scores: torch.Tensor) -> torch.Tensor:
 
 def nwj_lower_bound(scores: torch.Tensor) -> torch.Tensor:
     """Computes the NWJ (Nguyen-Wainwright-Jordan) lower bound for mutual information.
-
-    This estimator is also based on the Donsker-Varadhan representation and is closely
-    related to the TUBA estimator. It often exhibits lower variance than TUBA.
 
     Parameters
     ----------
@@ -69,10 +64,6 @@ def infonce_lower_bound(scores: torch.Tensor) -> torch.Tensor:
 def js_fgan_lower_bound(scores: torch.Tensor) -> torch.Tensor:
     """Computes the Jensen-Shannon (JS) f-GAN lower bound.
 
-    This estimator is based on the f-divergence representation of mutual information
-    and uses the Jensen-Shannon divergence. It is known to be less biased than
-    InfoNCE but can be more unstable during training.
-
     Parameters
     ----------
     scores : torch.Tensor
@@ -91,10 +82,7 @@ def js_fgan_lower_bound(scores: torch.Tensor) -> torch.Tensor:
     return first_term - second_term
 
 def smile_lower_bound(scores: torch.Tensor, clip: float = None) -> torch.Tensor:
-    """Computes the SMILE (State-wise Mutual Information Lower-bound Estimator).
-
-    SMILE is a technique that aims to reduce the bias of MI estimators by clipping
-    the critic's scores. It combines the JS estimator with a bias correction term.
+    """Computes the SMILE ( Smoothed Mutual Information “Lower-bound” Estimator).
 
     Parameters
     ----------
