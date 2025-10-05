@@ -74,28 +74,28 @@ def generate_nonlinear_from_latent(n_samples, latent_dim, observed_dim, mi, hidd
         return x.numpy(), y.numpy()
     return x, y
 
-def generate_temporally_convolved_data(n_samples, use_torch=True):
+def generate_temporally_convolved_data(n_samples, lag=30, noise=0.1, use_torch=True):
     """
-    Generates data where the relationship is spread out over time.
+    Generates data where Y is a simple time-delayed version of X.
 
-    This makes the choice of `window_size` a critical parameter for analysis.
+    This creates a clean, unambiguous temporal relationship ideal for testing
+    the windowing functionality of the MI estimator.
 
     Args:
         n_samples (int): The number of time points to generate.
+        lag (int): The number of timepoints to delay Y relative to X.
+        noise (float): The amount of Gaussian noise to add to Y.
         use_torch (bool): If True, returns torch.Tensors.
 
     Returns:
         tuple: A tuple (x, y) of the generated temporal data, each of shape
                [1, n_samples] for compatibility with our processors.
     """
-    z = np.cumsum(np.random.randn(n_samples))
-    z = (z - z.mean()) / z.std()
-
-    kernel_x = np.array([0, 0, 1, 0.5, 0.2]) 
-    kernel_y = np.ones(25) / 25.0
-
-    x = convolve(z, kernel_x, mode='same') + np.random.randn(n_samples) * 0.1
-    y = convolve(z, kernel_y, mode='same') + np.random.randn(n_samples) * 0.1
+    full_signal = np.cumsum(np.random.randn(n_samples + lag))
+    full_signal = (full_signal - full_signal.mean()) / full_signal.std()
+    
+    x = full_signal[:-lag]
+    y = full_signal[lag:] + np.random.randn(n_samples) * noise
     
     x = x.reshape(1, -1)
     y = y.reshape(1, -1)
@@ -103,6 +103,7 @@ def generate_temporally_convolved_data(n_samples, use_torch=True):
     if use_torch:
         return torch.from_numpy(x).float(), torch.from_numpy(y).float()
     return x, y
+
 
 def generate_xor_data(n_samples, noise=0.1, use_torch=True):
     """
