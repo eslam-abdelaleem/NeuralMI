@@ -1,181 +1,145 @@
 # neural_mi/analysis/workflow.py
 
 import torch
-import torch.optim as optim
 import numpy as np
 import pandas as pd
 import itertools
 import uuid
-import warnings
-from multiprocessing import Pool, cpu_count
+import multiprocessing
+from multiprocessing import cpu_count
 import statsmodels.api as sm
-from collections import Counter
+from tqdm.auto import tqdm
+from typing import List, Dict, Any, Optional
 
-from neural_mi.models.embeddings import MLP, VarMLP
-from neural_mi.models.critics import SeparableCritic, ConcatCritic
-from neural_mi.training.trainer import Trainer
-from neural_mi.estimators import bounds
+from neural_mi.utils import run_training_task
+from neural_mi.logger import logger
+from neural_mi.exceptions import InsufficientDataError, TrainingError
 
-# _build_critic and _run_training_task functions remain the same
-def _build_critic(critic_type, embedding_params, use_variational=False):
-    input_dim_x = embedding_params['input_dim_x']; input_dim_y = embedding_params['input_dim_y']
-    hidden_dim = embedding_params['hidden_dim']; n_layers = embedding_params['n_layers']
-    EmbeddingModel = VarMLP if use_variational else MLP
-    if critic_type == 'separable':
-        embed_dim = embedding_params['embedding_dim']
-        embedding_net_x = EmbeddingModel(input_dim_x, hidden_dim, embed_dim, n_layers)
-        embedding_net_y = EmbeddingModel(input_dim_y, hidden_dim, embed_dim, n_layers)
-        return SeparableCritic(embedding_net_x, embedding_net_y)
-    elif critic_type == 'concat':
-        embedding_net = EmbeddingModel(input_dim_x + input_dim_y, hidden_dim, 1, n_layers)
-        return ConcatCritic(embedding_net)
-    else: raise ValueError(f"Unknown critic_type: {critic_type}")
+def __find_linear_region(group: pd.DataFrame, delta_threshold: float,
+                         min_gamma_points: int, verbose: bool) -> List[int]:
+    gammas_to_fit = sorted(group['gamma'].unique())
+    while len(gammas_to_fit) >= min_gamma_points:
+        subset = group[group['gamma'].isin(gammas_to_fit)]
+        if len(subset) < 3: break
+        weights = 1 / subset['gamma'].map(subset['gamma'].value_counts())
+        X_quad = sm.add_constant(np.vstack([subset['gamma'], subset['gamma']**2]).T)
+        model_quad = sm.WLS(subset['test_mi'], X_quad, weights=weights).fit()
+        _, a1, a2 = model_quad.params
+        final_delta = abs(a2 / a1) if a1 != 0 else float('inf')
+        if final_delta < delta_threshold: break
+        gammas_to_fit.pop(-1)
+    return gammas_to_fit
 
-def _run_training_task(args):
-    x_data, y_data, params, run_id = args
-    use_variational = params.get('use_variational', False)
-    critic = _build_critic(params['critic_type'], params, use_variational=use_variational)
-    optimizer = optim.Adam(critic.parameters(), lr=params['learning_rate'])
-    trainer = Trainer(model=critic, estimator_fn=params['estimator_fn'], optimizer=optimizer,
-                      use_variational=use_variational, beta=params.get('beta', 1.0))
-    results = trainer.train(x_data=x_data, y_data=y_data, n_epochs=params['n_epochs'],
-                            batch_size=params['batch_size'], patience=params['patience'], run_id=run_id)
-    return {**params, **results}
+def __extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
+                     confidence_level: float) -> tuple:
+    final_subset = group[group['gamma'].isin(gammas_to_fit)]
+    if len(final_subset) < 2:
+        raise InsufficientDataError("Not enough points for a reliable linear fit after pruning.")
+    
+    weights = 1 / final_subset['gamma'].map(final_subset['gamma'].value_counts())
+    X_linear = sm.add_constant(final_subset['gamma'])
+    fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=weights).fit()
+    intercept, slope = fit_linear.params
+    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=1-confidence_level)[0]
+    mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
+    return intercept, mi_error, slope
+
+def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any], delta_threshold: float, 
+                              min_gamma_points: int, confidence_level: float, verbose: bool) -> List[Dict[str, Any]]:
+    
+    valid_df = df.dropna(subset=['gamma', 'test_mi'])
+    if valid_df.empty:
+        raise TrainingError("Rigorous analysis failed: all training runs produced NaN MI values.")
+
+    group_keys = list(sweep_grid.keys()) if sweep_grid else []
+    
+    corrected_results = []
+    
+    # If there are no sweep parameters, group the whole dataframe as one.
+    if not group_keys:
+        group_keys.append('dummy_group')
+        valid_df['dummy_group'] = 0
+
+    for params, group in valid_df.groupby(group_keys):
+        # Ensure param_dict is correctly formed for single or multiple keys
+        if isinstance(params, tuple):
+            param_dict = dict(zip(group_keys, params))
+        else:
+            param_dict = {group_keys[0]: params}
+
+        try:
+            gammas_used = __find_linear_region(group, delta_threshold, min_gamma_points, verbose)
+            is_reliable = len(gammas_used) >= min_gamma_points
+            if not is_reliable:
+                logger.warning(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
+
+            mi_corrected, mi_error, slope = __extrapolate_mi(group, gammas_used, confidence_level)
+            param_dict.update({
+                'mi_corrected': mi_corrected, 'mi_error': mi_error, 'slope': slope,
+                'is_reliable': is_reliable, 'gammas_used': gammas_used
+            })
+            corrected_results.append(param_dict)
+        except InsufficientDataError as e:
+            logger.error(f"Could not perform extrapolation for params {param_dict}: {e}")
+
+    return corrected_results
 
 
 class AnalysisWorkflow:
-    """
-    Orchestrates the full, rigorous MI analysis including iterative bias correction.
-    """
-    def __init__(self, x_data, y_data, base_params, critic_type='separable',
-                 estimator_fn=bounds.infonce_lower_bound, use_variational=False):
-        self.x_data = x_data; self.y_data = y_data; self.base_params = base_params
+    def __init__(self, x_data, y_data, base_params, **kwargs):
+        self.x_data, self.y_data = x_data, y_data
+        self.base_params = base_params
         self.base_params.update({
-            'critic_type': critic_type, 'estimator_fn': estimator_fn,
-            'use_variational': use_variational,
             'input_dim_x': x_data.shape[1] * x_data.shape[2],
-            'input_dim_y': y_data.shape[1] * y_data.shape[2]
+            'input_dim_y': y_data.shape[1] * y_data.shape[2],
+            **kwargs
         })
 
-    def run(self, param_grid, gamma_range=range(1, 11), n_workers=None,
-            delta_threshold=0.1, min_gamma_points=5, confidence_level=0.68, verbose=False):
-        if n_workers is None: n_workers = cpu_count()
-        print(f"Starting rigorous analysis with {n_workers} workers...")
+    def run(self, param_grid: Optional[Dict[str, List]], gamma_range=range(1, 11),
+            n_workers: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+        n_workers = n_workers or cpu_count()
+        logger.info(f"Starting rigorous analysis with {n_workers} workers...")
         tasks = self._prepare_tasks(param_grid, gamma_range)
-        if not tasks: print("No tasks to run."); return []
+        if not tasks:
+            return {"corrected_results": [], "raw_results_df": pd.DataFrame()}
 
-        with Pool(processes=n_workers) as pool:
-            raw_results = list(pool.map(_run_training_task, tasks))
-        
-        print("All training tasks finished. Performing bias correction...")
-        
-        # --- CHANGE: Return a dictionary with both corrected and raw results ---
+        with multiprocessing.get_context("spawn").Pool(processes=n_workers) as pool:
+            raw_results = list(tqdm(
+                pool.imap(run_training_task, tasks), total=len(tasks),
+                desc="Rigorous Analysis Progress", unit="task"
+            ))
+
+        logger.info("All training tasks finished. Performing bias correction...")
         raw_results_df = pd.DataFrame(raw_results)
-        corrected_results = self._post_process_and_correct(raw_results_df, delta_threshold, min_gamma_points, confidence_level, verbose)
         
-        return {
-            "corrected_results": corrected_results,
-            "raw_results_df": raw_results_df
+        correction_kwargs = {
+            'sweep_grid': param_grid, # Pass the sweep_grid for correct grouping
+            'delta_threshold': kwargs.get('delta_threshold', 0.1),
+            'min_gamma_points': kwargs.get('min_gamma_points', 5),
+            'confidence_level': kwargs.get('confidence_level', 0.68),
+            'verbose': kwargs.get('verbose', False)
         }
+        
+        corrected_results = _post_process_and_correct(raw_results_df, **correction_kwargs)
+        return {"corrected_results": corrected_results, "raw_results_df": raw_results_df}
 
-    def _post_process_and_correct(self, df, delta_threshold, min_gamma_points, confidence_level, verbose):
-            """Performs iterative WLS fitting on all individual points."""
-            # --- CHANGE: Now accepts a DataFrame ---
-            df = df[df['test_mi'] >= 0].dropna(subset=['gamma', 'test_mi'])
-    
-            param_cols = [c for c in df.columns if c not in ['gamma', 'train_mi', 'test_mi', 'best_epoch', 'test_mi_history']]
-            
-            corrected_results = []
-            # --- FIX: Ensure groupby works even with no extra params ---
-            group_keys = [col for col in param_cols if col in df.columns]
-            if not group_keys: # If no sweep grid, group all rows together
-                df['dummy_group'] = 0
-                group_keys = ['dummy_group']
-
-            for params, group in df.groupby(group_keys):
-                param_dict = dict(zip(group_keys, [params])) if len(group_keys) == 1 else dict(zip(group_keys, params))
-
-                if verbose: print(f"\n--- Correcting for params: {param_dict} ---")
-                
-                # ... (rest of the function is the same) ...
-                is_reliable = True
-                gammas_to_fit = sorted(group['gamma'].unique())
-                final_delta = float('inf')
-    
-                while len(gammas_to_fit) >= min_gamma_points:
-                    subset = group[group['gamma'].isin(gammas_to_fit)]
-                    if len(subset) < 3: break
-                    
-                    gamma_counts = subset['gamma'].value_counts()
-                    weights = subset['gamma'].map(lambda g: 1 / gamma_counts[g])
-                    if verbose:
-                        print(f'Total number of sucsseful used runs: {len(weights)}')
-                        print(f'Quadratic fit weights: {weights}')
-    
-                    X_quad = sm.add_constant(np.vstack([subset['gamma'], subset['gamma']**2]).T)
-                    
-                    model_quad = sm.WLS(subset['test_mi'], X_quad, weights=weights).fit()
-                    _, a1, a2 = model_quad.params
-                    final_delta = abs(a2 / a1) if a1 != 0 else float('inf')
-                    
-                    if verbose: print(f"  Fitting gammas {gammas_to_fit}: delta = {final_delta:.4f}")
-    
-                    if final_delta < delta_threshold:
-                        if verbose: print(f"  Delta ({final_delta:.4f}) < threshold ({delta_threshold}). Stopping pruning.")
-                        break
-                    else:
-                        pruned_gamma = gammas_to_fit.pop(-1)
-                        if verbose: print(f"  Delta > threshold. Pruning gamma = {pruned_gamma}.")
-                
-                if len(gammas_to_fit) < min_gamma_points:
-                    is_reliable = False
-                    warnings.warn(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
-                
-                final_subset = group[group['gamma'].isin(gammas_to_fit)]
-                    
-                if len(final_subset) < 2:
-                    warnings.warn(f"Not enough points for even an unreliable linear fit for {param_dict}. Returning NaN.")
-                    intercept, slope, mi_error = float('nan'), float('nan'), float('nan')
-                else:
-                    final_gamma_counts = final_subset['gamma'].value_counts()
-                    final_weights = final_subset['gamma'].map(lambda g: 1 / final_gamma_counts[g])
-                    if verbose:
-                        print(f'Total number of sucsseful used runs: {len(final_weights)}')
-                        print(f'Linear fit weights: {final_weights}')
-                    
-                    X_linear = sm.add_constant(final_subset['gamma'])
-                    fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=final_weights).fit()
-                    
-                    intercept, slope = fit_linear.params
-                    alpha = 1 - confidence_level
-                    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=alpha)[0]
-                    mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
-    
-                param_dict.update({
-                    'mi_corrected': intercept, 'mi_error': mi_error, 'slope': slope,
-                    'is_reliable': is_reliable, 'gammas_used': gammas_to_fit, 'final_delta': final_delta
-                })
-                corrected_results.append(param_dict)
-                
-            return corrected_results
-
-    def _prepare_tasks(self, param_grid, gamma_range):
-        # (This function remains the same)
+    def _prepare_tasks(self, param_grid: Optional[Dict[str, List]], gamma_range) -> List[tuple]:
         tasks = []; run_id_base = str(uuid.uuid4())
-        if self.base_params['critic_type'] == 'concat' and 'embedding_dim' in param_grid:
+        param_grid = param_grid or {}
+        if self.base_params.get('critic_type') == 'concat' and 'embedding_dim' in param_grid:
             param_grid.pop('embedding_dim')
-            if not param_grid: param_grid = {'_dummy': [None]}
+        
         keys, values = zip(*param_grid.items()) if param_grid else ([], [])
         param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if param_grid else [{}]
+
         for i_combo, params in enumerate(param_combinations):
-            current_params = self.base_params.copy(); current_params.update(params)
+            current_params = {**self.base_params, **params}
             for gamma in gamma_range:
                 current_params['gamma'] = gamma
                 indices = np.random.permutation(self.x_data.shape[0])
-                subset_indices_list = np.array_split(indices, gamma)
-                for i_subset, subset_indices in enumerate(subset_indices_list):
-                    x_subset = self.x_data[subset_indices]; y_subset = self.y_data[subset_indices]
+                for i_subset, subset_indices in enumerate(np.array_split(indices, gamma)):
+                    x_subset, y_subset = self.x_data[subset_indices], self.y_data[subset_indices]
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
                     tasks.append((x_subset, y_subset, current_params.copy(), task_run_id))
-        print(f"Created {len(tasks)} tasks to run...")
+        logger.debug(f"Created {len(tasks)} tasks to run...")
         return tasks
