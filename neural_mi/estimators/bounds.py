@@ -2,71 +2,40 @@
 
 import torch
 import torch.nn.functional as F
-import numpy as np
-# We no longer need to import the global device variable
 
-def tuba_lower_bound(scores):
-    """TUBA lower bound on mutual information."""
-    joint_term = scores.diag().mean()
-    # Pass the scores tensor to the helper to infer the device
-    marg_term = torch.exp(logmeanexp_nodiag(scores))
-    return 1. + joint_term - marg_term
+def tuba_lower_bound(scores: torch.Tensor) -> torch.Tensor:
+    joint = scores.diag().mean()
+    marg = torch.exp(logmeanexp_nodiag(scores))
+    return 1. + joint - marg
 
-def nwj_lower_bound(scores):
-    """NWJ lower bound on mutual information, a biased version of TUBA."""
+def nwj_lower_bound(scores: torch.Tensor) -> torch.Tensor:
     return tuba_lower_bound(scores - 1.)
 
-def infonce_lower_bound(scores):
-    """InfoNCE lower bound on mutual information."""
+def infonce_lower_bound(scores: torch.Tensor) -> torch.Tensor:
     nll = scores.diag() - torch.logsumexp(scores, dim=1)
-    # Create the new tensor on the same device as the scores matrix
-    mi = torch.log(torch.tensor(scores.size(0), dtype=torch.float32, device=scores.device)) + nll.mean()
+    mi = torch.log(torch.tensor(scores.size(0), device=scores.device)) + nll.mean()
     return mi
 
-def js_fgan_lower_bound(scores):
-    """Jensen-Shannon f-GAN lower bound on mutual information."""
+def js_fgan_lower_bound(scores: torch.Tensor) -> torch.Tensor:
     f_diag = scores.diag()
     n = scores.size(0)
     first_term = -F.softplus(-f_diag).mean()
     second_term = (torch.sum(F.softplus(scores)) - torch.sum(F.softplus(f_diag))) / (n * (n - 1.))
     return first_term - second_term
 
-def smile_lower_bound(scores, clip=None):
-    """SMILE lower bound on mutual information."""
-    if clip is not None:
-        scores_ = torch.clamp(scores, -clip, clip)
-    else:
-        scores_ = scores
-        
-    # Pass the scores tensor to the helper to infer the device
+def smile_lower_bound(scores: torch.Tensor, clip: float = None) -> torch.Tensor:
+    scores_ = torch.clamp(scores, -clip, clip) if clip is not None else scores
     z = logmeanexp_nodiag(scores_, dim=(0, 1))
     dv = scores.diag().mean() - z
     js = js_fgan_lower_bound(scores)
-
     with torch.no_grad():
         dv_js = dv - js
-    
     return js + dv_js
 
-# --- Helper functions ---
-
-def logmeanexp_nodiag(x, dim=None):
-    """
-    Compute log(mean(exp(x))) for off-diagonal elements.
-    Device is inferred from the input tensor 'x'.
-    """
+def logmeanexp_nodiag(x: torch.Tensor, dim=None) -> torch.Tensor:
     batch_size = x.size(0)
-    if dim is None:
-        dim = (0, 1)
-
-    # Create the diagonal mask on the same device as x
     inf_diag = torch.diag(float('inf') * torch.ones(batch_size, device=x.device))
-    logsumexp = torch.logsumexp(x - inf_diag, dim=dim)
+    logsumexp = torch.logsumexp(x - inf_diag, dim=dim or (0,1))
     
-    if isinstance(dim, int):
-        num_elem = batch_size - 1.
-    else:
-        num_elem = batch_size * (batch_size - 1.)
-        
-    # Create the num_elem tensor on the same device as x
+    num_elem = batch_size * (batch_size - 1.) if dim is None or isinstance(dim, tuple) else batch_size - 1.
     return logsumexp - torch.log(torch.tensor(num_elem, device=x.device))
