@@ -1,0 +1,39 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Sphinx documentation build directory
+docs/build/
+
+# Pytest cache
+.pytest_cache/
+.tox/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Virtual environment folders
+venv/
+env/
+.venv/
+*-env/
+
+# IDE settings folders
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+
+# Coverage reports
+.coverage
