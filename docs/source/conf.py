@@ -36,5 +36,15 @@ exclude_patterns = []
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 
-html_css_files = ["https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"]
-html_context = { "github_url": "https://github.com/eslam-abdelaleem/NeuralMI" }
+html_theme_options = {
+    'canonical_url': 'https://eslam-abdelaleem.github.io/NeuralMI/',
+    'logo_only': False,
+    'display_version': True,
+    'prev_next_buttons_location': 'bottom',
+    'style_external_links': False,
+    'collapse_navigation': True,
+    'sticky_navigation': True,
+    'navigation_depth': 4,
+    'includehidden': True,
+    'titles_only': False
+}
