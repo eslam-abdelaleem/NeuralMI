@@ -24,7 +24,7 @@ In modern neuroscience, a naive MI estimate is not enough. Estimates can be plag
 * **Built-in Visualizations:** Generate high-quality, publication-ready plots for dimensionality curves and bias-correction fits with a single command.
 * **Flexible & Extensible:** Choose from multiple MI estimators (`InfoNCE`, `SMILE`, etc.) and provide your own pre-initialized PyTorch models for advanced use cases.
 
-## Quickstart: A Publication-Ready Estimate
+## Quickstart: An Accurate Estimate
 Scienctists should not settle for a naive estimate. Go from raw data to a bias-corrected MI estimate with a confidence interval in a single step using `mode='rigorous'`.
 
 ```python
