@@ -25,15 +25,12 @@ jobs:
       - name: Install dependencies 🔧
         run: |
           pip install -r requirements.txt
-          pip install sphinx sphinx_rtd_theme nbsphinx
+          pip install sphinx sphinx_rtd_theme nbsphinx ipython ipykernel
 
       - name: Build Docs 📖
         run: |
           cd docs
           make html
-
-      - name: List files for debugging 🔍
-        run: ls -R
 
       - name: Deploy 🚀
         uses: JamesIves/github-pages-deploy-action@v4
