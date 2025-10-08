@@ -8,7 +8,7 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    permissions:      # This is the new block
+    permissions:
       contents: write
     steps:
       - name: Checkout 🛎️
@@ -29,9 +29,9 @@ jobs:
           pip install -r requirements.txt
           pip install sphinx sphinx_rtd_theme nbsphinx ipython ipykernel
 
-      - name: Build Docs with Sphinx-Build 📖
+      - name: Build Docs with correct base URL 📖
         run: |
-          sphinx-build -b html docs/source docs/_build/html
+          sphinx-build -b html docs/source docs/_build/html -D html_baseurl=/NeuralMI/
 
       - name: Deploy 🚀
         uses: JamesIves/github-pages-deploy-action@v4
