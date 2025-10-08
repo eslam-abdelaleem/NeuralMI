@@ -1,0 +1,256 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Under the Hood: How NeuralMI Works &mdash; NeuralMI 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=8d563738"></script>
+      <script src="_static/doctools.js?v=9a2dae69"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+      <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true}, "options": {"ignoreHtmlClass": "tex2jax_ignore|mathjax_ignore|document", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="prev" title="Theoretical Foundations of NeuralMI" href="THEORY.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="getting_started.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api_reference.html">API Reference</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="further_reading.html">Further Reading</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="THEORY.html">Theoretical Foundations of NeuralMI</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Under the Hood: How NeuralMI Works</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#part-1-anatomy-of-a-neural-mi-estimator">Part 1: Anatomy of a Neural MI Estimator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#part-2-the-training-loop-demystified">Part 2: The Training Loop Demystified</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#part-3-the-intuition-behind-mode-rigorous">Part 3: The Intuition Behind <code class="docutils literal notranslate"><span class="pre">mode='rigorous'</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="further_reading.html">Further Reading</a></li>
+      <li class="breadcrumb-item active">Under the Hood: How NeuralMI Works</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/UNDER_THE_HOOD.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="under-the-hood-how-neuralmi-works">
+<h1>Under the Hood: How NeuralMI Works<a class="headerlink" href="#under-the-hood-how-neuralmi-works" title="Link to this heading"></a></h1>
+<p>This document is for the curious user who has completed the tutorials and wants a deeper understanding of what <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> is doing under the hood. We won’t cover all the advanced features, but we will build a simple neural MI estimator from scratch to demystify the core concepts.</p>
+<p>The document is based heavily on <a class="reference external" href="https://arxiv.org/abs/2506.00330">this paper</a>.</p>
+<p>Our goal is to answer three key questions:</p>
+<ol class="arabic simple">
+<li><p>What <em>is</em> a neural MI estimator, really?</p></li>
+<li><p>How is it trained and evaluated?</p></li>
+<li><p>What is the intuition behind the “rigorous” bias correction?</p></li>
+</ol>
+<p>Let’s dive in with some simple PyTorch code.</p>
+<p>—</p>
+<section id="part-1-anatomy-of-a-neural-mi-estimator">
+<h2>Part 1: Anatomy of a Neural MI Estimator<a class="headerlink" href="#part-1-anatomy-of-a-neural-mi-estimator" title="Link to this heading"></a></h2>
+<p>At its heart, one way of looking at a neural MI estimator is just a clever way of training a neural network to solve a classification problem. Instead of estimating probability densities directly, we train a <strong>critic</strong> network, <code class="docutils literal notranslate"><span class="pre">f(x,</span> <span class="pre">y)</span></code>, to distinguish between “positive” samples (pairs <code class="docutils literal notranslate"><span class="pre">(x_i,</span> <span class="pre">y_i)</span></code> that genuinely occurred together) and “negative” samples (pairs <code class="docutils literal notranslate"><span class="pre">(x_i,</span> <span class="pre">y_j)</span></code> that did not).</p>
+<p>Let’s build the three essential components from scratch.</p>
+<p>### The Components</p>
+<ol class="arabic">
+<li><p><strong>Embedding Networks (``g`` and ``h``):</strong> These are two simple neural networks that learn to extract meaningful features from <code class="docutils literal notranslate"><span class="pre">X</span></code> and <code class="docutils literal notranslate"><span class="pre">Y</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
+
+<span class="c1"># A simple MLP to process an input vector into an embedding</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">create_embedding_net</span><span class="p">(</span><span class="n">input_dim</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span><span class="p">(</span>
+        <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">input_dim</span><span class="p">,</span> <span class="mi">64</span><span class="p">),</span>
+        <span class="n">nn</span><span class="o">.</span><span class="n">ReLU</span><span class="p">(),</span>
+        <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">64</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">)</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>The Critic ``f(x, y)``:</strong> In a <code class="docutils literal notranslate"><span class="pre">SeparableCritic</span></code>, the “critic” is just the dot product between the embeddings. It computes a similarity score for every possible pairing of samples in a batch.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">separable_critic</span><span class="p">(</span><span class="n">x_embedded</span><span class="p">,</span> <span class="n">y_embedded</span><span class="p">):</span>
+    <span class="c1"># x_embedded has shape (batch_size, embedding_dim)</span>
+    <span class="c1"># y_embedded has shape (batch_size, embedding_dim)</span>
+    <span class="c1"># The result is a (batch_size, batch_size) matrix of scores</span>
+    <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">x_embedded</span><span class="p">,</span> <span class="n">y_embedded</span><span class="o">.</span><span class="n">t</span><span class="p">())</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>The Estimator (Loss Function):</strong> This is the mathematical formula that turns the score matrix from the critic into an MI estimate. Let’s implement the most common one, <strong>InfoNCE</strong>. The formula is:</p>
+<div class="math notranslate nohighlight">
+\[I(X;Y) \ge \mathbb{E}\left[ \frac{1}{N}\sum_{i=1}^N \left( f(x_i,y_i) - \log\left(\sum_{j=1}^N e^{f(x_i,y_j)}\right) \right) \right] + \log(N)\]</div>
+<p>This looks complex, but it’s just a form of cross-entropy loss. For each <code class="docutils literal notranslate"><span class="pre">x_i</span></code> in the batch (each row of the score matrix), we’re trying to maximize the score of its true partner <code class="docutils literal notranslate"><span class="pre">y_i</span></code> (the diagonal element) relative to all other <code class="docutils literal notranslate"><span class="pre">y_j</span></code>’s in the batch (the off-diagonal elements).</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">infonce_estimator</span><span class="p">(</span><span class="n">scores</span><span class="p">):</span>
+    <span class="c1"># scores is the (batch_size, batch_size) matrix from the critic</span>
+    <span class="n">batch_size</span> <span class="o">=</span> <span class="n">scores</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+
+    <span class="c1"># The f(x_i, y_i) term is the diagonal of the score matrix</span>
+    <span class="n">positive_scores</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">diag</span><span class="p">(</span><span class="n">scores</span><span class="p">)</span>
+
+    <span class="c1"># The log-sum-exp term is calculated for each row</span>
+    <span class="n">log_sum_exp</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">logsumexp</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+
+    <span class="c1"># The MI is the mean difference, plus log(batch_size)</span>
+    <span class="n">mi_estimate_nats</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">positive_scores</span> <span class="o">-</span> <span class="n">log_sum_exp</span><span class="p">)</span> <span class="o">+</span> <span class="n">torch</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">batch_size</span><span class="p">))</span>
+
+    <span class="k">return</span> <span class="n">mi_estimate_nats</span>
+</pre></div>
+</div>
+</li>
+</ol>
+<p>And that’s it! A neural MI estimator is just these three pieces working together.</p>
+<p>—</p>
+</section>
+<section id="part-2-the-training-loop-demystified">
+<h2>Part 2: The Training Loop Demystified<a class="headerlink" href="#part-2-the-training-loop-demystified" title="Link to this heading"></a></h2>
+<p>Now, how do we use these components? We train them just like any other neural network: by minimizing a loss function. For MI estimation, the loss is simply the <strong>negative of the MI estimate</strong>. Maximizing the MI is the same as minimizing <code class="docutils literal notranslate"><span class="pre">-MI</span></code>.</p>
+<p>Here’s a simplified training loop.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># --- Setup ---</span>
+<span class="n">dim</span> <span class="o">=</span> <span class="mi">5</span>
+<span class="n">embedding_dim</span> <span class="o">=</span> <span class="mi">16</span>
+<span class="n">batch_size</span> <span class="o">=</span> <span class="mi">128</span>
+<span class="n">n_epochs</span> <span class="o">=</span> <span class="mi">10</span>
+
+<span class="c1"># Create simple correlated data</span>
+<span class="n">x_data</span><span class="p">,</span> <span class="n">y_data</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="n">dim</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="n">dim</span><span class="p">)</span>
+
+<span class="c1"># Create our embedding networks</span>
+<span class="n">g_net</span> <span class="o">=</span> <span class="n">create_embedding_net</span><span class="p">(</span><span class="n">dim</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">)</span>
+<span class="n">h_net</span> <span class="o">=</span> <span class="n">create_embedding_net</span><span class="p">(</span><span class="n">dim</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">)</span>
+
+<span class="c1"># Group parameters and create an optimizer</span>
+<span class="n">params</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">g_net</span><span class="o">.</span><span class="n">parameters</span><span class="p">())</span> <span class="o">+</span> <span class="nb">list</span><span class="p">(</span><span class="n">h_net</span><span class="o">.</span><span class="n">parameters</span><span class="p">())</span>
+<span class="n">optimizer</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">Adam</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">lr</span><span class="o">=</span><span class="mf">1e-3</span><span class="p">)</span>
+
+<span class="c1"># --- Training Loop ---</span>
+<span class="k">for</span> <span class="n">epoch</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_epochs</span><span class="p">):</span>
+    <span class="c1"># In a real scenario, we would use a DataLoader to get batches</span>
+    <span class="n">x_batch</span> <span class="o">=</span> <span class="n">x_data</span><span class="p">[:</span><span class="n">batch_size</span><span class="p">]</span>
+    <span class="n">y_batch</span> <span class="o">=</span> <span class="n">y_data</span><span class="p">[:</span><span class="n">batch_size</span><span class="p">]</span>
+
+    <span class="c1"># 1. Get embeddings</span>
+    <span class="n">x_embedded</span> <span class="o">=</span> <span class="n">g_net</span><span class="p">(</span><span class="n">x_batch</span><span class="p">)</span>
+    <span class="n">y_embedded</span> <span class="o">=</span> <span class="n">h_net</span><span class="p">(</span><span class="n">y_batch</span><span class="p">)</span>
+
+    <span class="c1"># 2. Get scores from the critic</span>
+    <span class="n">scores</span> <span class="o">=</span> <span class="n">separable_critic</span><span class="p">(</span><span class="n">x_embedded</span><span class="p">,</span> <span class="n">y_embedded</span><span class="p">)</span>
+
+    <span class="c1"># 3. Calculate the MI estimate</span>
+    <span class="n">mi_estimate</span> <span class="o">=</span> <span class="n">infonce_estimator</span><span class="p">(</span><span class="n">scores</span><span class="p">)</span>
+
+    <span class="c1"># 4. The loss is the negative MI</span>
+    <span class="n">loss</span> <span class="o">=</span> <span class="o">-</span><span class="n">mi_estimate</span>
+
+    <span class="c1"># 5. Backpropagate and optimize</span>
+    <span class="n">optimizer</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
+    <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
+    <span class="n">optimizer</span><span class="o">.</span><span class="n">step</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="n">epoch</span> <span class="o">%</span> <span class="mi">2</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Epoch </span><span class="si">{</span><span class="n">epoch</span><span class="si">}</span><span class="s2">, MI Estimate (nats): </span><span class="si">{</span><span class="n">mi_estimate</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>### Evaluation and Early Stopping</p>
+<p>During a real training run, we would split our data into training and validation sets. After each epoch, we’d calculate the MI on the validation set.</p>
+<p>This produces a <code class="docutils literal notranslate"><span class="pre">test_mi_history</span></code> curve. A heuristic introduced in the paper is to stop training and use the model that achieved the highest MI on the validation set. However, this curve can be very noisy. <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> follows the same procedure as the paper and improves on this by applying a median filter followed by a Gaussian filter to get a smoothed curve. It then stops training when this smoothed curve has stopped improving for a set number of epochs (<code class="docutils literal notranslate"><span class="pre">patience</span></code>), which is a more robust strategy.</p>
+<p>—</p>
+</section>
+<section id="part-3-the-intuition-behind-mode-rigorous">
+<h2>Part 3: The Intuition Behind <code class="docutils literal notranslate"><span class="pre">mode='rigorous'</span></code><a class="headerlink" href="#part-3-the-intuition-behind-mode-rigorous" title="Link to this heading"></a></h2>
+<p>Even with a perfectly trained model, any MI estimate from a finite dataset will be biased. The model will inevitably find spurious correlations in the noise, leading to a <strong>systematic overestimation</strong> of the true MI.</p>
+<p>As explained in the literature, this bias has a predictable relationship with the number of samples, <code class="docutils literal notranslate"><span class="pre">N</span></code>:</p>
+<div class="math notranslate nohighlight">
+\[I_{\text{estimated}}(N) \approx I_{\text{true}} + \frac{a}{N}\]</div>
+<p>This means the estimated MI is approximately linear in <code class="docutils literal notranslate"><span class="pre">1/N</span></code>. The <code class="docutils literal notranslate"><span class="pre">rigorous</span></code> mode exploits this relationship to correct for the bias.</p>
+<p>### The Extrapolation Procedure</p>
+<ol class="arabic simple">
+<li><p><strong>Subsample:</strong> The library runs the MI estimation multiple times on different fractions of the data. For example, it might split the data into <code class="docutils literal notranslate"><span class="pre">γ=2</span></code> halves, then <code class="docutils literal notranslate"><span class="pre">γ=3</span></code> thirds, and so on. This gives us MI estimates for different effective sample sizes <code class="docutils literal notranslate"><span class="pre">N/γ</span></code>.</p></li>
+<li><p><strong>Plot vs. 1/N:</strong> The library plots the mean MI estimate for each <code class="docutils literal notranslate"><span class="pre">γ</span></code> against <code class="docutils literal notranslate"><span class="pre">1/(N/γ)</span></code>, which is proportional to <code class="docutils literal notranslate"><span class="pre">γ</span></code>. Because of the formula above, this plot should be a straight line.</p></li>
+<li><p><strong>Extrapolate:</strong> <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> performs a weighted linear regression on this line and finds the y-intercept. This intercept corresponds to the point where <code class="docutils literal notranslate"><span class="pre">1/N</span> <span class="pre">=</span> <span class="pre">0</span></code>, which represents an infinite dataset. This extrapolated value is the final, bias-corrected MI estimate. If we’re not able to perform such fit –i.e., the fit is not <em>linear</em>, judging by fitting a second order WLS first, see if the ratio of the quadratic to linear contribution <code class="docutils literal notranslate"><span class="pre">δ</span></code> is greater than a certain threshold -set to 10%- then we reject this fitting point. If so, we drop the estimates corresponding to this <code class="docutils literal notranslate"><span class="pre">γ</span></code> value, and recalculate, if <code class="docutils literal notranslate"><span class="pre">δ</span> <span class="pre">&gt;=</span></code> threshold, keep dropping points till we reach the <code class="docutils literal notranslate"><span class="pre">γ</span></code> &lt; <code class="docutils literal notranslate"><span class="pre">min_gamma_points</span></code>, usually 5, and if not linear yet, we deem this fit <em>not reliable</em> and shouldn’t be trusted as we don’t have enough data.</p></li>
+</ol>
+<p>The plot generated by <code class="docutils literal notranslate"><span class="pre">results.plot()</span></code> in rigorous mode is a direct visualization of this procedure. The <strong>Corrected MI</strong> is simply the y-intercept of the extrapolation line, giving you an estimate of what the MI would be if you could collect an infinite amount of data.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="THEORY.html" class="btn btn-neutral float-left" title="Theoretical Foundations of NeuralMI" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

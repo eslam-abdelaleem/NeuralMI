@@ -1,0 +1,676 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tutorial 6: Uncovering Latent Dimensionality &mdash; NeuralMI 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/nbsphinx-code-cells.css?v=2aa19091" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+      <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true}, "options": {"ignoreHtmlClass": "tex2jax_ignore|mathjax_ignore|document", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Tutorial 7: Advanced Customization with Custom Models" href="Tutorial_07_Advanced_Customization.html" />
+    <link rel="prev" title="Tutorial 5: A Better Standard - Bias Correction" href="Tutorial_05_A_Better_Standard_Bias_Correction.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../getting_started.html">Getting Started</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../tutorials.html">Tutorials</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_01_A_First_Estimate.html">Tutorial 1: A First MI Estimate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_02_Handling_Neural_Data.html">Tutorial 2: A Visual Guide to Neuroscience Data Processing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_03_Finding_Temporal_Relationships.html">Tutorial 3: Finding Temporal Relationships</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_04_Choosing_the_Right_Model_and_Estimator.html">Tutorial 4: Choosing the Right Model and Estimator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_05_A_Better_Standard_Bias_Correction.html">Tutorial 5: A Better Standard - Bias Correction</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Tutorial 6: Uncovering Latent Dimensionality</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#1.-Shared-Dimensionality-between-X-and-Y">1. Shared Dimensionality between X and Y</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#2.-Internal-Dimensionality-of-a-Single-Population">2. Internal Dimensionality of a Single Population</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#2.1-Analysis-with-InfoNCE-vs.-SMILE">2.1 Analysis with InfoNCE vs. SMILE</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#2.2-An-Even-Better-Estimator?-The-Variational-Approach">2.2 An Even Better Estimator? The Variational Approach</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#3.-Comparison-and-Conclusion">3. Comparison and Conclusion</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#Final-Recommendations:">Final Recommendations:</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_07_Advanced_Customization.html">Tutorial 7: Advanced Customization with Custom Models</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_reference.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../further_reading.html">Further Reading</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../tutorials.html">Tutorials</a></li>
+      <li class="breadcrumb-item active">Tutorial 6: Uncovering Latent Dimensionality</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/tutorials/Tutorial_06_Uncovering_Latent_Dimensionality.ipynb.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="Tutorial-6:-Uncovering-Latent-Dimensionality">
+<h1>Tutorial 6: Uncovering Latent Dimensionality<a class="headerlink" href="#Tutorial-6:-Uncovering-Latent-Dimensionality" title="Link to this heading"></a></h1>
+<p>This tutorial covers one of the most powerful applications of mutual information: discovering the <strong>latent dimensionality</strong> of a system. This technique allows us to ask not just <em>how much</em> information is shared, but <em>how complex</em> that shared information is.</p>
+<p>We will explore two related but distinct scientific questions:</p>
+<ol class="arabic simple">
+<li><p><strong>Shared Dimensionality:</strong> What is the dimensionality of the information shared <em>between</em> two variables, X and Y?</p></li>
+<li><p><strong>Internal Dimensionality:</strong> What is the intrinsic complexity of a <em>single</em>, high-dimensional neural population?</p></li>
+</ol>
+<p>We will see how <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> can answer both questions and learn why the choice of MI estimator (<code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code> vs. <code class="docutils literal notranslate"><span class="pre">SMILE</span></code>) and model type (<code class="docutils literal notranslate"><span class="pre">variational</span></code>) is critical for getting the right answer.</p>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[1]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">neural_mi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nmi</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">seaborn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sns</span>
+
+<span class="n">sns</span><span class="o">.</span><span class="n">set_context</span><span class="p">(</span><span class="s2">&quot;talk&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<section id="1.-Shared-Dimensionality-between-X-and-Y">
+<h2>1. Shared Dimensionality between X and Y<a class="headerlink" href="#1.-Shared-Dimensionality-between-X-and-Y" title="Link to this heading"></a></h2>
+<p>Let’s start with a common question: if X and Y are related, what is the dimensionality of their shared relationship? We can investigate this by performing a simple sweep over the <code class="docutils literal notranslate"><span class="pre">embedding_dim</span></code> of a <code class="docutils literal notranslate"><span class="pre">SeparableCritic</span></code>.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">embedding_dim</span></code> acts as an <strong>information bottleneck</strong>. We expect the measured MI to rise as this bottleneck widens and then <strong>plateau</strong> once it’s large enough to capture the full shared signal. The location of this plateau is our estimate of the shared dimensionality.</p>
+<p>For this task, the default <strong>InfoNCE</strong> estimator is often an excellent choice due to its stability and low variance.</p>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[2]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># --- Generate Data ---</span>
+<span class="c1"># We&#39;ll create 100D X and Y variables that non-linearly share a 7D latent signal.</span>
+<span class="n">true_latent_dim</span> <span class="o">=</span> <span class="mi">7</span>
+<span class="n">x_raw</span><span class="p">,</span> <span class="n">y_raw</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">generate_nonlinear_from_latent</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="o">=</span><span class="mi">5000</span><span class="p">,</span>
+    <span class="n">latent_dim</span><span class="o">=</span><span class="n">true_latent_dim</span><span class="p">,</span>
+    <span class="n">observed_dim</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>
+    <span class="n">mi</span><span class="o">=</span><span class="mf">3.0</span> <span class="c1"># The MI between the latent variables</span>
+<span class="p">)</span>
+<span class="n">x_raw_transposed</span> <span class="o">=</span> <span class="n">x_raw</span><span class="o">.</span><span class="n">T</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span>
+<span class="n">y_raw_transposed</span> <span class="o">=</span> <span class="n">y_raw</span><span class="o">.</span><span class="n">T</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[3]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># Base parameters for the trainer</span>
+<span class="n">base_params</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;n_epochs&#39;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span> <span class="s1">&#39;learning_rate&#39;</span><span class="p">:</span> <span class="mf">1e-3</span><span class="p">,</span> <span class="s1">&#39;batch_size&#39;</span><span class="p">:</span> <span class="mi">256</span><span class="p">,</span>
+    <span class="s1">&#39;patience&#39;</span><span class="p">:</span> <span class="mi">10</span><span class="p">,</span> <span class="s1">&#39;hidden_dim&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;n_layers&#39;</span><span class="p">:</span> <span class="mi">3</span>
+<span class="p">}</span>
+
+<span class="c1"># We sweep over the embedding_dim using a standard &#39;sweep&#39; mode</span>
+<span class="n">sweep_grid</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;embedding_dim&#39;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">12</span><span class="p">,</span> <span class="mi">15</span><span class="p">,</span> <span class="mi">20</span><span class="p">],</span>
+    <span class="s1">&#39;run_id&#39;</span><span class="p">:</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span> <span class="c1"># Average for stability</span>
+<span class="p">}</span>
+
+<span class="n">shared_dim_results</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw_transposed</span><span class="p">,</span>
+    <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw_transposed</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;sweep&#39;</span><span class="p">,</span> <span class="c1"># Note: we use &#39;sweep&#39;, not &#39;dimensionality&#39; for this question</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">sweep_grid</span><span class="o">=</span><span class="n">sweep_grid</span><span class="p">,</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:50:13 - neural_mi - WARNING - Reproducibility with random_seed is not guaranteed with n_workers &gt; 1.
+2025-10-08 00:50:13 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "9b6605ee1a9d4ddb9b30cc288da2516a", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Run 7a771993-c4fb-459e-a338-9b2629bce6d5_c38 | MI: 2.834:  58%|█████▊    | 29/50 [00:03&lt;00:02,  8.52it/s]
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:50:51 - neural_mi - INFO - Parameter sweep finished.
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<p>The resulting curve clearly rises and then begins to saturate right around the true latent dimension of 7 (and also gets the right MI value). Usually the saturation happens 1 dimension after the correct one, this <em>extra</em> dimension allows for some wiggle room to capturea all the information. This is a beuatiful way of finding the shared dimensionality.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[4]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">ax</span> <span class="o">=</span> <span class="n">shared_dim_results</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">show</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">axhline</span><span class="p">(</span><span class="n">y</span><span class="o">=</span><span class="mf">3.0</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;black&#39;</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;-&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;True MI = 3 bits&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">axvline</span><span class="p">(</span><span class="n">x</span><span class="o">=</span><span class="n">true_latent_dim</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;black&#39;</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;--&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;True Shared Dim (</span><span class="si">{</span><span class="n">true_latent_dim</span><span class="si">}</span><span class="s1">)&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s1">&#39;MI vs. Shared Embedding Dimension (InfoNCE)&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">legend</span><span class="p">()</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="n">bottom</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_Tutorial_06_Uncovering_Latent_Dimensionality_6_0.png" src="../_images/tutorials_Tutorial_06_Uncovering_Latent_Dimensionality_6_0.png" />
+</div>
+</div>
+</section>
+<section id="2.-Internal-Dimensionality-of-a-Single-Population">
+<h2>2. Internal Dimensionality of a Single Population<a class="headerlink" href="#2.-Internal-Dimensionality-of-a-Single-Population" title="Link to this heading"></a></h2>
+<p>Now for a more advanced question: what is the internal complexity of a <em>single</em> variable <code class="docutils literal notranslate"><span class="pre">X</span></code>? For this, we use <code class="docutils literal notranslate"><span class="pre">mode='dimensionality'</span></code>. This mode automatically splits the channels of <code class="docutils literal notranslate"><span class="pre">X</span></code> into two random halves (<code class="docutils literal notranslate"><span class="pre">X_A</span></code> and <code class="docutils literal notranslate"><span class="pre">X_B</span></code>) and measures the “Internal Information” <code class="docutils literal notranslate"><span class="pre">I(X_A;</span> <span class="pre">X_B)</span></code>.</p>
+<p>As we’ve discussed, this is a special, high-information scenario. It’s the perfect place to compare our different estimators.</p>
+<section id="2.1-Analysis-with-InfoNCE-vs.-SMILE">
+<h3>2.1 Analysis with InfoNCE vs. SMILE<a class="headerlink" href="#2.1-Analysis-with-InfoNCE-vs.-SMILE" title="Link to this heading"></a></h3>
+<p>Let’s run the analysis twice: once with the default <code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code> estimator, and once with the less-biased <code class="docutils literal notranslate"><span class="pre">SMILE</span></code> estimator.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[6]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">sweep_grid_dim</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;embedding_dim&#39;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">12</span><span class="p">,</span> <span class="mi">15</span><span class="p">,</span> <span class="mi">20</span><span class="p">],</span>
+<span class="p">}</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;--- Running with InfoNCE ---&quot;</span><span class="p">)</span>
+<span class="n">dim_results_infonce</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw_transposed</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;dimensionality&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">sweep_grid</span><span class="o">=</span><span class="n">sweep_grid_dim</span><span class="p">,</span>
+    <span class="n">estimator</span><span class="o">=</span><span class="s1">&#39;infonce&#39;</span><span class="p">,</span> <span class="c1"># Default, but explicit here for clarity</span>
+    <span class="n">n_splits</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="c1"># Average over 3 random splits for stability, Note that for accurate results, we probably need more splits</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">--- Running with SMILE ---&quot;</span><span class="p">)</span>
+<span class="n">dim_results_smile</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw_transposed</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;dimensionality&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">sweep_grid</span><span class="o">=</span><span class="n">sweep_grid_dim</span><span class="p">,</span>
+    <span class="n">estimator</span><span class="o">=</span><span class="s1">&#39;smile&#39;</span><span class="p">,</span>
+    <span class="n">estimator_params</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;clip&#39;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">},</span>
+    <span class="n">n_splits</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="c1"># Average over 3 random splits for stability, Note that for accurate results, we probably need more splits</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+--- Running with InfoNCE ---
+2025-10-08 00:51:54 - neural_mi - WARNING - Reproducibility with random_seed is not guaranteed with n_workers &gt; 1.
+2025-10-08 00:51:54 - neural_mi - WARNING - Using &#39;infonce&#39; estimator for dimensionality analysis. For this specific mode, consider using the &#39;smile&#39; estimator, as its lower bias may reveal the saturation point more clearly.
+2025-10-08 00:51:54 - neural_mi - INFO - --- Running Split 1/3 ---
+2025-10-08 00:51:54 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "ec6f242f79a947f9b4bc9147b9b270af", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:52:20 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:52:20 - neural_mi - INFO - --- Running Split 2/3 ---
+2025-10-08 00:52:20 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "1da9a703696f49e886ad17eb238374f5", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Run 343c1c2b-c6c1-4994-bffc-f178425b52dc_c12 | MI: 8.786:  62%|██████▏   | 31/50 [00:04&lt;00:02,  8.19it/s]
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:52:45 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:52:45 - neural_mi - INFO - --- Running Split 3/3 ---
+2025-10-08 00:52:45 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "5199ba0fd2814402bf1b37ef0237a85b", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Run 9d427c70-6bce-420a-9645-00c63a26a918_c11 | MI: 8.935:  98%|█████████▊| 49/50 [00:06&lt;00:00,  6.61it/s]
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:53:09 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:53:09 - neural_mi - INFO - --- Dimensionality Analysis Complete ---
+
+--- Running with SMILE ---
+2025-10-08 00:53:09 - neural_mi - WARNING - Reproducibility with random_seed is not guaranteed with n_workers &gt; 1.
+2025-10-08 00:53:09 - neural_mi - INFO - --- Running Split 1/3 ---
+2025-10-08 00:53:09 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "83d4b018ce124501aed58f0488798594", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Run feb6a816-d06b-46e6-995e-e88a95e080e9_c12 | MI: 8.514:  70%|███████   | 35/50 [00:05&lt;00:01,  7.52it/s]
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:53:32 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:53:32 - neural_mi - INFO - --- Running Split 2/3 ---
+2025-10-08 00:53:32 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "18e4875414214113bb6af1039edd0119", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:53:51 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:53:51 - neural_mi - INFO - --- Running Split 3/3 ---
+2025-10-08 00:53:51 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "2e0df0051c5d4799a4987a9f659d08d0", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Run 5eac6f52-fd0c-43c6-85e8-5f44d2312b39_c12 | MI: 11.449:  98%|█████████▊| 49/50 [00:06&lt;00:00,  8.05it/s]
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:54:13 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:54:13 - neural_mi - INFO - --- Dimensionality Analysis Complete ---
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+</section>
+<section id="2.2-An-Even-Better-Estimator?-The-Variational-Approach">
+<h3>2.2 An Even Better Estimator? The Variational Approach<a class="headerlink" href="#2.2-An-Even-Better-Estimator?-The-Variational-Approach" title="Link to this heading"></a></h3>
+<p>We’ve seen that SMILE is better than InfoNCE for this task because it’s less biased. Can we do even better? For very complex, high-dimensional data, a standard model might struggle to create a good representation.</p>
+<p>A <strong>variational</strong> model (like <code class="docutils literal notranslate"><span class="pre">VarMLP</span></code>) adds a layer of sophistication: instead of learning a single embedding vector for each data point, it learns a <em>distribution</em> (a mean and a variance) over the embedding space. This acts as a form of regularization, which can help stabilize training and lead to a more robust estimate, especially in high-MI regimes.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[7]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">--- Running with Variational SMILE ---&quot;</span><span class="p">)</span>
+<span class="n">dim_results_smile_var</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw_transposed</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;dimensionality&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="p">{</span><span class="o">**</span><span class="n">base_params</span><span class="p">,</span> <span class="s1">&#39;use_variational&#39;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s1">&#39;beta&#39;</span><span class="p">:</span><span class="o">-</span><span class="mi">1</span><span class="o">/</span><span class="mi">1024</span><span class="p">},</span> <span class="c1"># Enable the variational model</span>
+    <span class="n">sweep_grid</span><span class="o">=</span><span class="n">sweep_grid_dim</span><span class="p">,</span>
+    <span class="n">estimator</span><span class="o">=</span><span class="s1">&#39;smile&#39;</span><span class="p">,</span>
+    <span class="n">estimator_params</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;clip&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">n_splits</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+
+--- Running with Variational SMILE ---
+2025-10-08 00:54:54 - neural_mi - WARNING - Reproducibility with random_seed is not guaranteed with n_workers &gt; 1.
+2025-10-08 00:54:54 - neural_mi - INFO - --- Running Split 1/3 ---
+2025-10-08 00:54:54 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "e2c90df2c70c4ad0b3f1b078f1552879", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:55:20 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:55:20 - neural_mi - INFO - --- Running Split 2/3 ---
+2025-10-08 00:55:20 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "91f15aaaabec4d788e7671eb0a0cdb54", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:55:47 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:55:47 - neural_mi - INFO - --- Running Split 3/3 ---
+2025-10-08 00:55:47 - neural_mi - INFO - Starting parameter sweep with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "9000ad6cd0244395b05cea3b479d1db3", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 00:56:16 - neural_mi - INFO - Parameter sweep finished.
+2025-10-08 00:56:16 - neural_mi - INFO - --- Dimensionality Analysis Complete ---
+</pre></div></div>
+</div>
+</section>
+</section>
+<section id="3.-Comparison-and-Conclusion">
+<h2>3. Comparison and Conclusion<a class="headerlink" href="#3.-Comparison-and-Conclusion" title="Link to this heading"></a></h2>
+<p>Let’s plot all three curves on the same axes. The difference is clear.</p>
+<p>The <strong>InfoNCE</strong> curve flattens out abruptly, likely hitting slighlty around its theoretical maximum value (<code class="docutils literal notranslate"><span class="pre">log(256)</span> <span class="pre">≈</span> <span class="pre">8</span></code> bits for our batch size).</p>
+<p>The <strong>SMILE</strong> curve, being less biased, continues to rise and shows a more accurate saturation point near the true latent dimension of 7, albiet it’s very noisy.</p>
+<p>The <strong>Variational SMILE</strong> curve follows a similar path but is much smoother and more stable, providing the most confident estimate of the saturation point. It has lower variance like InfoNCE, but reaches the correct dimensionality like SMILE.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[8]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">fig</span><span class="p">,</span> <span class="n">ax</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">7</span><span class="p">))</span>
+
+<span class="c1"># Plot InfoNCE results</span>
+<span class="n">df_i</span> <span class="o">=</span> <span class="n">dim_results_infonce</span><span class="o">.</span><span class="n">dataframe</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">df_i</span><span class="p">[</span><span class="s1">&#39;embedding_dim&#39;</span><span class="p">],</span> <span class="n">df_i</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">],</span> <span class="s1">&#39;o-&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s1">&#39;Internal Info (InfoNCE)&#39;</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.7</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">fill_between</span><span class="p">(</span><span class="n">df_i</span><span class="p">[</span><span class="s1">&#39;embedding_dim&#39;</span><span class="p">],</span> <span class="n">df_i</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">]</span> <span class="o">-</span> <span class="n">df_i</span><span class="p">[</span><span class="s1">&#39;mi_std&#39;</span><span class="p">],</span> <span class="n">df_i</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">]</span> <span class="o">+</span> <span class="n">df_i</span><span class="p">[</span><span class="s1">&#39;mi_std&#39;</span><span class="p">],</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
+
+<span class="c1"># Plot SMILE results</span>
+<span class="n">df_s</span> <span class="o">=</span> <span class="n">dim_results_smile</span><span class="o">.</span><span class="n">dataframe</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">df_s</span><span class="p">[</span><span class="s1">&#39;embedding_dim&#39;</span><span class="p">],</span> <span class="n">df_s</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">],</span> <span class="s1">&#39;o-&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s1">&#39;Internal Info (SMILE)&#39;</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.8</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">fill_between</span><span class="p">(</span><span class="n">df_s</span><span class="p">[</span><span class="s1">&#39;embedding_dim&#39;</span><span class="p">],</span> <span class="n">df_s</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">]</span> <span class="o">-</span> <span class="n">df_s</span><span class="p">[</span><span class="s1">&#39;mi_std&#39;</span><span class="p">],</span> <span class="n">df_s</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">]</span> <span class="o">+</span> <span class="n">df_s</span><span class="p">[</span><span class="s1">&#39;mi_std&#39;</span><span class="p">],</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.15</span><span class="p">)</span>
+
+<span class="c1"># Plot Variational SMILE results</span>
+<span class="n">df_v</span> <span class="o">=</span> <span class="n">dim_results_smile_var</span><span class="o">.</span><span class="n">dataframe</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">df_v</span><span class="p">[</span><span class="s1">&#39;embedding_dim&#39;</span><span class="p">],</span> <span class="n">df_v</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">],</span> <span class="s1">&#39;o-&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s1">&#39;Internal Info (Variational SMILE)&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">fill_between</span><span class="p">(</span><span class="n">df_v</span><span class="p">[</span><span class="s1">&#39;embedding_dim&#39;</span><span class="p">],</span> <span class="n">df_v</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">]</span> <span class="o">-</span> <span class="n">df_v</span><span class="p">[</span><span class="s1">&#39;mi_std&#39;</span><span class="p">],</span> <span class="n">df_v</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">]</span> <span class="o">+</span> <span class="n">df_v</span><span class="p">[</span><span class="s1">&#39;mi_std&#39;</span><span class="p">],</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.2</span><span class="p">)</span>
+
+<span class="n">ax</span><span class="o">.</span><span class="n">axvline</span><span class="p">(</span><span class="n">x</span><span class="o">=</span><span class="n">true_latent_dim</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;black&#39;</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;--&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;True Dim (</span><span class="si">{</span><span class="n">true_latent_dim</span><span class="si">}</span><span class="s1">)&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s1">&#39;Estimator Comparison for Internal Dimensionality&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s1">&#39;Embedding Dimension&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s1">&#39;Internal Information (bits)&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">legend</span><span class="p">()</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="n">bottom</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_Tutorial_06_Uncovering_Latent_Dimensionality_13_0.png" src="../_images/tutorials_Tutorial_06_Uncovering_Latent_Dimensionality_13_0.png" />
+</div>
+</div>
+<section id="Final-Recommendations:">
+<h3>Final Recommendations:<a class="headerlink" href="#Final-Recommendations:" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>To find the dimensionality of the <strong>shared signal between X and Y</strong>, a standard <code class="docutils literal notranslate"><span class="pre">mode='sweep'</span></code> with the default <strong>``InfoNCE``</strong> estimator is a great choice.</p></li>
+<li><p>To find the <strong>internal dimensionality of a single population ``X``</strong>, use <code class="docutils literal notranslate"><span class="pre">mode='dimensionality'</span></code> and start with the <strong>``SMILE``</strong> estimator for a less biased result.</p></li>
+<li><p>For particularly high-dimensional or complex data, consider using <strong>``use_variational=True``</strong> with SMILE to get the most stable and reliable curve.</p></li>
+</ul>
+<p><em>Note</em>: The variational estimators often require slightly more training to reach good estimates, thus consider increasing the number of epochs and patience when using them.</p>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="Tutorial_05_A_Better_Standard_Bias_Correction.html" class="btn btn-neutral float-left" title="Tutorial 5: A Better Standard - Bias Correction" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="Tutorial_07_Advanced_Customization.html" class="btn btn-neutral float-right" title="Tutorial 7: Advanced Customization with Custom Models" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

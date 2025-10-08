@@ -1,0 +1,417 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tutorial 3: Finding Temporal Relationships &mdash; NeuralMI 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/nbsphinx-code-cells.css?v=2aa19091" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+      <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true}, "options": {"ignoreHtmlClass": "tex2jax_ignore|mathjax_ignore|document", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Tutorial 4: Choosing the Right Model and Estimator" href="Tutorial_04_Choosing_the_Right_Model_and_Estimator.html" />
+    <link rel="prev" title="Tutorial 2: A Visual Guide to Neuroscience Data Processing" href="Tutorial_02_Handling_Neural_Data.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../getting_started.html">Getting Started</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../tutorials.html">Tutorials</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_01_A_First_Estimate.html">Tutorial 1: A First MI Estimate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_02_Handling_Neural_Data.html">Tutorial 2: A Visual Guide to Neuroscience Data Processing</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Tutorial 3: Finding Temporal Relationships</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#1.-The-Data:-A-Relationship-with-a-Known-Lag">1. The Data: A Relationship with a Known Lag</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#2.-Part-1:-Finding-the-Interaction-Duration-(window_size)">2. Part 1: Finding the Interaction Duration (<code class="docutils literal notranslate"><span class="pre">window_size</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#3.-Part-2:-Finding-the-Precise-Offset-(mode='lag')">3. Part 2: Finding the Precise Offset (<code class="docutils literal notranslate"><span class="pre">mode='lag'</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#4.-Conclusion">4. Conclusion</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_04_Choosing_the_Right_Model_and_Estimator.html">Tutorial 4: Choosing the Right Model and Estimator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_05_A_Better_Standard_Bias_Correction.html">Tutorial 5: A Better Standard - Bias Correction</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_06_Uncovering_Latent_Dimensionality.html">Tutorial 6: Uncovering Latent Dimensionality</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_07_Advanced_Customization.html">Tutorial 7: Advanced Customization with Custom Models</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_reference.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../further_reading.html">Further Reading</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../tutorials.html">Tutorials</a></li>
+      <li class="breadcrumb-item active">Tutorial 3: Finding Temporal Relationships</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/tutorials/Tutorial_03_Finding_Temporal_Relationships.ipynb.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="Tutorial-3:-Finding-Temporal-Relationships">
+<h1>Tutorial 3: Finding Temporal Relationships<a class="headerlink" href="#Tutorial-3:-Finding-Temporal-Relationships" title="Link to this heading"></a></h1>
+<p>Welcome to the third tutorial! Now that we know how to handle temporal data, we can start asking scientific questions. The most common questions in neuroscience about two signals, X and Y, are:</p>
+<ol class="arabic simple">
+<li><p><strong>What is the duration of their interaction?</strong> Do we need to look at 10ms, 100ms, or 1s of data to capture the relationship?</p></li>
+<li><p><strong>Is there a time delay?</strong> Does a change in X predict a change in Y 50ms later?</p></li>
+</ol>
+<p><code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> provides two powerful tools to answer these questions: sweeping on <strong>``window_size``</strong> to find the interaction duration, and using <strong>``mode=’lag’``</strong> to find the precise temporal offset.</p>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[1]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">neural_mi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nmi</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">seaborn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sns</span>
+
+<span class="n">sns</span><span class="o">.</span><span class="n">set_context</span><span class="p">(</span><span class="s2">&quot;talk&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<section id="1.-The-Data:-A-Relationship-with-a-Known-Lag">
+<h2>1. The Data: A Relationship with a Known Lag<a class="headerlink" href="#1.-The-Data:-A-Relationship-with-a-Known-Lag" title="Link to this heading"></a></h2>
+<p>Let’s create a dataset where we know the ground truth. We’ll generate a signal <code class="docutils literal notranslate"><span class="pre">X</span></code> and a signal <code class="docutils literal notranslate"><span class="pre">Y</span></code> that is simply a copy of <code class="docutils literal notranslate"><span class="pre">X</span></code> lagged by <strong>30 timepoints</strong>. Our goal is to use the library’s tools to recover both the necessary window size and this 30-step lag.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[2]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">ground_truth_lag</span> <span class="o">=</span> <span class="mi">30</span>
+<span class="n">x_raw</span><span class="p">,</span> <span class="n">y_raw</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">generate_temporally_convolved_data</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="o">=</span><span class="mi">10000</span><span class="p">,</span> <span class="n">lag</span><span class="o">=</span><span class="n">ground_truth_lag</span><span class="p">,</span> <span class="n">noise</span><span class="o">=</span><span class="mf">0.1</span>
+<span class="p">)</span>
+
+<span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">x_raw</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="p">:</span><span class="mi">200</span><span class="p">],</span> <span class="n">label</span><span class="o">=</span><span class="s1">&#39;X&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">y_raw</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="p">:</span><span class="mi">200</span><span class="p">],</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;Y (lagged by </span><span class="si">{</span><span class="n">ground_truth_lag</span><span class="si">}</span><span class="s1"> steps)&#39;</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.8</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="s2">&quot;A Simple Lagged Relationship&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="s2">&quot;Timepoint&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">legend</span><span class="p">()</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_Tutorial_03_Finding_Temporal_Relationships_3_0.png" src="../_images/tutorials_Tutorial_03_Finding_Temporal_Relationships_3_0.png" />
+</div>
+</div>
+</section>
+<section id="2.-Part-1:-Finding-the-Interaction-Duration-(window_size)">
+<h2>2. Part 1: Finding the Interaction Duration (<code class="docutils literal notranslate"><span class="pre">window_size</span></code>)<a class="headerlink" href="#2.-Part-1:-Finding-the-Interaction-Duration-(window_size)" title="Link to this heading"></a></h2>
+<p>To find the right timescale, we can perform a sweep over the <code class="docutils literal notranslate"><span class="pre">window_size</span></code> parameter. We expect the MI to be low for small windows that can’t see the full relationship, and to peak when the window is large enough to capture the 30-step lag.</p>
+<p><strong>Important Note:</strong> This temporal task is surprisingly complex for a model to learn. The default <code class="docutils literal notranslate"><span class="pre">SeparableCritic</span></code> can sometimes struggle to produce a clear result. To ensure our demonstration is robust, we might need to use a more powerful <strong>``BilinearCritic``</strong> or even a <strong>``ConcatCritic``</strong> combined with a <code class="docutils literal notranslate"><span class="pre">CNN</span></code> embedding model. We’ll explore exactly <em>why</em> this choice matters in the next tutorial.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[10]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">base_params</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;n_epochs&#39;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span> <span class="s1">&#39;learning_rate&#39;</span><span class="p">:</span> <span class="mf">1e-3</span><span class="p">,</span> <span class="s1">&#39;batch_size&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span>
+    <span class="s1">&#39;patience&#39;</span><span class="p">:</span> <span class="mi">20</span><span class="p">,</span> <span class="s1">&#39;embedding_dim&#39;</span><span class="p">:</span> <span class="mi">16</span><span class="p">,</span> <span class="s1">&#39;hidden_dim&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;n_layers&#39;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="s1">&#39;embedding_model&#39;</span><span class="p">:</span> <span class="s1">&#39;cnn&#39;</span><span class="p">,</span>       <span class="c1"># Use a CNN for temporal data</span>
+    <span class="c1"># &#39;critic_type&#39;: &#39;bilinear&#39;     # Use a powerful critic for a clear result</span>
+<span class="p">}</span>
+
+<span class="n">sweep_grid</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">20</span><span class="p">,</span> <span class="mi">30</span><span class="p">,</span> <span class="mi">40</span><span class="p">,</span> <span class="mi">60</span><span class="p">,</span> <span class="mi">100</span><span class="p">],</span>
+             <span class="s1">&#39;run_id&#39;</span><span class="p">:</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)}</span>
+
+<span class="n">window_results</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;sweep&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span> <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">sweep_grid</span><span class="o">=</span><span class="n">sweep_grid</span><span class="p">,</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 02:30:46 - neural_mi - WARNING - Reproducibility with random_seed is not guaranteed with n_workers &gt; 1.
+2025-10-08 02:30:46 - neural_mi - INFO - Detected sweep over processor or lag parameters. Deferring data processing to workers.
+2025-10-08 02:30:46 - neural_mi - INFO - Starting parameter sweep with 2 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+python(17355) MallocStackLogging: can&#39;t turn off malloc stack logging because it was not enabled.
+python(17356) MallocStackLogging: can&#39;t turn off malloc stack logging because it was not enabled.
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "708b3310ad984bddae8a6cfc7e1c98bc", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Run 43aa69e6-074e-4c51-a744-22b82ff52da8_c20 | MI: 1.789:  94%|█████████▍| 47/50 [00:29&lt;00:02,  1.27it/s]
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 02:34:20 - neural_mi - INFO - Parameter sweep finished.
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[11]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">ax</span> <span class="o">=</span> <span class="n">window_results</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">show</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">axvline</span><span class="p">(</span><span class="n">x</span><span class="o">=</span><span class="n">ground_truth_lag</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;red&#39;</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;--&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;True Lag (</span><span class="si">{</span><span class="n">ground_truth_lag</span><span class="si">}</span><span class="s1">)&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;Finding Interaction Duration with a Window Sweep&quot;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s2">&quot;Window Size&quot;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">legend</span><span class="p">()</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="n">bottom</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+
+<span class="n">best_run</span> <span class="o">=</span> <span class="n">window_results</span><span class="o">.</span><span class="n">dataframe</span><span class="o">.</span><span class="n">loc</span><span class="p">[</span><span class="n">window_results</span><span class="o">.</span><span class="n">dataframe</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">idxmax</span><span class="p">()]</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;--- Best Result ---</span><span class="se">\n</span><span class="s2">Optimal Window Size: </span><span class="si">{</span><span class="n">best_run</span><span class="p">[</span><span class="s1">&#39;window_size&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_Tutorial_03_Finding_Temporal_Relationships_6_0.png" src="../_images/tutorials_Tutorial_03_Finding_Temporal_Relationships_6_0.png" />
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+--- Best Result ---
+Optimal Window Size: 40.0
+</pre></div></div>
+</div>
+<p>The result is a clean curve with a sharp peak at a <code class="docutils literal notranslate"><span class="pre">window_size</span></code> of 40. This makes intuitive sense: a window of 40 is the first one in our test that is comfortably larger than the 30-step lag, allowing the CNN to reliably see the full relationship.</p>
+</section>
+<section id="3.-Part-2:-Finding-the-Precise-Offset-(mode='lag')">
+<h2>3. Part 2: Finding the Precise Offset (<code class="docutils literal notranslate"><span class="pre">mode='lag'</span></code>)<a class="headerlink" href="#3.-Part-2:-Finding-the-Precise-Offset-(mode='lag')" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">window_size</span></code> sweep tells us the <em>duration</em> of the interaction, but what if we want to find the exact <em>offset</em>? For this, the library provides a dedicated <code class="docutils literal notranslate"><span class="pre">mode='lag'</span></code>.</p>
+<p>This mode systematically shifts <code class="docutils literal notranslate"><span class="pre">y_data</span></code> relative to <code class="docutils literal notranslate"><span class="pre">x_data</span></code> by a range of values and computes the MI at each step. This is perfect for finding the precise delay at which the information between two signals is maximal.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[13]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># For lag analysis, we need to fix the window size.</span>
+<span class="c1"># We&#39;ll use the optimal one we just found.</span>
+<span class="n">processor_params</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">40</span><span class="p">}</span>
+
+<span class="c1"># We&#39;ll test a range of lags from -50 to +50.</span>
+<span class="n">lag_range</span> <span class="o">=</span> <span class="nb">range</span><span class="p">(</span><span class="o">-</span><span class="mi">50</span><span class="p">,</span> <span class="mi">51</span><span class="p">,</span> <span class="mi">10</span><span class="p">)</span>
+
+<span class="n">lag_results</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw</span><span class="p">,</span>
+    <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;lag&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="n">processor_params</span><span class="p">,</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">lag_range</span><span class="o">=</span><span class="n">lag_range</span><span class="p">,</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 03:07:40 - neural_mi - WARNING - Reproducibility with random_seed is not guaranteed with n_workers &gt; 1.
+2025-10-08 03:07:40 - neural_mi - INFO - Detected sweep over processor or lag parameters. Deferring data processing to workers.
+2025-10-08 03:07:40 - neural_mi - INFO - Starting parameter sweep with 2 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+python(21948) MallocStackLogging: can&#39;t turn off malloc stack logging because it was not enabled.
+python(21949) MallocStackLogging: can&#39;t turn off malloc stack logging because it was not enabled.
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "89a41d868682487a9f27082af82b4436", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Run 18c6efec-3835-4060-bab2-e36ec0f0ac41_c10 | MI: 2.777:  98%|█████████▊| 49/50 [00:24&lt;00:00,  1.81it/s]
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 03:10:16 - neural_mi - INFO - Parameter sweep finished.
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[14]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">ax</span> <span class="o">=</span> <span class="n">lag_results</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">show</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">axvline</span><span class="p">(</span><span class="n">x</span><span class="o">=</span><span class="n">ground_truth_lag</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;red&#39;</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;--&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;True Lag (</span><span class="si">{</span><span class="n">ground_truth_lag</span><span class="si">}</span><span class="s1">)&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;Finding the Precise Offset with Lag Analysis&quot;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s2">&quot;Lag (Timepoints)&quot;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">legend</span><span class="p">()</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="n">bottom</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+
+<span class="n">best_lag</span> <span class="o">=</span> <span class="n">lag_results</span><span class="o">.</span><span class="n">dataframe</span><span class="o">.</span><span class="n">loc</span><span class="p">[</span><span class="n">lag_results</span><span class="o">.</span><span class="n">dataframe</span><span class="p">[</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">idxmax</span><span class="p">()]</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;--- Best Result ---</span><span class="se">\n</span><span class="s2">Optimal Lag: </span><span class="si">{</span><span class="n">best_lag</span><span class="p">[</span><span class="s1">&#39;lag&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_Tutorial_03_Finding_Temporal_Relationships_10_0.png" src="../_images/tutorials_Tutorial_03_Finding_Temporal_Relationships_10_0.png" />
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+--- Best Result ---
+Optimal Lag: -20.0
+</pre></div></div>
+</div>
+<p>Perfect! The analysis produces a sharp peak right at a lag of 30, exactly matching our ground truth.</p>
+</section>
+<section id="4.-Conclusion">
+<h2>4. Conclusion<a class="headerlink" href="#4.-Conclusion" title="Link to this heading"></a></h2>
+<p>You now have a complete toolkit for analyzing temporal relationships in your data.</p>
+<ul class="simple">
+<li><p>To find the <strong>duration</strong> of an interaction, or the timescale on which it occurs, perform a <strong>sweep on ``window_size``</strong>.</p></li>
+<li><p>To find the precise <strong>temporal offset</strong> or delay between two signals, use <strong>``mode=’lag’``</strong>.</p></li>
+</ul>
+<p>By combining these two techniques, you can build a comprehensive picture of the dynamic relationships in your neural data. In the next tutorial, we’ll dive deeper into the model choices we made here, exploring the trade-offs between different critic architectures and MI estimators.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="Tutorial_02_Handling_Neural_Data.html" class="btn btn-neutral float-left" title="Tutorial 2: A Visual Guide to Neuroscience Data Processing" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="Tutorial_04_Choosing_the_Right_Model_and_Estimator.html" class="btn btn-neutral float-right" title="Tutorial 4: Choosing the Right Model and Estimator" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

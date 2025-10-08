@@ -1,0 +1,261 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Tutorial 1: A First MI Estimate\n",
+    "\n",
+    "Welcome to the `NeuralMI` library! This first tutorial covers the most basic use case: getting a single, quick estimate of mutual information (MI) between two variables.\n",
+    "\n",
+    "Our goal is to introduce the main `nmi.run` function and show how to interpret its output. We'll use a simple synthetic dataset where the true MI is known, allowing us to verify that our estimate is accurate."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 1. Imports\n",
+    "\n",
+    "First, let's import the necessary libraries. We'll need `numpy` for data manipulation and, most importantly, our `neural_mi` library, which we import as `nmi`."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np\n",
+    "import neural_mi as nmi"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 2. Generating the Data\n",
+    "\n",
+    "We will use the `generate_correlated_gaussians` function, which creates two multidimensional Gaussian variables, `X` and `Y`, with a precisely specified mutual information in **bits**.\n",
+    "\n",
+    "The library's `ContinuousProcessor` expects raw data in the format `(n_channels, n_timepoints)`. Our data generator produces data of shape `(n_samples, n_features)`, so we will simply transpose the matrices to match the expected format."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Transposed X data shape: torch.Size([5, 5000])\n",
+      "Transposed Y data shape: torch.Size([5, 5000])\n"
+     ]
+    }
+   ],
+   "source": [
+    "# --- Dataset Parameters ---\n",
+    "n_samples = 5000\n",
+    "dim = 5\n",
+    "ground_truth_mi_bits = 2.0\n",
+    "\n",
+    "# --- Generate Raw 2D Data ---\n",
+    "# This creates data of shape (n_samples, dim).\n",
+    "x_raw, y_raw = nmi.datasets.generate_correlated_gaussians(\n",
+    "    n_samples=n_samples, \n",
+    "    dim=dim, \n",
+    "    mi=ground_truth_mi_bits\n",
+    ")\n",
+    "\n",
+    "# Transpose to the expected (n_channels, n_timepoints) format for the processor\n",
+    "x_raw_transposed = x_raw.T\n",
+    "y_raw_transposed = y_raw.T\n",
+    "\n",
+    "print(f\"Transposed X data shape: {x_raw_transposed.shape}\")\n",
+    "print(f\"Transposed Y data shape: {y_raw_transposed.shape}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 3. The `nmi.run` Function: Modes of Analysis\n",
+    "\n",
+    "The `nmi.run` function is the heart of the library. It can be configured to run in several 'modes', each designed for a different kind of analysis. For this tutorial, we will use the simplest mode, `'estimate'`, but it's good to be aware of the others, which we will cover in future tutorials:\n",
+    "\n",
+    "- **`'estimate'`**:  A single, quick MI estimate. Perfect for getting a first look at your data.\n",
+    "- **`'sweep'`**:  An exploratory sweep over a grid of hyperparameters (like `window_size`).\n",
+    "- **`'rigorous'`**: The full, bias-corrected MI estimation workflow for publication-ready results.\n",
+    "- **`'dimensionality'`**: Estimates the latent dimensionality of a single variable X.\n",
+    "- **`'lag'`**:  Estimates MI across a range of time lags between X and Y."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 4. Defining the Analysis Parameters\n",
+    "\n",
+    "To run an estimation, we need to provide two sets of parameters:\n",
+    "1. `processor_params`: These tell the data processor how to handle the raw data. Since each sample in our Gaussian dataset is independent, we use a `window_size` of 1. This tells the processor to treat each of the 5000 timepoints as a separate sample.\n",
+    "2. `base_params`: These control the neural network model and the training process. We'll define a simple model architecture and set the number of training epochs."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# The processor will treat each of the 5000 columns as an independent sample.\n",
+    "processor_params = {'window_size': 1}\n",
+    "\n",
+    "# Basic model and training parameters\n",
+    "base_params = {\n",
+    "    'n_epochs': 50, 'learning_rate': 5e-4, 'batch_size': 128,\n",
+    "    'patience': 10, 'embedding_dim': 16, 'hidden_dim': 64, 'n_layers': 2\n",
+    "}"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 5. Running the MI Estimation\n",
+    "\n",
+    "Now we call the main `nmi.run` function. We specify `mode='estimate'` for a single, quick run and set `random_seed=42` to ensure our result is reproducible."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "2025-10-07 17:21:03 - neural_mi - WARNING - `processor_type` is deprecated. Use `processor_type_x` and `processor_type_y` instead.\n",
+      "2025-10-07 17:21:03 - neural_mi - WARNING - `processor_params` is deprecated. Use `processor_params_x` and `processor_params_y` instead.\n",
+      "2025-10-07 17:21:03 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "443fd0cfef714528b059904a53ae6b5b",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Sequential Sweep Progress:   0%|          | 0/1 [00:00<?, ?it/s]"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "60bdee1bb9c94efabfcc28bce9323da9",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Run 9c5035de-e7f7-4ac6-9a0a-e6d41fcb529d_c0:   0%|          | 0/50 [00:00<?, ?it/s]"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "2025-10-07 17:21:08 - neural_mi - INFO - Parameter sweep finished.\n"
+     ]
+    }
+   ],
+   "source": [
+    "results = nmi.run(\n",
+    "    x_data=x_raw_transposed, y_data=y_raw_transposed,\n",
+    "    mode='estimate',\n",
+    "    processor_type='continuous',\n",
+    "    processor_params=processor_params,\n",
+    "    base_params=base_params,\n",
+    "    output_units='bits', # Specify the output units\n",
+    "    random_seed=42       # For reproducibility\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 6. Interpreting the Results\n",
+    "\n",
+    "The `nmi.run` function returns a special `Results` object that holds all the information from the analysis. For `'estimate'` mode, the most important attribute is `mi_estimate`."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "--- Results ---\n",
+      "Ground Truth MI:  2.000 bits\n",
+      "Estimated MI:     1.875 bits\n",
+      "Estimation Error: 0.125 bits\n"
+     ]
+    }
+   ],
+   "source": [
+    "estimated_mi_bits = results.mi_estimate\n",
+    "\n",
+    "print(f\"\\n--- Results ---\")\n",
+    "print(f\"Ground Truth MI:  {ground_truth_mi_bits:.3f} bits\")\n",
+    "print(f\"Estimated MI:     {estimated_mi_bits:.3f} bits\")\n",
+    "print(f\"Estimation Error: {abs(estimated_mi_bits - ground_truth_mi_bits):.3f} bits\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 7. Conclusion\n",
+    "\n",
+    "Success! The estimated MI is very close to the ground truth value. You have successfully used the `nmi.run` function to get your first MI estimate.\n",
+    "\n",
+    "In the next tutorial, we'll dive deeper into how the library handles more complex, realistic neural data formats."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python [conda env:base] *",
+   "language": "python",
+   "name": "conda-base-py"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.13"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}

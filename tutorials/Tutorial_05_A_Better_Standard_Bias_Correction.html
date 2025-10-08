@@ -1,0 +1,409 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tutorial 5: A Better Standard - Bias Correction &mdash; NeuralMI 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/nbsphinx-code-cells.css?v=2aa19091" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+      <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true}, "options": {"ignoreHtmlClass": "tex2jax_ignore|mathjax_ignore|document", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Tutorial 6: Uncovering Latent Dimensionality" href="Tutorial_06_Uncovering_Latent_Dimensionality.html" />
+    <link rel="prev" title="Tutorial 4: Choosing the Right Model and Estimator" href="Tutorial_04_Choosing_the_Right_Model_and_Estimator.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../getting_started.html">Getting Started</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../tutorials.html">Tutorials</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_01_A_First_Estimate.html">Tutorial 1: A First MI Estimate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_02_Handling_Neural_Data.html">Tutorial 2: A Visual Guide to Neuroscience Data Processing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_03_Finding_Temporal_Relationships.html">Tutorial 3: Finding Temporal Relationships</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_04_Choosing_the_Right_Model_and_Estimator.html">Tutorial 4: Choosing the Right Model and Estimator</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Tutorial 5: A Better Standard - Bias Correction</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#1.-The-Problems-with-Naive-Estimates">1. The Problems with Naive Estimates</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#Problem-1:-Estimator-Variance">Problem 1: Estimator Variance</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#Problem-2:-Finite-Sampling-Bias">Problem 2: Finite-Sampling Bias</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#2.-The-Solution:-mode='rigorous'">2. The Solution: <code class="docutils literal notranslate"><span class="pre">mode='rigorous'</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#3.-Visualizing-the-Correction">3. Visualizing the Correction</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#4.-Fine-Tuning-the-Rigorous-Analysis">4. Fine-Tuning the Rigorous Analysis</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#5.-Conclusion">5. Conclusion</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_06_Uncovering_Latent_Dimensionality.html">Tutorial 6: Uncovering Latent Dimensionality</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_07_Advanced_Customization.html">Tutorial 7: Advanced Customization with Custom Models</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_reference.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../further_reading.html">Further Reading</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../tutorials.html">Tutorials</a></li>
+      <li class="breadcrumb-item active">Tutorial 5: A Better Standard - Bias Correction</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/tutorials/Tutorial_05_A_Better_Standard_Bias_Correction.ipynb.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="Tutorial-5:-A-Better-Standard---Bias-Correction">
+<h1>Tutorial 5: A Better Standard - Bias Correction<a class="headerlink" href="#Tutorial-5:-A-Better-Standard---Bias-Correction" title="Link to this heading"></a></h1>
+<p>So far, we have learned how to get an MI estimate. But is that estimate <em>correct</em>? Is it <em>reliable</em>? For scientific research, a single number is not enough. We need to be sure that our result is not an artifact of our limited data.</p>
+<p>This tutorial tackles the most important concept for producing publishable results: <strong>bias correction</strong>. We will demonstrate two critical statistical pitfalls and show how <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code>’s flagship <code class="docutils literal notranslate"><span class="pre">'rigorous'</span></code> mode solves them.</p>
+<section id="1.-The-Problems-with-Naive-Estimates">
+<h2>1. The Problems with Naive Estimates<a class="headerlink" href="#1.-The-Problems-with-Naive-Estimates" title="Link to this heading"></a></h2>
+<p>Using an MI estimator naively with <code class="docutils literal notranslate"><span class="pre">mode='estimate'</span></code> is fast, but it doesn’t account for two critical issues:</p>
+<ol class="arabic simple">
+<li><p><strong>Estimator Variance:</strong> Due to the random nature of neural network training (e.g., weight initialization, data shuffling), running the same estimation twice will give slightly different answers.</p></li>
+<li><p><strong>Finite-Sampling Bias:</strong> This is the bigger problem. With a finite dataset, estimators tend to find spurious correlations in the noise, which leads them to <strong>systematically overestimate</strong> the true MI. This bias gets worse as the amount of data gets smaller.</p></li>
+</ol>
+<p>Let’s demonstrate these problems in code.</p>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[25]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">neural_mi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nmi</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">seaborn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sns</span>
+
+<span class="n">sns</span><span class="o">.</span><span class="n">set_context</span><span class="p">(</span><span class="s2">&quot;talk&quot;</span><span class="p">)</span>
+
+<span class="c1"># --- Generate Data ---</span>
+<span class="c1"># We use a moderate number of samples to ensure the bias is visible.</span>
+<span class="n">n_samples</span> <span class="o">=</span> <span class="mi">2500</span>
+<span class="n">x_raw</span><span class="p">,</span> <span class="n">y_raw</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">generate_nonlinear_from_latent</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="o">=</span><span class="n">n_samples</span><span class="p">,</span> <span class="n">latent_dim</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">observed_dim</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">mi</span><span class="o">=</span><span class="mf">3.0</span>
+<span class="p">)</span>
+<span class="n">x_raw_transposed</span> <span class="o">=</span> <span class="n">x_raw</span><span class="o">.</span><span class="n">T</span>
+<span class="n">y_raw_transposed</span> <span class="o">=</span> <span class="n">y_raw</span><span class="o">.</span><span class="n">T</span>
+</pre></div>
+</div>
+</div>
+<section id="Problem-1:-Estimator-Variance">
+<h3>Problem 1: Estimator Variance<a class="headerlink" href="#Problem-1:-Estimator-Variance" title="Link to this heading"></a></h3>
+<p>Let’s run the exact same estimation twice, changing only the <code class="docutils literal notranslate"><span class="pre">random_seed</span></code>.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[34]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">base_params</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;n_epochs&#39;</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span>
+    <span class="s1">&#39;learning_rate&#39;</span><span class="p">:</span> <span class="mf">5e-4</span><span class="p">,</span>
+    <span class="s1">&#39;batch_size&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span>
+    <span class="s1">&#39;patience&#39;</span><span class="p">:</span> <span class="mi">20</span><span class="p">,</span>
+    <span class="s1">&#39;embedding_dim&#39;</span><span class="p">:</span> <span class="mi">20</span><span class="p">,</span>
+    <span class="s1">&#39;hidden_dim&#39;</span><span class="p">:</span> <span class="mi">256</span><span class="p">,</span>
+    <span class="s1">&#39;n_layers&#39;</span><span class="p">:</span> <span class="mi">3</span>
+<span class="p">}</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;--- Demonstrating Estimator Variance ---&quot;</span><span class="p">)</span>
+<span class="n">results_1</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">x_data</span><span class="o">=</span><span class="n">x_raw_transposed</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw_transposed</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;estimate&#39;</span><span class="p">,</span> <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span> <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span> <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">results_2</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">x_data</span><span class="o">=</span><span class="n">x_raw_transposed</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw_transposed</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;estimate&#39;</span><span class="p">,</span> <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span> <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span> <span class="n">random_seed</span><span class="o">=</span><span class="mi">123</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Run 1 (seed=42):  </span><span class="si">{</span><span class="n">results_1</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Run 2 (seed=123): </span><span class="si">{</span><span class="n">results_2</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+--- Demonstrating Estimator Variance ---
+2025-10-07 22:59:29 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "26224ab7d92b4e858eb7acc25eaf5bcd", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-07 22:59:33 - neural_mi - INFO - Parameter sweep finished.
+2025-10-07 22:59:33 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "30799eddbebf43d082a347fd05cf2dbd", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-07 22:59:37 - neural_mi - INFO - Parameter sweep finished.
+Run 1 (seed=42):  2.737 bits
+Run 2 (seed=123): 2.591 bits
+</pre></div></div>
+</div>
+<p>Notice that the estimates are slightly different. While not a huge difference, this instability is not ideal for science.</p>
+</section>
+<section id="Problem-2:-Finite-Sampling-Bias">
+<h3>Problem 2: Finite-Sampling Bias<a class="headerlink" href="#Problem-2:-Finite-Sampling-Bias" title="Link to this heading"></a></h3>
+<p>Now for the more serious issue. What happens if we had collected only <strong>half</strong> as much data? A true property of the system shouldn’t change just because we have less data, but our estimate does.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[35]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">--- Demonstrating Finite-Sampling Bias ---&quot;</span><span class="p">)</span>
+<span class="c1"># Run the estimation on only the first half of the data</span>
+<span class="n">half_samples</span> <span class="o">=</span> <span class="n">n_samples</span> <span class="o">//</span> <span class="mi">2</span>
+<span class="n">results_half_data</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">x_data</span><span class="o">=</span><span class="n">x_raw_transposed</span><span class="p">[:,</span> <span class="p">:</span><span class="n">half_samples</span><span class="p">],</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw_transposed</span><span class="p">[:,</span> <span class="p">:</span><span class="n">half_samples</span><span class="p">],</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;estimate&#39;</span><span class="p">,</span> <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span> <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span> <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span> <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Estimate on ALL data (</span><span class="si">{</span><span class="n">n_samples</span><span class="si">}</span><span class="s2"> samples):   </span><span class="si">{</span><span class="n">results_1</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Estimate on HALF data (</span><span class="si">{</span><span class="n">half_samples</span><span class="si">}</span><span class="s2"> samples):  </span><span class="si">{</span><span class="n">results_half_data</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+
+--- Demonstrating Finite-Sampling Bias ---
+2025-10-07 22:59:40 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "b7985c3d393d46ebaa7451490fc9a2c1", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-07 22:59:43 - neural_mi - INFO - Parameter sweep finished.
+Estimate on ALL data (2500 samples):   2.737 bits
+Estimate on HALF data (1250 samples):  2.323 bits
+</pre></div></div>
+</div>
+<p>The result is dramatic. The MI estimate is <strong>different, probably higher</strong> when we use less data. This is the finite-sampling bias in action: with fewer samples, the model is more likely to find spurious correlations, leading to an overestimation.</p>
+<p>This is unacceptable for rigorous science. Our measurement of a physical property cannot depend on the size of our dataset.</p>
+</section>
+</section>
+<section id="2.-The-Solution:-mode='rigorous'">
+<h2>2. The Solution: <code class="docutils literal notranslate"><span class="pre">mode='rigorous'</span></code><a class="headerlink" href="#2.-The-Solution:-mode='rigorous'" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">'rigorous'</span></code> mode is designed to solve both of these problems. It works by repeatedly running the MI estimation on different fractions of the data (e.g., 1/2, 1/3, …, 1/10th of the data). This allows it to measure how the MI estimate changes as a function of dataset size (1/N).</p>
+<p>It then performs a weighted linear extrapolation to estimate what the MI would be with an <strong>infinite</strong> amount of data (where 1/N = 0). This extrapolated value is our final, bias-corrected MI estimate. The variation across runs at each data fraction is used to calculate a confidence interval (an error bar), solving the variance problem.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[36]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">rigorous_results</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw_transposed</span><span class="p">,</span>
+    <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw_transposed</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;rigorous&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="c1"># Use multiple cores to speed this up</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">--- Rigorous vs. Naive Estimates ---&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Naive Estimate (Full Data): </span><span class="si">{</span><span class="n">results_1</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+
+<span class="n">mi_est</span> <span class="o">=</span> <span class="n">rigorous_results</span><span class="o">.</span><span class="n">mi_estimate</span>
+<span class="n">mi_err</span> <span class="o">=</span> <span class="n">rigorous_results</span><span class="o">.</span><span class="n">details</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;mi_error&#39;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Corrected MI Estimate:      </span><span class="si">{</span><span class="n">mi_est</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> ± </span><span class="si">{</span><span class="n">mi_err</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Is the Fit Reliable:      </span><span class="si">{</span><span class="n">rigorous_results</span><span class="o">.</span><span class="n">details</span><span class="p">[</span><span class="s1">&#39;is_reliable&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-07 22:59:48 - neural_mi - WARNING - Reproducibility with random_seed is not guaranteed with n_workers &gt; 1.
+2025-10-07 22:59:48 - neural_mi - INFO - Starting rigorous analysis with 4 workers...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "1cfb0b8a682349309a1213d0bfcaf93a", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Run ba9191bc-bb0e-4a08-a10c-56aa77ed43c8_c0_g10_s9 | MI: 1.447:  50%|█████     | 50/100 [00:00&lt;00:00, 83.04it/s]
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-07 23:00:07 - neural_mi - INFO - All training tasks finished. Performing bias correction...
+
+--- Rigorous vs. Naive Estimates ---
+Naive Estimate (Full Data): 2.737 bits
+Corrected MI Estimate:      2.600 ± 0.160 bits
+Is the Fit Reliable:      True
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+
+</pre></div></div>
+</div>
+</section>
+<section id="3.-Visualizing-the-Correction">
+<h2>3. Visualizing the Correction<a class="headerlink" href="#3.-Visualizing-the-Correction" title="Link to this heading"></a></h2>
+<p>The best way to understand what happened is to use the built-in <code class="docutils literal notranslate"><span class="pre">.plot()</span></code> function on the results object. Let’s break down the components of this plot:</p>
+<ul class="simple">
+<li><p><strong>X-Axis (``γ``)</strong>: The number of subsets the data was split into. <span class="math notranslate nohighlight">\(\gamma=2\)</span> means the analysis was run on two separate halves of the data. Higher <span class="math notranslate nohighlight">\(\gamma\)</span> means less data per run.</p></li>
+<li><p><strong>Gray Dots</strong>: The raw, biased MI estimate from a single run on a single data subset.</p></li>
+<li><p><strong>Black Line</strong>: The mean MI estimate for each <span class="math notranslate nohighlight">\(\gamma\)</span>. Notice how it clearly trends upwards as <span class="math notranslate nohighlight">\(\gamma\)</span> increases (less data), showing the bias.</p></li>
+<li><p><strong>Red Dashed Line</strong>: The weighted linear fit to the linear region of the black curve.</p></li>
+<li><p><strong>Red Star</strong>: The y-intercept of the red line. This is our final, <strong>bias-corrected MI estimate</strong>—the estimate for an infinite dataset size (<span class="math notranslate nohighlight">\(\frac{1}{N}=0\)</span>), complete with error bars.</p></li>
+<li><p><strong>Reliability</strong>: We can’t expect our estimator to be universally working in any data regime. In some cases, the extrapolation fit won’t be reliable, and we shouldn’t be trusting the estimator given this ammount of data in this case.</p></li>
+</ul>
+<p>This is a result you can report with better confidence.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[38]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">ax</span> <span class="o">=</span> <span class="n">rigorous_results</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">show</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">axhline</span><span class="p">(</span><span class="n">y</span><span class="o">=</span><span class="mf">3.0</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;green&#39;</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;-&#39;</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;True MI (</span><span class="si">{</span><span class="mf">3.0</span><span class="si">:</span><span class="s1">.2f</span><span class="si">}</span><span class="s1"> bits)&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">legend</span><span class="p">()</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="n">bottom</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_Tutorial_05_A_Better_Standard_Bias_Correction_11_0.png" src="../_images/tutorials_Tutorial_05_A_Better_Standard_Bias_Correction_11_0.png" />
+</div>
+</div>
+</section>
+<section id="4.-Fine-Tuning-the-Rigorous-Analysis">
+<h2>4. Fine-Tuning the Rigorous Analysis<a class="headerlink" href="#4.-Fine-Tuning-the-Rigorous-Analysis" title="Link to this heading"></a></h2>
+<p>For advanced users, <code class="docutils literal notranslate"><span class="pre">nmi.run</span></code> provides parameters to control the bias correction procedure:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">gamma_range</span> <span class="pre">(range)</span></code>: Sets the range of data splits to test. The default is <code class="docutils literal notranslate"><span class="pre">range(1,</span> <span class="pre">11)</span></code>. A straight line on a larger range is a better sign.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">delta_threshold</span> <span class="pre">(float)</span></code>: A measure of curvature used to find the ‘linear region’ of the MI vs 1/N plot for extrapolation. Lower values are stricter. The default is <code class="docutils literal notranslate"><span class="pre">0.1</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">min_gamma_points</span> <span class="pre">(int)</span></code>: The minimum number of points required for a reliable linear fit after pruning non-linear points. The default is <code class="docutils literal notranslate"><span class="pre">5</span></code>.</p></li>
+</ul>
+<p>While the defaults are robust for most cases, these parameters offer more control for specialized analyses.</p>
+</section>
+<section id="5.-Conclusion">
+<h2>5. Conclusion<a class="headerlink" href="#5.-Conclusion" title="Link to this heading"></a></h2>
+<p>You now understand the most important feature of the <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> library. Simple MI estimates are unreliable for scientific work, but <code class="docutils literal notranslate"><span class="pre">mode='rigorous'</span></code> provides a principled, automated workflow to correct for statistical biases and produce a final estimate with a confidence interval.</p>
+<blockquote>
+<div><p><strong>Recommendation:</strong> For any final, scientific analysis where you actually care about the exact MI result, <code class="docutils literal notranslate"><span class="pre">mode='rigorous'</span></code> is the recommended mode.</p>
+</div></blockquote>
+<p>In the next tutorial, we’ll explore another advanced analysis for understanding the complexity of a single neural population.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="Tutorial_04_Choosing_the_Right_Model_and_Estimator.html" class="btn btn-neutral float-left" title="Tutorial 4: Choosing the Right Model and Estimator" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="Tutorial_06_Uncovering_Latent_Dimensionality.html" class="btn btn-neutral float-right" title="Tutorial 6: Uncovering Latent Dimensionality" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

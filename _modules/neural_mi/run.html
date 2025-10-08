@@ -1,0 +1,439 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>neural_mi.run &mdash; NeuralMI 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../getting_started.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api_reference.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../further_reading.html">Further Reading</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">neural_mi.run</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for neural_mi.run</h1><div class="highlight"><pre>
+<span></span><span class="c1"># neural_mi/run.py</span>
+<span class="sd">&quot;&quot;&quot;Provides the main `run` function, the primary entry point for the library.</span>
+
+<span class="sd">This module orchestrates the entire analysis pipeline, from data validation</span>
+<span class="sd">and preprocessing to model training and results aggregation. The `run` function</span>
+<span class="sd">acts as a unified interface for all supported analysis modes.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="c1"># Safe guard for macOS problems:</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">platform</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.logger</span><span class="w"> </span><span class="kn">import</span> <span class="n">logger</span>
+
+<span class="c1"># On macOS, PyTorch multiprocessing can have issues with the default temp directory.</span>
+<span class="c1"># This creates a local, user-owned temp directory to avoid these issues.</span>
+<span class="k">if</span> <span class="n">platform</span><span class="o">.</span><span class="n">system</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;Darwin&quot;</span><span class="p">:</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">custom_temp_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">expanduser</span><span class="p">(</span><span class="s1">&#39;~/.neural_mi_tmp&#39;</span><span class="p">)</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">custom_temp_dir</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        
+        <span class="c1"># Set environment variables for all tempfile-related operations</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;TMPDIR&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">custom_temp_dir</span>
+        <span class="n">tempfile</span><span class="o">.</span><span class="n">tempdir</span> <span class="o">=</span> <span class="n">custom_temp_dir</span>
+        
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Set custom temporary directory for multiprocessing: </span><span class="si">{</span><span class="n">custom_temp_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Could not set custom temp directory: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">. Using system default.&quot;</span><span class="p">)</span>
+
+
+<span class="c1"># Actual run code</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Union</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">List</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">multiprocessing</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">platform</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.analysis.workflow</span><span class="w"> </span><span class="kn">import</span> <span class="n">AnalysisWorkflow</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.analysis.dimensionality</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_dimensionality_analysis</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.analysis.lag</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_lag_analysis</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.data.handler</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataHandler</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.estimators</span><span class="w"> </span><span class="kn">import</span> <span class="n">ESTIMATORS</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.results</span><span class="w"> </span><span class="kn">import</span> <span class="n">Results</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.validation</span><span class="w"> </span><span class="kn">import</span> <span class="n">ParameterValidator</span><span class="p">,</span> <span class="n">DataValidator</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.logger</span><span class="w"> </span><span class="kn">import</span> <span class="n">logger</span>
+
+
+<span class="k">try</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">platform</span><span class="o">.</span><span class="n">system</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;Darwin&quot;</span><span class="p">:</span>
+        <span class="n">multiprocessing</span><span class="o">.</span><span class="n">set_start_method</span><span class="p">(</span><span class="s2">&quot;spawn&quot;</span><span class="p">,</span> <span class="n">force</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Multiprocessing start method already set.&quot;</span><span class="p">)</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_convert_mi_units</span><span class="p">(</span><span class="n">results</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">to_bits</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Recursively converts MI values in results from nats to bits.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">to_bits</span><span class="p">:</span> <span class="k">return</span> <span class="n">results</span>
+    <span class="n">NATS_TO_BITS</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">results</span><span class="p">,</span> <span class="nb">float</span><span class="p">):</span> <span class="k">return</span> <span class="n">results</span> <span class="o">*</span> <span class="n">NATS_TO_BITS</span>
+    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">results</span><span class="p">,</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">):</span>
+        <span class="n">df</span> <span class="o">=</span> <span class="n">results</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="n">cols</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;test_mi&#39;</span><span class="p">,</span> <span class="s1">&#39;train_mi&#39;</span><span class="p">,</span> <span class="s1">&#39;mi_mean&#39;</span><span class="p">,</span> <span class="s1">&#39;mi_std&#39;</span><span class="p">,</span> <span class="s1">&#39;mi_corrected&#39;</span><span class="p">,</span> <span class="s1">&#39;mi_error&#39;</span><span class="p">,</span> <span class="s1">&#39;slope&#39;</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">col</span> <span class="ow">in</span> <span class="n">cols</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">col</span> <span class="ow">in</span> <span class="n">df</span><span class="o">.</span><span class="n">columns</span><span class="p">:</span> <span class="n">df</span><span class="p">[</span><span class="n">col</span><span class="p">]</span> <span class="o">*=</span> <span class="n">NATS_TO_BITS</span>
+        <span class="k">return</span> <span class="n">df</span>
+    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">results</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">all</span><span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">r</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">results</span><span class="p">):</span>
+        <span class="n">keys</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;test_mi&#39;</span><span class="p">,</span> <span class="s1">&#39;train_mi&#39;</span><span class="p">,</span> <span class="s1">&#39;mi_corrected&#39;</span><span class="p">,</span> <span class="s1">&#39;mi_error&#39;</span><span class="p">,</span> <span class="s1">&#39;slope&#39;</span><span class="p">]</span>
+        <span class="k">return</span> <span class="p">[{</span><span class="o">**</span><span class="n">r</span><span class="p">,</span> <span class="o">**</span><span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">r</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">*</span> <span class="n">NATS_TO_BITS</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span> <span class="k">if</span> <span class="n">r</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">k</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">}}</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">results</span><span class="p">]</span>
+    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">results</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="n">new_results</span> <span class="o">=</span> <span class="n">results</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="k">if</span> <span class="s1">&#39;corrected_results&#39;</span> <span class="ow">in</span> <span class="n">new_results</span><span class="p">:</span>
+            <span class="n">new_results</span><span class="p">[</span><span class="s1">&#39;corrected_results&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_convert_mi_units</span><span class="p">(</span><span class="n">new_results</span><span class="p">[</span><span class="s1">&#39;corrected_results&#39;</span><span class="p">],</span> <span class="n">to_bits</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;raw_results_df&#39;</span> <span class="ow">in</span> <span class="n">new_results</span><span class="p">:</span>
+            <span class="n">new_results</span><span class="p">[</span><span class="s1">&#39;raw_results_df&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_convert_mi_units</span><span class="p">(</span><span class="n">new_results</span><span class="p">[</span><span class="s1">&#39;raw_results_df&#39;</span><span class="p">],</span> <span class="n">to_bits</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">new_results</span>
+    <span class="k">return</span> <span class="n">results</span>
+
+<div class="viewcode-block" id="run">
+<a class="viewcode-back" href="../../api_reference.html#neural_mi.run">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">List</span><span class="p">],</span>
+    <span class="n">y_data</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Union</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">List</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;estimate&#39;</span><span class="p">,</span>
+    <span class="n">processor_type</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">processor_params</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">processor_type_y</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">processor_params_y</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">base_params</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">sweep_grid</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">output_units</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;bits&#39;</span><span class="p">,</span>
+    <span class="n">estimator</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;infonce&#39;</span><span class="p">,</span>
+    <span class="n">estimator_params</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">custom_critic</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">custom_embedding_cls</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">type</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">save_best_model_path</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">verbose</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="n">device</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">delta_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">min_gamma_points</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
+    <span class="n">confidence_level</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.68</span><span class="p">,</span>
+    <span class="o">**</span><span class="n">analysis_kwargs</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Results</span><span class="p">:</span>
+<span class="w">    </span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;The unified entry point for all analyses in the NeuralMI library.</span>
+<span class="sd">    </span>
+<span class="sd">    This function provides a single, consistent interface for various mutual</span>
+<span class="sd">    information estimation workflows. It handles data validation, processing,</span>
+<span class="sd">    model training, and results aggregation, returning a standardized</span>
+<span class="sd">    :class:`~neural_mi.results.Results` object that can be easily</span>
+<span class="sd">    inspected and plotted.</span>
+<span class="sd">    </span>
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    x_data : np.ndarray, torch.Tensor, or list</span>
+<span class="sd">        The data for variable X. The required format depends on ``processor_type``:</span>
+<span class="sd">        </span>
+<span class="sd">        - &#39;continuous&#39; or &#39;categorical&#39;: A 2D array, typically of shape</span>
+<span class="sd">          (n_channels, n_timepoints). Data of shape (n_timepoints, n_channels)</span>
+<span class="sd">          is also supported and will be transposed automatically.</span>
+<span class="sd">        - &#39;spike&#39;: A list of 1D NumPy arrays, where each array contains</span>
+<span class="sd">          spike times for a single channel/neuron.</span>
+<span class="sd">    y_data : np.ndarray, torch.Tensor, or list, optional</span>
+<span class="sd">        The data for variable Y. Required for all modes except &#39;dimensionality&#39;.</span>
+<span class="sd">        Should have the same format as ``x_data``. Defaults to None.</span>
+<span class="sd">    mode : {&#39;estimate&#39;, &#39;sweep&#39;, &#39;dimensionality&#39;, &#39;rigorous&#39;, &#39;lag&#39;}, default=&#39;estimate&#39;</span>
+<span class="sd">        The analysis mode to run.</span>
+<span class="sd">    processor_type_x : {&#39;continuous&#39;, &#39;spike&#39;, &#39;categorical&#39;}, optional</span>
+<span class="sd">        The type of processing to apply to raw X data. If None, data is assumed</span>
+<span class="sd">        to be pre-processed. Defaults to None.</span>
+<span class="sd">    processor_params_x : dict, optional</span>
+<span class="sd">        Parameters for the X data processor, e.g., ``{&#39;window_size&#39;: 10}``.</span>
+<span class="sd">        Defaults to None.</span>
+<span class="sd">    processor_type_y : {&#39;continuous&#39;, &#39;spike&#39;, &#39;categorical&#39;}, optional</span>
+<span class="sd">        The type of processing to apply to raw Y data. If None, data is assumed</span>
+<span class="sd">        to be pre-processed. Defaults to None.</span>
+<span class="sd">    processor_params_y : dict, optional</span>
+<span class="sd">        Parameters for the Y data processor, e.g., ``{&#39;window_size&#39;: 10}``.</span>
+<span class="sd">        Defaults to None.</span>
+<span class="sd">    base_params : dict, optional</span>
+<span class="sd">        A dictionary of fixed parameters for the MI estimator&#39;s trainer. These</span>
+<span class="sd">        are used for all runs. Common parameters include ``n_epochs``,</span>
+<span class="sd">        ``learning_rate``, ``batch_size``, ``embedding_dim``, etc. Defaults to {}.</span>
+<span class="sd">    sweep_grid : dict, optional</span>
+<span class="sd">        A dictionary defining the parameter grid for &#39;sweep&#39; and</span>
+<span class="sd">        &#39;dimensionality&#39; modes. Keys are parameter names and values are lists</span>
+<span class="sd">        of values to test, e.g., ``{&#39;embedding_dim&#39;: [8, 16, 32]}``.</span>
+<span class="sd">        Defaults to None.</span>
+<span class="sd">    output_units : {&#39;bits&#39;, &#39;nats&#39;}, default=&#39;bits&#39;</span>
+<span class="sd">        The units for the final MI estimate.</span>
+<span class="sd">    estimator : {&#39;infonce&#39;, &#39;nwj&#39;, &#39;tuba&#39;, &#39;smile&#39;, &#39;js&#39;}, default=&#39;infonce&#39;</span>
+<span class="sd">        The MI lower bound to use for estimation.</span>
+<span class="sd">    estimator_params : dict, optional</span>
+<span class="sd">        Additional keyword arguments for the selected estimator function.</span>
+<span class="sd">        For example, ``{&#39;clip&#39;: 5.0}`` for the &#39;smile&#39; estimator. Defaults to None.</span>
+<span class="sd">    custom_critic : torch.nn.Module, optional</span>
+<span class="sd">        A pre-initialized custom critic model. If provided, all internal model</span>
+<span class="sd">        building is skipped. ``base_params`` related to model architecture will be</span>
+<span class="sd">        ignored. Defaults to None.</span>
+<span class="sd">    custom_embedding_cls : type, optional</span>
+<span class="sd">        A user-defined embedding model class (not an instance) to be used</span>
+<span class="sd">        within the library&#39;s standard critic structures. Defaults to None.</span>
+<span class="sd">    save_best_model_path : str, optional</span>
+<span class="sd">        If provided, the file path where the state dictionary of the</span>
+<span class="sd">        best-performing trained critic model will be saved. Defaults to None.</span>
+<span class="sd">    random_seed : int, optional</span>
+<span class="sd">        A seed for ``random``, ``numpy``, and ``torch`` to ensure reproducibility.</span>
+<span class="sd">        Note: Full reproducibility is only guaranteed for ``n_workers=1``.</span>
+<span class="sd">        Defaults to None.</span>
+<span class="sd">    verbose : bool, default=True</span>
+<span class="sd">        If True, progress bars and informational logs will be displayed.</span>
+<span class="sd">    device : str, optional</span>
+<span class="sd">        The compute device to use (e.g., &#39;cpu&#39;, &#39;cuda&#39;, &#39;mps&#39;). If None, it</span>
+<span class="sd">        is auto-detected. Defaults to None.</span>
+<span class="sd">    delta_threshold : float, default=0.1</span>
+<span class="sd">        For ``mode=&#39;rigorous&#39;``, the curvature threshold for determining the</span>
+<span class="sd">        linear region of the MI vs. 1/gamma plot. Lower values enforce</span>
+<span class="sd">        stricter linearity.</span>
+<span class="sd">    min_gamma_points : int, default=5</span>
+<span class="sd">        For ``mode=&#39;rigorous&#39;``, the minimum number of gamma values required to</span>
+<span class="sd">        perform a reliable extrapolation fit after pruning non-linear points.</span>
+<span class="sd">    confidence_level : float, default=0.68</span>
+<span class="sd">        For ``mode=&#39;rigorous&#39;``, the confidence level (e.g., 0.68 for ~1 std</span>
+<span class="sd">        dev) used for the final MI estimate&#39;s error bars.</span>
+<span class="sd">    **analysis_kwargs</span>
+<span class="sd">        Additional keyword arguments passed to the specific analysis engine.</span>
+<span class="sd">        Common examples include ``n_workers``, ``n_splits``, or ``gamma_range``.</span>
+<span class="sd">        For ``mode=&#39;lag&#39;``, this must include ``lag_range``.</span>
+<span class="sd">    </span>
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    neural_mi.results.Results</span>
+<span class="sd">        A standardized object containing the analysis results, which can be</span>
+<span class="sd">        inspected as a dataframe or plotted directly via its ``.plot()`` method.</span>
+<span class="sd">    </span>
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    Perform a rigorous, bias-corrected MI estimation between two variables.</span>
+<span class="sd">    </span>
+<span class="sd">    &gt;&gt;&gt; import neural_mi as nmi</span>
+<span class="sd">    &gt;&gt;&gt; import numpy as np</span>
+<span class="sd">    &gt;&gt;&gt; # Generate synthetic data</span>
+<span class="sd">    &gt;&gt;&gt; x_raw, y_raw = nmi.datasets.generate_nonlinear_from_latent(</span>
+<span class="sd">    ...     n_samples=2500, latent_dim=10, observed_dim=100, mi=3.0</span>
+<span class="sd">    ... )</span>
+<span class="sd">    &gt;&gt;&gt; # Define model and training parameters</span>
+<span class="sd">    &gt;&gt;&gt; base_params = {</span>
+<span class="sd">    ...     &#39;n_epochs&#39;: 50, &#39;learning_rate&#39;: 1e-3, &#39;batch_size&#39;: 128,</span>
+<span class="sd">    ...     &#39;embedding_dim&#39;: 16, &#39;hidden_dim&#39;: 64</span>
+<span class="sd">    ... }</span>
+<span class="sd">    &gt;&gt;&gt; # Run the analysis</span>
+<span class="sd">    &gt;&gt;&gt; results = nmi.run(</span>
+<span class="sd">    ...     x_data=x_raw.T, y_data=y_raw.T,</span>
+<span class="sd">    ...     mode=&#39;rigorous&#39;,</span>
+<span class="sd">    ...     processor_type_x=&#39;continuous&#39;,</span>
+<span class="sd">    ...     processor_params_x={&#39;window_size&#39;: 1},</span>
+<span class="sd">    ...     base_params=base_params,</span>
+<span class="sd">    ...     n_workers=4,</span>
+<span class="sd">    ...     random_seed=42</span>
+<span class="sd">    ... )</span>
+<span class="sd">    &gt;&gt;&gt; mi_est = results.mi_estimate</span>
+<span class="sd">    &gt;&gt;&gt; mi_err = results.details.get(&#39;mi_error&#39;, 0.0)</span>
+<span class="sd">    &gt;&gt;&gt; print(f&quot;Corrected MI: {mi_est:.3f} ± {mi_err:.3f} bits&quot;)</span>
+<span class="sd">    Corrected MI: 2.953 ± 0.081 bits</span>
+<span class="sd">    </span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    
+    <span class="k">if</span> <span class="n">random_seed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">random_seed</span><span class="p">)</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">random_seed</span><span class="p">)</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">manual_seed</span><span class="p">(</span><span class="n">random_seed</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">is_available</span><span class="p">():</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">manual_seed_all</span><span class="p">(</span><span class="n">random_seed</span><span class="p">)</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">backends</span><span class="o">.</span><span class="n">cudnn</span><span class="o">.</span><span class="n">deterministic</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">backends</span><span class="o">.</span><span class="n">cudnn</span><span class="o">.</span><span class="n">benchmark</span> <span class="o">=</span> <span class="kc">False</span>
+    
+    <span class="k">if</span> <span class="n">random_seed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">analysis_kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;n_workers&#39;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">analysis_kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;n_workers&#39;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;Reproducibility with random_seed is not guaranteed with n_workers &gt; 1.&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Handle old and new processor parameter styles for backward compatibility</span>
+    <span class="k">if</span> <span class="n">processor_type</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;`processor_type` is deprecated. Use `processor_type_x` and `processor_type_y` instead.&quot;</span><span class="p">)</span>
+        <span class="n">processor_type_x</span> <span class="o">=</span> <span class="n">processor_type_x</span> <span class="ow">or</span> <span class="n">processor_type</span>
+        <span class="n">processor_type_y</span> <span class="o">=</span> <span class="n">processor_type_y</span> <span class="ow">or</span> <span class="n">processor_type</span>
+    <span class="k">if</span> <span class="n">processor_params</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;`processor_params` is deprecated. Use `processor_params_x` and `processor_params_y` instead.&quot;</span><span class="p">)</span>
+        <span class="n">processor_params_x</span> <span class="o">=</span> <span class="n">processor_params_x</span> <span class="ow">or</span> <span class="n">processor_params</span>
+        <span class="n">processor_params_y</span> <span class="o">=</span> <span class="n">processor_params_y</span> <span class="ow">or</span> <span class="n">processor_params</span>
+
+    <span class="n">ParameterValidator</span><span class="p">(</span><span class="nb">locals</span><span class="p">())</span><span class="o">.</span><span class="n">validate</span><span class="p">()</span>
+    <span class="n">DataValidator</span><span class="p">(</span><span class="n">x_data</span><span class="p">,</span> <span class="n">y_data</span><span class="p">,</span> <span class="n">processor_type_x</span><span class="p">,</span> <span class="n">processor_type_y</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="n">base_params</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span> <span class="n">base_params</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;output_units&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">output_units</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;verbose&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">verbose</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;device&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">device</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;estimator_name&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">estimator</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;estimator_params&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">estimator_params</span> <span class="ow">or</span> <span class="p">{}</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;custom_critic&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">custom_critic</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;custom_embedding_cls&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">custom_embedding_cls</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;save_best_model_path&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">save_best_model_path</span>
+
+    <span class="n">run_params</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;mode&quot;</span><span class="p">:</span> <span class="n">mode</span><span class="p">,</span> <span class="s2">&quot;processor_type_x&quot;</span><span class="p">:</span> <span class="n">processor_type_x</span><span class="p">,</span> <span class="s2">&quot;processor_params_x&quot;</span><span class="p">:</span> <span class="n">processor_params_x</span><span class="p">,</span>
+                  <span class="s2">&quot;processor_type_y&quot;</span><span class="p">:</span> <span class="n">processor_type_y</span><span class="p">,</span> <span class="s2">&quot;processor_params_y&quot;</span><span class="p">:</span> <span class="n">processor_params_y</span><span class="p">,</span>
+                  <span class="s2">&quot;base_params&quot;</span><span class="p">:</span> <span class="n">base_params</span><span class="p">,</span> <span class="s2">&quot;sweep_grid&quot;</span><span class="p">:</span> <span class="n">sweep_grid</span><span class="p">,</span> <span class="s2">&quot;output_units&quot;</span><span class="p">:</span> <span class="n">output_units</span><span class="p">,</span>
+                  <span class="s2">&quot;estimator&quot;</span><span class="p">:</span> <span class="n">estimator</span><span class="p">,</span> <span class="s2">&quot;random_seed&quot;</span><span class="p">:</span> <span class="n">random_seed</span><span class="p">,</span> <span class="s2">&quot;delta_threshold&quot;</span><span class="p">:</span> <span class="n">delta_threshold</span><span class="p">,</span>
+                  <span class="s2">&quot;min_gamma_points&quot;</span><span class="p">:</span> <span class="n">min_gamma_points</span><span class="p">,</span> <span class="s2">&quot;confidence_level&quot;</span><span class="p">:</span> <span class="n">confidence_level</span><span class="p">,</span>
+                  <span class="o">**</span><span class="n">analysis_kwargs</span><span class="p">}</span>
+
+    <span class="n">processor_param_keys</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;window_size&#39;</span><span class="p">,</span> <span class="s1">&#39;step_size&#39;</span><span class="p">,</span> <span class="s1">&#39;n_seconds&#39;</span><span class="p">,</span> <span class="s1">&#39;max_spikes_per_window&#39;</span><span class="p">,</span> <span class="s1">&#39;data_format&#39;</span><span class="p">]</span>
+    <span class="n">is_proc_sweep</span> <span class="o">=</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;sweep&#39;</span> <span class="ow">and</span> <span class="nb">any</span><span class="p">(</span><span class="n">key</span> <span class="ow">in</span> <span class="p">(</span><span class="n">sweep_grid</span> <span class="ow">or</span> <span class="p">{})</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">processor_param_keys</span><span class="p">)</span>
+    
+    <span class="n">handler</span> <span class="o">=</span> <span class="n">DataHandler</span><span class="p">(</span><span class="n">x_data</span><span class="p">,</span> <span class="n">y_data</span><span class="p">,</span> <span class="n">processor_type_x</span><span class="p">,</span> <span class="n">processor_params_x</span><span class="p">,</span> <span class="n">processor_type_y</span><span class="p">,</span> <span class="n">processor_params_y</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">is_proc_sweep</span> <span class="ow">or</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;lag&#39;</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Detected sweep over processor or lag parameters. Deferring data processing to workers.&quot;</span><span class="p">)</span>
+        <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_type_x&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_type_x</span>
+        <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_params_x&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_params_x</span>
+        <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_type_y&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_type_y</span>
+        <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_params_y&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_params_y</span>
+        <span class="c1"># Use handler&#39;s raw data for deferred processing</span>
+        <span class="n">x_run_data</span><span class="p">,</span> <span class="n">y_run_data</span> <span class="o">=</span> <span class="n">handler</span><span class="o">.</span><span class="n">x_data</span><span class="p">,</span> <span class="n">handler</span><span class="o">.</span><span class="n">y_data</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;dimensionality&#39;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">y_data</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span> <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;y_data is ignored for mode &#39;dimensionality&#39;.&quot;</span><span class="p">)</span>
+            <span class="n">x_run_data</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">handler</span><span class="o">.</span><span class="n">process</span><span class="p">()</span>
+            <span class="n">y_run_data</span> <span class="o">=</span> <span class="kc">None</span> <span class="c1"># y_data is not used in this mode</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">y_data</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span> <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;y_data must be provided for mode &#39;</span><span class="si">{</span><span class="n">mode</span><span class="si">}</span><span class="s2">&#39;.&quot;</span><span class="p">)</span>
+            <span class="n">x_run_data</span><span class="p">,</span> <span class="n">y_run_data</span> <span class="o">=</span> <span class="n">handler</span><span class="o">.</span><span class="n">process</span><span class="p">()</span>
+
+    <span class="kn">from</span><span class="w"> </span><span class="nn">.analysis.sweep</span><span class="w"> </span><span class="kn">import</span> <span class="n">ParameterSweep</span>
+    <span class="k">if</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;sweep&#39;</span><span class="p">:</span>
+        <span class="n">results_list</span> <span class="o">=</span> <span class="n">ParameterSweep</span><span class="p">(</span><span class="n">x_run_data</span><span class="p">,</span> <span class="n">y_run_data</span><span class="p">,</span> <span class="n">base_params</span><span class="p">)</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+            <span class="n">sweep_grid</span><span class="p">,</span> <span class="n">is_proc_sweep</span><span class="o">=</span><span class="n">is_proc_sweep</span><span class="p">,</span> <span class="o">**</span><span class="n">analysis_kwargs</span>
+        <span class="p">)</span>
+        <span class="n">df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">results_list</span><span class="p">)</span>
+        <span class="n">group_vars</span> <span class="o">=</span> <span class="p">[</span><span class="n">key</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">sweep_grid</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span> <span class="k">if</span> <span class="n">key</span> <span class="o">!=</span> <span class="s1">&#39;run_id&#39;</span><span class="p">]</span>
+        <span class="n">agg_df</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">groupby</span><span class="p">(</span><span class="n">group_vars</span><span class="p">)[</span><span class="s1">&#39;test_mi&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">agg</span><span class="p">([</span><span class="s1">&#39;mean&#39;</span><span class="p">,</span> <span class="s1">&#39;std&#39;</span><span class="p">])</span><span class="o">.</span><span class="n">reset_index</span><span class="p">()</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">columns</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;mean&#39;</span><span class="p">:</span> <span class="s1">&#39;mi_mean&#39;</span><span class="p">,</span> <span class="s1">&#39;std&#39;</span><span class="p">:</span> <span class="s1">&#39;mi_std&#39;</span><span class="p">})</span><span class="o">.</span><span class="n">fillna</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span> <span class="k">if</span> <span class="n">group_vars</span> <span class="k">else</span> <span class="n">df</span>
+        <span class="n">primary_sweep_var</span> <span class="o">=</span> <span class="n">group_vars</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">if</span> <span class="n">group_vars</span> <span class="k">else</span> <span class="kc">None</span>
+        <span class="k">return</span> <span class="n">Results</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="n">mode</span><span class="p">,</span> <span class="n">dataframe</span><span class="o">=</span><span class="n">_convert_mi_units</span><span class="p">(</span><span class="n">agg_df</span><span class="p">,</span> <span class="n">output_units</span> <span class="o">==</span> <span class="s1">&#39;bits&#39;</span><span class="p">),</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="o">**</span><span class="n">run_params</span><span class="p">,</span> <span class="s1">&#39;sweep_var&#39;</span><span class="p">:</span> <span class="n">primary_sweep_var</span><span class="p">},</span> <span class="n">details</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;raw_results&#39;</span><span class="p">:</span> <span class="n">df</span><span class="p">})</span>
+
+    <span class="k">elif</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;estimate&#39;</span><span class="p">:</span>
+        <span class="n">results_list</span> <span class="o">=</span> <span class="n">ParameterSweep</span><span class="p">(</span><span class="n">x_run_data</span><span class="p">,</span> <span class="n">y_run_data</span><span class="p">,</span> <span class="n">base_params</span><span class="p">)</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">sweep_grid</span> <span class="ow">or</span> <span class="p">{},</span> <span class="o">**</span><span class="n">analysis_kwargs</span><span class="p">)</span>
+        <span class="n">mi</span> <span class="o">=</span> <span class="n">results_list</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s1">&#39;test_mi&#39;</span><span class="p">]</span> <span class="k">if</span> <span class="n">results_list</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">Results</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="n">mode</span><span class="p">,</span> <span class="n">mi_estimate</span><span class="o">=</span><span class="n">_convert_mi_units</span><span class="p">(</span><span class="n">mi</span><span class="p">,</span> <span class="n">output_units</span> <span class="o">==</span> <span class="s1">&#39;bits&#39;</span><span class="p">),</span> <span class="n">params</span><span class="o">=</span><span class="n">run_params</span><span class="p">)</span>
+
+    <span class="k">elif</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;dimensionality&#39;</span><span class="p">:</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">find_saturation_point</span>
+        <span class="n">df</span> <span class="o">=</span> <span class="n">run_dimensionality_analysis</span><span class="p">(</span><span class="n">x_run_data</span><span class="p">,</span> <span class="n">base_params</span><span class="p">,</span> <span class="n">sweep_grid</span><span class="p">,</span> <span class="o">**</span><span class="n">analysis_kwargs</span><span class="p">)</span>
+        <span class="n">df</span> <span class="o">=</span> <span class="n">_convert_mi_units</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">output_units</span> <span class="o">==</span> <span class="s1">&#39;bits&#39;</span><span class="p">)</span>
+        <span class="n">dims</span> <span class="o">=</span> <span class="n">find_saturation_point</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">strictness</span><span class="o">=</span><span class="n">analysis_kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;strictness&#39;</span><span class="p">,</span> <span class="p">[</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">15.0</span><span class="p">]))</span>
+        <span class="k">return</span> <span class="n">Results</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="n">mode</span><span class="p">,</span> <span class="n">dataframe</span><span class="o">=</span><span class="n">df</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="o">**</span><span class="n">run_params</span><span class="p">,</span> <span class="s1">&#39;sweep_var&#39;</span><span class="p">:</span> <span class="s1">&#39;embedding_dim&#39;</span><span class="p">},</span> <span class="n">details</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;estimated_dims&#39;</span><span class="p">:</span> <span class="n">dims</span><span class="p">})</span>
+
+    <span class="k">elif</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;rigorous&#39;</span><span class="p">:</span>
+        <span class="n">analysis_kwargs</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="s1">&#39;delta_threshold&#39;</span><span class="p">:</span> <span class="n">delta_threshold</span><span class="p">,</span> <span class="s1">&#39;min_gamma_points&#39;</span><span class="p">:</span> <span class="n">min_gamma_points</span><span class="p">,</span> <span class="s1">&#39;confidence_level&#39;</span><span class="p">:</span> <span class="n">confidence_level</span><span class="p">})</span>
+        <span class="n">results</span> <span class="o">=</span> <span class="n">AnalysisWorkflow</span><span class="p">(</span><span class="n">x_run_data</span><span class="p">,</span> <span class="n">y_run_data</span><span class="p">,</span> <span class="n">base_params</span><span class="p">)</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">sweep_grid</span> <span class="ow">or</span> <span class="p">{},</span> <span class="o">**</span><span class="n">analysis_kwargs</span><span class="p">)</span>
+        <span class="n">results</span> <span class="o">=</span> <span class="n">_convert_mi_units</span><span class="p">(</span><span class="n">results</span><span class="p">,</span> <span class="n">output_units</span> <span class="o">==</span> <span class="s1">&#39;bits&#39;</span><span class="p">)</span>
+        <span class="n">corrected_list</span> <span class="o">=</span> <span class="n">results</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;corrected_results&#39;</span><span class="p">,</span> <span class="p">[])</span>
+        <span class="n">details</span> <span class="o">=</span> <span class="n">corrected_list</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">if</span> <span class="n">corrected_list</span> <span class="k">else</span> <span class="p">{}</span>
+        <span class="k">return</span> <span class="n">Results</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="n">mode</span><span class="p">,</span> <span class="n">mi_estimate</span><span class="o">=</span><span class="n">details</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;mi_corrected&#39;</span><span class="p">),</span> <span class="n">dataframe</span><span class="o">=</span><span class="n">results</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;raw_results_df&#39;</span><span class="p">),</span> <span class="n">details</span><span class="o">=</span><span class="n">details</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="n">run_params</span><span class="p">)</span>
+    
+    <span class="k">elif</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;lag&#39;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="s1">&#39;lag_range&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">analysis_kwargs</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;`lag_range` must be provided for mode=&#39;lag&#39;.&quot;</span><span class="p">)</span>
+        <span class="n">results_list</span> <span class="o">=</span> <span class="n">run_lag_analysis</span><span class="p">(</span><span class="n">x_run_data</span><span class="p">,</span> <span class="n">y_run_data</span><span class="p">,</span> <span class="n">base_params</span><span class="p">,</span> <span class="o">**</span><span class="n">analysis_kwargs</span><span class="p">)</span>
+        <span class="n">df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">results_list</span><span class="p">)</span>
+        <span class="n">agg_df</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">groupby</span><span class="p">(</span><span class="s1">&#39;lag&#39;</span><span class="p">)[</span><span class="s1">&#39;test_mi&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">agg</span><span class="p">([</span><span class="s1">&#39;mean&#39;</span><span class="p">,</span> <span class="s1">&#39;std&#39;</span><span class="p">])</span><span class="o">.</span><span class="n">reset_index</span><span class="p">()</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">columns</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;mean&#39;</span><span class="p">:</span> <span class="s1">&#39;mi_mean&#39;</span><span class="p">,</span> <span class="s1">&#39;std&#39;</span><span class="p">:</span> <span class="s1">&#39;mi_std&#39;</span><span class="p">})</span><span class="o">.</span><span class="n">fillna</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">Results</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="n">mode</span><span class="p">,</span> <span class="n">dataframe</span><span class="o">=</span><span class="n">_convert_mi_units</span><span class="p">(</span><span class="n">agg_df</span><span class="p">,</span> <span class="n">output_units</span> <span class="o">==</span> <span class="s1">&#39;bits&#39;</span><span class="p">),</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="o">**</span><span class="n">run_params</span><span class="p">,</span> <span class="s1">&#39;sweep_var&#39;</span><span class="p">:</span> <span class="s1">&#39;lag&#39;</span><span class="p">},</span> <span class="n">details</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;raw_results&#39;</span><span class="p">:</span> <span class="n">df</span><span class="p">})</span>
+
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unknown mode: &#39;</span><span class="si">{</span><span class="n">mode</span><span class="si">}</span><span class="s2">&#39;.&quot;</span><span class="p">)</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

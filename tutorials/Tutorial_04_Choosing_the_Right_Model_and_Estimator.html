@@ -1,0 +1,710 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tutorial 4: Choosing the Right Model and Estimator &mdash; NeuralMI 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/nbsphinx-code-cells.css?v=2aa19091" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+      <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true}, "options": {"ignoreHtmlClass": "tex2jax_ignore|mathjax_ignore|document", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Tutorial 5: A Better Standard - Bias Correction" href="Tutorial_05_A_Better_Standard_Bias_Correction.html" />
+    <link rel="prev" title="Tutorial 3: Finding Temporal Relationships" href="Tutorial_03_Finding_Temporal_Relationships.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../getting_started.html">Getting Started</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../tutorials.html">Tutorials</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_01_A_First_Estimate.html">Tutorial 1: A First MI Estimate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_02_Handling_Neural_Data.html">Tutorial 2: A Visual Guide to Neuroscience Data Processing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_03_Finding_Temporal_Relationships.html">Tutorial 3: Finding Temporal Relationships</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Tutorial 4: Choosing the Right Model and Estimator</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#Part-1:-Choosing-the-Critic-Architecture">Part 1: Choosing the Critic Architecture</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#The-Test:-The-Rotated-Manifold-Problem">The Test: The Rotated Manifold Problem</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#The-Result:-Sort-of-a-Hierarchy">The Result: Sort of a Hierarchy</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#Part-2:-Choosing-the-MI-Estimator">Part 2: Choosing the MI Estimator</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#The-Problem:-The-InfoNCE-Upper-Bound">The Problem: The <code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code> Upper Bound</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#Critic-Architecture,-Revisited:">Critic Architecture, Revisited:</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#The-New-Result:-A-Clear-Hierarchy">The New Result: A Clear Hierarchy</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#Conclusion-and-Recommendations">Conclusion and Recommendations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_05_A_Better_Standard_Bias_Correction.html">Tutorial 5: A Better Standard - Bias Correction</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_06_Uncovering_Latent_Dimensionality.html">Tutorial 6: Uncovering Latent Dimensionality</a></li>
+<li class="toctree-l2"><a class="reference internal" href="Tutorial_07_Advanced_Customization.html">Tutorial 7: Advanced Customization with Custom Models</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_reference.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../further_reading.html">Further Reading</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../tutorials.html">Tutorials</a></li>
+      <li class="breadcrumb-item active">Tutorial 4: Choosing the Right Model and Estimator</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/tutorials/Tutorial_04_Choosing_the_Right_Model_and_Estimator.ipynb.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="Tutorial-4:-Choosing-the-Right-Model-and-Estimator">
+<h1>Tutorial 4: Choosing the Right Model and Estimator<a class="headerlink" href="#Tutorial-4:-Choosing-the-Right-Model-and-Estimator" title="Link to this heading"></a></h1>
+<p>So far, we’ve learned how to prepare our data and optimize processing parameters like <code class="docutils literal notranslate"><span class="pre">window_size</span></code>. Now, we need to look inside the ‘black box’ and understand the two most important choices that determine the success of our MI estimate:</p>
+<ol class="arabic simple">
+<li><p><strong>The Critic Architecture</strong>: The neural network that <em>compares</em> the data from X and Y.</p></li>
+<li><p><strong>The MI Estimator</strong>: The loss function that <em>trains</em> the critic.</p></li>
+</ol>
+<p>Getting these right is key to capturing the true nature of the relationship in your data. This tutorial will provide the intuition and practical examples to guide your choices.</p>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[1]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">neural_mi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nmi</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">seaborn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sns</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="kn">import</span> <span class="n">Sequential</span><span class="p">,</span> <span class="n">Linear</span><span class="p">,</span> <span class="n">Softplus</span>
+
+<span class="n">sns</span><span class="o">.</span><span class="n">set_context</span><span class="p">(</span><span class="s2">&quot;talk&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<section id="Part-1:-Choosing-the-Critic-Architecture">
+<h2>Part 1: Choosing the Critic Architecture<a class="headerlink" href="#Part-1:-Choosing-the-Critic-Architecture" title="Link to this heading"></a></h2>
+<p>Think of the critic’s job as being a sophisticated comparison function, <code class="docutils literal notranslate"><span class="pre">f(x,</span> <span class="pre">y)</span></code>. The complexity of this function determines the kinds of relationships the model can find. <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> provides three main critic types, each with a different balance of computational cost and expressive power.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Critic Type</p></th>
+<th class="head"><p>How it Works</p></th>
+<th class="head"><p>Power</p></th>
+<th class="head"><p>Cost</p></th>
+<th class="head"><p>Use Case</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>``SeparableCritic``</strong></p></td>
+<td><p>Compares embeddings with a simple dot product: <code class="docutils literal notranslate"><span class="pre">g(x)</span> <span class="pre">•</span> <span class="pre">h(y)</span></code>.</p></td>
+<td><p>Low</p></td>
+<td><p>Low</p></td>
+<td><p><strong>Default choice.</strong> Fast and effective for most relationships.</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>``BilinearCritic``</strong></p></td>
+<td><p>Uses a learnable matrix to compare embeddings: <code class="docutils literal notranslate"><span class="pre">g(x)ᵀ</span> <span class="pre">W</span> <span class="pre">h(y)</span></code>.</p></td>
+<td><p>Medium</p></td>
+<td><p>Medium</p></td>
+<td><p>Good for more complex relationships, like rotations, without a huge speed penalty.</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>``ConcatCritic``</strong></p></td>
+<td><p>Concatenates inputs <code class="docutils literal notranslate"><span class="pre">[x,</span> <span class="pre">y]</span></code> into a single powerful network <code class="docutils literal notranslate"><span class="pre">f(x,</span> <span class="pre">y)</span></code>.</p></td>
+<td><p>High</p></td>
+<td><p>High</p></td>
+<td><p>The most powerful, but can be very slow. Use when other critics fail.</p></td>
+</tr>
+</tbody>
+</table>
+<section id="The-Test:-The-Rotated-Manifold-Problem">
+<h3>The Test: The Rotated Manifold Problem<a class="headerlink" href="#The-Test:-The-Rotated-Manifold-Problem" title="Link to this heading"></a></h3>
+<p>To see the difference, we’ll create a special dataset. We’ll generate a high-dimensional <code class="docutils literal notranslate"><span class="pre">X</span></code> from a latent variable <code class="docutils literal notranslate"><span class="pre">Z</span></code>, and a high-dimensional <code class="docutils literal notranslate"><span class="pre">Y</span></code> from a <strong>rotated</strong> version of <code class="docutils literal notranslate"><span class="pre">Z</span></code>. A simple <code class="docutils literal notranslate"><span class="pre">SeparableCritic</span></code> (dot product) will struggle to see that these are related, but the more powerful critics should succeed. Also note that MI here is bounded by the entropy of <code class="docutils literal notranslate"><span class="pre">Z</span></code> (<code class="docutils literal notranslate"><span class="pre">I(X;Y)~I(Z;Z)~H(Z)</span></code>) which can be infinte. Thus, we are not interested in the exact value of MI, but rather the
+trends.</p>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[2]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Create the shared latent variable Z</span>
+<span class="n">n_samples</span> <span class="o">=</span> <span class="mi">5000</span>
+<span class="n">z</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
+
+<span class="c1"># 2. Create a 45-degree rotation matrix for Y&#39;s latent variable</span>
+<span class="n">angle</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">pi</span> <span class="o">/</span> <span class="mi">4</span>
+<span class="n">rotation_matrix</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([[</span><span class="n">np</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">angle</span><span class="p">),</span> <span class="o">-</span><span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">angle</span><span class="p">)],</span> <span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">angle</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">angle</span><span class="p">)]],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">z_rotated</span> <span class="o">=</span> <span class="n">z</span> <span class="o">@</span> <span class="n">rotation_matrix</span>
+
+<span class="c1"># 3. Create nonlinear mappings from latent to a high-dimensional observed space</span>
+<span class="n">mlp</span> <span class="o">=</span> <span class="n">Sequential</span><span class="p">(</span><span class="n">Linear</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">64</span><span class="p">),</span> <span class="n">Softplus</span><span class="p">(),</span> <span class="n">Linear</span><span class="p">(</span><span class="mi">64</span><span class="p">,</span> <span class="mi">50</span><span class="p">))</span>
+<span class="n">x_raw</span> <span class="o">=</span> <span class="n">mlp</span><span class="p">(</span><span class="n">z</span><span class="p">)</span><span class="o">.</span><span class="n">T</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span>
+<span class="n">y_raw</span> <span class="o">=</span> <span class="n">mlp</span><span class="p">(</span><span class="n">z_rotated</span><span class="p">)</span><span class="o">.</span><span class="n">T</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[3]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># Now we sweep over the critic types to see which one can solve the task</span>
+<span class="n">sweep_grid</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;critic_type&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;separable&#39;</span><span class="p">,</span> <span class="s1">&#39;bilinear&#39;</span><span class="p">,</span> <span class="s1">&#39;concat&#39;</span><span class="p">],</span>
+    <span class="s1">&#39;run_id&#39;</span><span class="p">:</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span> <span class="c1"># Average over 5 runs for stability</span>
+<span class="p">}</span>
+
+<span class="n">base_params</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;n_epochs&#39;</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span> <span class="s1">&#39;learning_rate&#39;</span><span class="p">:</span> <span class="mf">5e-4</span><span class="p">,</span> <span class="s1">&#39;batch_size&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span>
+    <span class="s1">&#39;patience&#39;</span><span class="p">:</span> <span class="mi">20</span><span class="p">,</span> <span class="s1">&#39;embedding_dim&#39;</span><span class="p">:</span> <span class="mi">8</span><span class="p">,</span> <span class="s1">&#39;hidden_dim&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span> <span class="s1">&#39;n_layers&#39;</span><span class="p">:</span> <span class="mi">3</span>
+<span class="p">}</span>
+
+<span class="n">critic_results</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;sweep&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">sweep_grid</span><span class="o">=</span><span class="n">sweep_grid</span><span class="p">,</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="c1"># Because concat is very costly, running multiple instances of it together will likely crash the device</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 02:15:25 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "065da25c39e14e6b861300334e93f8f6", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "0e0800b7e6ba47efb77e70d706f74f19", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "efb0dbf7546c4a32b3078ec884db47a0", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "86a2d6e51c4b407fa5b67ce5411e8c39", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "3b17f2f6e8534272acacbcb02625be72", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "7178a901612c41638cd79b71e637b478", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "7607b789f48846a0b0fdc0b9c48b138f", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "ae6f6ac606b441f1aac13b1875d7b18f", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "72998f40a9c348a4b7c593a24d0de8b7", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "584de1c13ff942da965063808042ba6a", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "fc48bc9ec0b44829ba81e4205ca212b1", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "1c1b0857e8344f1eb60c6366d275f6fe", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "4e35851f25d84bbc963173c9de1964e3", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "2b4435291d9547c38492da2ac8b1f543", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "54da9144d16b450f97f43a68432fbe13", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "ec4a8683f57142fda97a1fae453e6163", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 02:24:47 - neural_mi - INFO - Parameter sweep finished.
+</pre></div></div>
+</div>
+</section>
+<section id="The-Result:-Sort-of-a-Hierarchy">
+<h3>The Result: Sort of a Hierarchy<a class="headerlink" href="#The-Result:-Sort-of-a-Hierarchy" title="Link to this heading"></a></h3>
+<p>The results might show a hierarchy in power. The <code class="docutils literal notranslate"><span class="pre">SeparableCritic</span></code> finds the lowest MI. The <code class="docutils literal notranslate"><span class="pre">BilinearCritic</span></code> does better, as its learnable matrix <code class="docutils literal notranslate"><span class="pre">W</span></code> can effectively undo the rotation. The <code class="docutils literal notranslate"><span class="pre">ConcatCritic</span></code>, being the most powerful, also succeeds, achieving a slightly higher MI at the cost of being slower.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[4]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">6</span><span class="p">))</span>
+<span class="n">sns</span><span class="o">.</span><span class="n">barplot</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="n">critic_results</span><span class="o">.</span><span class="n">dataframe</span><span class="p">,</span> <span class="n">x</span><span class="o">=</span><span class="s1">&#39;critic_type&#39;</span><span class="p">,</span> <span class="n">y</span><span class="o">=</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">,</span> <span class="n">capsize</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">order</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;separable&#39;</span><span class="p">,</span> <span class="s1">&#39;bilinear&#39;</span><span class="p">,</span> <span class="s1">&#39;concat&#39;</span><span class="p">])</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="s1">&#39;Critic Performance on the Rotated Manifold Task&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="s1">&#39;Estimated MI (bits)&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="s1">&#39;Critic Architecture&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">ylim</span><span class="p">(</span><span class="n">bottom</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_Tutorial_04_Choosing_the_Right_Model_and_Estimator_8_0.png" src="../_images/tutorials_Tutorial_04_Choosing_the_Right_Model_and_Estimator_8_0.png" />
+</div>
+</div>
+</section>
+</section>
+<section id="Part-2:-Choosing-the-MI-Estimator">
+<h2>Part 2: Choosing the MI Estimator<a class="headerlink" href="#Part-2:-Choosing-the-MI-Estimator" title="Link to this heading"></a></h2>
+<p>The estimator is the loss function used to train the critic. The choice of estimator involves a crucial trade-off between <strong>bias</strong> and <strong>variance</strong>.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Estimator</p></th>
+<th class="head"><p>Bias</p></th>
+<th class="head"><p>Variance</p></th>
+<th class="head"><p>Use Case</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>``InfoNCE``</strong></p></td>
+<td><p>High (Biased Low)</p></td>
+<td><p>Low</p></td>
+<td><p><strong>Default choice.</strong> Very stable. Excellent for most tasks where the true MI isn’t extremely high.</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>``SMILE``</strong></p></td>
+<td><p>Low</p></td>
+<td><p>Medium</p></td>
+<td><p>Less biased. Use when you suspect the true MI is very high, as it can avoid the artificial ceiling that affects
+<code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code>.</p></td>
+</tr>
+</tbody>
+</table>
+<section id="The-Problem:-The-InfoNCE-Upper-Bound">
+<h3>The Problem: The <code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code> Upper Bound<a class="headerlink" href="#The-Problem:-The-InfoNCE-Upper-Bound" title="Link to this heading"></a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code> estimator is mathematically bounded by <code class="docutils literal notranslate"><span class="pre">log(batch_size)</span></code>. This means it can never report an MI value higher than this limit. For a batch size of 128, the limit is <code class="docutils literal notranslate"><span class="pre">log(128)</span> <span class="pre">≈</span> <span class="pre">4.85</span></code> nats or <code class="docutils literal notranslate"><span class="pre">6.99</span></code> bits. If the true MI is higher than this, <code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code> will underestimate it.</p>
+<p>Let’s create a dataset with a known <strong>ground truth MI of 8.0 bits</strong> and see how the two estimators perform.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[5]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">ground_truth_mi</span> <span class="o">=</span> <span class="mf">8.0</span>
+<span class="n">batch_size</span> <span class="o">=</span> <span class="mi">128</span>
+<span class="n">infonce_limit_bits</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">batch_size</span><span class="p">)</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+
+<span class="n">x_high_mi</span><span class="p">,</span> <span class="n">y_high_mi</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">generate_correlated_gaussians</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="o">=</span><span class="mi">10000</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span> <span class="n">mi</span><span class="o">=</span><span class="n">ground_truth_mi</span>
+<span class="p">)</span>
+
+<span class="c1"># Use a powerful model to ensure the estimator is the limiting factor</span>
+<span class="n">high_mi_params</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;n_epochs&#39;</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span> <span class="s1">&#39;learning_rate&#39;</span><span class="p">:</span> <span class="mf">5e-4</span><span class="p">,</span> <span class="s1">&#39;batch_size&#39;</span><span class="p">:</span> <span class="n">batch_size</span><span class="p">,</span>
+    <span class="s1">&#39;patience&#39;</span><span class="p">:</span> <span class="mi">20</span><span class="p">,</span> <span class="s1">&#39;embedding_dim&#39;</span><span class="p">:</span> <span class="mi">32</span><span class="p">,</span> <span class="s1">&#39;hidden_dim&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;n_layers&#39;</span><span class="p">:</span> <span class="mi">3</span>
+<span class="p">}</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;--- Running with InfoNCE (default) ---&quot;</span><span class="p">)</span>
+<span class="n">infonce_results</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_high_mi</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_high_mi</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;estimate&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span> <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">high_mi_params</span><span class="p">,</span> <span class="n">estimator</span><span class="o">=</span><span class="s1">&#39;infonce&#39;</span><span class="p">,</span> <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">--- Running with SMILE ---&quot;</span><span class="p">)</span>
+<span class="n">smile_results</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_high_mi</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_high_mi</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;estimate&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span> <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">high_mi_params</span><span class="p">,</span> <span class="n">estimator</span><span class="o">=</span><span class="s1">&#39;smile&#39;</span><span class="p">,</span> <span class="n">estimator_params</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;clip&#39;</span><span class="p">:</span> <span class="mi">5</span><span class="p">},</span> <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">--- Comparison ---&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Ground Truth MI:      </span><span class="si">{</span><span class="n">ground_truth_mi</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;InfoNCE Limit:          </span><span class="si">{</span><span class="n">infonce_limit_bits</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;InfoNCE Estimate:       </span><span class="si">{</span><span class="n">infonce_results</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;SMILE Estimate:         </span><span class="si">{</span><span class="n">smile_results</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+--- Running with InfoNCE (default) ---
+2025-10-08 02:29:00 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "46780c742850471b968fef5777369fcc", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "4ce7cb5251e1481ca9ccf5bf9ed8d92f", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 02:29:13 - neural_mi - INFO - Parameter sweep finished.
+
+--- Running with SMILE ---
+2025-10-08 02:29:13 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "4fa278fd5eb143ac923998e00433a154", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "0b9371904e9f41e781150bf751d76064", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 02:29:39 - neural_mi - INFO - Parameter sweep finished.
+
+--- Comparison ---
+Ground Truth MI:      8.000 bits
+InfoNCE Limit:          7.000 bits
+InfoNCE Estimate:       5.795 bits
+SMILE Estimate:         8.868 bits
+</pre></div></div>
+</div>
+<p>The results are interesting: <code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code> approaches its artificial ceiling and underestimates the true MI. <code class="docutils literal notranslate"><span class="pre">SMILE</span></code>, being less biased, provides a higher -and noiser- estimate. This is why <code class="docutils literal notranslate"><span class="pre">SMILE</span></code> is the recommended choice for <code class="docutils literal notranslate"><span class="pre">mode='dimensionality'</span></code>, where we don’t care that much about the exact value of MI, rather its trend, and the internal information can be very high.</p>
+<p>This result then should invite us to rethink the difference between the critics we noticed earlier, is it a <em>true</em> saturation, or an artifact of <code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code>?</p>
+</section>
+<section id="Critic-Architecture,-Revisited:">
+<h3>Critic Architecture, Revisited:<a class="headerlink" href="#Critic-Architecture,-Revisited:" title="Link to this heading"></a></h3>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[7]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">critic_results_smile</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;sweep&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">estimator</span><span class="o">=</span><span class="s1">&#39;smile&#39;</span><span class="p">,</span> <span class="n">estimator_params</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;clip&#39;</span><span class="p">:</span> <span class="mi">5</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">sweep_grid</span><span class="o">=</span><span class="n">sweep_grid</span><span class="p">,</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="c1"># Because concat is very costly, running multiple instances of it together will likely crash the device</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 03:08:04 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "83a3143ae14644cab0218e843e5a447a", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "22289bedef7546e8a7f8b31e9709f66d", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "b937abd2dbaf4f0ba7b806985547931f", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "41216b466bdb4b51b896e7b224e4f694", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "5b92cd5ad0524a0297c26a8c1d7d00d1", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "aa8c6ecdb99a49ac9e2c7c22670a65c2", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "72a636d42e6746c4bd179e6b3c7e74b7", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "ac3af02c0dfd43c4a4c99492c5169b77", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "3eedf40a8de5414a9b73138b256be7b9", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "50ee4e44b73848a1b5e1430ac9e024ea", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "7341f888b24a48199eb37089eed5a5e2", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "45460a4a71b549b68b0cfa9d8b9af4e1", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "27efb6a18e7849fe978ccc50151349dd", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "b44e6c9cc69941fc9d24522e5b6ebe6e", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "e6606c6de07845da902088c6573ba9d7", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "0087336ff0584a2a9ff18a24b2e44900", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-08 03:15:22 - neural_mi - INFO - Parameter sweep finished.
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[8]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">fig</span><span class="p">,</span> <span class="n">axes</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">14</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="n">sharey</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="n">sns</span><span class="o">.</span><span class="n">barplot</span><span class="p">(</span>
+    <span class="n">data</span><span class="o">=</span><span class="n">critic_results</span><span class="o">.</span><span class="n">dataframe</span><span class="p">,</span>
+    <span class="n">x</span><span class="o">=</span><span class="s1">&#39;critic_type&#39;</span><span class="p">,</span>
+    <span class="n">y</span><span class="o">=</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">,</span>
+    <span class="n">capsize</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">order</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;separable&#39;</span><span class="p">,</span> <span class="s1">&#39;bilinear&#39;</span><span class="p">,</span> <span class="s1">&#39;concat&#39;</span><span class="p">],</span>
+    <span class="n">ax</span><span class="o">=</span><span class="n">axes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<span class="p">)</span>
+<span class="n">axes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s1">&#39;InfoNCE&#39;</span><span class="p">)</span>
+<span class="n">axes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s1">&#39;Estimated MI (bits)&#39;</span><span class="p">)</span>
+<span class="n">axes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s1">&#39;Critic Architecture&#39;</span><span class="p">)</span>
+<span class="n">axes</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="n">bottom</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+
+<span class="n">sns</span><span class="o">.</span><span class="n">barplot</span><span class="p">(</span>
+    <span class="n">data</span><span class="o">=</span><span class="n">critic_results_smile</span><span class="o">.</span><span class="n">dataframe</span><span class="p">,</span>
+    <span class="n">x</span><span class="o">=</span><span class="s1">&#39;critic_type&#39;</span><span class="p">,</span>
+    <span class="n">y</span><span class="o">=</span><span class="s1">&#39;mi_mean&#39;</span><span class="p">,</span>
+    <span class="n">capsize</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">order</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;separable&#39;</span><span class="p">,</span> <span class="s1">&#39;bilinear&#39;</span><span class="p">,</span> <span class="s1">&#39;concat&#39;</span><span class="p">],</span>
+    <span class="n">ax</span><span class="o">=</span><span class="n">axes</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span>
+    <span class="n">color</span><span class="o">=</span><span class="s1">&#39;red&#39;</span>
+<span class="p">)</span>
+<span class="n">axes</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s1">&#39;SMILE&#39;</span><span class="p">)</span>
+<span class="n">axes</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s1">&#39;Critic Architecture&#39;</span><span class="p">)</span>
+<span class="n">axes</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="o">-</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">1.2</span><span class="o">*</span><span class="n">critic_results_smile</span><span class="o">.</span><span class="n">dataframe</span><span class="o">.</span><span class="n">mi_mean</span><span class="o">.</span><span class="n">max</span><span class="p">())</span>
+
+<span class="n">plt</span><span class="o">.</span><span class="n">tight_layout</span><span class="p">()</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_Tutorial_04_Choosing_the_Right_Model_and_Estimator_14_0.png" src="../_images/tutorials_Tutorial_04_Choosing_the_Right_Model_and_Estimator_14_0.png" />
+</div>
+</div>
+</section>
+<section id="The-New-Result:-A-Clear-Hierarchy">
+<h3>The New Result: A Clear Hierarchy<a class="headerlink" href="#The-New-Result:-A-Clear-Hierarchy" title="Link to this heading"></a></h3>
+<p>The new results show a clear hierarchy in power. The <code class="docutils literal notranslate"><span class="pre">SeparableCritic</span></code> finds the lowest MI. The <code class="docutils literal notranslate"><span class="pre">BilinearCritic</span></code> does better, as its learnable matrix <code class="docutils literal notranslate"><span class="pre">W</span></code> can effectively undo the rotation. The <code class="docutils literal notranslate"><span class="pre">ConcatCritic</span></code>, being the most powerful, also succeeds, achieving a significantly higher MI at the cost of being slower.</p>
+</section>
+</section>
+<section id="Conclusion-and-Recommendations">
+<h2>Conclusion and Recommendations<a class="headerlink" href="#Conclusion-and-Recommendations" title="Link to this heading"></a></h2>
+<p>Choosing the right architecture and estimator is a trade-off. Here’s a simple guide to get started:</p>
+<blockquote>
+<div><p><strong>Recommendation:</strong> Always start with the default: a <strong>``SeparableCritic``</strong> and the <strong>``InfoNCE``</strong> estimator. This combination is fast, stable, and works for a wide variety of problems.</p>
+</div></blockquote>
+<ul class="simple">
+<li><p>If you have reason to suspect a complex, non-linear relationship (like a rotation or other geometric transformation), try the <strong>``BilinearCritic``</strong>. It offers a significant power boost without the high cost of the <code class="docutils literal notranslate"><span class="pre">ConcatCritic</span></code>.</p></li>
+<li><p>If you are estimating the internal dimensionality of a system (<code class="docutils literal notranslate"><span class="pre">mode='dimensionality'</span></code>) or have other reasons to believe the true MI is very high, switch to the <strong>``SMILE``</strong> estimator to get a less biased result.</p></li>
+</ul>
+<p>With these guidelines, you are now equipped to make informed decisions about the core components of your MI analysis. In the next tutorial, we will tackle the final and most important step for scientific rigor: correcting for finite-sampling bias to get a statstically sound result.</p>
+<p><em>A note</em>: While the theoretical bound of <code class="docutils literal notranslate"><span class="pre">InfoNCE</span></code> is <code class="docutils literal notranslate"><span class="pre">log(batch_size)</span></code>, this is the case during the <em>training</em>. i.e., we should never see an MI value when we’re training the estimator that exceeds this bound. However, when evaluating on the whole dataset, the MI value can be bigger, as now the batch size is bigger.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="Tutorial_03_Finding_Temporal_Relationships.html" class="btn btn-neutral float-left" title="Tutorial 3: Finding Temporal Relationships" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="Tutorial_05_A_Better_Standard_Bias_Correction.html" class="btn btn-neutral float-right" title="Tutorial 5: A Better Standard - Bias Correction" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
