@@ -32,6 +32,9 @@ jobs:
           cd docs
           make html
 
+      - name: List files for debugging 🔍
+        run: ls -R
+
       - name: Deploy 🚀
         uses: JamesIves/github-pages-deploy-action@v4
         with:
