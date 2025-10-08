@@ -29,10 +29,10 @@ jobs:
           pip install -r requirements.txt
           pip install sphinx sphinx_rtd_theme nbsphinx ipython ipykernel
 
-      - name: Build Docs with correct base URL 📖
+      - name: Build Docs 📖
         run: |
-          sphinx-build -b html docs/source docs/_build/html -D html_baseurl=/NeuralMI/
-
+          sphinx-build -b html docs/source docs/_build/html
+          
       - name: Deploy 🚀
         uses: JamesIves/github-pages-deploy-action@v4
         with:
