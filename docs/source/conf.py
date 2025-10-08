@@ -34,5 +34,7 @@ exclude_patterns = []
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = 'sphinx_rtd_theme'
-html_baseurl = 'https://eslam-abdelaleem.github.io/NeuralMI/'
 html_static_path = ['_static']
+
+html_css_files = ["https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"]
+html_context = { "github_url": "https://github.com/eslam-abdelaleem/NeuralMI" }
