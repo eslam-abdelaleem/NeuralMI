@@ -34,6 +34,7 @@ def test_run_lag_mode(processor_type):
         mode='lag',
         processor_type_x=processor_type,
         processor_params_x=processor_params,
+        sweep_grid={'run_id': range(2)},
         base_params=BASE_PARAMS_TEST,
         lag_range=lag_range,
         n_workers=1,
