@@ -322,9 +322,26 @@ def run(
     elif mode == 'lag':
         if 'lag_range' not in analysis_kwargs:
             raise ValueError("`lag_range` must be provided for mode='lag'.")
-        results_list = run_lag_analysis(x_run_data, y_run_data, base_params, **analysis_kwargs)
+        
+        # Pass the main sweep_grid from the run() call to the analysis function
+        results_list = run_lag_analysis(x_run_data, y_run_data, base_params, sweep_grid=sweep_grid, **analysis_kwargs)
         df = pd.DataFrame(results_list)
-        agg_df = df.groupby('lag')['test_mi'].agg(['mean', 'std']).reset_index().rename(columns={'mean': 'mi_mean', 'std': 'mi_std'}).fillna(0)
+        
+        # Make aggregation smarter: group by all swept variables except for 'run_id'
+        group_vars = ['lag'] # Always group by lag
+        if sweep_grid:
+            group_vars.extend([key for key in sweep_grid.keys() if key != 'run_id'])
+        
+        # Ensure all group_vars exist in the dataframe before grouping
+        valid_group_vars = [var for var in group_vars if var in df.columns]
+        
+        if valid_group_vars:
+            agg_df = df.groupby(valid_group_vars)['test_mi'].agg(['mean', 'std']).reset_index().rename(
+                columns={'mean': 'mi_mean', 'std': 'mi_std'}
+            ).fillna(0)
+        else:
+            agg_df = df
+
         return Results(mode=mode, dataframe=_convert_mi_units(agg_df, output_units == 'bits'), params={**run_params, 'sweep_var': 'lag'}, details={'raw_results': df})
 
     else:
