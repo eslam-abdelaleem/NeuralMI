@@ -19,6 +19,7 @@ def run_lag_analysis(
     y_data: Any,
     base_params: Dict[str, Any],
     lag_range: range,
+    sweep_grid: Optional[Dict[str, Any]] = None, # Add sweep_grid as an argument
     **kwargs
 ) -> List[Dict[str, Any]]:
     """Estimates mutual information across a range of time lags.
@@ -38,6 +39,8 @@ def run_lag_analysis(
     lag_range : range
         A range of integer lags (for continuous/categorical) or float lags in
         seconds (for spike) to test.
+    sweep_grid : dict
+        Extra sweep parameters, like run_id, to be included in the sweep.
     **kwargs : dict
         Additional keyword arguments passed to the `ParameterSweep`.
 
@@ -47,12 +50,16 @@ def run_lag_analysis(
         A list of result dictionaries, one for each lag, containing the
         MI estimate and the lag value.
     """
-    sweep_grid = {'lag': list(lag_range)}
+    full_sweep_grid = sweep_grid.copy() if sweep_grid is not None else {}
+    
+    # Add the lag range to it, warning if 'lag' is already present
+    if 'lag' in full_sweep_grid:
+        logger.warning("'lag' in sweep_grid is being overwritten by lag_range.")
+    full_sweep_grid['lag'] = list(lag_range)
 
     # For lag analysis, data processing is always deferred to workers.
-    # The necessary processor params should already be in base_params.
     sweep = ParameterSweep(x_data=x_data, y_data=y_data, base_params=base_params)
     
-    results_list = sweep.run(sweep_grid, is_proc_sweep=True, **kwargs)
+    results_list = sweep.run(full_sweep_grid, is_proc_sweep=True, **kwargs)
     
     return results_list
