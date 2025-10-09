@@ -322,9 +322,10 @@ def run(
     elif mode == 'lag':
         if 'lag_range' not in analysis_kwargs:
             raise ValueError("`lag_range` must be provided for mode='lag'.")
+        lag_range_val = analysis_kwargs.pop('lag_range')
         
         # Pass the main sweep_grid from the run() call to the analysis function
-        results_list = run_lag_analysis(x_run_data, y_run_data, base_params, sweep_grid=sweep_grid, **analysis_kwargs)
+        results_list = run_lag_analysis(x_run_data, y_run_data, base_params, lag_range=lag_range_val, sweep_grid=sweep_grid, **analysis_kwargs)
         df = pd.DataFrame(results_list)
         
         # Make aggregation smarter: group by all swept variables except for 'run_id'
