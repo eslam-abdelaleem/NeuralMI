@@ -8,11 +8,25 @@ acts as a unified interface for all supported analysis modes.
 # Safe guard for macOS problems:
 import platform
 import os
+import multiprocessing
 import tempfile
 from .logger import logger
 
-# On macOS, PyTorch multiprocessing can have issues with the default temp directory.
-# This creates a local, user-owned temp directory to avoid these issues.
+# 1. UNIVERSAL SAFEGUARD: Set multiprocessing start method to 'spawn'.
+# This is required for Windows and is the safest method for CUDA on Linux/macOS,
+# preventing potential deadlocks.
+try:
+    # The 'force=True' flag is important on systems where the method might have
+    # already been set (e.g., in an interactive session).
+    multiprocessing.set_start_method("spawn", force=True)
+    logger.debug("Successfully set multiprocessing start method to 'spawn'.")
+except RuntimeError:
+    # This will be raised if the context has already been set and cannot be changed.
+    # It's safe to ignore in most cases as it means it's already configured.
+    logger.debug("Multiprocessing start method was already set.")
+
+# 2. MACOS-SPECIFIC WORKAROUND: Address issues with the default temp directory.
+# This code is only executed on macOS and does not affect other systems.
 if platform.system() == "Darwin":
     try:
         custom_temp_dir = os.path.expanduser('~/.neural_mi_tmp')
@@ -22,9 +36,9 @@ if platform.system() == "Darwin":
         os.environ['TMPDIR'] = custom_temp_dir
         tempfile.tempdir = custom_temp_dir
         
-        logger.debug(f"Set custom temporary directory for multiprocessing: {custom_temp_dir}")
+        logger.debug(f"Applied macOS-specific temp directory fix: {custom_temp_dir}")
     except Exception as e:
-        logger.warning(f"Could not set custom temp directory: {e}. Using system default.")
+        logger.warning(f"Could not set custom temp directory for macOS: {e}. Using system default.")
 
 
 # Actual run code
