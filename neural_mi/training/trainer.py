@@ -6,11 +6,11 @@ a critic model, monitoring its performance, implementing early stopping, and
 saving the best-performing model state.
 """
 import torch
+import tempfile
 import numpy as np
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from scipy.ndimage import gaussian_filter1d, median_filter
 import os
-import tempfile
 import shutil
 from tqdm.auto import tqdm
 from typing import Dict, Any, Tuple, Optional, List, Callable
@@ -139,8 +139,9 @@ class Trainer:
         x_data = x_data.to(self.device)
         y_data = y_data.to(self.device)
 
-        with tempfile.NamedTemporaryFile(suffix=".pt") as tmp:
-            tmp_path = tmp.name
+        # Use TemporaryDirectory for robust, cross-platform temporary file handling.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = os.path.join(tmpdir, "best_model.pt")
             
             train_idx, test_idx = self._create_blocked_split(x_data.shape[0], train_fraction, n_test_blocks)
             
@@ -168,7 +169,7 @@ class Trainer:
                     scores, kl_loss = self.model(x_batch, y_batch)
                     loss = -self.estimator_fn(scores, **self.estimator_params)
                     if self.use_variational:
-                        loss -= self.beta * kl_loss
+                        loss += self.beta * kl_loss
                     loss.backward()
                     self.optimizer.step()
 
@@ -238,8 +239,8 @@ class Trainer:
         if n_test < k: k = n_test
         block, rem = divmod(n_test, k) if k > 0 else (0, 0)
         if n - block < k or block + 1 <= 0:
-             indices = np.random.permutation(n)
-             return indices[n_test:], indices[:n_test]
+                indices = np.random.permutation(n)
+                return indices[n_test:], indices[:n_test]
         starts = _sample_with_minimum_distance(n - block, k, block + 1)
         test_idx = np.concatenate([np.arange(s, s + block + (1 if i<rem else 0)) for i, s in enumerate(starts)])
         return np.setdiff1d(np.arange(n), test_idx), test_idx
