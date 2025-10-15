@@ -84,11 +84,25 @@
 <span class="c1"># Safe guard for macOS problems:</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">platform</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">multiprocessing</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.logger</span><span class="w"> </span><span class="kn">import</span> <span class="n">logger</span>
 
-<span class="c1"># On macOS, PyTorch multiprocessing can have issues with the default temp directory.</span>
-<span class="c1"># This creates a local, user-owned temp directory to avoid these issues.</span>
+<span class="c1"># 1. UNIVERSAL SAFEGUARD: Set multiprocessing start method to &#39;spawn&#39;.</span>
+<span class="c1"># This is required for Windows and is the safest method for CUDA on Linux/macOS,</span>
+<span class="c1"># preventing potential deadlocks.</span>
+<span class="k">try</span><span class="p">:</span>
+    <span class="c1"># The &#39;force=True&#39; flag is important on systems where the method might have</span>
+    <span class="c1"># already been set (e.g., in an interactive session).</span>
+    <span class="n">multiprocessing</span><span class="o">.</span><span class="n">set_start_method</span><span class="p">(</span><span class="s2">&quot;spawn&quot;</span><span class="p">,</span> <span class="n">force</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Successfully set multiprocessing start method to &#39;spawn&#39;.&quot;</span><span class="p">)</span>
+<span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
+    <span class="c1"># This will be raised if the context has already been set and cannot be changed.</span>
+    <span class="c1"># It&#39;s safe to ignore in most cases as it means it&#39;s already configured.</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Multiprocessing start method was already set.&quot;</span><span class="p">)</span>
+
+<span class="c1"># 2. MACOS-SPECIFIC WORKAROUND: Address issues with the default temp directory.</span>
+<span class="c1"># This code is only executed on macOS and does not affect other systems.</span>
 <span class="k">if</span> <span class="n">platform</span><span class="o">.</span><span class="n">system</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;Darwin&quot;</span><span class="p">:</span>
     <span class="k">try</span><span class="p">:</span>
         <span class="n">custom_temp_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">expanduser</span><span class="p">(</span><span class="s1">&#39;~/.neural_mi_tmp&#39;</span><span class="p">)</span>
@@ -98,9 +112,9 @@
         <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;TMPDIR&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">custom_temp_dir</span>
         <span class="n">tempfile</span><span class="o">.</span><span class="n">tempdir</span> <span class="o">=</span> <span class="n">custom_temp_dir</span>
         
-        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Set custom temporary directory for multiprocessing: </span><span class="si">{</span><span class="n">custom_temp_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Applied macOS-specific temp directory fix: </span><span class="si">{</span><span class="n">custom_temp_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
     <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Could not set custom temp directory: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">. Using system default.&quot;</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Could not set custom temp directory for macOS: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">. Using system default.&quot;</span><span class="p">)</span>
 
 
 <span class="c1"># Actual run code</span>
