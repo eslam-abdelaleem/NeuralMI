@@ -83,7 +83,6 @@ To get the most out of `NeuralMI`, we recommend following our new tutorial serie
     - **07_Advanced_Customization:** Learn how to use your own custom PyTorch models with the library.
 
 ## Installation
-
 ```bash
 # 1. Clone the repository from GitHub (if in Jupyter or Colab, remember to add "!" before running terminal commands like the following
 
