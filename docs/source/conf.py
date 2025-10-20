@@ -23,7 +23,31 @@ extensions = [
     'nbsphinx',
     'sphinx.ext.intersphinx',
     'sphinx_rtd_theme',
+    'myst_parser',  # Added for Markdown support
 ]
+
+# MyST-Parser configuration for advanced Markdown features
+myst_enable_extensions = [
+    "amsmath",      # For LaTeX math
+    "colon_fence",  # For ::: admonitions
+    "deflist",      # For definition lists
+    "dollarmath",   # For $$ math blocks
+    "fieldlist",    # For field lists
+    "html_admonition",
+    "html_image",
+    "linkify",      # Auto-link URLs
+    "replacements",
+    "smartquotes",
+    "strikethrough",
+    "substitution",
+    "tasklist",
+]
+
+# Source file suffixes
+source_suffix = {
+    '.rst': 'restructuredtext',
+    '.md': 'markdown',
+}
 
 templates_path = ['_templates']
 exclude_patterns = []
@@ -47,8 +71,12 @@ html_theme_options = {
     'titles_only': False
 }
 
-# The 'display_version' option has been removed as it was unsupported.
-
 # -- Autodoc settings --------------------------------------------------------
 autodoc_member_order = 'bysource'
 
+# -- Intersphinx configuration -----------------------------------------------
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3', None),
+    'numpy': ('https://numpy.org/doc/stable/', None),
+    'torch': ('https://pytorch.org/docs/stable/', None),
+}

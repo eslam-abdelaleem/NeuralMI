@@ -84,17 +84,26 @@ To get the most out of `NeuralMI`, we recommend following our new tutorial serie
 
 ## Installation
 ```bash
-# To install the library
+# 1. Clone the repository from GitHub (if in Jupyter or Colab, remember to add "!" before running terminal commands like the following
+
+git clone https://github.com/eslam-abdelaleem/NeuralMI.git
+
+# 2. Navigate into the project directory
+cd NeuralMI
+
+# 3. Install the library
+# For standard use:
 pip install .
 
-# For developers
+# 4. For developers
 pip install -e .
 pip install -r requirements-dev.txt
 ```
 
 ## Further Reading
 - `THEORY.md`: A concise theoretical background for the core methods used in the library.
-- `UNDER_THE_HOOD.md`: A practical, code-based walkthrough of how a neural MI estimator is built and trained from scratch.
+- `CONCEPTS.md`: A practical, code-based walkthrough of how a neural MI estimator is built and trained from scratch.
+- `DEVELOPERS_GUIDE.md`: A guide to the codebase for contributors and advanced users.
 
 ## Contributing
 Contributions are welcome! Please see ```CONTRIBUTING.md``` for details on how to set up a development environment, run tests, and submit pull requests.

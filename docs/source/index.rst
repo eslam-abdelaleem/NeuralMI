@@ -1,7 +1,9 @@
-Welcome to NeuralMI's documentation!
-======================================
+NeuralMI: A Toolbox for Rigorous Mutual Information Estimation in Neuroscience
+================================================================================
 
-**NeuralMI** is a Python library designed to provide neuroscientists with a complete, end-to-end workflow for robustly and reproducibly estimating mutual information from complex neural data.
+Welcome to the technical reference for `NeuralMI`. This page provides detailed documentation on the public functions, classes, and modules that make up the library's API.
+
+For a high-level overview and practical examples, please see the :doc:`tutorials`. For implementation details, feel free to explore the source code on our `GitHub repository <https://github.com/eslam-abdelaleem/NeuralMI>`_.
 
 .. toctree::
    :maxdepth: 2

@@ -1,0 +1,19 @@
+# Documentation build requirements for NeuralMI
+# Install with: pip install -r requirements-docs.txt
+
+# Core Sphinx
+sphinx>=5.0.0
+sphinx_rtd_theme>=1.0.0
+
+# Markdown support
+myst-parser>=0.18.0
+
+# Jupyter notebook support
+nbsphinx>=0.8.0
+
+# Code documentation
+sphinx-autodoc-typehints>=1.19.0
+
+# Additional utilities
+sphinx-copybutton>=0.5.0  # Optional: adds copy button to code blocks
+sphinxcontrib-bibtex>=2.4.0  # Optional: for bibliography management
