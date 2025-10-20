@@ -1,0 +1,41 @@
+name: Build and Deploy Docs
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@v3
+
+      - name: Set up Python 🐍
+        uses: actions/setup-python@v3
+        with:
+          python-version: 3.9
+
+      - name: Install Pandoc 🔽
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+
+      - name: Install dependencies 🔧
+        run: |
+          pip install -r requirements.txt
+          pip install sphinx sphinx_rtd_theme nbsphinx ipython ipykernel
+
+      - name: Build Docs 📖
+        run: |
+          sphinx-build -b html docs/source docs/_build/html
+          touch docs/_build/html/.nojekyll
+
+      - name: Deploy 🚀
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: gh-pages
+          folder: docs/_build/html

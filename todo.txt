@@ -1,0 +1,2 @@
+- Fix saving names for more than one model. Currently, it saves with random generated unique names, if we're saving the best model of one run like in rigourous, it's working fine, but for sweeps or dimensionality, we get multiple random names and it's not useful.
+- Make sure that we're saving both netowrks, not just one of them in the case of separable.
