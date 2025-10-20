@@ -6,7 +6,8 @@ sphinx>=5.0.0
 sphinx_rtd_theme>=1.0.0
 
 # Markdown support
-myst-parser>=0.18.0 linkify-it-py>=2.0.0
+myst-parser>=0.18.0
+linkify-it-py>=2.0.0
 
 # Jupyter notebook support
 nbsphinx>=0.8.0
