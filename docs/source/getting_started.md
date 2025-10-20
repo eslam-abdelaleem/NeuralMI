@@ -110,7 +110,7 @@ pip install -r requirements-dev.txt
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to set up a development environment, run tests, and submit pull requests.
+Contributions are welcome! Please see [CONTRIBUTING](CONTRIBUTING.md) for details on how to set up a development environment, run tests, and submit pull requests.
 
 ## License
 

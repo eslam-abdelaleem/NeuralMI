@@ -24,6 +24,7 @@ extensions = [
     'sphinx.ext.intersphinx',
     'sphinx_rtd_theme',
     'myst_parser',  
+    'sphinx_copybutton',
 ]
 
 # MyST-Parser configuration for advanced Markdown features
@@ -43,6 +44,20 @@ myst_enable_extensions = [
     "tasklist",
 ]
 
+# -- Intersphinx mapping for external links ----------------------------------
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3', None),
+    'numpy': ('https://numpy.org/doc/stable/', None),
+    'torch': ('https://pytorch.org/docs/stable/', None),
+    'pandas': ('https://pandas.pydata.org/pandas-docs/stable/', None),
+    'matplotlib': ('https://matplotlib.org/stable/', None),
+}
+
+# -- Copybutton configuration ------------------------------------------------
+# Exclude Python prompts and output from being copied
+copybutton_prompt_text = r">>> |\.\.\. |\$ "
+copybutton_prompt_is_regexp = True
+
 # Source file suffixes
 source_suffix = {
     '.rst': 'restructuredtext',
@@ -60,7 +75,6 @@ html_static_path = ['_static']
 html_baseurl = 'https://eslam-abdelaleem.github.io/NeuralMI/'
 
 html_theme_options = {
-    'canonical_url': 'https://eslam-abdelaleem.github.io/NeuralMI/',
     'logo_only': False,
     'prev_next_buttons_location': 'bottom',
     'style_external_links': True,
@@ -68,15 +82,11 @@ html_theme_options = {
     'sticky_navigation': True,
     'navigation_depth': 4,
     'includehidden': True,
-    'titles_only': False
+    'titles_only': False,
+    'vcs_pageview_mode': '',
+    'style_nav_header_background': '#2980B9',
 }
 
 # -- Autodoc settings --------------------------------------------------------
 autodoc_member_order = 'bysource'
 
-# -- Intersphinx configuration -----------------------------------------------
-intersphinx_mapping = {
-    'python': ('https://docs.python.org/3', None),
-    'numpy': ('https://numpy.org/doc/stable/', None),
-    'torch': ('https://pytorch.org/docs/stable/', None),
-}
