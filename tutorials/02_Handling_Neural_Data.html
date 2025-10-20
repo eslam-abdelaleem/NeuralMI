@@ -1,0 +1,647 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tutorial 2: Handling Neural Data &mdash; NeuralMI 1.1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/nbsphinx-code-cells.css?v=2aa19091" />
+
+  
+    <link rel="canonical" href="https://eslam-abdelaleem.github.io/NeuralMI/tutorials/02_Handling_Neural_Data.html" />
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=fc837d61"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+      <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true}, "options": {"ignoreHtmlClass": "tex2jax_ignore|mathjax_ignore|document", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Tutorial 03: Uncovering Temporal Dynamics in Neural Data" href="03_Finding_Temporal_Relationships.html" />
+    <link rel="prev" title="Tutorial 1: A First MI Estimate" href="01_A_First_Estimate.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../getting_started.html">Getting Started</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../tutorials.html">Tutorials</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="../tutorials.html#part-1-the-fundamentals">Part 1: The Fundamentals</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="01_A_First_Estimate.html">Tutorial 1: A First MI Estimate</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Tutorial 2: Handling Neural Data</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#A-Note-on-Data-Splitting">A Note on Data Splitting</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#Before:-The-Raw-Signal">Before: The Raw Signal</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#During:-The-Sliding-Window">During: The Sliding Window</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#After:-The-Processed-Tensor">After: The Processed Tensor</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#Before:-The-Raw-Spike-Raster">Before: The Raw Spike Raster</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#During:-Windowing-the-Spikes">During: Windowing the Spikes</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#After:-The-Padded-Tensor-of-Relative-Times">After: The Padded Tensor of Relative Times</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#Before:-The-Raw-State-Sequence">Before: The Raw State Sequence</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#During-&amp;-After:-One-Hot-Encoding-and-Windowing">During &amp; After: One-Hot Encoding and Windowing</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#Before:-Unaligned-Raw-Data">Before: Unaligned Raw Data</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#Zoom-in-a-little-bit">Zoom in a little bit</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#After:-Aligned-Processed-Tensors">After: Aligned Processed Tensors</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#Plotting-the-First-Window..">Plotting the First Window..</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../tutorials.html#part-2-core-concepts-for-scientific-rigor">Part 2: Core Concepts for Scientific Rigor</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../tutorials.html#part-3-advanced-analysis-and-customization">Part 3: Advanced Analysis and Customization</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_reference.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../further_reading.html">Further Reading</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content style-external-links">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../tutorials.html">Tutorials</a></li>
+      <li class="breadcrumb-item active">Tutorial 2: Handling Neural Data</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/tutorials/02_Handling_Neural_Data.ipynb.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="Tutorial-2:-Handling-Neural-Data">
+<h1>Tutorial 2: Handling Neural Data<a class="headerlink" href="#Tutorial-2:-Handling-Neural-Data" title="Link to this heading"></a></h1>
+<p>Welcome to the second tutorial! In Tutorial 1, we learned the basics of <code class="docutils literal notranslate"><span class="pre">nmi.run</span></code>. Now, we’ll tackle the most critical step in any analysis: <strong>data processing</strong>.</p>
+<p>Real-world neural data is complex. It evolves over time and comes in different formats. <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> is designed to handle this complexity, but to use it effectively, we need to understand how it <em>sees</em> our data.</p>
+<p>This tutorial is a <strong>visual guide</strong>. For each data type, we will show you what the data looks like <strong>before</strong>, <strong>during</strong>, and <strong>after</strong> processing. The goal is to build a strong intuition for how the library transforms raw recordings into a format that neural networks can understand.</p>
+<section id="A-Note-on-Data-Splitting">
+<h2>A Note on Data Splitting<a class="headerlink" href="#A-Note-on-Data-Splitting" title="Link to this heading"></a></h2>
+<p>Notice that the data we are generating here (spike trains and time-series) has a clear <strong>temporal order</strong>. Unlike the IID data in the first tutorial, the samples are not independent.</p>
+<p>For this reason, we will <strong>not</strong> set <code class="docutils literal notranslate"><span class="pre">split_mode='random'</span></code>. We will rely on the library’s default behavior (<code class="docutils literal notranslate"><span class="pre">split_mode='blocked'</span></code>), which correctly creates a validation set that is temporally separate from the training set. This is crucial for getting a reliable MI estimate on time-series data.</p>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[1]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">neural_mi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nmi</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">seaborn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sns</span>
+
+<span class="n">sns</span><span class="o">.</span><span class="n">set_context</span><span class="p">(</span><span class="s2">&quot;talk&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<section id="1.-Continuous-Data-(LFP,-EEG,-Calcium-Imaging)">
+<h3>1. Continuous Data (LFP, EEG, Calcium Imaging)<a class="headerlink" href="#1.-Continuous-Data-(LFP,-EEG,-Calcium-Imaging)" title="Link to this heading"></a></h3>
+<p>Continuous signals are the bedrock of many neuroscience experiments. The core challenge is that relationships between them often involve time delays. To find these relationships, we can’t just look at individual time points; we need to analyze <strong>chunks of time</strong>, or <strong>windows</strong>.</p>
+</section>
+</section>
+<section id="Before:-The-Raw-Signal">
+<h2>Before: The Raw Signal<a class="headerlink" href="#Before:-The-Raw-Signal" title="Link to this heading"></a></h2>
+<p>Let’s start with a simple sine wave. This is our raw data, represented as a 2D array of shape <code class="docutils literal notranslate"><span class="pre">(n_channels,</span> <span class="pre">n_timepoints)</span></code>.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[2]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">raw_continuous_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">100</span><span class="p">))</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">)</span>
+
+<span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">raw_continuous_data</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">marker</span><span class="o">=</span><span class="s1">&#39;.&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="s2">&quot;Before: Raw Continuous Signal&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="s2">&quot;Timepoint&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="s2">&quot;Amplitude&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Raw data shape: </span><span class="si">{</span><span class="n">raw_continuous_data</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_4_0.png" src="../_images/tutorials_02_Handling_Neural_Data_4_0.png" />
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+Raw data shape: (1, 100)
+</pre></div></div>
+</div>
+</section>
+<section id="During:-The-Sliding-Window">
+<h2>During: The Sliding Window<a class="headerlink" href="#During:-The-Sliding-Window" title="Link to this heading"></a></h2>
+<p>Now, we apply the <code class="docutils literal notranslate"><span class="pre">ContinuousProcessor</span></code>. We’ll use a <code class="docutils literal notranslate"><span class="pre">window_size</span></code> of 10. The processor slides this window along the signal, creating a new, smaller data segment at each step. The plot below shows the exact data (highlighted in red) that is extracted to create the 5th sample.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[3]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">window_size</span> <span class="o">=</span> <span class="mi">10</span>
+<span class="n">sample_idx_to_show</span> <span class="o">=</span> <span class="mi">5</span>
+<span class="n">start</span> <span class="o">=</span> <span class="n">sample_idx_to_show</span>
+<span class="n">end</span> <span class="o">=</span> <span class="n">start</span> <span class="o">+</span> <span class="n">window_size</span>
+
+<span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">raw_continuous_data</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;gray&#39;</span><span class="p">,</span> <span class="n">marker</span><span class="o">=</span><span class="s1">&#39;.&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">start</span><span class="p">,</span> <span class="n">end</span><span class="p">),</span> <span class="n">raw_continuous_data</span><span class="o">.</span><span class="n">T</span><span class="p">[</span><span class="n">start</span><span class="p">:</span><span class="n">end</span><span class="p">],</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;red&#39;</span><span class="p">,</span> <span class="n">marker</span><span class="o">=</span><span class="s1">&#39;o&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">axvspan</span><span class="p">(</span><span class="n">start</span><span class="p">,</span> <span class="n">end</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;red&#39;</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.2</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;Data for Sample #</span><span class="si">{</span><span class="n">sample_idx_to_show</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="s2">&quot;During: The Sliding Window in Action&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="s2">&quot;Timepoint&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="s2">&quot;Amplitude&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">legend</span><span class="p">()</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_6_0.png" src="../_images/tutorials_02_Handling_Neural_Data_6_0.png" />
+</div>
+</div>
+</section>
+<section id="After:-The-Processed-Tensor">
+<h2>After: The Processed Tensor<a class="headerlink" href="#After:-The-Processed-Tensor" title="Link to this heading"></a></h2>
+<p>The final output is a 3D tensor of shape <code class="docutils literal notranslate"><span class="pre">(n_samples,</span> <span class="pre">n_channels,</span> <span class="pre">window_size)</span></code>. Each of the 91 samples is a snapshot of the signal, 10 timepoints long. The plot below shows the contents of <code class="docutils literal notranslate"><span class="pre">Sample</span> <span class="pre">#5</span></code>—it’s a perfect match for the highlighted region above!</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[4]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">processor</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">ContinuousProcessor</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="n">window_size</span><span class="p">,</span> <span class="n">step_size</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">processed_data</span> <span class="o">=</span> <span class="n">processor</span><span class="o">.</span><span class="n">process</span><span class="p">(</span><span class="n">raw_continuous_data</span><span class="p">)</span>
+
+<span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">processed_data</span><span class="p">[</span><span class="n">sample_idx_to_show</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="p">:]</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="s1">&#39;o-&#39;</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;red&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;After: Contents of Processed Sample #</span><span class="si">{</span><span class="n">sample_idx_to_show</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="s2">&quot;Timepoint within Window&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="s2">&quot;Amplitude&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Processed data shape: </span><span class="si">{</span><span class="n">processed_data</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_8_0.png" src="../_images/tutorials_02_Handling_Neural_Data_8_0.png" />
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+Processed data shape: torch.Size([91, 1, 10])
+</pre></div></div>
+</div>
+<section id="2.-Spike-Data-(Neuronal-Firing)">
+<h3>2. Spike Data (Neuronal Firing)<a class="headerlink" href="#2.-Spike-Data-(Neuronal-Firing)" title="Link to this heading"></a></h3>
+<p>Spike data is fundamentally different. It’s a list of discrete event times. The <code class="docutils literal notranslate"><span class="pre">SpikeProcessor</span></code>’s job is to convert this irregular format into a regular 3D tensor our models can use.</p>
+</section>
+</section>
+<section id="Before:-The-Raw-Spike-Raster">
+<h2>Before: The Raw Spike Raster<a class="headerlink" href="#Before:-The-Raw-Spike-Raster" title="Link to this heading"></a></h2>
+<p>We start with a list of arrays, where each array holds the spike times for one neuron. The best way to visualize this is a raster plot.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[5]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">spike_data</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">generate_correlated_spike_trains</span><span class="p">(</span>
+    <span class="n">n_neurons</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
+    <span class="n">duration</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span> <span class="c1"># Use a shorter duration for visualization</span>
+    <span class="n">firing_rate</span><span class="o">=</span><span class="mi">15</span>
+<span class="p">)</span>
+
+<span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">eventplot</span><span class="p">(</span><span class="n">spike_data</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;black&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="s2">&quot;Before: Raw Spike Data (Raster Plot)&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="s2">&quot;Time (s)&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="s2">&quot;Neuron ID&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_11_0.png" src="../_images/tutorials_02_Handling_Neural_Data_11_0.png" />
+</div>
+</div>
+</section>
+<section id="During:-Windowing-the-Spikes">
+<h2>During: Windowing the Spikes<a class="headerlink" href="#During:-Windowing-the-Spikes" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">SpikeProcessor</span></code> also uses a sliding window. It moves across time and collects any spike times that fall within it. Let’s highlight the window for <code class="docutils literal notranslate"><span class="pre">Sample</span> <span class="pre">#50</span></code>.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[6]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">window_size_s</span> <span class="o">=</span> <span class="mf">0.1</span> <span class="c1"># 100 ms</span>
+<span class="n">step_size_s</span> <span class="o">=</span> <span class="mf">0.01</span>  <span class="c1"># 10 ms</span>
+<span class="n">sample_idx_to_show</span> <span class="o">=</span> <span class="mi">50</span>
+
+<span class="n">start_time</span> <span class="o">=</span> <span class="n">sample_idx_to_show</span> <span class="o">*</span> <span class="n">step_size_s</span>
+<span class="n">end_time</span> <span class="o">=</span> <span class="n">start_time</span> <span class="o">+</span> <span class="n">window_size_s</span>
+
+<span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">eventplot</span><span class="p">(</span><span class="n">spike_data</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;black&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">axvspan</span><span class="p">(</span><span class="n">start_time</span><span class="p">,</span> <span class="n">end_time</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;red&#39;</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.2</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;Data for Sample #</span><span class="si">{</span><span class="n">sample_idx_to_show</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="s2">&quot;During: Windowing the Spike Raster&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="s2">&quot;Time (s)&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="s2">&quot;Neuron ID&quot;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">xlim</span><span class="p">(</span><span class="n">start_time</span> <span class="o">-</span> <span class="n">window_size_s</span><span class="o">*</span><span class="mi">2</span><span class="p">,</span> <span class="n">end_time</span> <span class="o">+</span> <span class="n">window_size_s</span><span class="o">*</span><span class="mi">2</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">legend</span><span class="p">()</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_13_0.png" src="../_images/tutorials_02_Handling_Neural_Data_13_0.png" />
+</div>
+</div>
+</section>
+<section id="After:-The-Padded-Tensor-of-Relative-Times">
+<h2>After: The Padded Tensor of Relative Times<a class="headerlink" href="#After:-The-Padded-Tensor-of-Relative-Times" title="Link to this heading"></a></h2>
+<p>This is the most important step to understand. The final tensor does <strong>not</strong> contain the absolute spike times. It contains:</p>
+<ol class="arabic simple">
+<li><p><strong>Relative Times</strong>: Spike times are measured relative to the start of the window.</p></li>
+<li><p><strong>Padding</strong>: Because each window can have a different number of spikes, the results are padded with zeros up to a fixed length (<code class="docutils literal notranslate"><span class="pre">max_spikes_per_window</span></code>).</p></li>
+</ol>
+<p>Let’s process the data and visualize the exact contents of <code class="docutils literal notranslate"><span class="pre">Sample</span> <span class="pre">#50</span></code>. The text output clearly shows the relative spike times for each neuron and the zero-padding.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[7]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">max_spikes</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">processors</span><span class="o">.</span><span class="n">find_max_spikes_per_window</span><span class="p">(</span><span class="n">spike_data</span><span class="p">,</span> <span class="n">window_size_s</span><span class="p">)</span>
+<span class="n">spike_processor</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">SpikeProcessor</span><span class="p">(</span>
+    <span class="n">window_size</span><span class="o">=</span><span class="n">window_size_s</span><span class="p">,</span> <span class="n">step_size</span><span class="o">=</span><span class="n">step_size_s</span><span class="p">,</span> <span class="n">max_spikes_per_window</span><span class="o">=</span><span class="n">max_spikes</span>
+<span class="p">)</span>
+<span class="n">processed_spike_data</span> <span class="o">=</span> <span class="n">spike_processor</span><span class="o">.</span><span class="n">process</span><span class="p">(</span><span class="n">spike_data</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;After: Contents of Processed Sample #</span><span class="si">{</span><span class="n">sample_idx_to_show</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;---------------------------------------------------&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Window Time: [</span><span class="si">{</span><span class="n">start_time</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">s, </span><span class="si">{</span><span class="n">end_time</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">s]&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Processed Tensor Shape: </span><span class="si">{</span><span class="n">processed_spike_data</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">Contents (Spike times relative to window start):&quot;</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">spike_data</span><span class="p">)):</span>
+    <span class="n">content</span> <span class="o">=</span> <span class="n">processed_spike_data</span><span class="p">[</span><span class="n">sample_idx_to_show</span><span class="p">,</span> <span class="n">i</span><span class="p">,</span> <span class="p">:]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Neuron </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">content</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+After: Contents of Processed Sample #50
+---------------------------------------------------
+Window Time: [0.50s, 0.60s]
+Processed Tensor Shape: torch.Size([189, 5, 7])
+
+Contents (Spike times relative to window start):
+  Neuron 0: [0.019 0.069 0.    0.    0.    0.    0.   ]
+  Neuron 1: [0. 0. 0. 0. 0. 0. 0.]
+  Neuron 2: [0. 0. 0. 0. 0. 0. 0.]
+  Neuron 3: [0. 0. 0. 0. 0. 0. 0.]
+  Neuron 4: [0.03  0.043 0.046 0.099 0.    0.    0.   ]
+</pre></div></div>
+</div>
+<section id="3.-Categorical-Data-(Behavioral-States,-Stimuli)">
+<h3>3. Categorical Data (Behavioral States, Stimuli)<a class="headerlink" href="#3.-Categorical-Data-(Behavioral-States,-Stimuli)" title="Link to this heading"></a></h3>
+<p>Categorical data represents discrete states (e.g., resting, running, stimulus on/off). The <code class="docutils literal notranslate"><span class="pre">CategoricalProcessor</span></code> handles this by first <strong>one-hot encoding</strong> the states and then applying a sliding window.</p>
+</section>
+</section>
+<section id="Before:-The-Raw-State-Sequence">
+<h2>Before: The Raw State Sequence<a class="headerlink" href="#Before:-The-Raw-State-Sequence" title="Link to this heading"></a></h2>
+<p>Let’s generate a sequence of 3 categories (0, 1, 2) for one channel. We can visualize this with <code class="docutils literal notranslate"><span class="pre">imshow</span></code> to see the state transitions over time.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[8]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">raw_cat_data</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">generate_correlated_categorical_series</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span> <span class="n">n_channels</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">n_categories</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">use_torch</span><span class="o">=</span><span class="kc">False</span>
+<span class="p">)</span>
+
+<span class="n">fig</span><span class="p">,</span> <span class="n">ax</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mf">1.5</span><span class="p">))</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">imshow</span><span class="p">(</span><span class="n">raw_cat_data</span><span class="p">,</span> <span class="n">aspect</span><span class="o">=</span><span class="s1">&#39;auto&#39;</span><span class="p">,</span> <span class="n">cmap</span><span class="o">=</span><span class="s1">&#39;viridis&#39;</span><span class="p">,</span> <span class="n">interpolation</span><span class="o">=</span><span class="s1">&#39;nearest&#39;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;Before: Raw Categorical States&quot;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s2">&quot;Timepoint&quot;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">&quot;Channel&quot;</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_yticks</span><span class="p">([])</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Raw data: </span><span class="si">{</span><span class="n">raw_cat_data</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="p">:</span><span class="mi">20</span><span class="p">]</span><span class="si">}</span><span class="s2">...&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_18_0.png" src="../_images/tutorials_02_Handling_Neural_Data_18_0.png" />
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+Raw data: [2 2 2 2 2 2 1 1 1 1 1 1 1 1 1 1 1 1 1 1]...
+</pre></div></div>
+</div>
+</section>
+<section id="During-&amp;-After:-One-Hot-Encoding-and-Windowing">
+<h2>During &amp; After: One-Hot Encoding and Windowing<a class="headerlink" href="#During-&-After:-One-Hot-Encoding-and-Windowing" title="Link to this heading"></a></h2>
+<p>The processor takes a window of these integer states, converts each integer to a one-hot vector, and then flattens them into a single feature vector for that sample.</p>
+<p>Let’s look at the first window. The raw states are <code class="docutils literal notranslate"><span class="pre">[2,</span> <span class="pre">2,</span> <span class="pre">2]</span></code>. Each <code class="docutils literal notranslate"><span class="pre">2</span></code> becomes <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">0,</span> <span class="pre">1]</span></code>. Concatenated, this becomes <code class="docutils literal notranslate"><span class="pre">[0,</span> <span class="pre">0,</span> <span class="pre">1,</span> <span class="pre">0,</span> <span class="pre">0,</span> <span class="pre">1,</span> <span class="pre">0,</span> <span class="pre">0,</span> <span class="pre">1]</span></code>.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[9]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">cat_processor</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">CategoricalProcessor</span><span class="p">(</span><span class="n">window_size</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">step_size</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">processed_cat_data</span> <span class="o">=</span> <span class="n">cat_processor</span><span class="o">.</span><span class="n">process</span><span class="p">(</span><span class="n">raw_cat_data</span><span class="p">)</span>
+
+<span class="n">first_window_raw</span> <span class="o">=</span> <span class="n">raw_cat_data</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="p">:</span><span class="mi">3</span><span class="p">]</span>
+<span class="n">first_window_processed</span> <span class="o">=</span> <span class="n">processed_cat_data</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="p">:]</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Raw states for first window: </span><span class="si">{</span><span class="n">first_window_raw</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Processed one-hot vector:    </span><span class="si">{</span><span class="n">first_window_processed</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">Final processed shape: </span><span class="si">{</span><span class="n">processed_cat_data</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="c1"># Visualize the one-hot encoding</span>
+<span class="n">fig</span><span class="p">,</span> <span class="p">(</span><span class="n">ax1</span><span class="p">,</span> <span class="n">ax2</span><span class="p">)</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="n">gridspec_kw</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;width_ratios&#39;</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">]})</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">imshow</span><span class="p">(</span><span class="n">first_window_raw</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">cmap</span><span class="o">=</span><span class="s1">&#39;viridis&#39;</span><span class="p">,</span> <span class="n">aspect</span><span class="o">=</span><span class="s1">&#39;auto&#39;</span><span class="p">,</span> <span class="n">vmin</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vmax</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;During: Raw Window&quot;</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">set_yticks</span><span class="p">([])</span>
+
+<span class="n">ax2</span><span class="o">.</span><span class="n">imshow</span><span class="p">(</span><span class="n">first_window_processed</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">cmap</span><span class="o">=</span><span class="s1">&#39;gray_r&#39;</span><span class="p">,</span> <span class="n">aspect</span><span class="o">=</span><span class="s1">&#39;auto&#39;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;After: One-Hot Encoded &amp; Flattened Vector&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_yticks</span><span class="p">([])</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+Raw states for first window: [2 2 2]
+Processed one-hot vector:    [0. 0. 1. 0. 0. 1. 0. 0. 1.]
+
+Final processed shape: torch.Size([48, 1, 9])
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_20_1.png" src="../_images/tutorials_02_Handling_Neural_Data_20_1.png" />
+</div>
+</div>
+<section id="4.-Advanced:-Aligning-Mixed-Data-Types">
+<h3>4. Advanced: Aligning Mixed Data Types<a class="headerlink" href="#4.-Advanced:-Aligning-Mixed-Data-Types" title="Link to this heading"></a></h3>
+<p>What if you want to relate continuous LFP data to spike trains? <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> handles this automatically. The internal <code class="docutils literal notranslate"><span class="pre">DataHandler</span></code> processes each data stream and then <strong>aligns them by truncating to the minimum number of samples</strong>. This ensures the final tensors are the same size.</p>
+</section>
+</section>
+<section id="Before:-Unaligned-Raw-Data">
+<h2>Before: Unaligned Raw Data<a class="headerlink" href="#Before:-Unaligned-Raw-Data" title="Link to this heading"></a></h2>
+<p>Let’s create 10 seconds of LFP data (sampled at 100Hz -&gt; 1000 pts) and 10 seconds of spike data. They cover the same duration but are in different formats.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[10]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">x_cont_raw</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)</span>
+<span class="n">y_spike_raw</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">generate_correlated_spike_trains</span><span class="p">(</span><span class="n">n_neurons</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span> <span class="n">duration</span><span class="o">=</span><span class="mf">10.0</span><span class="p">)</span>
+
+<span class="n">fig</span><span class="p">,</span> <span class="p">(</span><span class="n">ax1</span><span class="p">,</span> <span class="n">ax2</span><span class="p">)</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="n">sharex</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">1000</span><span class="p">),</span> <span class="n">x_cont_raw</span><span class="o">.</span><span class="n">T</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;Before: Raw Continuous Data (X)&quot;</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">&quot;Amplitude&quot;</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+
+<span class="n">ax2</span><span class="o">.</span><span class="n">eventplot</span><span class="p">(</span><span class="n">y_spike_raw</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;black&#39;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;Before: Raw Spike Data (Y)&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s2">&quot;Time (s)&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">&quot;Neuron ID&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_23_0.png" src="../_images/tutorials_02_Handling_Neural_Data_23_0.png" />
+</div>
+</div>
+</section>
+<section id="Zoom-in-a-little-bit">
+<h2>Zoom in a little bit<a class="headerlink" href="#Zoom-in-a-little-bit" title="Link to this heading"></a></h2>
+<p>Here we’re just changing the plotting range. However, the number of windows won’t be the same.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[11]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">fig</span><span class="p">,</span> <span class="p">(</span><span class="n">ax1</span><span class="p">,</span> <span class="n">ax2</span><span class="p">)</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="n">sharex</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">1000</span><span class="p">),</span> <span class="n">x_cont_raw</span><span class="o">.</span><span class="n">T</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;Before: Raw Continuous Data (X)&quot;</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">&quot;Amplitude&quot;</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+
+<span class="n">ax2</span><span class="o">.</span><span class="n">eventplot</span><span class="p">(</span><span class="n">y_spike_raw</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;black&#39;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;Before: Raw Spike Data (Y)&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s2">&quot;Time (s)&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">&quot;Neuron ID&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_xlim</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="mf">0.5</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_25_0.png" src="../_images/tutorials_02_Handling_Neural_Data_25_0.png" />
+</div>
+</div>
+</section>
+<section id="After:-Aligned-Processed-Tensors">
+<h2>After: Aligned Processed Tensors<a class="headerlink" href="#After:-Aligned-Processed-Tensors" title="Link to this heading"></a></h2>
+<p>Now we process them. Let’s choose parameters that would theoretically produce a different number of samples:</p>
+<ul class="simple">
+<li><p><strong>Continuous</strong>: <code class="docutils literal notranslate"><span class="pre">(1000</span> <span class="pre">total</span> <span class="pre">pts</span> <span class="pre">-</span> <span class="pre">100</span> <span class="pre">win)</span> <span class="pre">/</span> <span class="pre">10</span> <span class="pre">step</span> <span class="pre">+</span> <span class="pre">1</span> <span class="pre">=</span> <span class="pre">91</span></code> samples.</p></li>
+<li><p><strong>Spikes</strong>: <code class="docutils literal notranslate"><span class="pre">(10s</span> <span class="pre">total</span> <span class="pre">-</span> <span class="pre">0.5s</span> <span class="pre">win)</span> <span class="pre">/</span> <span class="pre">0.05s</span> <span class="pre">step</span> <span class="pre">+</span> <span class="pre">1</span> <span class="pre">=</span> <span class="pre">191</span></code> samples.</p></li>
+</ul>
+<p>The library will automatically detect this mismatch and truncate both to the smaller number, <strong>91 samples</strong>.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[12]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">handler</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">DataHandler</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_cont_raw</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_spike_raw</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span> <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span> <span class="s1">&#39;step_size&#39;</span><span class="p">:</span> <span class="mi">10</span><span class="p">},</span> <span class="c1"># -&gt; 91 samples</span>
+    <span class="n">processor_type_y</span><span class="o">=</span><span class="s1">&#39;spike&#39;</span><span class="p">,</span> <span class="n">processor_params_y</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">,</span> <span class="s1">&#39;step_size&#39;</span><span class="p">:</span> <span class="mf">0.05</span><span class="p">}</span>     <span class="c1"># -&gt; 191 samples</span>
+<span class="p">)</span>
+
+<span class="n">x_processed</span><span class="p">,</span> <span class="n">y_processed</span> <span class="o">=</span> <span class="n">handler</span><span class="o">.</span><span class="n">process</span><span class="p">()</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;--- Theoretical vs. Actual Sample Counts ---&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Continuous theoretical samples: 91&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Spike theoretical samples: 191&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;The library will align to the smaller count.</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;--- Final Processed Shapes ---&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;X (Continuous) shape: </span><span class="si">{</span><span class="n">x_processed</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Y (Spike) shape:      </span><span class="si">{</span><span class="n">y_processed</span><span class="o">.</span><span class="n">shape</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">The number of samples (dim 0) is now identical!&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-20 00:03:21 - neural_mi - WARNING - Post-trimming mismatch: X has 91, Y has 188. Final truncation.
+--- Theoretical vs. Actual Sample Counts ---
+Continuous theoretical samples: 91
+Spike theoretical samples: 191
+The library will align to the smaller count.
+
+--- Final Processed Shapes ---
+X (Continuous) shape: torch.Size([91, 2, 100])
+Y (Spike) shape:      torch.Size([91, 5, 848])
+
+The number of samples (dim 0) is now identical!
+</pre></div></div>
+</div>
+</section>
+<section id="Plotting-the-First-Window..">
+<h2>Plotting the First Window..<a class="headerlink" href="#Plotting-the-First-Window.." title="Link to this heading"></a></h2>
+<p>Here we can see almost the same plot (maybe we loose a spike at the boundaries) but the number of windows is now the same.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[13]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="n">fig</span><span class="p">,</span> <span class="p">(</span><span class="n">ax1</span><span class="p">,</span> <span class="n">ax2</span><span class="p">)</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="n">sharex</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span> <span class="n">x_processed</span><span class="p">[</span><span class="mi">0</span><span class="p">,:,:]</span><span class="o">.</span><span class="n">T</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;After: 1st Window of Continuous Data (X)&quot;</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">&quot;Amplitude&quot;</span><span class="p">)</span>
+<span class="n">ax1</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+
+<span class="n">ax2</span><span class="o">.</span><span class="n">eventplot</span><span class="p">(</span><span class="n">y_processed</span><span class="p">[</span><span class="mi">0</span><span class="p">,:,:],</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;black&#39;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">&quot;After: 1st Window of Spike Data (Y)&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s2">&quot;Time (s)&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">&quot;Neuron ID&quot;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+<span class="n">ax2</span><span class="o">.</span><span class="n">set_xlim</span><span class="p">(</span><span class="n">left</span><span class="o">=</span><span class="mf">0.001</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">tight_layout</span><span class="p">()</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/tutorials_02_Handling_Neural_Data_29_0.png" src="../_images/tutorials_02_Handling_Neural_Data_29_0.png" />
+</div>
+</div>
+<section id="5.-Conclusion">
+<h3>5. Conclusion<a class="headerlink" href="#5.-Conclusion" title="Link to this heading"></a></h3>
+<p>You now have a strong visual intuition for the crucial role of data processors in <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code>.</p>
+<ul class="simple">
+<li><p>Data is converted into <strong>3D Tensors</strong> of <code class="docutils literal notranslate"><span class="pre">(n_samples,</span> <span class="pre">n_channels,</span> <span class="pre">n_features)</span></code>.</p></li>
+<li><p>The key operation is the <strong>sliding window</strong>, which captures temporal context.</p></li>
+<li><p>Each processor has its own logic: <code class="docutils literal notranslate"><span class="pre">Continuous</span></code> grabs signal values, <code class="docutils literal notranslate"><span class="pre">Spike</span></code> grabs relative times and pads, and <code class="docutils literal notranslate"><span class="pre">Categorical</span></code> one-hot encodes.</p></li>
+<li><p>The library automatically <strong>aligns mixed data types</strong> by ensuring they have the same final number of samples.</p></li>
+</ul>
+<p>With this foundation, you are ready for the next tutorial, where we’ll learn how to use <code class="docutils literal notranslate"><span class="pre">mode='sweep'</span></code> to find the optimal window size and other key parameters for your analysis.</p>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="01_A_First_Estimate.html" class="btn btn-neutral float-left" title="Tutorial 1: A First MI Estimate" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="03_Finding_Temporal_Relationships.html" class="btn btn-neutral float-right" title="Tutorial 03: Uncovering Temporal Dynamics in Neural Data" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

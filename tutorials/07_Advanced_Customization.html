@@ -1,0 +1,386 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tutorial 7: Advanced Customization with Custom Models &mdash; NeuralMI 1.1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/nbsphinx-code-cells.css?v=2aa19091" />
+
+  
+    <link rel="canonical" href="https://eslam-abdelaleem.github.io/NeuralMI/tutorials/07_Advanced_Customization.html" />
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=fc837d61"></script>
+      <script src="../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+      <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true}, "options": {"ignoreHtmlClass": "tex2jax_ignore|mathjax_ignore|document", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference" href="../api_reference.html" />
+    <link rel="prev" title="Tutorial 6: Choosing the Right Model and Estimator" href="06_Choosing_the_Right_Model_and_Estimator.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../getting_started.html">Getting Started</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../tutorials.html">Tutorials</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../tutorials.html#part-1-the-fundamentals">Part 1: The Fundamentals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../tutorials.html#part-2-core-concepts-for-scientific-rigor">Part 2: Core Concepts for Scientific Rigor</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../tutorials.html#part-3-advanced-analysis-and-customization">Part 3: Advanced Analysis and Customization</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="05_Uncovering_Latent_Dimensionality.html">Tutorial 5: Uncovering Latent Dimensionality</a></li>
+<li class="toctree-l3"><a class="reference internal" href="06_Choosing_the_Right_Model_and_Estimator.html">Tutorial 6: Choosing the Right Model and Estimator</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Tutorial 7: Advanced Customization with Custom Models</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#1.-The-Requirements-for-a-Custom-Model">1. The Requirements for a Custom Model</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#2.-Method-1:-Full-Control-with-custom_critic">2. Method 1: Full Control with <code class="docutils literal notranslate"><span class="pre">custom_critic</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#3.-Method-2:-Modular-Control-with-custom_embedding_cls">3. Method 2: Modular Control with <code class="docutils literal notranslate"><span class="pre">custom_embedding_cls</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#4.-Conclusion">4. Conclusion</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../api_reference.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../further_reading.html">Further Reading</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content style-external-links">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../tutorials.html">Tutorials</a></li>
+      <li class="breadcrumb-item active">Tutorial 7: Advanced Customization with Custom Models</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/tutorials/07_Advanced_Customization.ipynb.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="Tutorial-7:-Advanced-Customization-with-Custom-Models">
+<h1>Tutorial 7: Advanced Customization with Custom Models<a class="headerlink" href="#Tutorial-7:-Advanced-Customization-with-Custom-Models" title="Link to this heading"></a></h1>
+<p>Welcome to our final tutorial! You have now mastered the main workflows of <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code>, from simple estimates to rigorous, publication-ready analyses. But what happens when your research requires a model architecture that isn’t built into the library?</p>
+<p>This tutorial is for the advanced user who wants maximum flexibility. We will show you how to define your own models using PyTorch and seamlessly integrate them into the <code class="docutils literal notranslate"><span class="pre">nmi.run</span></code> pipeline, ensuring that <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> can grow with your research needs.</p>
+<section id="1.-The-Requirements-for-a-Custom-Model">
+<h2>1. The Requirements for a Custom Model<a class="headerlink" href="#1.-The-Requirements-for-a-Custom-Model" title="Link to this heading"></a></h2>
+<p>To be compatible with the <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> trainer, any custom model must meet two simple requirements:</p>
+<ol class="arabic simple">
+<li><p>It must inherit from <strong>``nmi.models.BaseCritic``</strong>.</p></li>
+<li><p>Its <code class="docutils literal notranslate"><span class="pre">forward</span></code> method must accept two arguments, <code class="docutils literal notranslate"><span class="pre">x</span></code> and <code class="docutils literal notranslate"><span class="pre">y</span></code>, and return a <strong>tuple</strong> containing:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">scores</span></code>: A <code class="docutils literal notranslate"><span class="pre">(batch_size,</span> <span class="pre">batch_size)</span></code> tensor of similarity scores.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">kl_loss</span></code>: A scalar tensor for any KL divergence loss. If not using a variational model, this should be <code class="docutils literal notranslate"><span class="pre">torch.tensor(0.0)</span></code>.</p></li>
+</ul>
+</li>
+</ol>
+<p>Let’s explore the two main ways to achieve this.</p>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[1]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">neural_mi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nmi</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">seaborn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sns</span>
+
+<span class="n">sns</span><span class="o">.</span><span class="n">set_context</span><span class="p">(</span><span class="s2">&quot;talk&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</section>
+<section id="2.-Method-1:-Full-Control-with-custom_critic">
+<h2>2. Method 1: Full Control with <code class="docutils literal notranslate"><span class="pre">custom_critic</span></code><a class="headerlink" href="#2.-Method-1:-Full-Control-with-custom_critic" title="Link to this heading"></a></h2>
+<p>This method gives you complete control. You define the entire critic architecture from scratch and pass a pre-initialized <strong>instance</strong> of your model to <code class="docutils literal notranslate"><span class="pre">nmi.run</span></code>.</p>
+<p>Let’s build a simple custom critic that uses a linear embedding layer.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[2]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># Define a simple embedding model (can be anything that inherits from BaseEmbedding)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">LinearEmbedding</span><span class="p">(</span><span class="n">nmi</span><span class="o">.</span><span class="n">models</span><span class="o">.</span><span class="n">BaseEmbedding</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">input_dim</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">layer</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">input_dim</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+        <span class="n">x_flat</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">x</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">layer</span><span class="p">(</span><span class="n">x_flat</span><span class="p">)</span>
+
+<span class="c1"># Define our custom critic that uses the embedding model</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MyCustomSeparableCritic</span><span class="p">(</span><span class="n">nmi</span><span class="o">.</span><span class="n">models</span><span class="o">.</span><span class="n">BaseCritic</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">input_dim</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">embedding_net</span> <span class="o">=</span> <span class="n">LinearEmbedding</span><span class="p">(</span><span class="n">input_dim</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">):</span>
+        <span class="n">x_embedded</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">embedding_net</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+        <span class="n">y_embedded</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">embedding_net</span><span class="p">(</span><span class="n">y</span><span class="p">)</span>
+        <span class="n">scores</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">x_embedded</span><span class="p">,</span> <span class="n">y_embedded</span><span class="o">.</span><span class="n">t</span><span class="p">())</span>
+        <span class="k">return</span> <span class="n">scores</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">scores</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Custom critic class defined successfully!&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+Custom critic class defined successfully!
+</pre></div></div>
+</div>
+<section id="Using-the-Custom-Critic-in-nmi.run">
+<h3>Using the Custom Critic in <code class="docutils literal notranslate"><span class="pre">nmi.run</span></code><a class="headerlink" href="#Using-the-Custom-Critic-in-nmi.run" title="Link to this heading"></a></h3>
+<p>Using our new model is simple: we instantiate our critic and pass the <strong>instance</strong> to the <code class="docutils literal notranslate"><span class="pre">custom_critic</span></code> argument. The library will then skip its internal model-building logic and use our model directly. Any model architecture parameters in <code class="docutils literal notranslate"><span class="pre">base_params</span></code> (like <code class="docutils literal notranslate"><span class="pre">embedding_dim</span></code>, <code class="docutils literal notranslate"><span class="pre">hidden_dim</span></code>, etc.) will be ignored.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[3]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># --- Generate some simple data ---</span>
+<span class="n">x_raw</span><span class="p">,</span> <span class="n">y_raw</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">generate_correlated_gaussians</span><span class="p">(</span><span class="n">n_samples</span><span class="o">=</span><span class="mi">5000</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span> <span class="n">mi</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+
+<span class="c1"># --- Instantiate our model ---</span>
+<span class="n">my_critic_instance</span> <span class="o">=</span> <span class="n">MyCustomSeparableCritic</span><span class="p">(</span><span class="n">input_dim</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="o">=</span><span class="mi">16</span><span class="p">)</span>
+
+<span class="c1"># --- Define trainer parameters (no model architecture params needed) ---</span>
+<span class="n">base_params</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;n_epochs&#39;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span> <span class="s1">&#39;learning_rate&#39;</span><span class="p">:</span> <span class="mf">1e-3</span><span class="p">,</span> <span class="s1">&#39;batch_size&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span>
+    <span class="s1">&#39;patience&#39;</span><span class="p">:</span> <span class="mi">10</span>
+<span class="p">}</span>
+
+<span class="c1"># --- Run the estimation ---</span>
+<span class="n">results</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw</span><span class="o">.</span><span class="n">T</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;estimate&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params</span><span class="p">,</span>
+    <span class="n">split_mode</span><span class="o">=</span><span class="s1">&#39;random&#39;</span><span class="p">,</span>
+    <span class="n">custom_critic</span><span class="o">=</span><span class="n">my_critic_instance</span><span class="p">,</span> <span class="c1"># Here is the magic!</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">--- Results with custom_critic ---&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Ground Truth MI:  2.000 bits&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Estimated MI:     </span><span class="si">{</span><span class="n">results</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-20 00:10:41 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "b94c5d97570f448384ad8db9cc48c7b2", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "66971a3c32dd44d1aa3bf5921da232b6", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-20 00:10:45 - neural_mi - INFO - Parameter sweep finished.
+
+--- Results with custom_critic ---
+Ground Truth MI:  2.000 bits
+Estimated MI:     1.579 bits
+</pre></div></div>
+</div>
+</section>
+</section>
+<section id="3.-Method-2:-Modular-Control-with-custom_embedding_cls">
+<h2>3. Method 2: Modular Control with <code class="docutils literal notranslate"><span class="pre">custom_embedding_cls</span></code><a class="headerlink" href="#3.-Method-2:-Modular-Control-with-custom_embedding_cls" title="Link to this heading"></a></h2>
+<p>Sometimes you don’t need to reinvent the wheel. You might like the library’s built-in <code class="docutils literal notranslate"><span class="pre">SeparableCritic</span></code>, but you just want to swap out the embedding model (e.g., use a Transformer instead of an MLP).</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">custom_embedding_cls</span></code> parameter is perfect for this. Instead of a model <em>instance</em>, you provide the <strong>class</strong> of your custom embedding model. The library will then handle instantiating it for you, using the architecture parameters from <code class="docutils literal notranslate"><span class="pre">base_params</span></code>.</p>
+<p><strong>Important:</strong> For this to work, your custom embedding’s <code class="docutils literal notranslate"><span class="pre">__init__</span></code> method must be designed to accept the standard parameters that the library provides: <code class="docutils literal notranslate"><span class="pre">input_dim</span></code>, <code class="docutils literal notranslate"><span class="pre">hidden_dim</span></code>, <code class="docutils literal notranslate"><span class="pre">embed_dim</span></code>, and <code class="docutils literal notranslate"><span class="pre">n_layers</span></code>.</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[4]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># Define a more complex custom embedding that is compatible with the library&#39;s builder</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">CustomMLP</span><span class="p">(</span><span class="n">nmi</span><span class="o">.</span><span class="n">models</span><span class="o">.</span><span class="n">BaseEmbedding</span><span class="p">):</span>
+    <span class="c1"># This __init__ signature matches the arguments the library&#39;s internal builder will provide</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">input_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">hidden_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">embed_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">n_layers</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">activation</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;relu&#39;</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+
+        <span class="c1"># You can define any architecture you want inside</span>
+        <span class="n">layers</span> <span class="o">=</span> <span class="p">[</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">input_dim</span><span class="p">,</span> <span class="n">hidden_dim</span><span class="p">),</span> <span class="n">nn</span><span class="o">.</span><span class="n">ReLU</span><span class="p">()]</span>
+        <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_layers</span> <span class="o">-</span> <span class="mi">1</span><span class="p">):</span>
+            <span class="n">layers</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">hidden_dim</span><span class="p">,</span> <span class="n">hidden_dim</span><span class="p">),</span> <span class="n">nn</span><span class="o">.</span><span class="n">ReLU</span><span class="p">()])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">network</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span><span class="p">(</span><span class="o">*</span><span class="n">layers</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">output_layer</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">hidden_dim</span><span class="p">,</span> <span class="n">embed_dim</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">output_layer</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">network</span><span class="p">(</span><span class="n">x</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">x</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)))</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;CustomMLP class defined successfully!&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+CustomMLP class defined successfully!
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[5]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span><span class="c1"># --- Define model and trainer parameters ---</span>
+<span class="c1"># This time, we DO need to provide the architecture params, as the library will use them</span>
+<span class="c1"># to instantiate our CustomMLP class.</span>
+<span class="n">base_params_cls</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;n_epochs&#39;</span><span class="p">:</span> <span class="mi">50</span><span class="p">,</span> <span class="s1">&#39;learning_rate&#39;</span><span class="p">:</span> <span class="mf">1e-3</span><span class="p">,</span> <span class="s1">&#39;batch_size&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span>
+    <span class="s1">&#39;patience&#39;</span><span class="p">:</span> <span class="mi">10</span><span class="p">,</span> <span class="s1">&#39;embedding_dim&#39;</span><span class="p">:</span> <span class="mi">16</span><span class="p">,</span> <span class="s1">&#39;hidden_dim&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span> <span class="s1">&#39;n_layers&#39;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="s1">&#39;critic_type&#39;</span><span class="p">:</span> <span class="s1">&#39;separable&#39;</span>
+<span class="p">}</span>
+
+<span class="c1"># --- Run the estimation ---</span>
+<span class="n">results_cls</span> <span class="o">=</span> <span class="n">nmi</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">x_data</span><span class="o">=</span><span class="n">x_raw</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">y_data</span><span class="o">=</span><span class="n">y_raw</span><span class="o">.</span><span class="n">T</span><span class="p">,</span>
+    <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;estimate&#39;</span><span class="p">,</span>
+    <span class="n">processor_type_x</span><span class="o">=</span><span class="s1">&#39;continuous&#39;</span><span class="p">,</span>
+    <span class="n">processor_params_x</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;window_size&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+    <span class="n">split_mode</span><span class="o">=</span><span class="s1">&#39;random&#39;</span><span class="p">,</span>
+    <span class="n">base_params</span><span class="o">=</span><span class="n">base_params_cls</span><span class="p">,</span>
+    <span class="n">custom_embedding_cls</span><span class="o">=</span><span class="n">CustomMLP</span><span class="p">,</span> <span class="c1"># Pass the CLASS here</span>
+    <span class="n">n_workers</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+    <span class="n">random_seed</span><span class="o">=</span><span class="mi">42</span>
+<span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">--- Results with custom_embedding_cls ---&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Ground Truth MI:  2.000 bits&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Estimated MI:     </span><span class="si">{</span><span class="n">results_cls</span><span class="o">.</span><span class="n">mi_estimate</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> bits&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-20 00:10:45 - neural_mi - INFO - Starting parameter sweep sequentially (n_workers=1)...
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "b4a013c02bdc42fca57ff8504b1416e7", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "649d9c6add3e4a8488ea1de7b7304f8f", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+2025-10-20 00:10:48 - neural_mi - INFO - Parameter sweep finished.
+
+--- Results with custom_embedding_cls ---
+Ground Truth MI:  2.000 bits
+Estimated MI:     1.944 bits
+</pre></div></div>
+</div>
+<p>Success! The estimate is probably more accurate. This modular approach allows you to leverage the library’s tested critic architectures while still having the freedom to design novel embedding models for your specific data.</p>
+</section>
+<section id="4.-Conclusion">
+<h2>4. Conclusion<a class="headerlink" href="#4.-Conclusion" title="Link to this heading"></a></h2>
+<p>Congratulations! You have completed the <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> learning path. You now have the skills to handle complex neural data, choose the right model architecture, perform scientifically rigorous analyses, and even extend the library with your own custom models.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">custom_critic</span></code> and <code class="docutils literal notranslate"><span class="pre">custom_embedding_cls</span></code> features provide escape hatches for maximum flexibility, ensuring that <code class="docutils literal notranslate"><span class="pre">NeuralMI</span></code> can serve as the foundation for your analysis, no matter how specialized your research becomes.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="06_Choosing_the_Right_Model_and_Estimator.html" class="btn btn-neutral float-left" title="Tutorial 6: Choosing the Right Model and Estimator" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../api_reference.html" class="btn btn-neutral float-right" title="API Reference" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

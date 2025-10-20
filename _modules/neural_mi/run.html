@@ -5,15 +5,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>neural_mi.run &mdash; NeuralMI 1.0.0 documentation</title>
+  <title>neural_mi.run &mdash; NeuralMI 1.1.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
 
   
-    <link rel="canonical" href="https://eslam-abdelaleem.github.io/NeuralMI/_modules/neural_mi/run.html"/>
+    <link rel="canonical" href="https://eslam-abdelaleem.github.io/NeuralMI/_modules/neural_mi/run.html" />
       <script src="../../_static/jquery.js?v=5d32c60e"></script>
       <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../../_static/documentation_options.js?v=fc837d61"></script>
       <script src="../../_static/doctools.js?v=9a2dae69"></script>
       <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
       <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
@@ -59,7 +59,7 @@
       </nav>
 
       <div class="wy-nav-content">
-        <div class="rst-content">
+        <div class="rst-content style-external-links">
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
@@ -188,11 +188,15 @@
     <span class="n">random_seed</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">verbose</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">device</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">split_mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;blocked&#39;</span><span class="p">,</span>
+    <span class="n">train_indices</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">test_indices</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">delta_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span><span class="p">,</span>
     <span class="n">min_gamma_points</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
     <span class="n">confidence_level</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.68</span><span class="p">,</span>
     <span class="o">**</span><span class="n">analysis_kwargs</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Results</span><span class="p">:</span>
+
 <span class="w">    </span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;The unified entry point for all analyses in the NeuralMI library.</span>
 <span class="sd">    </span>
@@ -264,6 +268,13 @@
 <span class="sd">    device : str, optional</span>
 <span class="sd">        The compute device to use (e.g., &#39;cpu&#39;, &#39;cuda&#39;, &#39;mps&#39;). If None, it</span>
 <span class="sd">        is auto-detected. Defaults to None.</span>
+<span class="sd">    split_mode : {&#39;blocked&#39;, &#39;random&#39;}, default=&#39;blocked&#39;</span>
+<span class="sd">        Method for splitting data. &#39;blocked&#39; is for time-series, &#39;random&#39; for IID.</span>
+<span class="sd">        Ignored if train/test indices are provided.</span>
+<span class="sd">    train_indices : np.ndarray, optional</span>
+<span class="sd">        Specific indices for the training set.</span>
+<span class="sd">    test_indices : np.ndarray, optional</span>
+<span class="sd">        Specific indices for the test set.</span>
 <span class="sd">    delta_threshold : float, default=0.1</span>
 <span class="sd">        For ``mode=&#39;rigorous&#39;``, the curvature threshold for determining the</span>
 <span class="sd">        linear region of the MI vs. 1/gamma plot. Lower values enforce</span>
@@ -350,6 +361,16 @@
     <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;custom_critic&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">custom_critic</span>
     <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;custom_embedding_cls&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">custom_embedding_cls</span>
     <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;save_best_model_path&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">save_best_model_path</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;split_mode&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">split_mode</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;train_indices&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">train_indices</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;test_indices&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">test_indices</span>
+    
+    <span class="c1"># ** THE FIX IS HERE **</span>
+    <span class="c1"># Add processor info to base_params BEFORE the analysis functions are called.</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_type_x&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_type_x</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_params_x&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_params_x</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_type_y&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_type_y</span>
+    <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_params_y&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_params_y</span>
 
     <span class="n">run_params</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;mode&quot;</span><span class="p">:</span> <span class="n">mode</span><span class="p">,</span> <span class="s2">&quot;processor_type_x&quot;</span><span class="p">:</span> <span class="n">processor_type_x</span><span class="p">,</span> <span class="s2">&quot;processor_params_x&quot;</span><span class="p">:</span> <span class="n">processor_params_x</span><span class="p">,</span>
                   <span class="s2">&quot;processor_type_y&quot;</span><span class="p">:</span> <span class="n">processor_type_y</span><span class="p">,</span> <span class="s2">&quot;processor_params_y&quot;</span><span class="p">:</span> <span class="n">processor_params_y</span><span class="p">,</span>
@@ -358,6 +379,7 @@
                   <span class="s2">&quot;min_gamma_points&quot;</span><span class="p">:</span> <span class="n">min_gamma_points</span><span class="p">,</span> <span class="s2">&quot;confidence_level&quot;</span><span class="p">:</span> <span class="n">confidence_level</span><span class="p">,</span>
                   <span class="o">**</span><span class="n">analysis_kwargs</span><span class="p">}</span>
 
+
     <span class="n">processor_param_keys</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;window_size&#39;</span><span class="p">,</span> <span class="s1">&#39;step_size&#39;</span><span class="p">,</span> <span class="s1">&#39;n_seconds&#39;</span><span class="p">,</span> <span class="s1">&#39;max_spikes_per_window&#39;</span><span class="p">,</span> <span class="s1">&#39;data_format&#39;</span><span class="p">]</span>
     <span class="n">is_proc_sweep</span> <span class="o">=</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;sweep&#39;</span> <span class="ow">and</span> <span class="nb">any</span><span class="p">(</span><span class="n">key</span> <span class="ow">in</span> <span class="p">(</span><span class="n">sweep_grid</span> <span class="ow">or</span> <span class="p">{})</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">processor_param_keys</span><span class="p">)</span>
     
@@ -365,10 +387,6 @@
 
     <span class="k">if</span> <span class="n">is_proc_sweep</span> <span class="ow">or</span> <span class="n">mode</span> <span class="o">==</span> <span class="s1">&#39;lag&#39;</span><span class="p">:</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Detected sweep over processor or lag parameters. Deferring data processing to workers.&quot;</span><span class="p">)</span>
-        <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_type_x&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_type_x</span>
-        <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_params_x&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_params_x</span>
-        <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_type_y&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_type_y</span>
-        <span class="n">base_params</span><span class="p">[</span><span class="s1">&#39;processor_params_y&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">processor_params_y</span>
         <span class="c1"># Use handler&#39;s raw data for deferred processing</span>
         <span class="n">x_run_data</span><span class="p">,</span> <span class="n">y_run_data</span> <span class="o">=</span> <span class="n">handler</span><span class="o">.</span><span class="n">x_data</span><span class="p">,</span> <span class="n">handler</span><span class="o">.</span><span class="n">y_data</span>
     <span class="k">else</span><span class="p">:</span>

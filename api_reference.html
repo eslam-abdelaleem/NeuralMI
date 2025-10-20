@@ -6,15 +6,15 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>API Reference &mdash; NeuralMI 1.0.0 documentation</title>
+  <title>API Reference &mdash; NeuralMI 1.1.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
 
   
-    <link rel="canonical" href="https://eslam-abdelaleem.github.io/NeuralMI/api_reference.html"/>
+    <link rel="canonical" href="https://eslam-abdelaleem.github.io/NeuralMI/api_reference.html" />
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=8d563738"></script>
+      <script src="_static/documentation_options.js?v=fc837d61"></script>
       <script src="_static/doctools.js?v=9a2dae69"></script>
       <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
       <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
@@ -22,7 +22,7 @@
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
     <link rel="next" title="Further Reading" href="further_reading.html" />
-    <link rel="prev" title="Tutorial 7: Advanced Customization with Custom Models" href="tutorials/Tutorial_07_Advanced_Customization.html" /> 
+    <link rel="prev" title="Tutorial 7: Advanced Customization with Custom Models" href="tutorials/07_Advanced_Customization.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -49,7 +49,7 @@
 <li class="toctree-l1"><a class="reference internal" href="getting_started.html">Getting Started</a></li>
 <li class="toctree-l1"><a class="reference internal" href="tutorials.html">Tutorials</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">API Reference</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="#core-function">Core Function</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#the-core-run-function">The Core <cite>run()</cite> Function</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#neural_mi.run"><code class="docutils literal notranslate"><span class="pre">run()</span></code></a></li>
 </ul>
 </li>
@@ -65,8 +65,29 @@
 </li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#data-generation-datasets">Data Generation (<cite>datasets</cite>)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_correlated_gaussians"><code class="docutils literal notranslate"><span class="pre">generate_correlated_gaussians()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_nonlinear_from_latent"><code class="docutils literal notranslate"><span class="pre">generate_nonlinear_from_latent()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_temporally_convolved_data"><code class="docutils literal notranslate"><span class="pre">generate_temporally_convolved_data()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_xor_data"><code class="docutils literal notranslate"><span class="pre">generate_xor_data()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_event_related_data"><code class="docutils literal notranslate"><span class="pre">generate_event_related_data()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_linear_data"><code class="docutils literal notranslate"><span class="pre">generate_linear_data()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id0"><code class="docutils literal notranslate"><span class="pre">generate_linear_data()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_nonlinear_data"><code class="docutils literal notranslate"><span class="pre">generate_nonlinear_data()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id1"><code class="docutils literal notranslate"><span class="pre">generate_nonlinear_data()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_history_data"><code class="docutils literal notranslate"><span class="pre">generate_history_data()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.datasets.generate_full_data"><code class="docutils literal notranslate"><span class="pre">generate_full_data()</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#visualization-visualize">Visualization (<cite>visualize</cite>)</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.visualize.plot_sweep_curve"><code class="docutils literal notranslate"><span class="pre">plot_sweep_curve()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.visualize.plot_bias_correction_fit"><code class="docutils literal notranslate"><span class="pre">plot_bias_correction_fit()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.visualize.plot_cross_correlation"><code class="docutils literal notranslate"><span class="pre">plot_cross_correlation()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.visualize.analyze_mi_heatmap"><code class="docutils literal notranslate"><span class="pre">analyze_mi_heatmap()</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#configuration">Configuration</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#neural_mi.set_verbosity"><code class="docutils literal notranslate"><span class="pre">set_verbosity()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="#neural_mi.logger.set_verbosity"><code class="docutils literal notranslate"><span class="pre">set_verbosity()</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#exceptions">Exceptions</a><ul>
@@ -91,7 +112,7 @@
       </nav>
 
       <div class="wy-nav-content">
-        <div class="rst-content">
+        <div class="rst-content style-external-links">
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
@@ -107,13 +128,14 @@
              
   <section id="api-reference">
 <h1>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h1>
-<p>This page provides a detailed look at the functions, classes, and exceptions within the <code class="docutils literal notranslate"><span class="pre">neural_mi</span></code> library.</p>
-<section id="core-function">
-<h2>Core Function<a class="headerlink" href="#core-function" title="Link to this heading"></a></h2>
-<p>This is the main entry point for all analyses in the library.</p>
+<p>Welcome to the technical reference for <cite>NeuralMI</cite>. This page provides detailed documentation on the public functions, classes, and modules that make up the library’s API.</p>
+<p>For a high-level overview and practical examples, please see the <a class="reference internal" href="tutorials.html"><span class="doc">Tutorials</span></a>. For implementation details, feel free to explore the source code on our <a class="reference external" href="https://github.com/eslam-abdelaleem/NeuralMI">GitHub repository</a>.</p>
+<section id="the-core-run-function">
+<h2>The Core <cite>run()</cite> Function<a class="headerlink" href="#the-core-run-function" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">run()</span></code> function is the main entry point for all analyses in the library. It is a unified interface that orchestrates data processing, model training, and results aggregation based on the specified <code class="docutils literal notranslate"><span class="pre">mode</span></code>.</p>
 <dl class="py function">
 <dt class="sig sig-object py" id="neural_mi.run">
-<span class="sig-prename descclassname"><span class="pre">neural_mi.</span></span><span class="sig-name descname"><span class="pre">run</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x_data</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">ndarray</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">Tensor</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">List</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_data</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">ndarray</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">Tensor</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">List</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mode</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'estimate'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_type</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_params</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_type_x</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_params_x</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_type_y</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_params_y</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_params</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sweep_grid</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">list</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_units</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'bits'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">estimator</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'infonce'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">estimator_params</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_critic</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Module</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_embedding_cls</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">type</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_best_model_path</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">random_seed</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">delta_threshold</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_gamma_points</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">confidence_level</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0.68</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">analysis_kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#neural_mi.results.Results" title="neural_mi.results.Results"><span class="pre">Results</span></a></span></span><a class="reference internal" href="_modules/neural_mi/run.html#run"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.run" title="Link to this definition"></a></dt>
+<span class="sig-prename descclassname"><span class="pre">neural_mi.</span></span><span class="sig-name descname"><span class="pre">run</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x_data</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">ndarray</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">Tensor</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">List</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_data</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">ndarray</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">Tensor</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">List</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mode</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'estimate'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_type</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_params</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_type_x</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_params_x</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_type_y</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">processor_params_y</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_params</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sweep_grid</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">list</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_units</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'bits'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">estimator</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'infonce'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">estimator_params</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_critic</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Module</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_embedding_cls</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">type</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_best_model_path</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">random_seed</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">split_mode</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'blocked'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">train_indices</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">ndarray</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">test_indices</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">ndarray</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">delta_threshold</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_gamma_points</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">confidence_level</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0.68</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">analysis_kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference internal" href="#neural_mi.results.Results" title="neural_mi.results.Results"><span class="pre">Results</span></a></span></span><a class="reference internal" href="_modules/neural_mi/run.html#run"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.run" title="Link to this definition"></a></dt>
 <dd><p>The unified entry point for all analyses in the NeuralMI library.</p>
 <p>This function provides a single, consistent interface for various mutual
 information estimation workflows. It handles data validation, processing,
@@ -167,6 +189,10 @@ Defaults to None.</p></li>
 <li><p><strong>verbose</strong> (<em>bool</em><em>, </em><em>default=True</em>) – If True, progress bars and informational logs will be displayed.</p></li>
 <li><p><strong>device</strong> (<em>str</em><em>, </em><em>optional</em>) – The compute device to use (e.g., ‘cpu’, ‘cuda’, ‘mps’). If None, it
 is auto-detected. Defaults to None.</p></li>
+<li><p><strong>split_mode</strong> (<em>{'blocked'</em><em>, </em><em>'random'}</em><em>, </em><em>default='blocked'</em>) – Method for splitting data. ‘blocked’ is for time-series, ‘random’ for IID.
+Ignored if train/test indices are provided.</p></li>
+<li><p><strong>train_indices</strong> (<em>np.ndarray</em><em>, </em><em>optional</em>) – Specific indices for the training set.</p></li>
+<li><p><strong>test_indices</strong> (<em>np.ndarray</em><em>, </em><em>optional</em>) – Specific indices for the test set.</p></li>
 <li><p><strong>delta_threshold</strong> (<em>float</em><em>, </em><em>default=0.1</em>) – For <code class="docutils literal notranslate"><span class="pre">mode='rigorous'</span></code>, the curvature threshold for determining the
 linear region of the MI vs. 1/gamma plot. Lower values enforce
 stricter linearity.</p></li>
@@ -220,8 +246,8 @@ inspected as a dataframe or plotted directly via its <code class="docutils liter
 
 </section>
 <section id="the-results-object">
-<span id="results-object"></span><h2>The Results Object<a class="headerlink" href="#the-results-object" title="Link to this heading"></a></h2>
-<p>All calls to <code class="docutils literal notranslate"><span class="pre">run()</span></code> return a special <code class="docutils literal notranslate"><span class="pre">Results</span></code> object. It holds all the information from the analysis and has a built-in plotting method.</p>
+<h2>The Results Object<a class="headerlink" href="#the-results-object" title="Link to this heading"></a></h2>
+<p>All calls to <code class="docutils literal notranslate"><span class="pre">run()</span></code> return a <code class="docutils literal notranslate"><span class="pre">Results</span></code> object. This object acts as a container for all the outputs of an analysis, providing convenient access to the final MI estimate, the raw data, and a built-in plotting method.</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="neural_mi.results.Results">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.results.</span></span><span class="sig-name descname"><span class="pre">Results</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mode:</span> <span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">params:</span> <span class="pre">~typing.Dict[str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">~typing.Any]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mi_estimate:</span> <span class="pre">float</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dataframe:</span> <span class="pre">~pandas.core.frame.DataFrame</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">details:</span> <span class="pre">~typing.Dict[str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">~typing.Any]</span> <span class="pre">=</span> <span class="pre">&lt;factory&gt;</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/results.html#Results"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.results.Results" title="Link to this definition"></a></dt>
@@ -327,12 +353,284 @@ function (e.g., <cite>figsize</cite>, <cite>show</cite>, <cite>title</cite>).</p
 </dd></dl>
 
 </section>
+<section id="data-generation-datasets">
+<h2>Data Generation (<cite>datasets</cite>)<a class="headerlink" href="#data-generation-datasets" title="Link to this heading"></a></h2>
+<p>This module provides functions to generate synthetic datasets with known properties. These are useful for testing estimators, validating models, and following the tutorials.</p>
+<p id="module-neural_mi.datasets">This package contains functions for generating synthetic datasets.</p>
+<p>These functions are useful for testing, validating, and demonstrating the
+capabilities of the mutual information estimators in the library.</p>
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_correlated_gaussians">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_correlated_gaussians</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dim</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mi</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_torch</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">ndarray</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">ndarray</span><span class="p"><span class="pre">]</span></span></span></span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_correlated_gaussians"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_correlated_gaussians" title="Link to this definition"></a></dt>
+<dd><p>Generates two correlated multivariate Gaussian datasets.</p>
+<p>The ground truth mutual information between these two variables can be
+calculated analytically.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>n_samples</strong> (<em>int</em>) – The number of samples to generate.</p></li>
+<li><p><strong>dim</strong> (<em>int</em>) – The number of dimensions for each variable.</p></li>
+<li><p><strong>mi</strong> (<em>float</em>) – The ground truth mutual information in bits.</p></li>
+<li><p><strong>use_torch</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, returns torch.Tensors; otherwise, returns NumPy arrays.
+Defaults to True.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A tuple containing:
+- <strong>x</strong> (<em>np.ndarray</em> or <em>torch.Tensor</em>): The first dataset, of shape <cite>(n_samples, dim)</cite>.
+- <strong>y</strong> (<em>np.ndarray</em> or <em>torch.Tensor</em>): The second dataset, of shape <cite>(n_samples, dim)</cite>.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Tuple[np.ndarray, np.ndarray]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_nonlinear_from_latent">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_nonlinear_from_latent</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">latent_dim</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">observed_dim</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mi</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hidden_dim</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">64</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_torch</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">ndarray</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">ndarray</span><span class="p"><span class="pre">]</span></span></span></span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_nonlinear_from_latent"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_nonlinear_from_latent" title="Link to this definition"></a></dt>
+<dd><p>Generates two nonlinearly related datasets from a shared latent variable.</p>
+<p>A low-dimensional latent variable <cite>z</cite> is first generated. Two observed
+variables, <cite>x</cite> and <cite>y</cite>, are then created as nonlinear projections of <cite>z</cite>
+with added noise.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>n_samples</strong> (<em>int</em>) – The number of samples to generate.</p></li>
+<li><p><strong>latent_dim</strong> (<em>int</em>) – The dimensionality of the shared latent variable <cite>z</cite>.</p></li>
+<li><p><strong>observed_dim</strong> (<em>int</em>) – The dimensionality of the observed variables <cite>x</cite> and <cite>y</cite>.</p></li>
+<li><p><strong>mi</strong> (<em>float</em>) – The ground truth MI between the latent variables Z_x and Z_y in bits.</p></li>
+<li><p><strong>hidden_dim</strong> (<em>int</em><em>, </em><em>optional</em>) – The hidden dimension of the transforming MLPs. Defaults to 64.</p></li>
+<li><p><strong>use_torch</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, returns torch.Tensors. Defaults to True.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A tuple containing:
+- <strong>x</strong> (<em>np.ndarray</em> or <em>torch.Tensor</em>): The first dataset, of shape <cite>(n_samples, observed_dim)</cite>.
+- <strong>y</strong> (<em>np.ndarray</em> or <em>torch.Tensor</em>): The second dataset, of shape <cite>(n_samples, observed_dim)</cite>.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Tuple[np.ndarray, np.ndarray]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_temporally_convolved_data">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_temporally_convolved_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_torch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_temporally_convolved_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_temporally_convolved_data" title="Link to this definition"></a></dt>
+<dd><p>Generates data where Y is a simple time-delayed version of X.</p>
+<p>This creates a clean, unambiguous temporal relationship ideal for testing
+the windowing functionality of the MI estimator.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>n_samples</strong> (<em>int</em>) – The number of time points to generate.</p></li>
+<li><p><strong>lag</strong> (<em>int</em>) – The number of timepoints to delay Y relative to X.</p></li>
+<li><p><strong>noise</strong> (<em>float</em>) – The amount of Gaussian noise to add to Y.</p></li>
+<li><p><strong>use_torch</strong> (<em>bool</em>) – If True, returns torch.Tensors.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><dl class="simple">
+<dt>A tuple (x, y) of the generated temporal data, each of shape</dt><dd><p>[1, n_samples] for compatibility with our processors.</p>
+</dd>
+</dl>
+</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>tuple</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_xor_data">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_xor_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_torch</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">ndarray</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">ndarray</span><span class="p"><span class="pre">]</span></span></span></span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_xor_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_xor_data" title="Link to this definition"></a></dt>
+<dd><p>Generates data for the XOR task, a classic test for synergy.</p>
+<p>The XOR problem is a classic example where the mutual information between
+the joint variable <cite>(x1, x2)</cite> and <cite>y</cite> is high, but the MI between either
+<cite>x1</cite> and <cite>y</cite> or <cite>x2</cite> and <cite>y</cite> individually is zero.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>n_samples</strong> (<em>int</em>) – Number of samples.</p></li>
+<li><p><strong>noise</strong> (<em>float</em><em>, </em><em>optional</em>) – Noise to add to the continuous Y variable. Defaults to 0.1.</p></li>
+<li><p><strong>use_torch</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, returns torch.Tensors. Defaults to True.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A tuple (x, y) where x is <cite>(n_samples, 2)</cite> and y is <cite>(n_samples, 1)</cite>.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Tuple[np.ndarray, np.ndarray]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_event_related_data">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_event_related_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">5000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">lag</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">30</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_events</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">response_length</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_torch</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">any</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">any</span><span class="p"><span class="pre">]</span></span></span></span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_event_related_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_event_related_data" title="Link to this definition"></a></dt>
+<dd><p>Generates data with a sparse event signal (X) and a delayed response (Y).</p>
+<p>This dataset is designed to test lag detection. Signal X contains a few
+sharp spikes (“events”). Signal Y is zero everywhere except for a stereotyped
+response (a sine wave) that begins <cite>lag</cite> time steps after each event in X.</p>
+<p>This structure prevents the model from using global statistical features
+and forces it to learn the precise local temporal relationship.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>n_samples</strong> (<em>int</em>) – The number of time points to generate.</p></li>
+<li><p><strong>lag</strong> (<em>int</em>) – The number of timepoints to delay Y’s response relative to X.</p></li>
+<li><p><strong>n_events</strong> (<em>int</em>) – The number of sparse events in signal X.</p></li>
+<li><p><strong>response_length</strong> (<em>int</em>) – The duration of the sine wave response in Y.</p></li>
+<li><p><strong>noise</strong> (<em>float</em>) – The amount of Gaussian noise to add to Y.</p></li>
+<li><p><strong>use_torch</strong> (<em>bool</em>) – If True, returns torch.Tensors.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><dl class="simple">
+<dt>A tuple (x, y) of the generated temporal data, each of shape</dt><dd><p>[1, n_samples].</p>
+</dd>
+</dl>
+</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>tuple</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_linear_data">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_linear_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">true_lag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">50</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_linear_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_linear_data" title="Link to this definition"></a></dt>
+<dd><p>Y(t) is a simple, lagged version of X(t).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="id0">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_linear_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">true_lag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">50</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_linear_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id0" title="Link to this definition"></a></dt>
+<dd><p>Y(t) is a simple, lagged version of X(t).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_nonlinear_data">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_nonlinear_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">true_lag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">50</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_nonlinear_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_nonlinear_data" title="Link to this definition"></a></dt>
+<dd><p>Y(t) is a nonlinear function of lagged X(t).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="id1">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_nonlinear_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">true_lag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">50</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_nonlinear_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id1" title="Link to this definition"></a></dt>
+<dd><p>Y(t) is a nonlinear function of lagged X(t).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_history_data">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_history_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">history_duration</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_history_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_history_data" title="Link to this definition"></a></dt>
+<dd><p>Y(t) is a nonlinear function of the moving average of X over a recent window (no lag).</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.datasets.generate_full_data">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.datasets.</span></span><span class="sig-name descname"><span class="pre">generate_full_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n_samples</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">true_lag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">history_duration</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.3</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/datasets/generators.html#generate_full_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.datasets.generate_full_data" title="Link to this definition"></a></dt>
+<dd><p>Y(t) is a nonlinear function of the moving average of X over a past, lagged window.</p>
+</dd></dl>
+
+</section>
+<section id="visualization-visualize">
+<h2>Visualization (<cite>visualize</cite>)<a class="headerlink" href="#visualization-visualize" title="Link to this heading"></a></h2>
+<p>This module contains helper functions for creating publication-quality plots of analysis results. These functions are typically called automatically by the <code class="docutils literal notranslate"><span class="pre">Results.plot()</span></code> method but can also be used directly.</p>
+<p id="module-neural_mi.visualize">This package contains modules for visualizing analysis results.</p>
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.visualize.plot_sweep_curve">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.visualize.</span></span><span class="sig-name descname"><span class="pre">plot_sweep_curve</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">summary_df</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">DataFrame</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">param_col</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mean_col</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'mi_mean'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">std_col</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'mi_std'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">true_value</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">estimated_values</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Any</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ax</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Axes</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">units</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'bits'</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/visualize/plot.html#plot_sweep_curve"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.visualize.plot_sweep_curve" title="Link to this definition"></a></dt>
+<dd><p>Plots the results of a hyperparameter sweep.</p>
+<p>This function creates a curve of the mean MI estimate against the values
+of the swept hyperparameter, with a shaded region representing the
+standard deviation. It can also display true and estimated values as
+vertical lines for comparison.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>summary_df</strong> (<em>pd.DataFrame</em>) – A DataFrame containing the summarized results of the sweep. Must
+contain columns for the parameter, mean MI, and std dev of MI.</p></li>
+<li><p><strong>param_col</strong> (<em>str</em>) – The name of the column in <cite>summary_df</cite> that contains the swept
+hyperparameter values.</p></li>
+<li><p><strong>mean_col</strong> (<em>str</em><em>, </em><em>optional</em>) – The name of the column for the mean MI estimate. Defaults to ‘mi_mean’.</p></li>
+<li><p><strong>std_col</strong> (<em>str</em><em>, </em><em>optional</em>) – The name of the column for the standard deviation of the MI estimate.
+Defaults to ‘mi_std’.</p></li>
+<li><p><strong>true_value</strong> (<em>float</em><em>, </em><em>optional</em>) – If known, the true value of the parameter, to be plotted as a
+vertical dashed line. Defaults to None.</p></li>
+<li><p><strong>estimated_values</strong> (<em>Any</em><em>, </em><em>optional</em>) – An estimated value or a dictionary of estimated values to plot as
+vertical dotted lines. Defaults to None.</p></li>
+<li><p><strong>ax</strong> (<em>plt.Axes</em><em>, </em><em>optional</em>) – A matplotlib Axes object to plot on. If None, a new figure and axes
+are created. Defaults to None.</p></li>
+<li><p><strong>units</strong> (<em>str</em><em>, </em><em>optional</em>) – The units of the MI estimate (e.g., ‘bits’ or ‘nats’) for axis labels.
+Defaults to ‘bits’.</p></li>
+<li><p><strong>**kwargs</strong> (<em>dict</em>) – Additional keyword arguments passed to <cite>ax.plot</cite>.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.visualize.plot_bias_correction_fit">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.visualize.</span></span><span class="sig-name descname"><span class="pre">plot_bias_correction_fit</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">raw_results_df</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">DataFrame</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">corrected_result</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ax</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Axes</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">None</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">units</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">str</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">'bits'</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/visualize/plot.html#plot_bias_correction_fit"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.visualize.plot_bias_correction_fit" title="Link to this definition"></a></dt>
+<dd><p>Plots the results of a rigorous, bias-corrected analysis.</p>
+<p>This function visualizes the extrapolation fit used for bias correction.
+It shows the raw MI estimates for each data subset size (gamma), the mean
+MI at each gamma, and the final linear fit extrapolated to an infinite
+dataset size (gamma=0).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>raw_results_df</strong> (<em>pd.DataFrame</em>) – A DataFrame containing the raw results from all training runs in the
+rigorous analysis. Must contain ‘gamma’ and ‘test_mi’ columns.</p></li>
+<li><p><strong>corrected_result</strong> (<em>Dict</em><em>[</em><em>str</em><em>, </em><em>Any</em><em>]</em>) – A dictionary containing the results of the bias correction, including
+the ‘slope’, ‘mi_corrected’, ‘mi_error’, and ‘gammas_used’.</p></li>
+<li><p><strong>ax</strong> (<em>plt.Axes</em><em>, </em><em>optional</em>) – A matplotlib Axes object to plot on. If None, a new figure and axes
+are created. Defaults to None.</p></li>
+<li><p><strong>units</strong> (<em>str</em><em>, </em><em>optional</em>) – The units of the MI estimate (e.g., ‘bits’ or ‘nats’) for labels.
+Defaults to ‘bits’.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.visualize.plot_cross_correlation">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.visualize.</span></span><span class="sig-name descname"><span class="pre">plot_cross_correlation</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">true_lag</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/visualize/plot.html#plot_cross_correlation"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.visualize.plot_cross_correlation" title="Link to this definition"></a></dt>
+<dd><p>Plotting function for cross-correlation.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="neural_mi.visualize.analyze_mi_heatmap">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.visualize.</span></span><span class="sig-name descname"><span class="pre">analyze_mi_heatmap</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">results_df</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">absolute_mi_threshold</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contour_rise_fraction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radius_multiplier</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">true_lag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">history_duration</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/visualize/plot.html#analyze_mi_heatmap"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.visualize.analyze_mi_heatmap" title="Link to this definition"></a></dt>
+<dd><p>Performs the ultimate topological analysis of a 2D MI heatmap.
+- Finds the Causal Contour.
+- Finds the shortest “bridge” between the Causal and Significant MI Contours.
+- Draws a “Parsimonious Circle” centered on this bridge to highlight the optimal region.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>results_df</strong> (<em>pd.DataFrame</em>) – DataFrame with ‘lag’, ‘window_size’, and ‘mi’ columns.</p></li>
+<li><p><strong>absolute_mi_threshold</strong> (<em>float</em>) – The absolute MI value to consider “significant”.</p></li>
+<li><p><strong>contour_rise_fraction</strong> (<em>float</em>) – Heuristic for finding the Causal Contour rise point.</p></li>
+<li><p><strong>radius_multiplier</strong> (<em>float</em>) – Factor to scale the Parsimonious Circle’s radius.</p></li>
+<li><p><strong>true_lag</strong> (<em>float</em><em>, </em><em>optional</em>) – The true lag value to mark on the plot.</p></li>
+<li><p><strong>history_duration</strong> (<em>float</em><em>, </em><em>optional</em>) – The true history/window duration to mark on the plot.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
-<p>Use this function to control the library’s logging output.</p>
+<p>Use this function to control the library’s logging output level.</p>
 <dl class="py function">
-<dt class="sig sig-object py" id="neural_mi.set_verbosity">
-<span class="sig-prename descclassname"><span class="pre">neural_mi.</span></span><span class="sig-name descname"><span class="pre">set_verbosity</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">level</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">str</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/logger.html#set_verbosity"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.set_verbosity" title="Link to this definition"></a></dt>
+<dt class="sig sig-object py" id="neural_mi.logger.set_verbosity">
+<span class="sig-prename descclassname"><span class="pre">neural_mi.logger.</span></span><span class="sig-name descname"><span class="pre">set_verbosity</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">level</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><span class="pre">str</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/neural_mi/logger.html#set_verbosity"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.logger.set_verbosity" title="Link to this definition"></a></dt>
 <dd><p>Sets the global verbosity level for the library’s logger.</p>
 <p>This function provides a simple way to control the logging output of the
 entire library.</p>
@@ -347,33 +645,36 @@ entire library.</p>
 </section>
 <section id="exceptions">
 <h2>Exceptions<a class="headerlink" href="#exceptions" title="Link to this heading"></a></h2>
-<p>These are the custom exceptions raised by the library.</p>
-<dl class="py class">
+<p>These are the custom exceptions raised by the library to signal specific errors.</p>
+<p id="module-neural_mi.exceptions">Defines custom exceptions for the neural_mi library.</p>
+<p>Using custom exceptions allows for more specific error handling and clearer
+error messages, making the library easier to debug and use.</p>
+<dl class="py exception">
 <dt class="sig sig-object py" id="neural_mi.exceptions.NeuralMIError">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.exceptions.</span></span><span class="sig-name descname"><span class="pre">NeuralMIError</span></span><a class="reference internal" href="_modules/neural_mi/exceptions.html#NeuralMIError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.exceptions.NeuralMIError" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.exceptions.</span></span><span class="sig-name descname"><span class="pre">NeuralMIError</span></span><a class="reference internal" href="_modules/neural_mi/exceptions.html#NeuralMIError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.exceptions.NeuralMIError" title="Link to this definition"></a></dt>
 <dd><p>Base class for all custom exceptions in the neural_mi library.</p>
 </dd></dl>
 
-<dl class="py class">
+<dl class="py exception">
 <dt class="sig sig-object py" id="neural_mi.exceptions.DataShapeError">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.exceptions.</span></span><span class="sig-name descname"><span class="pre">DataShapeError</span></span><a class="reference internal" href="_modules/neural_mi/exceptions.html#DataShapeError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.exceptions.DataShapeError" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.exceptions.</span></span><span class="sig-name descname"><span class="pre">DataShapeError</span></span><a class="reference internal" href="_modules/neural_mi/exceptions.html#DataShapeError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.exceptions.DataShapeError" title="Link to this definition"></a></dt>
 <dd><p>Exception raised for errors related to the shape of input data.</p>
 <p>This is typically raised when an input tensor or array does not have the
 expected number of dimensions or when dimensions have an incorrect size.</p>
 </dd></dl>
 
-<dl class="py class">
+<dl class="py exception">
 <dt class="sig sig-object py" id="neural_mi.exceptions.InsufficientDataError">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.exceptions.</span></span><span class="sig-name descname"><span class="pre">InsufficientDataError</span></span><a class="reference internal" href="_modules/neural_mi/exceptions.html#InsufficientDataError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.exceptions.InsufficientDataError" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.exceptions.</span></span><span class="sig-name descname"><span class="pre">InsufficientDataError</span></span><a class="reference internal" href="_modules/neural_mi/exceptions.html#InsufficientDataError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.exceptions.InsufficientDataError" title="Link to this definition"></a></dt>
 <dd><p>Exception raised when not enough data is provided for an operation.</p>
 <p>This is a subclass of <cite>DataShapeError</cite> and is used, for example, when
 the length of a time series is smaller than the required window size for
 processing.</p>
 </dd></dl>
 
-<dl class="py class">
+<dl class="py exception">
 <dt class="sig sig-object py" id="neural_mi.exceptions.TrainingError">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.exceptions.</span></span><span class="sig-name descname"><span class="pre">TrainingError</span></span><a class="reference internal" href="_modules/neural_mi/exceptions.html#TrainingError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.exceptions.TrainingError" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">neural_mi.exceptions.</span></span><span class="sig-name descname"><span class="pre">TrainingError</span></span><a class="reference internal" href="_modules/neural_mi/exceptions.html#TrainingError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#neural_mi.exceptions.TrainingError" title="Link to this definition"></a></dt>
 <dd><p>Exception raised for critical errors that occur during model training.</p>
 <p>This exception is used to signal that the training process has failed
 and cannot continue, for example, if no valid model checkpoint could be
@@ -387,7 +688,7 @@ created.</p>
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="tutorials/Tutorial_07_Advanced_Customization.html" class="btn btn-neutral float-left" title="Tutorial 7: Advanced Customization with Custom Models" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="tutorials/07_Advanced_Customization.html" class="btn btn-neutral float-left" title="Tutorial 7: Advanced Customization with Custom Models" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
         <a href="further_reading.html" class="btn btn-neutral float-right" title="Further Reading" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 

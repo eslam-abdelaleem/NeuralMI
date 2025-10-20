@@ -1,0 +1,524 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>neural_mi.datasets.generators &mdash; NeuralMI 1.1.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+
+  
+    <link rel="canonical" href="https://eslam-abdelaleem.github.io/NeuralMI/_modules/neural_mi/datasets/generators.html" />
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=fc837d61"></script>
+      <script src="../../../_static/doctools.js?v=9a2dae69"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            NeuralMI
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../getting_started.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../api_reference.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../further_reading.html">Further Reading</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">NeuralMI</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content style-external-links">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">neural_mi.datasets.generators</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for neural_mi.datasets.generators</h1><div class="highlight"><pre>
+<span></span><span class="c1"># neural_mi/datasets/generators.py</span>
+<span class="sd">&quot;&quot;&quot;Generates synthetic datasets for testing and validating MI estimators.</span>
+
+<span class="sd">This module provides functions to create various kinds of synthetic datasets</span>
+<span class="sd">with known or expected properties. These are useful for tutorials, debugging,</span>
+<span class="sd">and validating the behavior of different MI estimators and models.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">List</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">mi_to_rho</span><span class="p">(</span><span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">mi</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Calculates the correlation coefficient `rho` for a given MI and dimension.</span>
+
+<span class="sd">    This function is used for generating correlated Gaussian variables with a</span>
+<span class="sd">    pre-defined mutual information. The formula is derived from the analytical</span>
+<span class="sd">    expression for MI between two multivariate Gaussian variables.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    dim : int</span>
+<span class="sd">        The dimension of the Gaussian variables.</span>
+<span class="sd">    mi : float</span>
+<span class="sd">        The desired mutual information in bits.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    float</span>
+<span class="sd">        The corresponding correlation coefficient `rho`.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="c1"># Convert MI from bits to nats for the formula</span>
+    <span class="n">mi_nats</span> <span class="o">=</span> <span class="n">mi</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">np</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="mf">2.0</span> <span class="o">/</span> <span class="n">dim</span> <span class="o">*</span> <span class="n">mi_nats</span><span class="p">))</span>
+
+<div class="viewcode-block" id="generate_correlated_gaussians">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_correlated_gaussians">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_correlated_gaussians</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">mi</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">use_torch</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Generates two correlated multivariate Gaussian datasets.</span>
+
+<span class="sd">    The ground truth mutual information between these two variables can be</span>
+<span class="sd">    calculated analytically.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    n_samples : int</span>
+<span class="sd">        The number of samples to generate.</span>
+<span class="sd">    dim : int</span>
+<span class="sd">        The number of dimensions for each variable.</span>
+<span class="sd">    mi : float</span>
+<span class="sd">        The ground truth mutual information in bits.</span>
+<span class="sd">    use_torch : bool, optional</span>
+<span class="sd">        If True, returns torch.Tensors; otherwise, returns NumPy arrays.</span>
+<span class="sd">        Defaults to True.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    Tuple[np.ndarray, np.ndarray]</span>
+<span class="sd">        A tuple containing:</span>
+<span class="sd">        - **x** (*np.ndarray* or *torch.Tensor*): The first dataset, of shape `(n_samples, dim)`.</span>
+<span class="sd">        - **y** (*np.ndarray* or *torch.Tensor*): The second dataset, of shape `(n_samples, dim)`.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">rho</span> <span class="o">=</span> <span class="n">mi_to_rho</span><span class="p">(</span><span class="n">dim</span><span class="p">,</span> <span class="n">mi</span><span class="p">)</span>
+    <span class="n">mean</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">dim</span><span class="p">)</span>
+    <span class="n">cov</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">dim</span><span class="p">)</span>
+    <span class="n">cov</span><span class="p">[</span><span class="n">dim</span><span class="p">:,</span> <span class="p">:</span><span class="n">dim</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="n">dim</span><span class="p">)</span> <span class="o">*</span> <span class="n">rho</span>
+    <span class="n">cov</span><span class="p">[:</span><span class="n">dim</span><span class="p">,</span> <span class="n">dim</span><span class="p">:]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="n">dim</span><span class="p">)</span> <span class="o">*</span> <span class="n">rho</span>
+    
+    <span class="n">data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">multivariate_normal</span><span class="p">(</span><span class="n">mean</span><span class="p">,</span> <span class="n">cov</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">data</span><span class="p">[:,</span> <span class="p">:</span><span class="n">dim</span><span class="p">]</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">data</span><span class="p">[:,</span> <span class="n">dim</span><span class="p">:]</span>
+    
+    <span class="k">if</span> <span class="n">use_torch</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">x</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">(),</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">y</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span></div>
+
+
+<div class="viewcode-block" id="generate_nonlinear_from_latent">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_nonlinear_from_latent">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_nonlinear_from_latent</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">latent_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">observed_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">mi</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> 
+    <span class="n">hidden_dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">64</span><span class="p">,</span> <span class="n">use_torch</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Generates two nonlinearly related datasets from a shared latent variable.</span>
+
+<span class="sd">    A low-dimensional latent variable `z` is first generated. Two observed</span>
+<span class="sd">    variables, `x` and `y`, are then created as nonlinear projections of `z`</span>
+<span class="sd">    with added noise.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    n_samples : int</span>
+<span class="sd">        The number of samples to generate.</span>
+<span class="sd">    latent_dim : int</span>
+<span class="sd">        The dimensionality of the shared latent variable `z`.</span>
+<span class="sd">    observed_dim : int</span>
+<span class="sd">        The dimensionality of the observed variables `x` and `y`.</span>
+<span class="sd">    mi : float</span>
+<span class="sd">        The ground truth MI between the latent variables Z_x and Z_y in bits.</span>
+<span class="sd">    hidden_dim : int, optional</span>
+<span class="sd">        The hidden dimension of the transforming MLPs. Defaults to 64.</span>
+<span class="sd">    use_torch : bool, optional</span>
+<span class="sd">        If True, returns torch.Tensors. Defaults to True.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    Tuple[np.ndarray, np.ndarray]</span>
+<span class="sd">        A tuple containing:</span>
+<span class="sd">        - **x** (*np.ndarray* or *torch.Tensor*): The first dataset, of shape `(n_samples, observed_dim)`.</span>
+<span class="sd">        - **y** (*np.ndarray* or *torch.Tensor*): The second dataset, of shape `(n_samples, observed_dim)`.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">z_x</span><span class="p">,</span> <span class="n">z_y</span> <span class="o">=</span> <span class="n">generate_correlated_gaussians</span><span class="p">(</span><span class="n">n_samples</span><span class="p">,</span> <span class="n">latent_dim</span><span class="p">,</span> <span class="n">mi</span><span class="p">,</span> <span class="n">use_torch</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    
+    <span class="n">mlp_x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span><span class="p">(</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">latent_dim</span><span class="p">,</span> <span class="n">hidden_dim</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Softplus</span><span class="p">(),</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">hidden_dim</span><span class="p">,</span> <span class="n">observed_dim</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="n">mlp_y</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span><span class="p">(</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">latent_dim</span><span class="p">,</span> <span class="n">hidden_dim</span><span class="p">),</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Softplus</span><span class="p">(),</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">hidden_dim</span><span class="p">,</span> <span class="n">observed_dim</span><span class="p">)</span>
+    <span class="p">)</span>
+    
+    <span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
+        <span class="n">x</span> <span class="o">=</span> <span class="n">mlp_x</span><span class="p">(</span><span class="n">z_x</span><span class="p">)</span>
+        <span class="n">y</span> <span class="o">=</span> <span class="n">mlp_y</span><span class="p">(</span><span class="n">z_y</span><span class="p">)</span>
+        
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">use_torch</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">x</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="n">y</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span></div>
+
+
+<div class="viewcode-block" id="generate_temporally_convolved_data">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_temporally_convolved_data">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_temporally_convolved_data</span><span class="p">(</span><span class="n">n_samples</span><span class="p">,</span> <span class="n">lag</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span> <span class="n">noise</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">use_torch</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Generates data where Y is a simple time-delayed version of X.</span>
+
+<span class="sd">    This creates a clean, unambiguous temporal relationship ideal for testing</span>
+<span class="sd">    the windowing functionality of the MI estimator.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        n_samples (int): The number of time points to generate.</span>
+<span class="sd">        lag (int): The number of timepoints to delay Y relative to X.</span>
+<span class="sd">        noise (float): The amount of Gaussian noise to add to Y.</span>
+<span class="sd">        use_torch (bool): If True, returns torch.Tensors.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        tuple: A tuple (x, y) of the generated temporal data, each of shape</span>
+<span class="sd">               [1, n_samples] for compatibility with our processors.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">full_signal</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">cumsum</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span> <span class="o">+</span> <span class="n">lag</span><span class="p">))</span>
+    <span class="n">full_signal</span> <span class="o">=</span> <span class="p">(</span><span class="n">full_signal</span> <span class="o">-</span> <span class="n">full_signal</span><span class="o">.</span><span class="n">mean</span><span class="p">())</span> <span class="o">/</span> <span class="n">full_signal</span><span class="o">.</span><span class="n">std</span><span class="p">()</span>
+    
+    <span class="n">x</span> <span class="o">=</span> <span class="n">full_signal</span><span class="p">[:</span><span class="o">-</span><span class="n">lag</span><span class="p">]</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">full_signal</span><span class="p">[</span><span class="n">lag</span><span class="p">:]</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span> <span class="o">*</span> <span class="n">noise</span>
+    
+    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">y</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">use_torch</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">x</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">(),</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">y</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span></div>
+
+
+<div class="viewcode-block" id="generate_xor_data">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_xor_data">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_xor_data</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">noise</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span><span class="p">,</span> <span class="n">use_torch</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Generates data for the XOR task, a classic test for synergy.</span>
+
+<span class="sd">    The XOR problem is a classic example where the mutual information between</span>
+<span class="sd">    the joint variable `(x1, x2)` and `y` is high, but the MI between either</span>
+<span class="sd">    `x1` and `y` or `x2` and `y` individually is zero.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    n_samples : int</span>
+<span class="sd">        Number of samples.</span>
+<span class="sd">    noise : float, optional</span>
+<span class="sd">        Noise to add to the continuous Y variable. Defaults to 0.1.</span>
+<span class="sd">    use_torch : bool, optional</span>
+<span class="sd">        If True, returns torch.Tensors. Defaults to True.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    Tuple[np.ndarray, np.ndarray]</span>
+<span class="sd">        A tuple (x, y) where x is `(n_samples, 2)` and y is `(n_samples, 1)`.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">x1</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">x2</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">bitwise_xor</span><span class="p">(</span><span class="n">x1</span><span class="p">,</span> <span class="n">x2</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span> <span class="o">*</span> <span class="n">noise</span>
+    
+    <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">vstack</span><span class="p">([</span><span class="n">x1</span><span class="p">,</span> <span class="n">x2</span><span class="p">])</span><span class="o">.</span><span class="n">T</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">y</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">use_torch</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">x</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">(),</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">y</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span></div>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_correlated_spike_trains</span><span class="p">(</span>
+    <span class="n">n_neurons</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span> <span class="n">duration</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">100.0</span><span class="p">,</span> <span class="n">firing_rate</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span> 
+    <span class="n">delay</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.02</span><span class="p">,</span> <span class="n">jitter</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.005</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span> <span class="n">List</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Generates two populations of spike trains with a time-lagged correlation.</span>
+
+<span class="sd">    Population X is a homogeneous Poisson process. Population Y fires with a</span>
+<span class="sd">    specified delay and jitter after the corresponding neuron in population X.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    n_neurons : int, optional</span>
+<span class="sd">        Number of neurons in each population. Defaults to 10.</span>
+<span class="sd">    duration : float, optional</span>
+<span class="sd">        Duration of the recording in seconds. Defaults to 100.0.</span>
+<span class="sd">    firing_rate : float, optional</span>
+<span class="sd">        Firing rate in Hz for the source population (X). Defaults to 5.0.</span>
+<span class="sd">    delay : float, optional</span>
+<span class="sd">        The time lag in seconds for the target population&#39;s (Y) response.</span>
+<span class="sd">        Defaults to 0.02.</span>
+<span class="sd">    jitter : float, optional</span>
+<span class="sd">        Standard deviation of the Gaussian noise added to the delay.</span>
+<span class="sd">        Defaults to 0.005.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    Tuple[List[np.ndarray], List[np.ndarray]]</span>
+<span class="sd">        A tuple (pop_x, pop_y) of two lists of numpy arrays, where each</span>
+<span class="sd">        array contains the spike times for a single neuron.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">pop_x</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_neurons</span><span class="p">):</span>
+        <span class="n">n_spikes</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">poisson</span><span class="p">(</span><span class="n">duration</span> <span class="o">*</span> <span class="n">firing_rate</span><span class="p">)</span>
+        <span class="n">spike_times</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">duration</span><span class="p">,</span> <span class="n">n_spikes</span><span class="p">))</span>
+        <span class="n">pop_x</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">spike_times</span><span class="p">)</span>
+    
+    <span class="n">pop_y</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_neurons</span><span class="p">):</span>
+        <span class="n">delayed_spikes</span> <span class="o">=</span> <span class="n">pop_x</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">+</span> <span class="n">delay</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">jitter</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">pop_x</span><span class="p">[</span><span class="n">i</span><span class="p">]))</span>
+        <span class="n">delayed_spikes</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">delayed_spikes</span><span class="p">[(</span><span class="n">delayed_spikes</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">delayed_spikes</span> <span class="o">&lt;</span> <span class="n">duration</span><span class="p">)])</span>
+        <span class="n">pop_y</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">delayed_spikes</span><span class="p">)</span>
+        
+    <span class="k">return</span> <span class="n">pop_x</span><span class="p">,</span> <span class="n">pop_y</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_correlated_categorical_series</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">n_channels</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="n">n_categories</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span><span class="p">,</span> 
+    <span class="n">transition_probability</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.9</span><span class="p">,</span> <span class="n">use_torch</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Generates two correlated categorical time series.</span>
+
+<span class="sd">    A base series `x` is generated where the state at time `t` has a high</span>
+<span class="sd">    probability of being the same as at `t-1`. A second series `y` is generated</span>
+<span class="sd">    where the state at time `t` is highly likely to be the same as in `x` at `t`.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    n_samples : int</span>
+<span class="sd">        The number of timepoints to generate.</span>
+<span class="sd">    n_channels : int, optional</span>
+<span class="sd">        The number of channels for the data. Defaults to 1.</span>
+<span class="sd">    n_categories : int, optional</span>
+<span class="sd">        The number of distinct categories (e.g., 3 for states 0, 1, 2). Defaults to 3.</span>
+<span class="sd">    transition_probability : float, optional</span>
+<span class="sd">        The probability of Y&#39;s state matching X&#39;s state at each timepoint. Defaults to 0.9.</span>
+<span class="sd">    use_torch : bool, optional</span>
+<span class="sd">        If True, returns torch.Tensors. Defaults to False.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    Tuple[np.ndarray, np.ndarray]</span>
+<span class="sd">        A tuple (x, y) of the generated categorical data, each of shape</span>
+<span class="sd">        `(n_channels, n_samples)`.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">n_channels</span><span class="p">,</span> <span class="n">n_samples</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">n_channels</span><span class="p">,</span> <span class="n">n_samples</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+
+    <span class="k">for</span> <span class="n">ch</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_channels</span><span class="p">):</span>
+        <span class="c1"># Generate the first series with some temporal smoothness</span>
+        <span class="n">x</span><span class="p">[</span><span class="n">ch</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="n">n_categories</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">n_samples</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">rand</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mf">0.95</span><span class="p">:</span>  <span class="c1"># High prob of staying in the same state</span>
+                <span class="n">x</span><span class="p">[</span><span class="n">ch</span><span class="p">,</span> <span class="n">t</span><span class="p">]</span> <span class="o">=</span> <span class="n">x</span><span class="p">[</span><span class="n">ch</span><span class="p">,</span> <span class="n">t</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">x</span><span class="p">[</span><span class="n">ch</span><span class="p">,</span> <span class="n">t</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="n">n_categories</span><span class="p">)</span>
+
+        <span class="c1"># Generate the second series correlated with the first</span>
+        <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_samples</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">rand</span><span class="p">()</span> <span class="o">&lt;</span> <span class="n">transition_probability</span><span class="p">:</span>
+                <span class="n">y</span><span class="p">[</span><span class="n">ch</span><span class="p">,</span> <span class="n">t</span><span class="p">]</span> <span class="o">=</span> <span class="n">x</span><span class="p">[</span><span class="n">ch</span><span class="p">,</span> <span class="n">t</span><span class="p">]</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">y</span><span class="p">[</span><span class="n">ch</span><span class="p">,</span> <span class="n">t</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randint</span><span class="p">(</span><span class="n">n_categories</span><span class="p">)</span>
+                
+    <span class="k">if</span> <span class="n">use_torch</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">x</span><span class="p">)</span><span class="o">.</span><span class="n">int</span><span class="p">(),</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">y</span><span class="p">)</span><span class="o">.</span><span class="n">int</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span>
+
+<div class="viewcode-block" id="generate_event_related_data">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_event_related_data">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_event_related_data</span><span class="p">(</span>
+    <span class="n">n_samples</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5000</span><span class="p">,</span>
+    <span class="n">lag</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">30</span><span class="p">,</span>
+    <span class="n">n_events</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
+    <span class="n">response_length</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span><span class="p">,</span>
+    <span class="n">noise</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">use_torch</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">any</span><span class="p">,</span> <span class="nb">any</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Generates data with a sparse event signal (X) and a delayed response (Y).</span>
+
+<span class="sd">    This dataset is designed to test lag detection. Signal X contains a few</span>
+<span class="sd">    sharp spikes (&quot;events&quot;). Signal Y is zero everywhere except for a stereotyped</span>
+<span class="sd">    response (a sine wave) that begins `lag` time steps after each event in X.</span>
+
+<span class="sd">    This structure prevents the model from using global statistical features</span>
+<span class="sd">    and forces it to learn the precise local temporal relationship.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        n_samples (int): The number of time points to generate.</span>
+<span class="sd">        lag (int): The number of timepoints to delay Y&#39;s response relative to X.</span>
+<span class="sd">        n_events (int): The number of sparse events in signal X.</span>
+<span class="sd">        response_length (int): The duration of the sine wave response in Y.</span>
+<span class="sd">        noise (float): The amount of Gaussian noise to add to Y.</span>
+<span class="sd">        use_torch (bool): If True, returns torch.Tensors.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        tuple: A tuple (x, y) of the generated temporal data, each of shape</span>
+<span class="sd">               [1, n_samples].</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="c1"># Create the sparse event signal X</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">1</span><span class="p">,</span> <span class="n">n_samples</span><span class="p">))</span>
+    <span class="n">event_times</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">choice</span><span class="p">(</span><span class="n">n_samples</span> <span class="o">-</span> <span class="n">lag</span> <span class="o">-</span> <span class="n">response_length</span><span class="p">,</span> <span class="n">n_events</span><span class="p">,</span> <span class="n">replace</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="n">x</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="n">event_times</span><span class="p">]</span> <span class="o">=</span> <span class="mf">1.0</span>
+
+    <span class="c1"># Create the delayed response signal Y</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">1</span><span class="p">,</span> <span class="n">n_samples</span><span class="p">))</span>
+    <span class="n">t</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">pi</span><span class="p">,</span> <span class="n">response_length</span><span class="p">)</span>
+    <span class="n">response_shape</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+
+    <span class="k">for</span> <span class="n">event_time</span> <span class="ow">in</span> <span class="n">event_times</span><span class="p">:</span>
+        <span class="n">start</span> <span class="o">=</span> <span class="n">event_time</span> <span class="o">+</span> <span class="n">lag</span>
+        <span class="n">end</span> <span class="o">=</span> <span class="n">start</span> <span class="o">+</span> <span class="n">response_length</span>
+        <span class="k">if</span> <span class="n">end</span> <span class="o">&lt;</span> <span class="n">n_samples</span><span class="p">:</span>
+            <span class="n">y</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="n">start</span><span class="p">:</span><span class="n">end</span><span class="p">]</span> <span class="o">+=</span> <span class="n">response_shape</span>
+
+    <span class="c1"># Add noise to Y</span>
+    <span class="n">y</span> <span class="o">+=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span> <span class="o">*</span> <span class="n">noise</span>
+
+    <span class="k">if</span> <span class="n">use_torch</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">x</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">(),</span> <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">y</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span></div>
+
+
+<span class="c1"># Mainly used for tutorials</span>
+<div class="viewcode-block" id="generate_linear_data">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_linear_data">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_linear_data</span><span class="p">(</span><span class="n">n_samples</span><span class="o">=</span><span class="mi">5000</span><span class="p">,</span> <span class="n">true_lag</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span> <span class="n">noise_level</span><span class="o">=</span><span class="mf">0.5</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Y(t) is a simple, lagged version of X(t).&quot;&quot;&quot;</span>
+    <span class="n">x_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">x_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">convolve</span><span class="p">(</span><span class="n">x_data</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span><span class="o">/</span><span class="mi">10</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;same&#39;</span><span class="p">)</span> <span class="c1"># Smooth it out</span>
+    <span class="n">y_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">y_data</span><span class="p">[</span><span class="n">true_lag</span><span class="p">:]</span> <span class="o">=</span> <span class="n">x_data</span><span class="p">[:</span><span class="o">-</span><span class="n">true_lag</span><span class="p">]</span>
+    <span class="n">y_data</span> <span class="o">+=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span> <span class="o">*</span> <span class="n">noise_level</span>
+    <span class="k">return</span> <span class="n">x_data</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">y_data</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="generate_nonlinear_data">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_nonlinear_data">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_nonlinear_data</span><span class="p">(</span><span class="n">n_samples</span><span class="o">=</span><span class="mi">5000</span><span class="p">,</span> <span class="n">true_lag</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span> <span class="n">noise_level</span><span class="o">=</span><span class="mf">0.2</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Y(t) is a nonlinear function of lagged X(t).&quot;&quot;&quot;</span>
+    <span class="n">x_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">x_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">convolve</span><span class="p">(</span><span class="n">x_data</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">10</span><span class="p">)</span><span class="o">/</span><span class="mi">10</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;same&#39;</span><span class="p">)</span> 
+    <span class="n">y_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">y_data</span><span class="p">[</span><span class="n">true_lag</span><span class="p">:]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">square</span><span class="p">(</span><span class="n">x_data</span><span class="p">[:</span><span class="o">-</span><span class="n">true_lag</span><span class="p">])</span> <span class="c1"># The nonlinearity!</span>
+    <span class="n">y_data</span> <span class="o">+=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span> <span class="o">*</span> <span class="n">noise_level</span>
+    <span class="k">return</span> <span class="n">x_data</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">y_data</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="generate_history_data">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_history_data">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_history_data</span><span class="p">(</span><span class="n">n_samples</span><span class="o">=</span><span class="mi">5000</span><span class="p">,</span> <span class="n">history_duration</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span> <span class="n">noise_level</span><span class="o">=</span><span class="mf">0.1</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Y(t) is a nonlinear function of the moving average of X over a recent window (no lag).&quot;&quot;&quot;</span>
+    <span class="n">x_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">x_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">convolve</span><span class="p">(</span><span class="n">x_data</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span><span class="o">/</span><span class="mi">5</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;same&#39;</span><span class="p">)</span>
+    <span class="n">y_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span>
+    
+    <span class="c1"># Calculate the moving average efficiently</span>
+    <span class="n">moving_avg</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">convolve</span><span class="p">(</span><span class="n">x_data</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="n">history_duration</span><span class="p">)</span><span class="o">/</span><span class="n">history_duration</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;full&#39;</span><span class="p">)[:</span><span class="o">-</span><span class="n">history_duration</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span>
+    
+    <span class="c1"># Y is a nonlinear function (tanh) of the moving average</span>
+    <span class="n">y_signal</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">tanh</span><span class="p">(</span><span class="n">moving_avg</span> <span class="o">*</span> <span class="mf">2.0</span><span class="p">)</span>
+    
+    <span class="n">y_data</span><span class="p">[</span><span class="n">history_duration</span><span class="p">:]</span> <span class="o">=</span> <span class="n">y_signal</span><span class="p">[:</span><span class="n">n_samples</span> <span class="o">-</span> <span class="n">history_duration</span><span class="p">]</span>
+    <span class="n">y_data</span> <span class="o">+=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span> <span class="o">*</span> <span class="n">noise_level</span>
+    <span class="k">return</span> <span class="n">x_data</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">y_data</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="generate_full_data">
+<a class="viewcode-back" href="../../../api_reference.html#neural_mi.datasets.generate_full_data">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">generate_full_data</span><span class="p">(</span><span class="n">n_samples</span><span class="o">=</span><span class="mi">5000</span><span class="p">,</span> <span class="n">true_lag</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span> <span class="n">history_duration</span><span class="o">=</span><span class="mi">20</span><span class="p">,</span> <span class="n">noise_level</span><span class="o">=</span><span class="mf">0.3</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Y(t) is a nonlinear function of the moving average of X over a past, lagged window.&quot;&quot;&quot;</span>
+    <span class="n">x_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span>
+    <span class="n">x_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">convolve</span><span class="p">(</span><span class="n">x_data</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span><span class="o">/</span><span class="mi">5</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;same&#39;</span><span class="p">)</span>
+    <span class="n">y_data</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span>
+    
+    <span class="n">moving_avg</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">convolve</span><span class="p">(</span><span class="n">x_data</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="n">history_duration</span><span class="p">)</span><span class="o">/</span><span class="n">history_duration</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;full&#39;</span><span class="p">)[:</span><span class="o">-</span><span class="n">history_duration</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span>
+    <span class="n">y_signal</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">tanh</span><span class="p">(</span><span class="n">moving_avg</span> <span class="o">*</span> <span class="mf">2.0</span><span class="p">)</span>
+    
+    <span class="c1"># Apply the lag</span>
+    <span class="n">effective_lag</span> <span class="o">=</span> <span class="n">true_lag</span> <span class="o">+</span> <span class="n">history_duration</span>
+    <span class="n">y_data</span><span class="p">[</span><span class="n">effective_lag</span><span class="p">:]</span> <span class="o">=</span> <span class="n">y_signal</span><span class="p">[:</span><span class="n">n_samples</span> <span class="o">-</span> <span class="n">effective_lag</span><span class="p">]</span>
+    <span class="n">y_data</span> <span class="o">+=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">n_samples</span><span class="p">)</span> <span class="o">*</span> <span class="n">noise_level</span>
+    
+    <span class="k">return</span> <span class="n">x_data</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">y_data</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2025, Eslam Abdelaleem.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
