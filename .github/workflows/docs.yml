@@ -1,41 +1,57 @@
-name: Build and Deploy Docs
+# Simple workflow for deploying static content to GitHub Pages
+name: Deploy static content to Pages
 
 on:
+  # Runs on pushes targeting the default branch
   push:
-    branches:
-      - main
+    branches: ["main"]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
-  build-and-deploy:
+  # Single deploy job since we're just deploying
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout 🛎️
-        uses: actions/checkout@v3
-
-      - name: Set up Python 🐍
-        uses: actions/setup-python@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.9
+          python-version: '3.9'
 
-      - name: Install Pandoc 🔽
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pandoc
+      - name: Install Documentation Dependencies
+        run: pip install -r docs/requirements-docs.txt
 
-      - name: Install dependencies 🔧
-        run: |
-          pip install -r requirements.txt
-          pip install sphinx sphinx_rtd_theme nbsphinx ipython ipykernel
+      - name: Build Sphinx Site
+        run: sphinx-build -b html docs/source docs/_build/html
 
-      - name: Build Docs 📖
-        run: |
-          sphinx-build -b html docs/source docs/_build/html
-          touch docs/_build/html/.nojekyll
-
-      - name: Deploy 🚀
-        uses: JamesIves/github-pages-deploy-action@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          branch: gh-pages
-          folder: docs/_build/html
+          # Upload entire directory
+          path: 'docs/_build/html'
+      
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
