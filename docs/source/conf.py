@@ -23,7 +23,7 @@ extensions = [
     'nbsphinx',
     'sphinx.ext.intersphinx',
     'sphinx_rtd_theme',
-    'myst_parser',  # Added for Markdown support
+    'myst_parser',  
 ]
 
 # MyST-Parser configuration for advanced Markdown features
