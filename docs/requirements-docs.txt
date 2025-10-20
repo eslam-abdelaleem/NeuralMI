@@ -18,3 +18,8 @@ sphinx-autodoc-typehints>=1.19.0
 # Additional utilities
 sphinx-copybutton>=0.5.0  # Optional: adds copy button to code blocks
 sphinxcontrib-bibtex>=2.4.0  # Optional: for bibliography management
+
+# Python requirments
+torch
+numpy
+pandas
