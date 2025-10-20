@@ -23,3 +23,8 @@ sphinxcontrib-bibtex>=2.4.0  # Optional: for bibliography management
 torch
 numpy
 pandas
+statsmodels
+scikit-learn
+tqdm
+matplotlib
+seaborn
