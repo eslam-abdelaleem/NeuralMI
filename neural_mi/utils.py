@@ -122,7 +122,12 @@ def find_saturation_point(summary_df: pd.DataFrame, param_col: str = 'embedding_
                             mean_col: str = 'mi_mean', std_col: str = 'mi_std', 
                             strictness: Union[List[float], float] = 1.0) -> Dict[float, Any]:
     if not isinstance(strictness, list): strictness = [strictness]
-    df = summary_df.sort_values(param_col).reset_index()
+    df = summary_df.dropna(subset=[mean_col, std_col]).sort_values(param_col).reset_index()
+    if len(df) < 2:
+        logger.warning("Not enough valid data points to find a saturation point after dropping NaNs.")
+        # Return the max value for all strictness levels as a fallback
+        return {s: summary_df[param_col].max() for s in strictness}
+    # df = summary_df.sort_values(param_col).reset_index()
     mi_diff = df[mean_col].diff().to_numpy()
     estimated_dims = {}
     for s in strictness:

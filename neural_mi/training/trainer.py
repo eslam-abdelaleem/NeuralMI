@@ -174,6 +174,7 @@ class Trainer:
                     if self.use_variational:
                         loss += self.beta * kl_loss
                     loss.backward()
+                    nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
                     self.optimizer.step()
 
                 self.model.eval()
@@ -198,9 +199,13 @@ class Trainer:
                 if no_improve >= patience:
                     logger.debug(f"Early stopping at epoch {epoch+1}.")
                     break
-            
+
             if not best_model_saved:
-                raise TrainingError("Training failed to produce a valid model checkpoint.")
+                logger.warning(f"Training run {run_id or ''} failed to produce a valid model. "
+                               "This is likely due to numerical instability. "
+                               "Returning NaN for MI estimates.")
+                return {'train_mi': float('nan'), 'test_mi': float('nan'),
+                        'best_epoch': -1, 'test_mi_history': history}
 
             self.model.load_state_dict(torch.load(tmp_path, map_location=self.device, weights_only=True))
             with torch.no_grad():
@@ -213,7 +218,6 @@ class Trainer:
             return {'train_mi': train_mi, 'test_mi': test_mi,
                     'best_epoch': np.argmax(self._smooth(history, smoothing_sigma, median_window)),
                     'test_mi_history': history}
-
 
     def _eval_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
         if x.shape[0] < 2:
