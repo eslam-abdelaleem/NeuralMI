@@ -1,0 +1,24 @@
+[project]
+name = "neuralmi"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.7",
+    "numpy>=2.3.4",
+    "pandas>=2.3.3",
+    "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
+    "statsmodels>=0.14.5",
+    "torch>=2.9.0",
+    "tqdm>=4.67.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.0.1",
+    "myst-parser>=0.18.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+]
