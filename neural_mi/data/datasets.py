@@ -121,7 +121,13 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         """
         super().__init__(window_manager, device)
 
-        self.data_orig = torch.as_tensor(data, dtype=torch.float32)
+        # Three versions of data are kept
+        # 1. data_orig: A numpy master matching the original (n_channels, n_timepoints)
+        # 2. data_master: A clean copy of data moved to windows (n_windows, n_channels, n_timepoints)
+        # 3. data: A working copy of data moved to windows. 
+        # This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
+        self.data_orig = data
+        self.data_master = None # Will be allocated when moving to windows
         self.data = None # Will be allocated when moving to windows
         self.time_offset = 0 # By default, no offset is applied
         # Time vector handling
@@ -182,6 +188,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # as time shifting variables needs to refer to those windows again
         self.data = self.data[self.window_manager.valid_windows, :, :]
         self.data = torch.tensor(self.data, device=self.device) #TODO: Set device to have a reasonable default
+        self.data_master = self.data.detach().clone()
 
     def _validate_window_coverage(self):
         """Check which windows have sufficient data coverage. Assumes window manager attached"""
@@ -208,16 +215,13 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     
     def add_noise(self, amplitude):
         """Add Gaussian noise to data."""
-        noise = torch.randn_like(self.data_orig) * amplitude
-        self.data = self.data_orig + noise
-        self._move_data_to_windows()
-        # For efficiency, can make a method of move data to windows which doesn't recalculate searchsorted 
-        # Only new version needed if time vector changed
+        noise = torch.randn_like(self.data) * amplitude
+        self.data = self.data_master + noise
     
     def reset(self):
         """Reset to original data."""
-        self.data = self.data_orig.clone()
-        self._move_data_to_windows()
+        self.data = self.data_master.detach().clone()
+        # self._move_data_to_windows() # May be needed here, not sure yet
 
 
 class SpikeWindowDataset(TemporalWindowDataset):
