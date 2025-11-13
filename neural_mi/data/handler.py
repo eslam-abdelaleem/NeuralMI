@@ -69,9 +69,9 @@ class PairedTemporalDataset(Dataset):
         # Determine temporal extent and create windows
         self._initialize_windows(t_start, t_end)
         # Attach window manager to datasets
-        self.x_dataset.window_manager = self.window_manager
+        self.x_dataset.set_window_manager(self.window_manager)
         if self.y_dataset is not None:
-            self.y_dataset.window_manager = self.window_manager
+            self.y_dataset.set_window_manager(self.window_manager)
         # Ensure alignment
         if y_dataset is not None:
             self._align_datasets()
