@@ -19,7 +19,7 @@ BASE_PARAMS = {
 @pytest.fixture
 def gaussian_data():
     """Generate pre-processed 3D correlated Gaussian data."""
-    x_data, y_data = nmi.datasets.generate_correlated_gaussians(
+    x_data, y_data = nmi.generators.generate_correlated_gaussians(
         n_samples=200, dim=5, mi=2.0
     )
     x_data_3d = x_data.reshape(200, 1, 5)
@@ -29,7 +29,7 @@ def gaussian_data():
 @pytest.fixture
 def raw_gaussian_data():
     """Generate raw 2D correlated Gaussian data."""
-    x_data, y_data = nmi.datasets.generate_correlated_gaussians(
+    x_data, y_data = nmi.generators.generate_correlated_gaussians(
         n_samples=500, dim=5, mi=2.0
     )
     return x_data, y_data
@@ -138,7 +138,7 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
     """
     # Original gaussian_data fixture is too small (200 samples)
     # Generate larger data for this specific test
-    x_data, y_data = nmi.datasets.generate_correlated_gaussians(
+    x_data, y_data = nmi.generators.generate_correlated_gaussians(
         n_samples=1000, dim=5, mi=2.0
     )
     x_data = x_data.reshape(1000, 1, 5)

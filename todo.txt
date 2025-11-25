@@ -1,2 +1,12 @@
 - Fix saving names for more than one model. Currently, it saves with random generated unique names, if we're saving the best model of one run like in rigourous, it's working fine, but for sweeps or dimensionality, we get multiple random names and it's not useful.
 - Make sure that we're saving both netowrks, not just one of them in the case of separable.
+
+
+- ContinuousWindowDataset (and categorical) need to gracefully handle data not sampled evenly. Right now not sure they can work with uneven time sampling
+- Give datasets shape parameter
+
+- Update run, trainer, lag, and sweep (among others) for new data handling
+
+- Write tests
+
+- Github landing page should link to documentation

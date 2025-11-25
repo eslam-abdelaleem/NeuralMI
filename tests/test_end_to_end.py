@@ -7,7 +7,7 @@ def test_rigorous_mode_with_spike_data():
     Tests the full end-to-end pipeline for rigorous analysis on spike data.
     """
     # 1. Generate synthetic spike data
-    x_spikes, y_spikes = nmi.datasets.generate_correlated_spike_trains(
+    x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
         n_neurons=5,
         duration=10.0,
         firing_rate=10.0,

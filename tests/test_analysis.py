@@ -16,15 +16,15 @@ def test_run_lag_mode(processor_type):
     DataFrame with the correct columns.
     """
     if processor_type == "continuous":
-        x_data, y_data = nmi.datasets.generate_temporally_convolved_data(n_samples=500, lag=5)
+        x_data, y_data = nmi.generators.generate_temporally_convolved_data(n_samples=500, lag=5)
         lag_range = range(-10, 11, 5)
         processor_params = {'window_size': 10}
     elif processor_type == "categorical":
-        x_data, y_data = nmi.datasets.generate_correlated_categorical_series(n_samples=500, n_categories=3)
+        x_data, y_data = nmi.generators.generate_correlated_categorical_series(n_samples=500, n_categories=3)
         lag_range = range(-10, 11, 5)
         processor_params = {'window_size': 10}
     else: # spike
-        x_data, y_data = nmi.datasets.generate_correlated_spike_trains(duration=10.0, delay=0.02)
+        x_data, y_data = nmi.generators.generate_correlated_spike_trains(duration=10.0, delay=0.02)
         lag_range = np.arange(-0.05, 0.06, 0.01)
         processor_params = {'window_size': 0.1, 'max_spikes_per_window': 10} # Added max_spikes for robustness
 

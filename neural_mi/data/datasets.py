@@ -1,7 +1,6 @@
 # neural_mi/data/datasets.py
 import torch
 import numpy as np
-from typing import List, Optional, Union
 from torch.utils.data import Dataset
 from abc import ABC, abstractmethod
 from neural_mi.logger import logger

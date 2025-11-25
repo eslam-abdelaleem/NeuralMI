@@ -7,7 +7,7 @@ import neural_mi as nmi
 @pytest.fixture
 def iid_data():
     """Generate simple IID Gaussian data."""
-    x_data, y_data = nmi.datasets.generate_correlated_gaussians(
+    x_data, y_data = nmi.generators.generate_correlated_gaussians(
         n_samples=100, dim=2, mi=1.0
     )
     # Reshape to be (n_samples, n_channels, n_features)

@@ -31,7 +31,7 @@ import neural_mi as nmi
 import numpy as np
 
 # 1. Generate raw data (e.g., 100 channels with 10 latent dims over 2500 timepoints)
-x_raw, y_raw = nmi.datasets.generate_nonlinear_from_latent(
+x_raw, y_raw = nmi.generators.generate_nonlinear_from_latent(
     n_samples=2500, latent_dim=10, observed_dim=100, mi=3.0
 )
 

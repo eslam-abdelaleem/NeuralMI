@@ -18,12 +18,12 @@ All calls to ``run()`` return a ``Results`` object. This object acts as a contai
    :undoc-members:
    :show-inheritance:
 
-Data Generation (`datasets`)
+Data Generation (`generators`)
 ----------------------------
 
 This module provides functions to generate synthetic datasets with known properties. These are useful for testing estimators, validating models, and following the tutorials.
 
-.. automodule:: neural_mi.datasets
+.. automodule:: neural_mi.generators
    :members: generate_correlated_gaussians, generate_nonlinear_from_latent, generate_linear_data, generate_nonlinear_data, generate_temporally_convolved_data, generate_xor_data, generate_event_related_data, generate_linear_data, generate_nonlinear_data, generate_history_data, generate_full_data
    :undoc-members:
 

@@ -225,7 +225,7 @@ def run(
     >>> import neural_mi as nmi
     >>> import numpy as np
     >>> # Generate synthetic data
-    >>> x_raw, y_raw = nmi.datasets.generate_nonlinear_from_latent(
+    >>> x_raw, y_raw = nmi.generators.generate_nonlinear_from_latent(
     ...     n_samples=2500, latent_dim=10, observed_dim=100, mi=3.0
     ... )
     >>> # Define model and training parameters

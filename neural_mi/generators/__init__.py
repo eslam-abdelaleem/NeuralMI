@@ -1,10 +1,10 @@
-# neural_mi/datasets/__init__.py
+# neural_mi/generators/__init__.py
 """This package contains functions for generating synthetic datasets.
 
 These functions are useful for testing, validating, and demonstrating the
 capabilities of the mutual information estimators in the library.
 """
-from .generators import (
+from .synthetic import (
     generate_correlated_gaussians, 
     generate_nonlinear_from_latent,
     generate_temporally_convolved_data,

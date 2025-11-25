@@ -12,7 +12,7 @@ BASE_PARAMS_TEST = {
 
 @pytest.fixture
 def raw_data():
-    x, y = nmi.datasets.generate_correlated_gaussians(n_samples=200, dim=5, mi=2.0)
+    x, y = nmi.generators.generate_correlated_gaussians(n_samples=200, dim=5, mi=2.0)
     return x.T, y.T # Return as (channels, timepoints)
 
 def test_run_estimate_mode(raw_data):
@@ -37,7 +37,7 @@ def test_run_sweep_mode(raw_data):
     assert len(results.dataframe) == 2
 
 def test_run_dimensionality_mode():
-    x, _ = nmi.datasets.generate_nonlinear_from_latent(200, 3, 20, 2.0)
+    x, _ = nmi.generators.generate_nonlinear_from_latent(200, 3, 20, 2.0)
     results = nmi.run(
         x_data=x.T, mode='dimensionality',
         processor_type='continuous', processor_params={'window_size': 1},

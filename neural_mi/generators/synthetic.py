@@ -1,4 +1,4 @@
-# neural_mi/datasets/generators.py
+# neural_mi/generators/synthetic.py
 """Generates synthetic datasets for testing and validating MI estimators.
 
 This module provides functions to create various kinds of synthetic datasets

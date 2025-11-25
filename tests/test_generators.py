@@ -1,8 +1,8 @@
-# tests/test_datasets.py
+# tests/test_generators.py
 import pytest
 import numpy as np
 import torch
-from neural_mi.datasets import (
+from neural_mi.generators import (
     generate_correlated_gaussians,
     generate_nonlinear_from_latent,
     generate_temporally_convolved_data,

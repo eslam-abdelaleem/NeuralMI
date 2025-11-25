@@ -3,7 +3,7 @@ from .run import run
 from .logger import logger, set_verbosity
 from .exceptions import NeuralMIError, DataShapeError, InsufficientDataError, TrainingError
 from . import data
-from . import datasets
+from . import generators
 from . import estimators
 from . import models
 from . import results
@@ -13,6 +13,6 @@ from . import visualize
 
 __all__ = [
     'run', 'logger', 'set_verbosity', 'NeuralMIError', 'DataShapeError',
-    'InsufficientDataError', 'TrainingError', 'data', 'datasets', 'estimators',
+    'InsufficientDataError', 'TrainingError', 'data', 'generators', 'estimators',
     'models', 'results', 'utils', 'validation', 'visualize'
 ]

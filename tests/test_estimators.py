@@ -38,7 +38,7 @@ class TestEstimators:
         ground_truth_mi = 2.0
         n_samples = 2000
         dim = 5
-        x_raw, y_raw = nmi.datasets.generate_correlated_gaussians(
+        x_raw, y_raw = nmi.generators.generate_correlated_gaussians(
             n_samples=n_samples, dim=dim, mi=ground_truth_mi, use_torch=True
         )
         x_data = x_raw.reshape(n_samples, 1, dim)
@@ -71,7 +71,7 @@ class TestEstimators:
         Tests that the 'smile' estimator's 'clip' parameter is correctly
         used within the full nmi.run pipeline.
         """
-        x_data, y_data = nmi.datasets.generate_correlated_gaussians(n_samples=1000, dim=5, mi=3.0)
+        x_data, y_data = nmi.generators.generate_correlated_gaussians(n_samples=1000, dim=5, mi=3.0)
         x_data, y_data = x_data.T, y_data.T
 
         # Define the full set of base_params required by build_critic

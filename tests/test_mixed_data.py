@@ -11,7 +11,7 @@ def test_continuous_and_spike_alignment():
     # Continuous data: 1000 timepoints, window=10, step=5 -> (1000-10)/5 + 1 = 199 samples
     x_cont = np.random.randn(2, 1000)
     # Spike data: 10s duration, window=0.1, step=0.05 -> theoretical max of 199 samples
-    y_spike, _ = nmi.datasets.generate_correlated_spike_trains(duration=10.0)
+    y_spike, _ = nmi.generators.generate_correlated_spike_trains(duration=10.0)
 
     handler = DataHandler(
         x_data=x_cont, y_data=y_spike,

@@ -125,3 +125,8 @@ class TestCategoricalProcessor:
         processor = CategoricalProcessor(window_size=20)
         with pytest.raises(InsufficientDataError):
             processor.process(categorical_data)
+
+
+# Test that no data works
+
+# Test that extremely small windows work
