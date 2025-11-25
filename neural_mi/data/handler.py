@@ -2,7 +2,7 @@
 import torch
 import numpy as np
 
-from datasets import *
+from .datasets import *
 from torch.utils.data import Dataset
 from neural_mi.logger import logger
 
@@ -10,29 +10,52 @@ from neural_mi.logger import logger
 class WindowManager:
     """Centralized manager for creating and aligning temporal windows."""
     
-    def __init__(self, window_size):
+    def __init__(self, window_size, t_start=None, t_end=None):
         self.window_size = window_size
+        self.t_start = t_start
+        self.t_end = t_end
         self.window_times = None
         self.valid_windows = None
         self.n_windows = 0
+        self._observers = []  # Datasets that need to be notified
+        if t_start is not None and t_end is not None:
+            self.create_windows()
+        
+    def register_observer(self, observer):
+        """Register a dataset to be notified of changes."""
+        if observer not in self._observers:
+            self._observers.append(observer)
     
-    def create_windows(self, t_start, t_end):
+    def _notify_observers(self):
+        """Notify all registered datasets of window changes."""
+        for observer in self._observers:
+            observer._on_window_manager_updated()
+
+    def update_parameters(self, window_size=None, t_start=None, t_end=None):
+        """Update window parameters and regenerate windows."""
+        if window_size is not None:
+            self.window_size = window_size
+        if t_start is not None:
+            self.t_start = t_start
+        if t_end is not None:
+            self.t_end = t_end
+        
+        if self.t_start is not None and self.t_end is not None:
+            self.create_windows()
+            self._notify_observers()
+    
+    def create_windows(self):
         """Create window times for a given temporal range."""
-        self.window_times = np.arange(t_start, t_end, self.window_size)
+        if self.t_start is None or self.t_end is None:
+            raise RuntimeError("t_start and t_end parameters need to be set to create windows")
+        self.window_times = np.arange(self.t_start, self.t_end, self.window_size)
         self.n_windows = len(self.window_times)
         self.valid_windows = np.full(self.window_times.size, True, dtype=bool)
-        # return self.window_times
     
     def invalidate_windows(self, mask):
         """Mark certain windows as invalid."""
         self.valid_windows = np.logical_and(self.valid_windows, mask)
         self.n_windows = int(self.valid_windows.sum())
-    
-    # def get_window_bounds(self, idx):
-    #     """Get start and end time for a specific window."""
-    #     win_start = self.window_times[idx]
-    #     win_end = win_start + self.window_size
-    #     return win_start, win_end
 
 
 class PairedTemporalDataset(Dataset):
@@ -61,12 +84,13 @@ class PairedTemporalDataset(Dataset):
         """
         self.x_dataset = x_dataset
         self.y_dataset = y_dataset
+        self.validate_windows = validate_windows
         # Create window manager shared between X and Y
         # Using separate object allows X and Y to always be synchronized
         if window_size is None:
             raise ValueError("window_size must be provided")
-        self.window_manager = WindowManager(window_size)
         # Determine temporal extent and create windows
+        self.window_manager = WindowManager(window_size)
         self._initialize_windows(t_start, t_end)
         # Attach window manager to datasets
         self.x_dataset.set_window_manager(self.window_manager)
@@ -112,11 +136,11 @@ class PairedTemporalDataset(Dataset):
                 f"Invalid temporal range: t_start={final_start}, t_end={final_end}"
             )
         # Create windows
-        self.window_manager.create_windows(final_start, final_end)
-        if len(self.window_times) == 0:
+        self.window_manager.update_parameters(final_start, final_end)
+        if len(self.window_manager.window_times) == 0:
             raise ValueError(
                 f"No windows could be created in range [{final_start}, {final_end}] "
-                f"with window_size={self.window_size}"
+                f"with window_size={self.window_manager.window_size}"
             )
         # Validate window coverage for each dataset (optional)
         if self.validate_windows:
@@ -157,12 +181,18 @@ class PairedTemporalDataset(Dataset):
         if offset_y != 0 and self.y_dataset and hasattr(self.y_dataset, 'time_shift'):
             self.y_dataset.time_shift(offset_y)
 
+    def set_window_size(self, window_size):
+        """Change window size, update windows of data."""
+        self.window_manager.update_parameters(window_size=window_size)
+        # Datasets are automatically notified and updated via observer pattern
 
-class PairedPreprocessedDataset(Dataset):
-    """Dataset object for when both X/Y are given processor type of None. Assumes user already preprocessed data as much as they want"""
-    def __init__():
-        # Do some stuff
-        x=1
+
+
+# class PairedPreprocessedDataset(Dataset):
+#     """Dataset object for when both X/Y are given processor type of None. Assumes user already preprocessed data as much as they want"""
+#     def __init__():
+#         # Do some stuff
+#         x=1
 
 
 
@@ -215,7 +245,7 @@ class DataHandler:
             return PairedTemporalDataset(x_dataset, y_dataset)
         else:
             return PairedPreprocessedDataset(x_dataset, y_dataset)
-        # NOTE: Likely can handle categorical and preprocessed the same way, with the same object
+        # NOTE: Likely can handle preprocessed the same way, with the same object
 
     def _validate_combination(self):
         """Check if X and Y data types are compatible"""
@@ -238,16 +268,16 @@ class DataHandler:
                 f"Currently all combinations of 'spike', 'continuous', or 'categorical' are compatible. "
             )
     
-    def _create_single_dataset(self, data, time, proc_type, proc_params):
+    def _create_single_dataset(self, data, time, proc_type):
         """Create dataset for single variable."""
         if proc_type is None:
             # Already processed
             return PreprocessedDataset(data)
         if proc_type == 'continuous':
-            return ContinuousWindowDataset(data, time, proc_params.get('window_size', 1))
+            return ContinuousWindowDataset(data, time)
         elif proc_type == 'spike':
-            return SpikeWindowDataset(data, time, proc_params.get('window_size', 1))
+            return SpikeWindowDataset(data, time)
         elif proc_type == 'categorical':
-            return CategoricalDataset(data, proc_params.get('window_size', 1))
+            return CategoricalWindowDataset(data)
         else:
             raise ValueError(f"Unknown processor type: {proc_type}")
