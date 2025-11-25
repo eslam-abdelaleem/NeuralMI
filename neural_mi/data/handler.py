@@ -188,11 +188,58 @@ class PairedTemporalDataset(Dataset):
 
 
 
-# class PairedPreprocessedDataset(Dataset):
-#     """Dataset object for when both X/Y are given processor type of None. Assumes user already preprocessed data as much as they want"""
-#     def __init__():
-#         # Do some stuff
-#         x=1
+class PairedDataset(Dataset):
+    """
+    Dataset object for when both X/Y are given processor type of None. 
+    Assumes user already preprocessed data as much as they want, so avoids windowing or any temporal features."""
+    def __init__(self, x_dataset, y_dataset=None):
+        """
+        Parameters
+        ----------
+        x_dataset : PreprocessedDataset
+            Dataset for X variable
+        y_dataset : PreprocessedDataset, optional
+            Dataset for Y variable
+        """
+        self.x_dataset = x_dataset
+        self.y_dataset = y_dataset
+        # Ensure sizes match
+        if y_dataset is not None:
+            self._align_datasets()
+        logger.info(f"Created PairedDataset")
+    
+    def _align_datasets(self):
+        """Ensure X and Y have matching number of windows."""
+        n_x = len(self.x_dataset)
+        n_y = len(self.y_dataset)
+        if n_x != n_y:
+            min_len = min(n_x, n_y)
+            self.x_dataset.n_windows = min_len
+            self.y_dataset.n_windows = min_len
+            logger.warning(f"Truncated datasets to {min_len} windows for alignment")
+    
+    def __len__(self):
+        return len(self.x_dataset)
+    
+    def __getitem__(self, idx):
+        x_data = self.x_dataset[idx]
+        y_data = self.y_dataset[idx] if self.y_dataset else None
+        return x_data, y_data
+    
+    def add_noise(self, amplitude_x=0, amplitude_y=0):
+        """Add noise to both datasets."""
+        if amplitude_x > 0:
+            self.x_dataset.add_noise(amplitude_x)
+        if amplitude_y > 0 and self.y_dataset:
+            self.y_dataset.add_noise(amplitude_y)
+    
+    def time_shift(self, offset_x=0, offset_y=0):
+        """Apply time shifts."""
+        if offset_x != 0 and hasattr(self.x_dataset, 'time_shift'):
+            self.x_dataset.time_shift(offset_x)
+        if offset_y != 0 and self.y_dataset and hasattr(self.y_dataset, 'time_shift'):
+            self.y_dataset.time_shift(offset_y)
+
 
 
 
@@ -244,8 +291,7 @@ class DataHandler:
         if processor_type_x is not None and processor_type_y is not None:
             return PairedTemporalDataset(x_dataset, y_dataset)
         else:
-            return PairedPreprocessedDataset(x_dataset, y_dataset)
-        # NOTE: Likely can handle preprocessed the same way, with the same object
+            return PairedDataset(x_dataset, y_dataset)
 
     def _validate_combination(self):
         """Check if X and Y data types are compatible"""
