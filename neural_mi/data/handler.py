@@ -2,7 +2,8 @@
 import torch
 import numpy as np
 
-from .datasets import *
+from .temporal import *
+from .static import *
 from torch.utils.data import Dataset
 from neural_mi.logger import logger
 
@@ -308,17 +309,14 @@ class DataHandler:
         if any([pair == x for x in self.INCOMPATIBLE_PAIRS]):
             raise ValueError(
                 f"Incompatible data type combination: X is '{self.proc_type_x}' "
-                f"and Y is '{self.proc_type_y}'. Categorical data cannot be paired "
-                f"with spike or continuous data because they use different temporal "
-                f"representations.\n\n"
+                f"and Y is '{self.proc_type_y}'."
                 f"Currently all combinations of 'spike', 'continuous', or 'categorical' are compatible. "
             )
     
     def _create_single_dataset(self, data, time, proc_type):
         """Create dataset for single variable."""
         if proc_type is None:
-            # Already processed
-            return PreprocessedDataset(data)
+            return StaticDataset(data)
         if proc_type == 'continuous':
             return ContinuousWindowDataset(data, time)
         elif proc_type == 'spike':

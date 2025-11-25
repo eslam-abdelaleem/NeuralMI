@@ -1,4 +1,4 @@
-# neural_mi/data/datasets.py
+# neural_mi/data/temporal.py
 import torch
 import numpy as np
 from torch.utils.data import Dataset
@@ -112,20 +112,6 @@ class TemporalWindowDataset(Dataset, ABC):
         """Round data to a specific resolution/precision level."""
         pass
 
-
-class PreprocessedDataset(TemporalWindowDataset):
-    """Dataset for already-processed data."""
-    
-    def __init__(self, data):
-        super().__init__(window_size=1)  # Dummy value
-        self.data = torch.as_tensor(data, dtype=torch.float32)
-        self.n_windows = len(self.data)
-    
-    def _move_data_to_windows(self):
-        pass
-    
-    def __getitem__(self, idx):
-        return self.data[idx]
 
 
 class ContinuousWindowDataset(TemporalWindowDataset):
