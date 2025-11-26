@@ -197,9 +197,9 @@ class PairedDataset(Dataset):
         """
         Parameters
         ----------
-        x_dataset : PreprocessedDataset
+        x_dataset : StaticDataset
             Dataset for X variable
-        y_dataset : PreprocessedDataset, optional
+        y_dataset : StaticDataset, optional
             Dataset for Y variable
         """
         self.x_dataset = x_dataset
@@ -233,13 +233,6 @@ class PairedDataset(Dataset):
             self.x_dataset.add_noise(amplitude_x)
         if amplitude_y > 0 and self.y_dataset:
             self.y_dataset.add_noise(amplitude_y)
-    
-    def time_shift(self, offset_x=0, offset_y=0):
-        """Apply time shifts."""
-        if offset_x != 0 and hasattr(self.x_dataset, 'time_shift'):
-            self.x_dataset.time_shift(offset_x)
-        if offset_y != 0 and self.y_dataset and hasattr(self.y_dataset, 'time_shift'):
-            self.y_dataset.time_shift(offset_y)
 
 
 

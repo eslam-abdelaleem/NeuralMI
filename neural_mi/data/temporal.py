@@ -52,9 +52,22 @@ class TemporalWindowDataset(Dataset, ABC):
             Device for tensor operations
         """
         self.window_manager = window_manager
-        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
-        self.data_orig = None
-        self.data = None
+        if device:
+            self.device = device
+        elif torch.cuda.is_available():
+            self.device = 'cuda'
+        elif torch.backends.mps.is_available():
+            self.device = 'mps'
+        else:
+            self.device = 'cpu'
+        # Three versions of data are kept
+        # 1. data_orig: A numpy master matching the original (n_channels, n_timepoints), assigned in child classes
+        # 2. data_master: A clean copy of data moved to windows (n_windows, n_channels, n_timepoints)
+        # 3. data: A working copy of data moved to windows. 
+        # This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
+        self.data_master = None # Will be allocated when moving to windows
+        self.data = None # Will be allocated when moving to windows
+        self.time_offset = 0 # By default, no offset is applied
 
     def set_window_manager(self, window_manager):
         """Attach window manager and compute max samples/spikes per window."""
@@ -131,15 +144,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         """
         super().__init__(window_manager, device)
 
-        # Three versions of data are kept
-        # 1. data_orig: A numpy master matching the original (n_channels, n_timepoints)
-        # 2. data_master: A clean copy of data moved to windows (n_windows, n_channels, n_timepoints)
-        # 3. data: A working copy of data moved to windows. 
-        # This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
         self.data_orig = data
-        self.data_master = None # Will be allocated when moving to windows
-        self.data = None # Will be allocated when moving to windows
-        self.time_offset = 0 # By default, no offset is applied
         # Time vector handling. If no time vector given, assuming sampled on positive integers
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
@@ -252,14 +257,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
                  no_spike_value=0.0, device=None):
         super().__init__(window_manager, device)
 
-        # Three versions of data are kept
-        # 1. spike_times: A numpy master matching the original (n_channels, n_timepoints)
-        # 2. data_master: A clean copy of data moved to windows (n_windows, n_channels, n_timepoints)
-        # 3. data: A working copy of data moved to windows. 
-        # This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
-        self.spike_times = [np.array(st) for st in spike_times]
-        self.data_master = None # Will be allocated when moving to windows
-        self.data = None # Will be allocated when moving to windows
+        self.data_orig = [np.array(st) for st in spike_times]
         self._spike_mask = None # Used for faster noise operations
         self.no_spike_value = no_spike_value
         self.time_offset = 0
@@ -279,7 +277,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
 
     def _get_temporal_extent(self):
         """Return temporal extent of spike data."""
-        valid_trains = [st for st in self.spike_times if len(st) > 0]
+        valid_trains = [st for st in self.data_orig if len(st) > 0]
         if not valid_trains:
             return 0, 0
         t_start = min(st[0] for st in valid_trains)
@@ -298,18 +296,18 @@ class SpikeWindowDataset(TemporalWindowDataset):
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
         
         # Preallocate
-        data_shape = (self.window_manager.n_windows, len(self.spike_times), self.max_samples_per_window)
+        data_shape = (self.window_manager.n_windows, len(self.data_orig), self.max_samples_per_window)
         data = np.full(data_shape, self.no_spike_value, dtype=np.float32)
         # Use searchsorted on each neuron/muscle to assign to chunks
         # For millions of spikes, this is by far the slowest part of this whole function!
         # For that reason we'll be memory-hungry and cache it
-        self._cached_window_inds = [np.searchsorted(self.window_manager.window_times, x) - 1 for x in self.spike_times]
+        self._cached_window_inds = [np.searchsorted(self.window_manager.window_times, x) - 1 for x in self.data_orig]
         window_inds = self._cached_window_inds
-        for i in range(len(self.spike_times)):
+        for i in range(len(self.data_orig)):
             mask = self.window_manager.valid_windows[window_inds]
             _, _, counts = np.unique(window_inds[i], return_counts=True, return_index=True)
             column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)[mask]
-            data[window_inds[i][mask],i,column_inds] = self.spike_times[i][mask] - self.window_manager.window_times[window_inds[i][mask]]
+            data[window_inds[i][mask],i,column_inds] = self.data_orig[i][mask] - self.window_manager.window_times[window_inds[i][mask]]
         # Trim windows that aren't valid
         data = data[self.window_manager.valid_windows, :, :]
         # Convert to tensor, move to device. Make copies that noise will be applied on
@@ -339,7 +337,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
     def time_shift(self, offset):
         """Shift spike times by offset."""
         # Undo previous offset, apply new one
-        self.spike_times = [st + offset - self.time_offset for st in self.spike_times]
+        self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
         # Store this time offset to undo later
         self.time_offset = offset
         self._move_data_to_windows()
@@ -353,6 +351,8 @@ class SpikeWindowDataset(TemporalWindowDataset):
         """Round spike times to a specific resolution/precision level."""
         mask = self._spike_mask
         self.data[mask] = torch.round(self.data[mask] / precision_level) * precision_level
+
+
 
 
 class CategoricalWindowDataset(TemporalWindowDataset):
@@ -380,9 +380,6 @@ class CategoricalWindowDataset(TemporalWindowDataset):
             _, indices = np.unique(arr, return_inverse=True)
             arr = indices
         self.data_orig = np.asarray(arr, dtype=np.int32)
-        self.data_master = None  # Will be allocated when moving to windows
-        self.data = None  # Will be allocated when moving to windows
-        self.time_offset = 0
         
         # Time vector handling
         if time_vector is not None:
