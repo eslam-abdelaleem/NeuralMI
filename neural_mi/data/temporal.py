@@ -78,16 +78,27 @@ class TemporalWindowDataset(Dataset, ABC):
     def _on_window_manager_updated(self):
         """Called when window manager parameters (window size, t_start, t_end) change."""
         self._compute_max_samples_per_window()
-        self._move_data_to_windows()
+        # self._move_data_to_windows()
     
     def _compute_max_samples_per_window(self):
         """Compute maximum samples that fit in a window."""
         pass
     
     @abstractmethod
-    def _move_data_to_windows(self):
+    def move_data_to_windows(self):
         """Process raw data into windowed format."""
         pass
+
+    @abstractmethod
+    def validate_window_coverage(self):
+        """Check which windows have sufficient data coverage."""
+        pass
+
+    def remove_invalid_windows(self):
+        """Trim data to only valid windows."""
+        if self.window_manager is not None:
+            self.data = self.data[self.window_manager.valid_windows, :, :]
+            self.data_master = self.data_master[self.window_manager.valid_windows, :, :]
     
     @abstractmethod
     def __getitem__(self, idx):
@@ -103,11 +114,6 @@ class TemporalWindowDataset(Dataset, ABC):
     @abstractmethod
     def _get_temporal_extent(self):
         """Return (t_start, t_end) of the data."""
-        pass
-    
-    @abstractmethod
-    def validate_window_coverage(self, window_times):
-        """Check which windows have sufficient data coverage."""
         pass
 
     @abstractmethod
@@ -162,7 +168,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # Process data if window manager is available
         if window_manager is not None:
             self.set_window_manager(window_manager)
-            self._move_data_to_windows()
+            self.move_data_to_windows()
         else:
             self.window_manager = None
 
@@ -172,7 +178,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # For now always assuming fixed sample rate (outside of large jumps)
         self.max_samples_per_window = np.ceil(self.window_manager.window_size / self.period).astype(int)
     
-    def _move_data_to_windows(self):
+    def move_data_to_windows(self):
         """
         Convert continuous data into windows. 
         Continuous data of shape (n_channels, n_timepoints) is reshaped and interpolated 
@@ -192,24 +198,18 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # For that reason we'll be memory-hungry and cache it
         self._cached_window_inds = np.searchsorted(self.window_manager.window_times, self.time_vector, side='right') - 1
         window_inds = self._cached_window_inds
-        # Apply mask of which windows are valid to those indices
-        mask = self.window_manager.valid_windows[window_inds]
-        # Use those indices + mask to assign data to windows
+        # Use those indices to assign data to windows
         # Will interpolate data so that data is evenly sampled across window
         _, index, counts = np.unique(window_inds, return_counts=True, return_index=True)
-        column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)[mask]
+        column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
         first_inds = np.repeat(index, counts)
         time_shifts = self.time_vector[first_inds] - self.window_manager.window_times[window_inds][first_inds]
         for i in range(self.data_orig.shape[0]):
-            data[window_inds[mask],i,column_inds] = np.interp(
-                self.time_vector[mask] + time_shifts[mask], 
-                self.time_vector[mask], 
-                self.data_orig[i,mask]
+            data[window_inds,i,column_inds] = np.interp(
+                self.time_vector + time_shifts, 
+                self.time_vector, 
+                self.data_orig[i,:]
             )
-        # Trim data to only valid windows
-        # window_manager.window_times will stay long to include invalid windows,
-        # as time shifting variables needs to refer to those windows again
-        data = data[self.window_manager.valid_windows, :, :]
         self.data = torch.tensor(data, device=self.device) #TODO: Set device to have a reasonable default
         self.data_master = self.data.detach().clone()
 
@@ -225,7 +225,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         self.time_vector = self.time_vector + offset - self.time_offset
         # Store this time offset to undo later
         self.time_offset = offset
-        self._move_data_to_windows()
+        # Moving data to windows will be orchestrated by paired dataset
 
     def _get_temporal_extent(self):
         return self.time_vector[0], self.time_vector[-1]
@@ -264,7 +264,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
         # Process data if window manager is available
         if window_manager is not None:
             self.set_window_manager(window_manager)
-            self._move_data_to_windows()
+            self.move_data_to_windows()
         else:
             self.window_manager = None
     
@@ -284,7 +284,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
         t_end = max(st[-1] for st in valid_trains)
         return t_start, t_end
     
-    def _move_data_to_windows(self):
+    def move_data_to_windows(self):
         """
         Convert spike times into windowed format. 
         Spike data of form [(n_channels, n_spikes)] is reshaped to 
@@ -304,20 +304,12 @@ class SpikeWindowDataset(TemporalWindowDataset):
         self._cached_window_inds = [np.searchsorted(self.window_manager.window_times, x) - 1 for x in self.data_orig]
         window_inds = self._cached_window_inds
         for i in range(len(self.data_orig)):
-            mask = self.window_manager.valid_windows[window_inds]
             _, _, counts = np.unique(window_inds[i], return_counts=True, return_index=True)
-            column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)[mask]
-            data[window_inds[i][mask],i,column_inds] = self.data_orig[i][mask] - self.window_manager.window_times[window_inds[i][mask]]
-        # Trim windows that aren't valid
-        data = data[self.window_manager.valid_windows, :, :]
+            column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
+            data[window_inds[i],i,column_inds] = self.data_orig[i] - self.window_manager.window_times[window_inds[i]]
         # Convert to tensor, move to device. Make copies that noise will be applied on
         self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
-        # Pre-compute where spikes are, to quickly add noise
-        self._spike_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
-        # Pre-allocate noise tensor, number of spikes to avoid repeated allocations/operations when applying noise
-        # TODO: Not sure if this is necessary. Benchmark it
-        self._noise_buffer = torch.empty(len(self._spike_mask[0]), device=self.device, dtype=self.data.dtype)
 
     def validate_window_coverage(self):
         """Check which windows have sufficient data coverage. Assumes window manager attached"""
@@ -332,7 +324,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
     def reset(self):
         """Undo any added noise by resetting to original data. Does not undo time shifts."""
         self.data = self.data_master.detach().clone()
-        # self._move_data_to_windows() # May be needed here, not sure yet
     
     def time_shift(self, offset):
         """Shift spike times by offset."""
@@ -340,15 +331,26 @@ class SpikeWindowDataset(TemporalWindowDataset):
         self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
         # Store this time offset to undo later
         self.time_offset = offset
-        self._move_data_to_windows()
+        # Moving data to windows will be orchestrated by paired dataset class
 
     def apply_noise(self, amplitude):
         """Add temporal jitter to spike times."""
+        # If spike mask and noise buffer haven't been created, compute that now
+        if not hasattr(self, '_spike_mask'):
+            # Pre-compute where spikes are, to quickly add noise
+            self._spike_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
+            # Pre-allocate noise tensor, number of spikes to avoid repeated allocations/operations when applying noise
+            # TODO: Not sure if this is necessary. Benchmark it
+            self._noise_buffer = torch.empty(len(self._spike_mask[0]), device=self.device, dtype=self.data.dtype)
         self._noise_buffer.uniform_(-amplitude / 2, amplitude / 2)
         self.data[self._spike_mask] = self.data_master[self._spike_mask] + self._noise_buffer
 
     def apply_precision(self, precision_level):
         """Round spike times to a specific resolution/precision level."""
+        # If spike mask and noise buffer haven't been created, compute that now
+        if not hasattr(self, '_spike_mask'):
+            # Pre-compute where spikes are, to quickly add noise
+            self._spike_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
         mask = self._spike_mask
         self.data[mask] = torch.round(self.data[mask] / precision_level) * precision_level
 
@@ -402,7 +404,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         # Process data if window manager is available
         if window_manager is not None:
             self.set_window_manager(window_manager)
-            self._move_data_to_windows()
+            self.move_data_to_windows()
         else:
             self.window_manager = None
     
@@ -410,7 +412,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         """Compute maximum samples that fit in a window."""
         self.max_samples_per_window = np.ceil(self.window_manager.window_size / self.period).astype(int)
     
-    def _move_data_to_windows(self):
+    def move_data_to_windows(self):
         """
         Convert categorical data into windows with one-hot encoding.
         Categorical data of shape (n_channels, n_timepoints) is reshaped and mapped to 
@@ -430,21 +432,17 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         # Get indices of which window time points belong to
         self._cached_window_inds = np.searchsorted(self.window_manager.window_times, self.time_vector, side='right') - 1
         window_inds = self._cached_window_inds
-        # Apply mask of which windows are valid
-        mask = self.window_manager.valid_windows[window_inds]
         # Compute column indices for placement
         _, counts = np.unique(window_inds, return_counts=True)
-        column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)[mask]
+        column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
         # Expand column inds for one-hot encoding
         expanded = column_inds[:,None] * self.n_categories + np.arange(self.n_categories)
         expanded_column_inds = expanded.ravel()
         # Expand window indices for one-hot encoding
-        expanded_window_inds = np.repeat(window_inds[mask], self.n_categories)
+        expanded_window_inds = np.repeat(window_inds, self.n_categories)
         for i in range(self.data_orig.shape[0]):
-            data[expanded_window_inds,i,expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[i,mask]].flatten()
-        # Trim data to only valid windows
-        self.data = data[self.window_manager.valid_windows, :, :]
-        self.data = torch.tensor(self.data, device=self.device)
+            data[expanded_window_inds,i,expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[i,:]].flatten()
+        self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
@@ -460,7 +458,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         self.time_vector = self.time_vector + offset - self.time_offset
         # Store this time offset to undo later
         self.time_offset = offset
-        self._move_data_to_windows()
+        # Moving data to windows on new time shift will be orchestrated by paired dataset
 
     def _get_temporal_extent(self):
         """Return temporal extent of the data."""

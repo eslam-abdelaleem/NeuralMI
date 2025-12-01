@@ -2,131 +2,149 @@
 import pytest
 import numpy as np
 import torch
-from neural_mi.data.processors import ContinuousProcessor, SpikeProcessor, CategoricalProcessor, find_max_spikes_per_window
-from neural_mi.exceptions import InsufficientDataError, DataShapeError
+from neural_mi.data.handler import WindowManager, PairedTemporalDataset, PairedDataset
+from neural_mi.data.temporal import ContinuousWindowDataset, SpikeWindowDataset, CategoricalWindowDataset
+from neural_mi.data.static import StaticDataset
 
-class TestContinuousProcessor:
-    def test_basic_windowing(self):
-        processor = ContinuousProcessor(window_size=3, step_size=1)
-        data = np.arange(10).reshape(1, -1)
-        result = processor.process(data)
-        assert result.shape == (8, 1, 3)
-        assert torch.equal(result[0, 0, :], torch.tensor([0., 1., 2.]))
+# Fixtures for data generation
+@pytest.fixture
+def continuous_data():
+    """Generate continuous data and time vector."""
+    return np.random.randn(2, 100), np.arange(100)
 
-    def test_step_size(self):
-        processor = ContinuousProcessor(window_size=3, step_size=2)
-        data = np.arange(10).reshape(1, -1)
-        result = processor.process(data)
-        assert result.shape == (4, 1, 3)
+@pytest.fixture
+def spike_data():
+    """Generate spike data."""
+    return [np.sort(np.random.rand(200) * 100), np.sort(np.random.rand(150) * 100)]
 
-    def test_data_too_short_raises_error(self):
-        processor = ContinuousProcessor(window_size=10)
-        data = np.arange(5).reshape(1, -1)
-        with pytest.raises(InsufficientDataError):
-            processor.process(data)
+@pytest.fixture
+def categorical_data():
+    """Generate categorical data and time vector."""
+    return np.random.randint(0, 3, size=(2, 100)), np.arange(100)
 
-    def test_window_size_equals_data_length(self):
-        """Tests behavior when window_size is the same as the data length."""
-        processor = ContinuousProcessor(window_size=10, step_size=1)
-        data = np.arange(10).reshape(1, -1)
-        result = processor.process(data)
-        assert result.shape == (1, 1, 10)
-
-    def test_empty_input_data(self):
-        """Tests that an empty array is handled correctly."""
-        processor = ContinuousProcessor(window_size=10)
-        data = np.empty((2, 0)) # 2 channels, 0 timepoints
-        with pytest.raises(InsufficientDataError):
-            processor.process(data)
-
-    def test_step_size_larger_than_window(self):
-        """Tests non-overlapping windows."""
-        processor = ContinuousProcessor(window_size=3, step_size=3)
-        data = np.arange(9).reshape(1, -1)
-        result = processor.process(data)
-        assert result.shape == (3, 1, 3)
-        assert torch.equal(result[1, 0, :], torch.tensor([3., 4., 5.]))
+# WindowManager Tests
+def test_window_manager_creation():
+    """Test basic creation of WindowManager."""
+    wm = WindowManager(window_size=1.0, t_start=0.0, t_end=10.0)
+    assert wm.n_windows == 10
+    assert np.allclose(wm.window_times, np.arange(0.0, 10.0, 1.0))
 
 
-class TestSpikeProcessor:
-    def test_basic_processing(self):
-        processor = SpikeProcessor(window_size=1.0, step_size=0.5, max_spikes_per_window=5)
-        spike_data = [np.array([0.1, 0.8, 1.6, 2.2]), np.array([0.4, 1.9])]
-        result = processor.process(spike_data, t_start=0, t_end=3)
-        assert result.shape == (5, 2, 5) # 5 windows, 2 channels, 5 max spikes
-        # Check first window
-        assert torch.allclose(result[0, 0, :2], torch.tensor([0.1, 0.8]))
-        assert result[0, 0, 2] == 0 # Padded
+# ContinuousWindowDataset Tests
+def test_continuous_window_dataset(continuous_data):
+    """Test ContinuousWindowDataset windowing."""
+    data, time = continuous_data
+    wm = WindowManager(window_size=10, t_start=0, t_end=100)
+    dataset = ContinuousWindowDataset(data, time, window_manager=wm)
+    dataset.move_data_to_windows()
+    assert len(dataset) == 10
+    assert dataset.data.shape[0] == 10
+    assert dataset.data.shape[1] == 2
+    assert dataset.data.shape[2] > 0
 
-    def test_find_max_spikes_utility(self):
-        """Tests the new standalone utility function."""
-        spike_data = [np.array([0.1, 0.2, 0.3, 0.4, 0.5])]
-        max_spikes = find_max_spikes_per_window(spike_data, window_size=0.3)
-        assert max_spikes == 4
-
-    def test_empty_list_of_spikes(self):
-        """Tests when the input list itself is empty."""
-        processor = SpikeProcessor(window_size=1.0, step_size=0.1, max_spikes_per_window=5)
-        result = processor.process([])
-        assert result.shape == (0, 0, 5)
-
-    def test_list_of_empty_spike_arrays(self):
-        """Tests that a list of empty arrays returns a tensor with 0 samples."""
-        processor = SpikeProcessor(window_size=1.0, step_size=0.1, max_spikes_per_window=1)
-        spike_data = [np.array([]), np.array([])]
-        # This no longer raises an error. It should return a tensor with the
-        # correct number of channels (2) but zero samples (windows).
-        result = processor.process(spike_data)
-        assert result.shape == (0, 2, 1)
-
-    def test_window_larger_than_duration(self):
-        """Tests when the window is too large to fit in the data range."""
-        processor = SpikeProcessor(window_size=5.0, step_size=1.0, max_spikes_per_window=1)
-        spike_data = [np.array([0.1, 1.2, 2.3])]
-        result = processor.process(spike_data, t_start=0, t_end=3)
-        # Should produce zero windows
-        assert result.shape[0] == 0
-
-    def test_truncation_of_spikes(self):
-        """Tests that spikes are correctly truncated if they exceed max_spikes."""
-        processor = SpikeProcessor(window_size=1.0, step_size=1.0, max_spikes_per_window=3)
-        spike_data = [np.array([0.1, 0.2, 0.3, 0.4, 0.5])]
-        result = processor.process(spike_data, t_start=0, t_end=1)
-        assert result.shape == (1, 1, 3)
-        assert torch.all(result[0, 0, :] > 0) # All 3 spots should be filled
-        # Check that the 4th spike (0.4) is not present
-        assert 0.4 not in result[0, 0, :].numpy()
-
-class TestCategoricalProcessor:
-    @pytest.fixture
-    def categorical_data(self):
-        # Data: 2 channels, 10 timepoints, 3 categories (0, 1, 2)
-        return np.array([
-            [0, 1, 1, 2, 0, 0, 1, 2, 2, 1],
-            [1, 1, 0, 2, 1, 0, 0, 2, 1, 0]
-        ])
-
-    def test_basic_processing(self, categorical_data):
-        processor = CategoricalProcessor(window_size=3, step_size=1)
-        result = processor.process(categorical_data)
-        
-        # n_windows = 10 - 3 + 1 = 8
-        # n_channels = 2
-        # n_features = window_size * n_categories = 3 * 3 = 9
-        assert result.shape == (8, 2, 9)
-        assert result.dtype == torch.float32
-
-        # Check the content of the first window, first channel: [0, 1, 1]
-        # One-hot: [[1,0,0], [0,1,0], [0,1,0]] -> flattened -> [1,0,0,0,1,0,0,1,0]
-        expected = torch.tensor([1.,0.,0., 0.,1.,0., 0.,1.,0.])
-        assert torch.equal(result[0, 0, :], expected)
-
-    def test_data_too_short_raises_error(self, categorical_data):
-        processor = CategoricalProcessor(window_size=20)
-        with pytest.raises(InsufficientDataError):
-            processor.process(categorical_data)
+def test_continuous_window_with_jumps():
+    """Test ContinuousWindowDataset dealing with jumps in time with no data"""
+    x = np.hstack((np.linspace(0, 100, 1000), np.linspace(200, 300, 1000)))
+    dat = np.vstack((np.sin(x), np.cos(x)))
+    window_size = 1.5
+    wm = WindowManager(window_size, t_start=x[0], t_end=x[-1])
+    dataset = ContinuousWindowDataset(dat, time_vector=x, window_manager=wm)
+    window_on_jump_ind = np.floor(100/window_size).astype(int)
+    jump_window = dataset[window_on_jump_ind]
+    valid_windows = dataset.validate_window_coverage()
+    assert torch.all(jump_window[:,0:5] != 0.0) # Start of window has data
+    assert torch.all(jump_window[:,-5:] == 0.0) # End of window has just zeros
+    assert wm.n_windows == len(valid_windows)
+    # +1 is b/c last window is open interval (window_times only define start of each window)
+    assert (np.sum(wm.window_times < 100) + np.sum(wm.window_times > 200) + 1) == np.sum(valid_windows)
 
 
-# Test that no data works
+# SpikeWindowDataset Tests
+def test_spike_window_dataset(spike_data):
+    """Test SpikeWindowDataset windowing."""
+    wm = WindowManager(window_size=1.0, t_start=0, t_end=100)
+    dataset = SpikeWindowDataset(spike_data, window_manager=wm)
+    dataset.move_data_to_windows()
+    assert len(dataset) == 100
+    assert dataset.data.shape[0] == wm.n_windows
+    assert dataset.data.shape[1] == 2
+    assert dataset.data.shape[2] > 0
 
-# Test that extremely small windows work
+# CategoricalWindowDataset Tests
+def test_categorical_window_dataset(categorical_data):
+    """Test CategoricalWindowDataset windowing."""
+    data, time = categorical_data
+    wm = WindowManager(window_size=10, t_start=0, t_end=100)
+    dataset = CategoricalWindowDataset(data, time, window_manager=wm)
+    dataset.move_data_to_windows()
+    assert len(dataset) == 10
+    assert dataset.data.shape[0] == 10
+    assert dataset.data.shape[1] == 2
+    assert dataset.data.shape[2] > 0
+    
+# PairedTemporalDataset Tests
+def test_paired_temporal_dataset(continuous_data, spike_data):
+    """Test PairedTemporalDataset alignment and windowing."""
+    c_data, c_time = continuous_data
+    s_data = spike_data
+
+    # Initialize datasets without window manager first
+    x_dataset = ContinuousWindowDataset(c_data, c_time)
+    y_dataset = SpikeWindowDataset(s_data)
+    
+    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=1.0)
+    
+    assert paired_dataset.window_manager.n_windows > 0
+    assert len(paired_dataset) == paired_dataset.window_manager.n_windows
+    
+    # Test __getitem__
+    x_sample, y_sample = paired_dataset[0]
+    assert isinstance(x_sample, torch.Tensor)
+    assert isinstance(y_sample, torch.Tensor)
+
+def test_large_time_jumps(continuous_data):
+    """Test handling of large time jumps in temporal data."""
+    data, time = continuous_data
+    time[50:] += 100  # Create a large jump in the middle
+    
+    wm = WindowManager(window_size=10, t_start=0, t_end=200)
+    dataset = ContinuousWindowDataset(data, time, window_manager=wm)
+    
+    # This should still run without errors
+    dataset.move_data_to_windows()
+    
+    # Check that windows in the gap are empty (or have some fill value)
+    # The validation logic should handle this.
+    valid_mask = dataset.validate_window_coverage()
+    
+    # Windows covering the jump (e.g., from t=90 to t=150) should be invalid
+    jump_windows = (wm.window_times >= 90) & (wm.window_times < 150)
+    assert not np.any(valid_mask[jump_windows])
+
+# StaticDataset Tests
+def test_static_dataset():
+    """Test StaticDataset with various input shapes."""
+    data_2d = np.random.randn(2, 100)
+    dataset_2d = StaticDataset(data_2d)
+    assert dataset_2d.data.shape == (100, 2, 1)
+    
+    data_3d = np.random.randn(2, 100, 5)
+    dataset_3d = StaticDataset(data_3d)
+    assert dataset_3d.data.shape == (100, 2, 5)
+
+# PairedDataset Tests
+def test_paired_static_dataset():
+    """Test PairedDataset for static data."""
+    x_data = np.random.randn(2, 100)
+    y_data = np.random.randn(3, 100)
+    
+    x_dataset = StaticDataset(x_data)
+    y_dataset = StaticDataset(y_data)
+    
+    paired_dataset = PairedDataset(x_dataset, y_dataset)
+    assert len(paired_dataset) == 100
+    
+    x_sample, y_sample = paired_dataset[0]
+    assert x_sample.shape == (2, 1)
+    assert y_sample.shape == (3, 1)
+

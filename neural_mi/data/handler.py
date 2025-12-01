@@ -28,7 +28,7 @@ class WindowManager:
             self._observers.append(observer)
     
     def _notify_observers(self):
-        """Notify all registered datasets of window changes."""
+        """Notify all registered datasets of window changes (lightweight updates only)."""
         for observer in self._observers:
             observer._on_window_manager_updated()
 
@@ -51,12 +51,12 @@ class WindowManager:
             raise RuntimeError("t_start and t_end parameters need to be set to create windows")
         self.window_times = np.arange(self.t_start, self.t_end, self.window_size)
         self.n_windows = len(self.window_times)
+        # Initialize all windows as valid - will be updated by datasets
         self.valid_windows = np.full(self.window_times.size, True, dtype=bool)
     
-    def invalidate_windows(self, mask):
-        """Mark certain windows as invalid."""
-        self.valid_windows = np.logical_and(self.valid_windows, mask)
-        self.n_windows = int(self.valid_windows.sum())
+    def __len__(self):
+        """len() will return however many valid windows there are"""
+        return self.n_windows
 
 
 class PairedTemporalDataset(Dataset):
@@ -86,42 +86,27 @@ class PairedTemporalDataset(Dataset):
         self.x_dataset = x_dataset
         self.y_dataset = y_dataset
         self.validate_windows = validate_windows
+
         # Create window manager shared between X and Y
-        # Using separate object allows X and Y to always be synchronized
         if window_size is None:
             raise ValueError("window_size must be provided")
+        
         # Determine temporal extent and create windows
         self.window_manager = WindowManager(window_size)
         self._initialize_windows(t_start, t_end)
+        
         # Attach window manager to datasets
         self.x_dataset.set_window_manager(self.window_manager)
         if self.y_dataset is not None:
             self.y_dataset.set_window_manager(self.window_manager)
-        # Ensure alignment
-        if y_dataset is not None:
-            self._align_datasets()
-        # Process datasets now that they have window managers
-        if hasattr(self.x_dataset, '_move_data_to_windows'):
-            self.x_dataset._move_data_to_windows()
-        if self.y_dataset is not None:
-            if hasattr(self.y_dataset, '_move_data_to_windows'):
-                self.y_dataset._move_data_to_windows()
+        
+        # Build windows with full orchestration
+        self._build_windows()
         
         logger.info(f"Created {self.window_manager.n_windows} aligned windows")
     
-    def _align_datasets(self):
-        """Ensure X and Y have matching number of windows."""
-        n_x = len(self.x_dataset)
-        n_y = len(self.y_dataset)
-        if n_x != n_y:
-            min_len = min(n_x, n_y)
-            self.x_dataset.n_windows = min_len
-            self.y_dataset.n_windows = min_len
-            logger.warning(f"Truncated datasets to {min_len} windows for alignment")
-            # TODO: Actually make this truncation/handling happen
-    
     def _initialize_windows(self, t_start, t_end):
-        """Create windows based on data extent and validate coverage."""
+        """Create windows based on data extent."""
         # Get temporal extent from both datasets
         x_start, x_end = self.x_dataset._get_temporal_extent()
         if self.y_dataset is not None:
@@ -129,6 +114,7 @@ class PairedTemporalDataset(Dataset):
             data_start, data_end = max(x_start, y_start), min(x_end, y_end)
         else:
             data_start, data_end = x_start, x_end
+        
         # Apply user-specified bounds if provided
         final_start = t_start if t_start is not None else data_start
         final_end = t_end if t_end is not None else data_end
@@ -136,29 +122,47 @@ class PairedTemporalDataset(Dataset):
             raise ValueError(
                 f"Invalid temporal range: t_start={final_start}, t_end={final_end}"
             )
+        
         # Create windows
-        self.window_manager.update_parameters(final_start, final_end)
-        if len(self.window_manager.window_times) == 0:
+        self.window_manager.update_parameters(t_start=final_start, t_end=final_end)
+        
+        if self.window_manager.window_times is None or len(self.window_manager.window_times) == 0:
             raise ValueError(
                 f"No windows could be created in range [{final_start}, {final_end}] "
                 f"with window_size={self.window_manager.window_size}"
             )
-        # Validate window coverage for each dataset (optional)
+    
+    def _build_windows(self):
+        """Full sequence of moving data to windows and checking for presence of data."""
+        # Step 1: Move data to ALL windows for both X and Y
+        self.x_dataset.move_data_to_windows()
+        if self.y_dataset is not None:
+            self.y_dataset.move_data_to_windows()
+        # Step 2: Validate and filter if requested
         if self.validate_windows:
-            x_valid = self.x_dataset._validate_window_coverage()
+            x_valid = self.x_dataset.validate_window_coverage()
             if self.y_dataset is not None:
-                y_valid = self.y_dataset._validate_window_coverage()
+                y_valid = self.y_dataset.validate_window_coverage()
                 # Only keep windows valid for BOTH datasets
-                self.window_manager.valid_windows = np.logical_and(x_valid, y_valid)
+                combined_valid = np.logical_and(x_valid, y_valid)
             else:
-                self.window_manager.valid_windows = x_valid
-            self.window_manager.n_windows = int(self.window_manager.valid_windows.sum())
+                combined_valid = x_valid
+            # Step 3: Update WindowManager's tracking
+            self.window_manager.valid_windows = combined_valid
+            self.window_manager.n_windows = int(combined_valid.sum())
+            # Step 4: Apply the same mask to both datasets
+            self.x_dataset.remove_invalid_windows()
+            if self.y_dataset is not None:
+                self.y_dataset.remove_invalid_windows()
             if self.window_manager.n_windows == 0:
                 raise ValueError("No valid windows after checking data coverage")
             logger.info(
                 f"Window coverage: {self.window_manager.n_windows}/{len(self.window_manager.window_times)} "
                 f"windows have sufficient data"
             )
+        else:
+            # No validation - all windows are valid
+            self.window_manager.n_windows = len(self.window_manager.window_times)
     
     def __len__(self):
         return len(self.x_dataset)
@@ -181,15 +185,15 @@ class PairedTemporalDataset(Dataset):
             self.x_dataset.time_shift(offset_x)
         if offset_y != 0 and self.y_dataset and hasattr(self.y_dataset, 'time_shift'):
             self.y_dataset.time_shift(offset_y)
+        self._build_windows()
 
     def set_window_size(self, window_size):
-        """Change window size, update windows of data."""
+        """Change window size and rebuild windows."""
         self.window_manager.update_parameters(window_size=window_size)
-        # Datasets are automatically notified and updated via observer pattern
+        self._build_windows()
 
 
-
-class PairedDataset(Dataset):
+class PairedDataset(Dataset):#
     """
     Dataset object for when both X/Y are given processor type of None. 
     Assumes user already preprocessed data as much as they want, so avoids windowing or any temporal features."""
@@ -233,8 +237,6 @@ class PairedDataset(Dataset):
             self.x_dataset.add_noise(amplitude_x)
         if amplitude_y > 0 and self.y_dataset:
             self.y_dataset.add_noise(amplitude_y)
-
-
 
 
 class DataHandler:
@@ -306,7 +308,7 @@ class DataHandler:
                 f"Currently all combinations of 'spike', 'continuous', or 'categorical' are compatible. "
             )
     
-    def _create_single_dataset(self, data, time, proc_type):
+    def _create_single_dataset(self, data, time, proc_type, proc_params):
         """Create dataset for single variable."""
         if proc_type is None:
             return StaticDataset(data)

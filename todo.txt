@@ -5,8 +5,10 @@
 - ContinuousWindowDataset (and categorical) need to gracefully handle data not sampled evenly. Right now not sure they can work with uneven time sampling
 - Give datasets shape parameter
 
-- Update run, trainer, lag, and sweep (among others) for new data handling
+- Write tests for datasets
 
-- Write tests
+- Update run, trainer, lag, and sweep (among others) for new data handling
+- Check how parallel runs are done. Is it via a set of processes that run over chunks of a task?
+
 
 - Github landing page should link to documentation

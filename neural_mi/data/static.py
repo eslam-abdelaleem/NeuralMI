@@ -40,7 +40,8 @@ class BaseStaticDataset(Dataset, ABC):
         pass
     
     def __len__(self):
-        return self.data.shape[0] if self.data else 0
+        return self.data.shape[0] if self.data is not None else 0
+
     
     def _process(self):
         """Reshape input data array to 3D tensor of shape `(n_observations, n_channels, flattened_extra_dims)`"""
