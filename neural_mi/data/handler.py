@@ -108,9 +108,9 @@ class PairedTemporalDataset(Dataset):
     def _initialize_windows(self, t_start, t_end):
         """Create windows based on data extent."""
         # Get temporal extent from both datasets
-        x_start, x_end = self.x_dataset._get_temporal_extent()
+        x_start, x_end = self.x_dataset.get_temporal_extent()
         if self.y_dataset is not None:
-            y_start, y_end = self.y_dataset._get_temporal_extent()
+            y_start, y_end = self.y_dataset.get_temporal_extent()
             data_start, data_end = max(x_start, y_start), min(x_end, y_end)
         else:
             data_start, data_end = x_start, x_end
@@ -173,11 +173,11 @@ class PairedTemporalDataset(Dataset):
         return x_data, y_data
     
     def add_noise(self, amplitude_x=0, amplitude_y=0):
-        """Add noise to both datasets."""
+        """Apply noise to both datasets."""
         if amplitude_x > 0:
-            self.x_dataset.add_noise(amplitude_x)
+            self.x_dataset.apply_noise(amplitude_x)
         if amplitude_y > 0 and self.y_dataset:
-            self.y_dataset.add_noise(amplitude_y)
+            self.y_dataset.apply_noise(amplitude_y)
     
     def time_shift(self, offset_x=0, offset_y=0):
         """Apply time shifts."""
@@ -185,6 +185,7 @@ class PairedTemporalDataset(Dataset):
             self.x_dataset.time_shift(offset_x)
         if offset_y != 0 and self.y_dataset and hasattr(self.y_dataset, 'time_shift'):
             self.y_dataset.time_shift(offset_y)
+        self._initialize_windows(None, None)
         self._build_windows()
 
     def set_window_size(self, window_size):
@@ -193,7 +194,7 @@ class PairedTemporalDataset(Dataset):
         self._build_windows()
 
 
-class PairedDataset(Dataset):#
+class PairedDataset(Dataset):
     """
     Dataset object for when both X/Y are given processor type of None. 
     Assumes user already preprocessed data as much as they want, so avoids windowing or any temporal features."""

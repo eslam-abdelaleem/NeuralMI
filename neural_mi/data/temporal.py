@@ -40,7 +40,15 @@ def max_events_in_window(event_times: np.ndarray, window_size: float) -> int:
 
 
 class TemporalWindowDataset(Dataset, ABC):
-    """Base class for all temporal window datasets."""
+    """
+    Base class for all temporal window datasets.
+
+    Keeps 3 versions of main data
+    1. data_orig: A numpy master matching the original (n_channels, n_timepoints), assigned in child classes
+    2. data_master: A clean copy of data moved to windows (n_windows, n_channels, n_timepoints)
+    3. data: A working copy of data moved to windows. 
+    This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
+    """
     
     def __init__(self, window_manager=None, device=None):
         """
@@ -60,11 +68,6 @@ class TemporalWindowDataset(Dataset, ABC):
             self.device = 'mps'
         else:
             self.device = 'cpu'
-        # Three versions of data are kept
-        # 1. data_orig: A numpy master matching the original (n_channels, n_timepoints), assigned in child classes
-        # 2. data_master: A clean copy of data moved to windows (n_windows, n_channels, n_timepoints)
-        # 3. data: A working copy of data moved to windows. 
-        # This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
         self.data_master = None # Will be allocated when moving to windows
         self.data = None # Will be allocated when moving to windows
         self.time_offset = 0 # By default, no offset is applied
@@ -112,7 +115,7 @@ class TemporalWindowDataset(Dataset, ABC):
             return 0
     
     @abstractmethod
-    def _get_temporal_extent(self):
+    def get_temporal_extent(self):
         """Return (t_start, t_end) of the data."""
         pass
 
@@ -192,25 +195,31 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # Preallocate output
         # TODO: Deal with dtypes. Right now I use float32 for efficiency/training tradeoffs. 
         # Makes a good default, but giving users control might be nice
-        data = np.full((self.window_manager.n_windows, self.data_orig.shape[0], self.max_samples_per_window), 0, dtype=np.float32)
+        data_shape = (self.window_manager.n_windows, self.data_orig.shape[0], self.max_samples_per_window)
+        data = np.full(data_shape, 0.0, dtype=np.float32)
+        # Don't move data that occurs after the last window
+        mask = np.logical_and(
+            self.time_vector <= self.window_manager.t_end, 
+            self.time_vector >= self.window_manager.t_start
+        )
         # Get indices of which window each time point belongs to
         # For millions of entries, this is by far the slowest part of this whole function!
         # For that reason we'll be memory-hungry and cache it
-        self._cached_window_inds = np.searchsorted(self.window_manager.window_times, self.time_vector, side='right') - 1
+        self._cached_window_inds = np.searchsorted(self.window_manager.window_times, self.time_vector[mask], side='right') - 1
         window_inds = self._cached_window_inds
         # Use those indices to assign data to windows
         # Will interpolate data so that data is evenly sampled across window
         _, index, counts = np.unique(window_inds, return_counts=True, return_index=True)
         column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
         first_inds = np.repeat(index, counts)
-        time_shifts = self.time_vector[first_inds] - self.window_manager.window_times[window_inds][first_inds]
+        time_shifts = self.time_vector[mask][first_inds] - self.window_manager.window_times[window_inds][first_inds]
         for i in range(self.data_orig.shape[0]):
             data[window_inds,i,column_inds] = np.interp(
-                self.time_vector + time_shifts, 
-                self.time_vector, 
-                self.data_orig[i,:]
+                self.time_vector[mask] + time_shifts, 
+                self.time_vector[mask], 
+                self.data_orig[i,mask]
             )
-        self.data = torch.tensor(data, device=self.device) #TODO: Set device to have a reasonable default
+        self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
@@ -227,7 +236,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         self.time_offset = offset
         # Moving data to windows will be orchestrated by paired dataset
 
-    def _get_temporal_extent(self):
+    def get_temporal_extent(self):
         return self.time_vector[0], self.time_vector[-1]
     
     def __getitem__(self, idx):
@@ -236,16 +245,31 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     def reset(self):
         """Undo any added noise by resetting to original data. Does not undo time shifts."""
         self.data = self.data_master.detach().clone()
-        # self._move_data_to_windows() # May be needed here, not sure yet
 
     def apply_noise(self, amplitude):
         """Add Gaussian noise to data."""
-        noise = torch.randn_like(self.data) * amplitude
-        self.data = self.data_master + noise
+        # Reset to master copy if amplitude is zero. Useful as another interface to undo changes
+        if amplitude == 0.0:
+            self.reset()
+            return
+        # If data mask and noise buffer haven't been created, compute that now
+        if not hasattr(self, '_data_mask'):
+            self._data_mask = torch.nonzero(self.data, as_tuple=True)
+        # Pre-allocate noise tensor to avoid repeated allocations when applying noise
+        if not hasattr(self, '_noise_buffer'):
+            self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.device, dtype=self.data.dtype)
+        self._noise_buffer.normal_(mean=0, std=amplitude)
+        self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
 
     def apply_precision(self, precision_level):
         """Round data to a specific resolution/precision level."""
-        self.data = torch.round(self.data_master / precision_level) * precision_level
+        # Reset to master copy if zero. Avoids divide by zero, useful as interface to undo changes
+        if precision_level == 0.0:
+            self.reset()
+            return
+        if not hasattr(self, '_data_mask'):
+            self._data_mask = torch.nonzero(self.data, as_tuple=True)
+        self.data[self._data_mask] = torch.round(self.data_master[self._data_mask] / precision_level) * precision_level
 
 
 
@@ -258,7 +282,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
         super().__init__(window_manager, device)
 
         self.data_orig = [np.array(st) for st in spike_times]
-        self._spike_mask = None # Used for faster noise operations
         self.no_spike_value = no_spike_value
         self.time_offset = 0
         # Process data if window manager is available
@@ -275,7 +298,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
             for x in self.data_orig
         ]))
 
-    def _get_temporal_extent(self):
+    def get_temporal_extent(self):
         """Return temporal extent of spike data."""
         valid_trains = [st for st in self.data_orig if len(st) > 0]
         if not valid_trains:
@@ -298,15 +321,22 @@ class SpikeWindowDataset(TemporalWindowDataset):
         # Preallocate
         data_shape = (self.window_manager.n_windows, len(self.data_orig), self.max_samples_per_window)
         data = np.full(data_shape, self.no_spike_value, dtype=np.float32)
-        # Use searchsorted on each neuron/muscle to assign to chunks
-        # For millions of spikes, this is by far the slowest part of this whole function!
-        # For that reason we'll be memory-hungry and cache it
-        self._cached_window_inds = [np.searchsorted(self.window_manager.window_times, x) - 1 for x in self.data_orig]
-        window_inds = self._cached_window_inds
+        self._cached_window_inds = []
+        # Loop over channels/neurons/muscles
         for i in range(len(self.data_orig)):
-            _, _, counts = np.unique(window_inds[i], return_counts=True, return_index=True)
+            # Don't move data that occurs after the last window
+            mask = np.logical_and(
+                self.data_orig[i] >= self.window_manager.t_start,
+                self.data_orig[i] <= self.window_manager.t_end 
+            )
+            # Use searchsorted on each neuron/muscle to assign to chunks
+            # For millions of spikes, this is by far the slowest part of this whole function!
+            window_inds = np.searchsorted(self.window_manager.window_times, self.data_orig[i][mask]) - 1
+
+            _, counts = np.unique(window_inds, return_counts=True)
             column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
-            data[window_inds[i],i,column_inds] = self.data_orig[i] - self.window_manager.window_times[window_inds[i]]
+            data[window_inds,i,column_inds] = self.data_orig[i][mask] - self.window_manager.window_times[window_inds]
+            self._cached_window_inds.append(window_inds)
         # Convert to tensor, move to device. Make copies that noise will be applied on
         self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
@@ -335,24 +365,29 @@ class SpikeWindowDataset(TemporalWindowDataset):
 
     def apply_noise(self, amplitude):
         """Add temporal jitter to spike times."""
-        # If spike mask and noise buffer haven't been created, compute that now
+        # Reset to master copy if amplitude is zero. Useful as another interface to undo noise
+        if amplitude == 0.0:
+            self.reset()
+            return
+        # If spike mask hasn't been created, compute that now to more quickly modify spikes
         if not hasattr(self, '_spike_mask'):
-            # Pre-compute where spikes are, to quickly add noise
-            self._spike_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
-            # Pre-allocate noise tensor, number of spikes to avoid repeated allocations/operations when applying noise
-            # TODO: Not sure if this is necessary. Benchmark it
-            self._noise_buffer = torch.empty(len(self._spike_mask[0]), device=self.device, dtype=self.data.dtype)
+            self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
+        # Pre-allocate noise tensor to avoid repeated allocations when applying noise
+        if not hasattr(self, '_noise_buffer'):
+            self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.device, dtype=self.data.dtype)
         self._noise_buffer.uniform_(-amplitude / 2, amplitude / 2)
-        self.data[self._spike_mask] = self.data_master[self._spike_mask] + self._noise_buffer
+        self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
 
     def apply_precision(self, precision_level):
         """Round spike times to a specific resolution/precision level."""
-        # If spike mask and noise buffer haven't been created, compute that now
+        # Reset to master copy if zero. Avoids divide by zero, useful as interface to undo changes
+        if precision_level == 0.0:
+            self.reset()
+            return
+        # If spike mask hasn't been created, compute that now
         if not hasattr(self, '_spike_mask'):
-            # Pre-compute where spikes are, to quickly add noise
-            self._spike_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
-        mask = self._spike_mask
-        self.data[mask] = torch.round(self.data[mask] / precision_level) * precision_level
+            self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
+        self.data[self._data_mask] = torch.round(self.data[self._data_mask] / precision_level) * precision_level
 
 
 
@@ -424,13 +459,16 @@ class CategoricalWindowDataset(TemporalWindowDataset):
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
         
         # Preallocate output (one-hot encoded) (n_channels, n_windows, window_size * n_categories)
-        data = np.zeros(
-            (self.window_manager.n_windows, self.data_orig.shape[0], self.n_categories * self.max_samples_per_window), 
-            dtype=np.bool
-        )
+        data_shape = (self.window_manager.n_windows, self.data_orig.shape[0], self.n_categories * self.max_samples_per_window)
+        data = np.zeros(data_shape, dtype=np.bool)
         
+        # Don't move data that occurs after the last window
+        mask = np.logical_and(
+            self.time_vector <= self.window_manager.t_end, 
+            self.time_vector >= self.window_manager.t_start
+        )
         # Get indices of which window time points belong to
-        self._cached_window_inds = np.searchsorted(self.window_manager.window_times, self.time_vector, side='right') - 1
+        self._cached_window_inds = np.searchsorted(self.window_manager.window_times, self.time_vector[mask], side='right') - 1
         window_inds = self._cached_window_inds
         # Compute column indices for placement
         _, counts = np.unique(window_inds, return_counts=True)
@@ -441,7 +479,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         # Expand window indices for one-hot encoding
         expanded_window_inds = np.repeat(window_inds, self.n_categories)
         for i in range(self.data_orig.shape[0]):
-            data[expanded_window_inds,i,expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[i,:]].flatten()
+            data[expanded_window_inds,i,expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[i,mask]].flatten()
         self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
 
@@ -460,7 +498,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         self.time_offset = offset
         # Moving data to windows on new time shift will be orchestrated by paired dataset
 
-    def _get_temporal_extent(self):
+    def get_temporal_extent(self):
         """Return temporal extent of the data."""
         return self.time_vector[0], self.time_vector[-1]
     

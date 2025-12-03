@@ -41,7 +41,6 @@ class BaseStaticDataset(Dataset, ABC):
     
     def __len__(self):
         return self.data.shape[0] if self.data is not None else 0
-
     
     def _process(self):
         """Reshape input data array to 3D tensor of shape `(n_observations, n_channels, flattened_extra_dims)`"""
@@ -113,7 +112,7 @@ class StaticDataset(BaseStaticDataset):
         return self.data[idx, :, :]
     
     def __len__(self):
-        return self.data.shape[0] if self.data else 0
+        return self.data.shape[0]
 
     def apply_noise(self, amplitude):
         """Add Gaussian noise to data."""
