@@ -1,6 +1,7 @@
 # neural_mi/data/handler.py
 import torch
 import numpy as np
+import inspect
 
 from .temporal import *
 from .static import *
@@ -197,7 +198,8 @@ class PairedTemporalDataset(Dataset):
 class PairedDataset(Dataset):
     """
     Dataset object for when both X/Y are given processor type of None. 
-    Assumes user already preprocessed data as much as they want, so avoids windowing or any temporal features."""
+    Assumes user already preprocessed data as much as they want, so avoids windowing or any temporal features.
+    """
     def __init__(self, x_dataset, y_dataset=None):
         """
         Parameters
@@ -240,84 +242,89 @@ class PairedDataset(Dataset):
             self.y_dataset.add_noise(amplitude_y)
 
 
-class DataHandler:
-    """Factory for creating appropriate dataset objects."""
+
+def create_single_dataset(data, time, proc_type, proc_params):
+    """Create dataset for single variable."""
+    if proc_type is None:
+        return StaticDataset(data)
+    if proc_type == 'continuous':
+        return ContinuousWindowDataset(data, time)
+    elif proc_type == 'spike':
+        return SpikeWindowDataset(data, time)
+    elif proc_type == 'categorical':
+        return CategoricalWindowDataset(data, time)
+    else:
+        raise ValueError(f"Unknown processor type: {proc_type}")
+
+def create_dataset(
+        x_data, y_data=None,
+        x_time=None, y_time=None,
+        processor_type_x=None, processor_params_x=None,
+        processor_type_y=None, processor_params_y=None
+    ):
+    """
+    Factory function for creating appropriate dataset objects.
+    
+    Parameters
+    ----------
+    x_data : Union[np.ndarray, torch.Tensor, list]
+        The raw input data for variable X.
+    y_data : Union[np.ndarray, torch.Tensor, list]
+        The raw input data for variable Y.
+    x_time, y_time : Union[np.ndarray, torch.Tensor], optional
+        Vector of times variable X/Y was sampled at if processor type is continuous, must be the same length as X/Y
+    processor_type_x, processor_type_y : {'continuous', 'spike', 'categorical'}, optional
+        The type of processor to use. If `None`, the data is assumed to be
+        already processed and will be returned as-is after a shape check.
+        Defaults to None.
+    processor_params_x, processor_params_y : Dict[str, Any], optional
+        A dictionary of parameters to pass to the selected processor's
+        initializer. Defaults to None.
+    
+    Returns
+    -------
+    Union[PairedTemporalDataset, PairedDataset]
+        Dataset object configured for the given data types.
+    """
 
     INCOMPATIBLE_PAIRS = [
         {} # Right now no incompatible pairs
     ]
-    
-    def __init__(self, 
-                 x_data, y_data=None,
-                 x_time=None, y_time=None,
-                 processor_type_x=None, processor_params_x=None,
-                 processor_type_y=None, processor_params_y=None):
-        """
-        Parameters
-        ----------
-        x_data : Union[np.ndarray, torch.Tensor, list]
-            The raw input data for variable X.
-        y_data : Union[np.ndarray, torch.Tensor, list]
-            The raw input data for variable Y.
-        x_time, y_time : Union[np.ndarray, torch.Tensor], optional
-            Vector of times variable X/Y was sampled at if processor type is continuous, must be the same length as X/Y
-        processor_type_x, processor_type_y : {'continuous', 'spike', 'categorical'}, optional
-            The type of processor to use. If `None`, the data is assumed to be
-            already processed and will be returned as-is after a shape check.
-            Defaults to None.
-        processor_params_x, processor_params_y : Dict[str, Any], optional
-            A dictionary of parameters to pass to the selected processor's
-            initializer. Defaults to None.
-        """
-        self.x_data = x_data
-        self.y_data = y_data
-        self.x_time = x_time
-        self.y_time = y_time
-        self.proc_type_x = processor_type_x
-        self.proc_params_x = processor_params_x or {}
-        self.proc_type_y = processor_type_y if processor_type_y else processor_type_x
-        self.proc_params_y = processor_params_y if processor_params_y else self.proc_params_x.copy()
-        # Validate combination
-        self._validate_combination()
-        # Initialize datasets
-        x_dataset = self._create_single_dataset(self.x_data, self.x_time, self.proc_type_x, self.proc_params_x)
-        y_dataset = None
-        if self.y_data is not None:
-            y_dataset = self._create_single_dataset(self.y_data, self.y_time, self.proc_type_y, self.proc_params_y)
-        # If both types of data are temporal, create a paired temporal dataset
-        if processor_type_x is not None and processor_type_y is not None:
-            return PairedTemporalDataset(x_dataset, y_dataset)
-        else:
-            return PairedDataset(x_dataset, y_dataset)
 
-    def _validate_combination(self):
-        """Check if X and Y data types are compatible"""
-        if self.y_data is None:
-            return # Single variable is always OK
-        if self.proc_type_x is None or self.proc_type_y is None:
-            # If either is pre-processed, assume user knows what they're doing
-            logger.warning(
-                "Pre-processed data detected. Skipping compatibility check. "
-                "Ensure X and Y have compatible temporal representations."
-            )
-            return
-        pair = {self.proc_type_x, self.proc_type_y}
-        if any([pair == x for x in self.INCOMPATIBLE_PAIRS]):
-            raise ValueError(
-                f"Incompatible data type combination: X is '{self.proc_type_x}' "
-                f"and Y is '{self.proc_type_y}'."
-                f"Currently all combinations of 'spike', 'continuous', or 'categorical' are compatible. "
-            )
+    # Set up inputs
+    proc_type_x = processor_type_x
+    proc_params_x = processor_params_x or {}
+    proc_type_y = processor_type_y if processor_type_y else processor_type_x
+    proc_params_y = processor_params_y if processor_params_y else proc_params_x.copy()
+
+    # Validate combination
+    if proc_type_x is None or proc_type_y is None:
+        # If either is pre-processed, assume user knows what they're doing
+        logger.warning(
+            "Pre-processed data detected. Skipping compatibility check. "
+            "Ensure X and Y have compatible representations."
+        )
+    pair = {proc_type_x, proc_type_y}
+    if any([pair == x for x in INCOMPATIBLE_PAIRS]):
+        raise ValueError(
+            f"Incompatible data type combination: X is '{proc_type_x}' "
+            f"and Y is '{proc_type_y}'."
+        )
     
-    def _create_single_dataset(self, data, time, proc_type, proc_params):
-        """Create dataset for single variable."""
-        if proc_type is None:
-            return StaticDataset(data)
-        if proc_type == 'continuous':
-            return ContinuousWindowDataset(data, time)
-        elif proc_type == 'spike':
-            return SpikeWindowDataset(data, time)
-        elif proc_type == 'categorical':
-            return CategoricalWindowDataset(data)
-        else:
-            raise ValueError(f"Unknown processor type: {proc_type}")
+    # Initialize datasets
+    x_dataset = create_single_dataset(x_data, x_time, proc_type_x, proc_params_x)
+    y_dataset = create_single_dataset(y_data, y_time, proc_type_y, proc_params_y) if y_data is not None else None
+
+    # Create and return paired dataset
+    # If both types of data are temporal, create a paired temporal dataset
+    if proc_type_x is not None or proc_type_y is not None:
+        window_size = proc_params_x.pop('window_size', None)
+        # Filter kwargs to only valid ones for PairedTemporalDataset
+        valid_kwargs = inspect.signature(PairedTemporalDataset).parameters
+        filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
+        return PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size, **filtered_kwargs)
+    else:
+        # Filter kwargs to only valid ones for PairedTemporalDataset
+        valid_kwargs = inspect.signature(PairedDataset).parameters
+        filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
+        return PairedDataset(x_dataset, y_dataset, **filtered_kwargs)
