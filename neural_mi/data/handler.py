@@ -173,12 +173,18 @@ class PairedTemporalDataset(Dataset):
         y_data = self.y_dataset[idx] if self.y_dataset else None
         return x_data, y_data
     
-    def add_noise(self, amplitude_x=0, amplitude_y=0):
+    def apply_noise(self, amplitude_x=0, amplitude_y=0):
         """Apply noise to both datasets."""
         if amplitude_x > 0:
             self.x_dataset.apply_noise(amplitude_x)
         if amplitude_y > 0 and self.y_dataset:
             self.y_dataset.apply_noise(amplitude_y)
+
+    def apply_precision(self, precision_x=0, precision_y=0):
+        if precision_x > 0:
+            self.x_dataset.apply_precision(precision_x)
+        if precision_y > 0 and self.y_dataset:
+            self.y_dataset.apply_precision(precision_y)
     
     def time_shift(self, offset_x=0, offset_y=0):
         """Apply time shifts."""
@@ -234,12 +240,18 @@ class PairedDataset(Dataset):
         y_data = self.y_dataset[idx] if self.y_dataset else None
         return x_data, y_data
     
-    def add_noise(self, amplitude_x=0, amplitude_y=0):
-        """Add noise to both datasets."""
+    def apply_noise(self, amplitude_x=0, amplitude_y=0):
+        """Apply noise to both datasets."""
         if amplitude_x > 0:
-            self.x_dataset.add_noise(amplitude_x)
+            self.x_dataset.apply_noise(amplitude_x)
         if amplitude_y > 0 and self.y_dataset:
-            self.y_dataset.add_noise(amplitude_y)
+            self.y_dataset.apply_noise(amplitude_y)
+
+    def apply_precision(self, precision_x=0, precision_y=0):
+        if precision_x > 0:
+            self.x_dataset.apply_precision(precision_x)
+        if precision_y > 0 and self.y_dataset:
+            self.y_dataset.apply_precision(precision_y)
 
 
 
@@ -287,28 +299,17 @@ def create_dataset(
         Dataset object configured for the given data types.
     """
 
-    INCOMPATIBLE_PAIRS = [
-        {} # Right now no incompatible pairs
-    ]
-
     # Set up inputs
     proc_type_x = processor_type_x
     proc_params_x = processor_params_x or {}
     proc_type_y = processor_type_y if processor_type_y else processor_type_x
     proc_params_y = processor_params_y if processor_params_y else proc_params_x.copy()
 
-    # Validate combination
+    # Validation should be run before this function. Just quick check for pre-processed data
     if proc_type_x is None or proc_type_y is None:
-        # If either is pre-processed, assume user knows what they're doing
         logger.warning(
             "Pre-processed data detected. Skipping compatibility check. "
             "Ensure X and Y have compatible representations."
-        )
-    pair = {proc_type_x, proc_type_y}
-    if any([pair == x for x in INCOMPATIBLE_PAIRS]):
-        raise ValueError(
-            f"Incompatible data type combination: X is '{proc_type_x}' "
-            f"and Y is '{proc_type_y}'."
         )
     
     # Initialize datasets
@@ -324,7 +325,7 @@ def create_dataset(
         filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
         return PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size, **filtered_kwargs)
     else:
-        # Filter kwargs to only valid ones for PairedTemporalDataset
+        # Filter kwargs to only valid ones for PairedDataset
         valid_kwargs = inspect.signature(PairedDataset).parameters
         filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
         return PairedDataset(x_dataset, y_dataset, **filtered_kwargs)
