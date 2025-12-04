@@ -1,14 +1,36 @@
-- Fix saving names for more than one model. Currently, it saves with random generated unique names, if we're saving the best model of one run like in rigourous, it's working fine, but for sweeps or dimensionality, we get multiple random names and it's not useful.
-- Make sure that we're saving both netowrks, not just one of them in the case of separable.
+Current overhaul:
 
+**Trainer update**
+- Update task.py to pass in dataset objects to trainer
+- Update trainer.py to do time shifting, handle subsetting gracefully
+- Add subsetting methods to PairedDataset
+
+**Dimensionality update**
+- New data handling means dimensionality needs to be updated, as it processes (sends to DataHandler) before sending to tasks
+- Ideally change dimensionality analysis to process like other analyses, in task.py
+
+**New precision method**
+- New analysis that trains model, then loads that model and runs inference repeatedly at different precision levels
+
+**Fix estimation on large datasets**
+- Need to implement chunking when forward pass is run on data above a certain size
+
+
+
+Long term:
+
+- Training simultaneous encoders/decoders
+- Switch between memory and cpu hungry modes of handling data
+
+
+Small things:
+- Fix saving names for more than one model. Currently, it saves with random generated unique names, if we're saving the best model of one run like in rigourous, it's working fine, but for sweeps or dimensionality, we get multiple random names and it's not useful.
+- Make sure that we're saving both networks, not just one of them in the case of separable.
 
 - ContinuousWindowDataset (and categorical) need to gracefully handle data not sampled evenly. Right now not sure they can work with uneven time sampling
-- Give datasets shape parameter
 
-- Write tests for datasets
+- Use initializer on multiprocessing, especially in sweep.py. Give each worker the original data, generate datasets as needed
 
-- Update run, trainer, lag, and sweep (among others) for new data handling
-- Check how parallel runs are done. Is it via a set of processes that run over chunks of a task?
-
+- Convert to pytorch multiprocessing
 
 - Github landing page should link to documentation
