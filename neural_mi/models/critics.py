@@ -8,7 +8,7 @@ combined with different embedding models.
 """
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
+from typing import get_type_hints, get_origin, Optional, Tuple
 
 class BaseCritic(nn.Module):
     """Abstract base class for critic models.
@@ -85,8 +85,21 @@ class SeparableCritic(BaseCritic):
     embedding_net_y : nn.Module
         The network `h` used to embed samples from Y. If not provided,
         `embedding_net_x` is used for both (a shared embedding network).
+    embed_dim : int
+        The dimension of the embedding vectors produced by the embedding networks.
+    max_n_batches : int
+        Maximum number of input batches before chunking is performed instead of single pass
+    use_variational : bool
+            Whether using variational embedding_net or not
     """
-    def __init__(self, embedding_net_x: nn.Module, embedding_net_y: Optional[nn.Module] = None):
+    def __init__(self, 
+                 embedding_net_x: nn.Module, *, 
+                 embedding_net_y: Optional[nn.Module] = None,
+                 embed_dim : int = None, 
+                 max_n_batches : int = 512, 
+                 use_variational : bool = False,
+                 **kwargs
+        ):
         """
         Parameters
         ----------
@@ -95,10 +108,20 @@ class SeparableCritic(BaseCritic):
         embedding_net_y : nn.Module, optional
             The network used to embed samples from Y. If None, a single network
             is shared for both variables. Defaults to None.
+        embed_dim : int
+            The dimension of the embedding vectors produced by the embedding networks.
+        max_n_batches : int, optional
+            Maximum number of input batches before chunking is performed instead of single pass
+        use_variational : bool
+            Whether using variational embedding_net or not
+        
         """
         super().__init__()
         self.embedding_net_x = embedding_net_x
         self.embedding_net_y = embedding_net_y or embedding_net_x
+        self.embed_dim = embed_dim
+        self.max_n_batches = max_n_batches
+        self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Computes scores via dot product of embeddings.
@@ -106,8 +129,34 @@ class SeparableCritic(BaseCritic):
         If the embedding networks are variational (e.g., `VarMLP`), this method
         unpacks the returned tuple `(embedding, kl_loss)` and sums the KL losses.
         """
-        x_out = self.embedding_net_x(x)
-        y_out = self.embedding_net_y(y)
+        # If input is larger than max_n_batches, run as smaller batches to avoid out-of-memory issues
+        batch_size = x.shape[0]
+        if batch_size > self.max_n_batches:
+            # If forward returns a tuple (variational), operate differently
+            if self.use_variational:
+                n_loss_terms = batch_size // self.max_n_batches + 1
+                x_embed = torch.zeros(batch_size, self.embed_dim, device=x.device)
+                y_embed = torch.zeros(batch_size, self.embed_dim, device=y.device)#, torch.zeros(n_loss_terms, device=y.device))
+                x_loss = torch.zeros(n_loss_terms, device=x.device)
+                y_loss = torch.zeros(n_loss_terms, device=y.device)
+                for ind,i in enumerate(range(0, batch_size, self.max_n_batches)):
+                    end_idx = min(i + self.max_n_batches, batch_size)
+                    x_embed[0][i:end_idx,:], x_loss[ind] = self.embedding_net_x(x[i:end_idx,...])
+                    y_embed[0][i:end_idx,:], y_loss[ind] = self.embedding_net_y(y[i:end_idx,...])
+                # TODO: TAKING A MEAN IS PROBABLY WRONG
+                x_out = (x_embed, torch.mean(x_loss))
+                y_out = (x_embed, torch.mean(y_loss))
+            else:
+                x_out = torch.zeros(batch_size, self.embed_dim, device=x.device)
+                y_out = torch.zeros(batch_size, self.embed_dim, device=y.device)
+                for i in range(0, batch_size, self.max_n_batches):
+                    end_idx = min(i + self.max_n_batches, batch_size)
+                    x_out[i:end_idx,:] = self.embedding_net_x(x[i:end_idx,...])
+                    y_out[i:end_idx,:] = self.embedding_net_y(y[i:end_idx,...])
+        # Otherwise just run embedding networks normally
+        else:
+            x_out = self.embedding_net_x(x)
+            y_out = self.embedding_net_y(y)
 
         x_embedded, y_embedded, total_kl_loss = self._get_embeddings_and_kl(x_out, y_out)
 
@@ -130,8 +179,21 @@ class BilinearCritic(BaseCritic):
         The network `h` used to embed samples from Y.
     similarity_layer : nn.Bilinear
         The learnable bilinear layer `W` that computes the similarity score.
+    embed_dim : int
+        The dimension of the embedding vectors produced by the embedding networks.
+    max_n_batches : int
+        Maximum number of input batches before chunking is performed instead of single pass
+    use_variational : bool
+        Whether using variational embedding_net or not
     """
-    def __init__(self, embedding_net_x: nn.Module, embedding_net_y: nn.Module, embed_dim: int):
+    def __init__(self, 
+                 embedding_net_x: nn.Module,
+                 embedding_net_y: nn.Module,
+                 embed_dim : int = None, 
+                 max_n_batches : int = 512, 
+                 use_variational : bool = False,
+                 **kwargs
+        ):
         """
         Parameters
         ----------
@@ -141,16 +203,48 @@ class BilinearCritic(BaseCritic):
             The network used to embed samples from Y.
         embed_dim : int
             The dimension of the embedding vectors produced by the embedding networks.
+        max_n_batches : int
+            Maximum number of input batches before chunking is performed instead of single pass
+        use_variational : bool
+            Whether using variational embedding_net or not
         """
         super().__init__()
         self.embedding_net_x = embedding_net_x
         self.embedding_net_y = embedding_net_y
         self.similarity_layer = nn.Bilinear(embed_dim, embed_dim, 1)
+        self.embed_dim = embed_dim
+        self.max_n_batches = max_n_batches
+        self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size = x.size(0)
-        x_out = self.embedding_net_x(x)
-        y_out = self.embedding_net_y(y)
+        # If input is larger than max_n_batches, run as smaller batches to avoid out-of-memory issues
+        batch_size = x.shape[0]
+        if batch_size > self.max_n_batches:
+            # If forward returns a tuple (variational), operate differently
+            if self.use_variational:
+                n_loss_terms = batch_size // self.max_n_batches + 1
+                x_embed = torch.zeros(batch_size, self.embed_dim, device=x.device)
+                y_embed = torch.zeros(batch_size, self.embed_dim, device=y.device)#, torch.zeros(n_loss_terms, device=y.device))
+                x_loss = torch.zeros(n_loss_terms, device=x.device)
+                y_loss = torch.zeros(n_loss_terms, device=y.device)
+                for ind,i in enumerate(range(0, batch_size, self.max_n_batches)):
+                    end_idx = min(i + self.max_n_batches, batch_size)
+                    x_embed[0][i:end_idx,:], x_loss[ind] = self.embedding_net_x(x[i:end_idx,...])
+                    y_embed[0][i:end_idx,:], y_loss[ind] = self.embedding_net_y(y[i:end_idx,...])
+                # TODO: TAKING A MEAN IS PROBABLY WRONG
+                x_out = (x_embed, torch.mean(x_loss))
+                y_out = (x_embed, torch.mean(y_loss))
+            else:
+                x_out = torch.zeros(batch_size, self.embed_dim, device=x.device)
+                y_out = torch.zeros(batch_size, self.embed_dim, device=y.device)
+                for i in range(0, batch_size, self.max_n_batches):
+                    end_idx = min(i + self.max_n_batches, batch_size)
+                    x_out[i:end_idx,:] = self.embedding_net_x(x[i:end_idx,...])
+                    y_out[i:end_idx,:] = self.embedding_net_y(y[i:end_idx,...])
+        # Otherwise just run embedding networks normally
+        else:
+            x_out = self.embedding_net_x(x)
+            y_out = self.embedding_net_y(y)
 
         x_embedded, y_embedded, total_kl_loss = self._get_embeddings_and_kl(x_out, y_out)
         
@@ -174,8 +268,20 @@ class ConcatCritic(BaseCritic):
     ----------
     embedding_net : nn.Module
         The shared network that processes the concatenated input pairs.
+    embed_dim : int
+        The dimension of the embedding vectors produced by the embedding networks.
+    max_n_batches : int
+        Maximum number of input batches before chunking is performed instead of single pass
+    use_variational : bool
+        Whether using variational embedding_net or not
     """
-    def __init__(self, embedding_net: nn.Module):
+    def __init__(self, 
+                 embedding_net: nn.Module,
+                 embed_dim : int = None, 
+                 max_n_batches : int = 512, 
+                 use_variational : bool = False,
+                 **kwargs
+        ):
         """
         Parameters
         ----------
@@ -183,9 +289,18 @@ class ConcatCritic(BaseCritic):
             The shared network that takes the concatenated `(x, y)` pair and
             outputs a scalar score. Its input dimension must match the sum of
             the flattened dimensions of x and y.
+        embed_dim : int
+            The dimension of the embedding vectors produced by the embedding networks.
+        max_n_batches : int
+            Maximum number of input batches before chunking is performed instead of single pass
+        use_variational : bool
+            Whether using variational embedding_net or not
         """
         super().__init__()
         self.embedding_net = embedding_net
+        self.embed_dim = embed_dim
+        self.max_n_batches = max_n_batches
+        self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Computes scores by applying a network to all `(x, y)` pairs."""
@@ -195,7 +310,32 @@ class ConcatCritic(BaseCritic):
         y_tiled = y_flat.repeat(batch_size, 1)
         xy_pairs = torch.cat((x_tiled, y_tiled), dim=1)
         
-        out = self.embedding_net(xy_pairs)
+        # If input is larger than max_n_batches, run as smaller batches to avoid out-of-memory issues
+        if batch_size > self.max_n_batches:
+            # If forward returns a tuple (variational), operate differently
+            if self.use_variational:
+                n_loss_terms = batch_size // self.max_n_batches + 1
+                x_embed = torch.zeros(batch_size, self.embed_dim, device=x.device)
+                y_embed = torch.zeros(batch_size, self.embed_dim, device=y.device)#, torch.zeros(n_loss_terms, device=y.device))
+                x_loss = torch.zeros(n_loss_terms, device=x.device)
+                y_loss = torch.zeros(n_loss_terms, device=y.device)
+                for ind,i in enumerate(range(0, batch_size, self.max_n_batches)):
+                    end_idx = min(i + self.max_n_batches, batch_size)
+                    x_embed[0][i:end_idx,:], x_loss[ind] = self.embedding_net_x(x[i:end_idx,...])
+                    y_embed[0][i:end_idx,:], y_loss[ind] = self.embedding_net_y(y[i:end_idx,...])
+                # TODO: TAKING A MEAN IS PROBABLY WRONG
+                x_out = (x_embed, torch.mean(x_loss))
+                y_out = (x_embed, torch.mean(y_loss))
+            else:
+                x_out = torch.zeros(batch_size, self.embed_dim, device=x.device)
+                y_out = torch.zeros(batch_size, self.embed_dim, device=y.device)
+                for i in range(0, batch_size, self.max_n_batches):
+                    end_idx = min(i + self.max_n_batches, batch_size)
+                    x_out[i:end_idx,:] = self.embedding_net_x(x[i:end_idx,...])
+                    y_out[i:end_idx,:] = self.embedding_net_y(y[i:end_idx,...])
+        # Otherwise just run embedding networks normally
+        else:
+            out = self.embedding_net(xy_pairs)
         if isinstance(out, tuple):
             scores, kl_loss = out
         else:

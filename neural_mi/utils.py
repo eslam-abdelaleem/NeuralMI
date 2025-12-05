@@ -50,6 +50,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     model_type = embedding_params.get('embedding_model', 'mlp').lower()
     hidden_dim, n_layers = embedding_params['hidden_dim'], embedding_params['n_layers']
     embed_dim = embedding_params['embedding_dim']
+    max_n_batches = embedding_params.get('max_n_batches', 512)
 
     if critic_type == 'concat_cnn':
         if model_type != 'cnn':
@@ -86,7 +87,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     model_kwargs = {
         'hidden_dim': hidden_dim,
         'embed_dim': embed_dim,
-        'n_layers': n_layers
+        'n_layers': n_layers,
+    }
+    critic_kwargs = {
+        'embed_dim': embed_dim,
+        'max_n_batches': max_n_batches,
+        'use_variational': use_variational
     }
 
     if model_type in ['cnn', 'gru', 'lstm', 'tcn', 'transformer']:
@@ -105,13 +111,13 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # --- Critic Assembly ---
     if critic_type == 'separable':
-        return SeparableCritic(net_x, net_y)
+        return SeparableCritic(net_x, net_y, **critic_kwargs)
     elif critic_type == 'bilinear':
-        return BilinearCritic(net_x, net_y, embed_dim)
+        return BilinearCritic(net_x, net_y, **critic_kwargs)
     elif critic_type == 'concat':
         concat_input_dim = embedding_params['input_dim_x'] + embedding_params['input_dim_y']
         concat_net = MLP(concat_input_dim, hidden_dim, 1, n_layers)
-        return ConcatCritic(concat_net)
+        return ConcatCritic(concat_net, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
 
