@@ -22,6 +22,9 @@ Long term:
 - Training simultaneous encoders/decoders
 - Switch between memory and cpu hungry modes of handling data
 
+Super Long term:
+- More genereic augmentation framework during training.
+
 
 Small things:
 - Fix saving names for more than one model. Currently, it saves with random generated unique names, if we're saving the best model of one run like in rigourous, it's working fine, but for sweeps or dimensionality, we get multiple random names and it's not useful.
