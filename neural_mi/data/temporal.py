@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 from abc import ABC, abstractmethod
+from neural_mi.utils import get_device
 from neural_mi.logger import logger
 
 
@@ -62,16 +63,13 @@ class TemporalWindowDataset(Dataset, ABC):
         self.window_manager = window_manager
         if device:
             self.device = device
-        elif torch.cuda.is_available():
-            self.device = 'cuda'
-        elif torch.backends.mps.is_available():
-            self.device = 'mps'
         else:
-            self.device = 'cpu'
+            self.device = get_device()
         self.data_master = None # Will be allocated when moving to windows
         self.data = None # Will be allocated when moving to windows
         self.time_offset = 0 # By default, no offset is applied
 
+    # ------ Window handling
     def set_window_manager(self, window_manager):
         """Attach window manager and compute max samples/spikes per window."""
         self.window_manager = window_manager
@@ -103,6 +101,7 @@ class TemporalWindowDataset(Dataset, ABC):
             self.data = self.data[self.window_manager.valid_windows, :, :]
             self.data_master = self.data_master[self.window_manager.valid_windows, :, :]
     
+    # ------ Size and indexing
     @abstractmethod
     def __getitem__(self, idx):
         """Return data at index."""
@@ -118,7 +117,8 @@ class TemporalWindowDataset(Dataset, ABC):
     def get_temporal_extent(self):
         """Return (t_start, t_end) of the data."""
         pass
-
+    
+    # ------ Modifying data
     @abstractmethod
     def time_shift(self, time_offset):
         """Apply time shift to data."""

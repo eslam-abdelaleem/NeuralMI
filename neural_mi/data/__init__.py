@@ -5,3 +5,4 @@ It provides the `DataHandler` as a unified interface and specific processors
 for different data types like `ContinuousProcessor` and `SpikeProcessor`.
 """
 from .handler import DataHandler
+from .views import SubsetView

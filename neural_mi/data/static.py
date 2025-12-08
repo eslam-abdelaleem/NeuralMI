@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from abc import ABC, abstractmethod
 from torch.utils.data import Dataset
+from neural_mi.utils import get_device
 from neural_mi.logger import logger
 
 # TODO: Could co-opt time-shifting interface to allow shifting rows of x relative to y
@@ -20,12 +21,8 @@ class BaseStaticDataset(Dataset, ABC):
         """
         if device:
             self.device = device
-        elif torch.cuda.is_available():
-            self.device = 'cuda'
-        elif torch.backends.mps.is_available():
-            self.device = 'mps'
         else:
-            self.device = 'cpu'
+            self.device = get_device()
         # Three versions of data are kept
         # 1. data_orig: A numpy master matching the original (n_channels, n_timepoints), assigned in child classes
         # 2. data_master: A clean tensor copy of data moved to windows (n_windows, n_channels, n_timepoints)
