@@ -91,20 +91,26 @@ class PairedTemporalDataset(Dataset):
         # Create window manager shared between X and Y
         if window_size is None:
             raise ValueError("window_size must be provided")
-        
         # Determine temporal extent and create windows
         self.window_manager = WindowManager(window_size)
         self._initialize_windows(t_start, t_end)
-        
         # Attach window manager to datasets
         self.x_dataset.set_window_manager(self.window_manager)
         if self.y_dataset is not None:
             self.y_dataset.set_window_manager(self.window_manager)
-        
         # Build windows with full orchestration
         self._build_windows()
         
         logger.info(f"Created {self.window_manager.n_windows} aligned windows")
+
+    # Small properties for convenient access to main data
+    @property
+    def x_data(self):
+        return self.x_dataset.data
+    
+    @property
+    def y_data(self):
+        return self.y_dataset.data
     
     def _initialize_windows(self, t_start, t_end):
         """Create windows based on data extent."""
@@ -115,7 +121,13 @@ class PairedTemporalDataset(Dataset):
             data_start, data_end = max(x_start, y_start), min(x_end, y_end)
         else:
             data_start, data_end = x_start, x_end
-        
+        # Store data time extents to be used when time shifting, but only once!
+        if not hasattr(self, 'original_data_start'):
+            self.original_data_start = data_start
+            self.original_data_end = data_end
+        # Bound data time extents by original
+        data_start = min(data_start, self.original_data_start)
+        data_end = max(data_end, self.original_data_end)
         # Apply user-specified bounds if provided
         final_start = t_start if t_start is not None else data_start
         final_end = t_end if t_end is not None else data_end
@@ -123,7 +135,6 @@ class PairedTemporalDataset(Dataset):
             raise ValueError(
                 f"Invalid temporal range: t_start={final_start}, t_end={final_end}"
             )
-        
         # Create windows
         self.window_manager.update_parameters(t_start=final_start, t_end=final_end)
         
@@ -133,8 +144,15 @@ class PairedTemporalDataset(Dataset):
                 f"with window_size={self.window_manager.window_size}"
             )
     
-    def _build_windows(self):
-        """Full sequence of moving data to windows and checking for presence of data."""
+    def _build_windows(self, time_shift=None):
+        """
+        Full sequence of moving data to windows and checking for presence of data.
+        
+        Parameters
+        ----------
+        time_shift : offset_x, optional
+            If windows are being rebuilt due to time shift, contains the offset applied to x
+        """
         # Step 1: Move data to ALL windows for both X and Y
         self.x_dataset.move_data_to_windows()
         if self.y_dataset is not None:
@@ -164,6 +182,22 @@ class PairedTemporalDataset(Dataset):
         else:
             # No validation - all windows are valid
             self.window_manager.n_windows = len(self.window_manager.window_times)
+        
+        # Notify any views that windows have been rebuilt
+        self._notify_subset_views(time_shift=time_shift)
+
+    def _notify_subset_views(self, time_shift=None):
+        """
+        Notify all registered subset views that windows have been rebuilt.
+
+        Parameters
+        ----------
+        time_shift : offset_x, optional
+            If windows were rebuilt due to time shift, contains the offset applied to x
+        """
+        if hasattr(self, '_subset_views'):
+            for view in self._subset_views:
+                view._on_dataset_updated(time_shift=time_shift)
     
     def __len__(self):
         return len(self.x_dataset)
@@ -188,12 +222,12 @@ class PairedTemporalDataset(Dataset):
     
     def time_shift(self, offset_x=0, offset_y=0):
         """Apply time shifts."""
-        if offset_x != 0 and hasattr(self.x_dataset, 'time_shift'):
+        if hasattr(self.x_dataset, 'time_shift'):
             self.x_dataset.time_shift(offset_x)
-        if offset_y != 0 and self.y_dataset and hasattr(self.y_dataset, 'time_shift'):
+        if self.y_dataset and hasattr(self.y_dataset, 'time_shift'):
             self.y_dataset.time_shift(offset_y)
         self._initialize_windows(None, None)
-        self._build_windows()
+        self._build_windows(time_shift=offset_x)
 
     def set_window_size(self, window_size):
         """Change window size and rebuild windows."""
@@ -221,6 +255,15 @@ class PairedDataset(Dataset):
         if y_dataset is not None:
             self._align_datasets()
         logger.info(f"Created PairedDataset")
+
+    # Small properties for convenient access to main data
+    @property
+    def x_data(self):
+        return self.x_dataset.data
+    
+    @property
+    def y_data(self):
+        return self.y_dataset.data
     
     def _align_datasets(self):
         """Ensure X and Y have matching number of windows."""

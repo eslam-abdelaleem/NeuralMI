@@ -13,9 +13,10 @@ from scipy.ndimage import gaussian_filter1d, median_filter
 import os
 import shutil
 from tqdm.auto import tqdm
-from typing import Dict, Any, Tuple, Optional, List, Callable
+from typing import Dict, Any, Tuple, Optional, List, Callable, Union
 import torch.nn as nn
 
+from neural_mi.data import PairedDataset, PairedTemporalDataset, SubsetView
 from neural_mi.logger import logger
 from neural_mi.exceptions import TrainingError
 
@@ -67,9 +68,10 @@ class Trainer:
         self.use_variational, self.beta = use_variational, beta
         self.estimator_params = estimator_params if estimator_params is not None else {}
 
-    def train(self, x_data: torch.Tensor, y_data: torch.Tensor, n_epochs: int, batch_size: int,
-              train_fraction: float = 0.9, n_test_blocks: int = 5, patience: int = 10,
-              smoothing_sigma: float = 2.0, median_window: int = 5, min_improvement: float = 0.001,
+    def train(self, dataset : Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
+              train_fraction: float = 0.9, n_test_blocks: int = 5, 
+              random_time_shifting : bool = True, epochs_to_max_shift : int = 5,
+              patience: int = 10, smoothing_sigma: float = 2.0, median_window: int = 5, min_improvement: float = 0.001,
               save_best_model_path: Optional[str] = None, run_id: Optional[str] = None,
               output_units: str = 'nats', verbose: bool = True,
               split_mode: str = 'blocked',
@@ -95,6 +97,12 @@ class Trainer:
         n_test_blocks : int, optional
             For 'blocked' split_mode, the number of contiguous blocks for the test set.
             Defaults to 5.
+        random_time_shifting : bool, optional
+            If data is temporal and windowed, will randomly shift in time to encourage learning 
+            a robust representation of data
+        epochs_to_max_shift : int, optional
+            Number of epochs at start to wait before time shifting. 
+            Can be useful to burn-in a working model before time shifting full amounts
         patience : int, optional
             Epochs to wait for improvement before early stopping. Defaults to 10.
         smoothing_sigma : float, optional
@@ -132,8 +140,9 @@ class Trainer:
         """
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
 
-        x_data = x_data.to(self.device)
-        y_data = y_data.to(self.device)
+        # x_data = x_data.to(self.device)
+        # y_data = y_data.to(self.device)
+        is_temporal = True if isinstance(dataset, PairedTemporalDataset) else False
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = os.path.join(tmpdir, "best_model.pt")
@@ -143,10 +152,10 @@ class Trainer:
                 train_idx, test_idx = train_indices, test_indices
             elif split_mode == 'random':
                 logger.debug("Using random train/test split.")
-                train_idx, test_idx = self._create_random_split(x_data.shape[0], train_fraction)
+                train_idx, test_idx = self._create_random_split(len(dataset), train_fraction)
             else: # 'blocked' is the default
                 logger.debug("Using blocked train/test split for temporal data.")
-                train_idx, test_idx = self._create_blocked_split(x_data.shape[0], train_fraction, n_test_blocks)
+                train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks)
             
             n_train = len(train_idx)
             if batch_size > n_train > 0:
@@ -154,9 +163,9 @@ class Trainer:
                 batch_size = n_train
             if batch_size < 2 and n_train > 1: raise ValueError(f"batch_size must be >= 2, got {batch_size}.")
 
-            loader = DataLoader(torch.utils.data.TensorDataset(x_data, y_data), batch_size=batch_size, sampler=SubsetRandomSampler(train_idx))
-            x_train, y_train = x_data[train_idx], y_data[train_idx]
-            x_test, y_test = x_data[test_idx], y_data[test_idx]
+            # Subset dataset into train and test views
+            train_view = SubsetView(dataset, indices=train_idx)
+            test_view = SubsetView(dataset, indices=test_idx)
             
             history, best_mi, no_improve = [], -float('inf'), 0
             best_model_saved = False
@@ -165,11 +174,13 @@ class Trainer:
 
             for epoch in epoch_iterator:
                 self.model.train()
-                for x_batch, y_batch in loader:
-                    x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
+                # Shuffle trainig indices each epoch
+                train_idx = train_view.indices
+                shuffled_train_idx = train_idx[torch.randperm(train_idx.nelement())]
+                for batch_idx in shuffled_train_idx.split(batch_size):
                     
                     self.optimizer.zero_grad()
-                    scores, kl_loss = self.model(x_batch, y_batch)
+                    scores, kl_loss = self.model(dataset.x_dataset[batch_idx, ...], dataset.y_dataset[batch_idx, ...])
                     loss = -self.estimator_fn(scores, **self.estimator_params)
                     if self.use_variational:
                         loss += self.beta * kl_loss
@@ -178,6 +189,8 @@ class Trainer:
 
                 self.model.eval()
                 with torch.no_grad():
+                    x_test = dataset.x_dataset[test_view.indices, ...]
+                    y_test = dataset.y_dataset[test_view.indices, ...]
                     mi_nats = self._eval_mi(x_test, y_test)
                 history.append(mi_nats)
                 
@@ -185,6 +198,13 @@ class Trainer:
                 
                 is_first_valid_epoch = not np.isinf(best_mi)
                 improvement = (smoothed_nats - best_mi) / (abs(best_mi) + 1e-8) if is_first_valid_epoch else float('inf')
+
+                # Random time shift if data is temporal
+                if is_temporal and random_time_shifting:
+                    max_shift = np.clip(epoch / epochs_to_max_shift, 0, 1) * dataset.window_manager.window_size
+                    time_shift = np.random.uniform(high=max_shift)
+                    dataset.time_shift(offset_x=time_shift, offset_y=time_shift)
+
                 
                 if verbose:
                     epoch_iterator.set_description(f"Run {run_id or ''} | MI: {mi_nats * nats_to_bits:.3f}")
@@ -204,8 +224,14 @@ class Trainer:
 
             self.model.load_state_dict(torch.load(tmp_path, map_location=self.device, weights_only=True))
             with torch.no_grad():
-                train_mi = self._eval_mi(x_train, y_train)
-                test_mi = self._eval_mi(x_test, y_test)
+                train_mi = self._eval_mi(
+                    dataset.x_dataset[train_view.indices, ...], 
+                    dataset.y_dataset[train_view.indices, ...]
+                )
+                test_mi = self._eval_mi(
+                    dataset.x_dataset[test_view.indices, ...], 
+                    dataset.y_dataset[test_view.indices, ...]
+                )
             
             if save_best_model_path:
                 shutil.copy(tmp_path, save_best_model_path)

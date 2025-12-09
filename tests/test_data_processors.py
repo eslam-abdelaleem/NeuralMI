@@ -237,15 +237,18 @@ def test_paired_time_shift_positive(continuous_data, spike_data):
     # Store original
     original_x_time = paired_dataset.x_dataset.time_vector.copy()
     original_y_times = [st.copy() for st in paired_dataset.y_dataset.data_orig]
+    original_x_data = paired_dataset.x_data.detach().clone()
     # Apply positive shifts
     shift_x = 10.0
     shift_y = 5.0
     paired_dataset.time_shift(offset_x=shift_x, offset_y=shift_y)
-
     # Check shifts applied correctly
     assert np.allclose(paired_dataset.x_dataset.time_vector, original_x_time + shift_x)
     for orig, shifted in zip(original_y_times, paired_dataset.y_dataset.data_orig):
         assert np.allclose(shifted, orig + shift_y)
+    # Undo shifts, check back to normal
+    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
+    assert torch.allclose(paired_dataset.x_data, original_x_data)
 
 
 def test_paired_time_shift_negative(continuous_data, spike_data):

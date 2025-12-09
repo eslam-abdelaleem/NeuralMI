@@ -137,7 +137,12 @@ class TemporalWindowDataset(Dataset, ABC):
 
 
 class ContinuousWindowDataset(TemporalWindowDataset):
-    """Dataset for continuous time series data."""
+    """
+    Dataset for continuous time series data.
+
+    Note this class allows for irregular jumps in time between blocks of data, 
+    but assumes a constant sample rate.
+    """
     
     def __init__(self, data, time_vector=None, window_manager=None, device=None):
         """
@@ -153,6 +158,8 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         """
         super().__init__(window_manager, device)
 
+        if data.ndim == 1:
+            data = np.expand_dims(data, 0)
         self.data_orig = data
         # Time vector handling. If no time vector given, assuming sampled on positive integers
         if time_vector is not None:
@@ -228,13 +235,6 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         valid = np.full(self.window_manager.window_times.shape, False, bool)
         valid[window_inds] = True
         return valid
-    
-    def time_shift(self, offset):
-        # Undo previous offset, apply new one
-        self.time_vector = self.time_vector + offset - self.time_offset
-        # Store this time offset to undo later
-        self.time_offset = offset
-        # Moving data to windows will be orchestrated by paired dataset
 
     def get_temporal_extent(self):
         return self.time_vector[0], self.time_vector[-1]
@@ -245,6 +245,13 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     def reset(self):
         """Undo any added noise by resetting to original data. Does not undo time shifts."""
         self.data = self.data_master.detach().clone()
+
+    def time_shift(self, offset):
+        # Undo previous offset, apply new one
+        self.time_vector = self.time_vector + offset - self.time_offset
+        # Store this time offset to undo later
+        self.time_offset = offset
+        # Moving data to windows will be orchestrated by paired dataset
 
     def apply_noise(self, amplitude):
         """Add Gaussian noise to data."""
