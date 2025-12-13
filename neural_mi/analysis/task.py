@@ -29,9 +29,27 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
 
     # Now that data is processed and in the dataset object, we can safely determine input dimensions
     # even if the task started with raw data.
+    # Check for .shape attribute (handling list-based datasets like SpikeWindowDataset which might have list data_orig, but self.data should be tensor)
+    # Wait, dataset.x_data returns self.data.
+    # If SpikeWindowDataset, self.data IS a Tensor.
+    # So why did we get AttributeError: 'list' object has no attribute 'shape'?
+    # Only if self.data is NOT a Tensor.
+    # self.data is initialized to None.
+    # If move_data_to_windows wasn't called, it's None.
+    # If move_data_to_windows failed, it's None.
+    # If it was initialized with a list and not processed?
+    # SpikeWindowDataset calls move_data_to_windows in init if window_manager provided.
+    # create_dataset creates window_manager and calls set_window_manager.
+    # set_window_manager does NOT call move_data_to_windows automatically in TemporalWindowDataset.
+    # But PairedTemporalDataset calls _build_windows -> move_data_to_windows.
+    # So it should be processed.
+    # Unless dataset.x_data returns something else?
+    # PairedTemporalDataset.x_data -> self.x_dataset.data.
+
     if dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
         params['input_dim_x'] = dataset.x_data.shape[1] * dataset.x_data.shape[2]
         params['n_channels_x'] = dataset.x_data.shape[1]
+
     if dataset.y_data is not None and hasattr(dataset.y_data, 'shape'):
         params['input_dim_y'] = dataset.y_data.shape[1] * dataset.y_data.shape[2]
         params['n_channels_y'] = dataset.y_data.shape[1]

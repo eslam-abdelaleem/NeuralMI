@@ -111,13 +111,23 @@ class StaticDataset(BaseStaticDataset):
                 # Reshape: (n_channels, n_observations) -> (n_observations, n_channels, 1)
                 reshaped = self.data_orig.T[:, :, np.newaxis]
             else:
-                # Higher-dimensional observations
-                n_chan = self.data_orig.shape[0]
-                n_obs = self.data_orig.shape[1]
-                feature_dim = np.prod(self.data_orig.shape[2:])
-                # Reshape: (n_channels, n_observations, ...) -> (n_obs, n_chan, feature_dim)
-                # First transpose to move observations to front: (n_obs, n_chan, ...) then flatten trailing dimensions
-                reshaped = np.moveaxis(self.data_orig, 1, 0).reshape(n_obs, n_chan, feature_dim)
+                # Higher-dimensional observations: (C, N, F) or (N, C, F) ambiguity
+                # Heuristic: If dim 0 > dim 1, assume (N, C, F) and don't transpose.
+                if self.data_orig.shape[0] > self.data_orig.shape[1]:
+                    # Assume (N, C, F). Just reshape to ensure 3D (it is 3D).
+                    reshaped = self.data_orig
+                    # Ensure strictly 3D if >3 dims? flattened_extra_dims logic.
+                    n_obs = self.data_orig.shape[0]
+                    n_chan = self.data_orig.shape[1]
+                    feature_dim = np.prod(self.data_orig.shape[2:])
+                    reshaped = self.data_orig.reshape(n_obs, n_chan, feature_dim)
+                else:
+                    # Assume (C, N, F). Transpose.
+                    n_chan = self.data_orig.shape[0]
+                    n_obs = self.data_orig.shape[1]
+                    feature_dim = np.prod(self.data_orig.shape[2:])
+                    # Reshape: (C, N, ...) -> (N, C, feature_dim)
+                    reshaped = np.moveaxis(self.data_orig, 1, 0).reshape(n_obs, n_chan, feature_dim)
 
         # print(f"DEBUG: StaticDataset._process output shape={reshaped.shape}")
         self.data = torch.tensor(reshaped, device=self.device, dtype=torch.float32)
@@ -125,15 +135,7 @@ class StaticDataset(BaseStaticDataset):
 
     def __getitem__(self, idx):
         """Return data at index."""
-        # Handle slice or array indexing
-        try:
-            return self.data[idx]
-        except IndexError as e:
-            print(f"DEBUG: StaticDataset.__getitem__ failed. idx={idx}")
-            if isinstance(idx, tuple) and len(idx) > 0:
-                 if hasattr(idx[0], 'dtype'):
-                      print(f"DEBUG: idx[0].dtype={idx[0].dtype}")
-            raise e
+        return self.data[idx]
     
     def __len__(self):
         return self.data.shape[0]

@@ -153,7 +153,6 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         window_manager : WindowManager, optional
             External window manager for alignment
         """
-        print("DEBUG: Initializing ContinuousWindowDataset")
         # Call super init first to set device and window_manager
         super().__init__(window_manager, device)
 
@@ -225,17 +224,27 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # Flatten target times to 1D for efficient interpolation
         target_times_flat = target_times.ravel() # (n_windows * max_samples)
 
+        # Mask for out-of-bounds (zero padding)
+        # We check if target time is outside the range of actual data timestamps
+        # Note: assuming time_vector is sorted
+        t_min = self.time_vector[0]
+        t_max = self.time_vector[-1]
+        out_of_bounds = (target_times_flat < t_min) | (target_times_flat > t_max)
+
         # Interpolate for each channel
         for i in range(self.data_orig.shape[0]):
-            # np.interp expects 1D arrays. Interpolate the entire flattened grid at once.
+            # np.interp expects 1D arrays
+            # We interpolate the entire flattened grid at once
             interp_vals = np.interp(
                 target_times_flat,
                 self.time_vector,
                 self.data_orig[i]
             ).astype(np.float32)
 
+            # Apply zero padding
+            interp_vals[out_of_bounds] = 0.0
+
             # Reshape back to (n_windows, max_samples) and assign
-            # data is (n_windows, n_channels, max_samples)
             data[:, i, :] = interp_vals.reshape(self.window_manager.n_windows, self.max_samples_per_window)
 
         self.data = torch.tensor(data, device=self.device)
@@ -245,23 +254,32 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         """Check which windows have sufficient data coverage."""
         if self.window_manager is None:
             return None
-        # Valid if window overlaps with data range
-        data_start = self.time_vector[0]
-        data_end = self.time_vector[-1]
+
         window_starts = self.window_manager.window_times
         window_ends = window_starts + self.window_manager.window_size
 
-        # We require the window to be mostly within the data bounds to avoid extrapolation artifacts
-        # Let's say valid if the window center is within data bounds
-        window_centers = window_starts + self.window_manager.window_size / 2
-        valid = (window_centers >= data_start) & (window_centers <= data_end)
+        # Find index in time_vector
+        # Check if window actually contains data points
+        start_inds = np.searchsorted(self.time_vector, window_starts, side='left')
+        end_inds = np.searchsorted(self.time_vector, window_ends, side='left')
+
+        # Window is valid if it contains at least one data point
+        # Or we can be stricter.
+        # Original logic was: "windows_with_spikes".
+        # For continuous, we want windows that overlap with the time series.
+        # But if there are gaps (jumps), start_inds and end_inds will point to the same index (if gap is larger than window).
+
+        valid = (end_inds > start_inds)
+
+        # Also enforce strict boundary containment if desired, but "data points check" handles gaps correctly.
+
         return valid
 
     def get_temporal_extent(self):
         return self.time_vector[0], self.time_vector[-1]
     
     def __getitem__(self, idx):
-        return self.data[idx, :, :]
+        return self.data[idx]
     
     def reset(self):
         """Undo any added noise by resetting to original data. Does not undo time shifts."""
@@ -307,7 +325,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
     def __init__(self, spike_times, 
                  window_manager=None,
                  no_spike_value=0.0, device=None):
-        print("DEBUG: Initializing SpikeWindowDataset")
         super().__init__(window_manager, device)
 
         self.data_orig = [np.array(st) for st in spike_times]
@@ -378,7 +395,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
         return valid
     
     def __getitem__(self, idx):
-        return self.data[idx,:,:]
+        return self.data[idx]
     
     def reset(self):
         """Undo any added noise by resetting to original data. Does not undo time shifts."""
@@ -489,7 +506,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         
         # Preallocate output (one-hot encoded) (n_channels, n_windows, window_size * n_categories)
         data_shape = (self.window_manager.n_windows, self.data_orig.shape[0], self.n_categories * self.max_samples_per_window)
-        data = np.zeros(data_shape, dtype=bool)
+        data = np.zeros(data_shape, dtype=np.float32)
         
         # Don't move data that occurs after the last window
         mask = np.logical_and(
@@ -533,7 +550,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
     
     def __getitem__(self, idx):
         """Return one-hot encoded windowed data at index."""
-        return self.data[idx, :, :]
+        return self.data[idx]
     
     def reset(self):
         """Undo any added noise by resetting to original data. Does not undo time shifts."""
