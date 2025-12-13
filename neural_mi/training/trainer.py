@@ -209,7 +209,8 @@ class Trainer:
                 if verbose:
                     epoch_iterator.set_description(f"Run {run_id or ''} | MI: {mi_nats * nats_to_bits:.3f}")
                 
-                if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi)):
+                # Save if improved OR if it's the first valid epoch (to ensure we have at least one checkpoint)
+                if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi) or not best_model_saved):
                     best_mi, no_improve = smoothed_nats, 0
                     torch.save(self.model.state_dict(), tmp_path)
                     best_model_saved = True

@@ -32,7 +32,8 @@ def raw_gaussian_data():
     x_data, y_data = nmi.generators.generate_correlated_gaussians(
         n_samples=500, dim=5, mi=2.0
     )
-    return x_data, y_data
+    # run() expects (channels, time) for continuous data.
+    return x_data.T, y_data.T
 
 def test_run_estimate_mode_returns_results_with_float(gaussian_data):
     """
@@ -125,6 +126,8 @@ def test_run_with_continuous_processor_returns_results(raw_gaussian_data):
         mode='estimate',
         processor_type_x='continuous',
         processor_params_x={'window_size': 10, 'step_size': 5},
+        processor_type_y='continuous',
+        processor_params_y={'window_size': 10, 'step_size': 5},
         base_params=BASE_PARAMS,
         output_units='nats',
         n_workers=1

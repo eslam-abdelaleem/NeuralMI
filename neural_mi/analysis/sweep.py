@@ -15,7 +15,6 @@ from typing import List, Dict, Any, Optional
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger
-from neural_mi.data.handler import DataHandler
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
     """Helper to create a list of dictionaries from a grid."""
@@ -45,12 +44,13 @@ class ParameterSweep:
         self.x_data, self.y_data = x_data, y_data
         self.base_params = base_params
         
+        # If data is already a tensor (processed), we can infer dimensions
         if isinstance(x_data, torch.Tensor) and x_data.ndim == 3:
             self.base_params.update({
                 'input_dim_x': x_data.shape[1] * x_data.shape[2],
-                'input_dim_y': y_data.shape[1] * y_data.shape[2],
+                'input_dim_y': y_data.shape[1] * y_data.shape[2] if y_data is not None else 0,
                 'n_channels_x': x_data.shape[1],
-                'n_channels_y': y_data.shape[1],
+                'n_channels_y': y_data.shape[1] if y_data is not None else 0,
                 **kwargs
             })
         else:
@@ -137,10 +137,16 @@ class ParameterSweep:
         for i_combo, params in enumerate(param_combinations):
             current_params = {**self.base_params, **params}
             
-            task_processor_params_x = kwargs.get('processor_params_x', {}).copy()
+            # FIX: Initialize from base_params, then update from kwargs (if any), then sweep params
+            # Handle potential None from get()
+            task_processor_params_x = (self.base_params.get('processor_params_x') or {}).copy()
+            if 'processor_params_x' in kwargs:
+                task_processor_params_x.update(kwargs['processor_params_x'])
             task_processor_params_x.update(params)
             
-            task_processor_params_y = kwargs.get('processor_params_y', {}).copy()
+            task_processor_params_y = (self.base_params.get('processor_params_y') or {}).copy()
+            if 'processor_params_y' in kwargs:
+                task_processor_params_y.update(kwargs['processor_params_y'])
             task_processor_params_y.update(params)
 
             current_params.update({
@@ -154,7 +160,8 @@ class ParameterSweep:
                 x_to_send, y_to_send = self.x_data, self.y_data
                 if max_samples_per_task and self.x_data is not None and self.x_data.shape[0] > max_samples_per_task:
                     indices = np.random.choice(self.x_data.shape[0], max_samples_per_task, replace=False)
-                    x_to_send, y_to_send = self.x_data[indices], self.y_data[indices]
+                    x_to_send = self.x_data[indices]
+                    y_to_send = self.y_data[indices] if self.y_data is not None else None
                 task_data_x, task_data_y = x_to_send, y_to_send
 
             task_run_id = f"{run_id_base}_c{i_combo}"

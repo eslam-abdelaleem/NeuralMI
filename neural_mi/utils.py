@@ -111,9 +111,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # --- Critic Assembly ---
     if critic_type == 'separable':
-        return SeparableCritic(net_x, net_y, **critic_kwargs)
+        return SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y, **critic_kwargs)
     elif critic_type == 'bilinear':
-        return BilinearCritic(net_x, net_y, **critic_kwargs)
+        return BilinearCritic(embedding_net_x=net_x, embedding_net_y=net_y, **critic_kwargs)
     elif critic_type == 'concat':
         concat_input_dim = embedding_params['input_dim_x'] + embedding_params['input_dim_y']
         concat_net = MLP(concat_input_dim, hidden_dim, 1, n_layers)

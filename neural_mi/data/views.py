@@ -74,7 +74,10 @@ class SubsetView:
             self.times = None
             self.indices = np.sort(np.asarray(indices)) if indices is not None else None
         
-        self.indices = torch.tensor(self.indices, device=self.dataset.x_dataset.device)
+        # Ensure indices are LongTensor
+        if self.indices is not None:
+            # print(f"DEBUG: SubsetView init indices type {type(self.indices)} dtype {getattr(self.indices, 'dtype', 'N/A')}")
+            self.indices = torch.tensor(self.indices, device=self.dataset.x_dataset.device, dtype=torch.long)
     
     def _update_indices_from_times(self):
         """Convert time ranges to window indices. Called when windows change."""
@@ -89,7 +92,7 @@ class SubsetView:
         
         indices = np.concatenate([np.arange(start_end_inds[i,0], start_end_inds[i,1] + 1) for i in range(start_end_inds.shape[0])])
         indices = np.sort(np.unique(indices))
-        self.indices = torch.tensor(indices, device=self.dataset.x_dataset.device)
+        self.indices = torch.tensor(indices, device=self.dataset.x_dataset.device, dtype=torch.long)
     
     def _update_times_from_indices(self):
         """Convert indices to time ranges. Called once during initialization."""

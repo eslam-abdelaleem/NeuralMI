@@ -1,4 +1,4 @@
-# neural_mi/data/temporal.py
+# neural_mi/data/static.py
 import torch
 import numpy as np
 from abc import ABC, abstractmethod
@@ -58,27 +58,36 @@ class BaseStaticDataset(Dataset, ABC):
 class StaticDataset(BaseStaticDataset):
     """Base class for all non-temporal, static datasets."""
     
-    def __init__(self, data, device=None):
+    def __init__(self, data, device=None, preprocessed=False):
         """
         Parameters
         ----------
-        data : array-like
+        data : array-like or torch.Tensor
             Data of shape (n_channels, n_observations, ...)
+            If preprocessed=True, assumes (n_observations, n_channels, ...)
         device : str, optional
             Device for tensor operations
+        preprocessed : bool, optional
+            If True, assumes data is already in the target shape (n_observations, n_channels, ...).
+            Defaults to False.
         """
         super().__init__(device)
         
-        # Validate input type
+        # Validate input type and convert to numpy if it's a Tensor or list
         if isinstance(data, list):
             data = np.array(data)
+        elif isinstance(data, torch.Tensor):
+            data = data.detach().cpu().numpy()
+
         if not isinstance(data, np.ndarray):
-            raise ValueError(f"Data must be a numpy array, got {type(data)}")
+            raise ValueError(f"Data must be a numpy array or torch.Tensor, got {type(data)}")
+
         # Check for invalid values
         if not np.all(np.isfinite(data)):
             raise ValueError("Data contains NaN or infinite values")
         
         self.data_orig = data
+        self.preprocessed = preprocessed
         self._process()
 
     def _process(self):
@@ -87,26 +96,44 @@ class StaticDataset(BaseStaticDataset):
         to 3D tensor of shape `(n_observations, n_channels, flattened_extra_dims)`
         Extra dimensions are flattened into 3rd dimension of stored tensor
         """
-        # Reshape depending on original shape
-        if self.data_orig.ndim == 1:
-            reshaped = self.data_orig.reshape([-1,1,1])
-        if self.data_orig.ndim == 2:
-            # Reshape: (n_channels, n_observations) -> (n_observations, n_channels, 1)
-            reshaped = self.data_orig.T[:, :, np.newaxis]
+        # print(f"DEBUG: StaticDataset._process input shape={self.data_orig.shape}, preprocessed={self.preprocessed}")
+        if self.preprocessed:
+            # Assume data is already (n_obs, n_chan, n_feat)
+            reshaped = self.data_orig
+            # Ensure 3D
+            if reshaped.ndim == 2:
+                reshaped = reshaped[:, :, np.newaxis]
         else:
-            # Higher-dimensional observations
-            n_chan = self.data_orig.shape[0]
-            n_obs = self.data_orig.shape[1]
-            feature_dim = np.prod(self.data_orig.shape[2:])
-            # Reshape: (n_channels, n_observations, ...) -> (n_obs, n_chan, feature_dim)
-            # First transpose to move observations to front: (n_obs, n_chan, ...) then flatten trailing dimensions
-            reshaped = np.moveaxis(self.data_orig, 1, 0).reshape(n_obs, n_chan, feature_dim)
-        self.data = torch.tensor(reshaped, device=self.device)
+            # Reshape depending on original shape
+            if self.data_orig.ndim == 1:
+                reshaped = self.data_orig.reshape([-1,1,1])
+            elif self.data_orig.ndim == 2:
+                # Reshape: (n_channels, n_observations) -> (n_observations, n_channels, 1)
+                reshaped = self.data_orig.T[:, :, np.newaxis]
+            else:
+                # Higher-dimensional observations
+                n_chan = self.data_orig.shape[0]
+                n_obs = self.data_orig.shape[1]
+                feature_dim = np.prod(self.data_orig.shape[2:])
+                # Reshape: (n_channels, n_observations, ...) -> (n_obs, n_chan, feature_dim)
+                # First transpose to move observations to front: (n_obs, n_chan, ...) then flatten trailing dimensions
+                reshaped = np.moveaxis(self.data_orig, 1, 0).reshape(n_obs, n_chan, feature_dim)
+
+        # print(f"DEBUG: StaticDataset._process output shape={reshaped.shape}")
+        self.data = torch.tensor(reshaped, device=self.device, dtype=torch.float32)
         self.data_master = self.data.detach().clone()
 
     def __getitem__(self, idx):
         """Return data at index."""
-        return self.data[idx, :, :]
+        # Handle slice or array indexing
+        try:
+            return self.data[idx]
+        except IndexError as e:
+            print(f"DEBUG: StaticDataset.__getitem__ failed. idx={idx}")
+            if isinstance(idx, tuple) and len(idx) > 0:
+                 if hasattr(idx[0], 'dtype'):
+                      print(f"DEBUG: idx[0].dtype={idx[0].dtype}")
+            raise e
     
     def __len__(self):
         return self.data.shape[0]

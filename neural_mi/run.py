@@ -53,7 +53,7 @@ import random
 from .analysis.workflow import AnalysisWorkflow
 from .analysis.dimensionality import run_dimensionality_analysis
 from .analysis.lag import run_lag_analysis
-from .data.handler import DataHandler
+from .data.handler import create_dataset
 from .estimators import ESTIMATORS
 from .results import Results
 from .validation import ParameterValidator, DataValidator
@@ -305,20 +305,46 @@ def run(
     processor_param_keys = ['window_size', 'step_size', 'n_seconds', 'max_spikes_per_window', 'data_format']
     is_proc_sweep = mode == 'sweep' and any(key in (sweep_grid or {}) for key in processor_param_keys)
     
-    handler = DataHandler(x_data, y_data, processor_type_x, processor_params_x, processor_type_y, processor_params_y)
-
     if is_proc_sweep or mode == 'lag':
         logger.info("Detected sweep over processor or lag parameters. Deferring data processing to workers.")
-        # Use handler's raw data for deferred processing
-        x_run_data, y_run_data = handler.x_data, handler.y_data
+        # Use raw data for deferred processing
+        x_run_data, y_run_data = x_data, y_data
     else:
+        # Create dataset and process immediately
+        dataset = create_dataset(
+            x_data=x_data,
+            y_data=y_data if mode != 'dimensionality' else None,
+            processor_type_x=processor_type_x,
+            processor_params_x=processor_params_x,
+            processor_type_y=processor_type_y,
+            processor_params_y=processor_params_y
+        )
+
+        # If data is processed, we must tell future tasks (in ParameterSweep/worker)
+        # to treat it as preprocessed.
+        # This applies even if processor_type was None (StaticDataset).
+
+        # 1. Clear processor types so worker calls StaticDataset (via create_dataset)
+        base_params['processor_type_x'] = None
+        base_params['processor_type_y'] = None
+
+        # 2. Set preprocessed=True in params
+        if base_params.get('processor_params_x') is None:
+            base_params['processor_params_x'] = {}
+        if base_params.get('processor_params_y') is None:
+            base_params['processor_params_y'] = {}
+
+        base_params['processor_params_x']['preprocessed'] = True
+        base_params['processor_params_y']['preprocessed'] = True
+
         if mode == 'dimensionality':
             if y_data is not None: logger.warning("y_data is ignored for mode 'dimensionality'.")
-            x_run_data, _ = handler.process()
+            x_run_data = dataset.x_data
             y_run_data = None # y_data is not used in this mode
         else:
             if y_data is None: raise ValueError(f"y_data must be provided for mode '{mode}'.")
-            x_run_data, y_run_data = handler.process()
+            x_run_data = dataset.x_data
+            y_run_data = dataset.y_data
 
     from .analysis.sweep import ParameterSweep
     if mode == 'sweep':

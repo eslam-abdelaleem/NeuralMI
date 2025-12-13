@@ -7,8 +7,6 @@ from neural_mi.utils import get_device
 from neural_mi.logger import logger
 
 
-
-
 def max_events_in_window(event_times: np.ndarray, window_size: float) -> int:
     """
     Find the maximum number of events that can fit in a window of given size.
@@ -37,7 +35,6 @@ def max_events_in_window(event_times: np.ndarray, window_size: float) -> int:
         max_count = max(max_count, right - left + 1)
     
     return max(1, max_count)
-
 
 
 class TemporalWindowDataset(Dataset, ABC):
@@ -97,7 +94,7 @@ class TemporalWindowDataset(Dataset, ABC):
 
     def remove_invalid_windows(self):
         """Trim data to only valid windows."""
-        if self.window_manager is not None:
+        if self.window_manager is not None and self.data is not None:
             self.data = self.data[self.window_manager.valid_windows, :, :]
             self.data_master = self.data_master[self.window_manager.valid_windows, :, :]
     
@@ -135,7 +132,6 @@ class TemporalWindowDataset(Dataset, ABC):
         pass
 
 
-
 class ContinuousWindowDataset(TemporalWindowDataset):
     """
     Dataset for continuous time series data.
@@ -150,22 +146,35 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         ----------
         data : array-like
             Continuous data of shape (n_channels, n_timepoints)
+            If 3D (n_samples, n_channels, n_timepoints), it will be flattened to (n_samples*n_channels, n_timepoints)
         time_vector : array-like, optional
             Time stamps for each sample. 
             If None, assumes data sampled on positive integers in time [0, 1, 2, etc.]
         window_manager : WindowManager, optional
             External window manager for alignment
         """
+        print("DEBUG: Initializing ContinuousWindowDataset")
+        # Call super init first to set device and window_manager
         super().__init__(window_manager, device)
+
+        if isinstance(data, list):
+            data = np.array(data)
+        elif isinstance(data, torch.Tensor):
+            data = data.detach().cpu().numpy()
 
         if data.ndim == 1:
             data = np.expand_dims(data, 0)
+        elif data.ndim == 3:
+            # Flatten (samples, channels, time) -> (samples*channels, time)
+            data = data.reshape(-1, data.shape[-1])
+
         self.data_orig = data
+
         # Time vector handling. If no time vector given, assuming sampled on positive integers
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
         else:
-            self.time_vector = np.arange(0, self.data.shape[1])
+            self.time_vector = np.arange(0, self.data_orig.shape[1])
         # Infer sample rate from time vector
         # This class assumes, outside of jumps, a constant sample rate!
         self.period = self.time_vector[1] - self.time_vector[0]
@@ -186,7 +195,8 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         """Compute maximum samples that fit in a window."""
         # NOTE: There is a trivial, cheap version if data has fixed sample rate, and an expensive one using searchsorted
         # For now always assuming fixed sample rate (outside of large jumps)
-        self.max_samples_per_window = np.ceil(self.window_manager.window_size / self.period).astype(int)
+        # FIX: Add +1 buffer to avoid index out of bounds during interpolation at edges
+        self.max_samples_per_window = np.ceil(self.window_manager.window_size / self.period).astype(int) + 1
     
     def move_data_to_windows(self):
         """
@@ -200,40 +210,51 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
         
         # Preallocate output
-        # TODO: Deal with dtypes. Right now I use float32 for efficiency/training tradeoffs. 
-        # Makes a good default, but giving users control might be nice
+        # max_samples_per_window is roughly window_size / period
         data_shape = (self.window_manager.n_windows, self.data_orig.shape[0], self.max_samples_per_window)
         data = np.full(data_shape, 0.0, dtype=np.float32)
-        # Don't move data that occurs after the last window
-        mask = np.logical_and(
-            self.time_vector <= self.window_manager.t_end, 
-            self.time_vector >= self.window_manager.t_start
-        )
-        # Get indices of which window each time point belongs to
-        # For millions of entries, this is by far the slowest part of this whole function!
-        # For that reason we'll be memory-hungry and cache it
-        self._cached_window_inds = np.searchsorted(self.window_manager.window_times, self.time_vector[mask], side='right') - 1
-        window_inds = self._cached_window_inds
-        # Use those indices to assign data to windows
-        # Will interpolate data so that data is evenly sampled across window
-        _, index, counts = np.unique(window_inds, return_counts=True, return_index=True)
-        column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
-        first_inds = np.repeat(index, counts)
-        time_shifts = self.time_vector[mask][first_inds] - self.window_manager.window_times[window_inds][first_inds]
+
+        # Create target time grid for ALL windows: (n_windows, max_samples)
+        # target_times[w, t] = window_start[w] + t * period
+        time_offsets = np.arange(self.max_samples_per_window) * self.period
+
+        # Use broadcasting to create (n_windows, max_samples) target times
+        # Shape: (n_windows, 1) + (max_samples,) -> (n_windows, max_samples)
+        target_times = self.window_manager.window_times[:, None] + time_offsets[None, :]
+
+        # Flatten target times to 1D for efficient interpolation
+        target_times_flat = target_times.ravel() # (n_windows * max_samples)
+
+        # Interpolate for each channel
         for i in range(self.data_orig.shape[0]):
-            data[window_inds,i,column_inds] = np.interp(
-                self.time_vector[mask] + time_shifts, 
-                self.time_vector[mask], 
-                self.data_orig[i,mask]
-            )
+            # np.interp expects 1D arrays. Interpolate the entire flattened grid at once.
+            interp_vals = np.interp(
+                target_times_flat,
+                self.time_vector,
+                self.data_orig[i]
+            ).astype(np.float32)
+
+            # Reshape back to (n_windows, max_samples) and assign
+            # data is (n_windows, n_channels, max_samples)
+            data[:, i, :] = interp_vals.reshape(self.window_manager.n_windows, self.max_samples_per_window)
+
         self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
-        """Check which windows have sufficient data coverage. Assumes window manager attached"""
-        window_inds = self._cached_window_inds
-        valid = np.full(self.window_manager.window_times.shape, False, bool)
-        valid[window_inds] = True
+        """Check which windows have sufficient data coverage."""
+        if self.window_manager is None:
+            return None
+        # Valid if window overlaps with data range
+        data_start = self.time_vector[0]
+        data_end = self.time_vector[-1]
+        window_starts = self.window_manager.window_times
+        window_ends = window_starts + self.window_manager.window_size
+
+        # We require the window to be mostly within the data bounds to avoid extrapolation artifacts
+        # Let's say valid if the window center is within data bounds
+        window_centers = window_starts + self.window_manager.window_size / 2
+        valid = (window_centers >= data_start) & (window_centers <= data_end)
         return valid
 
     def get_temporal_extent(self):
@@ -286,6 +307,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
     def __init__(self, spike_times, 
                  window_manager=None,
                  no_spike_value=0.0, device=None):
+        print("DEBUG: Initializing SpikeWindowDataset")
         super().__init__(window_manager, device)
 
         self.data_orig = [np.array(st) for st in spike_times]
@@ -467,7 +489,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         
         # Preallocate output (one-hot encoded) (n_channels, n_windows, window_size * n_categories)
         data_shape = (self.window_manager.n_windows, self.data_orig.shape[0], self.n_categories * self.max_samples_per_window)
-        data = np.zeros(data_shape, dtype=np.bool)
+        data = np.zeros(data_shape, dtype=bool)
         
         # Don't move data that occurs after the last window
         mask = np.logical_and(
