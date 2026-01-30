@@ -1,29 +1,33 @@
 Current overhaul:
 
 **Trainer update**
-- Update task.py to pass in dataset objects to trainer
-- Update trainer.py to do time shifting, handle subsetting gracefully
-- Add subsetting methods to PairedDataset
+[X]- Update task.py to pass in dataset objects to trainer
+[X]- Update trainer.py to do time shifting, handle subsetting gracefully
+[X]- Add subsetting methods to PairedDataset
+[]- time_x and time_y handling throughout library
+[]- Update rest of library to call datasets correctly
+[]- Make input_dim_x&y and n_channels_x&y properties of dataset, remove instances of that in embedding params. All happens in task, task and/or dataset handles that now
+[]- Update documentation
+[]- Update tests
 
 **Dimensionality update**
-- New data handling means dimensionality needs to be updated, as it processes (sends to DataHandler) before sending to tasks
-- Ideally change dimensionality analysis to process like other analyses, in task.py
+[]- New data handling means dimensionality needs to be updated, as it processes (sends to DataHandler) before sending to tasks
+[]- Ideally change dimensionality analysis to process like other analyses, in task.py
 
 **New precision method**
-- New analysis that trains model, then loads that model and runs inference repeatedly at different precision levels
+[]- New analysis that trains model, then loads that model and runs inference repeatedly at different precision levels
 
 **Fix estimation on large datasets**
-- Need to implement chunking when forward pass is run on data above a certain size
-
+[X]- Need to implement chunking when forward pass is run on data above a certain size
 
 
 Long term:
-
 - Training simultaneous encoders/decoders
+[] - Make it so memory-hungry components of dataset are built when needed (for things like precision)
 - Switch between memory and cpu hungry modes of handling data
 
 Super Long term:
-- More genereic augmentation framework during training.
+- More generic augmentation framework during training.
 
 
 Small things:

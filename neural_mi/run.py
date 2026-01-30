@@ -53,7 +53,7 @@ import random
 from .analysis.workflow import AnalysisWorkflow
 from .analysis.dimensionality import run_dimensionality_analysis
 from .analysis.lag import run_lag_analysis
-from .data.handler import DataHandler
+# from .data.handler import DataHandler
 from .estimators import ESTIMATORS
 from .results import Results
 from .validation import ParameterValidator, DataValidator
@@ -92,6 +92,8 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
 def run(
     x_data: Union[np.ndarray, torch.Tensor, List],
     y_data: Optional[Union[np.ndarray, torch.Tensor, List]] = None,
+    x_time: Optional[np.ndarray] = None,
+    y_time: Optional[np.ndarray] = None,
     mode: str = 'estimate',
     processor_type: Optional[str] = None,
     processor_params: Optional[Dict[str, Any]] = None,
@@ -141,6 +143,10 @@ def run(
     y_data : np.ndarray, torch.Tensor, or list, optional
         The data for variable Y. Required for all modes except 'dimensionality'.
         Should have the same format as ``x_data``. Defaults to None.
+    x_time : np.ndarray, optional
+        Time vector for `x_data`. Required for temporal datasets. Defaults to None.
+    y_time : np.ndarray, optional
+        Time vector for `y_data`. Required for temporal datasets. Defaults to None.
     mode : {'estimate', 'sweep', 'dimensionality', 'rigorous', 'lag'}, default='estimate'
         The analysis mode to run.
     processor_type_x : {'continuous', 'spike', 'categorical'}, optional
@@ -287,7 +293,6 @@ def run(
     base_params['train_indices'] = train_indices
     base_params['test_indices'] = test_indices
     
-    # ** THE FIX IS HERE **
     # Add processor info to base_params BEFORE the analysis functions are called.
     base_params['processor_type_x'] = processor_type_x
     base_params['processor_params_x'] = processor_params_x

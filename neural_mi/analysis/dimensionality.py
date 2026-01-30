@@ -36,9 +36,10 @@ def run_dimensionality_analysis(
 
     Parameters
     ----------
-    x_data : torch.Tensor
-        A 3D tensor of shape `(n_samples, n_channels, n_features)` representing
-        the preprocessed input data.
+    dataset : torch.utils.data.Dataset
+        A dataset object containing the preprocessed input data.
+        Should contain a 3D tensor of shape `(n_samples, n_channels, n_features)` 
+        representing the preprocessed input data.
     base_params : Dict[str, Any]
         A dictionary of fixed parameters for the MI estimator's trainer, such as
         `n_epochs`, `learning_rate`, etc.
@@ -65,7 +66,7 @@ def run_dimensionality_analysis(
     Raises
     ------
     ValueError
-        If 'embedding_dim' is not in `sweep_grid` or if `x_data` has fewer
+        If 'embedding_dim' is not in `sweep_grid` or if dataset has fewer
         than 2 channels.
     """
     if 'embedding_dim' not in sweep_grid:
