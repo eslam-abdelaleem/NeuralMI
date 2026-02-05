@@ -12,9 +12,8 @@ from neural_mi.logger import logger
 class WindowManager:
     """Centralized manager for creating and aligning temporal windows."""
     
-    def __init__(self, window_size, step_size=None, t_start=None, t_end=None):
+    def __init__(self, window_size, t_start=None, t_end=None):
         self.window_size = window_size
-        self.step_size = step_size if step_size is not None else window_size
         self.t_start = t_start
         self.t_end = t_end
         self.window_times = None
@@ -34,21 +33,15 @@ class WindowManager:
         for observer in self._observers:
             observer._on_window_manager_updated()
 
-    def update_parameters(self, window_size=None, step_size=None, t_start=None, t_end=None):
+    def update_parameters(self, window_size=None, t_start=None, t_end=None):
         """Update window parameters and regenerate windows."""
         if window_size is not None:
             self.window_size = window_size
-        if step_size is not None:
-            self.step_size = step_size
         if t_start is not None:
             self.t_start = t_start
         if t_end is not None:
             self.t_end = t_end
         
-        # If step_size was never set but window_size was, default step to window
-        if self.step_size is None and self.window_size is not None:
-            self.step_size = self.window_size
-
         if self.t_start is not None and self.t_end is not None:
             self.create_windows()
             self._notify_observers()
@@ -57,10 +50,7 @@ class WindowManager:
         """Create window times for a given temporal range."""
         if self.t_start is None or self.t_end is None:
             raise RuntimeError("t_start and t_end parameters need to be set to create windows")
-
-        # Use step_size for stepping
-        self.window_times = np.arange(self.t_start, self.t_end, self.step_size)
-
+        self.window_times = np.arange(self.t_start, self.t_end, self.window_size)
         self.n_windows = len(self.window_times)
         # Initialize all windows as valid - will be updated by datasets
         self.valid_windows = np.full(self.window_times.size, True, dtype=bool)
@@ -75,7 +65,6 @@ class PairedTemporalDataset(Dataset):
     
     def __init__(self, x_dataset, y_dataset=None,
                  window_size=None,
-                 step_size=None,
                  t_start=None, t_end=None,
                  validate_windows=True):
         """
@@ -87,8 +76,6 @@ class PairedTemporalDataset(Dataset):
             Dataset for Y variable (not yet initialized with windows)
         window_size : float
             Window size in time units
-        step_size : float, optional
-            Step size (stride) for sliding windows. Defaults to window_size (non-overlapping).
         t_start : float, optional
             Start time for windows
         t_end : float, optional
@@ -105,8 +92,7 @@ class PairedTemporalDataset(Dataset):
         if window_size is None:
             raise ValueError("window_size must be provided")
         # Determine temporal extent and create windows
-        print(f"DEBUG: PairedTemporalDataset init: win={window_size}, step={step_size}, t_start={t_start}, t_end={t_end}")
-        self.window_manager = WindowManager(window_size, step_size=step_size)
+        self.window_manager = WindowManager(window_size)
         self._initialize_windows(t_start, t_end)
         # Attach window manager to datasets
         self.x_dataset.set_window_manager(self.window_manager)
@@ -135,9 +121,6 @@ class PairedTemporalDataset(Dataset):
             data_start, data_end = max(x_start, y_start), min(x_end, y_end)
         else:
             data_start, data_end = x_start, x_end
-
-        print(f"DEBUG: Data extent: {data_start} -> {data_end}")
-
         # Store data time extents to be used when time shifting, but only once!
         if not hasattr(self, 'original_data_start'):
             self.original_data_start = data_start
@@ -153,7 +136,6 @@ class PairedTemporalDataset(Dataset):
                 f"Invalid temporal range: t_start={final_start}, t_end={final_end}"
             )
         # Create windows
-        print(f"DEBUG: Updating parameters: t_start={final_start}, t_end={final_end}")
         self.window_manager.update_parameters(t_start=final_start, t_end=final_end)
         
         if self.window_manager.window_times is None or len(self.window_manager.window_times) == 0:
@@ -317,19 +299,16 @@ class PairedDataset(Dataset):
 
 
 
-def create_single_dataset(data, time, proc_type, proc_params):
+def create_single_dataset(data, time, proc_type, proc_params, device=None):
     """Create dataset for single variable."""
-    # print(f"DEBUG: create_single_dataset type={proc_type}")
     if proc_type is None:
-        # Pass preprocessed flag if present
-        preprocessed = proc_params.pop('preprocessed', False)
-        return StaticDataset(data, preprocessed=preprocessed)
+        return StaticDataset(data, device=device)
     if proc_type == 'continuous':
-        return ContinuousWindowDataset(data, time)
+        return ContinuousWindowDataset(data, time, device=device)
     elif proc_type == 'spike':
-        return SpikeWindowDataset(data, time)
+        return SpikeWindowDataset(data, time, device=device)
     elif proc_type == 'categorical':
-        return CategoricalWindowDataset(data, time)
+        return CategoricalWindowDataset(data, time, device=device)
     else:
         raise ValueError(f"Unknown processor type: {proc_type}")
 
@@ -337,7 +316,8 @@ def create_dataset(
         x_data, y_data=None,
         x_time=None, y_time=None,
         processor_type_x=None, processor_params_x=None,
-        processor_type_y=None, processor_params_y=None
+        processor_type_y=None, processor_params_y=None,
+        device=None
     ):
     """
     Factory function for creating appropriate dataset objects.
@@ -345,7 +325,7 @@ def create_dataset(
 
     # Set up inputs
     proc_type_x = processor_type_x
-    # FIX: Copy to avoid side-effects on original dict passed by reference
+    # Copy to avoid side-effects on original dict passed by reference
     proc_params_x = (processor_params_x or {}).copy()
     proc_type_y = processor_type_y if processor_type_y else processor_type_x
     proc_params_y = (processor_params_y or {}).copy() if processor_params_y else proc_params_x.copy()
@@ -358,19 +338,17 @@ def create_dataset(
         )
     
     # Initialize datasets
-    x_dataset = create_single_dataset(x_data, x_time, proc_type_x, proc_params_x)
-    y_dataset = create_single_dataset(y_data, y_time, proc_type_y, proc_params_y) if y_data is not None else None
+    x_dataset = create_single_dataset(x_data, x_time, proc_type_x, proc_params_x, device=device)
+    y_dataset = create_single_dataset(y_data, y_time, proc_type_y, proc_params_y, device=device) if y_data is not None else None
 
     # Create and return paired dataset
     # If both types of data are temporal, create a paired temporal dataset
     if proc_type_x is not None or proc_type_y is not None:
         window_size = proc_params_x.pop('window_size', None)
-        step_size = proc_params_x.pop('step_size', None)
-
         # Filter kwargs to only valid ones for PairedTemporalDataset
         valid_kwargs = inspect.signature(PairedTemporalDataset).parameters
         filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
-        return PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size, step_size=step_size, **filtered_kwargs)
+        return PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size, **filtered_kwargs)
     else:
         # Filter kwargs to only valid ones for PairedDataset
         valid_kwargs = inspect.signature(PairedDataset).parameters

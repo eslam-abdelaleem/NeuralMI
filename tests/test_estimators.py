@@ -45,11 +45,12 @@ class TestEstimators:
         x_data = x_raw.reshape(n_samples, 1, dim)
         y_data = y_raw.reshape(n_samples, 1, dim)
 
-        # Create dataset manually using the new create_dataset API
+        # Create dataset manually
         dataset = create_dataset(
             x_data=x_data, y_data=y_data,
             processor_type_x=None, processor_params_x={},
-            processor_type_y=None, processor_params_y={}
+            processor_type_y=None, processor_params_y={},
+            device=torch.device('cpu')
         )
 
         embedding_params = {

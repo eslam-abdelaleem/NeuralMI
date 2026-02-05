@@ -10,7 +10,7 @@ from neural_mi.data.static import StaticDataset
 @pytest.fixture
 def continuous_data():
     """Generate continuous data and time vector."""
-    return np.random.randn(2, 100), np.arange(100)
+    return np.random.randn(100, 2), np.arange(100)
 
 @pytest.fixture
 def spike_data():
@@ -20,7 +20,7 @@ def spike_data():
 @pytest.fixture
 def categorical_data():
     """Generate categorical data and time vector."""
-    return np.random.randint(0, 3, size=(2, 100)), np.arange(100)
+    return np.random.randint(0, 3, size=(100, 2)), np.arange(100)
 
 # WindowManager Tests
 def test_window_manager_creation():
@@ -45,7 +45,7 @@ def test_continuous_window_dataset(continuous_data):
 def test_continuous_window_with_jumps():
     """Test ContinuousWindowDataset dealing with jumps in time with no data"""
     x = np.hstack((np.linspace(0, 100, 1000), np.linspace(200, 300, 1000)))
-    dat = np.vstack((np.sin(x), np.cos(x)))
+    dat = np.vstack((np.sin(x), np.cos(x))).T
     window_size = 1.5
     wm = WindowManager(window_size, t_start=x[0], t_end=x[-1])
     dataset = ContinuousWindowDataset(dat, time_vector=x, window_manager=wm)
@@ -129,19 +129,19 @@ def test_large_time_jumps(continuous_data):
 # StaticDataset Tests
 def test_static_dataset():
     """Test StaticDataset with various input shapes."""
-    data_2d = np.random.randn(2, 100).astype(np.float32)
+    data_2d = np.random.randn(100, 2).astype(np.float32)
     dataset_2d = StaticDataset(data_2d)
     assert dataset_2d.data.shape == (100, 2, 1)
     
     data_3d = np.random.randn(2, 100, 5).astype(np.float32)
     dataset_3d = StaticDataset(data_3d)
-    assert dataset_3d.data.shape == (100, 2, 5)
+    assert dataset_3d.data.shape == (2, 100, 5)
 
 # PairedDataset Tests
 def test_paired_static_dataset():
     """Test PairedDataset for static data."""
-    x_data = np.random.randn(2, 100).astype(np.float32)
-    y_data = np.random.randn(3, 100).astype(np.float32)
+    x_data = np.random.randn(100, 2).astype(np.float32)
+    y_data = np.random.randn(100, 3).astype(np.float32)
     
     x_dataset = StaticDataset(x_data)
     y_dataset = StaticDataset(y_data)

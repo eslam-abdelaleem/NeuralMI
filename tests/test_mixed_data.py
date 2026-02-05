@@ -11,21 +11,16 @@ def test_continuous_and_spike_alignment():
     # Continuous data: 1000 timepoints
     # Assume 100Hz -> 10s duration.
     time_cont = np.arange(1000) / 100.0
-    x_cont = np.random.randn(2, 1000)
+    x_cont = np.random.randn(1000, 2)
 
     # Spike data: 10s duration
     y_spike, _ = nmi.generators.generate_correlated_spike_trains(duration=10.0)
 
-    # Use create_dataset with time-based windowing.
-    # window_size=0.1s (10 samples), step_size=0.05s (5 samples).
-    # Expected windows: (10.0 - 0.1) / 0.05 + 1 = 199.
-    # Due to validate_window_coverage strictness (center containment), we might lose 1-2 windows at edges.
-
     dataset = create_dataset(
         x_data=x_cont, y_data=y_spike,
         x_time=time_cont,
-        processor_type_x='continuous', processor_params_x={'window_size': 0.1, 'step_size': 0.05},
-        processor_type_y='spike', processor_params_y={'window_size': 0.1, 'step_size': 0.05}
+        processor_type_x='continuous', processor_params_x={'window_size': 0.1},
+        processor_type_y='spike', processor_params_y={'window_size': 0.1}
     )
 
     x_proc = dataset.x_data
@@ -44,17 +39,16 @@ def test_different_continuous_params_alignment():
     """
     Tests alignment between two continuous streams.
     """
-    x_data = np.random.randn(1, 100) # 0..99
-    y_data = np.random.randn(1, 120) # 0..119
+    x_data = np.random.randn(100, 1) # 0..99
+    y_data = np.random.randn(120, 1) # 0..119
 
-    # create_dataset enforces shared window/step for PairedTemporalDataset.
-    # But if we pass separate params, it might fail or use one.
-    # create_dataset logic uses params_x to extract window/step.
+    # create_dataset enforces shared window for PairedTemporalDataset.
+    # But if we pass separate params, it will use params_x.
 
     dataset = create_dataset(
         x_data=x_data, y_data=y_data,
-        processor_type_x='continuous', processor_params_x={'window_size': 10, 'step_size': 1},
-        processor_type_y='continuous', processor_params_y={'window_size': 10, 'step_size': 1}
+        processor_type_x='continuous', processor_params_x={'window_size': 10},
+        processor_type_y='continuous', processor_params_y={'window_size': 10}
     )
 
     x_proc = dataset.x_data

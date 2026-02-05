@@ -137,7 +137,7 @@ class ParameterSweep:
         for i_combo, params in enumerate(param_combinations):
             current_params = {**self.base_params, **params}
             
-            # FIX: Initialize from base_params, then update from kwargs (if any), then sweep params
+            # Initialize from base_params, then update from kwargs (if any), then sweep params
             # Handle potential None from get()
             task_processor_params_x = (self.base_params.get('processor_params_x') or {}).copy()
             if 'processor_params_x' in kwargs:

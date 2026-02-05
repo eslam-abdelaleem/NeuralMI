@@ -29,7 +29,7 @@ def test_run_sweep_mode(raw_data):
     x, y = raw_data
     results = nmi.run(
         x_data=x, y_data=y, mode='sweep',
-        processor_type='continuous', processor_params={'step_size': 1},
+        processor_type='continuous', processor_params={},#{'step_size': 1},
         base_params=BASE_PARAMS_TEST, sweep_grid={'window_size': [5, 10]},
         random_seed=42, n_workers=1
     )

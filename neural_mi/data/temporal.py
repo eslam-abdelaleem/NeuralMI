@@ -42,8 +42,8 @@ class TemporalWindowDataset(Dataset, ABC):
     Base class for all temporal window datasets.
 
     Keeps 3 versions of main data
-    1. data_orig: A numpy master matching the original (n_channels, n_timepoints), assigned in child classes
-    2. data_master: A clean copy of data moved to windows (n_windows, n_channels, n_timepoints)
+    1. data_orig: A numpy master matching the original (n_timepoints, n_channels), assigned in child classes
+    2. data_master: A clean copy of data moved to windows (n_windows, n_timepoints_in_window, n_channels)
     3. data: A working copy of data moved to windows. 
     This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
     """
@@ -145,8 +145,8 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         Parameters
         ----------
         data : array-like
-            Continuous data of shape (n_channels, n_timepoints)
-            If 3D (n_samples, n_channels, n_timepoints), it will be flattened to (n_samples*n_channels, n_timepoints)
+            Continuous data of shape (n_timepoints, n_channels)
+            If more than 3D (n_timepoints, n_channels, *extra_dims), it will be flattened to (n_timepoints, n_channels*...)
         time_vector : array-like, optional
             Time stamps for each sample. 
             If None, assumes data sampled on positive integers in time [0, 1, 2, etc.]
@@ -162,26 +162,26 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             data = data.detach().cpu().numpy()
 
         if data.ndim == 1:
-            data = np.expand_dims(data, 0)
-        elif data.ndim == 3:
-            # Flatten (samples, channels, time) -> (samples*channels, time)
-            data = data.reshape(-1, data.shape[-1])
-
-        self.data_orig = data
+            data = np.expand_dims(data, 1)  # (n_timepoints, 1)
+        elif data.ndim >= 3:
+            # Flatten (n_timepoints, n_channels, *extra_dims) -> (n_timepoints, n_channels*...)
+            n_timepoints = data.shape[0]
+            data = data.reshape(n_timepoints, -1)
+        self.data_orig = data  # Now (n_timepoints, n_channels)
 
         # Time vector handling. If no time vector given, assuming sampled on positive integers
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
         else:
-            self.time_vector = np.arange(0, self.data_orig.shape[1])
+            self.time_vector = np.arange(0, self.data_orig.shape[0])
         # Infer sample rate from time vector
         # This class assumes, outside of jumps, a constant sample rate!
         self.period = self.time_vector[1] - self.time_vector[0]
 
-        if len(self.time_vector) != self.data_orig.shape[1]:
+        if len(self.time_vector) != self.data_orig.shape[0]:
             raise ValueError(
                 f"time_vector must be same length as data. "
-                f"Recieved {len(self.time_vector)} time points and {self.data_orig.shape[1]} data points"
+                f"Recieved {len(self.time_vector)} time points and {self.data_orig.shape[0]} data points"
             )
         # Process data if window manager is available
         if window_manager is not None:
@@ -200,7 +200,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     def move_data_to_windows(self):
         """
         Convert continuous data into windows. 
-        Continuous data of shape (n_channels, n_timepoints) is reshaped and interpolated 
+        Continuous data of shape (n_timepoints, n_channels) is reshaped and interpolated 
         to (n_windows, n_channels, n_timepoints_in_window)
         
         Requires an attached window manager
@@ -210,7 +210,8 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         
         # Preallocate output
         # max_samples_per_window is roughly window_size / period
-        data_shape = (self.window_manager.n_windows, self.data_orig.shape[0], self.max_samples_per_window)
+        n_channels = self.data_orig.shape[1]
+        data_shape = (self.window_manager.n_windows, n_channels, self.max_samples_per_window)
         data = np.full(data_shape, 0.0, dtype=np.float32)
 
         # Create target time grid for ALL windows: (n_windows, max_samples)
@@ -232,18 +233,16 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         out_of_bounds = (target_times_flat < t_min) | (target_times_flat > t_max)
 
         # Interpolate for each channel
-        for i in range(self.data_orig.shape[0]):
+        for i in range(n_channels):
             # np.interp expects 1D arrays
             # We interpolate the entire flattened grid at once
             interp_vals = np.interp(
                 target_times_flat,
                 self.time_vector,
-                self.data_orig[i]
+                self.data_orig[:, i]
             ).astype(np.float32)
-
             # Apply zero padding
             interp_vals[out_of_bounds] = 0.0
-
             # Reshape back to (n_windows, max_samples) and assign
             data[:, i, :] = interp_vals.reshape(self.window_manager.n_windows, self.max_samples_per_window)
 
@@ -446,7 +445,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         Parameters
         ----------
         data : array-like
-            Categorical data of shape (n_channels, n_timepoints) with integer category labels
+            Categorical data of shape (n_timepoints, n_channels) with integer category labels
         time_vector : array-like, optional
             Time stamps for each sample. 
             If None, assumes data sampled on positive integers in time [0, 1, 2, etc.]
@@ -468,15 +467,15 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
         else:
-            self.time_vector = np.arange(0, self.data_orig.shape[1])
+            self.time_vector = np.arange(0, self.data_orig.shape[0])
         # Infer sample rate from time vector
         # This class assumes, outside of jumps, a constant sample rate!
         self.period = self.time_vector[1] - self.time_vector[0]
 
-        if len(self.time_vector) != self.data_orig.shape[1]:
+        if len(self.time_vector) != self.data_orig.shape[0]:
             raise ValueError(
                 f"time_vector must be same length as data. "
-                f"Received {len(self.time_vector)} time points and {self.data_orig.shape[1]} data points"
+                f"Received {len(self.time_vector)} time points and {self.data_orig.shape[0]} data points"
             )
         
         # Total one-hot encoded dimensions
@@ -496,7 +495,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
     def move_data_to_windows(self):
         """
         Convert categorical data into windows with one-hot encoding.
-        Categorical data of shape (n_channels, n_timepoints) is reshaped and mapped to 
+        Categorical data of shape (n_timepoints, n_channels) is reshaped and mapped to 
         (n_windows, n_channels, n_timepoints_in_window * n_categories)
         
         Requires an attached window manager.
@@ -504,8 +503,9 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         if self.window_manager is None:
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
         
-        # Preallocate output (one-hot encoded) (n_channels, n_windows, window_size * n_categories)
-        data_shape = (self.window_manager.n_windows, self.data_orig.shape[0], self.n_categories * self.max_samples_per_window)
+        # Preallocate output (one-hot encoded) (n_windows, window_size * n_categories, n_channels)
+        n_channels = self.data_orig.shape[1]
+        data_shape = (self.window_manager.n_windows, n_channels, self.n_categories * self.max_samples_per_window)
         data = np.zeros(data_shape, dtype=np.float32)
         
         # Don't move data that occurs after the last window
@@ -524,8 +524,8 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         expanded_column_inds = expanded.ravel()
         # Expand window indices for one-hot encoding
         expanded_window_inds = np.repeat(window_inds, self.n_categories)
-        for i in range(self.data_orig.shape[0]):
-            data[expanded_window_inds,i,expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[i,mask]].flatten()
+        for i in range(n_channels):
+            data[expanded_window_inds, i, expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[mask, i]].flatten()
         self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
 

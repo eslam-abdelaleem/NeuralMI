@@ -8,8 +8,8 @@ acts as a unified interface for all supported analysis modes.
 # Safe guard for macOS problems:
 import platform
 import os
-import multiprocessing
 import tempfile
+import torch.multiprocessing as mp
 from .logger import logger
 
 # 1. UNIVERSAL SAFEGUARD: Set multiprocessing start method to 'spawn'.
@@ -18,7 +18,7 @@ from .logger import logger
 try:
     # The 'force=True' flag is important on systems where the method might have
     # already been set (e.g., in an interactive session).
-    multiprocessing.set_start_method("spawn", force=True)
+    mp.set_start_method("spawn", force=True)
     logger.debug("Successfully set multiprocessing start method to 'spawn'.")
 except RuntimeError:
     # This will be raised if the context has already been set and cannot be changed.
@@ -46,7 +46,7 @@ import pandas as pd
 import numpy as np
 import torch
 from typing import Union, Optional, Dict, Any, List
-import multiprocessing
+import torch.multiprocessing as mp
 import platform
 import random
 
@@ -57,14 +57,9 @@ from .data.handler import create_dataset
 from .estimators import ESTIMATORS
 from .results import Results
 from .validation import ParameterValidator, DataValidator
+from .utils import get_device
 from .logger import logger
 
-
-try:
-    if platform.system() == "Darwin":
-        multiprocessing.set_start_method("spawn", force=True)
-except RuntimeError:
-    logger.debug("Multiprocessing start method already set.")
 
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
     """Recursively converts MI values in results from nats to bits."""
@@ -277,7 +272,7 @@ def run(
     if base_params is None: base_params = {}
     base_params['output_units'] = output_units
     base_params['verbose'] = verbose
-    base_params['device'] = device
+    base_params['device'] = device if device else get_device()
     base_params['estimator_name'] = estimator
     base_params['estimator_params'] = estimator_params or {}
     base_params['custom_critic'] = custom_critic
@@ -287,7 +282,6 @@ def run(
     base_params['train_indices'] = train_indices
     base_params['test_indices'] = test_indices
     
-    # ** THE FIX IS HERE **
     # Add processor info to base_params BEFORE the analysis functions are called.
     base_params['processor_type_x'] = processor_type_x
     base_params['processor_params_x'] = processor_params_x
