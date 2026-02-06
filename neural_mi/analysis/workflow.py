@@ -123,6 +123,8 @@ class AnalysisWorkflow:
         self.base_params.update({
             'input_dim_x': x_data.shape[1] * x_data.shape[2],
             'input_dim_y': y_data.shape[1] * y_data.shape[2],
+            'n_channels_x': x_data.shape[2],
+            'n_channels_y': y_data.shape[2],
             **kwargs
         })
 

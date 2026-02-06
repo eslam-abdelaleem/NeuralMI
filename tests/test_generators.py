@@ -23,7 +23,7 @@ class TestDatasetGenerators:
 
     def test_temporally_convolved_shape(self):
         x, y = generate_temporally_convolved_data(1000)
-        assert x.shape == (1, 1000) and y.shape == (1, 1000)
+        assert x.shape == (1000, 1) and y.shape == (1000, 1)
 
     def test_xor_data_logic(self):
         x, y = generate_xor_data(100, noise=0.0)
@@ -39,6 +39,6 @@ class TestDatasetGenerators:
 
     def test_generate_correlated_categorical_series_shape_and_type(self):
         x, y = generate_correlated_categorical_series(n_samples=100, n_channels=2, use_torch=False)
-        assert x.shape == (2, 100) and y.shape == (2, 100)
+        assert x.shape == (100, 2) and y.shape == (100, 2)
         assert isinstance(x, np.ndarray) and x.dtype == int
         assert (x.max()) < 3

@@ -29,10 +29,9 @@ def test_continuous_and_spike_alignment():
     # The key test: the number of samples must be identical after alignment.
     assert x_proc.shape[0] == y_proc.shape[0]
     
-    # Relax assertion slightly to account for time-based strictness
-    # 182 was observed in logs.
-    assert x_proc.shape[0] >= 180
-    assert x_proc.shape[0] <= 200
+    # Expected number of windows: 10s / 0.1s = 100 windows
+    assert x_proc.shape[0] >= 90
+    assert x_proc.shape[0] <= 110
 
 
 def test_different_continuous_params_alignment():
@@ -55,5 +54,5 @@ def test_different_continuous_params_alignment():
     y_proc = dataset.y_data
     
     assert x_proc.shape[0] == y_proc.shape[0]
-    # (99 - 10)/1 + 1 = 90 windows roughly.
-    assert x_proc.shape[0] > 80
+    # Expected number of windows: 100 / 10 = 10 windows
+    assert x_proc.shape[0] >= 9

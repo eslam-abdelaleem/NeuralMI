@@ -39,8 +39,8 @@ def test_continuous_window_dataset(continuous_data):
     dataset.move_data_to_windows()
     assert len(dataset) == 10
     assert dataset.data.shape[0] == 10
-    assert dataset.data.shape[1] == 2
-    assert dataset.data.shape[2] > 0
+    assert dataset.data.shape[2] == 2
+    assert dataset.data.shape[1] > 0
 
 def test_continuous_window_with_jumps():
     """Test ContinuousWindowDataset dealing with jumps in time with no data"""
@@ -52,7 +52,8 @@ def test_continuous_window_with_jumps():
     window_on_jump_ind = np.floor(100/window_size).astype(int)
     jump_window = dataset[window_on_jump_ind]
     valid_windows = dataset.validate_window_coverage()
-    assert torch.all(jump_window[:,0:5] != 0.0) # Start of window has data
+    # Jump window shape (time, channels)
+    assert torch.all(jump_window[0:5, :] != 0.0) # Start of window has data
     # NOTE: New interpolation logic interpolates across gaps, so zeros are not guaranteed unless we mask
     # assert torch.all(jump_window[:,-5:] == 0.0)
     assert wm.n_windows == len(valid_windows)
@@ -68,8 +69,8 @@ def test_spike_window_dataset(spike_data):
     dataset.move_data_to_windows()
     assert len(dataset) == 100
     assert dataset.data.shape[0] == wm.n_windows
-    assert dataset.data.shape[1] == 2
-    assert dataset.data.shape[2] > 0
+    assert dataset.data.shape[2] == 2
+    assert dataset.data.shape[1] > 0
 
 # CategoricalWindowDataset Tests
 def test_categorical_window_dataset(categorical_data):
@@ -80,8 +81,8 @@ def test_categorical_window_dataset(categorical_data):
     dataset.move_data_to_windows()
     assert len(dataset) == 10
     assert dataset.data.shape[0] == 10
-    assert dataset.data.shape[1] == 2
-    assert dataset.data.shape[2] > 0
+    assert dataset.data.shape[2] == 2
+    assert dataset.data.shape[1] > 0
     
 # PairedTemporalDataset Tests
 def test_paired_temporal_dataset(continuous_data, spike_data):
@@ -131,7 +132,7 @@ def test_static_dataset():
     """Test StaticDataset with various input shapes."""
     data_2d = np.random.randn(100, 2).astype(np.float32)
     dataset_2d = StaticDataset(data_2d)
-    assert dataset_2d.data.shape == (100, 2, 1)
+    assert dataset_2d.data.shape == (100, 1, 2)
     
     data_3d = np.random.randn(2, 100, 5).astype(np.float32)
     dataset_3d = StaticDataset(data_3d)
@@ -150,8 +151,8 @@ def test_paired_static_dataset():
     assert len(paired_dataset) == 100
     
     x_sample, y_sample = paired_dataset[0]
-    assert x_sample.shape == (2, 1)
-    assert y_sample.shape == (3, 1)
+    assert x_sample.shape == (1, 2)
+    assert y_sample.shape == (1, 3)
 
 
 # Time Shift Tests

@@ -296,7 +296,7 @@ def run(
                   **analysis_kwargs}
 
 
-    processor_param_keys = ['window_size', 'step_size', 'n_seconds', 'max_spikes_per_window', 'data_format']
+    processor_param_keys = ['window_size', 'n_seconds', 'max_spikes_per_window', 'data_format']
     is_proc_sweep = mode == 'sweep' and any(key in (sweep_grid or {}) for key in processor_param_keys)
     
     if is_proc_sweep or mode == 'lag':

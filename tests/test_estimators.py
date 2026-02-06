@@ -42,6 +42,7 @@ class TestEstimators:
         x_raw, y_raw = nmi.generators.generate_correlated_gaussians(
             n_samples=n_samples, dim=dim, mi=ground_truth_mi, use_torch=True
         )
+        # Shape: (observations, timepoints, channels)
         x_data = x_raw.reshape(n_samples, 1, dim)
         y_data = y_raw.reshape(n_samples, 1, dim)
 
@@ -81,7 +82,6 @@ class TestEstimators:
         used within the full nmi.run pipeline.
         """
         x_data, y_data = nmi.generators.generate_correlated_gaussians(n_samples=1000, dim=5, mi=3.0)
-        x_data, y_data = x_data.T, y_data.T
 
         # Define the full set of base_params required by build_critic
         test_base_params = {
