@@ -6,7 +6,8 @@ import neural_mi as nmi
 
 BASE_PARAMS_TEST = {
     'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
-    'patience': 1, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1
+    'patience': 1, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
+    'random_time_shifting': False # Disable time shifting to avoid dynamic window sizing issues in tests
 }
 
 @pytest.mark.parametrize("processor_type", ["continuous", "categorical", "spike"])

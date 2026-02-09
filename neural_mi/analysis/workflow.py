@@ -12,8 +12,7 @@ import numpy as np
 import pandas as pd
 import itertools
 import uuid
-import multiprocessing
-from multiprocessing import cpu_count
+import torch.multiprocessing as mp
 import statsmodels.api as sm
 from tqdm.auto import tqdm
 from typing import List, Dict, Any, Optional
@@ -124,6 +123,8 @@ class AnalysisWorkflow:
         self.base_params.update({
             'input_dim_x': x_data.shape[1] * x_data.shape[2],
             'input_dim_y': y_data.shape[1] * y_data.shape[2],
+            'n_channels_x': x_data.shape[2],
+            'n_channels_y': y_data.shape[2],
             **kwargs
         })
 
@@ -153,13 +154,13 @@ class AnalysisWorkflow:
             A dictionary containing the corrected results and the raw DataFrame
             from all the individual training runs.
         """
-        n_workers = n_workers or cpu_count()
+        n_workers = n_workers or mp.cpu_count()
         logger.info(f"Starting rigorous analysis with {n_workers} workers...")
         tasks = self._prepare_tasks(param_grid, gamma_range)
         if not tasks:
             return {"corrected_results": [], "raw_results_df": pd.DataFrame()}
 
-        with multiprocessing.get_context("spawn").Pool(processes=n_workers) as pool:
+        with mp.get_context('spawn').Pool(processes=n_workers) as pool:
             raw_results = list(tqdm(
                 pool.imap(run_training_task, tasks), total=len(tasks),
                 desc="Rigorous Analysis Progress", unit="task"

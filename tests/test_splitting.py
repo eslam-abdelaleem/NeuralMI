@@ -3,6 +3,7 @@ import pytest
 import torch
 import numpy as np
 import neural_mi as nmi
+# from neural_mi.data.handler import DataHandler # Removed
 
 @pytest.fixture
 def iid_data():
@@ -10,7 +11,10 @@ def iid_data():
     x_data, y_data = nmi.generators.generate_correlated_gaussians(
         n_samples=100, dim=2, mi=1.0
     )
-    # Reshape to be (n_samples, n_channels, n_features)
+    # Reshape to be (n_samples, n_channels, n_features) for StaticDataset compatibility
+    # StaticDataset expects (observations, channels, ...)
+    # x_data is (100, 2). We want 100 observations, 1 channel, 2 features.
+    # So (100, 1, 2)
     return x_data.unsqueeze(1), y_data.unsqueeze(1)
 
 def test_random_split_mode(iid_data):
@@ -45,6 +49,7 @@ def test_custom_indices_split(iid_data):
     Tests that providing custom train/test indices works correctly.
     """
     x_data, y_data = iid_data
+    # n_samples is dimension 0 now
     n_samples = x_data.shape[0]
     
     # Create custom indices

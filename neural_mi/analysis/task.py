@@ -11,27 +11,28 @@ from neural_mi.utils import build_critic, get_device
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger
-from neural_mi.data import create_dataset
+from neural_mi.data.handler import create_dataset
 
 def run_training_task(args: tuple) -> Dict[str, Any]:
     """A top-level function that can be pickled for multiprocessing."""
     x_data, y_data, params, run_id = args
     
-    # Update dimensions in params now that data is processed
-    if x_data is not None:
-        params['input_dim_x'] = x_data.shape[1] * x_data.shape[2]
-        params['n_channels_x'] = x_data.shape[1]
-    if y_data is not None:
-        params['input_dim_y'] = y_data.shape[1] * y_data.shape[2]
-        params['n_channels_y'] = y_data.shape[1]
-
+    # Check if this task needs to process raw data or if it received pre-processed tensors
     dataset = create_dataset(
         x_data, y_data,
         processor_type_x=params.get('processor_type_x'),
         processor_type_y=params.get('processor_type_y'),
         processor_params_x=params.get('processor_params_x'),
-        processor_params_y=params.get('processor_type_y')
+        processor_params_y=params.get('processor_params_y')
     )
+
+    if dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
+        params['input_dim_x'] = dataset.x_data.shape[1] * dataset.x_data.shape[2]
+        params['n_channels_x'] = dataset.x_data.shape[1]
+
+    if dataset.y_data is not None and hasattr(dataset.y_data, 'shape'):
+        params['input_dim_y'] = dataset.y_data.shape[1] * dataset.y_data.shape[2]
+        params['n_channels_y'] = dataset.y_data.shape[1]
 
     if params.get('custom_critic') is not None:
         critic = params['custom_critic']

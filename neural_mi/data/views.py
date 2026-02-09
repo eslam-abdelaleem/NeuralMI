@@ -74,22 +74,40 @@ class SubsetView:
             self.times = None
             self.indices = np.sort(np.asarray(indices)) if indices is not None else None
         
-        self.indices = torch.tensor(self.indices, device=self.dataset.x_dataset.device)
+        # Ensure indices are LongTensor
+        if self.indices is not None:
+            # print(f"DEBUG: SubsetView init indices type {type(self.indices)} dtype {getattr(self.indices, 'dtype', 'N/A')}")
+            self.indices = torch.tensor(self.indices, device=self.dataset.x_dataset.device, dtype=torch.long)
     
+    def _get_valid_window_times(self):
+        """Helper to get only the valid window times from manager."""
+        if not self.is_temporal:
+            return None
+        wm = self.dataset.window_manager
+        if wm.window_times is None:
+            return None
+        if wm.valid_windows is not None:
+            return wm.window_times[wm.valid_windows]
+        return wm.window_times
+
     def _update_indices_from_times(self):
         """Convert time ranges to window indices. Called when windows change."""
         if self.times is None:
             self.indices = None
             return
             
-        # Convert time ranges to indices using window_times
-        window_times = self.dataset.window_manager.window_times
-        start_end_inds = np.searchsorted(window_times, self.times, side='right') - 1
-        start_end_inds = np.clip(start_end_inds, 0, len(window_times) - 1)
-        
-        indices = np.concatenate([np.arange(start_end_inds[i,0], start_end_inds[i,1] + 1) for i in range(start_end_inds.shape[0])])
-        indices = np.sort(np.unique(indices))
-        self.indices = torch.tensor(indices, device=self.dataset.x_dataset.device)
+        # Convert time ranges to indices using valid window times
+        window_times = self._get_valid_window_times()
+        if window_times is None or len(window_times) == 0:
+             self.indices = np.array([]) # No valid windows
+        else:
+            start_end_inds = np.searchsorted(window_times, self.times, side='right') - 1
+            start_end_inds = np.clip(start_end_inds, 0, len(window_times) - 1)
+
+            indices = np.concatenate([np.arange(start_end_inds[i,0], start_end_inds[i,1] + 1) for i in range(start_end_inds.shape[0])])
+            indices = np.sort(np.unique(indices))
+
+        self.indices = torch.tensor(indices, device=self.dataset.x_dataset.device, dtype=torch.long)
     
     def _update_times_from_indices(self):
         """Convert indices to time ranges. Called once during initialization."""
@@ -108,7 +126,10 @@ class SubsetView:
             starts = np.concatenate([[self.indices[0]], self.indices[breaks + 1]])
             ends = np.concatenate([self.indices[breaks], [self.indices[-1]]])
         
-        window_times = self.dataset.window_manager.window_times
+        window_times = self._get_valid_window_times()
+        if window_times is None:
+             raise ValueError("Cannot update times from indices: No valid windows found")
+
         self.times = np.column_stack([window_times[starts], window_times[ends]])
     
     def _on_dataset_updated(self, time_shift=None):

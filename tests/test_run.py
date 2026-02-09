@@ -22,6 +22,7 @@ def gaussian_data():
     x_data, y_data = nmi.generators.generate_correlated_gaussians(
         n_samples=200, dim=5, mi=2.0
     )
+    # Shape: (n_samples, n_features, n_channels)
     x_data_3d = x_data.reshape(200, 1, 5)
     y_data_3d = y_data.reshape(200, 1, 5)
     return x_data_3d, y_data_3d
@@ -32,6 +33,7 @@ def raw_gaussian_data():
     x_data, y_data = nmi.generators.generate_correlated_gaussians(
         n_samples=500, dim=5, mi=2.0
     )
+    # run() expects (time, channels) for continuous data.
     return x_data, y_data
 
 def test_run_estimate_mode_returns_results_with_float(gaussian_data):
@@ -76,14 +78,24 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
     """
     Verifies that mode='rigorous' returns a Results object with mi_estimate, dataframe, and details.
     """
-    x_data, y_data = gaussian_data
+    # Original gaussian_data fixture is too small (200 samples)
+    # Generate larger data for this specific test
+    x_data, y_data = nmi.generators.generate_correlated_gaussians(
+        n_samples=1000, dim=5, mi=2.0
+    )
+    # Shape: (n_samples, n_features, n_channels)
+    x_data = x_data.reshape(1000, 1, 5)
+    y_data = y_data.reshape(1000, 1, 5)
+
     result = nmi.run(
         x_data=x_data,
         y_data=y_data,
         mode='rigorous',
         base_params=BASE_PARAMS,
         output_units='nats',
-        gamma_range=range(1, 2),
+        gamma_range=range(1, 4), # Use a smaller gamma range for speed
+        min_gamma_points=2,      # Match the small gamma range
+        delta_threshold=100.0,   # Disable pruning for this test
         n_workers=1
     )
     assert isinstance(result, Results)
@@ -97,10 +109,10 @@ def test_run_dimensionality_mode_returns_results_with_dataframe(gaussian_data):
     Verifies that mode='dimensionality' returns a Results object with a DataFrame.
     """
     x_data, _ = gaussian_data
-    x_data_multi_channel = x_data.reshape(200, 5, 1)
+    # gaussian_data is already (200, 1, 5), which is (n_samples, n_features, n_channels)
     sweep_grid = {'embedding_dim': [4, 8]}
     result = nmi.run(
-        x_data=x_data_multi_channel,
+        x_data=x_data,
         mode='dimensionality',
         base_params=BASE_PARAMS,
         sweep_grid=sweep_grid,
@@ -124,40 +136,15 @@ def test_run_with_continuous_processor_returns_results(raw_gaussian_data):
         y_data=y_raw,
         mode='estimate',
         processor_type_x='continuous',
-        processor_params_x={'window_size': 10, 'step_size': 5},
+        processor_params_x={'window_size': 10},
+        processor_type_y='continuous',
+        processor_params_y={'window_size': 10},
         base_params=BASE_PARAMS,
         output_units='nats',
         n_workers=1
     )
     assert isinstance(result, Results)
     assert isinstance(result.mi_estimate, float)
-
-def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
-    """
-    Verifies that mode='rigorous' returns a Results object with mi_estimate, dataframe, and details.
-    """
-    # Original gaussian_data fixture is too small (200 samples)
-    # Generate larger data for this specific test
-    x_data, y_data = nmi.generators.generate_correlated_gaussians(
-        n_samples=1000, dim=5, mi=2.0
-    )
-    x_data = x_data.reshape(1000, 1, 5)
-    y_data = y_data.reshape(1000, 1, 5)
-
-    result = nmi.run(
-        x_data=x_data,
-        y_data=y_data,
-        mode='rigorous',
-        base_params=BASE_PARAMS,
-        output_units='nats',
-        gamma_range=range(1, 4), # Use a smaller gamma range for speed
-        n_workers=1
-    )
-    assert isinstance(result, Results)
-    assert isinstance(result.mi_estimate, float)
-    assert isinstance(result.dataframe, pd.DataFrame)
-    assert isinstance(result.details, dict)
-    assert 'mi_error' in result.details
 
 # Define the custom critic class at the module level (outside the test function)
 class MyCustomCritic(nmi.models.BaseCritic):

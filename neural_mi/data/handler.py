@@ -64,7 +64,7 @@ class PairedTemporalDataset(Dataset):
     """Wrapper for paired X and Y datasets with temporal alignment."""
     
     def __init__(self, x_dataset, y_dataset=None,
-                 window_size=None, 
+                 window_size=None,
                  t_start=None, t_end=None,
                  validate_windows=True):
         """
@@ -174,6 +174,7 @@ class PairedTemporalDataset(Dataset):
             if self.y_dataset is not None:
                 self.y_dataset.remove_invalid_windows()
             if self.window_manager.n_windows == 0:
+                print(f"DEBUG: No valid windows. x_valid sum: {x_valid.sum()}, total: {len(x_valid)}")
                 raise ValueError("No valid windows after checking data coverage")
             logger.info(
                 f"Window coverage: {self.window_manager.n_windows}/{len(self.window_manager.window_times)} "
@@ -298,16 +299,16 @@ class PairedDataset(Dataset):
 
 
 
-def create_single_dataset(data, time, proc_type, proc_params):
+def create_single_dataset(data, time, proc_type, proc_params, device=None):
     """Create dataset for single variable."""
     if proc_type is None:
-        return StaticDataset(data)
+        return StaticDataset(data, device=device)
     if proc_type == 'continuous':
-        return ContinuousWindowDataset(data, time)
+        return ContinuousWindowDataset(data, time, device=device)
     elif proc_type == 'spike':
-        return SpikeWindowDataset(data, time)
+        return SpikeWindowDataset(data, time, device=device)
     elif proc_type == 'categorical':
-        return CategoricalWindowDataset(data, time)
+        return CategoricalWindowDataset(data, time, device=device)
     else:
         raise ValueError(f"Unknown processor type: {proc_type}")
 
@@ -315,38 +316,19 @@ def create_dataset(
         x_data, y_data=None,
         x_time=None, y_time=None,
         processor_type_x=None, processor_params_x=None,
-        processor_type_y=None, processor_params_y=None
+        processor_type_y=None, processor_params_y=None,
+        device=None
     ):
     """
     Factory function for creating appropriate dataset objects.
-    
-    Parameters
-    ----------
-    x_data : Union[np.ndarray, torch.Tensor, list]
-        The raw input data for variable X.
-    y_data : Union[np.ndarray, torch.Tensor, list]
-        The raw input data for variable Y.
-    x_time, y_time : Union[np.ndarray, torch.Tensor], optional
-        Vector of times variable X/Y was sampled at if processor type is continuous, must be the same length as X/Y
-    processor_type_x, processor_type_y : {'continuous', 'spike', 'categorical'}, optional
-        The type of processor to use. If `None`, the data is assumed to be
-        already processed and will be returned as-is after a shape check.
-        Defaults to None.
-    processor_params_x, processor_params_y : Dict[str, Any], optional
-        A dictionary of parameters to pass to the selected processor's
-        initializer. Defaults to None.
-    
-    Returns
-    -------
-    Union[PairedTemporalDataset, PairedDataset]
-        Dataset object configured for the given data types.
     """
 
     # Set up inputs
     proc_type_x = processor_type_x
-    proc_params_x = processor_params_x or {}
+    # Copy to avoid side-effects on original dict passed by reference
+    proc_params_x = (processor_params_x or {}).copy()
     proc_type_y = processor_type_y if processor_type_y else processor_type_x
-    proc_params_y = processor_params_y if processor_params_y else proc_params_x.copy()
+    proc_params_y = (processor_params_y or {}).copy() if processor_params_y else proc_params_x.copy()
 
     # Validation should be run before this function. Just quick check for pre-processed data
     if proc_type_x is None or proc_type_y is None:
@@ -356,8 +338,8 @@ def create_dataset(
         )
     
     # Initialize datasets
-    x_dataset = create_single_dataset(x_data, x_time, proc_type_x, proc_params_x)
-    y_dataset = create_single_dataset(y_data, y_time, proc_type_y, proc_params_y) if y_data is not None else None
+    x_dataset = create_single_dataset(x_data, x_time, proc_type_x, proc_params_x, device=device)
+    y_dataset = create_single_dataset(y_data, y_time, proc_type_y, proc_params_y, device=device) if y_data is not None else None
 
     # Create and return paired dataset
     # If both types of data are temporal, create a paired temporal dataset

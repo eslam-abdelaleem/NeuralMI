@@ -36,10 +36,9 @@ def run_dimensionality_analysis(
 
     Parameters
     ----------
-    dataset : torch.utils.data.Dataset
-        A dataset object containing the preprocessed input data.
-        Should contain a 3D tensor of shape `(n_samples, n_channels, n_features)` 
-        representing the preprocessed input data.
+    x_data : torch.Tensor
+        A 3D tensor of shape `(n_samples, n_features, n_channels)` representing
+        the preprocessed input data.
     base_params : Dict[str, Any]
         A dictionary of fixed parameters for the MI estimator's trainer, such as
         `n_epochs`, `learning_rate`, etc.
@@ -84,7 +83,7 @@ def run_dimensionality_analysis(
             "bias may reveal the saturation point more clearly."
         )
     
-    n_channels = x_data.shape[1]
+    n_channels = x_data.shape[2]
     if n_channels < 2:
         raise ValueError("Cannot split channels; input data has fewer than 2 channels.")
     if n_channels % 2 != 0:
@@ -105,8 +104,8 @@ def run_dimensionality_analysis(
         indices_a = indices[:n_channels // 2]
         indices_b = indices[n_channels // 2:]
 
-        x_a = x_data[:, indices_a, :]
-        x_b = x_data[:, indices_b, :]
+        x_a = x_data[:, :, indices_a]
+        x_b = x_data[:, :, indices_b]
         
         sweep = ParameterSweep(x_data=x_a, y_data=x_b, base_params=analysis_params, critic_type='separable')
         split_results = sweep.run(sweep_grid=sweep_grid, n_workers=n_workers, is_proc_sweep=False)

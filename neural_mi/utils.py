@@ -33,9 +33,9 @@ def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str) -> tupl
         if lag == 0:
             return x_data, y_data
         elif lag > 0: # y is shifted to the left (y is in the future of x)
-            return x_data[:, :-lag], y_data[:, lag:]
+            return x_data[:-lag, :], y_data[lag:, :]
         else: # lag < 0, y is shifted to the right (y is in the past of x)
-            return x_data[:, -lag:], y_data[:, :lag]
+            return x_data[-lag:, :], y_data[:lag, :]
             
     elif processor_type == 'spike':
         y_shifted = [spikes - lag for spikes in y_data] # lag is in seconds for spikes
@@ -101,7 +101,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             model_kwargs['kernel_size'] = embedding_params.get('kernel_size', 7 if model_type == 'cnn' else 3)
         if model_type in ['gru', 'lstm']:
             model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
-        if model_type == 'transformer':
+        if model_type in ['transformer']:
             model_kwargs['nhead'] = embedding_params.get('nhead', 4)
     else: # MLP
         input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
@@ -111,9 +111,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # --- Critic Assembly ---
     if critic_type == 'separable':
-        return SeparableCritic(net_x, net_y, **critic_kwargs)
+        return SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y, **critic_kwargs)
     elif critic_type == 'bilinear':
-        return BilinearCritic(net_x, net_y, **critic_kwargs)
+        return BilinearCritic(embedding_net_x=net_x, embedding_net_y=net_y, **critic_kwargs)
     elif critic_type == 'concat':
         concat_input_dim = embedding_params['input_dim_x'] + embedding_params['input_dim_y']
         concat_net = MLP(concat_input_dim, hidden_dim, 1, n_layers)

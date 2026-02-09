@@ -140,7 +140,7 @@ def generate_temporally_convolved_data(n_samples, lag=30, noise=0.1, use_torch=T
 
     Returns:
         tuple: A tuple (x, y) of the generated temporal data, each of shape
-               [1, n_samples] for compatibility with our processors.
+               [n_samples, 1] for compatibility with our processors.
     """
     full_signal = np.cumsum(np.random.randn(n_samples + lag))
     full_signal = (full_signal - full_signal.mean()) / full_signal.std()
@@ -148,8 +148,8 @@ def generate_temporally_convolved_data(n_samples, lag=30, noise=0.1, use_torch=T
     x = full_signal[:-lag]
     y = full_signal[lag:] + np.random.randn(n_samples) * noise
     
-    x = x.reshape(1, -1)
-    y = y.reshape(1, -1)
+    x = x.reshape(-1, 1)
+    y = y.reshape(-1, 1)
 
     if use_torch:
         return torch.from_numpy(x).float(), torch.from_numpy(y).float()
@@ -261,26 +261,26 @@ def generate_correlated_categorical_series(
     -------
     Tuple[np.ndarray, np.ndarray]
         A tuple (x, y) of the generated categorical data, each of shape
-        `(n_channels, n_samples)`.
+        `(n_samples, n_channels)`.
     """
-    x = np.zeros((n_channels, n_samples), dtype=int)
-    y = np.zeros((n_channels, n_samples), dtype=int)
+    x = np.zeros((n_samples, n_channels), dtype=int)
+    y = np.zeros((n_samples, n_channels), dtype=int)
 
     for ch in range(n_channels):
         # Generate the first series with some temporal smoothness
-        x[ch, 0] = np.random.randint(n_categories)
+        x[0, ch] = np.random.randint(n_categories)
         for t in range(1, n_samples):
             if np.random.rand() < 0.95:  # High prob of staying in the same state
-                x[ch, t] = x[ch, t - 1]
+                x[t, ch] = x[t - 1, ch]
             else:
-                x[ch, t] = np.random.randint(n_categories)
+                x[t, ch] = np.random.randint(n_categories)
 
         # Generate the second series correlated with the first
         for t in range(n_samples):
             if np.random.rand() < transition_probability:
-                y[ch, t] = x[ch, t]
+                y[t, ch] = x[t, ch]
             else:
-                y[ch, t] = np.random.randint(n_categories)
+                y[t, ch] = np.random.randint(n_categories)
                 
     if use_torch:
         return torch.from_numpy(x).int(), torch.from_numpy(y).int()
@@ -314,15 +314,15 @@ def generate_event_related_data(
 
     Returns:
         tuple: A tuple (x, y) of the generated temporal data, each of shape
-               [1, n_samples].
+               [n_samples, 1].
     """
     # Create the sparse event signal X
-    x = np.zeros((1, n_samples))
+    x = np.zeros((n_samples, 1))
     event_times = np.random.choice(n_samples - lag - response_length, n_events, replace=False)
-    x[0, event_times] = 1.0
+    x[event_times, 0] = 1.0
 
     # Create the delayed response signal Y
-    y = np.zeros((1, n_samples))
+    y = np.zeros((n_samples, 1))
     t = np.linspace(0, 2 * np.pi, response_length)
     response_shape = np.sin(t)
 
@@ -330,7 +330,7 @@ def generate_event_related_data(
         start = event_time + lag
         end = start + response_length
         if end < n_samples:
-            y[0, start:end] += response_shape
+            y[start:end, 0] += response_shape
 
     # Add noise to Y
     y += np.random.randn(n_samples) * noise
@@ -347,7 +347,7 @@ def generate_linear_data(n_samples=5000, true_lag=50, noise_level=0.5):
     y_data = np.zeros(n_samples)
     y_data[true_lag:] = x_data[:-true_lag]
     y_data += np.random.randn(n_samples) * noise_level
-    return x_data.reshape(1, -1), y_data.reshape(1, -1)
+    return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
 
 def generate_nonlinear_data(n_samples=5000, true_lag=50, noise_level=0.2):
     """Y(t) is a nonlinear function of lagged X(t)."""
@@ -356,7 +356,7 @@ def generate_nonlinear_data(n_samples=5000, true_lag=50, noise_level=0.2):
     y_data = np.zeros(n_samples)
     y_data[true_lag:] = np.square(x_data[:-true_lag]) # The nonlinearity!
     y_data += np.random.randn(n_samples) * noise_level
-    return x_data.reshape(1, -1), y_data.reshape(1, -1)
+    return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
 
 def generate_history_data(n_samples=5000, history_duration=20, noise_level=0.1):
     """Y(t) is a nonlinear function of the moving average of X over a recent window (no lag)."""
@@ -372,7 +372,7 @@ def generate_history_data(n_samples=5000, history_duration=20, noise_level=0.1):
     
     y_data[history_duration:] = y_signal[:n_samples - history_duration]
     y_data += np.random.randn(n_samples) * noise_level
-    return x_data.reshape(1, -1), y_data.reshape(1, -1)
+    return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
 
 def generate_full_data(n_samples=5000, true_lag=30, history_duration=20, noise_level=0.3):
     """Y(t) is a nonlinear function of the moving average of X over a past, lagged window."""
@@ -388,4 +388,4 @@ def generate_full_data(n_samples=5000, true_lag=30, history_duration=20, noise_l
     y_data[effective_lag:] = y_signal[:n_samples - effective_lag]
     y_data += np.random.randn(n_samples) * noise_level
     
-    return x_data.reshape(1, -1), y_data.reshape(1, -1)
+    return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
