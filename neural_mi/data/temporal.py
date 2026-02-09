@@ -201,7 +201,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         """
         Convert continuous data into windows. 
         Continuous data of shape (n_timepoints, n_channels) is reshaped and interpolated 
-        to (n_windows, n_timepoints_in_window, n_channels)
+        to (n_windows, n_channels, n_timepoints_in_window)
         
         Requires an attached window manager
         """
@@ -211,7 +211,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # Preallocate output
         # max_samples_per_window is roughly window_size / period
         n_channels = self.data_orig.shape[1]
-        data_shape = (self.window_manager.n_windows, self.max_samples_per_window, n_channels)
+        data_shape = (self.window_manager.n_windows, n_channels, self.max_samples_per_window)
         data = np.full(data_shape, 0.0, dtype=np.float32)
 
         # Create target time grid for ALL windows: (n_windows, max_samples)
@@ -244,7 +244,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             # Apply zero padding
             interp_vals[out_of_bounds] = 0.0
             # Reshape back to (n_windows, max_samples) and assign
-            data[:, :, i] = interp_vals.reshape(self.window_manager.n_windows, self.max_samples_per_window)
+            data[:, i, :] = interp_vals.reshape(self.window_manager.n_windows, self.max_samples_per_window)
 
         self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
@@ -356,7 +356,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
         """
         Convert spike times into windowed format. 
         Spike data of form [(n_channels, n_spikes)] is reshaped to 
-        (n_windows, n_timepoints_in_window, n_channels)
+        (n_windows, n_channels, n_timepoints_in_window)
         
         Requires an attached window manager
         """
@@ -364,7 +364,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
         
         # Preallocate
-        data_shape = (self.window_manager.n_windows, self.max_samples_per_window, len(self.data_orig))
+        data_shape = (self.window_manager.n_windows, len(self.data_orig), self.max_samples_per_window)
         data = np.full(data_shape, self.no_spike_value, dtype=np.float32)
         self._cached_window_inds = []
         # Loop over channels/neurons/muscles
@@ -380,7 +380,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
 
             _, counts = np.unique(window_inds, return_counts=True)
             column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
-            data[window_inds, column_inds, i] = self.data_orig[i][mask] - self.window_manager.window_times[window_inds]
+            data[window_inds,i,column_inds] = self.data_orig[i][mask] - self.window_manager.window_times[window_inds]
             self._cached_window_inds.append(window_inds)
         # Convert to tensor, move to device. Make copies that noise will be applied on
         self.data = torch.tensor(data, device=self.device)
@@ -496,7 +496,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         """
         Convert categorical data into windows with one-hot encoding.
         Categorical data of shape (n_timepoints, n_channels) is reshaped and mapped to 
-        (n_windows, n_timepoints_in_window * n_categories, n_channels)
+        (n_windows, n_channels, n_timepoints_in_window * n_categories)
         
         Requires an attached window manager.
         """
@@ -505,7 +505,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         
         # Preallocate output (one-hot encoded) (n_windows, window_size * n_categories, n_channels)
         n_channels = self.data_orig.shape[1]
-        data_shape = (self.window_manager.n_windows, self.n_categories * self.max_samples_per_window, n_channels)
+        data_shape = (self.window_manager.n_windows, n_channels, self.n_categories * self.max_samples_per_window)
         data = np.zeros(data_shape, dtype=np.float32)
         
         # Don't move data that occurs after the last window
@@ -525,7 +525,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         # Expand window indices for one-hot encoding
         expanded_window_inds = np.repeat(window_inds, self.n_categories)
         for i in range(n_channels):
-            data[expanded_window_inds, expanded_column_inds, i] = np.eye(self.n_categories)[self.data_orig[mask, i]].flatten()
+            data[expanded_window_inds, i, expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[mask, i]].flatten()
         self.data = torch.tensor(data, device=self.device)
         self.data_master = self.data.detach().clone()
 

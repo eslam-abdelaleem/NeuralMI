@@ -19,6 +19,8 @@ Current overhaul:
 
 Long term:
 
+- Shift/lag data operates on time vectors if there are time vectors. Otherwise if data is static, do index shifting as it has now (but do it right)
+
 - Training simultaneous encoders/decoders
 - Switch between memory and cpu hungry modes of handling data
 

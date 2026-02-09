@@ -81,12 +81,12 @@ class StaticDataset(BaseStaticDataset):
         if not np.all(np.isfinite(data)):
             raise ValueError("Data contains NaN or infinite values")
 
-        # Reshape input data array to tensor of shape `(n_observations, *extra_dimensions, n_channels)`
+        # Reshape input data array to tensor of shape `(n_observations, n_channels, *extra_dimensions)` 
         # Reshape depending on original shape
         if data.ndim == 1:
             reshaped = data.reshape([-1,1,1])
         elif data.ndim == 2:
-            reshaped = data.reshape([data.shape[0], 1, data.shape[1]])
+            reshaped = data[:, :, None]
         else:
             # Higher-dimensional observations: 
             # Not possible to infer which dim is channel vs observation vs extra, 
