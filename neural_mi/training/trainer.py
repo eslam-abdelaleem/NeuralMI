@@ -15,10 +15,12 @@ import shutil
 from tqdm.auto import tqdm
 from typing import Dict, Any, Tuple, Optional, List, Callable, Union
 import torch.nn as nn
+import copy
 
 from neural_mi.data import PairedDataset, PairedTemporalDataset, SubsetView
 from neural_mi.logger import logger
 from neural_mi.exceptions import TrainingError
+from neural_mi.utils import compute_cross_covariance_spectrum, compute_spectral_metrics
 
 def _ranks(sample: np.ndarray) -> List[int]:
     indices = sorted(range(len(sample)), key=lambda i: sample[i])
@@ -40,7 +42,9 @@ class Trainer:
     """
     def __init__(self, model: nn.Module, estimator_fn: Callable, optimizer: torch.optim.Optimizer,
                  device: torch.device, use_variational: bool = False, beta: float = 512,
-                 estimator_params: Optional[Dict[str, Any]] = None):
+                 estimator_params: Optional[Dict[str, Any]] = None,
+                 custom_smoothing_fn: Optional[Callable] = None):
+        
         """
         Parameters
         ----------
@@ -62,21 +66,31 @@ class Trainer:
             if `use_variational` is True. Defaults to 512.0.
         estimator_params : dict, optional
             Additional keyword arguments for the estimator function.
+        custom_smoothing_fn : Callable, optional
+            A custom function for smoothing the validation MI history, which takes
+            a list of MI values and returns a smoothed array. If not provided, a default Gaussian + median filter will be used.
         """
         self.device, self.model = device, model.to(device)
         self.estimator_fn, self.optimizer = estimator_fn, optimizer
         self.use_variational, self.beta = use_variational, beta
         self.estimator_params = estimator_params if estimator_params is not None else {}
+        self.custom_smoothing_fn = custom_smoothing_fn
 
-    def train(self, dataset : Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
+    def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
               train_fraction: float = 0.9, n_test_blocks: int = 5, 
-              random_time_shifting : bool = True, epochs_to_max_shift : int = 5,
-              patience: int = 10, smoothing_sigma: float = 2.0, median_window: int = 5, min_improvement: float = 0.001,
+              random_time_shifting: bool = True, epochs_to_max_shift: int = 5,
+              patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5, min_improvement: float = 0.001,
               save_best_model_path: Optional[str] = None, run_id: Optional[str] = None,
               output_units: str = 'nats', verbose: bool = True,
               split_mode: str = 'blocked',
               train_indices: Optional[np.ndarray] = None,
-              test_indices: Optional[np.ndarray] = None) -> Dict[str, Any]:
+              test_indices: Optional[np.ndarray] = None,
+              max_eval_samples: int = 5000,
+              train_subset_size: Optional[int] = None,
+              track_spectral_metrics: bool = False,
+              spectral_output: str = 'default',
+              return_spectrum: bool = False) -> Dict[str, Any]:
+        
         """Trains the critic model and returns performance metrics.
 
         This method implements the main training loop, including data splitting,
@@ -84,10 +98,6 @@ class Trainer:
 
         Parameters
         ----------
-        x_data : torch.Tensor
-            The complete dataset for the first variable, X.
-        y_data : torch.Tensor
-            The complete dataset for the second variable, Y.
         n_epochs : int
             The maximum number of epochs to train for.
         batch_size : int
@@ -132,6 +142,20 @@ class Trainer:
         test_indices : np.ndarray, optional
             An array of specific indices to use for the test set. If provided,
             `split_mode` and `train_fraction` are ignored.
+        max_eval_samples : int, optional
+            Maximum number of samples to use when evaluating MI on the validation set.
+            If the test set is larger than this, a random subset will be used for evaluation.
+            Defaults to 5000.
+        train_subset_size : int, optional
+            If provided, limits the number of training samples used in each epoch to this number.
+            If the training set is larger than this, a random subset will be selected each epoch.
+            Defaults to None (use all training samples).
+        track_spectral_metrics : bool, optional
+            If True, computes and tracks spectral metrics of the learned representations at each epoch.
+            Defaults to False.
+        spectral_output : str, optional
+            Determines the output of spectral metrics. If 'default', uses a predefined set of metrics.
+            If 'full', returns the full spectrum. Defaults to 'default'.
 
         Returns
         -------
@@ -139,114 +163,170 @@ class Trainer:
             A dictionary containing the results of the training run.
         """
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
+        is_temporal = isinstance(dataset, PairedTemporalDataset)
 
-        # x_data = x_data.to(self.device)
-        # y_data = y_data.to(self.device)
-        is_temporal = True if isinstance(dataset, PairedTemporalDataset) else False
+        # 1. Split Data
+        if train_indices is not None and test_indices is not None:
+            train_idx, test_idx = train_indices, test_indices
+        elif split_mode == 'random':
+            train_idx, test_idx = self._create_random_split(len(dataset), train_fraction)
+        else:
+            train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks)
+        
+        n_train = len(train_idx)
+        if batch_size > n_train > 0:
+            batch_size = n_train
+        if batch_size < 2 and n_train > 1: 
+            raise ValueError(f"batch_size must be >= 2, got {batch_size}.")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = os.path.join(tmpdir, "best_model.pt")
+        train_view = SubsetView(dataset, indices=train_idx)
+        test_view = SubsetView(dataset, indices=test_idx)
 
-            if train_indices is not None and test_indices is not None:
-                logger.debug("Using user-provided train and test indices.")
-                train_idx, test_idx = train_indices, test_indices
-            elif split_mode == 'random':
-                logger.debug("Using random train/test split.")
-                train_idx, test_idx = self._create_random_split(len(dataset), train_fraction)
-            else: # 'blocked' is the default
-                logger.debug("Using blocked train/test split for temporal data.")
-                train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks)
+        # 2. Lock in a Train Evaluation Subset (to prevent OOM/slowdown during train_mi tracking)
+        actual_train_subset_size = train_subset_size or min(len(train_idx), len(test_idx), max_eval_samples)
+        train_eval_idx = np.random.choice(train_idx, actual_train_subset_size, replace=False)
+        train_eval_view = SubsetView(dataset, indices=train_eval_idx)
+        
+        history, best_mi, no_improve = [], -float('inf'), 0
+        best_model_state = None
+        
+        epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False, disable=not verbose)
+
+        # 3. Epoch Loop
+        for epoch in epoch_iterator:
+            self.model.train()
             
-            n_train = len(train_idx)
-            if batch_size > n_train > 0:
-                logger.warning(f"batch_size ({batch_size}) > n_train_samples ({n_train}). Reducing to {n_train}.")
-                batch_size = n_train
-            if batch_size < 2 and n_train > 1: raise ValueError(f"batch_size must be >= 2, got {batch_size}.")
-
-            # Subset dataset into train and test views
-            train_view = SubsetView(dataset, indices=train_idx)
-            test_view = SubsetView(dataset, indices=test_idx)
+            # Manual batching for efficiency and temporal shifting support
+            current_train_idx = train_view.indices
+            shuffled_train_idx = current_train_idx[torch.randperm(current_train_idx.nelement())]
             
-            history, best_mi, no_improve = [], -float('inf'), 0
-            best_model_saved = False
-            
-            epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False, disable=not verbose)
+            for batch_idx in shuffled_train_idx.split(batch_size):
+                self.optimizer.zero_grad()
+                scores, kl_loss = self.model(dataset.x_dataset[batch_idx, ...].to(self.device), dataset.y_dataset[batch_idx, ...].to(self.device))
+                loss = -self.estimator_fn(scores, **self.estimator_params)
+                if self.use_variational:
+                    loss += self.beta * kl_loss
+                loss.backward()
+                self.optimizer.step()
 
-            for epoch in epoch_iterator:
-                self.model.train()
-                # Shuffle trainig indices each epoch
-                train_idx = train_view.indices
-                shuffled_train_idx = train_idx[torch.randperm(train_idx.nelement())]
-                for batch_idx in shuffled_train_idx.split(batch_size):
-                    
-                    self.optimizer.zero_grad()
-                    scores, kl_loss = self.model(dataset.x_dataset[batch_idx, ...], dataset.y_dataset[batch_idx, ...])
-                    loss = -self.estimator_fn(scores, **self.estimator_params)
-                    if self.use_variational:
-                        loss += self.beta * kl_loss
-                    loss.backward()
-                    self.optimizer.step()
-
-                self.model.eval()
-                with torch.no_grad():
-                    x_test = dataset.x_dataset[test_view.indices, ...]
-                    y_test = dataset.y_dataset[test_view.indices, ...]
-                    mi_nats = self._eval_mi(x_test, y_test)
-                history.append(mi_nats)
-                
-                smoothed_nats = self._smooth(history, smoothing_sigma, median_window)[-1]
-                
-                is_first_valid_epoch = not np.isinf(best_mi)
-                improvement = (smoothed_nats - best_mi) / (abs(best_mi) + 1e-8) if is_first_valid_epoch else float('inf')
-
-                # Random time shift if data is temporal
-                if is_temporal and random_time_shifting:
-                    max_shift = np.clip(epoch / epochs_to_max_shift, 0, 1) * dataset.window_manager.window_size
-                    time_shift = np.random.uniform(high=max_shift)
-                    dataset.time_shift(offset_x=time_shift, offset_y=time_shift)
-
-                
-                if verbose:
-                    epoch_iterator.set_description(f"Run {run_id or ''} | MI: {mi_nats * nats_to_bits:.3f}")
-                
-                # Save if improved OR if it's the first valid epoch (to ensure we have at least one checkpoint)
-                if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi) or not best_model_saved):
-                    best_mi, no_improve = smoothed_nats, 0
-                    torch.save(self.model.state_dict(), tmp_path)
-                    best_model_saved = True
-                else:
-                    no_improve += 1
-                if no_improve >= patience:
-                    logger.debug(f"Early stopping at epoch {epoch+1}.")
-                    break
-            
-            if not best_model_saved:
-                raise TrainingError("Training failed to produce a valid model checkpoint.")
-
-            self.model.load_state_dict(torch.load(tmp_path, map_location=self.device, weights_only=True))
+            # Fast evaluation using safety chunking
+            self.model.eval()
             with torch.no_grad():
-                train_mi = self._eval_mi(
-                    dataset.x_dataset[train_view.indices, ...], 
-                    dataset.y_dataset[train_view.indices, ...]
-                )
-                test_mi = self._eval_mi(
-                    dataset.x_dataset[test_view.indices, ...], 
-                    dataset.y_dataset[test_view.indices, ...]
-                )
+                x_test = dataset.x_dataset[test_view.indices, ...]
+                y_test = dataset.y_dataset[test_view.indices, ...]
+                mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples)
+                
+            history.append(mi_nats)
             
-            if save_best_model_path:
-                shutil.copy(tmp_path, save_best_model_path)
+            # Smoothing (Custom or Default)
+            if self.custom_smoothing_fn:
+                smoothed_nats = self.custom_smoothing_fn(history)[-1]
+            else:
+                smoothed_nats = self._smooth(history, smoothing_sigma, median_window)[-1]
             
-            return {'train_mi': train_mi, 'test_mi': test_mi,
-                    'best_epoch': np.argmax(self._smooth(history, smoothing_sigma, median_window)),
-                    'test_mi_history': history}
+            is_first_valid_epoch = not np.isinf(best_mi)
+            improvement = (smoothed_nats - best_mi) / (abs(best_mi) + 1e-8) if is_first_valid_epoch else float('inf')
 
+            # Data Augmentation: Temporal Shifting
+            if is_temporal and random_time_shifting:
+                max_shift = np.clip(epoch / epochs_to_max_shift, 0, 1) * dataset.window_manager.window_size
+                time_shift = np.random.uniform(high=max_shift)
+                dataset.time_shift(offset_x=time_shift, offset_y=time_shift)
+
+            if verbose:
+                epoch_iterator.set_description(f"Run {run_id or ''} | MI: {mi_nats * nats_to_bits:.3f}")
+            
+            # In-Memory Early Stopping
+            if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi) or best_model_state is None):
+                best_mi, no_improve = smoothed_nats, 0
+                best_model_state = copy.deepcopy(self.model.state_dict())
+            else:
+                no_improve += 1
+                
+            if no_improve >= patience:
+                logger.debug(f"Early stopping at epoch {epoch+1}.")
+                break
+        
+        if best_model_state is None:
+            raise TrainingError("Training failed to produce a valid model checkpoint.")
+
+        # 4. Finalization
+        self.model.load_state_dict(best_model_state)
+        if save_best_model_path:
+            torch.save(best_model_state, save_best_model_path)
+            
+        with torch.no_grad():
+            final_test_mi = self._safe_eval_mi(
+                dataset.x_dataset[test_view.indices, ...], 
+                dataset.y_dataset[test_view.indices, ...], max_eval_samples)
+            final_train_mi = self._safe_eval_mi(
+                dataset.x_dataset[train_eval_view.indices, ...], 
+                dataset.y_dataset[train_eval_view.indices, ...], max_eval_samples)
+        
+        best_ep = np.argmax(self.custom_smoothing_fn(history) if self.custom_smoothing_fn else self._smooth(history, smoothing_sigma, median_window))
+        
+        results = {
+            'train_mi': final_train_mi, 
+            'test_mi': final_test_mi,
+            'best_epoch': best_ep,
+            'test_mi_history': history
+        }
+
+        # 5. Spectral Metrics (Dimensionality)
+        if track_spectral_metrics:
+            metrics = self._extract_spectral_metrics(
+                dataset.x_dataset[test_view.indices, ...], 
+                dataset.y_dataset[test_view.indices, ...], 
+                spectral_output, return_spectrum
+            )
+            results.update(metrics)
+
+        return results
+
+    def _safe_eval_mi(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> float:
+        """Evaluates MI, chunking the dataset to prevent OOM on massive test sets."""
+        n_samples = x.shape[0]
+        if n_samples < 2:
+            return float('nan')
+            
+        if n_samples <= max_samples:
+            return self._eval_mi(x, y)
+            
+        # Mini-batch averaging for extremely large datasets
+        total_mi = 0.0
+        steps = 0
+        for i in range(0, n_samples, max_samples):
+            end = min(i + max_samples, n_samples)
+            if (end - i) >= 2:
+                total_mi += self._eval_mi(x[i:end], y[i:end])
+                steps += 1
+        return total_mi / steps if steps > 0 else float('nan')
 
     def _eval_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
-        if x.shape[0] < 2:
-            return float('nan')
-        scores, _ = self.model(x, y)
+        scores, _ = self.model(x.to(self.device), y.to(self.device))
         return self.estimator_fn(scores, **self.estimator_params).item()
+
+    def _extract_spectral_metrics(self, x: torch.Tensor, y: torch.Tensor, 
+                                  spectral_output: str, return_spectrum: bool) -> Dict[str, Any]:
+        """Extracts embeddings and computes cross-covariance spectral metrics."""
+        self.model.eval()
+        with torch.no_grad():
+            # Uses the unified embedding extraction method on the critic
+            zx, zy = self.model.get_embeddings(x.to(self.device), y.to(self.device))
+
+        spectrum = compute_cross_covariance_spectrum(zx, zy)
+        metrics = compute_spectral_metrics(spectrum)
+        
+        results = {}
+        if spectral_output == 'all':
+            results = metrics
+        else:
+            results['participation_ratio'] = metrics['pr_singular']
+            
+        if return_spectrum:
+            results['spectrum'] = spectrum
+            
+        return results
 
     def _smooth(self, arr: List[float], sigma: float, med_win: int) -> np.ndarray:
         hist = np.array(arr)
@@ -257,12 +337,12 @@ class Trainer:
         hist[nan_mask] = valid_hist[-1]
         if med_win > 1 and len(hist) >= med_win:
             hist = median_filter(hist, size=med_win, mode='reflect')
-        if sigma > 0: hist = gaussian_filter1d(hist, sigma=sigma, mode='reflect')
+        if sigma > 0: 
+            hist = gaussian_filter1d(hist, sigma=sigma, mode='reflect')
         hist[nan_mask] = np.nan
         return hist
         
     def _create_random_split(self, n: int, frac: float) -> Tuple[np.ndarray, np.ndarray]:
-        """Creates a simple random split of indices."""
         indices = np.random.permutation(n)
         n_train = int(n * frac)
         return indices[:n_train], indices[n_train:]

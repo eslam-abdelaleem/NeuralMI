@@ -44,21 +44,37 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                               
     optimizer = optim.Adam(critic.parameters(), lr=params['learning_rate'])
     device = get_device(params.get('device'))
+    
+    # Inject custom smoothing into Trainer init
     trainer = Trainer(
-        model=critic.to(device), estimator_fn=ESTIMATORS[params['estimator_name']], optimizer=optimizer,
-        device=device, use_variational=params.get('use_variational', False),
+        model=critic.to(device), 
+        estimator_fn=ESTIMATORS[params['estimator_name']], 
+        optimizer=optimizer,
+        device=device, 
+        use_variational=params.get('use_variational', False),
         beta=params.get('beta', 512.0),
-        estimator_params=params.get('estimator_params')
+        estimator_params=params.get('estimator_params'),
+        custom_smoothing_fn=params.get('custom_smoothing_fn')
     )
     
-    results = trainer.train(dataset, params['n_epochs'], params['batch_size'],
-        patience=params['patience'], run_id=run_id,
+    # Inject memory, logging, and spectral metrics parameters into train
+    results = trainer.train(
+        dataset, 
+        params['n_epochs'], 
+        params['batch_size'],
+        patience=params['patience'], 
+        run_id=run_id,
         output_units=params.get('output_units', 'nats'),
         verbose=params.get('verbose', True),
         save_best_model_path=params.get('save_best_model_path'),
         split_mode=params.get('split_mode', 'blocked'),
         train_indices=params.get('train_indices'),
-        test_indices=params.get('test_indices')
+        test_indices=params.get('test_indices'),
+        max_eval_samples=params.get('max_eval_samples', 5000),
+        train_subset_size=params.get('train_subset_size'),
+        track_spectral_metrics=params.get('track_spectral_metrics', False),
+        spectral_output=params.get('spectral_output', 'default'),
+        return_spectrum=params.get('return_spectrum', False)
     )
     
     return_params = params.copy()

@@ -46,19 +46,17 @@ import pandas as pd
 import numpy as np
 import torch
 from typing import Union, Optional, Dict, Any, List
-import torch.multiprocessing as mp
-import platform
 import random
 
 from .analysis.workflow import AnalysisWorkflow
 from .analysis.dimensionality import run_dimensionality_analysis
+from .analysis.precision import run_precision_analysis
 from .analysis.lag import run_lag_analysis
 from .data.handler import create_dataset
 from .estimators import ESTIMATORS
 from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .utils import get_device
-from .logger import logger
 
 
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
@@ -90,8 +88,6 @@ def run(
     x_time: Optional[np.ndarray] = None,
     y_time: Optional[np.ndarray] = None,
     mode: str = 'estimate',
-    processor_type: Optional[str] = None,
-    processor_params: Optional[Dict[str, Any]] = None,
     processor_type_x: Optional[str] = None,
     processor_params_x: Optional[Dict[str, Any]] = None,
     processor_type_y: Optional[str] = None,
@@ -113,9 +109,18 @@ def run(
     delta_threshold: float = 0.1,
     min_gamma_points: int = 5,
     confidence_level: float = 0.68,
+    max_eval_samples: int = 5000,
+    train_subset_size: Optional[int] = None,
+    track_spectral_metrics: bool = False,
+    spectral_output: str = 'default',
+    return_spectrum: bool = False,
+    tau_grid: Optional[List[float]] = None,
+    corrupt_target: str = 'x',
+    corruption_method: str = 'rounding',
+    n_noise_samples: int = 50,
+    threshold_ratio: float = 0.9,
     **analysis_kwargs
 ) -> Results:
-
     
     """The unified entry point for all analyses in the NeuralMI library.
     
@@ -212,6 +217,17 @@ def run(
         Additional keyword arguments passed to the specific analysis engine.
         Common examples include ``n_workers``, ``n_splits``, or ``gamma_range``.
         For ``mode='lag'``, this must include ``lag_range``.
+    max_eval_samples : int, default=5000
+        The maximum number of samples to use for evaluation during training.
+        This is a computational safeguard and does not affect the training data size.
+    train_subset_size : int, optional
+        If provided, the number of training samples to use in each epoch. This can speed up training on large datasets. Defaults to None (use all training data).
+    track_spectral_metrics : bool, default=False
+        If True, spectral metrics (e.g., singular values of embeddings) will be computed and stored during training. This can provide insights into the learned representations but may increase computational overhead.
+    spectral_output : str, default='default'
+        The format for spectral metrics output. If 'default', metrics are stored in the Results.details under 'spectral_metrics'. If 'full', the full spectrum is stored; if 'summary', only summary statistics (e.g., top singular values) are stored.
+    return_spectrum : bool, default=False
+        If True, the final spectrum (e.g., singular values) of the learned embeddings will be included in the returned Results object under details['final_spectrum'].
     
     Returns
     -------
@@ -262,15 +278,14 @@ def run(
     if random_seed is not None and analysis_kwargs.get('n_workers', 1) is not None and analysis_kwargs.get('n_workers', 1) > 1:
         logger.warning("Reproducibility with random_seed is not guaranteed with n_workers > 1.")
 
-    # Handle old and new processor parameter styles for backward compatibility
-    if processor_type is not None:
+    # Catch legacy processor arguments passed as kwargs
+    if 'processor_type' in analysis_kwargs:
         logger.warning("`processor_type` is deprecated. Use `processor_type_x` and `processor_type_y` instead.")
-        processor_type_x = processor_type_x or processor_type
-        processor_type_y = processor_type_y or processor_type
-    if processor_params is not None:
+        processor_type_x = processor_type_x or analysis_kwargs.pop('processor_type')
+    if 'processor_params' in analysis_kwargs:
         logger.warning("`processor_params` is deprecated. Use `processor_params_x` and `processor_params_y` instead.")
-        processor_params_x = processor_params_x or processor_params
-        processor_params_y = processor_params_y or processor_params
+        processor_params_x = processor_params_x or analysis_kwargs.pop('processor_params')
+        processor_params_y = processor_params_y or processor_params_x
 
     ParameterValidator(locals()).validate()
     DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
@@ -288,7 +303,13 @@ def run(
     base_params['train_indices'] = train_indices
     base_params['test_indices'] = test_indices
     
-    # Add processor info to base_params BEFORE the analysis functions are called.
+    # Inject new Trainer pipeline arguments
+    base_params['max_eval_samples'] = max_eval_samples
+    base_params['train_subset_size'] = train_subset_size
+    base_params['track_spectral_metrics'] = track_spectral_metrics
+    base_params['spectral_output'] = spectral_output
+    base_params['return_spectrum'] = return_spectrum
+    
     base_params['processor_type_x'] = processor_type_x
     base_params['processor_params_x'] = processor_params_x
     base_params['processor_type_y'] = processor_type_y
@@ -301,46 +322,34 @@ def run(
                   "min_gamma_points": min_gamma_points, "confidence_level": confidence_level,
                   **analysis_kwargs}
 
-
     processor_param_keys = ['window_size', 'n_seconds', 'max_spikes_per_window', 'data_format']
     is_proc_sweep = mode == 'sweep' and any(key in (sweep_grid or {}) for key in processor_param_keys)
     
     if is_proc_sweep or mode == 'lag':
         logger.info("Detected sweep over processor or lag parameters. Deferring data processing to workers.")
-        # Use raw data for deferred processing
         x_run_data, y_run_data = x_data, y_data
     else:
-        # Create dataset and process immediately
         dataset = create_dataset(
             x_data=x_data,
-            y_data=y_data if mode != 'dimensionality' else None,
+            y_data=y_data if (mode != 'dimensionality' or y_data is not None) else None,
             processor_type_x=processor_type_x,
             processor_params_x=processor_params_x,
             processor_type_y=processor_type_y,
             processor_params_y=processor_params_y
         )
 
-        # If data is processed, we must tell future tasks (in ParameterSweep/worker)
-        # to treat it as preprocessed.
-        # This applies even if processor_type was None (StaticDataset).
-
-        # 1. Clear processor types so worker calls StaticDataset (via create_dataset)
         base_params['processor_type_x'] = None
         base_params['processor_type_y'] = None
 
-        # 2. Set preprocessed=True in params
-        if base_params.get('processor_params_x') is None:
-            base_params['processor_params_x'] = {}
-        if base_params.get('processor_params_y') is None:
-            base_params['processor_params_y'] = {}
-
+        if base_params.get('processor_params_x') is None: base_params['processor_params_x'] = {}
+        if base_params.get('processor_params_y') is None: base_params['processor_params_y'] = {}
         base_params['processor_params_x']['preprocessed'] = True
         base_params['processor_params_y']['preprocessed'] = True
 
+        # Corrected Dimensionality routing for Intrinsic vs Interaction
         if mode == 'dimensionality':
-            if y_data is not None: logger.warning("y_data is ignored for mode 'dimensionality'.")
             x_run_data = dataset.x_data
-            y_run_data = None # y_data is not used in this mode
+            y_run_data = dataset.y_data if y_data is not None else None 
         else:
             if y_data is None: raise ValueError(f"y_data must be provided for mode '{mode}'.")
             x_run_data = dataset.x_data
@@ -359,15 +368,48 @@ def run(
 
     elif mode == 'estimate':
         results_list = ParameterSweep(x_run_data, y_run_data, base_params).run(sweep_grid or {}, **analysis_kwargs)
-        mi = results_list[0]['test_mi'] if results_list else float('nan')
-        return Results(mode=mode, mi_estimate=_convert_mi_units(mi, output_units == 'bits'), params=run_params)
+        if not results_list:
+            return Results(mode=mode, mi_estimate=float('nan'), params=run_params)
+            
+        res_dict = results_list[0].copy()
+        mi = res_dict.pop('test_mi', float('nan'))
+        # Ensure any requested spectral metrics are pushed into the details dictionary
+        return Results(mode=mode, mi_estimate=_convert_mi_units(mi, output_units == 'bits'), params=run_params, details=res_dict)
 
     elif mode == 'dimensionality':
-        from .utils import find_saturation_point
-        df = run_dimensionality_analysis(x_run_data, base_params, sweep_grid, **analysis_kwargs)
+        df = run_dimensionality_analysis(x_run_data, base_params, y_data=y_run_data, sweep_grid=sweep_grid, **analysis_kwargs)
         df = _convert_mi_units(df, output_units == 'bits')
-        dims = find_saturation_point(df, strictness=analysis_kwargs.get('strictness', [0.1, 1.0, 15.0]))
-        return Results(mode=mode, dataframe=df, params={**run_params, 'sweep_var': 'embedding_dim'}, details={'estimated_dims': dims})
+        return Results(mode=mode, dataframe=df, params={**run_params}, details={'raw_results': df})
+    
+    elif mode == 'precision':
+        if tau_grid is None:
+            raise ValueError("`tau_grid` must be provided for mode='precision'.")
+            
+        prec_results = run_precision_analysis(
+            x_run_data, y_run_data, base_params, tau_grid=tau_grid, 
+            corrupt_target=corrupt_target, corruption_method=corruption_method,
+            n_noise_samples=n_noise_samples, threshold_ratio=threshold_ratio,
+            **analysis_kwargs
+        )
+        
+        # Format the raw MI trace dataframe
+        df = prec_results['dataframe']
+        df = _convert_mi_units(df, output_units == 'bits')
+        
+        # Format the processed scalars
+        details = prec_results['details']
+        details['baseline_mi'] = _convert_mi_units(details['baseline_mi'], output_units == 'bits')
+        details['threshold_value'] = _convert_mi_units(details['threshold_value'], output_units == 'bits')
+        details['raw_results'] = df
+        
+        # The mi_estimate field neatly holds our final precision threshold
+        return Results(
+            mode=mode, 
+            mi_estimate=details['precision_tau'], 
+            dataframe=df, 
+            params={**run_params, 'tau_grid': tau_grid}, 
+            details=details
+        )
 
     elif mode == 'rigorous':
         analysis_kwargs.update({'delta_threshold': delta_threshold, 'min_gamma_points': min_gamma_points, 'confidence_level': confidence_level})
@@ -382,16 +424,13 @@ def run(
             raise ValueError("`lag_range` must be provided for mode='lag'.")
         lag_range_val = analysis_kwargs.pop('lag_range')
         
-        # Pass the main sweep_grid from the run() call to the analysis function
         results_list = run_lag_analysis(x_run_data, y_run_data, base_params, lag_range=lag_range_val, sweep_grid=sweep_grid, **analysis_kwargs)
         df = pd.DataFrame(results_list)
         
-        # Make aggregation smarter: group by all swept variables except for 'run_id'
-        group_vars = ['lag'] # Always group by lag
+        group_vars = ['lag']
         if sweep_grid:
             group_vars.extend([key for key in sweep_grid.keys() if key != 'run_id'])
         
-        # Ensure all group_vars exist in the dataframe before grouping
         valid_group_vars = [var for var in group_vars if var in df.columns]
         
         if valid_group_vars:

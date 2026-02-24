@@ -151,7 +151,6 @@ class ParameterValidator:
             raise ValueError("'processor_params_y' required when 'processor_type_y' is specified.")
 
     def _validate_sweep(self):
-        if self.mode in ["sweep", "dimensionality"] and self.params.get("sweep_grid") is None:
+        # Dimensionality no longer requires a sweep_grid in the new spectral engine
+        if self.mode == "sweep" and self.params.get("sweep_grid") is None:
             raise ValueError(f"'sweep_grid' required for mode='{self.mode}'.")
-        if self.mode == "dimensionality" and "embedding_dim" not in self.params.get("sweep_grid", {}):
-            raise ValueError("'sweep_grid' must contain 'embedding_dim' for mode='dimensionality'.")

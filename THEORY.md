@@ -120,22 +120,51 @@ This procedure effectively subtracts the bias that is dependent on sample size, 
 
 ---
 
-## 6. Estimating Latent Dimensionality
+## 6. Latent Dimensionality via Spectral Metrics
 
-The `mode='dimensionality'` uses a clever trick to estimate the complexity of a single neural population `X`. It randomly splits the channels of `X` into two halves, `X_A` and `X_B`, and measures the "Internal Information" `I(X_A; X_B)`.
+Historically -like last year-, finding the dimensionality of the shared information between two datasets involved treating the bottleneck dimension ($k_z$) as a search parameter. We would artificially starve the network's capacity and sweep $k_z$ to find the exact point where Mutual Information saturated. However, this approach is computationally expensive and highly sensitive to the geometric constraints of the chosen critic (e.g., a simple dot-product in a Separable Critic might fail to capture complex dependencies in low dimensions, causing "false saturation").
 
-**Intuition:**
+Following our work in ($\texttt{https://arxiv.org/abs/2602.08105}$), NeuralMI now treats dimensionality not as a search problem, but as an **observable property of an over-parameterized latent space**.
 
-If both `X_A` and `X_B` are just different observations of the same underlying low-dimensional latent signal `Z`, then in theory, `I(X_A; X_B) = I(Z; Z) = ∞`. However, the *discoverable* information is constrained by the dimensionality of `Z`.
+### The Hybrid Critic and the Saturation Hypothesis
+To accurately measure dimensionality, NeuralMI uses a **Hybrid Critic**. This architecture embeds $X$ and $Y$ independently but processes their concatenation through a final Multi-Layer Perceptron (MLP) decision head. By setting a safely large bottleneck (e.g., $k_z = 64$), we ensure the network is "capacity tight." The network will not artificially smear a low-dimensional signal across all 64 dimensions; instead, it routes the shared information efficiently into a compact subspace.
 
-We can find this constraint by using a **`SeparableCritic`** and varying its `embedding_dim`. The `embedding_dim` acts as a bottleneck:
+### Cross-Covariance and the Participation Ratio
+Once the Hybrid Critic is trained at maximum capacity, we extract the learned embeddings $Z_X$ and $Z_Y$ for the test set. We compute their cross-covariance matrix $C_{XY}$:
 
-- If `embedding_dim` < `dim(Z)`, the model can't capture all the shared information, and the estimated MI will be low.
-- As `embedding_dim` approaches `dim(Z)`, the estimated MI will rise.
-- Once `embedding_dim` > `dim(Z)`, the model has enough capacity, and the MI will **saturate**. The point of saturation is our estimate for the latent dimensionality of `Z`.
+$$C_{XY} = \frac{1}{N-1} (Z_X - \bar{Z}_X)^T (Z_Y - \bar{Z}_Y)$$
 
-For this specific task, **SMILE is often a better estimator than InfoNCE**. Because the true MI can be very high, InfoNCE might saturate at its theoretical limit of $\log(N)$ *before* the model's capacity (`embedding_dim`) becomes the true bottleneck. SMILE's lower bias allows the curve to rise higher, revealing the true saturation point more clearly.
+We then perform Singular Value Decomposition (SVD) on $C_{XY}$ to extract the spectrum of singular values $\sigma_i$. These singular values represent the strength of the shared variance across the orthogonal dimensions of the latent space.
 
-:::{note}
-This process can also be done for regular `I(X;Y)`, informing us about the intrinsic dimensionality of the *interaction* space. Here, the information won't be theoretically infinite, and InfoNCE will probably perform better.
-:::
+From this spectrum, NeuralMI calculates the **Participation Ratio (PR)**, a continuous measure of the effective number of dimensions utilized by the network:
+
+$$PR_{singular} = \frac{(\sum_{i=1}^{k_z} \sigma_i)^2}{\sum_{i=1}^{k_z} \sigma_i^2}$$
+
+A $PR$ of 5.2 indicates that the shared information between $X$ and $Y$ effectively occupies 5.2 dimensions, regardless of the fact that the actual bottleneck was 64.
+
+### Interaction vs. Intrinsic Dimensionality
+* **Interaction Dimensionality:** When evaluating two distinct datasets ($X$ and $Y$), the PR of their cross-covariance directly yields the dimensionality of their shared information space.
+* **Intrinsic Dimensionality:** When analyzing a single dataset ($X$), NeuralMI splits the data into two non-overlapping halves (e.g., randomly splitting the channels/neurons, or splitting spatially/temporally). It then computes the Interaction Dimensionality between these halves, repeating this process over multiple splits and averaging the PR to find the intrinsic dimensionality of the dataset itself.
+
+---
+
+## 7. Spike Timing Precision
+
+In many biological systems, neural codes rely on precise timing down to the millisecond scale. Measuring the exact temporal precision at which a representation carries information requires determining how much that information degrades when the timing is perturbed.
+
+NeuralMI implements a highly efficient **"Train Once, Evaluate Many"** paradigm to establish this precision threshold without the massive computational overhead of retraining models for every noise level.
+
+### The Baseline and Corruption Methodology
+First, a baseline Mutual Information estimate is established by training a critic on the raw, uncorrupted data ($X$ and $Y$). Once the model converges, its weights are frozen.
+
+To evaluate precision, the test data is iteratively corrupted across a grid of precision levels, denoted as $\tau$. NeuralMI supports two primary methods for corruption:
+
+1.  **Deterministic Rounding (Default):** The data is explicitly quantized, forcing continuous times to snap to a discrete grid defined by the precision level $\tau$. Because this operation is deterministic, it requires only a single forward pass through the frozen network per precision level. The rounding operation is defined as:
+    $$\tilde{X} = \tau * \left \lfloor{\frac{X}{\tau}}\right \rceil$$
+    where $\left \lfloor{\cdot}\right \rceil$ denotes rounding to the nearest integer.
+2.  **Additive Uniform Noise:** A stochastic alternative where noise sampled from a uniform distribution $U(-\frac{\tau}{2}, \frac{\tau}{2})$ is added to the data. Because this is probabilistic, the evaluation must be repeated multiple times (e.g., $N=50$) and averaged to get a stable estimate of the degraded Mutual Information.
+
+### Defining the Precision Threshold
+As $\tau$ increases, the severity of the corruption increases, and the Mutual Information estimated by the frozen network will inevitably drop. 
+
+The spike timing precision of the representation is formally defined as the specific $\tau$ threshold at which the degraded Mutual Information $I(\tilde{X}; Y)$ falls below **90% of the baseline zero-noise Mutual Information**. This provides an empirical bound on the temporal resolution required to capture the majority of the available information.

@@ -9,13 +9,11 @@ import numpy as np
 
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.models.embeddings import MLP, VarMLP, BaseEmbedding, CNN1D, GRU, LSTM, TCN, Transformer
-from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, BilinearCritic, ConcatCriticCNN
+from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
 from neural_mi.logger import logger
 
 def get_device(device_str: Optional[str] = None) -> torch.device:
-    """
-    Selects the appropriate device, including 'mps' for Apple Silicon.
-    """
+    """Selects the appropriate device, including 'mps' for Apple Silicon."""
     if device_str:
         return torch.device(device_str)
     if torch.cuda.is_available():
@@ -27,8 +25,16 @@ def get_device(device_str: Optional[str] = None) -> torch.device:
 def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str) -> tuple:
     """Shifts y_data relative to x_data based on the specified lag."""
     if processor_type in ['continuous', 'categorical']:
-        if not isinstance(x_data, np.ndarray): x_data = np.array(x_data)
-        if not isinstance(y_data, np.ndarray): y_data = np.array(y_data)
+        # Handle PyTorch tensors explicitly to avoid NumPy 2.0 deprecation warnings
+        if torch.is_tensor(x_data): 
+            x_data = x_data.detach().cpu().numpy()
+        elif not isinstance(x_data, np.ndarray): 
+            x_data = np.array(x_data)
+            
+        if torch.is_tensor(y_data): 
+            y_data = y_data.detach().cpu().numpy()
+        elif not isinstance(y_data, np.ndarray): 
+            y_data = np.array(y_data)
         
         if lag == 0:
             return x_data, y_data
@@ -51,19 +57,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     hidden_dim, n_layers = embedding_params['hidden_dim'], embedding_params['n_layers']
     embed_dim = embedding_params['embedding_dim']
     max_n_batches = embedding_params.get('max_n_batches', 512)
-
-    if critic_type == 'concat_cnn':
-        if model_type != 'cnn':
-            raise ValueError("critic_type='concat_cnn' requires embedding_model='cnn'.")
-        
-        kernel_size = embedding_params.get('kernel_size', 7)
-        cnn_x = CNN1D(embedding_params['n_channels_x'], hidden_dim, embed_dim, n_layers, kernel_size=kernel_size)
-        cnn_y = CNN1D(embedding_params['n_channels_y'], hidden_dim, embed_dim, n_layers, kernel_size=kernel_size)
-        
-        decision_head_input_dim = cnn_x.embed_dim + cnn_y.embed_dim
-        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=hidden_dim, 
-                            embed_dim=1, n_layers=max(1, n_layers - 1))
-        return ConcatCriticCNN(cnn_x, cnn_y, decision_head)
 
     # --- Model Selection Logic ---
     if custom_embedding_cls:
@@ -112,30 +105,53 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # --- Critic Assembly ---
     if critic_type == 'separable':
         return SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y, **critic_kwargs)
-    elif critic_type == 'bilinear':
-        return BilinearCritic(embedding_net_x=net_x, embedding_net_y=net_y, **critic_kwargs)
+    elif critic_type == 'hybrid':
+        decision_head_input_dim = embed_dim * 2
+        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=hidden_dim, embed_dim=1, n_layers=max(1, n_layers - 1))
+        return HybridCritic(embedding_net_x=net_x, embedding_net_y=net_y, decision_head=decision_head, **critic_kwargs)
     elif critic_type == 'concat':
-        concat_input_dim = embedding_params['input_dim_x'] + embedding_params['input_dim_y']
-        concat_net = MLP(concat_input_dim, hidden_dim, 1, n_layers)
-        return ConcatCritic(concat_net, **critic_kwargs)
+        concat_input_dim = input_dim_x + input_dim_y
+        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=hidden_dim, embed_dim=1, n_layers=n_layers)
+        return ConcatCritic(embedding_net=concat_net, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
 
 
+def compute_cross_covariance_spectrum(zx: torch.Tensor, zy: torch.Tensor) -> np.ndarray:
+    """Computes the singular values of the cross-covariance matrix of embeddings."""
+    zx = zx - zx.mean(dim=0, keepdim=True)
+    zy = zy - zy.mean(dim=0, keepdim=True)
+    
+    N = zx.size(0)
+    if N <= 1:
+        return np.array([])
+        
+    # Perform matmul on CPU to save VRAM for large embedding sets
+    cov_xy = torch.matmul(zx.cpu().T, zy.cpu()) / (N - 1)
+    _, s_xy, _ = torch.linalg.svd(cov_xy)
+    
+    return s_xy.numpy()
 
+def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[str, float]:
+    """Computes dimensionality metrics from singular values."""
+    s = np.array(spectrum)
+    s = s[s > eps]
+    
+    metrics = {}
+    
+    # 1. Variance/Energy-based PR
+    lam = s**2
+    metrics["pr_covariance"] = (lam.sum())**2 / (lam**2).sum() if lam.sum() > 0 else 0.0
 
-def find_saturation_point(summary_df: pd.DataFrame, param_col: str = 'embedding_dim', 
-                            mean_col: str = 'mi_mean', std_col: str = 'mi_std', 
-                            strictness: Union[List[float], float] = 1.0) -> Dict[float, Any]:
-    if not isinstance(strictness, list): strictness = [strictness]
-    df = summary_df.sort_values(param_col).reset_index()
-    mi_diff = df[mean_col].diff().to_numpy()
-    estimated_dims = {}
-    for s in strictness:
-        saturation_indices = np.where(mi_diff[1:] < (s * df[std_col].iloc[1:]))[0]
-        if len(saturation_indices) > 0:
-            saturation_dim = df[param_col].iloc[saturation_indices[0] + 1]
-        else:
-            saturation_dim = df[param_col].max()
-        estimated_dims[s] = saturation_dim
-    return estimated_dims
+    # 2. "Soft" PR (Based on Singular Values)
+    metrics["pr_singular"] = (s.sum())**2 / (s**2).sum() if s.sum() > 0 else 0.0
+
+    # 3. Effective Rank
+    if s.sum() > 0:
+        p = s / s.sum()
+        entropy = -np.sum(p * np.log(p))
+        metrics["effective_rank"] = np.exp(entropy)
+    else:
+        metrics["effective_rank"] = 0.0
+    
+    return metrics

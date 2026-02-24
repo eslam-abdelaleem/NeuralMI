@@ -10,6 +10,5 @@ from .embeddings import (
     GRU, LSTM, TCN, Transformer
 )
 from .critics import (
-    SeparableCritic, ConcatCritic, BaseCritic, 
-    BilinearCritic, ConcatCriticCNN
+    SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
 )

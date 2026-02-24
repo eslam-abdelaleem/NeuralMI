@@ -1,8 +1,9 @@
 # tests/test_utils.py
 import pytest
 import torch
-from neural_mi.utils import get_device, build_critic # Import build_critic
-from neural_mi.models.critics import BilinearCritic, ConcatCritic, ConcatCriticCNN
+import numpy as np
+from neural_mi.utils import get_device, build_critic, compute_cross_covariance_spectrum, compute_spectral_metrics
+from neural_mi.models.critics import SeparableCritic, ConcatCritic, HybridCritic
 
 # A list of all device types we want to test
 DEVICES = ["cuda", "mps", "cpu"]
@@ -44,18 +45,54 @@ DUMMY_EMBEDDING_PARAMS = {
     'window_size': 5
 }
 
-def test_build_critic_bilinear():
-    critic = build_critic('bilinear', DUMMY_EMBEDDING_PARAMS)
-    assert isinstance(critic, BilinearCritic)
-
 def test_build_critic_concat():
     critic = build_critic('concat', DUMMY_EMBEDDING_PARAMS)
     assert isinstance(critic, ConcatCritic)
 
-def test_build_critic_cnn_fails_with_mlp():
-    with pytest.raises(ValueError):
-        build_critic('concat_cnn', {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'mlp'})
 
-def test_build_critic_concat_cnn():
-    critic = build_critic('concat_cnn', {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'cnn'})
-    assert isinstance(critic, ConcatCriticCNN)
+def test_build_critic_separable():
+    critic = build_critic('separable', DUMMY_EMBEDDING_PARAMS)
+    assert isinstance(critic, SeparableCritic)
+
+def test_build_critic_hybrid():
+    critic = build_critic('hybrid', DUMMY_EMBEDDING_PARAMS)
+    assert isinstance(critic, HybridCritic)
+
+# --- Spectral Metric Tests ---
+def test_cross_covariance_spectrum_shape_and_values():
+    """Test that SVD extracts correct singular values from embeddings."""
+    # Create two identical embeddings (perfect correlation)
+    zx = torch.randn(100, 10)
+    zy = zx.clone()
+    
+    spectrum = compute_cross_covariance_spectrum(zx, zy)
+    
+    # 1. Output should be a numpy array
+    assert isinstance(spectrum, np.ndarray)
+    
+    # 2. Maximum possible singular values is the bottleneck dimension (10)
+    assert len(spectrum) == 10
+    
+    # 3. Singular values should be non-negative and sorted descendingly
+    assert np.all(spectrum >= -1e-7)  # allow tiny numerical noise
+    assert np.all(np.diff(spectrum) <= 1e-7)
+
+def test_spectral_metrics_single_dimension():
+    """Test metrics when only 1 dimension is utilized (perfectly concentrated)."""
+    # A spectrum where all energy is in the first dimension
+    spectrum = np.array([10.0, 0.0, 0.0, 0.0])
+    metrics = compute_spectral_metrics(spectrum)
+    
+    assert np.isclose(metrics['pr_singular'], 1.0)
+    assert np.isclose(metrics['pr_covariance'], 1.0)
+    assert np.isclose(metrics['effective_rank'], 1.0)
+
+def test_spectral_metrics_uniform_dimensions():
+    """Test metrics when all dimensions are utilized equally."""
+    # A spectrum where energy is perfectly distributed across 4 dimensions
+    spectrum = np.array([2.0, 2.0, 2.0, 2.0])
+    metrics = compute_spectral_metrics(spectrum)
+    
+    assert np.isclose(metrics['pr_singular'], 4.0)
+    assert np.isclose(metrics['pr_covariance'], 4.0)
+    assert np.isclose(metrics['effective_rank'], 4.0)

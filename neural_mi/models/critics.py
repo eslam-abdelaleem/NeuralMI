@@ -16,11 +16,8 @@ class BaseCritic(nn.Module):
     All critic models should inherit from this class. The main role of a critic
     is to produce a score matrix indicating the relationship between pairs of
     samples from two variables, X and Y.
-
-    The `forward` method must be implemented by all subclasses.
     """
     def __init__(self):
-        """Initializes the BaseCritic."""
         super().__init__()
         
     def _get_embeddings_and_kl(self, x_out: any, y_out: any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -41,81 +38,74 @@ class BaseCritic(nn.Module):
         total_kl_loss = kl_loss_x + kl_loss_y
         return x_embedded, y_embedded, total_kl_loss
 
+    def _compute_embeddings_chunked(self, x: torch.Tensor, y: torch.Tensor, 
+                                    net_x: nn.Module, net_y: nn.Module, 
+                                    max_n_batches: int, use_variational: bool) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Computes embeddings efficiently, handling chunking and proper variational loss weighting."""
+        batch_size = x.shape[0]
+        
+        # Fast path for small datasets
+        if batch_size <= max_n_batches:
+            x_out = net_x(x)
+            y_out = net_y(y)
+            return self._get_embeddings_and_kl(x_out, y_out)
+            
+        # Chunked processing to prevent OOM
+        x_embeds, y_embeds = [], []
+        total_kl = 0.0
+        
+        for i in range(0, batch_size, max_n_batches):
+            end_idx = min(i + max_n_batches, batch_size)
+            chunk_size = end_idx - i
+            weight = chunk_size / batch_size  # Size-weighted average for unbiased KL
+            
+            x_out = net_x(x[i:end_idx])
+            y_out = net_y(y[i:end_idx])
+            
+            x_emb, y_emb, kl = self._get_embeddings_and_kl(x_out, y_out)
+            
+            x_embeds.append(x_emb)
+            y_embeds.append(y_emb)
+            
+            if use_variational:
+                total_kl += kl * weight
+                
+        x_embedded = torch.cat(x_embeds, dim=0)
+        y_embedded = torch.cat(y_embeds, dim=0)
+        
+        if not use_variational or isinstance(total_kl, float):
+            total_kl = torch.tensor(0.0, device=x_embedded.device)
+            
+        return x_embedded, y_embedded, total_kl
+    
+    def get_embeddings(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Public API to extract chunked embeddings from a trained critic."""
+        # Unpack the embedding networks depending on the critic type
+        if hasattr(self, 'embedding_net_x'):
+            net_x, net_y = self.embedding_net_x, self.embedding_net_y
+        else:
+            # Fallback for ConcatCritic which only has one joint network
+            # (Though extracting separate embeddings from pure Concat is non-trivial)
+            return x, y 
+            
+        max_n = getattr(self, 'max_n_batches', 512)
+        use_var = getattr(self, 'use_variational', False)
+        
+        zx, zy, _ = self._compute_embeddings_chunked(x, y, net_x, net_y, max_n, use_var)
+        return zx, zy
+
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Computes the score matrix for batches of samples from X and Y.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            A batch of samples from the first variable, with shape (batch_size, ...).
-        y : torch.Tensor
-            A batch of samples from the second variable, with shape (batch_size, ...).
-
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor]
-            A tuple containing:
-            - **scores** (*torch.Tensor*): A `(batch_size, batch_size)` tensor
-              where `scores[i, j]` is the critic's output for the pair `(x[i], y[j])`.
-            - **kl_loss** (*torch.Tensor*): A scalar tensor representing the sum
-              of KL divergence losses from any variational embedding models used.
-              Returns 0.0 if no variational models are used.
-
-        Raises
-        ------
-        NotImplementedError
-            This is an abstract method and must be implemented by subclasses.
-        """
         raise NotImplementedError
 
 class SeparableCritic(BaseCritic):
-    """A critic with a separable architecture based on a dot product.
-
-    This critic computes embeddings for each sample from X and Y independently
-    using two embedding networks, `g` and `h`. The score for each pair
-    `(x_i, y_j)` is then calculated as the dot product of their embeddings:
-    `f(x, y) = g(x)^T h(y)`.
-
-    This is one of the most common and computationally efficient critic architectures.
-
-    Attributes
-    ----------
-    embedding_net_x : nn.Module
-        The network `g` used to embed samples from X.
-    embedding_net_y : nn.Module
-        The network `h` used to embed samples from Y. If not provided,
-        `embedding_net_x` is used for both (a shared embedding network).
-    embed_dim : int
-        The dimension of the embedding vectors produced by the embedding networks.
-    max_n_batches : int
-        Maximum number of input batches before chunking is performed instead of single pass
-    use_variational : bool
-            Whether using variational embedding_net or not
-    """
+    """A critic with a separable architecture based on a dot product."""
     def __init__(self, 
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
-                 embed_dim : int = None, 
-                 max_n_batches : int = 512, 
-                 use_variational : bool = False,
-                 **kwargs
-        ):
-        """
-        Parameters
-        ----------
-        embedding_net_x : nn.Module
-            The network used to embed samples from X.
-        embedding_net_y : nn.Module, optional
-            The network used to embed samples from Y. If None, a single network
-            is shared for both variables. Defaults to None.
-        embed_dim : int
-            The dimension of the embedding vectors produced by the embedding networks.
-        max_n_batches : int, optional
-            Maximum number of input batches before chunking is performed instead of single pass
-        use_variational : bool
-            Whether using variational embedding_net or not
-        
-        """
+                 embed_dim: int = None, 
+                 max_n_batches: int = 512, 
+                 use_variational: bool = False,
+                 **kwargs):
         super().__init__()
         self.embedding_net_x = embedding_net_x
         self.embedding_net_y = embedding_net_y or embedding_net_x
@@ -124,178 +114,70 @@ class SeparableCritic(BaseCritic):
         self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Computes scores via dot product of embeddings.
-
-        If the embedding networks are variational (e.g., `VarMLP`), this method
-        unpacks the returned tuple `(embedding, kl_loss)` and sums the KL losses.
-        """
-        # If input is larger than max_n_batches, run as smaller batches to avoid out-of-memory issues
-        batch_size = x.shape[0]
-        if batch_size > self.max_n_batches:
-            # If forward returns a tuple (variational), operate differently
-            if self.use_variational:
-                n_loss_terms = batch_size // self.max_n_batches + 1
-                x_embed = torch.zeros(batch_size, self.embed_dim, device=x.device)
-                y_embed = torch.zeros(batch_size, self.embed_dim, device=y.device)#, torch.zeros(n_loss_terms, device=y.device))
-                x_loss = torch.zeros(n_loss_terms, device=x.device)
-                y_loss = torch.zeros(n_loss_terms, device=y.device)
-                for ind,i in enumerate(range(0, batch_size, self.max_n_batches)):
-                    end_idx = min(i + self.max_n_batches, batch_size)
-                    x_embed[0][i:end_idx,:], x_loss[ind] = self.embedding_net_x(x[i:end_idx,...])
-                    y_embed[0][i:end_idx,:], y_loss[ind] = self.embedding_net_y(y[i:end_idx,...])
-                # TODO: TAKING A MEAN IS PROBABLY WRONG
-                x_out = (x_embed, torch.mean(x_loss))
-                y_out = (x_embed, torch.mean(y_loss))
-            else:
-                x_out = torch.zeros(batch_size, self.embed_dim, device=x.device)
-                y_out = torch.zeros(batch_size, self.embed_dim, device=y.device)
-                for i in range(0, batch_size, self.max_n_batches):
-                    end_idx = min(i + self.max_n_batches, batch_size)
-                    x_out[i:end_idx,:] = self.embedding_net_x(x[i:end_idx,...])
-                    y_out[i:end_idx,:] = self.embedding_net_y(y[i:end_idx,...])
-        # Otherwise just run embedding networks normally
-        else:
-            x_out = self.embedding_net_x(x)
-            y_out = self.embedding_net_y(y)
-
-        x_embedded, y_embedded, total_kl_loss = self._get_embeddings_and_kl(x_out, y_out)
-
+        x_embedded, y_embedded, total_kl_loss = self._compute_embeddings_chunked(
+            x, y, self.embedding_net_x, self.embedding_net_y, 
+            self.max_n_batches, self.use_variational
+        )
         scores = torch.matmul(x_embedded, y_embedded.t())
         return scores, total_kl_loss
 
-class BilinearCritic(BaseCritic):
-    """A critic using two embedding networks and a learnable bilinear layer.
-
-    This architecture allows for a more powerful, learnable interaction between
-    the embeddings of X and Y compared to a simple dot product. The score is
-    computed as `f(x, y) = g(x)^T W h(y)`, where `g` and `h` are the
-    embedding networks and `W` is a learnable matrix.
-
-    Attributes
-    ----------
-    embedding_net_x : nn.Module
-        The network `g` used to embed samples from X.
-    embedding_net_y : nn.Module
-        The network `h` used to embed samples from Y.
-    similarity_layer : nn.Bilinear
-        The learnable bilinear layer `W` that computes the similarity score.
-    embed_dim : int
-        The dimension of the embedding vectors produced by the embedding networks.
-    max_n_batches : int
-        Maximum number of input batches before chunking is performed instead of single pass
-    use_variational : bool
-        Whether using variational embedding_net or not
+class HybridCritic(BaseCritic):
+    """A hybrid critic that embeds inputs independently, then scores their concatenation.
+    
+    Combines the computational efficiency of the SeparableCritic's independent 
+    embeddings with the expressive interaction of the ConcatCritic.
     """
     def __init__(self, 
-                 embedding_net_x: nn.Module,
-                 embedding_net_y: nn.Module,
-                 embed_dim : int = None, 
-                 max_n_batches : int = 512, 
-                 use_variational : bool = False,
-                 **kwargs
-        ):
-        """
-        Parameters
-        ----------
-        embedding_net_x : nn.Module
-            The network used to embed samples from X.
-        embedding_net_y : nn.Module
-            The network used to embed samples from Y.
-        embed_dim : int
-            The dimension of the embedding vectors produced by the embedding networks.
-        max_n_batches : int
-            Maximum number of input batches before chunking is performed instead of single pass
-        use_variational : bool
-            Whether using variational embedding_net or not
-        """
+                 embedding_net_x: nn.Module, *, 
+                 embedding_net_y: Optional[nn.Module] = None,
+                 decision_head: nn.Module,
+                 embed_dim: int = None, 
+                 max_n_batches: int = 512, 
+                 use_variational: bool = False,
+                 **kwargs):
         super().__init__()
         self.embedding_net_x = embedding_net_x
-        self.embedding_net_y = embedding_net_y
-        self.similarity_layer = nn.Bilinear(embed_dim, embed_dim, 1)
+        self.embedding_net_y = embedding_net_y or embedding_net_x
+        self.decision_head = decision_head
         self.embed_dim = embed_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # If input is larger than max_n_batches, run as smaller batches to avoid out-of-memory issues
-        batch_size = x.shape[0]
-        if batch_size > self.max_n_batches:
-            # If forward returns a tuple (variational), operate differently
-            if self.use_variational:
-                n_loss_terms = batch_size // self.max_n_batches + 1
-                x_embed = torch.zeros(batch_size, self.embed_dim, device=x.device)
-                y_embed = torch.zeros(batch_size, self.embed_dim, device=y.device)#, torch.zeros(n_loss_terms, device=y.device))
-                x_loss = torch.zeros(n_loss_terms, device=x.device)
-                y_loss = torch.zeros(n_loss_terms, device=y.device)
-                for ind,i in enumerate(range(0, batch_size, self.max_n_batches)):
-                    end_idx = min(i + self.max_n_batches, batch_size)
-                    x_embed[0][i:end_idx,:], x_loss[ind] = self.embedding_net_x(x[i:end_idx,...])
-                    y_embed[0][i:end_idx,:], y_loss[ind] = self.embedding_net_y(y[i:end_idx,...])
-                # TODO: TAKING A MEAN IS PROBABLY WRONG
-                x_out = (x_embed, torch.mean(x_loss))
-                y_out = (x_embed, torch.mean(y_loss))
-            else:
-                x_out = torch.zeros(batch_size, self.embed_dim, device=x.device)
-                y_out = torch.zeros(batch_size, self.embed_dim, device=y.device)
-                for i in range(0, batch_size, self.max_n_batches):
-                    end_idx = min(i + self.max_n_batches, batch_size)
-                    x_out[i:end_idx,:] = self.embedding_net_x(x[i:end_idx,...])
-                    y_out[i:end_idx,:] = self.embedding_net_y(y[i:end_idx,...])
-        # Otherwise just run embedding networks normally
-        else:
-            x_out = self.embedding_net_x(x)
-            y_out = self.embedding_net_y(y)
-
-        x_embedded, y_embedded, total_kl_loss = self._get_embeddings_and_kl(x_out, y_out)
+        batch_size = x.size(0)
         
-        # Create all pairs of embeddings (x_i, y_j)
-        x_tiled = x_embedded.repeat_interleave(batch_size, dim=0)
-        y_tiled = y_embedded.repeat(batch_size, 1)
+        # 1. Embed inputs using the efficient chunked method
+        x_embedded, y_embedded, total_kl_loss = self._compute_embeddings_chunked(
+            x, y, self.embedding_net_x, self.embedding_net_y, 
+            self.max_n_batches, self.use_variational
+        )
         
-        scores = self.similarity_layer(x_tiled, y_tiled)
+        # 2. Compute the N^2 score matrix safely by generating pairs dynamically
+        scores = torch.zeros(batch_size * batch_size, device=x_embedded.device)
+        pair_batch_size = self.max_n_batches
+        
+        for i in range(0, batch_size * batch_size, pair_batch_size):
+            end_idx = min(i + pair_batch_size, batch_size * batch_size)
+            
+            # Map flat index back to row (x) and column (y)
+            idx = torch.arange(i, end_idx, device=x_embedded.device)
+            row_idx = idx // batch_size
+            col_idx = idx % batch_size
+            
+            pairs = torch.cat([x_embedded[row_idx], y_embedded[col_idx]], dim=1)
+            chunk_scores = self.decision_head(pairs).squeeze()
+            scores[i:end_idx] = chunk_scores
+            
         return scores.view(batch_size, batch_size), total_kl_loss
 
-        
 class ConcatCritic(BaseCritic):
-    """A critic that processes concatenated input pairs.
-
-    This critic flattens and concatenates each pair of samples `(x_i, y_j)`
-    and feeds the resulting vector into a single, shared network to produce a
-    scalar score. This allows the critic to learn a joint function over the
-    raw input spaces of X and Y.
-
-    Attributes
-    ----------
-    embedding_net : nn.Module
-        The shared network that processes the concatenated input pairs.
-    embed_dim : int
-        The dimension of the embedding vectors produced by the embedding networks.
-    max_n_batches : int
-        Maximum number of input batches before chunking is performed instead of single pass
-    use_variational : bool
-        Whether using variational embedding_net or not
-    """
+    """A critic that processes raw concatenated input pairs."""
     def __init__(self, 
                  embedding_net: nn.Module,
-                 embed_dim : int = None, 
-                 max_n_batches : int = 512, 
-                 use_variational : bool = False,
-                 **kwargs
-        ):
-        """
-        Parameters
-        ----------
-        embedding_net : nn.Module
-            The shared network that takes the concatenated `(x, y)` pair and
-            outputs a scalar score. Its input dimension must match the sum of
-            the flattened dimensions of x and y.
-        embed_dim : int
-            The dimension of the embedding vectors produced by the embedding networks.
-        max_n_batches : int
-            Maximum number of input batches before chunking is performed instead of single pass
-        use_variational : bool
-            Whether using variational embedding_net or not
-        """
+                 embed_dim: int = None, 
+                 max_n_batches: int = 512, 
+                 use_variational: bool = False,
+                 **kwargs):
         super().__init__()
         self.embedding_net = embedding_net
         self.embed_dim = embed_dim
@@ -303,162 +185,32 @@ class ConcatCritic(BaseCritic):
         self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Computes scores by applying a network to all `(x, y)` pairs."""
         batch_size = x.size(0)
         x_flat, y_flat = x.view(batch_size, -1), y.view(batch_size, -1)
-        x_tiled = x_flat.repeat_interleave(batch_size, dim=0)
-        y_tiled = y_flat.repeat(batch_size, 1)
-        xy_pairs = torch.cat((x_tiled, y_tiled), dim=1)
         
-        # If input is larger than max_n_batches, run as smaller batches to avoid out-of-memory issues
-        if batch_size > self.max_n_batches:
-            # If forward returns a tuple (variational), operate differently
-            if self.use_variational:
-                n_loss_terms = batch_size // self.max_n_batches + 1
-                x_embed = torch.zeros(batch_size, self.embed_dim, device=x.device)
-                y_embed = torch.zeros(batch_size, self.embed_dim, device=y.device)#, torch.zeros(n_loss_terms, device=y.device))
-                x_loss = torch.zeros(n_loss_terms, device=x.device)
-                y_loss = torch.zeros(n_loss_terms, device=y.device)
-                for ind,i in enumerate(range(0, batch_size, self.max_n_batches)):
-                    end_idx = min(i + self.max_n_batches, batch_size)
-                    x_embed[0][i:end_idx,:], x_loss[ind] = self.embedding_net_x(x[i:end_idx,...])
-                    y_embed[0][i:end_idx,:], y_loss[ind] = self.embedding_net_y(y[i:end_idx,...])
-                # TODO: TAKING A MEAN IS PROBABLY WRONG
-                x_out = (x_embed, torch.mean(x_loss))
-                y_out = (x_embed, torch.mean(y_loss))
-            else:
-                x_out = torch.zeros(batch_size, self.embed_dim, device=x.device)
-                y_out = torch.zeros(batch_size, self.embed_dim, device=y.device)
-                for i in range(0, batch_size, self.max_n_batches):
-                    end_idx = min(i + self.max_n_batches, batch_size)
-                    x_out[i:end_idx,:] = self.embedding_net_x(x[i:end_idx,...])
-                    y_out[i:end_idx,:] = self.embedding_net_y(y[i:end_idx,...])
-        # Otherwise just run embedding networks normally
-        else:
-            out = self.embedding_net(xy_pairs)
-        if isinstance(out, tuple):
-            scores, kl_loss = out
-        else:
-            scores = out
-            kl_loss = torch.tensor(0.0, device=scores.device)
+        scores = torch.zeros(batch_size * batch_size, device=x.device)
+        total_kl = 0.0
+        
+        pair_batch_size = self.max_n_batches
+        
+        for i in range(0, batch_size * batch_size, pair_batch_size):
+            end_idx = min(i + pair_batch_size, batch_size * batch_size)
             
-        return scores.view(batch_size, batch_size), kl_loss
-
-# class ConcatCriticCNN(BaseCritic):
-#     """A critic for CNNs that concatenates feature maps from two towers.
-
-#     This critic is designed for structured sequential data (e.g., time series).
-#     It uses two separate CNN feature extractors (towers) to process inputs
-#     from X and Y. The resulting feature maps are then concatenated and passed
-#     to a final decision head to produce a score.
-
-#     Note that this critic operates on the *feature maps* produced by the
-#     convolutional layers, not on final embedding vectors. This allows the
-#     decision head to learn interactions between the spatial/temporal features
-#     of the two inputs.
-
-#     Attributes
-#     ----------
-#     cnn_x : nn.Module
-#         The CNN feature extractor for samples from X.
-#     cnn_y : nn.Module
-#         The CNN feature extractor for samples from Y.
-#     decision_head : nn.Module
-#         The final network that takes the concatenated feature maps and outputs
-#         a scalar score.
-#     """
-#     def __init__(self, cnn_x: nn.Module, cnn_y: nn.Module, decision_head: nn.Module):
-#         """
-#         Parameters
-#         ----------
-#         cnn_x : nn.Module
-#             The CNN-based embedding network for samples from X.
-#         cnn_y : nn.Module
-#             The CNN-based embedding network for samples from Y.
-#         decision_head : nn.Module
-#             The final network that takes the concatenated embeddings and outputs a score.
-#         """
-#         super().__init__()
-#         self.cnn_x = cnn_x
-#         self.cnn_y = cnn_y
-#         self.decision_head = decision_head
-        
-#     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-#         batch_size = x.size(0)
-        
-#         # Create all pairs of windows (x_i, y_j)
-#         x_tiled = x.repeat_interleave(batch_size, dim=0)
-#         # y is tiled to match x_tiled. For each x_i, we need all y_j.
-#         y_tiled = y.repeat(batch_size, 1, 1)
-
-#         # Extract features with the CNNs
-#         features_x = self.cnn_x(x_tiled)
-#         features_y = self.cnn_y(y_tiled)
-        
-#         # Concatenate the output embedding vectors
-#         combined_features = torch.cat([features_x, features_y], dim=1)
-        
-#         # Pass through the final decision head
-#         scores = self.decision_head(combined_features)
-        
-#         return scores.view(batch_size, batch_size), torch.tensor(0.0, device=scores.device)
-
-# A more efficient version
-class ConcatCriticCNN(BaseCritic):
-    """A critic for CNNs that concatenates embeddings from two towers.
-
-    This critic is designed for structured sequential data (e.g., time series).
-    It uses two separate CNN feature extractors (towers) to process inputs
-    from X and Y, creating an embedding for each sample. The resulting
-    embedding vectors are then concatenated and passed to a final decision
-    head to produce a score.
-
-    This "siamese" or "two-tower" approach is computationally efficient as it
-    runs the expensive CNN operation only once per batch element.
-
-    Attributes
-    ----------
-    cnn_x : nn.Module
-        The CNN embedding network for samples from X.
-    cnn_y : nn.Module
-        The CNN embedding network for samples from Y.
-    decision_head : nn.Module
-        The final network that takes the concatenated embeddings and outputs
-        a scalar score.
-    """
-    def __init__(self, cnn_x: nn.Module, cnn_y: nn.Module, decision_head: nn.Module):
-        """
-        Parameters
-        ----------
-        cnn_x : nn.Module
-            The CNN-based embedding network for samples from X.
-        cnn_y : nn.Module
-            The CNN-based embedding network for samples from Y.
-        decision_head : nn.Module
-            The final network that takes the concatenated embeddings and outputs a score.
-        """
-        super().__init__()
-        self.cnn_x = cnn_x
-        self.cnn_y = cnn_y
-        self.decision_head = decision_head
-
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Computes scores by applying a decision head to all pairs of embeddings."""
-        batch_size = x.size(0)
-
-        # 1. Get embeddings for each batch element (computationally efficient)
-        # These calls now return (embedding, kl_loss) tuples if using VarCNN
-        x_out = self.cnn_x(x)
-        y_out = self.cnn_y(y)
-
-        x_embedded, y_embedded, total_kl_loss = self._get_embeddings_and_kl(x_out, y_out)
-        
-        # 2. Create all pairs of embeddings for the decision head
-        x_tiled = x_embedded.repeat_interleave(batch_size, dim=0)
-        y_tiled = y_embedded.repeat(batch_size, 1)
-
-        # 3. Concatenate and get scores
-        combined_features = torch.cat([x_tiled, y_tiled], dim=1)
-        scores = self.decision_head(combined_features)
-        
-        return scores.view(batch_size, batch_size), total_kl_loss
+            idx = torch.arange(i, end_idx, device=x.device)
+            row_idx = idx // batch_size
+            col_idx = idx % batch_size
+            
+            pairs = torch.cat([x_flat[row_idx], y_flat[col_idx]], dim=1)
+            out = self.embedding_net(pairs)
+            
+            if isinstance(out, tuple):
+                chunk_scores, kl = out
+                weight = (end_idx - i) / (batch_size * batch_size)
+                total_kl += kl * weight
+            else:
+                chunk_scores = out
+                
+            scores[i:end_idx] = chunk_scores.squeeze()
+            
+        kl_tensor = torch.tensor(total_kl, device=x.device) if isinstance(total_kl, float) else total_kl
+        return scores.view(batch_size, batch_size), kl_tensor

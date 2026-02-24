@@ -7,6 +7,7 @@ parallel across a grid of hyperparameters.
 import torch
 import itertools
 import uuid
+import os
 import torch.multiprocessing as mp
 import numpy as np
 from tqdm.auto import tqdm
@@ -97,8 +98,18 @@ class ParameterSweep:
         for i_combo, params in enumerate(param_combinations):
             current_params = {**self.base_params, **params}
             
+            # --- SMART MODEL SAVING LOGIC ---
+            base_save_path = current_params.get('save_best_model_path')
+            if base_save_path and params:
+                root, ext = os.path.splitext(base_save_path)
+                # Create a clean suffix from the parameters being swept
+                suffix = "_" + "_".join([f"{str(k)}_{str(v)}" for k, v in params.items()])
+                # Remove spaces or problematic characters if any exist in the values
+                suffix = suffix.replace(" ", "")
+                current_params['save_best_model_path'] = f"{root}{suffix}{ext}"
+            # --------------------------------
+            
             # Initialize from base_params, then update from kwargs (if any), then sweep params
-            # Handle potential None from get()
             task_processor_params_x = (self.base_params.get('processor_params_x') or {}).copy()
             if 'processor_params_x' in kwargs:
                 task_processor_params_x.update(kwargs['processor_params_x'])
@@ -125,7 +136,6 @@ class ParameterSweep:
                 task_data_x, task_data_y = x_to_send, y_to_send
 
             task_run_id = f"{run_id_base}_c{i_combo}"
-            # Option 1: Put data into dataset right here
             tasks.append((task_data_x, task_data_y, current_params.copy(), task_run_id))
         
         logger.debug(f"Created {len(tasks)} tasks for the sweep.")
@@ -133,36 +143,7 @@ class ParameterSweep:
 
     def run(self, sweep_grid: Dict[str, List], is_proc_sweep: bool = False, n_workers: Optional[int] = None,
             max_samples_per_task: Optional[int] = None, **kwargs) -> List[Dict[str, Any]]:
-        """Executes the hyperparameter sweep in parallel.
-
-        This method generates a list of training tasks based on the Cartesian
-        product of the `sweep_grid` parameters and distributes them to a pool
-        of worker processes.
-
-        Parameters
-        ----------
-        sweep_grid : Dict[str, List]
-            A dictionary defining the parameter grid to sweep over.
-        is_proc_sweep : bool, optional
-            If True, indicates that a data processor parameter is being swept,
-            meaning data processing must be deferred to the individual workers.
-            Defaults to False.
-        n_workers : int, optional
-            The number of worker processes to use. If None, it defaults to 1 (sequential).
-        max_samples_per_task : int, optional
-            The maximum number of samples to use for each individual training
-            task. If the dataset is larger, it will be randomly subsampled.
-            This is useful for quick sweeps on large datasets. Defaults to None.
-        **kwargs : Dict[str, Any]
-            Additional keyword arguments to be passed to the task preparation.
-
-        Returns
-        -------
-        List[Dict[str, Any]]
-            A list of result dictionaries, with each dictionary containing the
-            parameters and MI estimates for a single run in the sweep.
-        """
-        
+        """Executes the hyperparameter sweep in parallel."""
         tasks = self._prepare_tasks(sweep_grid, is_proc_sweep, max_samples_per_task, **kwargs)
         results = self._run_parallel(tasks, n_workers)
         logger.info("Parameter sweep finished.")

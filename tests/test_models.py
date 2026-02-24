@@ -1,12 +1,12 @@
 """Tests for the models in neural_mi."""
 
 import torch
+import torch.nn as nn
 import pytest
 from neural_mi.models.critics import (
     SeparableCritic,
-    BilinearCritic,
     ConcatCritic,
-    ConcatCriticCNN,
+    HybridCritic,
 )
 from neural_mi.models.embeddings import (
     MLP,
@@ -71,11 +71,9 @@ def test_varmlp_embedding(x_data):
 def test_varmlp_kl_loss(x_data):
     """Test the KL loss calculation in VarMLP."""
     var_mlp = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-    # Test in training mode
     var_mlp.train()
     _, kl_loss_train = var_mlp(x_data)
     assert kl_loss_train > 0.0
-    # Test in evaluation mode
     var_mlp.eval()
     _, kl_loss_eval = var_mlp(x_data)
     assert kl_loss_eval == 0.0
@@ -92,23 +90,23 @@ def test_separable_critic(x_data, y_data, mlp_embedding):
 def test_separable_critic_with_varmlp(x_data, y_data):
     """Test SeparableCritic with VarMLP returns a positive KL loss."""
     var_mlp = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-    critic = SeparableCritic(embedding_net_x=var_mlp)
+    critic = SeparableCritic(embedding_net_x=var_mlp, use_variational=True)
     critic.train()
     scores, kl_loss = critic(x_data, y_data)
     assert scores.shape == (10, 10)
     assert kl_loss > 0.0
 
-def test_bilinear_critic(x_data, y_data, mlp_embedding):
-    """Test the BilinearCritic returns a tuple (scores, kl_loss=0)."""
-    embedding_net_y = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-    critic = BilinearCritic(embedding_net_x=mlp_embedding, embedding_net_y=embedding_net_y, embed_dim=16)
+def test_hybrid_critic(x_data, y_data, mlp_embedding):
+    """Test the HybridCritic returns a tuple (scores, kl_loss=0)."""
+    decision_head = MLP(input_dim=32, hidden_dim=16, embed_dim=1, n_layers=1) # 16 from X + 16 from Y
+    critic = HybridCritic(embedding_net_x=mlp_embedding, decision_head=decision_head)
     scores, kl_loss = critic(x_data, y_data)
     assert scores.shape == (10, 10)
     assert kl_loss == 0.0
 
 def test_concat_critic(x_data, y_data):
     """Test the ConcatCritic returns a tuple (scores, kl_loss=0)."""
-    embedding_net = MLP(input_dim=64, hidden_dim=128, embed_dim=1, n_layers=2)
+    embedding_net = MLP(input_dim=64, hidden_dim=128, embed_dim=1, n_layers=2) # 32 from X + 32 from Y
     critic = ConcatCritic(embedding_net=embedding_net)
     scores, kl_loss = critic(x_data, y_data)
     assert scores.shape == (10, 10)
@@ -117,63 +115,80 @@ def test_concat_critic(x_data, y_data):
 def test_concat_critic_with_varmlp(x_data, y_data):
     """Test ConcatCritic with VarMLP returns a positive KL loss."""
     embedding_net = VarMLP(input_dim=64, hidden_dim=128, embed_dim=1, n_layers=2)
-    critic = ConcatCritic(embedding_net=embedding_net)
+    critic = ConcatCritic(embedding_net=embedding_net, use_variational=True)
     critic.train()
     scores, kl_loss = critic(x_data, y_data)
     assert scores.shape == (10, 10)
     assert kl_loss > 0.0
 
-def test_concat_critic_cnn(x_data_cnn, y_data_cnn, cnn1d_embedding):
-    """Test the ConcatCriticCNN returns a tuple (scores, kl_loss=0)."""
-    cnn_y = CNN1D(input_dim=1, hidden_dim=16, embed_dim=8, n_layers=2)
-    decision_head_input_dim = cnn1d_embedding.embed_dim + cnn_y.embed_dim
-    decision_head = MLP(
-        input_dim=decision_head_input_dim, hidden_dim=32, embed_dim=1, n_layers=1
-    )
-    critic = ConcatCriticCNN(cnn_x=cnn1d_embedding, cnn_y=cnn_y, decision_head=decision_head)
-    scores, kl_loss = critic(x_data_cnn, y_data_cnn)
-    assert scores.shape == (10, 10)
-    assert kl_loss == 0.0
+# --- Chunking Equivalency Tests ---
+
+@pytest.mark.parametrize("critic_type", ["Separable", "Hybrid"])
+def test_critic_chunking_equivalency(critic_type, x_data, y_data):
+    """Proves that chunked processing yields the EXACT same math as full-batch processing."""
+    net_x = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+    
+    # Force identical weights/seeds for deterministic output
+    net_x.eval() 
+    torch.manual_seed(42)
+
+    kwargs = {'embedding_net_x': net_x, 'use_variational': True}
+    
+    if critic_type == "Hybrid":
+        decision_head = MLP(input_dim=32, hidden_dim=16, embed_dim=1, n_layers=1)
+        decision_head.eval()
+        kwargs['decision_head'] = decision_head
+        critic_class = HybridCritic
+    else:
+        critic_class = SeparableCritic
+
+    # 1. Run without chunking (max_n_batches > batch_size)
+    critic_full = critic_class(**kwargs, max_n_batches=100)
+    scores_full, kl_full = critic_full(x_data, y_data)
+
+    # 2. Run with aggressive chunking (max_n_batches < batch_size)
+    critic_chunked = critic_class(**kwargs, max_n_batches=3)
+    scores_chunked, kl_chunked = critic_chunked(x_data, y_data)
+
+    # 3. Assert mathematical equivalence
+    assert torch.allclose(scores_full, scores_chunked, atol=1e-5), f"{critic_type} chunking altered the score matrix!"
+    assert torch.allclose(kl_full, kl_chunked, atol=1e-5), f"{critic_type} chunking altered the variational KL loss!"
 
 # --- Gradient Tests for Critics ---
 
 @pytest.fixture
-def critic_and_data(request, x_data, y_data, x_data_cnn, y_data_cnn):
+def critic_and_data(request, x_data, y_data):
     """Fixture to provide different critics and their corresponding data."""
     if request.param == "Separable":
         embedding_net = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
         critic = SeparableCritic(embedding_net_x=embedding_net)
         return critic, x_data, y_data
-    if request.param == "SeparableVarMLP":
+    elif request.param == "SeparableVarMLP":
         embedding_net = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-        critic = SeparableCritic(embedding_net_x=embedding_net)
+        critic = SeparableCritic(embedding_net_x=embedding_net, use_variational=True)
         return critic, x_data, y_data
-    elif request.param == "Bilinear":
-        embedding_net_x = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-        embedding_net_y = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-        critic = BilinearCritic(embedding_net_x=embedding_net_x, embedding_net_y=embedding_net_y, embed_dim=16)
+    elif request.param == "Hybrid":
+        embedding_net = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+        decision_head = MLP(input_dim=32, hidden_dim=16, embed_dim=1, n_layers=1)
+        critic = HybridCritic(embedding_net_x=embedding_net, decision_head=decision_head)
         return critic, x_data, y_data
     elif request.param == "Concat":
         embedding_net = MLP(input_dim=64, hidden_dim=128, embed_dim=1, n_layers=2)
         critic = ConcatCritic(embedding_net=embedding_net)
         return critic, x_data, y_data
-    elif request.param == "ConcatCNN":
-        cnn_x = CNN1D(input_dim=1, hidden_dim=16, embed_dim=8, n_layers=2)
-        cnn_y = CNN1D(input_dim=1, hidden_dim=16, embed_dim=8, n_layers=2)
-        decision_head_input_dim = cnn_x.embed_dim + cnn_y.embed_dim
-        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=32, embed_dim=1, n_layers=1)
-        critic = ConcatCriticCNN(cnn_x=cnn_x, cnn_y=cnn_y, decision_head=decision_head)
-        return critic, x_data_cnn, y_data_cnn
     return None
 
 @pytest.mark.parametrize(
     "critic_and_data",
-    ["Separable", "Bilinear", "Concat", "SeparableVarMLP", "ConcatCNN"],
+    ["Separable", "Hybrid", "Concat", "SeparableVarMLP"],
     indirect=True
 )
 def test_critic_gradients(critic_and_data):
     """Test that gradients are computed for all critic parameters."""
     critic, x, y = critic_and_data
+    if critic is None:
+        pytest.skip("Invalid critic specified.")
+        
     critic.train()
 
     scores, kl_loss = critic(x, y)
@@ -184,3 +199,19 @@ def test_critic_gradients(critic_and_data):
     for param in critic.parameters():
         assert param.grad is not None
         assert torch.sum(torch.abs(param.grad)) > 0
+
+def test_critic_get_embeddings(x_data, y_data):
+    """Test that critics can expose their embeddings for spectral analysis."""
+    # Test Separable
+    net_x = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=1)
+    critic_sep = SeparableCritic(embedding_net_x=net_x, max_n_batches=5)
+    zx, zy = critic_sep.get_embeddings(x_data, y_data)
+    assert zx.shape == (10, 16)
+    assert zy.shape == (10, 16)
+    
+    # Test Hybrid
+    decision_head = MLP(input_dim=32, hidden_dim=16, embed_dim=1, n_layers=1)
+    critic_hybrid = HybridCritic(embedding_net_x=net_x, decision_head=decision_head, max_n_batches=5)
+    zx_h, zy_h = critic_hybrid.get_embeddings(x_data, y_data)
+    assert zx_h.shape == (10, 16)
+    assert zy_h.shape == (10, 16)

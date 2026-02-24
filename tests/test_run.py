@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import neural_mi as nmi
 from neural_mi.results import Results
+from unittest.mock import patch
 
 # Base parameters that are used across multiple tests
 BASE_PARAMS = {
@@ -78,51 +79,56 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
     """
     Verifies that mode='rigorous' returns a Results object with mi_estimate, dataframe, and details.
     """
-    # Original gaussian_data fixture is too small (200 samples)
-    # Generate larger data for this specific test
-    x_data, y_data = nmi.generators.generate_correlated_gaussians(
-        n_samples=1000, dim=5, mi=2.0
-    )
-    # Shape: (n_samples, n_features, n_channels)
-    x_data = x_data.reshape(1000, 1, 5)
-    y_data = y_data.reshape(1000, 1, 5)
+    # We can use the smaller, faster gaussian_data fixture now
+    x_data, y_data = gaussian_data
 
-    result = nmi.run(
-        x_data=x_data,
-        y_data=y_data,
-        mode='rigorous',
-        base_params=BASE_PARAMS,
-        output_units='nats',
-        gamma_range=range(1, 4), # Use a smaller gamma range for speed
-        min_gamma_points=2,      # Match the small gamma range
-        delta_threshold=100.0,   # Disable pruning for this test
-        n_workers=1
-    )
+    # Mock the AnalysisWorkflow to prevent macOS multiprocessing serialization crashes during routing tests
+    with patch('neural_mi.run.AnalysisWorkflow') as MockWorkflow:
+        instance = MockWorkflow.return_value
+        instance.run.return_value = {
+            'raw_results_df': pd.DataFrame([{'gamma': 1.0, 'test_mi': 2.0}]),
+            'corrected_results': [{'mi_corrected': 2.5, 'mi_error': 0.1, 'slope': -0.05}]
+        }
+
+        result = nmi.run(
+            x_data=x_data,
+            y_data=y_data,
+            mode='rigorous',
+            base_params=BASE_PARAMS,
+            output_units='nats',
+            n_workers=1
+        )
+        
     assert isinstance(result, Results)
     assert isinstance(result.mi_estimate, float)
     assert isinstance(result.dataframe, pd.DataFrame)
     assert isinstance(result.details, dict)
     assert 'mi_error' in result.details
-
+    
 def test_run_dimensionality_mode_returns_results_with_dataframe(gaussian_data):
     """
-    Verifies that mode='dimensionality' returns a Results object with a DataFrame.
+    Verifies that mode='dimensionality' returns a Results object with the new spectral metrics.
     """
     x_data, _ = gaussian_data
-    # gaussian_data is already (200, 1, 5), which is (n_samples, n_features, n_channels)
-    sweep_grid = {'embedding_dim': [4, 8]}
+    
+    # We no longer need to sweep embedding_dim for dimensionality.
+    # The new engine handles the large bottleneck automatically.
     result = nmi.run(
         x_data=x_data,
         mode='dimensionality',
         base_params=BASE_PARAMS,
-        sweep_grid=sweep_grid,
         output_units='nats',
-        n_splits=1,
-        n_workers=1
+        split_method='random',
+        n_splits=2,
+        n_workers=1,
+        device='cpu'
     )
+    
     assert isinstance(result, Results)
     assert isinstance(result.dataframe, pd.DataFrame)
-    assert 'mi_mean' in result.dataframe.columns
+    # Check for our new spectral metrics instead of mi_mean
+    assert 'participation_ratio' in result.dataframe.columns
+    assert 'test_mi' in result.dataframe.columns
     assert 'embedding_dim' in result.dataframe.columns
     assert result.mi_estimate is None
 
@@ -184,3 +190,50 @@ def test_run_with_custom_critic(gaussian_data):
     # For a score matrix of all 1s, the InfoNCE bound is log(N) + E[diag - logsumexp]
     # which calculates to log(N) + 1 - (log(exp(1)*N)) = log(N) + 1 - (1 + log(N)) = 0.
     assert np.isclose(result.mi_estimate, 0.0, atol=1e-6)
+
+@patch('neural_mi.run.run_precision_analysis')
+def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_precision, gaussian_data):
+    """
+    Verifies that mode='precision' routes correctly and formats the Results object.
+    """
+    x_data, y_data = gaussian_data
+    
+    # Mock the return value of the precision engine
+    mock_precision.return_value = {
+        'dataframe': pd.DataFrame([{'tau': 0.0, 'test_mi': 2.0}, {'tau': 1.0, 'test_mi': 0.5}]),
+        'details': {
+            'baseline_mi': 2.0,
+            'precision_tau': 1.0,
+            'threshold_ratio': 0.9,
+            'threshold_value': 1.8,
+            'corruption_method': 'rounding',
+            'corrupt_target': 'x'
+        }
+    }
+    
+    result = nmi.run(
+        x_data=x_data,
+        y_data=y_data,
+        mode='precision',
+        base_params=BASE_PARAMS,
+        output_units='nats',
+        tau_grid=[0.5, 1.0, 2.0],
+        corrupt_target='x',
+        n_workers=1,
+        device='cpu'
+    )
+    
+    # Verify the routing successfully called the engine
+    mock_precision.assert_called_once()
+    
+    # Verify the final Results object formatting
+    assert isinstance(result, Results)
+    assert result.mode == 'precision'
+    assert isinstance(result.dataframe, pd.DataFrame)
+    
+    # The mi_estimate should be mapped to the precision_tau
+    assert result.mi_estimate == 1.0
+    
+    # Ensure the details dictionary has all the metadata
+    assert 'baseline_mi' in result.details
+    assert 'raw_results' in result.details
