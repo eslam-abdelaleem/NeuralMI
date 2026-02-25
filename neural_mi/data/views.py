@@ -99,15 +99,39 @@ class SubsetView:
         # Convert time ranges to indices using valid window times
         window_times = self._get_valid_window_times()
         if window_times is None or len(window_times) == 0:
-             self.indices = np.array([]) # No valid windows
+             self.indices = torch.tensor([], device=self.dataset.x_dataset.device, dtype=torch.long)
         else:
-            start_end_inds = np.searchsorted(window_times, self.times, side='right') - 1
-            start_end_inds = np.clip(start_end_inds, 0, len(window_times) - 1)
+            # Use 'right' for start to include windows starting at or before the start time
+            # (conceptually we want windows overlapping the interval, so windows starting before 'start'
+            # but ending after 'start' are covered if we just pick based on window start?
+            # Actually, standard behavior: Select windows whose start times are in [start, end).
+            # If we want strict overlap, it's more complex. Here we approximate by window starts.)
 
-            indices = np.concatenate([np.arange(start_end_inds[i,0], start_end_inds[i,1] + 1) for i in range(start_end_inds.shape[0])])
-            indices = np.sort(np.unique(indices))
+            # Using 'right' for start: finds index i where window_times[i] > start.
+            # We subtract 1 to get index where window_times[i] <= start.
+            start_inds = np.searchsorted(window_times, self.times[:, 0], side='right') - 1
 
-        self.indices = torch.tensor(indices, device=self.dataset.x_dataset.device, dtype=torch.long)
+            # Using 'left' for end: finds index i where window_times[i] >= end.
+            # We subtract 1 to get index where window_times[i] < end.
+            end_inds = np.searchsorted(window_times, self.times[:, 1], side='left') - 1
+
+            start_inds = np.clip(start_inds, 0, len(window_times) - 1)
+            end_inds = np.clip(end_inds, 0, len(window_times) - 1)
+
+            # Collect all indices in the ranges
+            indices_list = []
+            for s, e in zip(start_inds, end_inds):
+                # Ensure valid range (s <= e)
+                if e >= s:
+                    indices_list.append(np.arange(s, e + 1))
+
+            if indices_list:
+                indices = np.concatenate(indices_list)
+                indices = np.sort(np.unique(indices))
+            else:
+                indices = np.array([], dtype=np.int64)
+
+            self.indices = torch.tensor(indices, device=self.dataset.x_dataset.device, dtype=torch.long)
     
     def _update_times_from_indices(self):
         """Convert indices to time ranges. Called once during initialization."""

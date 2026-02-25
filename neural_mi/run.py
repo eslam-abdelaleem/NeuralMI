@@ -379,7 +379,30 @@ def run(
     elif mode == 'dimensionality':
         df = run_dimensionality_analysis(x_run_data, base_params, y_data=y_run_data, sweep_grid=sweep_grid, **analysis_kwargs)
         df = _convert_mi_units(df, output_units == 'bits')
-        return Results(mode=mode, dataframe=df, params={**run_params}, details={'raw_results': df})
+
+        group_vars = [key for key in (sweep_grid or {}).keys() if key != 'run_id']
+        metrics = ['test_mi', 'participation_ratio']
+        valid_metrics = [m for m in metrics if m in df.columns]
+
+        if group_vars:
+            agg_df = df.groupby(group_vars)[valid_metrics].agg(['mean', 'std']).reset_index()
+            # Flatten MultiIndex columns
+            agg_df.columns = [f"{col[0]}_{col[1]}" if col[1] else col[0] for col in agg_df.columns.values]
+            # Rename for consistency
+            rename_map = {f'{m}_mean': 'mi_mean' if m == 'test_mi' else f'{m}_mean' for m in valid_metrics}
+            rename_map.update({f'{m}_std': 'mi_std' if m == 'test_mi' else f'{m}_std' for m in valid_metrics})
+            agg_df = agg_df.rename(columns=rename_map).fillna(0)
+        else:
+             agg_data = {f'{m}_mean': df[m].mean() for m in valid_metrics}
+             agg_data.update({f'{m}_std': df[m].std() for m in valid_metrics})
+             # Map test_mi_mean -> mi_mean for consistency
+             if 'test_mi_mean' in agg_data:
+                 agg_data['mi_mean'] = agg_data.pop('test_mi_mean')
+             if 'test_mi_std' in agg_data:
+                 agg_data['mi_std'] = agg_data.pop('test_mi_std')
+             agg_df = pd.DataFrame([agg_data])
+
+        return Results(mode=mode, dataframe=agg_df, params={**run_params}, details={'raw_results': df})
     
     elif mode == 'precision':
         if tau_grid is None:

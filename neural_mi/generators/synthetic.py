@@ -333,7 +333,7 @@ def generate_event_related_data(
             y[start:end, 0] += response_shape
 
     # Add noise to Y
-    y += np.random.randn(n_samples) * noise
+    y += np.random.randn(n_samples).reshape(-1, 1) * noise
 
     if use_torch:
         return torch.from_numpy(x).float(), torch.from_numpy(y).float()
