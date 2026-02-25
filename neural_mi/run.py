@@ -287,10 +287,9 @@ def run(
         processor_params_x = processor_params_x or analysis_kwargs.pop('processor_params')
         processor_params_y = processor_params_y or processor_params_x
 
-    ParameterValidator(locals()).validate()
-    DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
-
     if base_params is None: base_params = {}
+
+    # Populate base_params with explicit arguments to ensure they are validated
     base_params['output_units'] = output_units
     base_params['verbose'] = verbose
     base_params['device'] = device if device else get_device()
@@ -314,6 +313,13 @@ def run(
     base_params['processor_params_x'] = processor_params_x
     base_params['processor_type_y'] = processor_type_y
     base_params['processor_params_y'] = processor_params_y
+
+    # Validate parameters and apply defaults to base_params
+    param_validator = ParameterValidator(locals())
+    param_validator.validate()
+    param_validator.apply_defaults()
+
+    DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
 
     run_params = {"mode": mode, "processor_type_x": processor_type_x, "processor_params_x": processor_params_x,
                   "processor_type_y": processor_type_y, "processor_params_y": processor_params_y,

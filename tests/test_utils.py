@@ -39,10 +39,13 @@ def test_get_device_auto_selection():
     assert isinstance(device, torch.device)
 
 # A dummy set of parameters for building models
+# Must include all defaults enforced by strict validation
 DUMMY_EMBEDDING_PARAMS = {
     'input_dim_x': 10, 'input_dim_y': 10, 'embedding_dim': 4,
     'hidden_dim': 16, 'n_layers': 1, 'n_channels_x': 2, 'n_channels_y': 2,
-    'window_size': 5
+    'window_size': 5,
+    'use_variational': False, 'embedding_model': 'mlp', 'max_n_batches': 512,
+    'kernel_size': 3, 'bidirectional': False, 'nhead': 4
 }
 
 def test_build_critic_concat():

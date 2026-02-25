@@ -51,12 +51,21 @@ def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str) -> tupl
     
 def build_critic(critic_type: str, embedding_params: Dict[str, Any], 
                  custom_embedding_cls: Optional[type] = None) -> BaseCritic:
+    """Builds and returns a critic model based on the provided parameters.
+
+    This function expects `embedding_params` to be fully populated with
+    defaults (e.g., via `ParameterValidator.apply_defaults`). It strictly
+    accesses required parameters and will raise a KeyError if something is missing,
+    preventing silent failures from missing defaults.
+    """
     
-    use_variational = embedding_params.get('use_variational', False)
-    model_type = embedding_params.get('embedding_model', 'mlp').lower()
-    hidden_dim, n_layers = embedding_params['hidden_dim'], embedding_params['n_layers']
+    # Access parameters strictly to ensure defaults were applied
+    use_variational = embedding_params['use_variational']
+    model_type = embedding_params['embedding_model'].lower()
+    hidden_dim = embedding_params['hidden_dim']
+    n_layers = embedding_params['n_layers']
     embed_dim = embedding_params['embedding_dim']
-    max_n_batches = embedding_params.get('max_n_batches', 512)
+    max_n_batches = embedding_params['max_n_batches']
 
     # --- Model Selection Logic ---
     if custom_embedding_cls:

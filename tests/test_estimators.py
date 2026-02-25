@@ -56,7 +56,9 @@ class TestEstimators:
 
         embedding_params = {
             'input_dim_x': dim, 'input_dim_y': dim, 'embedding_dim': 16,
-            'hidden_dim': 64, 'n_layers': 2
+            'hidden_dim': 64, 'n_layers': 2, 'use_variational': False,
+            'embedding_model': 'mlp', 'max_n_batches': 512,
+            'kernel_size': 3, 'bidirectional': False, 'nhead': 4
         }
         critic = build_critic('separable', embedding_params)
         optimizer = optim.Adam(critic.parameters(), lr=TRAINER_PARAMS_MINIMAL['learning_rate'])

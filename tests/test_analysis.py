@@ -147,6 +147,12 @@ def test_task_parameter_routing():
         'hidden_dim': 8,
         'n_layers': 1,
         'embedding_dim': 4,
+        'use_variational': False,
+        'embedding_model': 'mlp',
+        'max_n_batches': 512,
+        'kernel_size': 3,
+        'bidirectional': False,
+        'nhead': 4,
         # Our newly wired parameters:
         'max_eval_samples': 42,
         'track_spectral_metrics': True,
