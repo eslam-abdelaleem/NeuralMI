@@ -174,7 +174,6 @@ class PairedTemporalDataset(Dataset):
             if self.y_dataset is not None:
                 self.y_dataset.remove_invalid_windows()
             if self.window_manager.n_windows == 0:
-                print(f"DEBUG: No valid windows. x_valid sum: {x_valid.sum()}, total: {len(x_valid)}")
                 raise ValueError("No valid windows after checking data coverage")
             logger.info(
                 f"Window coverage: {self.window_manager.n_windows}/{len(self.window_manager.window_times)} "

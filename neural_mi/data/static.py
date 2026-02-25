@@ -6,8 +6,6 @@ from torch.utils.data import Dataset
 from neural_mi.utils import get_device
 from neural_mi.logger import logger
 
-# TODO: Could co-opt time-shifting interface to allow shifting rows of x relative to y
-
 
 class BaseStaticDataset(Dataset, ABC):
     """Base class for all non-temporal, static datasets."""

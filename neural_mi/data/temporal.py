@@ -192,9 +192,8 @@ class ContinuousWindowDataset(TemporalWindowDataset):
 
     def _compute_max_samples_per_window(self):
         """Compute maximum samples that fit in a window."""
-        # NOTE: There is a trivial, cheap version if data has fixed sample rate, and an expensive one using searchsorted
-        # For now always assuming fixed sample rate (outside of large jumps)
-        # FIX: Add +1 buffer to avoid index out of bounds during interpolation at edges
+        # Assuming fixed sample rate (outside of large jumps) for efficiency.
+        # Adding a +1 buffer to avoid index out of bounds during interpolation at edges.
         self.max_samples_per_window = np.ceil(self.window_manager.window_size / self.period).astype(int) + 1
     
     def move_data_to_windows(self):

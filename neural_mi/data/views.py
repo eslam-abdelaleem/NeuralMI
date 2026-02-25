@@ -76,7 +76,6 @@ class SubsetView:
         
         # Ensure indices are LongTensor
         if self.indices is not None:
-            # print(f"DEBUG: SubsetView init indices type {type(self.indices)} dtype {getattr(self.indices, 'dtype', 'N/A')}")
             self.indices = torch.tensor(self.indices, device=self.dataset.x_dataset.device, dtype=torch.long)
     
     def _get_valid_window_times(self):
