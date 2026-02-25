@@ -81,7 +81,7 @@ class Trainer:
               random_time_shifting: bool = True, epochs_to_max_shift: int = 5,
               patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5, min_improvement: float = 0.001,
               save_best_model_path: Optional[str] = None, run_id: Optional[str] = None,
-              output_units: str = 'nats', verbose: bool = True,
+              output_units: str = 'nats', verbose: bool = True, show_progress: bool = True,
               split_mode: str = 'blocked',
               train_indices: Optional[np.ndarray] = None,
               test_indices: Optional[np.ndarray] = None,
@@ -129,6 +129,8 @@ class Trainer:
         output_units : {'nats', 'bits'}, optional
             The units for displaying the MI estimate. Defaults to 'nats'.
         verbose : bool, optional
+            (Deprecated in favor of show_progress for progress bars). Kept for backward compatibility.
+        show_progress : bool, optional
             If True, a progress bar will be displayed. Defaults to True.
         split_mode : {'blocked', 'random'}, optional
             The method for splitting data into training and validation sets.
@@ -190,7 +192,9 @@ class Trainer:
         history, best_mi, no_improve = [], -float('inf'), 0
         best_model_state = None
         
-        epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False, disable=not verbose)
+        # Use show_progress if provided, otherwise fallback to verbose
+        display_progress = show_progress if show_progress is not None else verbose
+        epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False, disable=not display_progress)
 
         # 3. Epoch Loop
         for epoch in epoch_iterator:
@@ -233,7 +237,7 @@ class Trainer:
                 time_shift = np.random.uniform(high=max_shift)
                 dataset.time_shift(offset_x=time_shift, offset_y=time_shift)
 
-            if verbose:
+            if display_progress:
                 epoch_iterator.set_description(f"Run {run_id or ''} | MI: {mi_nats * nats_to_bits:.3f}")
             
             # In-Memory Early Stopping

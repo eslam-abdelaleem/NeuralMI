@@ -155,6 +155,7 @@ class AnalysisWorkflow:
             from all the individual training runs.
         """
         n_workers = n_workers or mp.cpu_count()
+        show_progress = self.base_params.get('show_progress', True)
         logger.info(f"Starting rigorous analysis with {n_workers} workers...")
         tasks = self._prepare_tasks(param_grid, gamma_range)
         if not tasks:
@@ -163,7 +164,7 @@ class AnalysisWorkflow:
         with mp.get_context('spawn').Pool(processes=n_workers) as pool:
             raw_results = list(tqdm(
                 pool.imap(run_training_task, tasks), total=len(tasks),
-                desc="Rigorous Analysis Progress", unit="task"
+                desc="Rigorous Analysis Progress", unit="task", disable=not show_progress
             ))
 
         logger.info("All training tasks finished. Performing bias correction...")

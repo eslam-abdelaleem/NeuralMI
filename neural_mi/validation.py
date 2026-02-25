@@ -14,6 +14,15 @@ from neural_mi.exceptions import DataShapeError
 from neural_mi.estimators import ESTIMATORS, ESTIMATOR_DEFAULTS
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
+ALLOWED_VALUES = {
+    'critic_type': ['separable', 'concat', 'hybrid'],
+    'embedding_model': ['mlp', 'cnn', 'gru', 'lstm', 'tcn', 'transformer'],
+    'split_mode': ['blocked', 'random'],
+    'output_units': ['bits', 'nats'],
+    'spectral_output': ['default', 'full', 'all'],
+    'estimator_name': list(ESTIMATORS.keys())
+}
+
 class DataValidator:
     """Validates the input data for type, shape, and content for two potentially different streams."""
     def __init__(self, x_data: Any, y_data: Any, processor_type_x: Optional[str], processor_type_y: Optional[str]):
@@ -157,6 +166,10 @@ class ParameterValidator:
             if 'min' in schema and value is not None and value < schema['min']:
                 raise ValueError(f"Parameter '{key}' must be >= {schema['min']}.")
 
+            # Allowed values check
+            if key in ALLOWED_VALUES and value not in ALLOWED_VALUES[key]:
+                raise ValueError(f"Parameter '{key}' has invalid value '{value}'. Allowed: {ALLOWED_VALUES[key]}")
+
     def _validate_processor(self):
         # Validate processor existence and params
         for suffix in ['x', 'y']:
@@ -201,14 +214,16 @@ class ParameterValidator:
     def apply_defaults(self):
         """Populates missing parameters in base_params with defaults."""
         bp = self.params["base_params"]
+        verbose = bp.get('verbose', True)
+
         for key, schema in BASE_PARAMS_SCHEMA.items():
             if key not in bp and 'default' in schema:
                 default_val = schema['default']
                 # Don't apply None defaults if they mean "optional"
                 if default_val is not None or schema['type'] == (str, type(None)):
-                     # Actually we want to set explicit defaults like n_layers=2
                      bp[key] = default_val
-                     logger.info(f"Parameter '{key}' not specified. Defaulting to {default_val}.")
+                     if verbose:
+                         logger.info(f"Parameter '{key}' not specified. Defaulting to {default_val}.")
 
 
 class EstimatorValidator:

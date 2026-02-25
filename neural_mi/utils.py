@@ -82,8 +82,10 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         EmbeddingModel = TCN
     elif model_type == 'transformer':
         EmbeddingModel = Transformer
-    else: # Default to MLP
+    elif model_type == 'mlp':
         EmbeddingModel = MLP
+    else:
+        raise ValueError(f"Unknown embedding_model: {model_type}")
     
     # --- Parameter Preparation ---
     model_kwargs = {

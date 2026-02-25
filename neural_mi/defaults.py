@@ -9,14 +9,15 @@ import torch
 BASE_PARAMS_SCHEMA = {
     # Trainer parameters
     'n_epochs': {'type': int, 'min': 1, 'default': 50},
-    'learning_rate': {'type': float, 'min': 0.0, 'default': 1e-3},
-    'batch_size': {'type': int, 'min': 1, 'default': 64},
-    'patience': {'type': int, 'min': 0, 'default': 10},
+    'learning_rate': {'type': float, 'min': 0.0, 'default': 5e-4},
+    'batch_size': {'type': int, 'min': 1, 'default': 128},
+    'patience': {'type': int, 'min': 0, 'default': 1000}, # Very large number, no early stopping by default
     'output_units': {'type': str, 'default': 'bits'},
     'verbose': {'type': bool, 'default': True},
+    'show_progress': {'type': bool, 'default': True},
     'device': {'type': (str, type(None), torch.device), 'default': None},
     'split_mode': {'type': str, 'default': 'blocked'},
-    'random_time_shifting': {'type': bool, 'default': True},
+    'random_time_shifting': {'type': bool, 'default': False},
     'epochs_to_max_shift': {'type': int, 'min': 0, 'default': 5},
     'smoothing_sigma': {'type': float, 'min': 0.0, 'default': 1.0},
     'median_window': {'type': int, 'min': 1, 'default': 5},
@@ -30,7 +31,7 @@ BASE_PARAMS_SCHEMA = {
     'estimator_name': {'type': str, 'default': 'infonce'},
     'estimator_params': {'type': dict, 'default': {}},
     'use_variational': {'type': bool, 'default': False},
-    'beta': {'type': float, 'default': 1.0},
+    'beta': {'type': float, 'default': 1024.0},
 
     # Model architecture parameters
     'embedding_dim': {'type': int, 'min': 1, 'default': 64},
@@ -71,7 +72,7 @@ MODE_KWARGS_SCHEMA = {
     },
     'dimensionality': {
         'n_workers': {'type': int, 'default': 1},
-        'split_method': {'type': str, 'default': 'random'},
+        'split_method': {'type': str, 'default': 'random'}, # 'random' or 'temporal'
         'n_splits': {'type': int, 'default': 5},
         'lag': {'type': int, 'default': 1}, # if split_method='temporal'
     },

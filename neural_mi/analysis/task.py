@@ -66,6 +66,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         run_id=run_id,
         output_units=params.get('output_units', 'nats'),
         verbose=params.get('verbose', True),
+        show_progress=params.get('show_progress', True),
         save_best_model_path=params.get('save_best_model_path'),
         split_mode=params.get('split_mode', 'blocked'),
         train_indices=params.get('train_indices'),

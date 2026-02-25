@@ -65,15 +65,17 @@ class ParameterSweep:
         # Default to sequential if n_workers is not specified or is 1
         effective_workers = n_workers if n_workers is not None else 1
 
+        show_progress = self.base_params.get('show_progress', True)
+
         if effective_workers <= 1:
             logger.info("Starting parameter sweep sequentially (n_workers=1)...")
-            all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sequential Sweep Progress")]
+            all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sequential Sweep Progress", disable=not show_progress)]
         else:
             logger.info(f"Starting parameter sweep with {effective_workers} workers...")
             with mp.get_context("spawn").Pool(processes=effective_workers) as pool:
                 all_results = list(tqdm(
                     pool.imap(run_training_task, tasks), total=len(tasks),
-                    desc="Parameter Sweep Progress", unit="task"
+                    desc="Parameter Sweep Progress", unit="task", disable=not show_progress
                 ))
         return all_results
     

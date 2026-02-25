@@ -36,6 +36,15 @@ class TestStrictValidation:
         # Check that result reflects success (defaults worked)
         assert result.mi_estimate is not None
 
+    def test_run_defaults_logging_suppressed_if_not_verbose(self, data, caplog):
+        x, y = data
+        caplog.clear()
+        with caplog.at_level('INFO'):
+            nmi.run(x, y, base_params={'n_epochs': 1, 'batch_size': 16}, verbose=False, n_workers=1)
+
+        # Should NOT see the logs
+        assert "Parameter 'n_layers' not specified" not in caplog.text
+
     def test_run_validates_types(self, data):
         x, y = data
         # n_epochs should be int
@@ -49,6 +58,12 @@ class TestStrictValidation:
         # batch_size min 1
         with pytest.raises(ValueError, match="Parameter 'batch_size' must be >= 1"):
             nmi.run(x, y, base_params={'n_epochs': 1, 'batch_size': 0}, n_workers=1)
+
+    def test_run_detects_invalid_choice_values(self, data):
+        x, y = data
+        # 'bla' is not a valid critic_type
+        with pytest.raises(ValueError, match="Parameter 'critic_type' has invalid value 'bla'"):
+            nmi.run(x, y, base_params={'critic_type': 'bla'}, n_workers=1)
 
     def test_run_detects_invalid_processor_params(self, data):
         x, y = data

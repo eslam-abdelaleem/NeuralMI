@@ -102,6 +102,7 @@ def run(
     save_best_model_path: Optional[str] = None,
     random_seed: Optional[int] = None,
     verbose: bool = True,
+    show_progress: bool = True,
     device: Optional[str] = None,
     split_mode: str = 'blocked',
     train_indices: Optional[np.ndarray] = None,
@@ -192,7 +193,9 @@ def run(
         Note: Full reproducibility is only guaranteed for ``n_workers=1``.
         Defaults to None.
     verbose : bool, default=True
-        If True, progress bars and informational logs will be displayed.
+        If True, informational logs (e.g. parameter defaults) will be displayed.
+    show_progress : bool, default=True
+        If True, tqdm progress bars for training will be displayed.
     device : str, optional
         The compute device to use (e.g., 'cpu', 'cuda', 'mps'). If None, it
         is auto-detected. Defaults to None.
@@ -292,6 +295,7 @@ def run(
     # Populate base_params with explicit arguments to ensure they are validated
     base_params['output_units'] = output_units
     base_params['verbose'] = verbose
+    base_params['show_progress'] = show_progress
     base_params['device'] = device if device else get_device()
     base_params['estimator_name'] = estimator
     base_params['estimator_params'] = estimator_params or {}
