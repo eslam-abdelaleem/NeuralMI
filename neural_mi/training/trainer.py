@@ -6,12 +6,10 @@ a critic model, monitoring its performance, implementing early stopping, and
 saving the best-performing model state.
 """
 import torch
-import tempfile
 import numpy as np
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from scipy.ndimage import gaussian_filter1d, median_filter
 import os
-import shutil
 from tqdm.auto import tqdm
 from typing import Dict, Any, Tuple, Optional, List, Callable, Union
 import torch.nn as nn
@@ -77,9 +75,10 @@ class Trainer:
         self.custom_smoothing_fn = custom_smoothing_fn
 
     def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
-              train_fraction: float = 0.9, n_test_blocks: int = 5, 
+              train_fraction: float = 0.9, n_test_blocks: int = 5,
               random_time_shifting: bool = True, epochs_to_max_shift: int = 5,
-              patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5, min_improvement: float = 0.001,
+              patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5,
+              min_improvement: float = 0.001,
               save_best_model_path: Optional[str] = None, run_id: Optional[str] = None,
               output_units: str = 'nats', verbose: bool = True, show_progress: bool = True,
               split_mode: str = 'blocked',
@@ -89,7 +88,8 @@ class Trainer:
               train_subset_size: Optional[int] = None,
               track_spectral_metrics: bool = False,
               spectral_output: str = 'default',
-              return_spectrum: bool = False) -> Dict[str, Any]:
+              return_spectrum: bool = False,
+              max_index_reduction: float = 0.05) -> Dict[str, Any]:
         
         """Trains the critic model and returns performance metrics.
 
@@ -129,9 +129,15 @@ class Trainer:
         output_units : {'nats', 'bits'}, optional
             The units for displaying the MI estimate. Defaults to 'nats'.
         verbose : bool, optional
+<<<<<<< HEAD
             (Deprecated in favor of show_progress for progress bars). Kept for backward compatibility.
         show_progress : bool, optional
             If True, a progress bar will be displayed. Defaults to True.
+=======
+            If True, details and defaults will be displayed. Defaults to False.
+        show_progress : bool, optional
+            If True, progress bar will be shown. Defaults to True.
+>>>>>>> experiment-dim-est-port
         split_mode : {'blocked', 'random'}, optional
             The method for splitting data into training and validation sets.
             - 'blocked': Samples contiguous blocks, useful for time-series data.
@@ -158,6 +164,12 @@ class Trainer:
         spectral_output : str, optional
             Determines the output of spectral metrics. If 'default', uses a predefined set of metrics.
             If 'full', returns the full spectrum. Defaults to 'default'.
+        return_spectrum : bool, optional
+            If True, includes the full spectrum in the returned results when `track_spectral_metrics` is True. Defaults to False.
+        max_index_reduction : float, optional
+            When using temporal datasets with windowing, random time shifting can reduce the number of valid windows
+            due to edge effects. This parameter sets a threshold for acceptable reduction in valid windows after shifting.
+            If the reduction exceeds this threshold, a warning is logged. Defaults to 0.05 (5%).
 
         Returns
         -------
@@ -166,6 +178,13 @@ class Trainer:
         """
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         is_temporal = isinstance(dataset, PairedTemporalDataset)
+        if is_temporal and random_time_shifting and patience < epochs_to_max_shift:
+            logger.warning(
+                f"patience={patience} < epochs_to_max_shift={epochs_to_max_shift}: "
+                f"early stopping may fire before random_time_shifting has reached its "
+                f"full range. The model may train only on unshifted windows. Consider "
+                f"increasing patience or decreasing epochs_to_max_shift."
+            )
 
         # 1. Split Data
         if train_indices is not None and test_indices is not None:
@@ -181,21 +200,28 @@ class Trainer:
         if batch_size < 2 and n_train > 1: 
             raise ValueError(f"batch_size must be >= 2, got {batch_size}.")
 
-        train_view = SubsetView(dataset, indices=train_idx)
-        test_view = SubsetView(dataset, indices=test_idx)
+        train_view = SubsetView(dataset, indices=train_idx, max_index_reduction=max_index_reduction)
+        test_view = SubsetView(dataset, indices=test_idx, max_index_reduction=max_index_reduction)
 
         # 2. Lock in a Train Evaluation Subset (to prevent OOM/slowdown during train_mi tracking)
         actual_train_subset_size = train_subset_size or min(len(train_idx), len(test_idx), max_eval_samples)
         train_eval_idx = np.random.choice(train_idx, actual_train_subset_size, replace=False)
-        train_eval_view = SubsetView(dataset, indices=train_eval_idx)
+        train_eval_view = SubsetView(dataset, indices=train_eval_idx, max_index_reduction=max_index_reduction)
         
-        history, best_mi, no_improve = [], -float('inf'), 0
+        history, metrics_tracked, best_mi, no_improve = [], [], -float('inf'), 0
         best_model_state = None
         
+<<<<<<< HEAD
         # Use show_progress if provided, otherwise fallback to verbose
         display_progress = show_progress if show_progress is not None else verbose
         epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False, disable=not display_progress)
 
+=======
+        display_progress = show_progress if show_progress is not None else verbose
+        epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False,
+                              disable=not display_progress)
+        
+>>>>>>> experiment-dim-est-port
         # 3. Epoch Loop
         for epoch in epoch_iterator:
             self.model.train()
@@ -219,7 +245,15 @@ class Trainer:
                 x_test = dataset.x_dataset[test_view.indices, ...]
                 y_test = dataset.y_dataset[test_view.indices, ...]
                 mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples)
-                
+
+                # Track spectral metrics if requested (can be expensive, so optional)
+                if track_spectral_metrics:
+                    metrics_during = self._extract_spectral_metrics(
+                    dataset.x_dataset[train_eval_view.indices, ...], 
+                    dataset.y_dataset[train_eval_view.indices, ...], 
+                    spectral_output, return_spectrum)            
+                    metrics_tracked.append(metrics_during)
+            
             history.append(mi_nats)
             
             # Smoothing (Custom or Default)
@@ -276,35 +310,47 @@ class Trainer:
             'test_mi_history': history
         }
 
-        # 5. Spectral Metrics (Dimensionality)
         if track_spectral_metrics:
-            metrics = self._extract_spectral_metrics(
-                dataset.x_dataset[test_view.indices, ...], 
-                dataset.y_dataset[test_view.indices, ...], 
-                spectral_output, return_spectrum
-            )
-            results.update(metrics)
+             results['spectral_metrics_history'] = metrics_tracked
+
+        # 5. Final Spectral Metrics (Dimensionality)
+        metrics_final = self._extract_spectral_metrics(
+            dataset.x_dataset[train_eval_view.indices, ...], 
+            dataset.y_dataset[train_eval_view.indices, ...], 
+            spectral_output, return_spectrum
+        )
+        results.update(metrics_final)
 
         return results
 
     def _safe_eval_mi(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> float:
-        """Evaluates MI, chunking the dataset to prevent OOM on massive test sets."""
+        """Evaluates MI on at most max_samples samples, drawn as a single random subset.
+        If the dataset exceeds max_samples, draw ONE random
+        subset of size max_samples and evaluate MI on that single set. This gives a
+        valid (if higher-variance) unbiased estimate.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Test set X data.
+        y : torch.Tensor
+            Test set Y data.
+        max_samples : int
+            Maximum number of samples for a single evaluation call. If the dataset
+            is larger, a random subset of this size is drawn once.
+        """
         n_samples = x.shape[0]
         if n_samples < 2:
             return float('nan')
-            
-        if n_samples <= max_samples:
-            return self._eval_mi(x, y)
-            
-        # Mini-batch averaging for extremely large datasets
-        total_mi = 0.0
-        steps = 0
-        for i in range(0, n_samples, max_samples):
-            end = min(i + max_samples, n_samples)
-            if (end - i) >= 2:
-                total_mi += self._eval_mi(x[i:end], y[i:end])
-                steps += 1
-        return total_mi / steps if steps > 0 else float('nan')
+
+        if n_samples > max_samples:
+            # Sample once 
+            idx = np.random.choice(n_samples, max_samples, replace=False)
+            idx_t = torch.from_numpy(idx)
+            x = x[idx_t]
+            y = y[idx_t]
+
+        return self._eval_mi(x, y)
 
     def _eval_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
         scores, _ = self.model(x.to(self.device), y.to(self.device))
@@ -315,7 +361,6 @@ class Trainer:
         """Extracts embeddings and computes cross-covariance spectral metrics."""
         self.model.eval()
         with torch.no_grad():
-            # Uses the unified embedding extraction method on the critic
             zx, zy = self.model.get_embeddings(x.to(self.device), y.to(self.device))
 
         spectrum = compute_cross_covariance_spectrum(zx, zy)
@@ -353,12 +398,24 @@ class Trainer:
 
     def _create_blocked_split(self, n: int, frac: float, k: int) -> Tuple[np.ndarray, np.ndarray]:
         n_test = int(n * (1 - frac))
-        if n_test == 0: return np.arange(n), np.array([])
-        if n_test < k: k = n_test
+        if n_test == 0:
+            return np.arange(n), np.array([])
+        if n_test < k:
+            k = n_test
         block, rem = divmod(n_test, k) if k > 0 else (0, 0)
         if n - block < k or block + 1 <= 0:
-                indices = np.random.permutation(n)
-                return indices[n_test:], indices[:n_test]
+            logger.warning(
+                "Blocked split parameters produced an invalid configuration. "
+                "Falling back to random split. Consider reducing n_test_blocks or "
+                "increasing your dataset size."
+            )
+            indices = np.random.permutation(n)
+            return indices[n_test:], indices[:n_test]
         starts = _sample_with_minimum_distance(n - block, k, block + 1)
-        test_idx = np.concatenate([np.arange(s, s + block + (1 if i<rem else 0)) for i, s in enumerate(starts)])
+        test_idx = np.concatenate([
+            np.arange(s, s + block + (1 if i < rem else 0))
+            for i, s in enumerate(starts)
+        ])
         return np.setdiff1d(np.arange(n), test_idx), test_idx
+
+

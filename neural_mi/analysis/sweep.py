@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Optional
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger
+from neural_mi.utils import _configure_multiprocessing
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
     """Helper to create a list of dictionaries from a grid."""
@@ -72,6 +73,7 @@ class ParameterSweep:
             all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sequential Sweep Progress", disable=not show_progress)]
         else:
             logger.info(f"Starting parameter sweep with {effective_workers} workers...")
+            _configure_multiprocessing()
             with mp.get_context("spawn").Pool(processes=effective_workers) as pool:
                 all_results = list(tqdm(
                     pool.imap(run_training_task, tasks), total=len(tasks),
@@ -111,16 +113,27 @@ class ParameterSweep:
                 current_params['save_best_model_path'] = f"{root}{suffix}{ext}"
             # --------------------------------
             
-            # Initialize from base_params, then update from kwargs (if any), then sweep params
+            # Initialize from base_params, then update from kwargs (if any), then sweep params.
+            # Only inject keys that belong to the processor schema — prevents model
+            # architecture params (embedding_dim, n_layers, etc.) from bleeding into
+            # processor_params_x/y when both processor and model params are swept together.
+            from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
+            proc_type_x = self.base_params.get('processor_type_x', 'continuous')
+            proc_type_y = self.base_params.get('processor_type_y', proc_type_x)
+            valid_proc_keys_x = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_x, []))
+            valid_proc_keys_y = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_y, []))
+            proc_params_from_sweep_x = {k: v for k, v in params.items() if k in valid_proc_keys_x}
+            proc_params_from_sweep_y = {k: v for k, v in params.items() if k in valid_proc_keys_y}
+
             task_processor_params_x = (self.base_params.get('processor_params_x') or {}).copy()
             if 'processor_params_x' in kwargs:
                 task_processor_params_x.update(kwargs['processor_params_x'])
-            task_processor_params_x.update(params)
-            
+            task_processor_params_x.update(proc_params_from_sweep_x)
+
             task_processor_params_y = (self.base_params.get('processor_params_y') or {}).copy()
             if 'processor_params_y' in kwargs:
                 task_processor_params_y.update(kwargs['processor_params_y'])
-            task_processor_params_y.update(params)
+            task_processor_params_y.update(proc_params_from_sweep_y)
 
             current_params.update({
                 'processor_params_x': task_processor_params_x,

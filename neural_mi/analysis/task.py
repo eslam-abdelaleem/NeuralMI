@@ -65,7 +65,11 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         patience=params['patience'], 
         run_id=run_id,
         output_units=params.get('output_units', 'nats'),
+<<<<<<< HEAD
         verbose=params.get('verbose', True),
+=======
+        verbose=params.get('verbose', False),
+>>>>>>> experiment-dim-est-port
         show_progress=params.get('show_progress', True),
         save_best_model_path=params.get('save_best_model_path'),
         split_mode=params.get('split_mode', 'blocked'),

@@ -140,7 +140,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     but assumes a constant sample rate.
     """
     
-    def __init__(self, data, time_vector=None, window_manager=None, device=None):
+    def __init__(self, data, time_vector=None, window_manager=None, device=None, min_coverage_fraction=0.2):
         """
         Parameters
         ----------
@@ -152,6 +152,11 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             If None, assumes data sampled on positive integers in time [0, 1, 2, etc.]
         window_manager : WindowManager, optional
             External window manager for alignment
+        device : str, optional
+            Device for tensor operations
+        min_coverage_fraction : float, optional
+            Minimum fraction of a window that must be covered by actual data (vs. padded) for the window to be considered valid.
+            This is used in validate_window_coverage to filter out windows that are mostly empty due to large jumps in time.
         """
         # Call super init first to set device and window_manager
         super().__init__(window_manager, device)
@@ -175,8 +180,19 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         else:
             self.time_vector = np.arange(0, self.data_orig.shape[0])
         # Infer sample rate from time vector
-        # This class assumes, outside of jumps, a constant sample rate!
-        self.period = self.time_vector[1] - self.time_vector[0]
+        diffs = np.diff(self.time_vector)
+        self.period = float(np.median(diffs)) if len(diffs) > 0 else 1.0
+        if len(diffs) > 1:
+            first_two = float(self.time_vector[1] - self.time_vector[0])
+            if not np.isclose(first_two, self.period, rtol=0.05):
+                from neural_mi.logger import logger as _logger
+                _logger.warning(
+                    f"ContinuousWindowDataset: first inter-sample interval "
+                    f"({first_two:.6g}) differs from median ({self.period:.6g}) by "
+                    f">5%. Using median. Check for boundary artifacts in your time vector."
+                )
+
+        self.min_coverage_fraction = min_coverage_fraction
 
         if len(self.time_vector) != self.data_orig.shape[0]:
             raise ValueError(
@@ -266,8 +282,12 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # Original logic was: "windows_with_spikes".
         # For continuous, we want windows that overlap with the time series.
         # But if there are gaps (jumps), start_inds and end_inds will point to the same index (if gap is larger than window).
+        actual_counts = end_inds - start_inds
+        # Minimum acceptable count based on coverage fraction
+        min_count = int(np.ceil(self.min_coverage_fraction * self.max_samples_per_window))
+        min_count = max(min_count, 1)  # always require at least 1 point
 
-        valid = (end_inds > start_inds)
+        valid = actual_counts >= min_count
 
         # Also enforce strict boundary containment if desired, but "data points check" handles gaps correctly.
 
@@ -280,34 +300,27 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         return self.data[idx]
     
     def reset(self):
-        """Undo any added noise by resetting to original data. Does not undo time shifts."""
         self.data = self.data_master.detach().clone()
+        # Invalidate mask cache so apply_noise/apply_precision recompute after reset
+        self.__dict__.pop('_data_mask', None)
+        self.__dict__.pop('_noise_buffer', None)
 
     def time_shift(self, offset):
-        # Undo previous offset, apply new one
         self.time_vector = self.time_vector + offset - self.time_offset
-        # Store this time offset to undo later
         self.time_offset = offset
-        # Moving data to windows will be orchestrated by paired dataset
 
     def apply_noise(self, amplitude):
-        """Add Gaussian noise to data."""
-        # Reset to master copy if amplitude is zero. Useful as another interface to undo changes
         if amplitude == 0.0:
             self.reset()
             return
-        # If data mask and noise buffer haven't been created, compute that now
         if not hasattr(self, '_data_mask'):
             self._data_mask = torch.nonzero(self.data, as_tuple=True)
-        # Pre-allocate noise tensor to avoid repeated allocations when applying noise
-        if not hasattr(self, '_noise_buffer'):
+        if not hasattr(self, '_noise_buffer') or len(self._noise_buffer) != len(self._data_mask[0]):
             self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.device, dtype=self.data.dtype)
         self._noise_buffer.normal_(mean=0, std=amplitude)
         self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
 
     def apply_precision(self, precision_level):
-        """Round data to a specific resolution/precision level."""
-        # Reset to master copy if zero. Avoids divide by zero, useful as interface to undo changes
         if precision_level == 0.0:
             self.reset()
             return
@@ -322,7 +335,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
     
     def __init__(self, spike_times, 
                  window_manager=None,
-                 no_spike_value=0.0, device=None):
+                 no_spike_value=-1.0, device=None):
         super().__init__(window_manager, device)
 
         self.data_orig = [np.array(st) for st in spike_times]
@@ -337,10 +350,22 @@ class SpikeWindowDataset(TemporalWindowDataset):
     
     def _compute_max_samples_per_window(self):
         """Compute maximum samples that fit in a window."""
-        self.max_samples_per_window = np.max(np.array([
-            max_events_in_window(x, self.window_manager.window_size) 
+        per_neuron_max = np.array([
+            max_events_in_window(x, self.window_manager.window_size)
             for x in self.data_orig
-        ]))
+        ])
+        self.max_samples_per_window = int(np.max(per_neuron_max))
+
+        # Warn if a burst outlier is bloating the tensor allocation
+        median_max = np.median(per_neuron_max)
+        if median_max > 0 and self.max_samples_per_window > 5 * median_max:
+            worst_neuron = int(np.argmax(per_neuron_max))
+            logger.warning(
+                f"Spike tensor allocation is dominated by a burst: neuron {worst_neuron} "
+                f"has a peak of {self.max_samples_per_window} spikes/window vs. a median of "
+                f"{median_max:.1f} across neurons. This causes {self.max_samples_per_window / median_max:.1f}x "
+                f"memory over-allocation. Consider inspecting or removing high-rate outlier neurons."
+            )
 
     def get_temporal_extent(self):
         """Return temporal extent of spike data."""
@@ -396,9 +421,13 @@ class SpikeWindowDataset(TemporalWindowDataset):
         return self.data[idx]
     
     def reset(self):
-        """Undo any added noise by resetting to original data. Does not undo time shifts."""
         self.data = self.data_master.detach().clone()
-    
+        # Invalidate mask cache — data shape may have changed or noise was cleared
+        self.__dict__.pop('_data_mask', None)
+        self.__dict__.pop('_noise_buffer', None)
+        self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
+        self.time_offset = offset
+
     def time_shift(self, offset):
         """Shift spike times by offset."""
         # Undo previous offset, apply new one
@@ -413,23 +442,21 @@ class SpikeWindowDataset(TemporalWindowDataset):
         if amplitude == 0.0:
             self.reset()
             return
-        # If spike mask hasn't been created, compute that now to more quickly modify spikes
-        if not hasattr(self, '_spike_mask'):
+        if not hasattr(self, '_data_mask'):
             self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
-        # Pre-allocate noise tensor to avoid repeated allocations when applying noise
-        if not hasattr(self, '_noise_buffer'):
+        if not hasattr(self, '_noise_buffer') or len(self._noise_buffer) != len(self._data_mask[0]):
             self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.device, dtype=self.data.dtype)
         self._noise_buffer.uniform_(-amplitude / 2, amplitude / 2)
         self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
-
+    
     def apply_precision(self, precision_level):
         """Round spike times to a specific resolution/precision level."""
         # Reset to master copy if zero. Avoids divide by zero, useful as interface to undo changes
         if precision_level == 0.0:
             self.reset()
             return
-        # If spike mask hasn't been created, compute that now
-        if not hasattr(self, '_spike_mask'):
+        # If data mask hasn't been created, compute that now
+        if not hasattr(self, '_data_mask'):
             self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
         self.data[self._data_mask] = torch.round(self.data[self._data_mask] / precision_level) * precision_level
 
@@ -439,7 +466,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
 class CategoricalWindowDataset(TemporalWindowDataset):
     """Dataset for categorical time series data with one-hot encoding."""
     
-    def __init__(self, data, time_vector=None, window_manager=None, device=None):
+    def __init__(self, data, time_vector=None, window_manager=None, device=None, min_coverage_fraction=0.2):
         """
         Parameters
         ----------
@@ -451,7 +478,10 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         window_manager : WindowManager, optional
             External window manager for alignment
         device : str, optional
-            Device for tensor operations
+            Device for tensor operations.
+        min_coverage_fraction : float, optional
+            Minimum fraction of a window that must be covered by actual data (vs. padded) for the window to be considered valid.
+            This is used in validate_window_coverage to filter out windows that are mostly empty due to large jumps in time.
         """
         super().__init__(window_manager, device)
 
@@ -469,7 +499,8 @@ class CategoricalWindowDataset(TemporalWindowDataset):
             self.time_vector = np.arange(0, self.data_orig.shape[0])
         # Infer sample rate from time vector
         # This class assumes, outside of jumps, a constant sample rate!
-        self.period = self.time_vector[1] - self.time_vector[0]
+        diffs = np.diff(self.time_vector)
+        self.period = float(np.median(diffs)) if len(diffs) > 0 else 1.0
 
         if len(self.time_vector) != self.data_orig.shape[0]:
             raise ValueError(
@@ -480,6 +511,8 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         # Total one-hot encoded dimensions
         self.n_categories = self.data_orig.max() + 1
         
+        self.min_coverage_fraction = min_coverage_fraction
+
         # Process data if window manager is available
         if window_manager is not None:
             self.set_window_manager(window_manager)
@@ -530,10 +563,16 @@ class CategoricalWindowDataset(TemporalWindowDataset):
 
     def validate_window_coverage(self):
         """Check which windows have sufficient data coverage."""
-        window_inds = self._cached_window_inds
-        valid = np.full(self.window_manager.window_times.shape, False, dtype=bool)
-        valid[window_inds] = True
-        return valid
+        if self.window_manager is None:
+            return None
+        max_samples = self.max_samples_per_window
+        min_count = max(1, int(np.ceil(self.min_coverage_fraction * max_samples)))
+        _, counts = np.unique(self._cached_window_inds, return_counts=True)
+        # Build per-window count array (windows with no samples have count 0)
+        window_counts = np.zeros(len(self.window_manager.window_times), dtype=int)
+        unique_wins, win_counts = np.unique(self._cached_window_inds, return_counts=True)
+        window_counts[unique_wins] = win_counts
+        return window_counts >= min_count
     
     def time_shift(self, offset):
         """Apply time shift to data."""
@@ -573,3 +612,118 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         """
         logger.warning("Precision adjustment not applicable to categorical data. Ignoring.")
         pass
+
+
+class BinnedSpikeDataset(TemporalWindowDataset):
+    """Spike train dataset using binned firing rates instead of raw spike times.
+
+    Parameters
+    ----------
+    spike_times : list of np.ndarray
+        One array of spike times per neuron, in seconds relative to session start.
+    bin_size : float
+        Width of each firing rate bin in seconds. Smaller bins preserve more
+        temporal precision at the cost of a higher-dimensional input to the critic.
+    window_manager : WindowManager, optional
+    device : str or torch.device, optional
+    normalize : bool, optional
+        If True, divide bin counts by bin_size to express as spikes/second.
+        Default True. Set False to keep raw counts.
+    """
+
+    def __init__(self, spike_times, bin_size: float,
+                 window_manager=None, device=None, normalize: bool = True):
+        super().__init__(window_manager, device)
+        self.data_orig = [np.array(st) for st in spike_times]
+        self.bin_size = bin_size
+        self.normalize = normalize
+        self.time_offset = 0
+        if window_manager is not None:
+            self.set_window_manager(window_manager)
+            self.move_data_to_windows()
+        else:
+            self.window_manager = None
+
+    def _compute_max_samples_per_window(self):
+        """Number of bins per window = ceil(window_size / bin_size)."""
+        self.max_samples_per_window = int(
+            np.ceil(self.window_manager.window_size / self.bin_size)
+        )
+
+    def get_temporal_extent(self):
+        valid = [st for st in self.data_orig if len(st) > 0]
+        if not valid:
+            return 0, 0
+        return min(st[0] for st in valid), max(st[-1] for st in valid)
+
+    def move_data_to_windows(self):
+        if self.window_manager is None:
+            raise RuntimeError("Cannot move data to windows: Window manager not initialized")
+
+        n_neurons = len(self.data_orig)
+        n_windows = self.window_manager.n_windows
+        n_bins = self.max_samples_per_window
+        wt = self.window_manager.window_times  # (n_windows,)
+
+        data = np.zeros((n_windows, n_neurons, n_bins), dtype=np.float32)
+
+        for i, spikes in enumerate(self.data_orig):
+            if len(spikes) == 0:
+                continue
+            for w_idx, t_start in enumerate(wt):
+                t_end = t_start + self.window_manager.window_size
+                # Spikes in this window
+                mask = (spikes >= t_start) & (spikes < t_end)
+                win_spikes = spikes[mask] - t_start  # relative to window start
+                # Bin them
+                bin_edges = np.linspace(0, self.window_manager.window_size, n_bins + 1)
+                counts, _ = np.histogram(win_spikes, bins=bin_edges)
+                if self.normalize:
+                    data[w_idx, i, :] = counts.astype(np.float32) / self.bin_size
+                else:
+                    data[w_idx, i, :] = counts.astype(np.float32)
+
+        self.data = torch.tensor(data, device=self.device)
+        self.data_master = self.data.detach().clone()
+
+    def validate_window_coverage(self):
+        """Mark a window valid if at least one neuron fired in it."""
+        n_windows = self.window_manager.n_windows
+        valid = np.zeros(n_windows, dtype=bool)
+        wt = self.window_manager.window_times
+        for spikes in self.data_orig:
+            if len(spikes) == 0:
+                continue
+            for w_idx, t_start in enumerate(wt):
+                t_end = t_start + self.window_manager.window_size
+                if np.any((spikes >= t_start) & (spikes < t_end)):
+                    valid[w_idx] = True
+        return valid
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+    def reset(self):
+        self.data = self.data_master.detach().clone()
+
+    def time_shift(self, offset):
+        self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
+        self.time_offset = offset
+
+    def apply_noise(self, amplitude):
+        """Add Uniform noise to non-zero bins (active bins only)."""
+        if amplitude == 0.0:
+            self.reset()
+            return
+        noise = torch.empty_like(self.data).uniform_(-amplitude / 2, amplitude / 2)
+        # Only perturb bins that actually had spikes
+        active = self.data_master > 0
+        self.data = self.data_master.clone()
+        self.data[active] = (self.data_master[active] + noise[active]).clamp(min=0)
+  
+    def apply_precision(self, precision_level):
+        """Round bin values to the nearest multiple of precision_level."""
+        if precision_level == 0.0:
+            self.reset()
+            return
+        self.data = torch.round(self.data_master / precision_level) * precision_level

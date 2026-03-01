@@ -96,7 +96,8 @@ def run_precision_analysis(
         patience=base_params.get('patience', 10),
         train_indices=train_idx,
         test_indices=test_idx,
-        verbose=base_params.get('verbose', True),
+        verbose=base_params.get('verbose', False),
+        show_progress=base_params.get('show_progress', True),
         max_eval_samples=base_params.get('max_eval_samples', 5000),
         track_spectral_metrics=False # Skip dimensionality math to save time
     )

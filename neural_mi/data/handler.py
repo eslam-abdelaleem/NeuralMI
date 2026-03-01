@@ -175,15 +175,15 @@ class PairedTemporalDataset(Dataset):
                 self.y_dataset.remove_invalid_windows()
             if self.window_manager.n_windows == 0:
                 raise ValueError("No valid windows after checking data coverage")
+            self.window_manager.window_times = self.window_manager.window_times[combined_valid]
+            self.window_manager.valid_windows = np.ones(self.window_manager.n_windows, dtype=bool)
+
             logger.info(
-                f"Window coverage: {self.window_manager.n_windows}/{len(self.window_manager.window_times)} "
+                f"Window coverage: {self.window_manager.n_windows}/{len(combined_valid)} "
                 f"windows have sufficient data"
             )
         else:
-            # No validation - all windows are valid
             self.window_manager.n_windows = len(self.window_manager.window_times)
-        
-        # Notify any views that windows have been rebuilt
         self._notify_subset_views(time_shift=time_shift)
 
     def _notify_subset_views(self, time_shift=None):
@@ -303,11 +303,21 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None):
     if proc_type is None:
         return StaticDataset(data, device=device)
     if proc_type == 'continuous':
-        return ContinuousWindowDataset(data, time, device=device)
+        min_cov = (proc_params or {}).get('min_coverage_fraction', 0.2)
+        return ContinuousWindowDataset(data, time, device=device,
+                                       min_coverage_fraction=min_cov)
     elif proc_type == 'spike':
-        return SpikeWindowDataset(data, time, device=device)
+        bin_size = (proc_params or {}).get('bin_size', None)
+        if bin_size is not None:
+            normalize = (proc_params or {}).get('normalize_bins', True)
+            return BinnedSpikeDataset(data, bin_size=bin_size, device=device,
+                                      normalize=normalize)
+        no_spike_val = (proc_params or {}).get('no_spike_value', -1.0)
+        return SpikeWindowDataset(data, time, device=device, no_spike_value=no_spike_val)
+
     elif proc_type == 'categorical':
-        return CategoricalWindowDataset(data, time, device=device)
+        min_cov = (proc_params or {}).get('min_coverage_fraction', 0.2)
+        return CategoricalWindowDataset(data, time, device=device, min_coverage_fraction=min_cov)
     else:
         raise ValueError(f"Unknown processor type: {proc_type}")
 
@@ -318,38 +328,27 @@ def create_dataset(
         processor_type_y=None, processor_params_y=None,
         device=None
     ):
-    """
-    Factory function for creating appropriate dataset objects.
-    """
-
-    # Set up inputs
+    """Factory function for creating appropriate dataset objects."""
     proc_type_x = processor_type_x
-    # Copy to avoid side-effects on original dict passed by reference
     proc_params_x = (processor_params_x or {}).copy()
     proc_type_y = processor_type_y if processor_type_y else processor_type_x
     proc_params_y = (processor_params_y or {}).copy() if processor_params_y else proc_params_x.copy()
 
-    # Validation should be run before this function. Just quick check for pre-processed data
     if proc_type_x is None or proc_type_y is None:
         logger.warning(
             "Pre-processed data detected. Skipping compatibility check. "
             "Ensure X and Y have compatible representations."
         )
     
-    # Initialize datasets
     x_dataset = create_single_dataset(x_data, x_time, proc_type_x, proc_params_x, device=device)
     y_dataset = create_single_dataset(y_data, y_time, proc_type_y, proc_params_y, device=device) if y_data is not None else None
 
-    # Create and return paired dataset
-    # If both types of data are temporal, create a paired temporal dataset
     if proc_type_x is not None or proc_type_y is not None:
         window_size = proc_params_x.pop('window_size', None)
-        # Filter kwargs to only valid ones for PairedTemporalDataset
         valid_kwargs = inspect.signature(PairedTemporalDataset).parameters
         filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
         return PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size, **filtered_kwargs)
     else:
-        # Filter kwargs to only valid ones for PairedDataset
         valid_kwargs = inspect.signature(PairedDataset).parameters
         filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
         return PairedDataset(x_dataset, y_dataset, **filtered_kwargs)

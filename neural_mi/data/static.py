@@ -90,7 +90,7 @@ class StaticDataset(BaseStaticDataset):
             # Not possible to infer which dim is channel vs observation vs extra, 
             # so leaving to original shape (on user to get correct)
             reshaped = data
-        self.data = torch.tensor(reshaped, device=self.device)
+        self.data = torch.tensor(reshaped, device=self.device, dtype=torch.float32)
 
     def __getitem__(self, idx):
         """Return data at index."""

@@ -1,6 +1,7 @@
 # neural_mi/data/views.py
 import torch
 import numpy as np
+from typing import List, Optional, Tuple
 
 from .handler import PairedTemporalDataset
 from neural_mi.logger import logger
@@ -19,7 +20,8 @@ class SubsetView:
     by however much x_dataset was shifted by. 
     """
     
-    def __init__(self, dataset, indices=None, times=None, channels_x=None, channels_y=None):
+    def __init__(self, dataset, indices=None, times=None, channels_x=None, channels_y=None,
+                 max_index_reduction: float = 0.05):
         """
         Parameters
         ----------
@@ -35,12 +37,19 @@ class SubsetView:
             Channel indices to select from X data
         channels_y : np.ndarray, optional
             Channel indices to select from Y data
+        max_index_reduction : float, optional
+            Maximum tolerated fractional drop in the number of valid windows
+            after a dataset rebuild (e.g. due to random_time_shifting).
+            If the window count drops by more than this fraction, a warning is
+            emitted with the old and new counts. Default is 0.05 (5%).
+            Set to 1.0 to suppress warnings entirely.
         """
         self.dataset = dataset
         self.channels_x = channels_x
         self.channels_y = channels_y
         self.is_temporal = isinstance(dataset, PairedTemporalDataset)
         self.time_offset = 0
+        self.max_index_reduction = max_index_reduction
         
         # Register this view with the dataset so it gets notified of changes
         if not hasattr(dataset, '_subset_views'):
@@ -159,16 +168,36 @@ class SubsetView:
         """
         Called by the dataset when windows are rebuilt (e.g., after time shift).
         Re-computes indices from stored times.
+        If the number of valid windows drops by more than
+        `max_index_reduction` (default 5%) after the rebuild, a warning is
+        emitted with the old and new counts. This makes silent dataset shrinkage
+        visible when random_time_shifting pushes windows out of valid range.
         """
         if not self.is_temporal or self.times is None:
             return
-        
+
+        old_count = len(self.indices) if self.indices is not None else 0
+
         # If time shift was applied, update our stored times
         if time_shift is not None:
             self.times = self.times + time_shift - self.time_offset
             self.time_offset = time_shift
-        
+
         self._update_indices_from_times()
+
+        new_count = len(self.indices) if self.indices is not None else 0
+        if old_count > 0:
+            reduction = (old_count - new_count) / old_count
+            if reduction > self.max_index_reduction:
+                logger.warning(
+                    f"SubsetView: window count dropped from {old_count} to "
+                    f"{new_count} ({reduction:.1%} reduction) after dataset "
+                    f"rebuild. This usually means random_time_shifting moved "
+                    f"windows outside the valid recording range. Consider "
+                    f"reducing the shift magnitude, or set "
+                    f"max_index_reduction > {self.max_index_reduction:.0%} "
+                    f"to suppress this warning."
+                )
     
     def __len__(self):
         if self.indices is None:
