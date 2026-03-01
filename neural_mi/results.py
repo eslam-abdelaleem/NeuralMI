@@ -85,25 +85,109 @@ class Results:
         from neural_mi.visualize.plot import plot_sweep_curve, plot_bias_correction_fit
         
         show = kwargs.pop('show', True)
+
+        units = kwargs.pop('units', self.params.get('output_units', 'bits'))
+
         if ax is None:
             fig, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
 
         if self.mode in ['sweep', 'dimensionality', 'lag']:
             if self.dataframe is None:
                 raise ValueError("Cannot plot: results do not contain a DataFrame.")
+
+            # Infer sweep_var more robustly by excluding all known result columns 
+            _RESULT_COLS = {
+                'mi_mean', 'mi_std', 'test_mi', 'train_mi', 'mi_corrected',
+                'mi_error', 'slope', 'run_id', 'is_reliable', 'gammas_used',
+            }
             sweep_var = self.params.get('sweep_var', 'embedding_dim' if self.mode == 'dimensionality' else None)
             if not sweep_var:
-                possible = [c for c in self.dataframe.columns if c not in ['mi_mean', 'mi_std']]
+                possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
                 if len(possible) == 1:
                     sweep_var = possible[0]
                     logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
+                elif len(possible) > 1:
+                    sweep_var = possible[0]
+                    logger.warning(
+                        f"Multiple candidate sweep variables found: {possible}. "
+                        f"Using '{sweep_var}'. Pass sweep_var=... explicitly to suppress."
+                    )
                 else:
-                    raise ValueError(f"Cannot determine sweep variable from {possible}.")
-            plot_sweep_curve(self.dataframe, param_col=sweep_var, ax=ax, **kwargs)
+                    raise ValueError(
+                        f"Cannot determine sweep variable. DataFrame columns: "
+                        f"{list(self.dataframe.columns)}. Pass sweep_var=... explicitly."
+                    )
+            plot_sweep_curve(self.dataframe, param_col=sweep_var, units=units, ax=ax, **kwargs)
+
         elif self.mode == 'rigorous':
             if self.dataframe is None or not self.details:
                 raise ValueError("Rigorous results are incomplete and cannot be plotted.")
-            plot_bias_correction_fit(self.dataframe, self.details, ax=ax, **kwargs)
+
+            # Validate required keys before entering the plotter so
+            # missing keys raise a clear ValueError rather than a KeyError deep
+            # inside plot_bias_correction_fit.
+            _REQUIRED = {'slope', 'mi_corrected', 'mi_error', 'gammas_used'}
+            _missing = _REQUIRED - set(self.details.keys())
+            if _missing:
+                raise ValueError(
+                    f"Results.plot() for mode='rigorous' is missing required keys "
+                    f"in details: {sorted(_missing)}. Present: {sorted(self.details.keys())}. "
+                    f"This may indicate the rigorous run failed or produced only partial results."
+                )
+            plot_bias_correction_fit(self.dataframe, self.details, units=units, ax=ax, **kwargs)
+
+        elif self.mode == 'precision':
+            # Precision mode produces a MI-vs-tau curve. The curve shows MI as a function of
+            # corruption level (tau), with horizontal and vertical dashed lines
+            # marking the threshold MI and precision tau respectively.
+            if self.dataframe is None or self.dataframe.empty:
+                raise ValueError(
+                    "Cannot plot precision results: dataframe is missing or empty. "
+                    "Expected columns: 'tau' and 'mi_mean' (or 'test_mi')."
+                )
+            df = self.dataframe.copy()
+            if 'mi_mean' not in df.columns and 'test_mi' in df.columns:
+                df = df.rename(columns={'test_mi': 'mi_mean'})
+
+            precision_tau   = self.details.get('precision_tau')
+            baseline_mi     = self.details.get('baseline_mi')
+            threshold_value = self.details.get('threshold_value')
+
+            tau_col = 'tau'
+            mi_col  = 'mi_mean'
+            if df.duplicated(subset=[tau_col]).any():
+                df = (df.groupby(tau_col)[mi_col]
+                        .agg(['mean', 'std'])
+                        .reset_index()
+                        .rename(columns={'mean': mi_col, 'std': 'mi_std'}))
+
+            ax.plot(df[tau_col], df[mi_col], 'o-', color='steelblue',
+                    linewidth=2, markersize=5, label='MI vs corruption')
+            if 'mi_std' in df.columns and (df['mi_std'] > 0).any():
+                ax.fill_between(df[tau_col],
+                                df[mi_col] - df['mi_std'],
+                                df[mi_col] + df['mi_std'],
+                                alpha=0.2, color='steelblue')
+            if threshold_value is not None:
+                ax.axhline(threshold_value, color='tomato', linestyle='--',
+                           linewidth=1.5,
+                           label=f'Threshold ({threshold_value:.3f} {units})')
+            if precision_tau is not None:
+                ax.axvline(precision_tau, color='darkorange', linestyle='--',
+                           linewidth=1.5,
+                           label=f'Precision τ = {precision_tau:.4g}')
+            if baseline_mi is not None:
+                ax.annotate(f'Baseline MI = {baseline_mi:.3f} {units}',
+                            xy=(df[tau_col].iloc[0], baseline_mi),
+                            xytext=(0.05, 0.92), textcoords='axes fraction',
+                            fontsize=9, color='gray',
+                            arrowprops=dict(arrowstyle='->', color='gray', lw=1))
+            ax.set_xlabel('Corruption level (τ)', fontsize=12)
+            ax.set_ylabel(f'Mutual Information ({units})', fontsize=12)
+            ax.set_title('Precision Analysis: MI vs Corruption', fontsize=13)
+            ax.legend(fontsize=9)
+            ax.grid(True, alpha=0.3)
+
         else:
             raise NotImplementedError(f"Plotting is not implemented for mode: '{self.mode}'")
 

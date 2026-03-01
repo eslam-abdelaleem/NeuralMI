@@ -17,3 +17,9 @@ ESTIMATORS = {
     'tuba': tuba_lower_bound,
     'smile': smile_lower_bound,
 }
+
+# Default parameters for estimators to enhance usability
+ESTIMATOR_DEFAULTS = {
+    'smile': {'clip': None}, # Default to None as per function definition, but explicit.
+    # Users can override this. If we want to change default behavior we can change it here.
+}

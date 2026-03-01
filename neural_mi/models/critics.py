@@ -38,26 +38,26 @@ class BaseCritic(nn.Module):
         total_kl_loss = kl_loss_x + kl_loss_y
         return x_embedded, y_embedded, total_kl_loss
 
-    def _compute_embeddings_chunked(self, x: torch.Tensor, y: torch.Tensor, 
-                                    net_x: nn.Module, net_y: nn.Module, 
-                                    max_n_batches: int, use_variational: bool) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Computes embeddings efficiently, handling chunking and proper variational loss weighting."""
+    def _compute_embeddings_chunked(self, x, y, net_x, net_y, max_n_batches, use_variational):
+        """Computes embeddings efficiently, with a single consistent KL normalization."""
         batch_size = x.shape[0]
         
         # Fast path for small datasets
         if batch_size <= max_n_batches:
             x_out = net_x(x)
             y_out = net_y(y)
-            return self._get_embeddings_and_kl(x_out, y_out)
+            x_embedded, y_embedded, total_kl = self._get_embeddings_and_kl(x_out, y_out)
+            # Apply single consistent normalization by batch size
+            if use_variational and not isinstance(total_kl, float):
+                total_kl = total_kl / batch_size
+            return x_embedded, y_embedded, total_kl
             
         # Chunked processing to prevent OOM
         x_embeds, y_embeds = [], []
-        total_kl = 0.0
+        total_kl_raw = torch.tensor(0.0)
         
         for i in range(0, batch_size, max_n_batches):
             end_idx = min(i + max_n_batches, batch_size)
-            chunk_size = end_idx - i
-            weight = chunk_size / batch_size  # Size-weighted average for unbiased KL
             
             x_out = net_x(x[i:end_idx])
             y_out = net_y(y[i:end_idx])
@@ -67,26 +67,30 @@ class BaseCritic(nn.Module):
             x_embeds.append(x_emb)
             y_embeds.append(y_emb)
             
-            if use_variational:
-                total_kl += kl * weight
+            if use_variational and not isinstance(kl, float):
+                # Accumulate raw KL — normalize once after all chunks
+                total_kl_raw = total_kl_raw + kl
                 
         x_embedded = torch.cat(x_embeds, dim=0)
         y_embedded = torch.cat(y_embeds, dim=0)
         
-        if not use_variational or isinstance(total_kl, float):
+        if use_variational and not isinstance(total_kl_raw, float):
+            # Single normalization by full batch size — consistent with fast path
+            total_kl = total_kl_raw.to(x_embedded.device) / batch_size
+        else:
             total_kl = torch.tensor(0.0, device=x_embedded.device)
             
         return x_embedded, y_embedded, total_kl
+
     
     def get_embeddings(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Public API to extract chunked embeddings from a trained critic."""
-        # Unpack the embedding networks depending on the critic type
         if hasattr(self, 'embedding_net_x'):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
         else:
-            # Fallback for ConcatCritic which only has one joint network
-            # (Though extracting separate embeddings from pure Concat is non-trivial)
-            return x, y 
+            # ConcatCritic: no separate embedding networks, return flat inputs.
+            # This is semantically honest — concat critics have no separable embedding.
+            return x.view(x.shape[0], -1), y.view(y.shape[0], -1)
             
         max_n = getattr(self, 'max_n_batches', 512)
         use_var = getattr(self, 'use_variational', False)
@@ -189,28 +193,32 @@ class ConcatCritic(BaseCritic):
         x_flat, y_flat = x.view(batch_size, -1), y.view(batch_size, -1)
         
         scores = torch.zeros(batch_size * batch_size, device=x.device)
-        total_kl = 0.0
+        total_kl_raw = torch.tensor(0.0)
         
         pair_batch_size = self.max_n_batches
         
         for i in range(0, batch_size * batch_size, pair_batch_size):
             end_idx = min(i + pair_batch_size, batch_size * batch_size)
-            
             idx = torch.arange(i, end_idx, device=x.device)
             row_idx = idx // batch_size
             col_idx = idx % batch_size
-            
             pairs = torch.cat([x_flat[row_idx], y_flat[col_idx]], dim=1)
             out = self.embedding_net(pairs)
             
             if isinstance(out, tuple):
                 chunk_scores, kl = out
-                weight = (end_idx - i) / (batch_size * batch_size)
-                total_kl += kl * weight
+                if self.use_variational and not isinstance(kl, float):
+                    total_kl_raw = total_kl_raw + kl
             else:
                 chunk_scores = out
                 
             scores[i:end_idx] = chunk_scores.squeeze()
-            
-        kl_tensor = torch.tensor(total_kl, device=x.device) if isinstance(total_kl, float) else total_kl
+
+        if self.use_variational and not isinstance(total_kl_raw, float):
+            kl_tensor = total_kl_raw.to(x.device) / (batch_size * batch_size)
+        else:
+            kl_tensor = torch.tensor(0.0, device=x.device)
+
         return scores.view(batch_size, batch_size), kl_tensor
+
+

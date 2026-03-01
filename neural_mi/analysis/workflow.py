@@ -20,6 +20,7 @@ from typing import List, Dict, Any, Optional
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger
 from neural_mi.exceptions import InsufficientDataError, TrainingError
+from neural_mi.utils import _configure_multiprocessing
 
 def __find_linear_region(group: pd.DataFrame, delta_threshold: float,
                          min_gamma_points: int, verbose: bool) -> List[int]:
@@ -31,36 +32,38 @@ def __find_linear_region(group: pd.DataFrame, delta_threshold: float,
     """
     gammas_to_fit = sorted(group['gamma'].unique())
     while len(gammas_to_fit) >= min_gamma_points:
-        subset = group[group['gamma'].isin(gammas_to_fit)]
-        if len(subset) < 3: break
+        subset = group[group['gamma'].isin(gammas_to_fit)].copy()
+        if len(subset) < 3:
+            break
+        subset['inv_gamma'] = 1.0 / subset['gamma']
         weights = 1 / subset['gamma'].map(subset['gamma'].value_counts())
-        X_quad = sm.add_constant(np.vstack([subset['gamma'], subset['gamma']**2]).T)
+        X_quad = sm.add_constant(np.vstack([subset['inv_gamma'], subset['inv_gamma']**2]).T)
         model_quad = sm.WLS(subset['test_mi'], X_quad, weights=weights).fit()
         _, a1, a2 = model_quad.params
         final_delta = abs(a2 / a1) if a1 != 0 else float('inf')
-        if final_delta < delta_threshold: break
+        if final_delta < delta_threshold:
+            break
         gammas_to_fit.pop(-1)
     return gammas_to_fit
 
 def __extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
                      confidence_level: float) -> tuple:
-    """Extrapolates MI to infinite data limit from the linear region.
-
-    Performs a weighted least squares linear fit on the identified linear
-    region of the MI vs. gamma plot. The intercept of this fit is the
-    bias-corrected MI estimate.
+    """Extrapolates MI to infinite data limit (gamma→0, i.e. 1/N→0).
+    
     """
-    final_subset = group[group['gamma'].isin(gammas_to_fit)]
+    final_subset = group[group['gamma'].isin(gammas_to_fit)].copy()
     if len(final_subset) < 2:
         raise InsufficientDataError("Not enough points for a reliable linear fit after pruning.")
-    
+
+    final_subset['inv_gamma'] = 1.0 / final_subset['gamma']
     weights = 1 / final_subset['gamma'].map(final_subset['gamma'].value_counts())
-    X_linear = sm.add_constant(final_subset['gamma'])
+    X_linear = sm.add_constant(final_subset['inv_gamma'])
     fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=weights).fit()
     intercept, slope = fit_linear.params
-    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=1-confidence_level)[0]
+    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=1 - confidence_level)[0]
     mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
     return intercept, mi_error, slope
+
 
 def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any], delta_threshold: float, 
                               min_gamma_points: int, confidence_level: float, verbose: bool) -> List[Dict[str, Any]]:
@@ -155,15 +158,17 @@ class AnalysisWorkflow:
             from all the individual training runs.
         """
         n_workers = n_workers or mp.cpu_count()
+        show_progress = self.base_params.get('show_progress', True)
         logger.info(f"Starting rigorous analysis with {n_workers} workers...")
         tasks = self._prepare_tasks(param_grid, gamma_range)
         if not tasks:
             return {"corrected_results": [], "raw_results_df": pd.DataFrame()}
 
+        _configure_multiprocessing()
         with mp.get_context('spawn').Pool(processes=n_workers) as pool:
             raw_results = list(tqdm(
                 pool.imap(run_training_task, tasks), total=len(tasks),
-                desc="Rigorous Analysis Progress", unit="task"
+                desc="Rigorous Analysis Progress", unit="task", disable=not show_progress
             ))
 
         logger.info("All training tasks finished. Performing bias correction...")
@@ -181,7 +186,15 @@ class AnalysisWorkflow:
         return {"corrected_results": corrected_results, "raw_results_df": raw_results_df}
 
     def _prepare_tasks(self, param_grid: Optional[Dict[str, List]], gamma_range) -> List[tuple]:
-        tasks = []; run_id_base = str(uuid.uuid4())
+        """Prepares tasks using a hierarchical master-permutation subsampling strategy.
+        Generate one master permutation at the start. For each gamma G,
+        split the master permutation into G equal chunks. This ensures:
+        - The gamma=2 subsets are literally halves of the gamma=1 dataset.
+        - Each gamma level sees a consistent view of the data, only varying in N.
+        - The linear fit extrapolates pure N-dependent bias, not noise variation.
+        """
+        tasks = []
+        run_id_base = str(uuid.uuid4())
         param_grid = param_grid or {}
         if self.base_params.get('critic_type') == 'concat' and 'embedding_dim' in param_grid:
             param_grid.pop('embedding_dim')
@@ -189,14 +202,27 @@ class AnalysisWorkflow:
         keys, values = zip(*param_grid.items()) if param_grid else ([], [])
         param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if param_grid else [{}]
 
+        N = self.x_data.shape[0]
+
         for i_combo, params in enumerate(param_combinations):
             current_params = {**self.base_params, **params}
+
+            master_permutation = np.random.permutation(N)
+
             for gamma in gamma_range:
                 current_params['gamma'] = gamma
-                indices = np.random.permutation(self.x_data.shape[0])
-                for i_subset, subset_indices in enumerate(np.array_split(indices, gamma)):
-                    x_subset, y_subset = self.x_data[subset_indices], self.y_data[subset_indices]
+
+                # Split the master permutation into gamma equal chunks.
+                # np.array_split handles uneven divisions gracefully.
+                chunks = np.array_split(master_permutation, gamma)
+
+                for i_subset, subset_indices in enumerate(chunks):
+                    x_subset = self.x_data[subset_indices]
+                    y_subset = self.y_data[subset_indices]
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
                     tasks.append((x_subset, y_subset, current_params.copy(), task_run_id))
+
         logger.debug(f"Created {len(tasks)} tasks to run...")
         return tasks
+
+

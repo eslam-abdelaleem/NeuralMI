@@ -7,6 +7,11 @@ from typing import Dict, Any, Optional, Union, List, Tuple
 import pandas as pd
 import numpy as np
 
+import multiprocessing as mp
+import os
+import platform
+import tempfile
+
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.models.embeddings import MLP, VarMLP, BaseEmbedding, CNN1D, GRU, LSTM, TCN, Transformer
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
@@ -22,41 +27,111 @@ def get_device(device_str: Optional[str] = None) -> torch.device:
         return torch.device("mps")
     return torch.device("cpu")
 
-def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str) -> tuple:
-    """Shifts y_data relative to x_data based on the specified lag."""
+_mp_configured = False
+
+def _configure_multiprocessing() -> None:
+    """Lazily configure multiprocessing for parallel pool creation.
+
+    Called once, lazily, just before any Pool is created. Guarded by
+    _mp_configured so it is idempotent even if workflow.py and sweep.py both
+    call it in the same process.
+    """
+    global _mp_configured
+    if _mp_configured:
+        return
+    try:
+        mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        # Already set — e.g. user called set_start_method themselves; respect it.
+        logger.debug("Multiprocessing start method already set; skipping.")
+    if platform.system() == "Darwin":
+        # macOS spawn workers inherit the parent's TMPDIR which may point to an
+        # app sandbox directory not accessible to child processes.
+        custom_temp = tempfile.mkdtemp()
+        os.environ["TMPDIR"] = custom_temp
+        logger.debug(f"macOS: set TMPDIR={custom_temp} for spawn workers.")
+    _mp_configured = True
+
+
+def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
+                sample_rate: Optional[float] = None) -> tuple:
+    """Shifts y_data relative to x_data based on the specified lag.
+
+    Parameters
+    ----------
+    x_data : array-like
+        Data for variable X.
+    y_data : array-like
+        Data for variable Y.
+    lag : int or float
+        The lag value. Units depend on processor_type and sample_rate — see above.
+    processor_type : str
+        One of 'continuous', 'categorical', or 'spike'.
+    sample_rate : float, optional
+        Samples per second for continuous/categorical data. If provided, lag is
+        interpreted as seconds and converted to samples. If None, lag is treated
+        as samples with a deprecation warning.
+    """
     if processor_type in ['continuous', 'categorical']:
-        # Handle PyTorch tensors explicitly to avoid NumPy 2.0 deprecation warnings
-        if torch.is_tensor(x_data): 
+        # Convert to numpy if needed
+        if torch.is_tensor(x_data):
             x_data = x_data.detach().cpu().numpy()
-        elif not isinstance(x_data, np.ndarray): 
+        elif not isinstance(x_data, np.ndarray):
             x_data = np.array(x_data)
-            
-        if torch.is_tensor(y_data): 
+
+        if torch.is_tensor(y_data):
             y_data = y_data.detach().cpu().numpy()
-        elif not isinstance(y_data, np.ndarray): 
+        elif not isinstance(y_data, np.ndarray):
             y_data = np.array(y_data)
-        
-        if lag == 0:
+
+        if sample_rate is not None:
+            # Lag provided in seconds — convert to samples
+            lag_samples = int(round(lag * sample_rate))
+        else:
+            # Legacy: treat lag as samples, but warn the user
+            logger.warning(
+                f"Lag units for '{processor_type}' data are ambiguous without a sample_rate. "
+                f"Treating lag={lag} as samples (index offset). "
+                f"To specify lag in seconds, pass 'sample_rate' in processor_params_x. "
+                f"Note: spike data always uses seconds, so mixing processor types without "
+                f"sample_rate will produce inconsistent lag scales."
+            )
+            lag_samples = int(lag)
+
+        if lag_samples == 0:
             return x_data, y_data
-        elif lag > 0: # y is shifted to the left (y is in the future of x)
-            return x_data[:-lag, :], y_data[lag:, :]
-        else: # lag < 0, y is shifted to the right (y is in the past of x)
-            return x_data[-lag:, :], y_data[:lag, :]
-            
+        elif lag_samples > 0:
+            # y is in the future of x
+            return x_data[:-lag_samples, :], y_data[lag_samples:, :]
+        else:
+            # y is in the past of x
+            return x_data[-lag_samples:, :], y_data[:lag_samples, :]
+
     elif processor_type == 'spike':
-        y_shifted = [spikes - lag for spikes in y_data] # lag is in seconds for spikes
+        # Spike times are always in seconds — lag is in seconds, no conversion needed
+        y_shifted = [spikes - lag for spikes in y_data]
         return x_data, y_shifted
-        
+
     return x_data, y_data
+
     
 def build_critic(critic_type: str, embedding_params: Dict[str, Any], 
                  custom_embedding_cls: Optional[type] = None) -> BaseCritic:
+    """Builds and returns a critic model based on the provided parameters.
+
+    This function expects `embedding_params` to be fully populated with
+    defaults (e.g., via `ParameterValidator.apply_defaults`). It strictly
+    accesses required parameters and will raise a KeyError if something is missing,
+    preventing silent failures from missing defaults.
+    """
     
-    use_variational = embedding_params.get('use_variational', False)
-    model_type = embedding_params.get('embedding_model', 'mlp').lower()
-    hidden_dim, n_layers = embedding_params['hidden_dim'], embedding_params['n_layers']
+    # Access parameters strictly to ensure defaults were applied
+    use_variational = embedding_params['use_variational']
+    model_type = embedding_params['embedding_model'].lower()
+    hidden_dim = embedding_params['hidden_dim']
+    n_layers = embedding_params['n_layers']
     embed_dim = embedding_params['embedding_dim']
-    max_n_batches = embedding_params.get('max_n_batches', 512)
+    max_n_batches = embedding_params['max_n_batches']
 
     # --- Model Selection Logic ---
     if custom_embedding_cls:
@@ -101,6 +176,19 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     net_x = EmbeddingModel(input_dim_x, **model_kwargs)
     net_y = EmbeddingModel(input_dim_y, **model_kwargs)
+
+    # Warn when the first embedding layer is severely overparameterized.
+    # Large first layers (input_dim * hidden_dim) are the most common cause of
+    # overfitting in neuroscience datasets where windows are high-dimensional but
+    # sample counts are modest. 500k is a practical threshold — not a hard limit.
+    first_layer_params = input_dim_x * hidden_dim
+    if first_layer_params > 500_000:
+        logger.warning(
+            f"Large first embedding layer detected: input_dim_x={input_dim_x} x "
+            f"hidden_dim={hidden_dim} = {first_layer_params:,} parameters. "
+            f"This may cause overfitting on small datasets. Consider reducing "
+            f"window_size, hidden_dim, or using a different embedding model."
+        )
 
     # --- Critic Assembly ---
     if critic_type == 'separable':

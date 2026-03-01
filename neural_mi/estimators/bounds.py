@@ -140,10 +140,10 @@ def smile_lower_bound(scores: torch.Tensor, clip: float = None) -> torch.Tensor:
     torch.Tensor
         A scalar tensor representing the estimated MI lower bound.
     """
-    scores_ = torch.clamp(scores, -clip, clip) if clip is not None else scores
-    z = logmeanexp_nodiag(scores_, dim=(0, 1))
-    dv = scores.diag().mean() - z
-    js = js_fgan_lower_bound(scores)
+    scores_clipped = torch.clamp(scores, -clip, clip) if clip is not None else scores
+    z = logmeanexp_nodiag(scores_clipped, dim=(0, 1))
+    dv = scores_clipped.diag().mean() - z
+    js = js_fgan_lower_bound(scores_clipped)
     with torch.no_grad():
         dv_js = dv - js
     return js + dv_js

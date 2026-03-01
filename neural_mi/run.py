@@ -5,46 +5,13 @@ This module orchestrates the entire analysis pipeline, from data validation
 and preprocessing to model training and results aggregation. The `run` function
 acts as a unified interface for all supported analysis modes.
 """
-# Safe guard for macOS problems:
+import pandas as pd
+import numpy as np
+import torch
 import platform
 import os
 import tempfile
 import torch.multiprocessing as mp
-from .logger import logger
-
-# 1. UNIVERSAL SAFEGUARD: Set multiprocessing start method to 'spawn'.
-# This is required for Windows and is the safest method for CUDA on Linux/macOS,
-# preventing potential deadlocks.
-try:
-    # The 'force=True' flag is important on systems where the method might have
-    # already been set (e.g., in an interactive session).
-    mp.set_start_method("spawn", force=True)
-    logger.debug("Successfully set multiprocessing start method to 'spawn'.")
-except RuntimeError:
-    # This will be raised if the context has already been set and cannot be changed.
-    # It's safe to ignore in most cases as it means it's already configured.
-    logger.debug("Multiprocessing start method was already set.")
-
-# 2. MACOS-SPECIFIC WORKAROUND: Address issues with the default temp directory.
-# This code is only executed on macOS and does not affect other systems.
-if platform.system() == "Darwin":
-    try:
-        custom_temp_dir = os.path.expanduser('~/.neural_mi_tmp')
-        os.makedirs(custom_temp_dir, exist_ok=True)
-        
-        # Set environment variables for all tempfile-related operations
-        os.environ['TMPDIR'] = custom_temp_dir
-        tempfile.tempdir = custom_temp_dir
-        
-        logger.debug(f"Applied macOS-specific temp directory fix: {custom_temp_dir}")
-    except Exception as e:
-        logger.warning(f"Could not set custom temp directory for macOS: {e}. Using system default.")
-
-
-# Actual run code
-import pandas as pd
-import numpy as np
-import torch
 from typing import Union, Optional, Dict, Any, List
 import random
 
@@ -57,6 +24,7 @@ from .estimators import ESTIMATORS
 from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .utils import get_device
+from .logger import logger
 
 
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
@@ -101,9 +69,12 @@ def run(
     custom_embedding_cls: Optional[type] = None,
     save_best_model_path: Optional[str] = None,
     random_seed: Optional[int] = None,
-    verbose: bool = True,
+    verbose: bool = False,
+    show_progress: bool = True,
     device: Optional[str] = None,
     split_mode: str = 'blocked',
+    train_fraction: float = 0.9,
+    n_test_blocks: int = 5,
     train_indices: Optional[np.ndarray] = None,
     test_indices: Optional[np.ndarray] = None,
     delta_threshold: float = 0.1,
@@ -114,6 +85,7 @@ def run(
     track_spectral_metrics: bool = False,
     spectral_output: str = 'default',
     return_spectrum: bool = False,
+    max_index_reduction: float = 0.05,
     tau_grid: Optional[List[float]] = None,
     corrupt_target: str = 'x',
     corruption_method: str = 'rounding',
@@ -191,14 +163,20 @@ def run(
         A seed for ``random``, ``numpy``, and ``torch`` to ensure reproducibility.
         Note: Full reproducibility is only guaranteed for ``n_workers=1``.
         Defaults to None.
-    verbose : bool, default=True
-        If True, progress bars and informational logs will be displayed.
+    verbose : bool, default=False
+        If True, informational logs and defaults will be displayed.
+    show_progress : bool, default=True
+        If True, progress bars will be displayed during training.
     device : str, optional
         The compute device to use (e.g., 'cpu', 'cuda', 'mps'). If None, it
         is auto-detected. Defaults to None.
     split_mode : {'blocked', 'random'}, default='blocked'
         Method for splitting data. 'blocked' is for time-series, 'random' for IID.
         Ignored if train/test indices are provided.
+    train_fraction : float, default=0.9
+        The fraction of data to use for training when creating splits. Ignored if train/test indices are provided.
+    n_test_blocks : int, default=5
+        For 'blocked' split mode, the number of contiguous blocks to use for testing. Ignored if train/test indices are provided.
     train_indices : np.ndarray, optional
         Specific indices for the training set.
     test_indices : np.ndarray, optional
@@ -221,14 +199,28 @@ def run(
         The maximum number of samples to use for evaluation during training.
         This is a computational safeguard and does not affect the training data size.
     train_subset_size : int, optional
-        If provided, the number of training samples to use in each epoch. This can speed up training on large datasets. Defaults to None (use all training data).
+        If provided, the number of training samples to use when evaluating at the end of each epoch. This can speed up training on large datasets. Defaults to None (use all training data).
     track_spectral_metrics : bool, default=False
         If True, spectral metrics (e.g., singular values of embeddings) will be computed and stored during training. This can provide insights into the learned representations but may increase computational overhead.
     spectral_output : str, default='default'
         The format for spectral metrics output. If 'default', metrics are stored in the Results.details under 'spectral_metrics'. If 'full', the full spectrum is stored; if 'summary', only summary statistics (e.g., top singular values) are stored.
     return_spectrum : bool, default=False
         If True, the final spectrum (e.g., singular values) of the learned embeddings will be included in the returned Results object under details['final_spectrum'].
-    
+    max_index_reduction : float, default=0.05
+        When using temporal datasets with windowing, random time shifting can reduce the number of valid windows
+        due to edge effects. This parameter sets a threshold for acceptable reduction in valid windows after shifting.
+        If the reduction exceeds this threshold, a warning is logged. Defaults to 0.05 (5%).
+    tau_grid : list of float, optional
+        For ``mode=``precision``, a list of additive uniform noise centered around 0 (interval [-tau/2, tau/2]) to apply to the target variable for the precision sweep. Defaults to None.
+    corrupt_target : {'x', 'y'}, default='x'
+        For ``mode='precision'``, which variable to apply noise corruption to during the precision sweep. Defaults to 'x'.
+    corruption_method : {'rounding', 'noise'}, default='rounding'
+        The method for corrupting the target variable in the precision sweep. 'rounding' rounds values to the nearest multiple of tau, while 'noise' adds uniform noise in the range [-tau/2, tau/2]. Defaults to 'rounding'.
+    n_noise_samples : int, default=50
+        For ``mode='precision'`` with ``corruption_method='noise'`, the number of noise realizations to average over for each tau value to stabilize the MI estimates. Defaults to 50.
+    threshold_ratio : float, default=0.9
+        For ``mode='precision'``, the ratio of the baseline MI used to determine the precision threshold. For example, a value of 0.9 means the precision threshold is the tau value at which the MI drops to 90% of the baseline MI. Defaults to 0.9
+
     Returns
     -------
     neural_mi.results.Results
@@ -278,21 +270,12 @@ def run(
     if random_seed is not None and analysis_kwargs.get('n_workers', 1) is not None and analysis_kwargs.get('n_workers', 1) > 1:
         logger.warning("Reproducibility with random_seed is not guaranteed with n_workers > 1.")
 
-    # Catch legacy processor arguments passed as kwargs
-    if 'processor_type' in analysis_kwargs:
-        logger.warning("`processor_type` is deprecated. Use `processor_type_x` and `processor_type_y` instead.")
-        processor_type_x = processor_type_x or analysis_kwargs.pop('processor_type')
-    if 'processor_params' in analysis_kwargs:
-        logger.warning("`processor_params` is deprecated. Use `processor_params_x` and `processor_params_y` instead.")
-        processor_params_x = processor_params_x or analysis_kwargs.pop('processor_params')
-        processor_params_y = processor_params_y or processor_params_x
-
-    ParameterValidator(locals()).validate()
-    DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
-
     if base_params is None: base_params = {}
+
+    # Populate base_params with explicit arguments to ensure they are validated
     base_params['output_units'] = output_units
     base_params['verbose'] = verbose
+    base_params['show_progress'] = show_progress
     base_params['device'] = device if device else get_device()
     base_params['estimator_name'] = estimator
     base_params['estimator_params'] = estimator_params or {}
@@ -300,20 +283,30 @@ def run(
     base_params['custom_embedding_cls'] = custom_embedding_cls
     base_params['save_best_model_path'] = save_best_model_path
     base_params['split_mode'] = split_mode
+    base_params['train_fraction'] = train_fraction
+    base_params['n_test_blocks'] = n_test_blocks
     base_params['train_indices'] = train_indices
     base_params['test_indices'] = test_indices
     
-    # Inject new Trainer pipeline arguments
+    # Inject  Trainer pipeline arguments
     base_params['max_eval_samples'] = max_eval_samples
     base_params['train_subset_size'] = train_subset_size
     base_params['track_spectral_metrics'] = track_spectral_metrics
     base_params['spectral_output'] = spectral_output
     base_params['return_spectrum'] = return_spectrum
-    
+    base_params['max_index_reduction'] = max_index_reduction
+
     base_params['processor_type_x'] = processor_type_x
     base_params['processor_params_x'] = processor_params_x
     base_params['processor_type_y'] = processor_type_y
     base_params['processor_params_y'] = processor_params_y
+
+    # Validate parameters and apply defaults to base_params
+    param_validator = ParameterValidator(locals())
+    param_validator.validate()
+    param_validator.apply_defaults()
+
+    DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
 
     run_params = {"mode": mode, "processor_type_x": processor_type_x, "processor_params_x": processor_params_x,
                   "processor_type_y": processor_type_y, "processor_params_y": processor_params_y,
@@ -346,10 +339,9 @@ def run(
         base_params['processor_params_x']['preprocessed'] = True
         base_params['processor_params_y']['preprocessed'] = True
 
-        # Corrected Dimensionality routing for Intrinsic vs Interaction
         if mode == 'dimensionality':
             x_run_data = dataset.x_data
-            y_run_data = dataset.y_data if y_data is not None else None 
+            y_run_data = dataset.y_data if y_data is not None else None
         else:
             if y_data is None: raise ValueError(f"y_data must be provided for mode '{mode}'.")
             x_run_data = dataset.x_data
@@ -362,108 +354,114 @@ def run(
         )
         df = pd.DataFrame(results_list)
         group_vars = [key for key in sweep_grid.keys() if key != 'run_id']
-        agg_df = df.groupby(group_vars)['test_mi'].agg(['mean', 'std']).reset_index().rename(columns={'mean': 'mi_mean', 'std': 'mi_std'}).fillna(0) if group_vars else df
+        agg_df = df.groupby(group_vars)['test_mi'].agg(['mean', 'std']).reset_index().rename(
+            columns={'mean': 'mi_mean', 'std': 'mi_std'}).fillna(0) if group_vars else df
         primary_sweep_var = group_vars[0] if group_vars else None
-        return Results(mode=mode, dataframe=_convert_mi_units(agg_df, output_units == 'bits'), params={**run_params, 'sweep_var': primary_sweep_var}, details={'raw_results': df})
+        return Results(mode=mode,
+                       dataframe=_convert_mi_units(agg_df, output_units == 'bits'),
+                       params={**run_params, 'sweep_var': primary_sweep_var},
+                       details={'raw_results': df})
 
     elif mode == 'estimate':
-        results_list = ParameterSweep(x_run_data, y_run_data, base_params).run(sweep_grid or {}, **analysis_kwargs)
+        results_list = ParameterSweep(x_run_data, y_run_data, base_params).run(
+            sweep_grid or {}, **analysis_kwargs)
         if not results_list:
             return Results(mode=mode, mi_estimate=float('nan'), params=run_params)
-            
         res_dict = results_list[0].copy()
         mi = res_dict.pop('test_mi', float('nan'))
-        # Ensure any requested spectral metrics are pushed into the details dictionary
-        return Results(mode=mode, mi_estimate=_convert_mi_units(mi, output_units == 'bits'), params=run_params, details=res_dict)
+        return Results(mode=mode,
+                       mi_estimate=_convert_mi_units(mi, output_units == 'bits'),
+                       params=run_params,
+                       details=res_dict)
 
     elif mode == 'dimensionality':
-        df = run_dimensionality_analysis(x_run_data, base_params, y_data=y_run_data, sweep_grid=sweep_grid, **analysis_kwargs)
+        df = run_dimensionality_analysis(x_run_data, base_params, y_data=y_run_data,
+                                         sweep_grid=sweep_grid, **analysis_kwargs)
         df = _convert_mi_units(df, output_units == 'bits')
-
         group_vars = [key for key in (sweep_grid or {}).keys() if key != 'run_id']
         metrics = ['test_mi', 'participation_ratio']
         valid_metrics = [m for m in metrics if m in df.columns]
-
         if group_vars:
             agg_df = df.groupby(group_vars)[valid_metrics].agg(['mean', 'std']).reset_index()
-            # Flatten MultiIndex columns
             agg_df.columns = [f"{col[0]}_{col[1]}" if col[1] else col[0] for col in agg_df.columns.values]
-            # Rename for consistency
             rename_map = {f'{m}_mean': 'mi_mean' if m == 'test_mi' else f'{m}_mean' for m in valid_metrics}
             rename_map.update({f'{m}_std': 'mi_std' if m == 'test_mi' else f'{m}_std' for m in valid_metrics})
             agg_df = agg_df.rename(columns=rename_map).fillna(0)
         else:
-             agg_data = {f'{m}_mean': df[m].mean() for m in valid_metrics}
-             agg_data.update({f'{m}_std': df[m].std() for m in valid_metrics})
-             # Map test_mi_mean -> mi_mean for consistency
-             if 'test_mi_mean' in agg_data:
-                 agg_data['mi_mean'] = agg_data.pop('test_mi_mean')
-             if 'test_mi_std' in agg_data:
-                 agg_data['mi_std'] = agg_data.pop('test_mi_std')
-             agg_df = pd.DataFrame([agg_data])
+            agg_data = {f'{m}_mean': df[m].mean() for m in valid_metrics}
+            agg_data.update({f'{m}_std': df[m].std() for m in valid_metrics})
+            if 'test_mi_mean' in agg_data:
+                agg_data['mi_mean'] = agg_data.pop('test_mi_mean')
+            if 'test_mi_std' in agg_data:
+                agg_data['mi_std'] = agg_data.pop('test_mi_std')
+            agg_df = pd.DataFrame([agg_data])
+        return Results(mode=mode, dataframe=agg_df, params={**run_params},
+                       details={'raw_results': df})
 
-        return Results(mode=mode, dataframe=agg_df, params={**run_params}, details={'raw_results': df})
-    
     elif mode == 'precision':
         if tau_grid is None:
             raise ValueError("`tau_grid` must be provided for mode='precision'.")
-            
         prec_results = run_precision_analysis(
-            x_run_data, y_run_data, base_params, tau_grid=tau_grid, 
+            x_run_data, y_run_data, base_params, tau_grid=tau_grid,
             corrupt_target=corrupt_target, corruption_method=corruption_method,
             n_noise_samples=n_noise_samples, threshold_ratio=threshold_ratio,
             **analysis_kwargs
         )
-        
-        # Format the raw MI trace dataframe
         df = prec_results['dataframe']
         df = _convert_mi_units(df, output_units == 'bits')
-        
-        # Format the processed scalars
         details = prec_results['details']
         details['baseline_mi'] = _convert_mi_units(details['baseline_mi'], output_units == 'bits')
         details['threshold_value'] = _convert_mi_units(details['threshold_value'], output_units == 'bits')
         details['raw_results'] = df
-        
-        # The mi_estimate field neatly holds our final precision threshold
         return Results(
-            mode=mode, 
-            mi_estimate=details['precision_tau'], 
-            dataframe=df, 
-            params={**run_params, 'tau_grid': tau_grid}, 
+            mode=mode,
+            mi_estimate=details['precision_tau'],
+            dataframe=df,
+            params={**run_params, 'tau_grid': tau_grid},
             details=details
         )
 
     elif mode == 'rigorous':
-        analysis_kwargs.update({'delta_threshold': delta_threshold, 'min_gamma_points': min_gamma_points, 'confidence_level': confidence_level})
-        results = AnalysisWorkflow(x_run_data, y_run_data, base_params).run(sweep_grid or {}, **analysis_kwargs)
+        analysis_kwargs.update({'delta_threshold': delta_threshold,
+                                 'min_gamma_points': min_gamma_points,
+                                 'confidence_level': confidence_level})
+        results = AnalysisWorkflow(x_run_data, y_run_data, base_params).run(
+            sweep_grid or {}, **analysis_kwargs)
         results = _convert_mi_units(results, output_units == 'bits')
         corrected_list = results.get('corrected_results', [])
         details = corrected_list[0] if corrected_list else {}
-        return Results(mode=mode, mi_estimate=details.get('mi_corrected'), dataframe=results.get('raw_results_df'), details=details, params=run_params)
-    
+        return Results(mode=mode, mi_estimate=details.get('mi_corrected'),
+                       dataframe=results.get('raw_results_df'), details=details,
+                       params=run_params)
+
     elif mode == 'lag':
         if 'lag_range' not in analysis_kwargs:
             raise ValueError("`lag_range` must be provided for mode='lag'.")
         lag_range_val = analysis_kwargs.pop('lag_range')
-        
-        results_list = run_lag_analysis(x_run_data, y_run_data, base_params, lag_range=lag_range_val, sweep_grid=sweep_grid, **analysis_kwargs)
+        results_list = run_lag_analysis(x_run_data, y_run_data, base_params,
+                                        lag_range=lag_range_val, sweep_grid=sweep_grid,
+                                        **analysis_kwargs)
         df = pd.DataFrame(results_list)
-        
         group_vars = ['lag']
         if sweep_grid:
             group_vars.extend([key for key in sweep_grid.keys() if key != 'run_id'])
-        
         valid_group_vars = [var for var in group_vars if var in df.columns]
-        
         if valid_group_vars:
             agg_df = df.groupby(valid_group_vars)['test_mi'].agg(['mean', 'std']).reset_index().rename(
-                columns={'mean': 'mi_mean', 'std': 'mi_std'}
-            ).fillna(0)
+                columns={'mean': 'mi_mean', 'std': 'mi_std'}).fillna(0)
         else:
             agg_df = df
-
-        return Results(mode=mode, dataframe=_convert_mi_units(agg_df, output_units == 'bits'), params={**run_params, 'sweep_var': 'lag'}, details={'raw_results': df})
+        return Results(mode=mode,
+                       dataframe=_convert_mi_units(agg_df, output_units == 'bits'),
+                       params={**run_params, 'sweep_var': 'lag'},
+                       details={'raw_results': df})
 
     else:
         raise ValueError(f"Unknown mode: '{mode}'.")
+
+
+
+
+
+
+

@@ -436,5 +436,5 @@ class VarMLP(_BaseMLP):
 
         # Calculate KL loss
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        kl_loss = kl_loss / x.size(0)  # normalize by batch for stability
+        # kl_loss = kl_loss / x.size(0)  # normalize by batch for stability
         return z, kl_loss

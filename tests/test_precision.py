@@ -45,7 +45,13 @@ def test_run_precision_analysis_end_to_end():
         'input_dim_y': 2,
         'hidden_dim': 8,
         'embedding_dim': 4,
-        'n_layers': 1
+        'n_layers': 1,
+        'use_variational': False,
+        'embedding_model': 'mlp',
+        'max_n_batches': 512,
+        'kernel_size': 3,
+        'bidirectional': False,
+        'nhead': 4
     }
     
     tau_grid = [0.1, 0.5, 1.0, 5.0]

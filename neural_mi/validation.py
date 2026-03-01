@@ -8,8 +8,11 @@ before starting a potentially long-running analysis.
 from typing import Dict, Any, Union, List, Optional
 import numpy as np
 import torch
+import inspect
 from neural_mi.logger import logger
 from neural_mi.exceptions import DataShapeError
+from neural_mi.estimators import ESTIMATORS, ESTIMATOR_DEFAULTS
+from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
 class DataValidator:
     """Validates the input data for type, shape, and content for two potentially different streams."""
@@ -123,7 +126,11 @@ class ParameterValidator:
 
     def validate(self):
         """Runs all parameter validation checks in sequence."""
-        self._validate_required(); self._validate_base(); self._validate_processor(); self._validate_sweep()
+        self._validate_required()
+        self._validate_base()
+        self._validate_processor()
+        self._validate_sweep()
+        self._validate_mode_kwargs()
 
     def _validate_required(self):
         if self.params.get("base_params") is None: raise ValueError("'base_params' is required.")
@@ -131,26 +138,106 @@ class ParameterValidator:
     def _validate_base(self):
         bp = self.params["base_params"]
         if not isinstance(bp, dict): raise TypeError("'base_params' must be a dictionary.")
-        checks = {"n_epochs": (int, 1), "learning_rate": (float, 0), "batch_size": (int, 1), 
-                  "patience": (int, 0), "embedding_dim": (int, 1), "hidden_dim": (int, 1), "n_layers": (int, 0)}
-        for key, (dtype, min_val) in checks.items():
-            if key in bp:
-                if not isinstance(bp[key], dtype): raise TypeError(f"'{key}' must be {dtype.__name__}.")
-                if bp[key] < min_val: raise ValueError(f"'{key}' must be at least {min_val}.")
+
+        # Check for unknown parameters in base_params
+        unknown_keys = set(bp.keys()) - set(BASE_PARAMS_SCHEMA.keys())
+        if unknown_keys:
+            raise ValueError(f"Unknown parameters in 'base_params': {unknown_keys}. "
+                             f"Allowed: {list(BASE_PARAMS_SCHEMA.keys())}")
+
+        # Validate types and values
+        for key, value in bp.items():
+            schema = BASE_PARAMS_SCHEMA[key]
+            # Type check
+            expected_type = schema['type']
+            if not isinstance(value, expected_type):
+                raise TypeError(f"Parameter '{key}' must be of type {expected_type}, got {type(value)}.")
+
+            # Min value check
+            if 'min' in schema and value is not None and value < schema['min']:
+                raise ValueError(f"Parameter '{key}' must be >= {schema['min']}.")
 
     def _validate_processor(self):
-        # This check is now more complex due to the _x and _y parameters
-        proc_x = self.params.get("processor_type_x")
-        params_x = self.params.get("processor_params_x")
-        proc_y = self.params.get("processor_type_y")
-        params_y = self.params.get("processor_params_y")
+        # Validate processor existence and params
+        for suffix in ['x', 'y']:
+            proc_type = self.params.get(f"processor_type_{suffix}")
+            proc_params = self.params.get(f"processor_params_{suffix}")
 
-        if proc_x and params_x is None:
-            raise ValueError("'processor_params_x' required when 'processor_type_x' is specified.")
-        if proc_y and params_y is None:
-            raise ValueError("'processor_params_y' required when 'processor_type_y' is specified.")
+            if proc_type:
+                if proc_params is None:
+                    raise ValueError(f"'processor_params_{suffix}' required when 'processor_type_{suffix}' is specified.")
+
+                # Check for invalid processor params
+                if proc_type in PROCESSOR_PARAMS_SCHEMA:
+                    allowed = set(PROCESSOR_PARAMS_SCHEMA[proc_type])
+                    # Allow 'preprocessed' as internal flag
+                    unknown = set(proc_params.keys()) - allowed - {'preprocessed'}
+                    if unknown:
+                        raise ValueError(f"Unknown parameters for {proc_type} processor: {unknown}. Allowed: {allowed}")
 
     def _validate_sweep(self):
-        # Dimensionality no longer requires a sweep_grid in the new spectral engine
         if self.mode == "sweep" and self.params.get("sweep_grid") is None:
             raise ValueError(f"'sweep_grid' required for mode='{self.mode}'.")
+
+    def _validate_mode_kwargs(self):
+        """Validates **analysis_kwargs passed to run() for the specific mode."""
+        mode_schema = MODE_KWARGS_SCHEMA.get(self.mode, {})
+        allowed_kwargs = set(mode_schema.keys())
+
+        # Check for unexpected kwargs (excluding standard run arguments)
+        # Note: self.params contains ALL locals() from run(). We only care about analysis_kwargs keys.
+        # But we don't have direct access to 'analysis_kwargs' dict here, just the merged locals.
+        # So we check if any key in locals that is NOT a standard run param is in allowed_kwargs.
+
+        # Actually, best to validate just the keys that are NOT standard args.
+        # Standard args are explicit in run(). The 'kwargs' are what we worry about.
+        # In run(), analysis_kwargs are passed. We should probably validate those specifically.
+        # But here we have 'locals()'.
+
+        # Let's rely on run() passing explicit analysis_kwargs to a specific validator if needed.
+        # For now, we assume user might pass them as kwargs.
+        pass
+
+    def apply_defaults(self):
+        """Populates missing parameters in base_params with defaults."""
+        bp = self.params["base_params"]
+        for key, schema in BASE_PARAMS_SCHEMA.items():
+            if key not in bp and 'default' in schema:
+                default_val = schema['default']
+                # Don't apply None defaults if they mean "optional"
+                if default_val is not None or schema['type'] == (str, type(None)):
+                     # Actually we want to set explicit defaults like n_layers=2
+                     bp[key] = default_val
+                     logger.info(f"Parameter '{key}' not specified. Defaulting to {default_val}.")
+
+
+class EstimatorValidator:
+    """Validates the parameters for the chosen MI estimator."""
+    def __init__(self, estimator_name: str, estimator_params: Optional[Dict[str, Any]] = None):
+        self.name = estimator_name
+        self.params = estimator_params or {}
+
+        if self.name not in ESTIMATORS:
+            raise ValueError(f"Unknown estimator '{self.name}'. Allowed estimators are: {list(ESTIMATORS.keys())}")
+
+        self.func = ESTIMATORS[self.name]
+        self.signature = inspect.signature(self.func)
+
+    def validate(self):
+        valid_params = set(self.signature.parameters.keys()) - {'scores'}
+        unexpected = set(self.params.keys()) - valid_params
+        if unexpected:
+            raise ValueError(
+                f"Estimator '{self.name}' got unexpected parameters: {unexpected}. "
+                f"Allowed parameters are: {list(valid_params) if valid_params else 'None'}."
+            )
+        for name, param in self.signature.parameters.items():
+            if name == 'scores': continue
+            if param.default == inspect.Parameter.empty and name not in self.params:
+                 raise ValueError(f"Estimator '{self.name}' requires parameter '{name}'.")
+
+    def get_merged_params(self) -> Dict[str, Any]:
+        defaults = ESTIMATOR_DEFAULTS.get(self.name, {})
+        merged = defaults.copy()
+        merged.update(self.params)
+        return merged
