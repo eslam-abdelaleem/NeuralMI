@@ -115,7 +115,7 @@ def js_fgan_lower_bound(scores: torch.Tensor) -> torch.Tensor:
     second_term = (torch.sum(F.softplus(scores)) - torch.sum(F.softplus(f_diag))) / (n * (n - 1.))
     return first_term - second_term
 
-def smile_lower_bound(scores: torch.Tensor, clip: float = None) -> torch.Tensor:
+def smile_lower_bound(scores: torch.Tensor, clip: Optional[float] = 5.0) -> torch.Tensor:
     """Computes the SMILE lower bound on mutual information.
 
     SMILE (Smoothed Mutual Information "Lower-bound" Estimator) is designed to

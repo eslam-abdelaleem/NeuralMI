@@ -24,21 +24,20 @@ BASE_PARAMS_SCHEMA = {
     'min_improvement': {'type': float, 'min': 0.0, 'default': 0.001},
     'max_eval_samples': {'type': int, 'min': 1, 'default': 5000},
     'train_subset_size': {'type': (int, type(None)), 'min': 1, 'default': None},
+    'split_gap_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
     'track_spectral_metrics': {'type': bool, 'default': False},
     'spectral_output': {'type': str, 'default': 'default'},
     'return_spectrum': {'type': bool, 'default': False},
+    'spectral_whitening': {'type': (str, type(None)), 'default': 'std'},
     'save_best_model_path': {'type': (str, type(None)), 'default': None},
     'estimator_name': {'type': str, 'default': 'infonce'},
     'estimator_params': {'type': dict, 'default': {}},
     'use_variational': {'type': bool, 'default': False},
     'beta': {'type': float, 'default': 1024.0},
-<<<<<<< HEAD
-=======
     'train_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
     'n_test_blocks': {'type': int, 'min': 1, 'default': 5},
     'max_index_reduction': {'type': float, 'min': 0.0, 'default': 0.05},
 
->>>>>>> experiment-dim-est-port
 
     # Model architecture parameters
     'embedding_dim': {'type': int, 'min': 1, 'default': 64},
@@ -65,6 +64,7 @@ BASE_PARAMS_SCHEMA = {
     'train_indices': {'type': (object, type(None))}, # numpy array
     'test_indices': {'type': (object, type(None))},
     'gamma': {'type': (int, float)}, # Rigorous
+    'min_reliable_samples': {'type': int, 'min': 1, 'default': 1000},
     'lag': {'type': int}, # Lag
 }
 
@@ -106,6 +106,6 @@ MODE_KWARGS_SCHEMA = {
 PROCESSOR_PARAMS_SCHEMA = {
     'continuous': ['window_size', 'min_coverage_fraction', 'sample_rate'],
     'spike': ['window_size', 'max_spikes_per_window', 'n_seconds', 'sample_rate',
-              'no_spike_value', 'bin_size', 'normalize_bins'],
-    'categorical': ['window_size', 'sample_rate', 'min_coverage_fraction'],
+              'no_spike_value', 'bin_size', 'normalize_bins', 'exclude_bursty_neurons', 'burst_threshold_multiplier'],
+    'categorical': ['window_size', 'sample_rate', 'min_coverage_fraction', 'encoding'],
 }

@@ -54,7 +54,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         use_variational=params.get('use_variational', False),
         beta=params.get('beta', 512.0),
         estimator_params=params.get('estimator_params'),
-        custom_smoothing_fn=params.get('custom_smoothing_fn')
+        custom_smoothing_fn=params.get('custom_smoothing_fn'),
+        spectral_whitening=params.get('spectral_whitening', 'std')
     )
     
     # Inject memory, logging, and spectral metrics parameters into train
@@ -65,17 +66,14 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         patience=params['patience'], 
         run_id=run_id,
         output_units=params.get('output_units', 'nats'),
-<<<<<<< HEAD
-        verbose=params.get('verbose', True),
-=======
         verbose=params.get('verbose', False),
->>>>>>> experiment-dim-est-port
         show_progress=params.get('show_progress', True),
         save_best_model_path=params.get('save_best_model_path'),
         split_mode=params.get('split_mode', 'blocked'),
         train_indices=params.get('train_indices'),
         test_indices=params.get('test_indices'),
         max_eval_samples=params.get('max_eval_samples', 5000),
+        split_gap_fraction=params.get('split_gap_fraction', 0.5),
         train_subset_size=params.get('train_subset_size'),
         track_spectral_metrics=params.get('track_spectral_metrics', False),
         spectral_output=params.get('spectral_output', 'default'),

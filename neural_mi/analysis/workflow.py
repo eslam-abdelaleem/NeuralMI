@@ -215,6 +215,17 @@ class AnalysisWorkflow:
                 # Split the master permutation into gamma equal chunks.
                 # np.array_split handles uneven divisions gracefully.
                 chunks = np.array_split(master_permutation, gamma)
+                
+                min_chunk_size = min(len(c) for c in chunks)
+                min_reliable_samples = current_params.get('min_reliable_samples', 1000)
+                if min_chunk_size < min_reliable_samples:
+                    logger.warning(
+                        f"gamma={gamma}: smallest data subset has {min_chunk_size} samples "
+                        f"(threshold: {min_reliable_samples}). MI estimates at this gamma "
+                        f"may be unreliable. Consider reducing gamma_range or collecting "
+                        f"more data. Set 'min_reliable_samples' in base_params to adjust "
+                        f"this threshold."
+                    )
 
                 for i_subset, subset_indices in enumerate(chunks):
                     x_subset = self.x_data[subset_indices]

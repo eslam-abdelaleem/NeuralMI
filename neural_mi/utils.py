@@ -207,20 +207,60 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         raise ValueError(f"Unknown critic_type: {critic_type}")
 
 
-def compute_cross_covariance_spectrum(zx: torch.Tensor, zy: torch.Tensor) -> np.ndarray:
-    """Computes the singular values of the cross-covariance matrix of embeddings."""
-    zx = zx - zx.mean(dim=0, keepdim=True)
-    zy = zy - zy.mean(dim=0, keepdim=True)
-    
-    N = zx.size(0)
+def compute_cross_covariance_spectrum(
+    zx: torch.Tensor,
+    zy: torch.Tensor,
+    whitening: Optional[str] = 'std'
+) -> np.ndarray:
+    """Computes the singular values of the cross-covariance matrix of embeddings.
+
+    Parameters
+    ----------
+    zx, zy : torch.Tensor
+        Embeddings of shape (n_samples, embedding_dim).
+    whitening : {'std', 'zca', None}, optional
+        Normalization applied before SVD.
+        - 'std': divide each dimension by its standard deviation (default).
+          Makes PR reflect the number of dimensions with non-trivial shared
+          variance, independent of embedding output scale.
+        - 'zca': full ZCA whitening (sphering). More aggressive; requires
+          n_samples >> embedding_dim to be stable.
+        - None: no whitening (legacy behavior). PR will reflect embedding scale.
+    """
+    zx_np = zx.detach().cpu().float().numpy()
+    zy_np = zy.detach().cpu().float().numpy()
+
+    # Center
+    zx_np = zx_np - zx_np.mean(axis=0, keepdims=True)
+    zy_np = zy_np - zy_np.mean(axis=0, keepdims=True)
+
+    N = zx_np.shape[0]
     if N <= 1:
         return np.array([])
-        
-    # Perform matmul on CPU to save VRAM for large embedding sets
-    cov_xy = torch.matmul(zx.cpu().T, zy.cpu()) / (N - 1)
-    _, s_xy, _ = torch.linalg.svd(cov_xy)
-    
-    return s_xy.numpy()
+
+    if whitening == 'std':
+        std_x = zx_np.std(axis=0, keepdims=True)
+        std_y = zy_np.std(axis=0, keepdims=True)
+        # Avoid division by zero for dead dimensions
+        zx_np = zx_np / np.where(std_x > 1e-8, std_x, 1.0)
+        zy_np = zy_np / np.where(std_y > 1e-8, std_y, 1.0)
+    elif whitening == 'zca':
+        def _zca_whiten(Z):
+            cov = (Z.T @ Z) / (Z.shape[0] - 1)
+            U, S, _ = np.linalg.svd(cov)
+            S_inv_sqrt = np.diag(1.0 / np.sqrt(np.maximum(S, 1e-8)))
+            W = U @ S_inv_sqrt @ U.T
+            return Z @ W.T
+        zx_np = _zca_whiten(zx_np)
+        zy_np = _zca_whiten(zy_np)
+    elif whitening is not None:
+        raise ValueError(f"Unknown whitening method: '{whitening}'. Expected 'std', 'zca', or None.")
+
+    cov_xy = (zx_np.T @ zy_np) / (N - 1)
+    _, s_xy, _ = np.linalg.svd(cov_xy)
+
+    return s_xy
+
 
 def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[str, float]:
     """Computes dimensionality metrics from singular values."""

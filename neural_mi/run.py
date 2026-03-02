@@ -75,6 +75,7 @@ def run(
     split_mode: str = 'blocked',
     train_fraction: float = 0.9,
     n_test_blocks: int = 5,
+    split_gap_fraction: float = 0.0,
     train_indices: Optional[np.ndarray] = None,
     test_indices: Optional[np.ndarray] = None,
     delta_threshold: float = 0.1,
@@ -177,6 +178,8 @@ def run(
         The fraction of data to use for training when creating splits. Ignored if train/test indices are provided.
     n_test_blocks : int, default=5
         For 'blocked' split mode, the number of contiguous blocks to use for testing. Ignored if train/test indices are provided.
+    split_gap_fraction : float, default=0.5
+        When using 'blocked' split_mode, this fraction of the data will be left as a gap between training and test blocks to reduce leakage.
     train_indices : np.ndarray, optional
         Specific indices for the training set.
     test_indices : np.ndarray, optional
@@ -285,6 +288,7 @@ def run(
     base_params['split_mode'] = split_mode
     base_params['train_fraction'] = train_fraction
     base_params['n_test_blocks'] = n_test_blocks
+    base_params['split_gap_fraction'] = split_gap_fraction
     base_params['train_indices'] = train_indices
     base_params['test_indices'] = test_indices
     

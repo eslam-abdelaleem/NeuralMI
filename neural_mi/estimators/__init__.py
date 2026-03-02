@@ -20,6 +20,5 @@ ESTIMATORS = {
 
 # Default parameters for estimators to enhance usability
 ESTIMATOR_DEFAULTS = {
-    'smile': {'clip': None}, # Default to None as per function definition, but explicit.
-    # Users can override this. If we want to change default behavior we can change it here.
+    'smile': {'clip': 5.0},   # Users can override this. If we want to change default behavior we can change it here.
 }

@@ -41,7 +41,8 @@ class Trainer:
     def __init__(self, model: nn.Module, estimator_fn: Callable, optimizer: torch.optim.Optimizer,
                  device: torch.device, use_variational: bool = False, beta: float = 512,
                  estimator_params: Optional[Dict[str, Any]] = None,
-                 custom_smoothing_fn: Optional[Callable] = None):
+                 custom_smoothing_fn: Optional[Callable] = None,
+                 spectral_whitening: str = 'std'):
         
         """
         Parameters
@@ -67,12 +68,16 @@ class Trainer:
         custom_smoothing_fn : Callable, optional
             A custom function for smoothing the validation MI history, which takes
             a list of MI values and returns a smoothed array. If not provided, a default Gaussian + median filter will be used.
-        """
+         spectral_whitening : str, optional
+            Method for spectral whitening when computing spectral metrics. Options are 'std' for standard whitening
+            and 'zca' for ZCA whitening and None. Defaults to 'std'.
+       """
         self.device, self.model = device, model.to(device)
         self.estimator_fn, self.optimizer = estimator_fn, optimizer
         self.use_variational, self.beta = use_variational, beta
         self.estimator_params = estimator_params if estimator_params is not None else {}
         self.custom_smoothing_fn = custom_smoothing_fn
+        self.spectral_whitening = spectral_whitening
 
     def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
               train_fraction: float = 0.9, n_test_blocks: int = 5,
@@ -86,6 +91,7 @@ class Trainer:
               test_indices: Optional[np.ndarray] = None,
               max_eval_samples: int = 5000,
               train_subset_size: Optional[int] = None,
+              split_gap_fraction: float = 0.0,
               track_spectral_metrics: bool = False,
               spectral_output: str = 'default',
               return_spectrum: bool = False,
@@ -129,15 +135,9 @@ class Trainer:
         output_units : {'nats', 'bits'}, optional
             The units for displaying the MI estimate. Defaults to 'nats'.
         verbose : bool, optional
-<<<<<<< HEAD
-            (Deprecated in favor of show_progress for progress bars). Kept for backward compatibility.
-        show_progress : bool, optional
-            If True, a progress bar will be displayed. Defaults to True.
-=======
             If True, details and defaults will be displayed. Defaults to False.
         show_progress : bool, optional
             If True, progress bar will be shown. Defaults to True.
->>>>>>> experiment-dim-est-port
         split_mode : {'blocked', 'random'}, optional
             The method for splitting data into training and validation sets.
             - 'blocked': Samples contiguous blocks, useful for time-series data.
@@ -158,6 +158,8 @@ class Trainer:
             If provided, limits the number of training samples used in each epoch to this number.
             If the training set is larger than this, a random subset will be selected each epoch.
             Defaults to None (use all training samples).
+        split_gap_fraction : float, optional
+            When using 'blocked' split_mode, this fraction of the data will be left as a gap between training and test blocks to reduce leakage.
         track_spectral_metrics : bool, optional
             If True, computes and tracks spectral metrics of the learned representations at each epoch.
             Defaults to False.
@@ -192,7 +194,8 @@ class Trainer:
         elif split_mode == 'random':
             train_idx, test_idx = self._create_random_split(len(dataset), train_fraction)
         else:
-            train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks)
+            train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
+                                                             gap_fraction=split_gap_fraction)
         
         n_train = len(train_idx)
         if batch_size > n_train > 0:
@@ -211,17 +214,10 @@ class Trainer:
         history, metrics_tracked, best_mi, no_improve = [], [], -float('inf'), 0
         best_model_state = None
         
-<<<<<<< HEAD
-        # Use show_progress if provided, otherwise fallback to verbose
-        display_progress = show_progress if show_progress is not None else verbose
-        epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False, disable=not display_progress)
-
-=======
         display_progress = show_progress if show_progress is not None else verbose
         epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False,
                               disable=not display_progress)
         
->>>>>>> experiment-dim-est-port
         # 3. Epoch Loop
         for epoch in epoch_iterator:
             self.model.train()
@@ -301,6 +297,18 @@ class Trainer:
                 dataset.x_dataset[train_eval_view.indices, ...], 
                 dataset.y_dataset[train_eval_view.indices, ...], max_eval_samples)
         
+        from neural_mi.estimators import infonce_lower_bound
+        if self.estimator_fn is infonce_lower_bound:
+            n_eval = min(len(test_idx), max_eval_samples)
+            eval_ceiling_nats = np.log(n_eval)
+            if final_test_mi > 0.85 * eval_ceiling_nats:
+                logger.warning(
+                    f"InfoNCE estimate ({final_test_mi:.3f} nats) is near the ceiling "
+                    f"for evaluation batch size log(n_eval={n_eval})={eval_ceiling_nats:.3f} nats. "
+                    f"The true MI may be higher. Consider increasing max_eval_samples or "
+                    f"switching to the 'smile' estimator for high-MI scenarios."
+                )
+
         best_ep = np.argmax(self.custom_smoothing_fn(history) if self.custom_smoothing_fn else self._smooth(history, smoothing_sigma, median_window))
         
         results = {
@@ -363,10 +371,11 @@ class Trainer:
         with torch.no_grad():
             zx, zy = self.model.get_embeddings(x.to(self.device), y.to(self.device))
 
-        spectrum = compute_cross_covariance_spectrum(zx, zy)
+        spectrum = compute_cross_covariance_spectrum(zx, zy, whitening=self.spectral_whitening)
         metrics = compute_spectral_metrics(spectrum)
         
         results = {}
+        results['spectral_whitening'] = self.spectral_whitening
         if spectral_output == 'all':
             results = metrics
         else:
@@ -396,7 +405,7 @@ class Trainer:
         n_train = int(n * frac)
         return indices[:n_train], indices[n_train:]
 
-    def _create_blocked_split(self, n: int, frac: float, k: int) -> Tuple[np.ndarray, np.ndarray]:
+    def _create_blocked_split(self, n: int, frac: float, k: int, gap_fraction: float = 0.0) -> Tuple[np.ndarray, np.ndarray]:
         n_test = int(n * (1 - frac))
         if n_test == 0:
             return np.arange(n), np.array([])
@@ -416,6 +425,28 @@ class Trainer:
             np.arange(s, s + block + (1 if i < rem else 0))
             for i, s in enumerate(starts)
         ])
-        return np.setdiff1d(np.arange(n), test_idx), test_idx
+
+        gap_size = int(round(gap_fraction * block)) if block > 0 else 0
+        if gap_size > 0:
+            gap_idx = set()
+            for i, s in enumerate(starts):
+                blk_len = block + (1 if i < rem else 0)
+                # Buffer before and after each test block
+                for g in range(1, gap_size + 1):
+                    if s - g >= 0:
+                        gap_idx.add(s - g)
+                    if s + blk_len + g - 1 < n:
+                        gap_idx.add(s + blk_len + g - 1)
+            excluded = np.array(sorted(gap_idx), dtype=int)
+            train_idx = np.setdiff1d(np.arange(n), np.union1d(test_idx, excluded))
+            if gap_size > 0:
+                logger.debug(
+                    f"Blocked split gap: excluded {len(excluded)} samples "
+                    f"({gap_size} samples per block boundary) from training set."
+                )
+        else:
+            train_idx = np.setdiff1d(np.arange(n), test_idx)
+
+        return train_idx, test_idx
 
 
