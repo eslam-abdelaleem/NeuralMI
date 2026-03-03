@@ -219,12 +219,14 @@ class ParameterValidator:
         for key, schema in BASE_PARAMS_SCHEMA.items():
             if key not in bp and 'default' in schema:
                 default_val = schema['default']
-                # Don't apply None defaults if they mean "optional"
-                if default_val is not None or schema['type'] == (str, type(None)):
-                     bp[key] = default_val
-                     if verbose:
-                         logger.info(f"Parameter '{key}' not specified. Defaulting to {default_val}.")
-
+                # Apply the default. If default is None, only apply it when the
+                # schema explicitly allows None (i.e. type is a tuple containing type(None)).
+                schema_type = schema['type']
+                type_allows_none = isinstance(schema_type, tuple) and type(None) in schema_type
+                if default_val is not None or type_allows_none:
+                    bp[key] = default_val
+                    if verbose:
+                        logger.info(f"Parameter '{key}' not specified. Defaulting to {default_val}.")
 
 class EstimatorValidator:
     """Validates the parameters for the chosen MI estimator."""

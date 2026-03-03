@@ -250,6 +250,12 @@ class Trainer:
                     spectral_output, return_spectrum)            
                     metrics_tracked.append(metrics_during)
             
+            if np.isnan(mi_nats):
+                logger.warning(
+                    f"NaN MI detected at epoch {epoch + 1}. This step will be skipped "
+                    f"for early stopping purposes. If this persists, check your data and "
+                    f"hyperparameters."
+                )
             history.append(mi_nats)
             
             # Smoothing (Custom or Default)
@@ -358,10 +364,32 @@ class Trainer:
             x = x[idx_t]
             y = y[idx_t]
 
-        return self._eval_mi(x, y)
+        result = self._eval_mi(x, y)
+        if np.isnan(result):
+            logger.warning(
+                f"MI evaluation returned NaN. This may indicate numerical instability, "
+                f"a degenerate batch, or exploding gradients. Check your learning_rate, "
+                f"batch_size, and input data for anomalies."
+            )
+        return result
 
     def _eval_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
         scores, _ = self.model(x.to(self.device), y.to(self.device))
+        if torch.isnan(scores).any():
+            logger.warning(
+                "Score matrix contains NaN values during evaluation. "
+                "Returning NaN for this step. Check for exploding gradients or "
+                "degenerate embeddings."
+            )
+            return float('nan')
+        if torch.isinf(scores).any():
+            dtype = scores.dtype
+            safe_max = torch.finfo(dtype).max / 2
+            scores = torch.clamp(scores, min=-safe_max, max=safe_max)
+            logger.warning(
+                f"Score matrix contains Inf values. Clamping to ±{safe_max:.3e} "
+                f"(dtype={dtype}, machine-epsilon-aware bound)."
+            )
         return self.estimator_fn(scores, **self.estimator_params).item()
 
     def _extract_spectral_metrics(self, x: torch.Tensor, y: torch.Tensor, 

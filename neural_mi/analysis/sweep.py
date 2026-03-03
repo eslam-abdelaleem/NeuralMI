@@ -98,7 +98,17 @@ class ParameterSweep:
             sweep_grid.pop('embedding_dim', None)
 
         param_combinations = _product_dict(**sweep_grid) if sweep_grid else [{}]
-
+        
+        for combo in param_combinations:
+            _emb = combo.get('embedding_model', self.base_params.get('embedding_model', 'mlp'))
+            _proc = combo.get('processor_type_x', self.base_params.get('processor_type_x', None))
+            if _proc is None and str(_emb).lower() in ('gru', 'lstm'):
+                raise ValueError(
+                    f"sweep_grid contains embedding_model='{_emb}' but processor_type_x=None "
+                    f"produces a StaticDataset with no time dimension. Remove 'gru'/'lstm' "
+                    f"from the sweep or set a windowed processor_type_x."
+                )
+            
         for i_combo, params in enumerate(param_combinations):
             current_params = {**self.base_params, **params}
             

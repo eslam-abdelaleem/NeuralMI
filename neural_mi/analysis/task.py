@@ -15,7 +15,20 @@ from neural_mi.data.handler import create_dataset
 
 def run_training_task(args: tuple) -> Dict[str, Any]:
     """A top-level function that can be pickled for multiprocessing."""
+    import random as _random
     x_data, y_data, params, run_id = args
+
+    # Deterministic per-worker seeding: derive a seed from the base seed and
+    # the run_id string so every task is reproducible but unique.
+    base_seed = params.get('random_seed', None)
+    if base_seed is not None:
+        import hashlib
+        task_seed = (base_seed + int(hashlib.md5(str(run_id).encode()).hexdigest(), 16)) % (2**31)
+        _random.seed(task_seed)
+        np.random.seed(task_seed)
+        torch.manual_seed(task_seed)
+        logger.debug(f"Task {run_id} seeded with {task_seed}.")
+
     
     # Check if this task needs to process raw data or if it received pre-processed tensors
     dataset = create_dataset(

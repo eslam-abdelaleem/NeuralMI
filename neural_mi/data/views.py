@@ -51,10 +51,11 @@ class SubsetView:
         self.time_offset = 0
         self.max_index_reduction = max_index_reduction
         
+        import weakref
         # Register this view with the dataset so it gets notified of changes
         if not hasattr(dataset, '_subset_views'):
-            dataset._subset_views = []
-        dataset._subset_views.append(self)
+            dataset._subset_views = weakref.WeakSet()
+        dataset._subset_views.add(self)        
         
         # Handle temporal subsetting
         if times is not None and self.is_temporal:

@@ -52,7 +52,23 @@ def _configure_multiprocessing() -> None:
         logger.debug(f"macOS: set TMPDIR={custom_temp} for spawn workers.")
     _mp_configured = True
 
+def _worker_init_fn(worker_id: int, base_seed: int) -> None:
+    """Seed a pool worker deterministically using base_seed + worker_id.
 
+    Called as the pool initializer so every worker gets a unique but
+    reproducible seed regardless of spawn order.
+    """
+    import random as _random
+    seed = base_seed + worker_id
+    _random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import torch as _torch
+        _torch.manual_seed(seed)
+    except ImportError:
+        pass
+    logger.debug(f"Worker {worker_id} seeded with {seed}.")
+    
 def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
                 sample_rate: Optional[float] = None) -> tuple:
     """Shifts y_data relative to x_data based on the specified lag.

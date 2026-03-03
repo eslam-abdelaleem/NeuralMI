@@ -275,43 +275,67 @@ def run(
 
     if base_params is None: base_params = {}
 
+    def _inject(bp: dict, key: str, val, source: str = "keyword argument") -> None:
+        """Inject val into bp[key], warning if an existing value is overwritten."""
+        if val is None:
+            return
+        if key in bp and bp[key] != val:
+            logger.warning(
+                f"Parameter '{key}' is defined in base_params ({bp[key]!r}) but is "
+                f"being overridden by {source} value ({val!r}). The {source} value "
+                f"takes precedence. To silence this, remove '{key}' from base_params."
+            )
+        bp[key] = val
+
     # Populate base_params with explicit arguments to ensure they are validated
-    base_params['output_units'] = output_units
-    base_params['verbose'] = verbose
-    base_params['show_progress'] = show_progress
-    base_params['device'] = device if device else get_device()
-    base_params['estimator_name'] = estimator
-    base_params['estimator_params'] = estimator_params or {}
-    base_params['custom_critic'] = custom_critic
-    base_params['custom_embedding_cls'] = custom_embedding_cls
-    base_params['save_best_model_path'] = save_best_model_path
-    base_params['split_mode'] = split_mode
-    base_params['train_fraction'] = train_fraction
-    base_params['n_test_blocks'] = n_test_blocks
-    base_params['split_gap_fraction'] = split_gap_fraction
-    base_params['train_indices'] = train_indices
-    base_params['test_indices'] = test_indices
+    _inject(base_params, 'output_units', output_units)
+    _inject(base_params, 'verbose', verbose)
+    _inject(base_params, 'show_progress', show_progress)
+    _inject(base_params, 'device', device if device else get_device())
+    _inject(base_params, 'estimator_name', estimator)
+    _inject(base_params, 'estimator_params', estimator_params or {})
+    _inject(base_params, 'custom_critic', custom_critic)
+    _inject(base_params, 'custom_embedding_cls', custom_embedding_cls)
+    _inject(base_params, 'save_best_model_path', save_best_model_path)
+    _inject(base_params, 'split_mode', split_mode)
+    _inject(base_params, 'train_fraction', train_fraction)
+    _inject(base_params, 'n_test_blocks', n_test_blocks)
+    _inject(base_params, 'split_gap_fraction', split_gap_fraction)
+    _inject(base_params, 'train_indices', train_indices)
+    _inject(base_params, 'test_indices', test_indices)
     
     # Inject  Trainer pipeline arguments
-    base_params['max_eval_samples'] = max_eval_samples
-    base_params['train_subset_size'] = train_subset_size
-    base_params['track_spectral_metrics'] = track_spectral_metrics
-    base_params['spectral_output'] = spectral_output
-    base_params['return_spectrum'] = return_spectrum
-    base_params['max_index_reduction'] = max_index_reduction
+    _inject(base_params, 'max_eval_samples', max_eval_samples)
+    _inject(base_params, 'train_subset_size', train_subset_size)
+    _inject(base_params, 'track_spectral_metrics', track_spectral_metrics)
+    _inject(base_params, 'spectral_output', spectral_output)
+    _inject(base_params, 'return_spectrum', return_spectrum)
+    _inject(base_params, 'max_index_reduction', max_index_reduction)
 
-    base_params['processor_type_x'] = processor_type_x
-    base_params['processor_params_x'] = processor_params_x
-    base_params['processor_type_y'] = processor_type_y
-    base_params['processor_params_y'] = processor_params_y
-
+    _inject(base_params, 'processor_type_x', processor_type_x)
+    _inject(base_params, 'processor_params_x', processor_params_x)
+    _inject(base_params, 'processor_type_y', processor_type_y)
+    _inject(base_params, 'processor_params_y', processor_params_y)
+    if random_seed is not None:
+        _inject(base_params, 'random_seed', random_seed)
+    
     # Validate parameters and apply defaults to base_params
     param_validator = ParameterValidator(locals())
     param_validator.validate()
     param_validator.apply_defaults()
 
     DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
-
+    
+    _processor = base_params.get('processor_type', None)
+    _embedding = base_params.get('embedding_model', 'mlp')
+    if _processor is None and str(_embedding).lower() in ('gru', 'lstm'):
+        raise ValueError(
+            f"embedding_model='{_embedding}' requires sequential input but "
+            f"processor_type=None produces a StaticDataset with no time dimension. "
+            f"Either set processor_type to a windowed processor (e.g. 'continuous_window', "
+            f"'spike_window') or switch embedding_model to 'mlp' / 'linear'."
+        )
+    
     run_params = {"mode": mode, "processor_type_x": processor_type_x, "processor_params_x": processor_params_x,
                   "processor_type_y": processor_type_y, "processor_params_y": processor_params_y,
                   "base_params": base_params, "sweep_grid": sweep_grid, "output_units": output_units,
