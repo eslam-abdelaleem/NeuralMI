@@ -8,7 +8,7 @@ and validating the behavior of different MI estimators and models.
 
 import numpy as np
 import torch
-from typing import Tuple, List
+from typing import Tuple, List, Union
 
 def mi_to_rho(dim: int, mi: float) -> float:
     """Calculates the correlation coefficient `rho` for a given MI and dimension.
@@ -125,22 +125,35 @@ def generate_nonlinear_from_latent(
         return x.numpy(), y.numpy()
     return x, y
 
-def generate_temporally_convolved_data(n_samples, lag=30, noise=0.1, use_torch=True):
-    """
-    Generates data where Y is a simple time-delayed version of X.
+def generate_temporally_convolved_data(
+    n_samples: int,
+    lag: int = 30,
+    noise: float = 0.1,
+    use_torch: bool = True,
+) -> Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
+    """Generates data where Y is a simple time-delayed version of X.
 
-    This creates a clean, unambiguous temporal relationship ideal for testing
-    the windowing functionality of the MI estimator.
+    A smoothed random-walk signal is generated and Y is set to a lagged copy
+    of X with added Gaussian noise. This creates a clean, unambiguous temporal
+    relationship ideal for testing the windowing functionality of the MI estimator.
 
-    Args:
-        n_samples (int): The number of time points to generate.
-        lag (int): The number of timepoints to delay Y relative to X.
-        noise (float): The amount of Gaussian noise to add to Y.
-        use_torch (bool): If True, returns torch.Tensors.
+    Parameters
+    ----------
+    n_samples : int
+        The number of time points to generate.
+    lag : int, optional
+        The number of time-steps to delay Y relative to X. Defaults to 30.
+    noise : float, optional
+        Standard deviation of the Gaussian noise added to Y. Defaults to 0.1.
+    use_torch : bool, optional
+        If True, returns ``torch.Tensor`` objects; otherwise returns
+        ``np.ndarray``. Defaults to True.
 
-    Returns:
-        tuple: A tuple (x, y) of the generated temporal data, each of shape
-               [n_samples, 1] for compatibility with our processors.
+    Returns
+    -------
+    Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]
+        A tuple ``(x, y)`` of the generated temporal data, each of shape
+        ``(n_samples, 1)`` for compatibility with the library's processors.
     """
     full_signal = np.cumsum(np.random.randn(n_samples + lag))
     full_signal = (full_signal - full_signal.mean()) / full_signal.std()
@@ -292,29 +305,37 @@ def generate_event_related_data(
     n_events: int = 100,
     response_length: int = 20,
     noise: float = 0.1,
-    use_torch: bool = True
-) -> Tuple[any, any]:
-    """
-    Generates data with a sparse event signal (X) and a delayed response (Y).
+    use_torch: bool = True,
+) -> Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
+    """Generates data with a sparse event signal (X) and a delayed response (Y).
 
-    This dataset is designed to test lag detection. Signal X contains a few
-    sharp spikes ("events"). Signal Y is zero everywhere except for a stereotyped
-    response (a sine wave) that begins `lag` time steps after each event in X.
+    Signal X contains ``n_events`` sharp unit impulses at random time-points.
+    Signal Y is zero everywhere except for a stereotyped sine-wave response
+    of length ``response_length`` that begins ``lag`` time-steps after each
+    event in X.  This structure forces the model to learn the precise local
+    temporal relationship rather than global statistics.
 
-    This structure prevents the model from using global statistical features
-    and forces it to learn the precise local temporal relationship.
+    Parameters
+    ----------
+    n_samples : int, optional
+        The number of time points to generate. Defaults to 5000.
+    lag : int, optional
+        The number of time-steps to delay Y's response relative to each event
+        in X. Defaults to 30.
+    n_events : int, optional
+        The number of sparse events in signal X. Defaults to 100.
+    response_length : int, optional
+        The duration (in samples) of the sine-wave response in Y. Defaults to 20.
+    noise : float, optional
+        Standard deviation of the Gaussian noise added to Y. Defaults to 0.1.
+    use_torch : bool, optional
+        If True, returns ``torch.Tensor`` objects. Defaults to True.
 
-    Args:
-        n_samples (int): The number of time points to generate.
-        lag (int): The number of timepoints to delay Y's response relative to X.
-        n_events (int): The number of sparse events in signal X.
-        response_length (int): The duration of the sine wave response in Y.
-        noise (float): The amount of Gaussian noise to add to Y.
-        use_torch (bool): If True, returns torch.Tensors.
-
-    Returns:
-        tuple: A tuple (x, y) of the generated temporal data, each of shape
-               [n_samples, 1].
+    Returns
+    -------
+    Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]
+        A tuple ``(x, y)`` of the generated temporal data, each of shape
+        ``(n_samples, 1)``.
     """
     # Create the sparse event signal X
     x = np.zeros((n_samples, 1))
@@ -340,52 +361,156 @@ def generate_event_related_data(
     return x, y
 
 # Mainly used for tutorials
-def generate_linear_data(n_samples=5000, true_lag=50, noise_level=0.5):
-    """Y(t) is a simple, lagged version of X(t)."""
+def generate_linear_data(
+    n_samples: int = 5000,
+    true_lag: int = 50,
+    noise_level: float = 0.5,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generates a linearly lagged pair of signals for tutorial use.
+
+    X is a smoothed Gaussian random walk. Y is a lagged copy of X plus
+    independent Gaussian noise — the simplest possible temporal relationship.
+
+    Parameters
+    ----------
+    n_samples : int, optional
+        Number of time points. Defaults to 5000.
+    true_lag : int, optional
+        Number of time-steps X leads Y by. Defaults to 50.
+    noise_level : float, optional
+        Standard deviation of additive noise on Y. Defaults to 0.5.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        A tuple ``(x, y)`` of ``np.ndarray`` of shape ``(n_samples, 1)``.
+    """
     x_data = np.random.randn(n_samples)
-    x_data = np.convolve(x_data, np.ones(10)/10, mode='same') # Smooth it out
+    x_data = np.convolve(x_data, np.ones(10) / 10, mode='same')  # Smooth it out
     y_data = np.zeros(n_samples)
     y_data[true_lag:] = x_data[:-true_lag]
     y_data += np.random.randn(n_samples) * noise_level
     return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
 
-def generate_nonlinear_data(n_samples=5000, true_lag=50, noise_level=0.2):
-    """Y(t) is a nonlinear function of lagged X(t)."""
+
+def generate_nonlinear_data(
+    n_samples: int = 5000,
+    true_lag: int = 50,
+    noise_level: float = 0.2,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generates a nonlinearly lagged pair of signals for tutorial use.
+
+    X is a smoothed Gaussian random walk. Y is a lagged, squared copy of X
+    plus additive noise, creating a relationship that linear cross-correlation
+    cannot detect but MI can.
+
+    Parameters
+    ----------
+    n_samples : int, optional
+        Number of time points. Defaults to 5000.
+    true_lag : int, optional
+        Number of time-steps X leads Y by. Defaults to 50.
+    noise_level : float, optional
+        Standard deviation of additive noise on Y. Defaults to 0.2.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        A tuple ``(x, y)`` of ``np.ndarray`` of shape ``(n_samples, 1)``.
+    """
     x_data = np.random.randn(n_samples)
-    x_data = np.convolve(x_data, np.ones(10)/10, mode='same') 
+    x_data = np.convolve(x_data, np.ones(10) / 10, mode='same')
     y_data = np.zeros(n_samples)
-    y_data[true_lag:] = np.square(x_data[:-true_lag]) # The nonlinearity!
+    y_data[true_lag:] = np.square(x_data[:-true_lag])  # The nonlinearity!
     y_data += np.random.randn(n_samples) * noise_level
     return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
 
-def generate_history_data(n_samples=5000, history_duration=20, noise_level=0.1):
-    """Y(t) is a nonlinear function of the moving average of X over a recent window (no lag)."""
+
+def generate_history_data(
+    n_samples: int = 5000,
+    history_duration: int = 20,
+    noise_level: float = 0.1,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generates signals where Y depends on a moving average of X (no pure lag).
+
+    X is a smoothed random walk. Y is a nonlinear (tanh) function of the
+    moving average of X over the most recent ``history_duration`` samples.
+    There is no fixed lag — the model must integrate information over the
+    full history window.
+
+    Parameters
+    ----------
+    n_samples : int, optional
+        Number of time points. Defaults to 5000.
+    history_duration : int, optional
+        Length of the moving-average window over which X is integrated.
+        Defaults to 20.
+    noise_level : float, optional
+        Standard deviation of additive noise on Y. Defaults to 0.1.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        A tuple ``(x, y)`` of ``np.ndarray`` of shape ``(n_samples, 1)``.
+    """
     x_data = np.random.randn(n_samples)
-    x_data = np.convolve(x_data, np.ones(5)/5, mode='same')
+    x_data = np.convolve(x_data, np.ones(5) / 5, mode='same')
     y_data = np.zeros(n_samples)
-    
+
     # Calculate the moving average efficiently
-    moving_avg = np.convolve(x_data, np.ones(history_duration)/history_duration, mode='full')[:-history_duration+1]
-    
+    moving_avg = np.convolve(
+        x_data, np.ones(history_duration) / history_duration, mode='full'
+    )[:-history_duration + 1]
+
     # Y is a nonlinear function (tanh) of the moving average
     y_signal = np.tanh(moving_avg * 2.0)
-    
+
     y_data[history_duration:] = y_signal[:n_samples - history_duration]
     y_data += np.random.randn(n_samples) * noise_level
     return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
 
-def generate_full_data(n_samples=5000, true_lag=30, history_duration=20, noise_level=0.3):
-    """Y(t) is a nonlinear function of the moving average of X over a past, lagged window."""
+
+def generate_full_data(
+    n_samples: int = 5000,
+    true_lag: int = 30,
+    history_duration: int = 20,
+    noise_level: float = 0.3,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generates the full tutorial dataset: nonlinear, lagged, history-dependent.
+
+    Y is a nonlinear (tanh) function of the moving average of X computed over
+    a past window that itself is lagged relative to the current time. This
+    combines lag, nonlinearity, and temporal integration in a single signal.
+
+    Parameters
+    ----------
+    n_samples : int, optional
+        Number of time points. Defaults to 5000.
+    true_lag : int, optional
+        Additional lag applied after history integration, in samples.
+        Defaults to 30.
+    history_duration : int, optional
+        Length of the moving-average window (in samples). Defaults to 20.
+    noise_level : float, optional
+        Standard deviation of additive noise on Y. Defaults to 0.3.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        A tuple ``(x, y)`` of ``np.ndarray`` of shape ``(n_samples, 1)``.
+    """
     x_data = np.random.randn(n_samples)
-    x_data = np.convolve(x_data, np.ones(5)/5, mode='same')
+    x_data = np.convolve(x_data, np.ones(5) / 5, mode='same')
     y_data = np.zeros(n_samples)
-    
-    moving_avg = np.convolve(x_data, np.ones(history_duration)/history_duration, mode='full')[:-history_duration+1]
+
+    moving_avg = np.convolve(
+        x_data, np.ones(history_duration) / history_duration, mode='full'
+    )[:-history_duration + 1]
     y_signal = np.tanh(moving_avg * 2.0)
-    
+
     # Apply the lag
     effective_lag = true_lag + history_duration
     y_data[effective_lag:] = y_signal[:n_samples - effective_lag]
     y_data += np.random.randn(n_samples) * noise_level
-    
+
     return x_data.reshape(-1, 1), y_data.reshape(-1, 1)

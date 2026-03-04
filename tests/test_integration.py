@@ -19,7 +19,7 @@ def test_run_estimate_mode(raw_data):
     x, y = raw_data
     results = nmi.run(
         x_data=x, y_data=y, mode='estimate',
-        processor_type='continuous', processor_params={'window_size': 1},
+        processor_type_x='continuous', processor_params_x={'window_size': 1},
         base_params=BASE_PARAMS_TEST, random_seed=42, n_workers=1
     )
     assert isinstance(results.mi_estimate, float)
@@ -29,7 +29,7 @@ def test_run_sweep_mode(raw_data):
     x, y = raw_data
     results = nmi.run(
         x_data=x, y_data=y, mode='sweep',
-        processor_type='continuous', processor_params={},
+        processor_type_x='continuous', processor_params_x={},
         base_params=BASE_PARAMS_TEST, sweep_grid={'window_size': [5, 10]},
         random_seed=42, n_workers=1
     )
@@ -40,7 +40,7 @@ def test_run_dimensionality_mode():
     x, _ = nmi.generators.generate_nonlinear_from_latent(200, 3, 20, 2.0)
     results = nmi.run(
         x_data=x, mode='dimensionality',
-        processor_type='continuous', processor_params={'window_size': 1},
+        processor_type_x='continuous', processor_params_x={'window_size': 1},
         base_params=BASE_PARAMS_TEST, sweep_grid={'embedding_dim': [2, 4]},
         n_splits=2, random_seed=42, n_workers=1
     )

@@ -31,8 +31,8 @@ def test_rigorous_mode_with_spike_data():
         x_data=x_spikes,
         y_data=y_spikes,
         mode='rigorous',
-        processor_type='spike',
-        processor_params={'window_size': 0.05},
+        processor_type_x='spike',
+        processor_params_x={'window_size': 0.05},
         base_params=base_params,
         gamma_range=range(1, 3),  # Use a small gamma range for a quick test
         n_workers=1,  # Use a single worker for reproducibility

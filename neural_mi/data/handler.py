@@ -266,14 +266,21 @@ class PairedDataset(Dataset):
         return self.y_dataset.data
     
     def _align_datasets(self):
-        """Ensure X and Y have matching number of windows."""
+        """Ensure X and Y have matching number of samples."""
         n_x = len(self.x_dataset)
         n_y = len(self.y_dataset)
         if n_x != n_y:
             min_len = min(n_x, n_y)
+            max_len = max(n_x, n_y)
+            lost = max_len - min_len
+            pct = 100.0 * lost / max_len
+            logger.warning(
+                f"X and Y have different numbers of samples (X: {n_x}, Y: {n_y}). "
+                f"Truncating both to {min_len} samples "
+                f"({lost} samples discarded, {pct:.1f}% of the larger dataset lost)."
+            )
             self.x_dataset.n_windows = min_len
             self.y_dataset.n_windows = min_len
-            logger.warning(f"Truncated datasets to {min_len} windows for alignment")
     
     def __len__(self):
         return len(self.x_dataset)

@@ -60,28 +60,38 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     
     # Inject custom smoothing into Trainer init
     trainer = Trainer(
-        model=critic.to(device), 
-        estimator_fn=ESTIMATORS[params['estimator_name']], 
+        model=critic.to(device),
+        estimator_fn=ESTIMATORS[params['estimator_name']],
         optimizer=optimizer,
-        device=device, 
+        device=device,
         use_variational=params.get('use_variational', False),
-        beta=params.get('beta', 512.0),
+        beta=params.get('beta', 1024.0),
         estimator_params=params.get('estimator_params'),
         custom_smoothing_fn=params.get('custom_smoothing_fn'),
         spectral_whitening=params.get('spectral_whitening', 'std')
     )
-    
+
+    # Phase G2: intercept save_best_model_path to use the new extended format
+    # (includes build_params alongside state_dict for later extract_embeddings()).
+    _save_path = params.get('save_best_model_path')
+    _BUILD_PARAMS_KEYS = [
+        'critic_type', 'embedding_model', 'hidden_dim', 'embedding_dim', 'n_layers',
+        'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
+        'use_variational', 'shared_encoder',
+        'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
+    ]
+
     # Inject memory, logging, and spectral metrics parameters into train
     results = trainer.train(
-        dataset, 
-        params['n_epochs'], 
+        dataset,
+        params['n_epochs'],
         params['batch_size'],
-        patience=params['patience'], 
+        patience=params['patience'],
         run_id=run_id,
         output_units=params.get('output_units', 'nats'),
         verbose=params.get('verbose', False),
         show_progress=params.get('show_progress', True),
-        save_best_model_path=params.get('save_best_model_path'),
+        save_best_model_path=None,  # we handle saving ourselves below (new format)
         split_mode=params.get('split_mode', 'blocked'),
         train_indices=params.get('train_indices'),
         test_indices=params.get('test_indices'),
@@ -92,9 +102,35 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         spectral_output=params.get('spectral_output', 'default'),
         return_spectrum=params.get('return_spectrum', False)
     )
-    
+
+    # G2: save model in new format {'state_dict': ..., 'build_params': {...}}
+    if _save_path:
+        build_params = {k: params[k] for k in _BUILD_PARAMS_KEYS if k in params}
+        torch.save({'state_dict': trainer.model.state_dict(), 'build_params': build_params},
+                   _save_path)
+        logger.debug(f"Model saved (extended format) to {_save_path}.")
+
+    # G1: optionally extract embeddings from the trained model
+    if params.get('return_embeddings', False):
+        _all_x = dataset.x_data
+        _all_y = dataset.y_data
+        if _all_y is None:
+            logger.warning("return_embeddings=True but y_data is None. Skipping embedding extraction.")
+        else:
+            trainer.model.eval()
+            with torch.no_grad():
+                _max_emb = params.get('max_eval_samples', 5000)
+                _n = _all_x.shape[0]
+                if _n > _max_emb:
+                    _idx = np.random.choice(_n, _max_emb, replace=False)
+                    _all_x = _all_x[_idx]
+                    _all_y = _all_y[_idx]
+                _zx, _zy = trainer.model.get_embeddings(_all_x.to(device), _all_y.to(device))
+                results['embeddings_x'] = _zx.detach().cpu().numpy()
+                results['embeddings_y'] = _zy.detach().cpu().numpy()
+
     return_params = params.copy()
     return_params.pop('custom_critic', None)
     return_params.pop('custom_embedding_cls', None)
-    
+
     return {**return_params, **results}

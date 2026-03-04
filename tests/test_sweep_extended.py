@@ -17,15 +17,16 @@ class TestSweepExtended:
         assert sweep.base_params['input_dim_y'] == 5 * 20
         assert sweep.base_params['n_channels_y'] == 5
 
-    def test_prepare_tasks_concat_critic_warning(self, caplog):
-        # Warning when embedding_dim is in sweep_grid for concat critic
+    def test_prepare_tasks_concat_critic_warning(self):
+        # A5: sweeping embedding_dim with concat critic must now raise ValueError
+        # (previously emitted a log warning; changed to hard error to fail loudly).
         x = np.random.randn(10, 5)
         y = np.random.randn(10, 5)
         base_params = {'critic_type': 'concat'}
         sweep = ParameterSweep(x, y, base_params)
 
-        sweep._prepare_tasks(sweep_grid={'embedding_dim': [4]}, is_proc_sweep=False, max_samples_per_task=None)
-        assert "is not applicable for ConcatCritic" in caplog.text
+        with pytest.raises(ValueError, match="embedding_dim"):
+            sweep._prepare_tasks(sweep_grid={'embedding_dim': [4]}, is_proc_sweep=False, max_samples_per_task=None)
 
     def test_prepare_tasks_max_samples(self):
         x = np.random.randn(100, 5)

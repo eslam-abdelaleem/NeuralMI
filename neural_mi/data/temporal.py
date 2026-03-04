@@ -249,19 +249,20 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         n_oob = int(out_of_bounds.sum())
         total = len(target_times_flat)
         
+        oob_frac = 0.0
+        oob_windows = np.array([], dtype=int)
         if n_oob > 0:
             oob_frac = n_oob / total
             # Find which windows are affected
             oob_windows = np.unique(np.where(out_of_bounds.reshape(
                 self.window_manager.n_windows, self.max_samples_per_window))[0])
-        
-        log_fn = logger.warning if oob_frac > 0.1 else logger.debug
-        log_fn(
-            f"ContinuousWindowDataset: {n_oob}/{total} interpolated time points "
-            f"({oob_frac:.1%}) are zero-padded due to data gaps. "
-            f"Affects {len(oob_windows)} window(s). "
-            f"{'Consider checking your time vector for large gaps.' if oob_frac > 0.1 else ''}"
-        )
+            log_fn = logger.warning if oob_frac > 0.1 else logger.debug
+            log_fn(
+                f"ContinuousWindowDataset: {n_oob}/{total} interpolated time points "
+                f"({oob_frac:.1%}) are zero-padded due to data gaps. "
+                f"Affects {len(oob_windows)} window(s). "
+                f"{'Consider checking your time vector for large gaps.' if oob_frac > 0.1 else ''}"
+            )
 
         # Interpolate for each channel
         for i in range(n_channels):
@@ -358,6 +359,14 @@ class SpikeWindowDataset(TemporalWindowDataset):
         super().__init__(window_manager, device)
 
         self.data_orig = [np.array(st) for st in spike_times]
+        # Ensure spike times are sorted within each neuron (safe: copy already made via np.array above)
+        for i, st in enumerate(self.data_orig):
+            if len(st) > 1 and not np.all(st[:-1] <= st[1:]):
+                logger.debug(
+                    f"SpikeWindowDataset: neuron {i} spike times are not sorted. "
+                    "Sorting automatically."
+                )
+                self.data_orig[i] = np.sort(st)
         self.no_spike_value = no_spike_value
         self.exclude_bursty_neurons = exclude_bursty_neurons
         self.burst_threshold_multiplier = burst_threshold_multiplier
@@ -464,8 +473,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
         # Invalidate mask cache — data shape may have changed or noise was cleared
         self.__dict__.pop('_data_mask', None)
         self.__dict__.pop('_noise_buffer', None)
-        self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
-        self.time_offset = offset
 
     def time_shift(self, offset):
         """Shift spike times by offset."""
@@ -843,21 +850,30 @@ class CategoricalWindowDataset(TemporalWindowDataset):
 
     def apply_noise(self, amplitude):
         """
-        Add noise to categorical data by randomly flipping categories.
-        
-        Parameters
-        ----------
-        amplitude : float
-            Probability of flipping a category (between 0 and 1)
+        Noise corruption is not defined for categorical data.
+
+        Raises
+        ------
+        NotImplementedError
+            Always. Apply augmentation to the underlying signal before encoding.
         """
-        pass
+        raise NotImplementedError(
+            "Noise corruption is not defined for categorical data. "
+            "Apply augmentation to the underlying signal before encoding."
+        )
 
     def apply_precision(self, precision_level):
         """
-        Precision doesn't apply to categorical data in the same way.
-        This is a no-op for categorical data since categories are already discrete.
+        Precision corruption is not defined for categorical data.
+
+        Raises
+        ------
+        NotImplementedError
+            Always. Apply augmentation to the underlying signal before encoding.
         """
-        logger.warning("Precision adjustment not applicable to categorical data. Ignoring.")
-        pass
+        raise NotImplementedError(
+            "Precision corruption is not defined for categorical data. "
+            "Apply augmentation to the underlying signal before encoding."
+        )
 
 

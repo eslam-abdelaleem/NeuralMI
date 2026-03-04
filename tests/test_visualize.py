@@ -79,7 +79,13 @@ def test_results_plot_dispatcher_for_rigorous(mock_plot_bias, rigorous_results_d
     Tests that the Results.plot() method correctly calls the bias correction plot
     function when mode is 'rigorous'.
     """
-    details = {'mi_corrected': 0.55, 'mi_error': 0.05}
+    # Must include all required keys that Results.plot() validates
+    details = {
+        'slope': -0.5,
+        'mi_corrected': 0.55,
+        'mi_error': 0.05,
+        'gammas_used': list(range(1, 6)),
+    }
     results = Results(
         mode='rigorous',
         dataframe=rigorous_results_df,

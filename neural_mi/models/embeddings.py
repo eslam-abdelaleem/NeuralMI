@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 import math
+from typing import Tuple
 
 class BaseEmbedding(nn.Module):
     """Abstract base class for embedding models.
@@ -86,25 +87,28 @@ class MLP(_BaseMLP):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Flattens the input and passes it through the MLP."""
-        return self.output_layer(self.network(x.view(x.shape[0], -1)))
+        # Use reshape (not view) so that non-contiguous inputs (e.g. from
+        # permute() in transfer-entropy history arrays) are handled correctly.
+        return self.output_layer(self.network(x.reshape(x.shape[0], -1)))
 
 class CNN1D(BaseEmbedding):
     """A 1D CNN embedding network for sequential data.
 
-    This network uses 1D convolutions to extract features from sequential data.
-    It dynamically creates its final fully-connected layers on the first
-    forward pass to adapt to variable-length input sequences.
+    This network uses 1D convolutions followed by global average pooling to
+    produce a fixed-size embedding, regardless of input sequence length. Using
+    ``AdaptiveAvgPool1d`` instead of lazy linear layers makes the model fully
+    picklable at construction time (important for multiprocessing).
 
     Attributes
     ----------
     conv_layers : nn.Sequential
         The sequence of convolutional layers.
-    final_layers : nn.Sequential or None
-        The dynamically created fully-connected layers. Initially None.
+    final_layers : nn.Sequential
+        The pooling and fully-connected layers that map to the embedding.
     embed_dim : int
         The dimensionality of the output embedding.
     hidden_dim : int
-        The dimensionality of the hidden representation after the CNN layers.
+        The number of feature channels after the CNN layers.
     """
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int, activation: str = 'relu', kernel_size: int = 7):
         """
@@ -113,11 +117,11 @@ class CNN1D(BaseEmbedding):
         input_dim : int
             The number of input channels.
         hidden_dim : int
-            The number of channels in the first hidden convolutional layer.
+            The number of channels in the hidden convolutional layers.
         embed_dim : int
             The dimensionality of the output embedding.
         n_layers : int
-            The number of convolutional layers (currently fixed architecture).
+            The number of convolutional layers.
         activation : str, optional
             The activation function to use after convolutional layers. Defaults to 'relu'.
         kernel_size : int, optional
@@ -126,7 +130,7 @@ class CNN1D(BaseEmbedding):
         super().__init__()
         if kernel_size % 2 == 0:
             raise ValueError("kernel_size must be an odd number for 'same' padding.")
-        
+
         activation_fn = {'relu': nn.ReLU, 'leaky_relu': nn.LeakyReLU}.get(activation, nn.ReLU)
 
         layers = [
@@ -139,23 +143,22 @@ class CNN1D(BaseEmbedding):
                 activation_fn()
             ])
         self.conv_layers = nn.Sequential(*layers)
-        self.final_layers = None
+        # AdaptiveAvgPool1d(1) collapses any sequence length → (batch, hidden_dim, 1),
+        # giving a fixed-size representation that is fully picklable at construction time.
+        self.final_layers = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, embed_dim)
+        )
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
         self._initialize_weights()
+        self._initialize_final_layers()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.conv_layers(x)
-        if self.final_layers is None:
-            flattened_size = h.shape[1] * h.shape[2]
-            self.final_layers = nn.Sequential(
-                nn.Flatten(),
-                nn.Linear(flattened_size, self.hidden_dim),
-                nn.ReLU(),
-                nn.Linear(self.hidden_dim, self.embed_dim)
-            ).to(x.device)
-            self._initialize_final_layers()
-        return self.final_layers(h)
+        return self.final_layers(self.conv_layers(x))
 
     def _initialize_weights(self):
         for m in self.conv_layers.modules():
@@ -164,11 +167,10 @@ class CNN1D(BaseEmbedding):
                 if m.bias is not None: nn.init.zeros_(m.bias)
 
     def _initialize_final_layers(self):
-        if self.final_layers is not None:
-            for m in self.final_layers.modules():
-                if isinstance(m, nn.Linear):
-                    nn.init.xavier_uniform_(m.weight)
-                    if m.bias is not None: nn.init.zeros_(m.bias)
+        for m in self.final_layers.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None: nn.init.zeros_(m.bias)
 
 class GRU(BaseEmbedding):
     """A Gated Recurrent Unit (GRU) embedding network for sequential data."""
@@ -327,7 +329,14 @@ class Transformer(BaseEmbedding):
             pe[:, 0, 1::2] = torch.cos(position * div_term)
             self.register_buffer('pe', pe)
         def forward(self, x):
-            return x + self.pe[:x.size(0)]
+            seq_len = x.size(0)
+            if seq_len > self.pe.size(0):
+                raise ValueError(
+                    f"Input sequence length ({seq_len}) exceeds the Transformer's "
+                    f"max_len ({self.pe.size(0)}). Either reduce window_size or "
+                    f"increase max_len in PositionalEncoding."
+                )
+            return x + self.pe[:seq_len]
 
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int, 
                  nhead: int = 4, **kwargs):
@@ -416,7 +425,7 @@ class VarMLP(_BaseMLP):
         self.fc_logvar = nn.Linear(hidden_dim, embed_dim)
         self._initialize_weights()
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Computes the embedding and KL divergence.
 
@@ -424,7 +433,7 @@ class VarMLP(_BaseMLP):
         the sample and the KL loss. In evaluation mode, it returns the mean of
         the distribution and a KL loss of 0.
         """
-        h = self.base_network(x.view(x.shape[0], -1))
+        h = self.base_network(x.reshape(x.shape[0], -1))
         mu, logvar = self.fc_mu(h), self.fc_logvar(h)
         if not self.training:
             return mu, torch.tensor(0.0, device=mu.device)
@@ -434,7 +443,7 @@ class VarMLP(_BaseMLP):
         eps = torch.randn_like(std)
         z = mu + eps * std
 
-        # Calculate KL loss
+        # Calculate KL loss, normalized by batch size for training stability
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        # kl_loss = kl_loss / x.size(0)  # normalize by batch for stability
+        kl_loss = kl_loss / x.size(0)
         return z, kl_loss

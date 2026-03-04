@@ -17,12 +17,12 @@ class DataShapeError(NeuralMIError, ValueError):
     """
     pass
 
-class InsufficientDataError(DataShapeError):
+class InsufficientDataError(NeuralMIError):
     """Exception raised when not enough data is provided for an operation.
 
-    This is a subclass of `DataShapeError` and is used, for example, when
+    This is a subclass of `NeuralMIError` and is used, for example, when
     the length of a time series is smaller than the required window size for
-    processing.
+    processing, or when insufficient data points remain after subsampling.
     """
     pass
 

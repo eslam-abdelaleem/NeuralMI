@@ -52,23 +52,6 @@ def _configure_multiprocessing() -> None:
         logger.debug(f"macOS: set TMPDIR={custom_temp} for spawn workers.")
     _mp_configured = True
 
-def _worker_init_fn(worker_id: int, base_seed: int) -> None:
-    """Seed a pool worker deterministically using base_seed + worker_id.
-
-    Called as the pool initializer so every worker gets a unique but
-    reproducible seed regardless of spawn order.
-    """
-    import random as _random
-    seed = base_seed + worker_id
-    _random.seed(seed)
-    np.random.seed(seed)
-    try:
-        import torch as _torch
-        _torch.manual_seed(seed)
-    except ImportError:
-        pass
-    logger.debug(f"Worker {worker_id} seeded with {seed}.")
-    
 def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
                 sample_rate: Optional[float] = None) -> tuple:
     """Shifts y_data relative to x_data based on the specified lag.
@@ -192,8 +175,16 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     else: # MLP
         input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
 
+    shared_encoder = embedding_params.get('shared_encoder', False)
+    if shared_encoder and critic_type == 'concat':
+        raise ValueError(
+            "shared_encoder=True is incompatible with critic_type='concat'. "
+            "ConcatCritic operates on raw concatenated inputs and has no separate "
+            "embedding networks to share. Switch to critic_type='separable' or 'hybrid'."
+        )
+
     net_x = EmbeddingModel(input_dim_x, **model_kwargs)
-    net_y = EmbeddingModel(input_dim_y, **model_kwargs)
+    net_y = net_x if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs)
 
     # Warn when the first embedding layer is severely overparameterized.
     # Large first layers (input_dim * hidden_dim) are the most common cause of
@@ -292,12 +283,15 @@ def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[s
     # 2. "Soft" PR (Based on Singular Values)
     metrics["pr_singular"] = (s.sum())**2 / (s**2).sum() if s.sum() > 0 else 0.0
 
-    # 3. Effective Rank
+    # 3. Effective Rank and Spectral Entropy
     if s.sum() > 0:
         p = s / s.sum()
+        p = p[p > 0]  # guard against numerical zeros before log
         entropy = -np.sum(p * np.log(p))
         metrics["effective_rank"] = np.exp(entropy)
+        metrics["spectral_entropy"] = float(entropy)
     else:
         metrics["effective_rank"] = 0.0
-    
+        metrics["spectral_entropy"] = 0.0
+
     return metrics

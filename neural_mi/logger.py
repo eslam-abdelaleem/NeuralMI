@@ -31,31 +31,38 @@ def setup_logger(name: str = 'neural_mi', level: int = logging.INFO) -> logging.
         A configured logger instance.
     """
     logger = logging.getLogger(name)
-    
+
     # Avoid adding multiple handlers if the logger is already configured
     if logger.handlers:
         return logger
-        
+
     logger.setLevel(level)
-    
-    # Create a console handler
-    handler = logging.StreamHandler(sys.stdout)
+
+    # Use stderr so library output does not pollute stdout (e.g. when stdout is piped)
+    handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(level)
-    
+
     # Create a formatter and set it for the handler
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     handler.setFormatter(formatter)
-    
+
     # Add the handler to the logger
     logger.addHandler(handler)
-    
+
     return logger
 
 # Create a default logger instance for the library
 logger = setup_logger()
+
+_VALID_VERBOSITY_LEVELS = {
+    0: logging.CRITICAL, 1: logging.ERROR, 2: logging.WARNING,
+    3: logging.INFO, 4: logging.DEBUG,
+    'CRITICAL': logging.CRITICAL, 'ERROR': logging.ERROR,
+    'WARNING': logging.WARNING, 'INFO': logging.INFO, 'DEBUG': logging.DEBUG
+}
 
 def set_verbosity(level: Union[int, str]):
     """Sets the global verbosity level for the library's logger.
@@ -68,16 +75,31 @@ def set_verbosity(level: Union[int, str]):
     level : int or str
         The desired verbosity level. Can be an integer from 0 (CRITICAL) to
         4 (DEBUG), or a string ('CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG').
+
+    Raises
+    ------
+    ValueError
+        If `level` is not a recognised verbosity level.
     """
-    level_map = {
-        0: logging.CRITICAL, 1: logging.ERROR, 2: logging.WARNING,
-        3: logging.INFO, 4: logging.DEBUG,
-        'CRITICAL': logging.CRITICAL, 'ERROR': logging.ERROR,
-        'WARNING': logging.WARNING, 'INFO': logging.INFO, 'DEBUG': logging.DEBUG
-    }
-    
-    log_level = level_map.get(level, logging.INFO)
-    
+    if level not in _VALID_VERBOSITY_LEVELS:
+        raise ValueError(
+            f"Invalid verbosity level: {level!r}. "
+            f"Expected an integer 0–4 or one of: "
+            f"{list(k for k in _VALID_VERBOSITY_LEVELS if isinstance(k, str))}."
+        )
+    log_level = _VALID_VERBOSITY_LEVELS[level]
     logger.setLevel(log_level)
     for handler in logger.handlers:
         handler.setLevel(log_level)
+
+
+def set_verbose(verbose: bool):
+    """Convenience wrapper: set logger to INFO (verbose=True) or WARNING (verbose=False).
+
+    Parameters
+    ----------
+    verbose : bool
+        If True, sets the logger to INFO level so informational messages are shown.
+        If False, sets the logger to WARNING level so only warnings and errors appear.
+    """
+    set_verbosity(3 if verbose else 2)

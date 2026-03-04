@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger
 from neural_mi.utils import _configure_multiprocessing
+from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
     """Helper to create a list of dictionaries from a grid."""
@@ -33,8 +34,10 @@ class ParameterSweep:
         """
         Parameters
         ----------
-        dataset : PairedDataset
-            A PairedDataset or PairedTemporalDataset object containing the data.
+        x_data : torch.Tensor
+            Data for variable X.
+        y_data : torch.Tensor
+            Data for variable Y.
         base_params : Dict[str, Any]
             A dictionary of fixed parameters for the MI estimator's trainer.
         **kwargs : Dict[str, Any]
@@ -94,8 +97,12 @@ class ParameterSweep:
         sweep_grid = sweep_grid or {}
 
         if self.base_params.get('critic_type') == 'concat' and 'embedding_dim' in sweep_grid:
-            logger.warning("'embedding_dim' is not applicable for ConcatCritic and will be ignored.")
-            sweep_grid.pop('embedding_dim', None)
+            raise ValueError(
+                "'embedding_dim' cannot be swept when critic_type='concat'. "
+                "ConcatCritic has no separate embedding networks, so embedding_dim "
+                "has no effect. Remove 'embedding_dim' from sweep_grid, or switch "
+                "to critic_type='separable' or 'hybrid'."
+            )
 
         param_combinations = _product_dict(**sweep_grid) if sweep_grid else [{}]
         
@@ -127,7 +134,6 @@ class ParameterSweep:
             # Only inject keys that belong to the processor schema — prevents model
             # architecture params (embedding_dim, n_layers, etc.) from bleeding into
             # processor_params_x/y when both processor and model params are swept together.
-            from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
             proc_type_x = self.base_params.get('processor_type_x', 'continuous')
             proc_type_y = self.base_params.get('processor_type_y', proc_type_x)
             valid_proc_keys_x = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_x, []))

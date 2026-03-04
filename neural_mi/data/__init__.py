@@ -6,3 +6,10 @@ paired datasets composed of different data types `ContinuousDataset` and `SpikeD
 """
 from .handler import create_dataset, PairedDataset, PairedTemporalDataset
 from .views import SubsetView
+
+__all__ = [
+    'create_dataset',
+    'PairedDataset',
+    'PairedTemporalDataset',
+    'SubsetView',
+]

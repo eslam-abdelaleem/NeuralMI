@@ -13,7 +13,7 @@ import numpy as np
 from scipy.signal import correlate
 from scipy.stats import zscore
 from matplotlib.ticker import MaxNLocator
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from scipy.spatial.distance import cdist
 from matplotlib.lines import Line2D
 
@@ -142,6 +142,177 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     
     if 'fig' in locals():
         plt.tight_layout()
+
+def plot_embeddings(
+    z: np.ndarray,
+    color: Optional[np.ndarray] = None,
+    method: str = 'auto',
+    dim: int = 2,
+    title: Optional[str] = None,
+    ax: Optional[plt.Axes] = None,
+    **kwargs,
+) -> plt.Axes:
+    """Visualize learned embeddings in 2-D or 3-D.
+
+    Parameters
+    ----------
+    z : np.ndarray
+        Embedding array of shape ``(n_samples, embed_dim)``.
+    color : np.ndarray, optional
+        Length-n array of values used for colouring points.  Continuous arrays
+        produce a colormap; integer / string arrays produce a discrete palette
+        with a legend.  Defaults to None (uniform colour).
+    method : {'auto', 'none', 'pca', 'tsne', 'umap'}, default='auto'
+        Dimensionality-reduction method applied before plotting:
+
+        - ``'none'`` — use the first ``dim`` dimensions directly (requires
+          ``embed_dim >= dim``).
+        - ``'pca'`` — sklearn PCA (always available).
+        - ``'tsne'`` — sklearn t-SNE.
+        - ``'umap'`` — UMAP (requires the ``umap-learn`` package).
+        - ``'auto'`` — uses ``'none'`` if ``embed_dim <= dim``, else tries
+          ``'umap'``, falls back to ``'pca'``.
+    dim : {2, 3}, default=2
+        Output dimensionality: 2 → 2-D scatter, 3 → 3-D scatter.
+    title : str, optional
+        Plot title.  Defaults to None.
+    ax : plt.Axes, optional
+        Axes to plot on.  Created automatically if None.  For dim=3 the axes
+        must be a 3-D axes (``projection='3d'``).
+    **kwargs
+        Additional keyword arguments forwarded to ``ax.scatter``.
+
+    Returns
+    -------
+    plt.Axes
+        The axes containing the plot.
+
+    Examples
+    --------
+    >>> zx, zy = nmi.extract_embeddings('model.pt', x_test, y_test)
+    >>> ax = nmi.visualize.plot_embeddings(zx, color=labels, method='pca')
+    >>> plt.show()
+    """
+    from neural_mi.logger import logger as _logger
+
+    z = np.asarray(z)
+    if z.ndim != 2:
+        raise ValueError(f"z must be 2-D (n_samples, embed_dim), got shape {z.shape}.")
+    n_samples, embed_dim = z.shape
+
+    if dim not in (2, 3):
+        raise ValueError(f"dim must be 2 or 3, got {dim}.")
+
+    # --- Resolve method ---
+    if method == 'auto':
+        if embed_dim <= dim:
+            method = 'none'
+        else:
+            try:
+                import umap  # noqa: F401
+                method = 'umap'
+            except ImportError:
+                method = 'pca'
+
+    # --- Apply dimensionality reduction ---
+    if method == 'none':
+        if embed_dim < dim:
+            raise ValueError(
+                f"method='none' requires embed_dim >= dim, but embed_dim={embed_dim} < dim={dim}."
+            )
+        z_plot = z[:, :dim]
+    elif method == 'pca':
+        from sklearn.decomposition import PCA
+        z_plot = PCA(n_components=dim).fit_transform(z)
+    elif method == 'tsne':
+        from sklearn.manifold import TSNE
+        z_plot = TSNE(n_components=dim, **{k: v for k, v in kwargs.items()
+                                            if k in ('perplexity', 'learning_rate', 'n_iter',
+                                                      'random_state', 'init')}).fit_transform(z)
+        # Remove t-SNE-specific kwargs so they don't reach ax.scatter
+        for _k in ('perplexity', 'learning_rate', 'n_iter', 'random_state', 'init'):
+            kwargs.pop(_k, None)
+    elif method == 'umap':
+        try:
+            import umap
+        except ImportError:
+            raise ImportError(
+                "method='umap' requires the umap-learn package. "
+                "Install it with: pip install umap-learn"
+            )
+        reducer = umap.UMAP(n_components=dim, **{k: v for k, v in kwargs.items()
+                                                  if k in ('n_neighbors', 'min_dist',
+                                                            'metric', 'random_state')})
+        z_plot = reducer.fit_transform(z)
+        for _k in ('n_neighbors', 'min_dist', 'metric', 'random_state'):
+            kwargs.pop(_k, None)
+    else:
+        raise ValueError(
+            f"method='{method}' is not recognised. "
+            f"Choose from 'auto', 'none', 'pca', 'tsne', 'umap'."
+        )
+
+    _logger.debug(f"plot_embeddings: {method} → {z_plot.shape}")
+
+    # --- Resolve colour ---
+    if color is None:
+        c_arr = None
+        cmap = kwargs.pop('cmap', 'viridis')
+        scatter_kwargs = {'c': None, 'cmap': cmap, **kwargs}
+        legend_handles = None
+    else:
+        color = np.asarray(color)
+        # Detect categorical vs continuous
+        is_categorical = not np.issubdtype(color.dtype, np.floating)
+        if is_categorical:
+            unique_vals = np.unique(color)
+            palette = plt.cm.get_cmap('tab10', len(unique_vals))
+            c_arr = np.array([np.where(unique_vals == v)[0][0] for v in color])
+            scatter_kwargs = {'c': c_arr, 'cmap': palette,
+                              'vmin': -0.5, 'vmax': len(unique_vals) - 0.5, **kwargs}
+            legend_handles = [
+                plt.Line2D([0], [0], marker='o', color='w',
+                           markerfacecolor=palette(i / max(len(unique_vals) - 1, 1)),
+                           label=str(v), markersize=8)
+                for i, v in enumerate(unique_vals)
+            ]
+        else:
+            scatter_kwargs = {'c': color, 'cmap': kwargs.pop('cmap', 'viridis'), **kwargs}
+            legend_handles = None
+
+    # --- Create axes ---
+    if ax is None:
+        if dim == 3:
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111, projection='3d')
+        else:
+            fig, ax = plt.subplots(figsize=(7, 6))
+
+    # --- Plot ---
+    if dim == 2:
+        sc = ax.scatter(z_plot[:, 0], z_plot[:, 1], **scatter_kwargs)
+        ax.set_xlabel(f'{method.upper()}-1')
+        ax.set_ylabel(f'{method.upper()}-2')
+    else:
+        sc = ax.scatter(z_plot[:, 0], z_plot[:, 1], z_plot[:, 2], **scatter_kwargs)
+        ax.set_xlabel(f'{method.upper()}-1')
+        ax.set_ylabel(f'{method.upper()}-2')
+        ax.set_zlabel(f'{method.upper()}-3')
+
+    if legend_handles:
+        ax.legend(handles=legend_handles, title='Class', loc='best')
+    elif color is not None and not is_categorical:
+        plt.colorbar(sc, ax=ax, label='Value')
+
+    if title:
+        ax.set_title(title)
+
+    sns.despine(ax=ax)
+    if 'fig' in locals():
+        plt.tight_layout()
+
+    return ax
+
 
 def plot_cross_correlation(x, y, true_lag):
     """Plotting function for cross-correlation."""

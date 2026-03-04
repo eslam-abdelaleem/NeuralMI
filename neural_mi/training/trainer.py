@@ -5,6 +5,7 @@ This module provides the `Trainer` class, a comprehensive utility for training
 a critic model, monitoring its performance, implementing early stopping, and
 saving the best-performing model state.
 """
+import warnings
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, SubsetRandomSampler
@@ -39,7 +40,7 @@ class Trainer:
     MI score, and the ability to save the best model checkpoint.
     """
     def __init__(self, model: nn.Module, estimator_fn: Callable, optimizer: torch.optim.Optimizer,
-                 device: torch.device, use_variational: bool = False, beta: float = 512,
+                 device: torch.device, use_variational: bool = False, beta: float = 1024,
                  estimator_params: Optional[Dict[str, Any]] = None,
                  custom_smoothing_fn: Optional[Callable] = None,
                  spectral_whitening: str = 'std'):
@@ -62,7 +63,7 @@ class Trainer:
             Defaults to False.
         beta : float, optional
             The weight to apply to the KL divergence term in the loss function,
-            if `use_variational` is True. Defaults to 512.0.
+            if `use_variational` is True. Defaults to 1024.0.
         estimator_params : dict, optional
             Additional keyword arguments for the estimator function.
         custom_smoothing_fn : Callable, optional
@@ -91,7 +92,7 @@ class Trainer:
               test_indices: Optional[np.ndarray] = None,
               max_eval_samples: int = 5000,
               train_subset_size: Optional[int] = None,
-              split_gap_fraction: float = 0.0,
+              split_gap_fraction: float = 0.5,
               track_spectral_metrics: bool = False,
               spectral_output: str = 'default',
               return_spectrum: bool = False,
@@ -123,7 +124,7 @@ class Trainer:
             Epochs to wait for improvement before early stopping. Defaults to 10.
         smoothing_sigma : float, optional
             Standard deviation for the Gaussian smoothing kernel on validation MI.
-            Defaults to 2.0.
+            Defaults to 1.0.
         median_window : int, optional
             Window size for the median filter on validation MI. Defaults to 5.
         min_improvement : float, optional
@@ -190,6 +191,11 @@ class Trainer:
 
         # 1. Split Data
         if train_indices is not None and test_indices is not None:
+            logger.warning(
+                "Custom train_indices and test_indices were provided. "
+                "The split_mode, train_fraction, n_test_blocks, and split_gap_fraction "
+                "parameters will be ignored for this run."
+            )
             train_idx, test_idx = train_indices, test_indices
         elif split_mode == 'random':
             train_idx, test_idx = self._create_random_split(len(dataset), train_fraction)
@@ -208,11 +214,22 @@ class Trainer:
 
         # 2. Lock in a Train Evaluation Subset (to prevent OOM/slowdown during train_mi tracking)
         actual_train_subset_size = train_subset_size or min(len(train_idx), len(test_idx), max_eval_samples)
+        if train_subset_size is not None and train_subset_size > len(train_idx):
+            warnings.warn(
+                f"train_subset_size={train_subset_size} exceeds the number of available "
+                f"training samples ({len(train_idx)}). Clamping to {len(train_idx)}. "
+                f"Evaluation metrics may be less stable than expected.",
+                UserWarning,
+                stacklevel=2,
+            )
+        # Clamp to available training samples to avoid ValueError from np.random.choice
+        actual_train_subset_size = min(actual_train_subset_size, len(train_idx))
         train_eval_idx = np.random.choice(train_idx, actual_train_subset_size, replace=False)
         train_eval_view = SubsetView(dataset, indices=train_eval_idx, max_index_reduction=max_index_reduction)
         
         history, metrics_tracked, best_mi, no_improve = [], [], -float('inf'), 0
         best_model_state = None
+        nan_streak = 0
         
         display_progress = show_progress if show_progress is not None else verbose
         epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False,
@@ -251,11 +268,21 @@ class Trainer:
                     metrics_tracked.append(metrics_during)
             
             if np.isnan(mi_nats):
+                nan_streak += 1
+                if nan_streak >= 3:
+                    raise TrainingError(
+                        f"Training aborted: {nan_streak} consecutive NaN MI values "
+                        f"(epochs {epoch + 2 - nan_streak}–{epoch + 1}). "
+                        f"Check your learning_rate, batch_size, and input data for "
+                        f"numerical instability (e.g. exploding gradients, zero-variance channels)."
+                    )
                 logger.warning(
-                    f"NaN MI detected at epoch {epoch + 1}. This step will be skipped "
-                    f"for early stopping purposes. If this persists, check your data and "
-                    f"hyperparameters."
+                    f"NaN MI detected at epoch {epoch + 1} (consecutive NaN streak: "
+                    f"{nan_streak}/3). This step will be skipped for early stopping. "
+                    f"If this persists, check your data and hyperparameters."
                 )
+            else:
+                nan_streak = 0
             history.append(mi_nats)
             
             # Smoothing (Custom or Default)
@@ -405,10 +432,12 @@ class Trainer:
         results = {}
         results['spectral_whitening'] = self.spectral_whitening
         if spectral_output == 'all':
-            results = metrics
+            # Return all metrics: pr_covariance, pr_singular, effective_rank, spectral_entropy
+            results.update(metrics)
         else:
+            # Default: only participation_ratio (pr_singular)
             results['participation_ratio'] = metrics['pr_singular']
-            
+
         if return_spectrum:
             results['spectrum'] = spectrum
             

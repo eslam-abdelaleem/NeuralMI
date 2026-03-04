@@ -75,6 +75,13 @@ def run_dimensionality_analysis(
     analysis_params['spectral_output'] = spectral_output
     analysis_params['return_spectrum'] = return_spectrum
 
+    # Default shared_encoder=True: X and Y are always split halves of the same
+    # distribution in dimensionality mode, so tying their embedding weights is
+    # both theoretically justified and reduces the parameter count by half.
+    # Users who want independent encoders can override via base_params.
+    if 'shared_encoder' not in analysis_params:
+        analysis_params['shared_encoder'] = True
+
     if 'embedding_dim' not in analysis_params and 'embedding_dim' not in (sweep_grid or {}):
         logger.info("No embedding_dim specified. Defaulting to 64 for robust dimensionality capacity.")
         analysis_params['embedding_dim'] = 64
@@ -96,7 +103,8 @@ def run_dimensionality_analysis(
     # 3. Intrinsic Dimensionality (only X provided — channel split)
     logger.info(f"Computing Intrinsic Dimensionality using '{split_method}' splits.")
 
-    n_channels = x_data.shape[-1]
+    # shape is (n_windows, n_channels, window_size) — channels are at dim 1, not dim -1
+    n_channels = x_data.shape[1]
 
     if split_method == 'temporal':
         lag = kwargs.get('lag', None)
@@ -130,12 +138,20 @@ def run_dimensionality_analysis(
             if split_method == 'random':
                 indices = np.random.permutation(n_channels)
                 half = n_channels // 2
-                x_a = x_data[..., indices[:half]]
-                x_b = x_data[..., indices[half:]]
+                if x_data.ndim == 2:
+                    x_a = x_data[:, indices[:half]]
+                    x_b = x_data[:, indices[half:]]
+                else:  # 3D (N, C, W)
+                    x_a = x_data[:, indices[:half], :]
+                    x_b = x_data[:, indices[half:], :]
             else:  # spatial
                 half = n_channels // 2
-                x_a = x_data[..., :half]
-                x_b = x_data[..., half:]
+                if x_data.ndim == 2:
+                    x_a = x_data[:, :half]
+                    x_b = x_data[:, half:]
+                else:  # 3D (N, C, W)
+                    x_a = x_data[:, :half, :]
+                    x_b = x_data[:, half:, :]
 
             split_rows = _run_single_split(x_a, x_b, analysis_params,
                                            sweep_grid, n_workers, split_id=i)
