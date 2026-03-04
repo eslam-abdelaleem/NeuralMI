@@ -64,7 +64,7 @@ def run_lag_analysis(
         proc_type_y = base_params.get('processor_type_x')
         logger.info("`processor_type_y` not specified in `base_params`, using the same as for x.")
 
-    # Iinfer sample_rate from processor_params to resolve unit ambiguity
+    # Infer sample_rate from processor_params to resolve unit ambiguity
     sample_rate = base_params.get('processor_params_x', {}).get('sample_rate', None)
     if sample_rate is None:
         sample_rate = base_params.get('processor_params_y', {}).get('sample_rate', None)
@@ -92,9 +92,13 @@ def run_lag_analysis(
         x_sh, y_sh = _shift_data(x_data, y_data, lag, proc_type_y, sample_rate=sample_rate)
         shifted_pairs[lag] = (x_sh, y_sh)
 
+    def _n_items(data):
+        """Return the number of samples/trials, supporting both arrays and lists."""
+        return data.shape[0] if hasattr(data, 'shape') else len(data)
+
     if equalize_n:
         # Determine minimum number of samples/windows across all lags
-        min_n = min(x_sh.shape[0] for x_sh, _ in shifted_pairs.values())
+        min_n = min(_n_items(x_sh) for x_sh, _ in shifted_pairs.values())
         logger.info(
             f"equalize_n=True: truncating all lags to {min_n} samples "
             f"(limited by the largest lag in the range)."
@@ -106,7 +110,7 @@ def run_lag_analysis(
 
     for lag in lag_range:
         x_shifted, y_shifted = shifted_pairs[lag]
-        n_windows_this_lag = x_shifted.shape[0]
+        n_windows_this_lag = _n_items(x_shifted)
 
         for i, other_params in enumerate(param_combinations):
             task_params = {**base_params, **other_params, 'lag': lag,

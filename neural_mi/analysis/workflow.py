@@ -22,7 +22,7 @@ from neural_mi.logger import logger
 from neural_mi.exceptions import InsufficientDataError, TrainingError
 from neural_mi.utils import _configure_multiprocessing
 
-def __find_linear_region(group: pd.DataFrame, delta_threshold: float,
+def _find_linear_region(group: pd.DataFrame, delta_threshold: float,
                          min_gamma_points: int, verbose: bool) -> List[int]:
     """Finds the linear region of the MI vs. 1/gamma plot.
 
@@ -46,7 +46,7 @@ def __find_linear_region(group: pd.DataFrame, delta_threshold: float,
         gammas_to_fit.pop(-1)
     return gammas_to_fit
 
-def __extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
+def _extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
                      confidence_level: float) -> tuple:
     """Extrapolates MI to infinite data limit (gamma→0, i.e. 1/N→0).
     
@@ -89,12 +89,12 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any], delt
             param_dict = {group_keys[0]: params}
 
         try:
-            gammas_used = __find_linear_region(group, delta_threshold, min_gamma_points, verbose)
+            gammas_used = _find_linear_region(group, delta_threshold, min_gamma_points, verbose)
             is_reliable = len(gammas_used) >= min_gamma_points
             if not is_reliable:
                 logger.warning(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
 
-            mi_corrected, mi_error, slope = __extrapolate_mi(group, gammas_used, confidence_level)
+            mi_corrected, mi_error, slope = _extrapolate_mi(group, gammas_used, confidence_level)
             param_dict.update({
                 'mi_corrected': mi_corrected, 'mi_error': mi_error, 'slope': slope,
                 'is_reliable': is_reliable, 'gammas_used': gammas_used
@@ -126,8 +126,8 @@ class AnalysisWorkflow:
         self.base_params.update({
             'input_dim_x': x_data.shape[1] * x_data.shape[2],
             'input_dim_y': y_data.shape[1] * y_data.shape[2],
-            'n_channels_x': x_data.shape[2],
-            'n_channels_y': y_data.shape[2],
+            'n_channels_x': x_data.shape[1],
+            'n_channels_y': y_data.shape[1],
             **kwargs
         })
 
@@ -164,12 +164,20 @@ class AnalysisWorkflow:
         if not tasks:
             return {"corrected_results": [], "raw_results_df": pd.DataFrame()}
 
-        _configure_multiprocessing()
-        with mp.get_context('spawn').Pool(processes=n_workers) as pool:
-            raw_results = list(tqdm(
-                pool.imap(run_training_task, tasks), total=len(tasks),
-                desc="Rigorous Analysis Progress", unit="task", disable=not show_progress
-            ))
+        if n_workers <= 1:
+            logger.info("Running rigorous analysis sequentially (n_workers=1)...")
+            raw_results = [
+                run_training_task(task)
+                for task in tqdm(tasks, desc="Rigorous Analysis Progress",
+                                 unit="task", disable=not show_progress)
+            ]
+        else:
+            _configure_multiprocessing()
+            with mp.get_context('spawn').Pool(processes=n_workers) as pool:
+                raw_results = list(tqdm(
+                    pool.imap(run_training_task, tasks), total=len(tasks),
+                    desc="Rigorous Analysis Progress", unit="task", disable=not show_progress
+                ))
 
         logger.info("All training tasks finished. Performing bias correction...")
         raw_results_df = pd.DataFrame(raw_results)
@@ -235,5 +243,3 @@ class AnalysisWorkflow:
 
         logger.debug(f"Created {len(tasks)} tasks to run...")
         return tasks
-
-

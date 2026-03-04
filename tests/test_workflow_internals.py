@@ -2,27 +2,32 @@
 import pytest
 import pandas as pd
 import numpy as np
-from neural_mi.analysis.workflow import __find_linear_region as find_linear_region
-from neural_mi.analysis.workflow import __extrapolate_mi as extrapolate_mi
+from neural_mi.analysis.workflow import _find_linear_region as find_linear_region
+from neural_mi.analysis.workflow import _extrapolate_mi as extrapolate_mi
 from neural_mi.analysis.workflow import _post_process_and_correct
 
 class TestWorkflowInternals:
     def test_find_linear_region(self):
-        # Create perfectly linear data
+        # _find_linear_region works in the space of (1/gamma, test_mi).
+        # For all 5 gammas to be retained, the data must be linear in 1/gamma,
+        # i.e. test_mi = a + b*(1/gamma).
+        gammas = [1, 2, 3, 4, 5]
         df = pd.DataFrame({
-            'gamma': [1, 2, 3, 4, 5],
-            'test_mi': [1.0, 0.5, 0.33, 0.25, 0.2]
+            'gamma': gammas,
+            # test_mi = 2*(1/gamma) + 1  — perfectly linear in 1/gamma
+            'test_mi': [2.0 / g + 1.0 for g in gammas],
         })
-
-        # If we provide linear data y = 2x + 1
-        df['test_mi'] = 2 * df['gamma'] + 1
-        gammas = find_linear_region(df, delta_threshold=0.1, min_gamma_points=3, verbose=False)
-        assert len(gammas) == 5
+        gammas_kept = find_linear_region(df, delta_threshold=0.1, min_gamma_points=3, verbose=False)
+        assert len(gammas_kept) == 5
 
     def test_extrapolate_mi(self):
+        # _extrapolate_mi fits test_mi = intercept + slope * (1/gamma) and
+        # returns (intercept, error, slope).  Data must be linear in 1/gamma.
+        # test_mi = 6 - 1/gamma  →  intercept = 6, slope = -1 at 1/gamma → 0.
+        gammas = [1, 2, 3, 4, 5]
         df = pd.DataFrame({
-            'gamma': [1, 2, 3, 4, 5],
-            'test_mi': [5, 4, 3, 2, 1] # y = 6 - gamma. Intercept 6.
+            'gamma': gammas,
+            'test_mi': [6.0 - 1.0 / g for g in gammas],
         })
         intercept, error, slope = extrapolate_mi(df, [1, 2, 3, 4, 5], confidence_level=0.95)
         assert np.isclose(intercept, 6.0)

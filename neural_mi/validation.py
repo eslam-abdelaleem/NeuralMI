@@ -19,6 +19,7 @@ ALLOWED_VALUES = {
     'embedding_model': ['mlp', 'cnn', 'gru', 'lstm', 'tcn', 'transformer'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
+    'spectral_mode': ['none', 'summary', 'full'],
     'spectral_output': ['default', 'full', 'all'],
     'estimator_name': list(ESTIMATORS.keys())
 }
@@ -99,8 +100,10 @@ class DataValidator:
                 if len(spikes) > 0 and np.any(spikes < 0):
                     raise ValueError(f"{name}[{i}] contains negative spike times.")
                 if len(spikes) > 1 and not np.all(spikes[:-1] <= spikes[1:]):
-                    logger.warning(f"{name}[{i}] not sorted. Sorting automatically.")
-                    data[i] = np.sort(spikes)
+                    logger.warning(
+                        f"{name}[{i}] spike times are not sorted; "
+                        "they will be sorted automatically by SpikeWindowDataset."
+                    )
         elif proc_type in ['continuous', 'categorical']:
             if isinstance(data, (np.ndarray, torch.Tensor)):
                 d_np = data.numpy() if isinstance(data, torch.Tensor) else data
@@ -188,6 +191,22 @@ class ParameterValidator:
                     if unknown:
                         raise ValueError(f"Unknown parameters for {proc_type} processor: {unknown}. Allowed: {allowed}")
 
+                # Validate numeric bounds for specific processor params
+                ws = proc_params.get('window_size')
+                if ws is not None:
+                    if not isinstance(ws, (int, float)) or ws <= 0:
+                        raise ValueError(
+                            f"processor_params_{suffix}['window_size'] must be a positive number, "
+                            f"got {ws!r}."
+                        )
+                sr = proc_params.get('sample_rate')
+                if sr is not None:
+                    if not isinstance(sr, (int, float)) or sr <= 0:
+                        raise ValueError(
+                            f"processor_params_{suffix}['sample_rate'] must be a positive number, "
+                            f"got {sr!r}."
+                        )
+
     def _validate_sweep(self):
         if self.mode == "sweep" and self.params.get("sweep_grid") is None:
             raise ValueError(f"'sweep_grid' required for mode='{self.mode}'.")
@@ -195,21 +214,41 @@ class ParameterValidator:
     def _validate_mode_kwargs(self):
         """Validates **analysis_kwargs passed to run() for the specific mode."""
         mode_schema = MODE_KWARGS_SCHEMA.get(self.mode, {})
-        allowed_kwargs = set(mode_schema.keys())
+        if not mode_schema:
+            return
 
-        # Check for unexpected kwargs (excluding standard run arguments)
-        # Note: self.params contains ALL locals() from run(). We only care about analysis_kwargs keys.
-        # But we don't have direct access to 'analysis_kwargs' dict here, just the merged locals.
-        # So we check if any key in locals that is NOT a standard run param is in allowed_kwargs.
+        # Check required kwargs
+        for key, schema in mode_schema.items():
+            if schema.get('required', False) and key not in self.params:
+                raise ValueError(
+                    f"Mode '{self.mode}' requires keyword argument '{key}'."
+                )
 
-        # Actually, best to validate just the keys that are NOT standard args.
-        # Standard args are explicit in run(). The 'kwargs' are what we worry about.
-        # In run(), analysis_kwargs are passed. We should probably validate those specifically.
-        # But here we have 'locals()'.
+        # Check types of provided kwargs that match the schema
+        for key, schema in mode_schema.items():
+            if key in self.params and self.params[key] is not None:
+                val = self.params[key]
+                expected_type = schema.get('type')
+                if expected_type and not isinstance(val, expected_type):
+                    raise TypeError(
+                        f"Keyword argument '{key}' for mode '{self.mode}' must be "
+                        f"of type {expected_type}, got {type(val)}."
+                    )
 
-        # Let's rely on run() passing explicit analysis_kwargs to a specific validator if needed.
-        # For now, we assume user might pass them as kwargs.
-        pass
+        # D2: lag_range entries must be numeric (int for sample lags, float for time lags)
+        if self.mode == 'lag':
+            lr = self.params.get('lag_range')
+            if lr is not None:
+                items = list(lr)
+                non_numeric = [x for x in items
+                               if not isinstance(x, (int, float, np.integer, np.floating))]
+                if non_numeric:
+                    raise ValueError(
+                        f"lag_range entries must all be numeric, but found non-numeric "
+                        f"values: {non_numeric[:5]}{'...' if len(non_numeric) > 5 else ''}. "
+                        f"Use range(-10, 11), a list of integers, or np.arange(...) for "
+                        f"time-based lags (e.g. spike trains)."
+                    )
 
     def apply_defaults(self):
         """Populates missing parameters in base_params with defaults."""

@@ -7,10 +7,19 @@ a container for MI estimates, dataframes, and detailed metadata, and also
 provides a convenient `.plot()` method for visualizing the results.
 """
 from dataclasses import dataclass, field
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 import pandas as pd
 import matplotlib.pyplot as plt
 from neural_mi.logger import logger
+
+# Module-level constant: columns produced by the MI estimator that are NOT
+# sweep/hyperparameter variables. Used when inferring the x-axis of a sweep plot.
+_RESULT_COLS: frozenset = frozenset({
+    'mi_mean', 'mi_std', 'test_mi', 'train_mi', 'mi_corrected',
+    'mi_error', 'slope', 'run_id', 'is_reliable', 'gammas_used',
+    'n_windows', 'lag',
+})
+
 
 @dataclass
 class Results:
@@ -95,11 +104,7 @@ class Results:
             if self.dataframe is None:
                 raise ValueError("Cannot plot: results do not contain a DataFrame.")
 
-            # Infer sweep_var more robustly by excluding all known result columns 
-            _RESULT_COLS = {
-                'mi_mean', 'mi_std', 'test_mi', 'train_mi', 'mi_corrected',
-                'mi_error', 'slope', 'run_id', 'is_reliable', 'gammas_used',
-            }
+            # Infer sweep_var more robustly by excluding all known result columns
             sweep_var = self.params.get('sweep_var', 'embedding_dim' if self.mode == 'dimensionality' else None)
             if not sweep_var:
                 possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
@@ -107,10 +112,9 @@ class Results:
                     sweep_var = possible[0]
                     logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
                 elif len(possible) > 1:
-                    sweep_var = possible[0]
-                    logger.warning(
-                        f"Multiple candidate sweep variables found: {possible}. "
-                        f"Using '{sweep_var}'. Pass sweep_var=... explicitly to suppress."
+                    raise ValueError(
+                        f"Cannot determine sweep variable. Multiple candidates found: {possible}. "
+                        f"Pass sweep_var=... explicitly."
                     )
                 else:
                     raise ValueError(
@@ -190,6 +194,141 @@ class Results:
 
         else:
             raise NotImplementedError(f"Plotting is not implemented for mode: '{self.mode}'")
+
+        if show:
+            plt.tight_layout()
+            plt.show()
+        return ax
+
+    @staticmethod
+    def compare(
+        results_list: List['Results'],
+        labels: Optional[List[str]] = None,
+        ax: Optional[plt.Axes] = None,
+        **kwargs,
+    ) -> plt.Axes:
+        """Overlay-plots multiple Results objects on a shared axis for comparison.
+
+        All Results objects in the list must share the same analysis mode.
+        For ``'sweep'``, ``'lag'``, and ``'dimensionality'`` modes, the sweep
+        curves are overlaid with distinct colours and a legend.  For
+        ``'rigorous'`` mode, the bias-correction fits are overlaid.
+
+        Parameters
+        ----------
+        results_list : list of Results
+            Two or more Results objects to compare.  All must have the same mode.
+        labels : list of str, optional
+            Legend labels for each result.  Defaults to ``'Result 0'``,
+            ``'Result 1'``, etc.
+        ax : plt.Axes, optional
+            An existing matplotlib Axes to plot on.  If ``None``, a new figure
+            and Axes are created.
+        **kwargs
+            Extra keyword arguments forwarded to the underlying plot call
+            (e.g., ``figsize``, ``units``).
+
+        Returns
+        -------
+        plt.Axes
+            The shared Axes object containing all overlaid plots.
+
+        Raises
+        ------
+        ValueError
+            If ``results_list`` is empty, contains only one element, or the
+            results do not all share the same mode.
+        NotImplementedError
+            If ``compare`` is not supported for the shared mode.
+        """
+        if not results_list:
+            raise ValueError("results_list is empty.")
+        if len(results_list) < 2:
+            raise ValueError(
+                "results_list must contain at least two Results objects to compare."
+            )
+
+        modes = [r.mode for r in results_list]
+        if len(set(modes)) > 1:
+            raise ValueError(
+                f"All Results objects must share the same mode. Found: {modes}."
+            )
+        mode = modes[0]
+
+        if labels is None:
+            labels = [f"Result {i}" for i in range(len(results_list))]
+        if len(labels) != len(results_list):
+            raise ValueError(
+                f"labels length ({len(labels)}) must match results_list length "
+                f"({len(results_list)})."
+            )
+
+        from neural_mi.visualize.plot import plot_sweep_curve, plot_bias_correction_fit
+
+        show = kwargs.pop('show', True)
+        figsize = kwargs.pop('figsize', (10, 6))
+        units = kwargs.pop('units', results_list[0].params.get('output_units', 'bits'))
+
+        if ax is None:
+            _, ax = plt.subplots(1, 1, figsize=figsize)
+
+        # Use matplotlib's default colour cycle
+        colours = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
+
+        if mode in ('sweep', 'lag', 'dimensionality'):
+            for i, (res, label) in enumerate(zip(results_list, labels)):
+                if res.dataframe is None:
+                    raise ValueError(
+                        f"Result '{label}' (index {i}) does not contain a DataFrame."
+                    )
+                sweep_var = res.params.get(
+                    'sweep_var',
+                    'embedding_dim' if mode == 'dimensionality' else None,
+                )
+                if not sweep_var:
+                    possible = [
+                        c for c in res.dataframe.columns if c not in _RESULT_COLS
+                    ]
+                    sweep_var = possible[0] if possible else None
+                    if sweep_var is None:
+                        raise ValueError(
+                            f"Cannot determine sweep variable for result '{label}'. "
+                            f"Set sweep_var=... in the result's params."
+                        )
+                plot_sweep_curve(
+                    res.dataframe,
+                    param_col=sweep_var,
+                    units=units,
+                    ax=ax,
+                    label=label,
+                    color=colours[i % len(colours)],
+                    **kwargs,
+                )
+            ax.legend(fontsize=9)
+
+        elif mode == 'rigorous':
+            for i, (res, label) in enumerate(zip(results_list, labels)):
+                if res.dataframe is None or not res.details:
+                    raise ValueError(
+                        f"Rigorous result '{label}' (index {i}) is missing "
+                        f"dataframe or details."
+                    )
+                plot_bias_correction_fit(
+                    res.dataframe,
+                    res.details,
+                    units=units,
+                    ax=ax,
+                    label=label,
+                    color=colours[i % len(colours)],
+                    **kwargs,
+                )
+            ax.legend(fontsize=9)
+
+        else:
+            raise NotImplementedError(
+                f"Results.compare() is not supported for mode='{mode}'. "
+                f"Supported modes: 'sweep', 'lag', 'dimensionality', 'rigorous'."
+            )
 
         if show:
             plt.tight_layout()

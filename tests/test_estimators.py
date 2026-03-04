@@ -35,7 +35,13 @@ class TestEstimators:
         """
         Tests if the estimators can recover a known ground-truth MI.
         """
-        
+        # Fix both torch and numpy seeds for full reproducibility — NWJ and
+        # SMILE can diverge with unlucky weight initialisation or data splits,
+        # so deterministic seeds prevent flaky failures across test orderings.
+        import numpy as np
+        np.random.seed(42)
+        torch.manual_seed(42)
+
         ground_truth_mi = 2.0
         n_samples = 2000
         dim = 5

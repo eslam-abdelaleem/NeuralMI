@@ -82,10 +82,9 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
     # We can use the smaller, faster gaussian_data fixture now
     x_data, y_data = gaussian_data
 
-    # Mock the AnalysisWorkflow to prevent macOS multiprocessing serialization crashes during routing tests
-    with patch('neural_mi.run.AnalysisWorkflow') as MockWorkflow:
-        instance = MockWorkflow.return_value
-        instance.run.return_value = {
+    # Mock run_rigorous_analysis to prevent macOS multiprocessing serialization crashes during routing tests
+    with patch('neural_mi.run.run_rigorous_analysis') as mock_rigorous:
+        mock_rigorous.return_value = {
             'raw_results_df': pd.DataFrame([{'gamma': 1.0, 'test_mi': 2.0}]),
             'corrected_results': [{'mi_corrected': 2.5, 'mi_error': 0.1, 'slope': -0.05}]
         }
@@ -105,11 +104,12 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
     assert isinstance(result.details, dict)
     assert 'mi_error' in result.details
     
-def test_run_dimensionality_mode_returns_results_with_dataframe(gaussian_data):
+def test_run_dimensionality_mode_returns_results_with_dataframe(raw_gaussian_data):
     """
     Verifies that mode='dimensionality' returns a Results object with the new spectral metrics.
+    Uses raw 2D data (N, C) so that shape[1] gives the channel count correctly.
     """
-    x_data, _ = gaussian_data
+    x_data, _ = raw_gaussian_data
     
     # We no longer need to sweep embedding_dim for dimensionality.
     # The new engine handles the large bottleneck automatically.

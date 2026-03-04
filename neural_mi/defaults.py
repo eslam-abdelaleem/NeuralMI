@@ -2,6 +2,7 @@
 """
 Centralized definition of default parameters and allowed keys for validation.
 """
+import numpy as np
 import torch
 
 # Allowed parameters for base_params
@@ -25,9 +26,11 @@ BASE_PARAMS_SCHEMA = {
     'max_eval_samples': {'type': int, 'min': 1, 'default': 5000},
     'train_subset_size': {'type': (int, type(None)), 'min': 1, 'default': None},
     'split_gap_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
-    'track_spectral_metrics': {'type': bool, 'default': False},
-    'spectral_output': {'type': str, 'default': 'default'},
-    'return_spectrum': {'type': bool, 'default': False},
+    'spectral_mode': {'type': str, 'default': 'none'},  # 'none' | 'summary' | 'full'
+    'track_spectral_metrics': {'type': bool, 'default': False},  # deprecated; use spectral_mode
+    'spectral_output': {'type': str, 'default': 'default'},       # deprecated; use spectral_mode
+    'return_spectrum': {'type': bool, 'default': False},           # deprecated; use spectral_mode
+    'return_embeddings': {'type': bool, 'default': False},
     'spectral_whitening': {'type': (str, type(None)), 'default': 'std'},
     'save_best_model_path': {'type': (str, type(None)), 'default': None},
     'estimator_name': {'type': str, 'default': 'infonce'},
@@ -40,6 +43,7 @@ BASE_PARAMS_SCHEMA = {
 
 
     # Model architecture parameters
+    'shared_encoder': {'type': bool, 'default': False},
     'embedding_dim': {'type': int, 'min': 1, 'default': 64},
     'hidden_dim': {'type': int, 'min': 1, 'default': 64},
     'n_layers': {'type': int, 'min': 0, 'default': 2},
@@ -66,6 +70,8 @@ BASE_PARAMS_SCHEMA = {
     'gamma': {'type': (int, float)}, # Rigorous
     'min_reliable_samples': {'type': int, 'min': 1, 'default': 1000},
     'lag': {'type': int}, # Lag
+    # Reproducibility — used by run() and task.py workers
+    'random_seed': {'type': (int, type(None)), 'default': None},
 }
 
 # Parameters allowed in analysis_kwargs for each mode
@@ -91,7 +97,8 @@ MODE_KWARGS_SCHEMA = {
     },
     'lag': {
         'n_workers': {'type': int, 'default': 1},
-        'lag_range': {'type': (range, list), 'required': True},
+        'lag_range': {'type': (range, list, np.ndarray), 'required': True},
+        'equalize_n': {'type': bool, 'default': False},
     },
     'precision': {
         'n_workers': {'type': int, 'default': 1},

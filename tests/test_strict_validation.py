@@ -26,8 +26,8 @@ class TestStrictValidation:
 
         # We must use 'estimate' mode and capture logs
         # Note: running actual training might take time, so we set minimal epochs
-        with caplog.at_level('INFO'):
-            result = nmi.run(x, y, base_params={'n_epochs': 2, 'batch_size': 16}, n_workers=1)
+        with caplog.at_level('INFO', logger='neural_mi'):
+            result = nmi.run(x, y, base_params={'n_epochs': 2, 'batch_size': 16}, verbose=True, n_workers=1)
 
         # Check logs for defaults
         assert "Parameter 'n_layers' not specified. Defaulting to 2" in caplog.text
