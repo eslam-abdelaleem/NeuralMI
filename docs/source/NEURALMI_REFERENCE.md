@@ -2,8 +2,7 @@
 
 > **Purpose of this document:** A self-contained technical reference for the NeuralMI library.
 > It covers concepts, architecture, every public API, all parameters, return types, and
-> worked examples — detailed enough to reason about tutorials and library design without
-> needing the source code open.
+> worked examples.
 
 ---
 
@@ -40,7 +39,7 @@
 
 ## 1. Library Overview & Philosophy
 
-**NeuralMI** is a Python library for rigorous, reproducible **mutual information (MI) estimation** from neural and time-series data. It wraps neural network–based MI estimators (InfoNCE, SMILE, NWJ, TUBA) into a unified, scientist-facing API with:
+**NeuralMI** is a Python library for rigorous, fast **mutual information (MI) estimation** from neural and time-series data. It wraps neural network–based MI estimators (e.g. InfoNCE) into a unified, scientist-facing API with:
 
 - **One entry point**: `neural_mi.run()` handles all analysis modes.
 - **Automated bias correction**: the `rigorous` mode extrapolates MI to the infinite-data limit.
@@ -55,10 +54,6 @@
 
 ## 2. Installation & Quick Start
 
-```bash
-pip install neural-mi
-```
-
 ```python
 import neural_mi as nmi
 import numpy as np
@@ -67,11 +62,9 @@ import numpy as np
 x = np.random.randn(1000, 4)   # 1000 time points, 4 channels
 y = 0.7 * x + 0.3 * np.random.randn(1000, 4)  # correlated copy
 
-result = nmi.run(x, y, mode='estimate', verbose=True)
+result = nmi.run(x, y, mode='estimate')
 
 print(result.mi_estimate)   # MI in bits
-result.plot()               # Training curve
-result.summary()            # Printed summary
 ```
 
 ---
@@ -92,14 +85,12 @@ Neural MI estimators train a **critic network** `f(x, y)` that approximates the 
 
 ### 3.2 Estimators
 
-NeuralMI supports four estimators. All take a score matrix `S ∈ ℝ^{N×N}` where `S[i,j] = f(xᵢ, yⱼ)`.
+NeuralMI supports different estimators. All take a score matrix `S ∈ ℝ^{N×N}` where `S[i,j] = f(xᵢ, yⱼ)`.
 
 | Estimator | Key Idea | Ceiling | Variance | Best for |
 |-----------|----------|---------|----------|----------|
-| **InfoNCE** | Noise-contrastive estimation | log(N) nats | Low | Default; MI < ~5 bits |
+| **InfoNCE** | Noise-contrastive estimation | log(N) nats | Low | Default; MI < ~7 bits |
 | **SMILE** | JS + clipped DV correction | None | Medium | High MI signals |
-| **NWJ** | TUBA(scores−1) | None | High | Verification |
-| **TUBA** | Tractable unnormalized Bayes | None | Medium | General |
 
 **InfoNCE** (default):
 ```
@@ -111,7 +102,6 @@ The ceiling of `log(N)` nats means with batch_size=128 you can estimate up to ~4
 
 **Practical guidance:**
 - Start with `infonce` (default). If `mi_estimate` is near the ceiling (`log(batch_size)` nats), increase `batch_size` or switch to `smile`.
-- Use `nwj` or `tuba` for cross-validation only.
 
 ### 3.3 Embedding Models
 
@@ -136,9 +126,9 @@ The critic `f(x, y)` combines the two embeddings into a score. Three architectur
 |--------|--------------------|-|
 | **Separable** | `'separable'` (default) | `f(x,y) = gₓ(embed(x))ᵀ g_y(embed(y))` — bilinear product of separate head networks |
 | **Concat** | `'concat'` | Concatenates raw inputs before any embedding; ignores `embedding_dim` |
-| **Hybrid** | `'hybrid'` | Large bottleneck embedding; used automatically by `dimensionality` mode |
+| **Hybrid** | `'hybrid'` | Similar to Separable with a concat embeddings instead of dot product; used automatically by `dimensionality` mode |
 
-**Choosing:** `separable` is the best general choice. `concat` can work for simple low-dim cases. `hybrid` is reserved for dimensionality analysis (library sets it automatically).
+**Choosing:** `separable` is the best general choice. `concat` is the most flexible but doesn't allow for embedding dimensionality and very costly to train. `hybrid` is reserved for dimensionality analysis (library sets it automatically).
 
 ### 3.5 Bias in Finite-Sample Estimation
 
@@ -185,7 +175,7 @@ For `'spike'`:
     'n_seconds': 100.0,           # total recording duration
     'bin_size': 0.001,            # seconds; spike bin width
     'normalize_bins': True,       # normalize spike counts
-    'no_spike_value': 0.0,        # value for empty bins
+    'no_spike_value': -1.0,        # value for empty bins
     'max_spikes_per_window': None,
     'exclude_bursty_neurons': False,
     'burst_threshold_multiplier': 5.0,
@@ -842,7 +832,6 @@ from neural_mi.analysis import (
     run_transfer_entropy,
     run_pairwise_mi,
     run_rigorous_analysis,
-    AnalysisWorkflow,       # Low-level; prefer run_rigorous_analysis
 )
 ```
 
