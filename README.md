@@ -4,14 +4,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://github.com/eslam-abdelaleem/NeuralMI/actions/workflows/tests.yml/badge.svg)](https://github.com/eslam-abdelaleem/NeuralMI/actions/workflows/tests.yml)
 
-**NeuralMI** is a Python library designed to provide neuroscientists with a complete, end-to-end workflow for robustly and quickly estimating mutual information from complex neural data.
+**NeuralMI** is a Python library designed to provide neuroscientists with a complete, end-to-end workflow for robustly and reproducibly estimating mutual information from complex neural data.
 
-In modern neuroscience, MI estimation is usually not possible and using black-box methods is rarely enough. Estimates can be plagued by finite-sampling bias and estimator variance, leading to results that aren't scientifically rigorous. `NeuralMI` solves this by moving beyond simple point estimates to incorporate essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and novel analyses of intrinsic dimensionality. It is built for researchers who need to analyze complex relationships in continuous time-series (like LFP or EEG), discrete spike trains, and categorical state data.
+In modern neuroscience, a naive MI estimate is not enough. Estimates can be plagued by finite-sampling bias and estimator variance, leading to results that aren't scientifically rigorous. `NeuralMI` solves this by moving beyond simple point estimates to incorporate essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and novel analyses of intrinsic dimensionality. It is built for researchers who need to analyze complex relationships in continuous time-series (like LFP or EEG), discrete spike trains, and categorical state data.
 
 ## Key Features
 
-* **Unified & Simple API:** Access all analysis modes through a single `run()` function.
-* **Bias Correction:** The `rigorous` mode performs automated finite-sampling bias correction via subsampling and extrapolation, providing a debiased MI estimate with a confidence interval.
+* **Unified & Simple API:** Access all analysis modes through a single, powerful `run()` function.
+* **Scientifically Rigorous by Default:** The flagship `rigorous` mode performs automated finite-sampling bias correction via subsampling and extrapolation, providing a debiased MI estimate with a confidence interval.
 * **Multiple Analysis Modes:**
     * **`estimate`**: Get a quick, single MI estimate for initial exploration.
     * **`sweep`**: Perform parallelized sweeps over any model or data processing hyperparameter.
@@ -26,7 +26,7 @@ In modern neuroscience, MI estimation is usually not possible and using black-bo
     * `SpikeProcessor`: Convert raw spike times into an analyzable format.
     * `CategoricalProcessor`: Process discrete behavioral or stimulus state data.
 * **Smart Data Splitting**: Automatically handles train/test splits for both **temporal** data (default `'blocked'` split) and **IID** data (`split_mode='random'`) to ensure valid, reliable estimates.
-* **Built-in Visualizations:** Generate plots for dimensionality curves and bias-correction fits with a single command.
+* **Built-in Visualizations:** Generate high-quality, publication-ready plots for dimensionality curves and bias-correction fits with a single command.
 * **Flexible & Extensible:** Choose from multiple MI estimators (`InfoNCE`, `SMILE`, etc.) and provide your own pre-initialized PyTorch models for advanced use cases.
 
 ## Quickstart: An Accurate Estimate
@@ -40,20 +40,29 @@ import numpy as np
 x_raw, y_raw = nmi.generators.generate_nonlinear_from_latent(
     n_samples=2500, latent_dim=10, observed_dim=100, mi=3.0
 )
+x_raw_transposed = x_raw.T
+y_raw_transposed = y_raw.T
 
-# 2. Run the rigorous, bias-corrected estimation
+# 2. Define model and training parameters
+base_params = {
+    'n_epochs': 100, 'learning_rate': 5e-4, 'batch_size': 128,
+    'patience': 20, 'embedding_dim': 32, 'hidden_dim': 256, 'n_layers': 3
+}
+
+# 3. Run the rigorous, bias-corrected estimation
 # This performs multiple runs on data subsets and extrapolates to an infinite-data estimate.
 results = nmi.run(
-    x_data=x_raw, y_data=y_raw,
+    x_data=x_raw.T, y_data=y_raw.T,
     mode='rigorous',
     processor_type_x='continuous',
     processor_params_x={'window_size': 1},
+    base_params=base_params,
     split_mode='random',  # Use random splitting for IID data
     n_workers=4, # Use multiple cores for speed
     random_seed=42
 )
 
-# 3. Access and print the final, scientifically robust result
+# 4. Access and print the final, scientifically robust result
 mi_est = results.mi_estimate
 mi_err = results.details.get('mi_error', 0.0)
 print(f"\nCorrected MI: {mi_est:.3f} ± {mi_err:.3f} bits")
@@ -67,15 +76,16 @@ results.plot()
 To get the most out of `NeuralMI`, we recommend following our new tutorial series in order. Each tutorial builds on the last, taking you from the basics to advanced applications.
 
 - **Part 1: The Fundamentals**
-    - **01_A_First_Estimate** Learn the basics of `nmi.run()` and the `Results` object on a simple dataset.
-    - **02_Handling_Neural_Data:** Understand how to use the `Continuous`, `Spike`, and `Categorical` processors.
+    - **01_A_First_Estimate**: Learn the basics of `nmi.run()` and the `Results` object on a simple dataset.
+    - **02_Neural_Data_Formats**: Understand how to use the `Continuous`, `Spike`, and `Categorical` data processors.
+    - **03_Temporal_Correlations_and_Splits**: Learn how to handle temporal data and avoid leakage with blocked splitting.
 - **Part 2: Core Concepts for Scientific Rigor**
-    - **03_Finding_Temporal_Relationships:** Use `mode='sweep'` to find the optimal `window_size` and `mode='lag'` to analyze temporal data.
-    - **04_Bias_Correction:** A deep dive into `mode='rigorous'` for accurate results.
-- **Part 3: Advanced Analysis and Customization**
-    - **05_Uncovering_Latent_Dimensionality:** Use `mode='dimensionality'` and variational models to explore data complexity.
-    - **06_Choosing_the_Right_Model_and_Estimator:** Understand the trade-offs between different critic architectures and MI estimators.
-    - **07_Advanced_Customization:** Learn how to use your own custom PyTorch models with the library.
+    - **04_Sweeps**: Use `mode='sweep'` to explore and optimize hyperparameters.
+    - **05_Rigorous_Estimation**: A deep dive into `mode='rigorous'` for debiased, accurate MI estimates.
+- **Part 3: Advanced Analysis and Applications**
+    - **06_Temporal_Questions**: Explore temporal dynamics with `mode='lag'` and conditional MI.
+    - **07_Population_Questions**: Use `mode='dimensionality'` to estimate latent complexity and dimensionality.
+    - **08_Models_Estimators_and_Validation**: Understand the trade-offs between different critic architectures, estimators, and custom models.
 
 ## Installation
 ```bash
