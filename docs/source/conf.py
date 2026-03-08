@@ -43,6 +43,8 @@ myst_enable_extensions = [
     "tasklist",
 ]
 
+suppress_warnings = ['misc.highlighting_failure', 'ref.ref']
+
 # Source file suffixes
 source_suffix = {
     '.rst': 'restructuredtext',
@@ -60,7 +62,6 @@ html_static_path = ['_static']
 html_baseurl = 'https://eslam-abdelaleem.github.io/NeuralMI/'
 
 html_theme_options = {
-    'canonical_url': 'https://eslam-abdelaleem.github.io/NeuralMI/',
     'logo_only': False,
     'prev_next_buttons_location': 'bottom',
     'style_external_links': True,

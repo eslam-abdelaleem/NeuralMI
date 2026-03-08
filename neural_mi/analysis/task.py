@@ -71,8 +71,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         spectral_whitening=params.get('spectral_whitening', 'std')
     )
 
-    # Phase G2: intercept save_best_model_path to use the new extended format
-    # (includes build_params alongside state_dict for later extract_embeddings()).
+    # Intercept save_best_model_path to use the extended format
+    # which includes build_params alongside state_dict for later extract_embeddings()
     _save_path = params.get('save_best_model_path')
     _BUILD_PARAMS_KEYS = [
         'critic_type', 'embedding_model', 'hidden_dim', 'embedding_dim', 'n_layers',
@@ -103,14 +103,14 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         return_spectrum=params.get('return_spectrum', False)
     )
 
-    # G2: save model in new format {'state_dict': ..., 'build_params': {...}}
+    # Save model in extended format {'state_dict': ..., 'build_params': {...}}
     if _save_path:
         build_params = {k: params[k] for k in _BUILD_PARAMS_KEYS if k in params}
         torch.save({'state_dict': trainer.model.state_dict(), 'build_params': build_params},
                    _save_path)
         logger.debug(f"Model saved (extended format) to {_save_path}.")
 
-    # G1: optionally extract embeddings from the trained model
+    # Optionally extract embeddings from the trained model
     if params.get('return_embeddings', False):
         _all_x = dataset.x_data
         _all_y = dataset.y_data

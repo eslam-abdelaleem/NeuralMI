@@ -186,8 +186,7 @@ def run(
         - **'smile'** — SMILE estimator. No hard ceiling on the MI estimate.
           Recommended when you expect MI > 3–4 bits or are not sure about the
           scale. Use with ``estimator_params={'clip': 5.0}`` to stabilise
-          training: ``nmi.run(..., estimator='smile',
-          estimator_params={'clip': 5.0})``.
+          training: ``nmi.run(..., estimator='smile', estimator_params={'clip': 5.0})``.
         - 'nwj', 'tuba', 'js' — Other valid lower bounds, included for
           completeness. Higher variance than InfoNCE and generally not
           recommended for practical use.
@@ -289,13 +288,13 @@ def run(
         due to edge effects. This parameter sets a threshold for acceptable reduction in valid windows after shifting.
         If the reduction exceeds this threshold, a warning is logged. Defaults to 0.05 (5%).
     tau_grid : list of float, optional
-        For ``mode=``precision``, a list of additive uniform noise centered around 0 (interval [-tau/2, tau/2]) to apply to the target variable for the precision sweep. Defaults to None.
+        For `mode='precision'`, a list of additive uniform noise centered around 0 (interval [-tau/2, tau/2]) to apply to the target variable for the precision sweep. Defaults to None.
     corrupt_target : {'x', 'y'}, default='x'
         For ``mode='precision'``, which variable to apply noise corruption to during the precision sweep. Defaults to 'x'.
     corruption_method : {'rounding', 'noise'}, default='rounding'
         The method for corrupting the target variable in the precision sweep. 'rounding' rounds values to the nearest multiple of tau, while 'noise' adds uniform noise in the range [-tau/2, tau/2]. Defaults to 'rounding'.
     n_noise_samples : int, default=50
-        For ``mode='precision'`` with ``corruption_method='noise'`, the number of noise realizations to average over for each tau value to stabilize the MI estimates. Defaults to 50.
+        For ``mode='precision'`` with ``corruption_method='noise'``, the number of noise realizations to average over for each tau value to stabilize the MI estimates. Defaults to 50.
     threshold_ratio : float, default=0.9
         For ``mode='precision'``, the ratio of the baseline MI used to determine the precision threshold. For example, a value of 0.9 means the precision threshold is the tau value at which the MI drops to 90% of the baseline MI. Defaults to 0.9
 
@@ -448,7 +447,7 @@ def _run_inner(
     _inject(base_params, 'max_eval_samples', max_eval_samples)
     _inject(base_params, 'train_subset_size', train_subset_size)
 
-    # Phase C: resolve spectral_mode → individual flags (backward compatible)
+    # Validate spectral_mode
     _SPECTRAL_MODES = {'none', 'summary', 'full'}
     if spectral_mode not in _SPECTRAL_MODES:
         raise ValueError(
@@ -501,7 +500,7 @@ def _run_inner(
             stacklevel=2,
         )
 
-    # D3: permutation_test not supported for rigorous/precision modes
+    # Permutation test not supported for rigorous/precision modes
     if permutation_test and mode in ('rigorous', 'precision'):
         raise ValueError(
             f"permutation_test=True is not supported for mode='{mode}'. "
@@ -510,7 +509,7 @@ def _run_inner(
             f"'conditional', or 'transfer' for permutation testing."
         )
 
-    # D4: z_data provided but mode is not 'conditional'
+    # Verify conditional MI input
     if z_data is not None and mode != 'conditional':
         logger.warning(
             f"z_data was provided but mode='{mode}' does not use it. "

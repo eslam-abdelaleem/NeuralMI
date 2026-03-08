@@ -13,3 +13,8 @@ For a high-level overview and practical examples, please see the :doc:`tutorials
    tutorials
    api_reference
    further_reading
+   CONCEPTS
+   CONTRIBUTING
+   DEVELOPERS_GUIDE
+   NEURALMI_REFERENCE
+   THEORY

@@ -235,7 +235,7 @@ class ParameterValidator:
                         f"of type {expected_type}, got {type(val)}."
                     )
 
-        # D2: lag_range entries must be numeric (int for sample lags, float for time lags)
+        # lag_range entries must be numeric (int for sample lags, float for time lags)
         if self.mode == 'lag':
             lr = self.params.get('lag_range')
             if lr is not None:

@@ -19,7 +19,7 @@ All calls to ``run()`` return a ``Results`` object. This object acts as a contai
    :show-inheritance:
 
 Data Generation (`generators`)
-----------------------------
+------------------------------
 
 This module provides functions to generate synthetic datasets with known properties. These are useful for testing estimators, validating models, and following the tutorials.
 
