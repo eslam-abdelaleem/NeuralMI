@@ -328,12 +328,20 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None):
     else:
         raise ValueError(f"Unknown processor type: {proc_type}")
 
+from typing import Union, Optional, Dict, Any, List
+import numpy as np
+import torch
+
 def create_dataset(
-        x_data, y_data=None,
-        x_time=None, y_time=None,
-        processor_type_x=None, processor_params_x=None,
-        processor_type_y=None, processor_params_y=None,
-        device=None
+        x_data: Union[np.ndarray, torch.Tensor, List],
+        y_data: Optional[Union[np.ndarray, torch.Tensor, List]] = None,
+        x_time: Optional[np.ndarray] = None,
+        y_time: Optional[np.ndarray] = None,
+        processor_type_x: Optional[str] = None,
+        processor_params_x: Optional[Dict[str, Any]] = None,
+        processor_type_y: Optional[str] = None,
+        processor_params_y: Optional[Dict[str, Any]] = None,
+        device: Optional[Union[str, torch.device]] = None
     ):
     """Factory function for creating appropriate dataset objects."""
     proc_type_x = processor_type_x

@@ -11,7 +11,7 @@ import os
 import torch.multiprocessing as mp
 import numpy as np
 from tqdm.auto import tqdm
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger
@@ -30,7 +30,7 @@ class ParameterSweep:
     This class prepares and distributes training tasks across multiple processes
     to efficiently explore a grid of hyperparameters.
     """
-    def __init__(self, x_data, y_data, base_params, **kwargs):
+    def __init__(self, x_data: Union[torch.Tensor, np.ndarray, List], y_data: Optional[Union[torch.Tensor, np.ndarray, List]], base_params: Dict[str, Any], **kwargs: Any):
         """
         Parameters
         ----------

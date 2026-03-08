@@ -14,6 +14,7 @@ import itertools
 import uuid
 import torch.multiprocessing as mp
 import statsmodels.api as sm
+import warnings
 from tqdm.auto import tqdm
 from typing import List, Dict, Any, Optional
 
@@ -38,7 +39,9 @@ def _find_linear_region(group: pd.DataFrame, delta_threshold: float,
         subset['inv_gamma'] = 1.0 / subset['gamma']
         weights = 1 / subset['gamma'].map(subset['gamma'].value_counts())
         X_quad = sm.add_constant(np.vstack([subset['inv_gamma'], subset['inv_gamma']**2]).T)
-        model_quad = sm.WLS(subset['test_mi'], X_quad, weights=weights).fit()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            model_quad = sm.WLS(subset['test_mi'], X_quad, weights=weights).fit()
         _, a1, a2 = model_quad.params
         final_delta = abs(a2 / a1) if a1 != 0 else float('inf')
         if final_delta < delta_threshold:
@@ -58,9 +61,13 @@ def _extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
     final_subset['inv_gamma'] = 1.0 / final_subset['gamma']
     weights = 1 / final_subset['gamma'].map(final_subset['gamma'].value_counts())
     X_linear = sm.add_constant(final_subset['inv_gamma'])
-    fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=weights).fit()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        fit_linear = sm.WLS(final_subset['test_mi'], X_linear, weights=weights).fit()
     intercept, slope = fit_linear.params
-    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=1 - confidence_level)[0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=1 - confidence_level)[0]
     mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
     return intercept, mi_error, slope
 

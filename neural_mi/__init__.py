@@ -33,3 +33,4 @@ __all__ = [
     'validation',
     'visualize',
 ]
+from .utils import load_model

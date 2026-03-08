@@ -86,7 +86,10 @@ class SubsetView:
         
         # Ensure indices are LongTensor
         if self.indices is not None:
-            self.indices = torch.tensor(self.indices, device=self.dataset.x_dataset.device, dtype=torch.long)
+            if isinstance(self.indices, torch.Tensor):
+                self.indices = self.indices.detach().clone().to(device=self.dataset.x_dataset.device, dtype=torch.long)
+            else:
+                self.indices = torch.tensor(self.indices, device=self.dataset.x_dataset.device, dtype=torch.long)
     
     def _get_valid_window_times(self):
         """Helper to get only the valid window times from manager."""

@@ -266,7 +266,7 @@ def plot_embeddings(
         is_categorical = not np.issubdtype(color.dtype, np.floating)
         if is_categorical:
             unique_vals = np.unique(color)
-            palette = plt.cm.get_cmap('tab10', len(unique_vals))
+            palette = plt.get_cmap('tab10', len(unique_vals))
             c_arr = np.array([np.where(unique_vals == v)[0][0] for v in color])
             scatter_kwargs = {'c': c_arr, 'cmap': palette,
                               'vmin': -0.5, 'vmax': len(unique_vals) - 0.5, **kwargs}
