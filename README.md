@@ -17,6 +17,10 @@ In modern neuroscience, a naive MI estimate is not enough. Estimates can be plag
     * **`sweep`**: Perform parallelized sweeps over any model or data processing hyperparameter.
     * **`lag`**: Find the precise temporal offset between two time-series through a specialized sweep.
     * **`dimensionality`**: Characterize the internal complexity of a neural population or between two neural populations by finding its latent dimensionality.
+    * **`precision`**: Find the precise threshold at which spike-timing resolution matters.
+    * **`conditional`**: Compute Conditional Mutual Information (CMI) to isolate direct relationships.
+    * **`transfer`**: Estimate Transfer Entropy to understand directed information flow over time.
+    * **`pairwise`**: Rapidly build all-to-all functional connectivity matrices.
 * **Neuroscience-Ready Data Processors:**
     * `ContinuousProcessor`: Seamlessly handle windowing of LFP, EEG, or calcium imaging data.
     * `SpikeProcessor`: Convert raw spike times into an analyzable format.
@@ -101,6 +105,10 @@ pip install -r requirements-dev.txt
 ```
 
 ## Further Reading
+Check out the fully updated documentation site: [https://eslam-abdelaleem.github.io/NeuralMI/](https://eslam-abdelaleem.github.io/NeuralMI/)
+
+If you prefer exploring the repository directly, we also include several detailed guides:
+- `NEURALMI_REFERENCE.md`: The complete technical reference covering the entire public API and parameter configurations.
 - `THEORY.md`: A concise theoretical background for the core methods used in the library.
 - `CONCEPTS.md`: A practical, code-based walkthrough of how a neural MI estimator is built and trained from scratch.
 - `DEVELOPERS_GUIDE.md`: A guide to the codebase for contributors and advanced users.
