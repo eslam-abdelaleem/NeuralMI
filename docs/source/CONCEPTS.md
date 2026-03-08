@@ -47,6 +47,19 @@ def separable_critic(x_embedded, y_embedded):
     return torch.matmul(x_embedded, y_embedded.t())
 ```
 
+#### Critic Choices:
+
+NeuralMI has three critic architectures:
+
+* **Separable Critic (`separable`):** Embeds $X$ and $Y$ independently and computes their score using a simple dot product. This is highly computationally efficient and is the **recommended default for standard MI estimation with a sufficently large embedding dimension**.
+* **Concat Critic (`concat`):** Concatenates raw $X$ and $Y$ before passing them through a single network. It is highly flexible but scales poorly with large input dimensions.
+* **Hybrid Critic (`hybrid`):** Embeds $X$ and $Y$ independently to a specified `embedding_dim` (the bottleneck), concatenates those embeddings, and then passes them through a final multi-layer perceptron (MLP) decision head. **necessary default for dimensionality estimation**.
+
+
+
+**Why do we need the Hybrid Critic?** The Hybrid Critic solves the "Critic Problem" in dimensionality estimation. If you force data through a small bottleneck using a `separable` critic, the rigid geometry of the dot product might fail to capture complex, non-linear dependencies. The `hybrid` critic guarantees that if the bottleneck is large enough to allow information to pass, the MLP decision head has the geometric flexibility to find it.
+
+
 **3. The Estimator (Loss Function):** This is the mathematical formula that turns the score matrix from the critic into an MI estimate. Let's implement the most common one, **InfoNCE**. The formula is:
 
 $$

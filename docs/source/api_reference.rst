@@ -24,7 +24,7 @@ Data Generation (`generators`)
 This module provides functions to generate synthetic datasets with known properties. These are useful for testing estimators, validating models, and following the tutorials.
 
 .. automodule:: neural_mi.generators
-   :members: generate_correlated_gaussians, generate_nonlinear_from_latent, generate_linear_data, generate_nonlinear_data, generate_temporally_convolved_data, generate_xor_data, generate_event_related_data, generate_linear_data, generate_nonlinear_data, generate_history_data, generate_full_data
+   :members: generate_correlated_categorical_series, generate_correlated_gaussians, generate_correlated_spike_trains, generate_event_related_data, generate_full_data, generate_history_data, generate_linear_data, generate_nonlinear_data, generate_nonlinear_from_latent, generate_temporally_convolved_data, generate_xor_data
    :undoc-members:
 
 Visualization (`visualize`)
@@ -33,7 +33,7 @@ Visualization (`visualize`)
 This module contains helper functions for creating publication-quality plots of analysis results. These functions are typically called automatically by the ``Results.plot()`` method but can also be used directly.
 
 .. automodule:: neural_mi.visualize
-   :members: plot_sweep_curve, plot_bias_correction_fit, plot_cross_correlation, analyze_mi_heatmap
+   :members: analyze_mi_heatmap, plot_bias_correction_fit, plot_cross_correlation, plot_embeddings, plot_sweep_curve, set_publication_style
    :undoc-members:
 
 Configuration
