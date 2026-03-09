@@ -43,7 +43,8 @@ class Trainer:
                  device: torch.device, use_variational: bool = False, beta: float = 1024,
                  estimator_params: Optional[Dict[str, Any]] = None,
                  custom_smoothing_fn: Optional[Callable] = None,
-                 spectral_whitening: str = 'std'):
+                 spectral_whitening: str = 'std',
+                 build_params: Optional[Dict[str, Any]] = None):
         
         """
         Parameters
@@ -79,6 +80,7 @@ class Trainer:
         self.estimator_params = estimator_params if estimator_params is not None else {}
         self.custom_smoothing_fn = custom_smoothing_fn
         self.spectral_whitening = spectral_whitening
+        self.build_params = build_params
 
     def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
               train_fraction: float = 0.9, n_test_blocks: int = 5,
@@ -231,7 +233,7 @@ class Trainer:
         best_model_state = None
         nan_streak = 0
         
-        display_progress = show_progress if show_progress is not None else verbose
+        display_progress = show_progress
         epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False,
                               disable=not display_progress)
         
@@ -320,7 +322,10 @@ class Trainer:
         # 4. Finalization
         self.model.load_state_dict(best_model_state)
         if save_best_model_path:
-            torch.save(best_model_state, save_best_model_path)
+            save_dict = {'state_dict': best_model_state}
+            if self.build_params:
+                save_dict['build_params'] = self.build_params
+            torch.save(save_dict, save_best_model_path)
             
         with torch.no_grad():
             final_test_mi = self._safe_eval_mi(

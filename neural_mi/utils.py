@@ -295,3 +295,40 @@ def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[s
         metrics["spectral_entropy"] = 0.0
 
     return metrics
+def load_model(path: str, device: Optional[Union[str, torch.device]] = None) -> BaseCritic:
+    """Loads a fully reconstructed critic model from a saved checkpoint path.
+
+    This function requires that the model was saved using the `save_best_model_path`
+    parameter during `neural_mi.run()`, which saves both the `state_dict` and the
+    `build_params` dictionary.
+
+    Args:
+        path: Path to the `.pt` or `.pth` file containing the saved model.
+        device: Device to load the model onto. If None, uses automatic selection.
+
+    Returns:
+        The instantiated critic model with its trained weights loaded.
+
+    Raises:
+        ValueError: If the checkpoint is missing `build_params`.
+    """
+    device = device or get_device()
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
+
+    if 'build_params' not in checkpoint:
+        raise ValueError(
+            f"Checkpoint at {path} does not contain 'build_params'. "
+            "Only models saved via `save_best_model_path` in NeuralMI >=0.1.0 can be automatically reconstructed."
+        )
+
+    params = checkpoint['build_params']
+    critic = build_critic(
+        critic_type=params.get('critic_type', 'separable'),
+        embedding_params=params
+    )
+
+    critic.load_state_dict(checkpoint['state_dict'])
+    critic.to(device)
+    critic.eval()
+
+    return critic
