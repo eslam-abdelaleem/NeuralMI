@@ -8,16 +8,13 @@ tags:
   - neural data analysis
   - PyTorch
 authors:
-  - name: [AUTHOR 1 — TO FILL]
-    orcid: [ORCID — TO FILL]
-    affiliation: 1
-  - name: [AUTHOR 2 — TO FILL]
-    orcid: [ORCID — TO FILL]
+  - name: Eslam Abdelaleem
+    orcid: 0009-0006-9429-3589
     affiliation: 1
 affiliations:
-  - name: [INSTITUTION — TO FILL]
+  - name: Georgia Institute of Technology
     index: 1
-date: [DATE — TO FILL]
+date: 10 March 2026
 bibliography: paper.bib
 ---
 
