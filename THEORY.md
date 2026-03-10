@@ -127,7 +127,7 @@ Until recently, finding the dimensionality of the shared information between two
 Following our work in ([arxiv:2602.08105](https://arxiv.org/abs/2602.08105)), NeuralMI now treats dimensionality not as a search problem, but as an **observable property of an over-parameterized latent space**.
 
 ### The Hybrid Critic and the Saturation Hypothesis
-To accurately measure dimensionality, NeuralMI uses a **Hybrid Critic**. This architecture embeds $X$ and $Y$ independently but processes their concatenation through a final Multi-Layer Perceptron (MLP) decision head. By setting a safely large bottleneck (e.g., $k_z = 64$), we ensure the network is "capacity tight." The network will not artificially smear a low-dimensional signal across all 64 dimensions; instead, it routes the shared information efficiently into a compact subspace.
+To accurately measure dimensionality, NeuralMI uses a **Hybrid Critic**. This architecture embeds $X$ and $Y$ independently but processes their concatenation through a final Multi-Layer Perceptron (MLP) decision head. By setting a safely large bottleneck (e.g., $k_z = 64$), we ensure the network is "capacity tight." The network does not distribute a low-dimensional signal diffusely across all 64 dimensions; instead, it concentrates the shared information into a compact subspace.
 
 ### Cross-Covariance and the Participation Ratio
 Once the Hybrid Critic is trained at maximum capacity, we extract the learned embeddings $Z_X$ and $Z_Y$ for the test set. We compute their cross-covariance matrix $C_{XY}$:

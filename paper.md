@@ -38,7 +38,7 @@ conditional MI (`conditional`), transfer entropy (`transfer`), and all-to-all
 pairwise connectivity matrices (`pairwise`). The `rigorous` mode implements the
 subsampling-and-extrapolation bias correction procedure introduced in
 @abdelaleem2025accurate. The `dimensionality` mode implements the cross-covariance
-spectral method and Participation Ratio introduced in @abdelaleem2025dimensionality.
+spectral method and Participation Ratio introduced in @gulati2026mutual.
 
 # Statement of Need
 
@@ -71,7 +71,7 @@ a common source of inflated estimates in practice. Fourth, the `dimensionality`
 mode provides a computationally efficient alternative to sweeping bottleneck size:
 a single over-parameterised Hybrid Critic training run followed by SVD of the
 cross-covariance of the learned embeddings, yielding a continuous Participation
-Ratio as the dimensionality estimate [@abdelaleem2025dimensionality].
+Ratio as the dimensionality estimate [@gulati2026mutual].
 
 # Functionality
 
@@ -119,6 +119,6 @@ recordings (7), and model and estimator selection (8).
 
 # Acknowledgements
 
-[ACKNOWLEDGEMENTS — TO FILL]
+*I want to thank me for believing in me, I want to thank me for doing all this hard work. I wanna thank me for having no days off. I wanna thank me for never quitting. I wanna thank me for always being a giver and trying to give more than I receive. I wanna thank me for trying to do more right than wrong. I wanna thank me for being me at all times* ***-Snoop Dogg***
 
 # References
