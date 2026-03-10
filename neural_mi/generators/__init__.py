@@ -17,6 +17,7 @@ from .synthetic import (
     generate_nonlinear_data,
     generate_history_data,
     generate_full_data,
+    generate_windowed_dependency_data,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     'generate_nonlinear_data',
     'generate_history_data',
     'generate_full_data',
+    'generate_windowed_dependency_data',
 ]

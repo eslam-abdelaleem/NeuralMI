@@ -33,12 +33,60 @@ def apply_corruption(data: torch.Tensor, tau: float, method: str) -> torch.Tenso
         raise ValueError(f"Unknown corruption method: {method}")
 
 def run_precision_analysis(
-    x_data: Any, y_data: Any, base_params: Dict[str, Any], 
-    tau_grid: List[float], corrupt_target: str = 'x', 
+    x_data: Any, y_data: Any, base_params: Dict[str, Any],
+    tau_grid: List[float], corrupt_target: str = 'x',
     corruption_method: str = 'rounding', n_noise_samples: int = 50,
     threshold_ratio: float = 0.9, **kwargs
 ) -> Dict[str, Any]:
-    
+    """Estimate spike-timing precision via a "Train Once, Evaluate Many" sweep.
+
+    Trains a single baseline MI estimator at full precision (zero corruption),
+    then freezes the network and evaluates it across a grid of corruption levels
+    (*tau*).  The precision threshold is defined as the smallest *tau* at which
+    the MI drops below ``threshold_ratio`` × baseline MI.
+
+    Parameters
+    ----------
+    x_data : array-like
+        Preprocessed data for variable X, shape ``(n_samples, n_channels, window_size)``.
+    y_data : array-like
+        Preprocessed data for variable Y, same leading dimension as *x_data*.
+    base_params : Dict[str, Any]
+        Parameters for the MI estimator (model architecture, training schedule, etc.).
+        See ``run()`` documentation for the full list of accepted keys.
+    tau_grid : list of float
+        Corruption levels to sweep over (ascending order recommended).  Each value
+        is applied to the target variable according to *corruption_method*.
+    corrupt_target : {'x', 'y'}, default='x'
+        Which variable to corrupt during the sweep.
+    corruption_method : {'rounding', 'noise'}, default='rounding'
+        How corruption is applied.  ``'rounding'`` quantizes values to the nearest
+        multiple of *tau* (deterministic).  ``'noise'`` adds uniform noise drawn
+        from U(-tau/2, tau/2).
+    n_noise_samples : int, default=50
+        Number of independent noise realizations to average when
+        ``corruption_method='noise'``.  Ignored for ``'rounding'``.
+    threshold_ratio : float, default=0.9
+        The precision threshold is the smallest *tau* at which MI falls below
+        ``threshold_ratio × baseline_MI``.  Must be in (0, 1].
+    **kwargs
+        Additional keyword arguments forwarded to the trainer
+        (e.g., ``n_test_blocks``).
+
+    Returns
+    -------
+    Dict[str, Any]
+        A dictionary with the following keys:
+
+        - ``'dataframe'`` : pd.DataFrame with columns ``tau`` and ``mi_mean``
+          (one row per *tau* value).
+        - ``'details'`` : dict containing:
+
+          - ``'baseline_mi'`` — MI at zero corruption (float, nats).
+          - ``'precision_tau'`` — the estimated precision threshold (float).
+          - ``'threshold_value'`` — MI value at the threshold (float, nats).
+          - ``'raw_results'`` — same DataFrame as ``'dataframe'``.
+    """
     logger.info("Initializing Precision Analysis...")
     
     # 1. Prepare Data & Model

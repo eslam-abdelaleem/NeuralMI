@@ -1,5 +1,5 @@
 # Expose the main run function and other key components at the top level
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 
 from .run import run
 from .logger import logger, set_verbosity, set_verbose

@@ -80,9 +80,11 @@ To get the most out of `NeuralMI`, we recommend following our new tutorial serie
     - **08_Models_Estimators_and_Validation**: Understand the trade-offs between different critic architectures, estimators, and custom models.
 
 ## Installation
-```bash
-# 1. Clone the repository from GitHub (if in Jupyter or Colab, remember to add "!" before running terminal commands like the following
 
+> **Jupyter / Colab users:** prefix each shell command below with `!` (e.g. `!git clone ...`).
+
+```bash
+# 1. Clone the repository from GitHub
 git clone https://github.com/eslam-abdelaleem/NeuralMI.git
 
 # 2. Navigate into the project directory

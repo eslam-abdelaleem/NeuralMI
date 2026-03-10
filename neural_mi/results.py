@@ -40,10 +40,19 @@ class Results:
         and 'rigorous' modes.
     dataframe : pd.DataFrame, optional
         A DataFrame containing detailed results. Populated in 'sweep',
-        'dimensionality', and 'rigorous' modes.
+        'dimensionality', 'rigorous', 'lag', 'precision', and 'pairwise' modes.
     details : Dict[str, Any]
         A dictionary containing additional metadata or detailed results, such
         as raw run data or estimated latent dimensions.
+
+    Methods
+    -------
+    summary()
+        Print a human-readable summary to stdout.
+    plot(ax=None, **kwargs)
+        Generate a mode-appropriate figure.
+    compare(results_list, labels=None, ax=None, **kwargs)
+        Static method; overlay multiple Results on a shared axis.
     """
     mode: str
     params: Dict[str, Any] = field(default_factory=dict)
@@ -58,6 +67,38 @@ class Results:
         if self.dataframe is not None: rep += f", dataframe_shape={self.dataframe.shape}"
         if self.details: rep += f", details_keys={list(self.details.keys())}"
         return rep + ")"
+
+    def summary(self) -> None:
+        """Print a human-readable summary of the analysis results to stdout.
+
+        Prints the analysis mode, MI estimate (if available), confidence
+        interval (for ``mode='rigorous'``), reliability flag (for
+        ``mode='rigorous'``), and DataFrame shape (if a DataFrame is present).
+        """
+        SEP = "─" * 50
+        units = self.params.get('output_units', 'bits')
+        print(SEP)
+        print(f"  NeuralMI Results  |  mode = '{self.mode}'")
+        print(SEP)
+        if self.mi_estimate is not None:
+            print(f"  MI estimate : {self.mi_estimate:.4f} {units}")
+            if self.mode == 'rigorous':
+                mi_err = self.details.get('mi_error')
+                is_reliable = self.details.get('is_reliable')
+                if mi_err is not None:
+                    print(f"  ± (half CI)   : {mi_err:.4f} {units}")
+                if is_reliable is False:
+                    print("  ⚠  is_reliable = False — extrapolation is unreliable; "
+                          "collect more data or simplify the model.")
+                elif is_reliable is True:
+                    print("  ✓  is_reliable = True")
+        else:
+            print("  MI estimate : (none — see result.dataframe or result.details)")
+        if self.dataframe is not None:
+            rows, cols = self.dataframe.shape
+            col_names = list(self.dataframe.columns)
+            print(f"  DataFrame   : {rows} rows × {cols} cols  {col_names}")
+        print(SEP)
 
     def plot(self, ax: Optional[plt.Axes] = None, **kwargs) -> plt.Axes:
         """Visualizes the results of the analysis.
@@ -100,7 +141,33 @@ class Results:
         if ax is None:
             fig, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
 
-        if self.mode in ['sweep', 'dimensionality', 'lag']:
+        if self.mode == 'estimate':
+            # Training curve: test MI vs epoch, with best-epoch marker.
+            history = self.details.get('test_mi_history')
+            best_epoch = self.details.get('best_epoch')
+            if history is None:
+                raise ValueError(
+                    "Results.plot() for mode='estimate' requires 'test_mi_history' "
+                    f"in result.details, but only found: {list(self.details.keys())}. "
+                    "This key is populated automatically during training."
+                )
+            import numpy as np
+            epochs = list(range(len(history)))
+            ax.plot(epochs, history, color='steelblue', linewidth=1.5,
+                    label='Test MI')
+            if best_epoch is not None and 0 <= best_epoch < len(history):
+                ax.axvline(best_epoch, color='tomato', linestyle='--',
+                           linewidth=1.5, label=f'Best epoch ({best_epoch})')
+                ax.scatter([best_epoch], [history[best_epoch]],
+                           color='tomato', zorder=5, s=60)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel(f'MI ({units})', fontsize=12)
+            title = kwargs.pop('title', 'Training curve')
+            ax.set_title(title, fontsize=13)
+            ax.legend(fontsize=9)
+            ax.grid(True, alpha=0.3)
+
+        elif self.mode in ['sweep', 'dimensionality', 'lag']:
             if self.dataframe is None:
                 raise ValueError("Cannot plot: results do not contain a DataFrame.")
 

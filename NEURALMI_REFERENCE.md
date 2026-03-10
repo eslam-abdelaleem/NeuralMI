@@ -207,7 +207,7 @@ result = nmi.run(
     processor_params_y=None,
 
     # ── Analysis Mode ───────────────────────────────────────────────────────
-    mode='estimate',                 # See §6 for all modes
+    mode='estimate',                 # 'estimate'|'sweep'|'dimensionality'|'rigorous'|'lag'|'precision'|'conditional'|'transfer'|'pairwise'
 
     # ── Model Configuration ────────────────────────────────────────────────
     base_params=None,                # dict; see §8 for full reference
@@ -622,7 +622,7 @@ Generates a mode-appropriate figure:
 
 | Mode | Plot type |
 |------|-----------|
-| `estimate` | Training curve (train/test MI vs epoch) |
+| `estimate` | Test MI vs epoch; best epoch marked with vertical dashed line |
 | `sweep` / `lag` | MI vs swept variable; multiple lines if multi-param |
 | `dimensionality` | MI vs embedding_dim with participation ratio |
 | `rigorous` | MI vs 1/γ with linear fit and extrapolated point |
@@ -696,7 +696,8 @@ Pass any of these in the `base_params` dict:
 |-----------|------|---------|-------|
 | `output_units` | str | `'bits'` | `'bits'` or `'nats'` |
 | `device` | str or None | None | Auto-detect |
-| `verbose` | bool | True | |
+| `verbose` | bool | False | |
+| `show_progress` | bool | True | Show tqdm progress bar during training |
 | `return_embeddings` | bool | False | |
 | `save_best_model_path` | str or None | None | |
 | `max_eval_samples` | int | 5000 | Max samples used for eval (GPU memory) |

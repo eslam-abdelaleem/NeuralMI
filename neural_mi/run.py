@@ -145,7 +145,7 @@ def run(
         Time vector for `x_data`. Required for temporal datasets. Defaults to None.
     y_time : np.ndarray, optional
         Time vector for `y_data`. Required for temporal datasets. Defaults to None.
-    mode : {'estimate', 'sweep', 'dimensionality', 'rigorous', 'lag'}, default='estimate'
+    mode : {'estimate', 'sweep', 'dimensionality', 'rigorous', 'lag', 'precision', 'conditional', 'transfer', 'pairwise'}, default='estimate'
         The analysis mode to run.
     processor_type_x : {'continuous', 'spike', 'categorical'}, optional
         The type of processing to apply to raw X data. If None, data is assumed
@@ -288,7 +288,11 @@ def run(
         due to edge effects. This parameter sets a threshold for acceptable reduction in valid windows after shifting.
         If the reduction exceeds this threshold, a warning is logged. Defaults to 0.05 (5%).
     tau_grid : list of float, optional
-        For `mode='precision'`, a list of additive uniform noise centered around 0 (interval [-tau/2, tau/2]) to apply to the target variable for the precision sweep. Defaults to None.
+        For ``mode='precision'``, a list of corruption levels to sweep over. Each value is
+        a precision parameter *tau* applied to the target variable. With
+        ``corruption_method='rounding'`` (default), values are quantized to the nearest
+        multiple of *tau*. With ``corruption_method='noise'``, additive uniform noise drawn
+        from U(-tau/2, tau/2) is applied. Defaults to None.
     corrupt_target : {'x', 'y'}, default='x'
         For ``mode='precision'``, which variable to apply noise corruption to during the precision sweep. Defaults to 'x'.
     corruption_method : {'rounding', 'noise'}, default='rounding'

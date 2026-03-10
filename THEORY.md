@@ -122,9 +122,9 @@ This procedure effectively subtracts the bias that is dependent on sample size, 
 
 ## 6. Latent Dimensionality via Spectral Metrics
 
-Historically -like last year-, finding the dimensionality of the shared information between two datasets involved treating the bottleneck dimension ($k_z$) as a search parameter. We would artificially starve the network's capacity and sweep $k_z$ to find the exact point where Mutual Information saturated. However, this approach is computationally expensive and highly sensitive to the geometric constraints of the chosen critic (e.g., a simple dot-product in a Separable Critic might fail to capture complex dependencies in low dimensions, causing "false saturation").
+Until recently, finding the dimensionality of the shared information between two datasets involved treating the bottleneck dimension ($k_z$) as a search parameter. We would artificially starve the network's capacity and sweep $k_z$ to find the exact point where Mutual Information saturated. However, this approach is computationally expensive and highly sensitive to the geometric constraints of the chosen critic (e.g., a simple dot-product in a Separable Critic might fail to capture complex dependencies in low dimensions, causing "false saturation").
 
-Following our work in ($\texttt{https://arxiv.org/abs/2602.08105}$), NeuralMI now treats dimensionality not as a search problem, but as an **observable property of an over-parameterized latent space**.
+Following our work in ([arxiv:2602.08105](https://arxiv.org/abs/2602.08105)), NeuralMI now treats dimensionality not as a search problem, but as an **observable property of an over-parameterized latent space**.
 
 ### The Hybrid Critic and the Saturation Hypothesis
 To accurately measure dimensionality, NeuralMI uses a **Hybrid Critic**. This architecture embeds $X$ and $Y$ independently but processes their concatenation through a final Multi-Layer Perceptron (MLP) decision head. By setting a safely large bottleneck (e.g., $k_z = 64$), we ensure the network is "capacity tight." The network will not artificially smear a low-dimensional signal across all 64 dimensions; instead, it routes the shared information efficiently into a compact subspace.

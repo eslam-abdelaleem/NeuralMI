@@ -469,6 +469,82 @@ def generate_history_data(
     y_data += np.random.randn(n_samples) * noise_level
     return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
 
+def generate_windowed_dependency_data(
+    n_timepoints: int,
+    n_channels: int = 4,
+    timescale: int = 50,
+    history_window: int = None,
+    noise_level: float = 0.3,
+    use_torch: bool = True,
+) -> Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
+    """Generates autocorrelated X and Y coupled through a causal history window.
+
+    This generator is designed specifically for window-size sweeps. Unlike
+    ``generate_autocorrelated_data`` (which couples X and Y via an explicit lag),
+    here Y depends on a moving average of X over the recent ``history_window``.
+    This isolates the window-size effect from lag-detection effects.
+
+    Parameters
+    ----------
+    n_timepoints : int
+        Number of timepoints to generate.
+    n_channels : int, optional
+        Number of channels for both X and Y. Defaults to 4.
+    timescale : int, optional
+        Dominant autocorrelation timescale for X. Defaults to 50.
+    history_window : int or None, optional
+        Number of past samples integrated to generate Y. If None, defaults to
+        ``timescale``.
+    noise_level : float, optional
+        Fraction of Y replaced by independent noise. Must be in [0, 1].
+        Defaults to 0.3.
+    use_torch : bool, optional
+        If True, return torch tensors; otherwise numpy arrays.
+
+    Returns
+    -------
+    Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]
+        ``(x, y)`` with shape ``(n_timepoints, n_channels)``.
+    """
+    if history_window is None:
+        history_window = timescale
+    if history_window < 1:
+        raise ValueError(f"history_window must be >= 1, got {history_window!r}.")
+    if not (0.0 <= noise_level <= 1.0):
+        raise ValueError(f"noise_level must be in [0, 1], got {noise_level!r}.")
+
+    # Match the X construction used in generate_autocorrelated_data.
+    rho_fast = np.exp(-1.0 / timescale)
+    rho_slow = np.exp(-1.0 / (4 * timescale))
+    h_len_fast = min(6 * timescale, n_timepoints // 2)
+    h_len_slow = min(24 * timescale, n_timepoints // 2)
+    h_fast = rho_fast ** np.arange(h_len_fast)
+    h_fast /= np.sqrt(np.sum(h_fast ** 2))
+    h_slow = rho_slow ** np.arange(h_len_slow)
+    h_slow /= np.sqrt(np.sum(h_slow ** 2))
+
+    x = np.zeros((n_timepoints, n_channels))
+    for ch in range(n_channels):
+        fast_ch = np.convolve(np.random.randn(n_timepoints), h_fast, mode='full')[:n_timepoints]
+        slow_ch = np.convolve(np.random.randn(n_timepoints), h_slow, mode='full')[:n_timepoints]
+        x[:, ch] = 0.7 * fast_ch + 0.3 * slow_ch
+
+    # Causal rolling-mean dependency: Y_t depends on X_{t-history_window+1:t}.
+    y = np.zeros((n_timepoints, n_channels))
+    signal_scale = 1.0 - noise_level
+    for ch in range(n_channels):
+        x_ch = x[:, ch]
+        csum = np.cumsum(np.concatenate(([0.0], x_ch)))
+        idx = np.arange(n_timepoints)
+        start = np.maximum(0, idx - history_window + 1)
+        lengths = idx - start + 1
+        history_signal = (csum[idx + 1] - csum[start]) / lengths
+        y[:, ch] = signal_scale * history_signal + noise_level * np.random.randn(n_timepoints)
+
+    if use_torch:
+        return torch.from_numpy(x).float(), torch.from_numpy(y).float()
+    return x, y
+
 
 def generate_full_data(
     n_samples: int = 5000,
