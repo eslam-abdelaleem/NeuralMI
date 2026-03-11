@@ -88,8 +88,9 @@ def run_transfer_entropy(
     prediction_horizon: int = 1,
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
+    bidirectional: bool = False,
 ) -> Dict[str, Any]:
-    """Estimates transfer entropy TE(X→Y).
+    """Estimates transfer entropy TE(X→Y), and optionally TE(Y→X).
 
     Uses the chain-rule identity:
         TE(X→Y) = I(x_past, y_past ; y_future) - I(y_past ; y_future)
@@ -114,17 +115,33 @@ def run_transfer_entropy(
         Optional hyperparameter grid passed to both sweep runs.
     n_workers : int, optional
         Number of parallel workers. Defaults to 1.
+    bidirectional : bool, optional
+        If True, also compute TE(Y→X) and return a directionality index.
+        Defaults to False.
 
     Returns
     -------
     Dict[str, Any]
         Dictionary with keys:
-        - ``'te_estimate'`` : float — point estimate of TE(X→Y).
+
+        - ``'te_xy'`` : float — point estimate of TE(X→Y).
+        - ``'te_estimate'`` : float — backward-compatible alias for ``te_xy``.
         - ``'i_xypast_yfuture'`` : float — mean I(x_past, y_past ; y_future).
         - ``'i_ypast_yfuture'`` : float — mean I(y_past ; y_future).
         - ``'raw_xypast_yfuture'`` : list of result dicts.
         - ``'raw_ypast_yfuture'`` : list of result dicts.
         - ``'n_samples'`` : int — number of valid sliding-window samples.
+        - ``'bidirectional'`` : bool — whether bidirectional TE was computed.
+
+        If ``bidirectional=True``, additionally:
+
+        - ``'te_yx'`` : float — point estimate of TE(Y→X).
+        - ``'i_yxpast_xfuture'`` : float — mean I(y_past, x_past ; x_future).
+        - ``'i_xpast_xfuture'`` : float — mean I(x_past ; x_future).
+        - ``'raw_yxpast_xfuture'`` : list of result dicts.
+        - ``'raw_xpast_xfuture'`` : list of result dicts.
+        - ``'directionality_index'`` : float — (TE_xy - TE_yx) / (|TE_xy| + |TE_yx|).
+          +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric.
     """
     if x_data.ndim != 2 or y_data.ndim != 2:
         raise ValueError(
@@ -135,6 +152,14 @@ def run_transfer_entropy(
         raise ValueError(
             "x_data and y_data must have the same number of time points. "
             f"Got {x_data.shape[0]} and {y_data.shape[0]}."
+        )
+
+    if not bidirectional:
+        logger.warning(
+            "Computing TE(X→Y) only. In coupled systems, consider also computing TE(Y→X) "
+            "by swapping x_data and y_data and comparing both directions. Pass "
+            "bidirectional=True to compute both directions automatically and obtain "
+            "a directionality index."
         )
 
     logger.info(
@@ -166,12 +191,14 @@ def run_transfer_entropy(
         sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
     )
 
-    mi_joint = float(
-        np.mean([r['test_mi'] for r in results_joint if 'test_mi' in r])
-    )
-    mi_marginal = float(
-        np.mean([r['test_mi'] for r in results_marginal if 'test_mi' in r])
-    )
+    joint_vals = [r['test_mi'] for r in results_joint if 'test_mi' in r]
+    marginal_vals = [r['test_mi'] for r in results_marginal if 'test_mi' in r]
+    if not joint_vals:
+        raise RuntimeError("Transfer entropy: all joint MI runs failed — no valid test_mi values.")
+    if not marginal_vals:
+        raise RuntimeError("Transfer entropy: all marginal MI runs failed — no valid test_mi values.")
+    mi_joint = float(np.mean(joint_vals))
+    mi_marginal = float(np.mean(marginal_vals))
     te = mi_joint - mi_marginal
 
     logger.info(
@@ -179,11 +206,64 @@ def run_transfer_entropy(
         f"I(y_past;y_future)={mi_marginal:.4f}, TE={te:.4f}"
     )
 
-    return {
-        'te_estimate': te,
-        'i_xypast_yfuture': mi_joint,   # I(x_past, y_past ; y_future)
-        'i_ypast_yfuture': mi_marginal,  # I(y_past ; y_future)
+    result = {
+        'te_xy': te,
+        'te_estimate': te,            # backward-compatible alias
+        'i_xypast_yfuture': mi_joint,
+        'i_ypast_yfuture': mi_marginal,
         'raw_xypast_yfuture': results_joint,
         'raw_ypast_yfuture': results_marginal,
         'n_samples': n_samples,
+        'bidirectional': bidirectional,
     }
+
+    if bidirectional:
+        logger.info("Transfer Entropy (bidirectional): estimating TE(Y→X)...")
+        # Swap roles of X and Y to get TE(Y→X)
+        y_past_b, x_past_b, x_future = _build_te_arrays(
+            y_data, x_data, history_window, prediction_horizon
+        )
+        yx_past = torch.cat([y_past_b, x_past_b], dim=1)
+
+        sweep_joint_yx = ParameterSweep(
+            x_data=yx_past, y_data=x_future, base_params=base_params.copy()
+        )
+        results_joint_yx = sweep_joint_yx.run(
+            sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
+        )
+        sweep_marginal_yx = ParameterSweep(
+            x_data=x_past_b, y_data=x_future, base_params=base_params.copy()
+        )
+        results_marginal_yx = sweep_marginal_yx.run(
+            sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
+        )
+
+        joint_vals_yx = [r['test_mi'] for r in results_joint_yx if 'test_mi' in r]
+        marginal_vals_yx = [r['test_mi'] for r in results_marginal_yx if 'test_mi' in r]
+        if not joint_vals_yx:
+            raise RuntimeError("TE(Y→X): all joint MI runs failed — no valid test_mi values.")
+        if not marginal_vals_yx:
+            raise RuntimeError("TE(Y→X): all marginal MI runs failed — no valid test_mi values.")
+
+        mi_joint_yx = float(np.mean(joint_vals_yx))
+        mi_marginal_yx = float(np.mean(marginal_vals_yx))
+        te_yx = mi_joint_yx - mi_marginal_yx
+
+        # Directionality index: +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric
+        te_sum = abs(te) + abs(te_yx)
+        directionality_index = (te - te_yx) / te_sum if te_sum > 1e-10 else 0.0
+
+        logger.info(
+            f"TE(X→Y)={te:.4f}, TE(Y→X)={te_yx:.4f}, "
+            f"directionality_index={directionality_index:.4f}"
+        )
+        result.update({
+            'te_yx': te_yx,
+            'i_yxpast_xfuture': mi_joint_yx,
+            'i_xpast_xfuture': mi_marginal_yx,
+            'raw_yxpast_xfuture': results_joint_yx,
+            'raw_xpast_xfuture': results_marginal_yx,
+            'directionality_index': directionality_index,
+        })
+
+    return result

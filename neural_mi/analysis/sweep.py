@@ -77,6 +77,10 @@ class ParameterSweep:
         else:
             logger.info(f"Starting parameter sweep with {effective_workers} workers...")
             _configure_multiprocessing()
+            # Use 'spawn' start method for cross-platform safety.
+            # On macOS and Windows, 'fork' is either unavailable or unsafe with
+            # PyTorch's CUDA context. On Linux, 'spawn' is slightly slower than
+            # 'fork' but avoids deadlocks in multi-threaded environments.
             with mp.get_context("spawn").Pool(processes=effective_workers) as pool:
                 all_results = list(tqdm(
                     pool.imap(run_training_task, tasks), total=len(tasks),

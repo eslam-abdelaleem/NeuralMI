@@ -102,7 +102,7 @@ class StaticDataset(BaseStaticDataset):
     def apply_noise(self, amplitude):
         """Add Gaussian noise to data."""
         # Allocate data_master if not allocated yet
-        if not hasattr(self, 'data_master'):
+        if self.data_master is None:
             self.data_master = self.data.detach().clone()
         noise = torch.randn_like(self.data) * amplitude
         self.data = self.data_master + noise
@@ -110,6 +110,6 @@ class StaticDataset(BaseStaticDataset):
     def apply_precision(self, precision_level):
         """Round data to a specific resolution/precision level."""
         # Allocate data_master if not allocated yet
-        if not hasattr(self, 'data_master'):
+        if self.data_master is None:
             self.data_master = self.data.detach().clone()
         self.data = torch.round(self.data_master / precision_level) * precision_level

@@ -48,7 +48,7 @@
 - **Temporal analyses**: lag, transfer entropy, spike-timing precision.
 - **Spatial analyses**: pairwise channel MI matrix, latent dimensionality.
 
-**Core dependency stack:** PyTorch ≥ 2.9, NumPy ≥ 2.3, Pandas ≥ 2.3, scikit-learn, statsmodels, Matplotlib, Seaborn.
+**Core dependency stack:** PyTorch ≥ 2.0, NumPy ≥ 1.23, Pandas ≥ 1.4, scikit-learn ≥ 1.0, statsmodels ≥ 0.13, Matplotlib ≥ 3.5, Seaborn ≥ 0.12.
 
 ---
 
@@ -207,7 +207,7 @@ result = nmi.run(
     processor_params_y=None,
 
     # ── Analysis Mode ───────────────────────────────────────────────────────
-    mode='estimate',                 # See §6 for all modes
+    mode='estimate',                 # 'estimate'|'sweep'|'dimensionality'|'rigorous'|'lag'|'precision'|'conditional'|'transfer'|'pairwise'
 
     # ── Model Configuration ────────────────────────────────────────────────
     base_params=None,                # dict; see §8 for full reference
@@ -385,8 +385,9 @@ Two sub-modes controlled by whether `y_data` is provided:
 **Key kwargs:** `n_workers=1`, `split_method='random'`, `n_splits=5`, `lag=<int>` (for temporal)
 
 **Returns:** `Results` with:
-- `result.dataframe` — columns: `embedding_dim`, `test_mi`, `participation_ratio`, `split_id`
-- `participation_ratio` — effective dimensionality from covariance spectrum: `(Σλᵢ)² / Σλᵢ²`
+- `result.dataframe` — columns: `embedding_dim`, `test_mi`, `participation_ratio`, `participation_ratio_singular`, `split_id`
+- `participation_ratio` — effective dimensionality from eigenvalue (covariance) spectrum: `(Σσᵢ²)² / Σσᵢ⁴` — stricter, weights large singular values more
+- `participation_ratio_singular` — PR from singular-value spectrum: `(Σσᵢ)² / Σσᵢ²` — less strict variant
 
 ```python
 result = nmi.run(x, mode='dimensionality',
@@ -404,8 +405,8 @@ result.plot()    # MI vs split_id with participation ratio overlay
 
 **Key parameters:**
 - `gamma_range`: range or list of denominators (default `range(1, 11)`)
-- `delta_threshold=0.1`: curvature threshold for accepting a gamma point as "in the linear region"
-- `min_gamma_points=5`: minimum points needed for a reliable fit
+- `delta_threshold=0.1`: quadratic curvature threshold — gamma points whose estimated quadratic coefficient exceeds this value are excluded before the linear regression (see THEORY.md §5)
+- `min_gamma_points=5`: minimum points that must survive the curvature filter for a reliable fit
 - `confidence_level=0.68`: width of the confidence interval (0.68 ≈ 1σ, 0.95 ≈ 2σ)
 
 **Key kwargs:** `n_workers=1`
@@ -472,24 +473,34 @@ peak_lag = result.dataframe.loc[result.dataframe['test_mi'].idxmax(), 'lag']
 
 **Key parameters:**
 - `corrupt_target='x'` — which signal to corrupt: `'x'`, `'y'`, or `'both'`
-- `threshold_ratio=0.9` — defines the precision cutoff (90% of baseline by default)
+- `threshold_ratio=0.9` — defines the precision cutoff. Can be a **single float** (default 0.9 = 90% of baseline) **or a list of floats** to compute multiple thresholds simultaneously (e.g. `[0.9, 0.75, 0.5]`)
 - `n_noise_samples=50` — for `'noise'` method: repeated samples per τ
 
 **Returns:** `Results` with:
 - `result.dataframe` — columns: `tau`, `test_mi`, `test_mi_std`
 - `result.details`:
   - `baseline_mi` — MI at τ=0 (uncorrupted)
-  - `precision_tau` — τ* where MI drops to threshold
-  - `threshold_value` — actual MI threshold value
+  - `precision_tau` — τ* for the primary (first) threshold ratio (backward-compatible)
+  - `threshold_value` — actual MI value at the primary threshold
+  - `threshold_ratio` — the original input (scalar or list)
+  - `precision_thresholds` — dict mapping each ratio to `{'precision_tau', 'threshold_value'}`
   - `corruption_method`, `corrupt_target`
 
 ```python
+# Single threshold (default)
 result = nmi.run(spike_x, y, mode='precision',
                  processor_type_x='spike',
                  processor_params_x={'window_size': 0.05, 'n_seconds': 100.0},
                  tau_grid=[0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05],
                  threshold_ratio=0.9)
 print(f"Precision timescale: {result.details['precision_tau']*1000:.1f} ms")
+
+# Multiple thresholds simultaneously
+result = nmi.run(spike_x, y, mode='precision',
+                 tau_grid=[0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05],
+                 threshold_ratio=[0.9, 0.75, 0.5])
+for ratio, v in result.details['precision_thresholds'].items():
+    print(f"  {ratio*100:.0f}% threshold: tau* = {v['precision_tau']*1000:.1f} ms")
 result.plot()
 ```
 
@@ -540,24 +551,42 @@ where `x_past`, `y_past` are the `history_window` most recent samples and `y_fut
 
 **Required:** `history_window` (int, number of past samples)
 
-**Key parameter:** `prediction_horizon=1` — samples ahead to predict
+**Key parameters:**
+- `prediction_horizon=1` — samples ahead to predict
+- `bidirectional_te=False` — if `True`, also compute TE(Y→X) and return a directionality index. When `False`, a warning is logged recommending bidirectional evaluation to detect spurious causal claims.
 
 **Returns:** `Results` with:
 - `result.mi_estimate` — float: TE(X→Y) in `output_units`
 - `result.details`:
-  - `te_estimate` — same as `mi_estimate`
+  - `te_estimate` — same as `mi_estimate` (backward-compatible alias for `te_xy`)
+  - `te_xy` — TE(X→Y) point estimate
   - `i_xypast_yfuture` — I(x_past, y_past ; y_future)
   - `i_ypast_yfuture` — I(y_past ; y_future)
   - `raw_xypast_yfuture`, `raw_ypast_yfuture` — per-run lists
   - `n_samples` — number of valid sliding windows created
+  - `bidirectional` — bool
+
+  If `bidirectional_te=True`, additionally:
+  - `te_yx` — TE(Y→X) point estimate
+  - `directionality_index` — `(TE_xy − TE_yx) / (|TE_xy| + |TE_yx|)`; +1 = pure X→Y, −1 = pure Y→X, 0 = symmetric
 
 ```python
+# Unidirectional (default) — logs a warning to consider bidirectional
 result = nmi.run(x, y, mode='transfer',
-                 history_window=20,     # 20-sample past window
+                 history_window=20,
                  prediction_horizon=1,
                  base_params={'n_epochs': 100},
                  n_workers=4)
 print(f"TE(X→Y) = {result.mi_estimate:.3f} bits")
+
+# Bidirectional — recommended for causal inference
+result = nmi.run(x, y, mode='transfer',
+                 history_window=20,
+                 bidirectional_te=True,
+                 n_workers=4)
+print(f"TE(X→Y) = {result.details['te_xy']:.3f} bits")
+print(f"TE(Y→X) = {result.details['te_yx']:.3f} bits")
+print(f"Directionality index = {result.details['directionality_index']:.3f}")
 ```
 
 **Note:** `x_data` and `y_data` must be 2D here: `(T, n_channels)`, i.e., a raw temporal sequence. The library builds sliding windows internally.
@@ -622,7 +651,7 @@ Generates a mode-appropriate figure:
 
 | Mode | Plot type |
 |------|-----------|
-| `estimate` | Training curve (train/test MI vs epoch) |
+| `estimate` | Test MI vs epoch; best epoch marked with vertical dashed line |
 | `sweep` / `lag` | MI vs swept variable; multiple lines if multi-param |
 | `dimensionality` | MI vs embedding_dim with participation ratio |
 | `rigorous` | MI vs 1/γ with linear fit and extrapolated point |
@@ -691,12 +720,19 @@ Pass any of these in the `base_params` dict:
 | `spectral_whitening` | str or None | `'std'` | Standardize embedding dimensions |
 | `spectral_mode` | str | `'none'` | `'none'`, `'summary'`, `'full'` |
 
+### Variational Training
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `use_variational` | bool | False | Enable variational reparameterization for embeddings |
+| `beta` | float | 1024.0 | MI weight in variational loss `L = KL − β·MI`. Large β (≥ 1) makes MI maximization dominate; decrease for stronger KL regularization |
+
 ### Other
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
 | `output_units` | str | `'bits'` | `'bits'` or `'nats'` |
 | `device` | str or None | None | Auto-detect |
-| `verbose` | bool | True | |
+| `verbose` | bool | False | |
+| `show_progress` | bool | True | Show tqdm progress bar during training |
 | `return_embeddings` | bool | False | |
 | `save_best_model_path` | str or None | None | |
 | `max_eval_samples` | int | 5000 | Max samples used for eval (GPU memory) |
@@ -889,9 +925,9 @@ Modes:
   dimensionality → result.dataframe [embedding_dim, test_mi, participation_ratio]
   rigorous     → result.mi_estimate ± result.details['mi_error']
   lag          → result.dataframe [lag, test_mi]
-  precision    → result.dataframe [tau, test_mi]; result.details['precision_tau']
+  precision    → result.dataframe [tau, test_mi]; result.details['precision_tau'], ['precision_thresholds']
   conditional  → result.mi_estimate  (I(X;Y|Z))
-  transfer     → result.mi_estimate  (TE(X→Y))
+  transfer     → result.mi_estimate  (TE(X→Y)); bidirectional_te=True adds te_yx, directionality_index
   pairwise     → result.dataframe [ch_x, ch_y, mi_estimate]
 
 Estimators: 'infonce' (default, has ceiling), 'smile' (no ceiling), 'nwj', 'tuba'

@@ -100,8 +100,14 @@ def run_conditional_mi(
         sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
     )
 
-    mi_xz_y = float(np.mean([r['test_mi'] for r in results_xz_y if 'test_mi' in r]))
-    mi_z_y = float(np.mean([r['test_mi'] for r in results_z_y if 'test_mi' in r]))
+    vals_xz_y = [r['test_mi'] for r in results_xz_y if 'test_mi' in r]
+    vals_z_y = [r['test_mi'] for r in results_z_y if 'test_mi' in r]
+    if not vals_xz_y:
+        raise RuntimeError("Conditional MI: all I(XZ;Y) runs failed — no valid test_mi values.")
+    if not vals_z_y:
+        raise RuntimeError("Conditional MI: all I(Z;Y) runs failed — no valid test_mi values.")
+    mi_xz_y = float(np.mean(vals_xz_y))
+    mi_z_y = float(np.mean(vals_z_y))
     cmi = mi_xz_y - mi_z_y
 
     logger.info(

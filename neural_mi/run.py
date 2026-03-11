@@ -112,6 +112,7 @@ def run(
     z_processor_params: Optional[Dict[str, Any]] = None,
     history_window: Optional[int] = None,
     prediction_horizon: int = 1,
+    bidirectional_te: bool = False,
     n_epochs: Optional[int] = None,
     batch_size: Optional[int] = None,
     shared_encoder: Optional[bool] = None,
@@ -373,7 +374,7 @@ def run(
             threshold_ratio=threshold_ratio, permutation_test=permutation_test,
             n_permutations=n_permutations, z_data=z_data, z_processor_type=z_processor_type,
             z_processor_params=z_processor_params, history_window=history_window,
-            prediction_horizon=prediction_horizon,
+            prediction_horizon=prediction_horizon, bidirectional_te=bidirectional_te,
             n_epochs=n_epochs, batch_size=batch_size, shared_encoder=shared_encoder,
             return_embeddings=return_embeddings, lag_range=lag_range,
             **analysis_kwargs
@@ -395,7 +396,7 @@ def _run_inner(
     return_spectrum, max_index_reduction, tau_grid, corrupt_target,
     corruption_method, n_noise_samples, threshold_ratio, permutation_test,
     n_permutations, z_data, z_processor_type, z_processor_params,
-    history_window, prediction_horizon,
+    history_window, prediction_horizon, bidirectional_te=False,
     n_epochs=None, batch_size=None, shared_encoder=None,
     return_embeddings=False, lag_range=None,
     spectral_mode='none',
@@ -772,7 +773,8 @@ def _run_inner(
         raw = run_transfer_entropy(_x_te, _y_te, base_params,
                                    history_window=history_window,
                                    prediction_horizon=prediction_horizon,
-                                   sweep_grid=sweep_grid, n_workers=n_workers)
+                                   sweep_grid=sweep_grid, n_workers=n_workers,
+                                   bidirectional=analysis_kwargs.pop('bidirectional_te', bidirectional_te))
         raw = _convert_mi_units(raw, output_units == 'bits')  # convert all MI scalars at once
         te = raw['te_estimate']
         result = Results(mode=mode, mi_estimate=te, params=run_params, details=raw)

@@ -104,7 +104,12 @@ def run_pairwise_mi(
             results = sweep.run(
                 sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
             )
-            mi_ij = float(np.mean([r['test_mi'] for r in results if 'test_mi' in r]))
+            vals = [r['test_mi'] for r in results if 'test_mi' in r]
+            if not vals:
+                logger.warning(f"  Pair x_ch={i}, y_ch={j}: all runs failed, recording NaN.")
+                mi_ij = float('nan')
+            else:
+                mi_ij = float(np.mean(vals))
             mi_matrix[i, j] = mi_ij
             records.append({'ch_x': i, 'ch_y': j, 'mi_estimate': mi_ij})
 
@@ -142,7 +147,12 @@ def run_pairwise_mi(
             results = sweep.run(
                 sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
             )
-            mi_ij = float(np.mean([r['test_mi'] for r in results if 'test_mi' in r]))
+            vals = [r['test_mi'] for r in results if 'test_mi' in r]
+            if not vals:
+                logger.warning(f"  Pair ({i}, {j}): all runs failed, recording NaN.")
+                mi_ij = float('nan')
+            else:
+                mi_ij = float(np.mean(vals))
             mi_matrix[i, j] = mi_ij
             mi_matrix[j, i] = mi_ij  # symmetric
             records.append({'ch_x': i, 'ch_y': j, 'mi_estimate': mi_ij})

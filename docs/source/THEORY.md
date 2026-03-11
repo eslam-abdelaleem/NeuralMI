@@ -83,6 +83,8 @@ $$
 
 This regularization can improve the quality of the learned representations and lead to more stable and robust MI estimates, particularly in complex, high-dimensional settings.
 
+**Choosing $\beta$:** The default value of $\beta = 1024$ reflects the typical use-case where MI maximisation should strongly dominate over KL regularisation. With this setting the loss is effectively $\mathcal{L} \approx -1024\,\hat{I}$, which drives the embeddings to extract maximal shared information while the KL term still gently penalises degenerate distributions. Decreasing $\beta$ increases the relative influence of the KL prior; setting $\beta \ll 1$ can collapse the embeddings toward the prior and reduce estimated MI.
+
 ---
 
 ## 4. The Problem of Finite-Sampling Bias
@@ -111,6 +113,10 @@ The `mode='rigorous'` in `NeuralMI` automates a principled, multi-step workflow 
 
 This procedure effectively subtracts the bias that is dependent on sample size, yielding a more accurate and scientifically rigorous result.
 
+### Quadratic Curvature Filtering
+
+In practice, the $1/N$ relationship is only approximately linear; at very large $\gamma$ (very small sample sizes), finite-sample effects and network under-fitting introduce measurable curvature. `NeuralMI` applies an automatic **quadratic curvature filter**: it fits a quadratic polynomial to the MI-vs-$1/\gamma$ curve and excludes any $\gamma$ point whose estimated quadratic coefficient exceeds the `delta_threshold` parameter (default 0.1). Only the remaining approximately-linear points are used for the final regression. A minimum of `min_gamma_points` (default 5) such points must survive for the estimate to be considered reliable; if fewer remain the result is flagged as unreliable.
+
 :::{admonition} References
 :class: note
 
@@ -120,22 +126,69 @@ This procedure effectively subtracts the bias that is dependent on sample size, 
 
 ---
 
-## 6. Estimating Latent Dimensionality
+## 6. Latent Dimensionality via Spectral Metrics
 
-The `mode='dimensionality'` uses a clever trick to estimate the complexity of a single neural population `X`. It randomly splits the channels of `X` into two halves, `X_A` and `X_B`, and measures the "Internal Information" `I(X_A; X_B)`.
+Until recently, finding the dimensionality of the shared information between two datasets involved treating the bottleneck dimension ($k_z$) as a search parameter. We would artificially starve the network's capacity and sweep $k_z$ to find the exact point where Mutual Information saturated. However, this approach is computationally expensive and highly sensitive to the geometric constraints of the chosen critic (e.g., a simple dot-product in a Separable Critic might fail to capture complex dependencies in low dimensions, causing "false saturation").
 
-**Intuition:**
+Following our work in ([arxiv:2602.08105](https://arxiv.org/abs/2602.08105)), NeuralMI now treats dimensionality not as a search problem, but as an **observable property of an over-parameterized latent space**.
 
-If both `X_A` and `X_B` are just different observations of the same underlying low-dimensional latent signal `Z`, then in theory, `I(X_A; X_B) = I(Z; Z) = ∞`. However, the *discoverable* information is constrained by the dimensionality of `Z`.
+### The Hybrid Critic and the Saturation Hypothesis
+To accurately measure dimensionality, NeuralMI uses a **Hybrid Critic**. This architecture embeds $X$ and $Y$ independently but processes their concatenation through a final Multi-Layer Perceptron (MLP) decision head. By setting a safely large bottleneck (e.g., $k_z = 64$), we ensure the network is "capacity tight." The network does not distribute a low-dimensional signal diffusely across all 64 dimensions; instead, it concentrates the shared information into a compact subspace.
 
-We can find this constraint by using a **`SeparableCritic`** and varying its `embedding_dim`. The `embedding_dim` acts as a bottleneck:
+### Embedding Whitening
 
-- If `embedding_dim` < `dim(Z)`, the model can't capture all the shared information, and the estimated MI will be low.
-- As `embedding_dim` approaches `dim(Z)`, the estimated MI will rise.
-- Once `embedding_dim` > `dim(Z)`, the model has enough capacity, and the MI will **saturate**. The point of saturation is our estimate for the latent dimensionality of `Z`.
+Before computing the cross-covariance, `NeuralMI` optionally **whitens** the embeddings. The default mode (`spectral_whitening='std'`) standardises each embedding dimension by dividing it by its empirical standard deviation:
 
-For this specific task, **SMILE is often a better estimator than InfoNCE**. Because the true MI can be very high, InfoNCE might saturate at its theoretical limit of $\log(N)$ *before* the model's capacity (`embedding_dim`) becomes the true bottleneck. SMILE's lower bias allows the curve to rise higher, revealing the true saturation point more clearly.
+$$\tilde{Z}_{X,i} = \frac{Z_{X,i}}{\text{std}(Z_{X,i})}, \qquad \tilde{Z}_{Y,i} = \frac{Z_{Y,i}}{\text{std}(Z_{Y,i})}$$
 
-:::{note}
-This process can also be done for regular `I(X;Y)`, informing us about the intrinsic dimensionality of the *interaction* space. Here, the information won't be theoretically infinite, and InfoNCE will probably perform better.
-:::
+This ensures that dimensions with accidentally large variance do not dominate the SVD spectrum, yielding a PR estimate that reflects the true geometric structure of the shared information rather than the scale of individual latent dimensions.
+
+### Cross-Covariance and the Participation Ratio
+Once the Hybrid Critic is trained at maximum capacity, we extract the learned embeddings $Z_X$ and $Z_Y$ for the test set. We compute their cross-covariance matrix $C_{XY}$:
+
+$$C_{XY} = \frac{1}{N-1} (Z_X - \bar{Z}_X)^T (Z_Y - \bar{Z}_Y)$$
+
+We then perform Singular Value Decomposition (SVD) on $C_{XY}$ to extract the spectrum of singular values $\sigma_i$. These singular values represent the strength of the shared variance across the orthogonal dimensions of the latent space.
+
+From this spectrum, NeuralMI calculates two variants of the **Participation Ratio (PR)**:
+
+$$PR_{\text{singular}} = \frac{\left(\sum_{i=1}^{k_z} \sigma_i\right)^2}{\sum_{i=1}^{k_z} \sigma_i^2}$$
+
+$$PR_{\text{covariance}} = \frac{\left(\sum_{i=1}^{k_z} \sigma_i^2\right)^2}{\sum_{i=1}^{k_z} \sigma_i^4}$$
+
+Both are continuous measures of the effective number of dimensions utilised by the network; a value of 5.2 indicates that the shared information effectively occupies 5.2 dimensions. The two variants differ in how they weight the spectrum:
+
+* **$PR_{\text{singular}}$** weights each dimension proportionally to its singular value $\sigma_i$.
+* **$PR_{\text{covariance}}$** weights each dimension proportionally to its eigenvalue $\lambda_i = \sigma_i^2$. Because eigenvalues amplify contrast between large and small singular values, $PR_{\text{covariance}} \le PR_{\text{singular}}$ in general and is more sensitive to the true rank of the representation — small-but-nonzero singular values contribute relatively less.
+
+### Interaction vs. Intrinsic Dimensionality
+* **Interaction Dimensionality:** When evaluating two distinct datasets ($X$ and $Y$), the PR of their cross-covariance directly yields the dimensionality of their shared information space.
+* **Intrinsic Dimensionality:** When analyzing a single dataset ($X$), NeuralMI splits the data into two non-overlapping halves (e.g., randomly splitting the channels/neurons, or splitting spatially/temporally). It then computes the Interaction Dimensionality between these halves, repeating this process over multiple splits and averaging the PR to find the intrinsic dimensionality of the dataset itself.
+
+---
+
+## 7. Spike Timing Precision
+
+In many biological systems, neural codes rely on precise timing down to the millisecond scale. Measuring the exact temporal precision at which a representation carries information requires determining how much that information degrades when the timing is perturbed.
+
+NeuralMI implements a highly efficient **"Train Once, Evaluate Many"** paradigm to establish this precision threshold without the massive computational overhead of retraining models for every noise level.
+
+### The Baseline and Corruption Methodology
+First, a baseline Mutual Information estimate is established by training a critic on the raw, uncorrupted data ($X$ and $Y$). Once the model converges, its weights are frozen.
+
+To evaluate precision, the test data is iteratively corrupted across a grid of precision levels, denoted as $\tau$. NeuralMI supports two primary methods for corruption:
+
+1.  **Deterministic Rounding (Default):** The data is explicitly quantized, forcing continuous times to snap to a discrete grid defined by the precision level $\tau$. Because this operation is deterministic, it requires only a single forward pass through the frozen network per precision level. The rounding operation is defined as:
+    $$\tilde{X} = \tau * \left \lfloor{\frac{X}{\tau}}\right \rceil$$
+    where $\left \lfloor{\cdot}\right \rceil$ denotes rounding to the nearest integer.
+2.  **Additive Uniform Noise:** A stochastic alternative where noise sampled from a uniform distribution $U(-\frac{\tau}{2}, \frac{\tau}{2})$ is added to the data. Because this is probabilistic, the evaluation must be repeated multiple times (e.g., $N=50$) and averaged to get a stable estimate of the degraded Mutual Information.
+
+### Defining the Precision Threshold
+
+As $\tau$ increases, the severity of the corruption increases, and the Mutual Information estimated by the frozen network will inevitably drop. The spike timing precision of the representation is formally defined as the smallest $\tau^*$ at which the degraded Mutual Information falls below a fixed fraction $\rho$ of the baseline:
+
+$$I(\tilde{X}^{\tau^*}; Y) < \rho \cdot I(X; Y)$$
+
+The default ratio $\rho = 0.9$ (90%) is deliberately conservative: it identifies the coarsest timing resolution at which 90% of the available information is still preserved, providing an upper bound on the temporal precision required for faithful information transmission. This approach mirrors methods established in prior work on neural coding precision (Abdelaleem et al., "An information theoretic method to resolve millisecond-scale spike timing precision in a comprehensive motor program").
+
+Multiple threshold ratios can be specified simultaneously — e.g., `threshold_ratio=[0.9, 0.75, 0.5]` — to characterise the full degradation profile of the representation and identify, for instance, both the onset of information loss (90%) and the point of catastrophic degradation (50%).

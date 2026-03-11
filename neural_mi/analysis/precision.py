@@ -9,7 +9,7 @@ find the precision threshold where mutual information degrades.
 import torch
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 from neural_mi.training.trainer import Trainer
 from neural_mi.estimators import ESTIMATORS
@@ -36,7 +36,7 @@ def run_precision_analysis(
     x_data: Any, y_data: Any, base_params: Dict[str, Any],
     tau_grid: List[float], corrupt_target: str = 'x',
     corruption_method: str = 'rounding', n_noise_samples: int = 50,
-    threshold_ratio: float = 0.9, **kwargs
+    threshold_ratio: Union[float, List[float]] = 0.9, **kwargs
 ) -> Dict[str, Any]:
     """Estimate spike-timing precision via a "Train Once, Evaluate Many" sweep.
 
@@ -66,9 +66,12 @@ def run_precision_analysis(
     n_noise_samples : int, default=50
         Number of independent noise realizations to average when
         ``corruption_method='noise'``.  Ignored for ``'rounding'``.
-    threshold_ratio : float, default=0.9
+    threshold_ratio : float or list of float, default=0.9
         The precision threshold is the smallest *tau* at which MI falls below
-        ``threshold_ratio × baseline_MI``.  Must be in (0, 1].
+        ``threshold_ratio × baseline_MI``.  Each value must be in (0, 1].
+        If a list is provided, thresholds are computed for all ratios and
+        returned in the ``precision_thresholds`` dict; the first ratio is
+        used as the primary (backward-compatible) result.
     **kwargs
         Additional keyword arguments forwarded to the trainer
         (e.g., ``n_test_blocks``).
@@ -83,8 +86,11 @@ def run_precision_analysis(
         - ``'details'`` : dict containing:
 
           - ``'baseline_mi'`` — MI at zero corruption (float, nats).
-          - ``'precision_tau'`` — the estimated precision threshold (float).
-          - ``'threshold_value'`` — MI value at the threshold (float, nats).
+          - ``'precision_tau'`` — the primary estimated precision threshold (float).
+          - ``'threshold_ratio'`` — the original input (scalar or list).
+          - ``'threshold_value'`` — MI value at the primary threshold (float, nats).
+          - ``'precision_thresholds'`` — dict mapping each ratio to its
+            ``{'precision_tau', 'threshold_value'}`` result.
           - ``'raw_results'`` — same DataFrame as ``'dataframe'``.
     """
     logger.info("Initializing Precision Analysis...")
@@ -122,7 +128,7 @@ def run_precision_analysis(
         optimizer=optimizer,
         device=device,
         use_variational=base_params.get('use_variational', False),
-        beta=base_params.get('beta', 512.0),
+        beta=base_params.get('beta', 1024.0),
         estimator_params=base_params.get('estimator_params')
     )
     
@@ -184,29 +190,48 @@ def run_precision_analysis(
 
     df = pd.DataFrame(results_list)
     
-    # 4. Find the Precision Threshold
-    threshold_value = baseline_mi * threshold_ratio
-    precision_tau = None
-    
-    # Iterate through ascending tau to find the exact point it drops below threshold
-    for _, row in df.iterrows():
-        if row['tau'] > 0 and row['test_mi'] < threshold_value:
-            precision_tau = row['tau']
-            break
-            
-    if precision_tau is None:
-        logger.warning(f"MI never dropped below {threshold_ratio*100}% of baseline. Consider increasing the maximum tau.")
-        
-    logger.info(f"Precision Threshold estimated at tau = {precision_tau}")
-    
+    # 4. Find Precision Threshold(s)
+    # Normalise threshold_ratio to a list for uniform handling
+    if isinstance(threshold_ratio, (int, float)):
+        ratio_list = [float(threshold_ratio)]
+        scalar_input = True
+    else:
+        ratio_list = sorted([float(r) for r in threshold_ratio], reverse=True)
+        scalar_input = False
+
+    precision_thresholds = {}
+    for ratio in ratio_list:
+        threshold_value_i = baseline_mi * ratio
+        tau_i = None
+        for _, row in df.iterrows():
+            if row['tau'] > 0 and row['test_mi'] < threshold_value_i:
+                tau_i = row['tau']
+                break
+        if tau_i is None:
+            logger.warning(
+                f"MI never dropped below {ratio*100:.0f}% of baseline. "
+                f"Consider extending the tau_grid."
+            )
+        precision_thresholds[ratio] = {
+            'precision_tau': tau_i,
+            'threshold_value': threshold_value_i,
+        }
+
+    # Backward-compatible scalar output
+    primary_ratio = ratio_list[0]
+    precision_tau = precision_thresholds[primary_ratio]['precision_tau']
+    threshold_value = precision_thresholds[primary_ratio]['threshold_value']
+    logger.info(f"Precision Threshold ({primary_ratio*100:.0f}%) estimated at tau = {precision_tau}")
+
     return {
         'dataframe': df,
         'details': {
             'baseline_mi': baseline_mi,
-            'precision_tau': precision_tau,
-            'threshold_ratio': threshold_ratio,
-            'threshold_value': threshold_value,
+            'precision_tau': precision_tau,           # primary threshold (backward compat)
+            'threshold_ratio': threshold_ratio,        # original input (scalar or list)
+            'threshold_value': threshold_value,        # primary threshold value
+            'precision_thresholds': precision_thresholds,  # full multi-threshold dict
             'corruption_method': corruption_method,
-            'corrupt_target': corrupt_target
+            'corrupt_target': corrupt_target,
         }
     }

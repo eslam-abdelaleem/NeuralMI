@@ -194,14 +194,14 @@ class ParameterValidator:
                 # Validate numeric bounds for specific processor params
                 ws = proc_params.get('window_size')
                 if ws is not None:
-                    if not isinstance(ws, (int, float)) or ws <= 0:
+                    if not isinstance(ws, (int, float)) or not np.isfinite(ws) or ws <= 0:
                         raise ValueError(
                             f"processor_params_{suffix}['window_size'] must be a positive number, "
                             f"got {ws!r}."
                         )
                 sr = proc_params.get('sample_rate')
                 if sr is not None:
-                    if not isinstance(sr, (int, float)) or sr <= 0:
+                    if not isinstance(sr, (int, float)) or not np.isfinite(sr) or sr <= 0:
                         raise ValueError(
                             f"processor_params_{suffix}['sample_rate'] must be a positive number, "
                             f"got {sr!r}."
@@ -249,6 +249,31 @@ class ParameterValidator:
                         f"Use range(-10, 11), a list of integers, or np.arange(...) for "
                         f"time-based lags (e.g. spike trains)."
                     )
+
+        # Precision mode: validate threshold_ratio bounds
+        if self.mode == 'precision':
+            tr = self.params.get('threshold_ratio')
+            if tr is not None:
+                ratios = tr if isinstance(tr, (list, tuple)) else [tr]
+                for r in ratios:
+                    if not isinstance(r, (int, float)) or not (0 < r <= 1):
+                        raise ValueError(
+                            f"threshold_ratio must be a float in (0, 1] "
+                            f"(or a list of such floats), got {r!r}."
+                        )
+
+        # Rigorous mode: validate delta_threshold and confidence_level
+        if self.mode == 'rigorous':
+            dt = self.params.get('delta_threshold')
+            if dt is not None and (not isinstance(dt, (int, float)) or dt <= 0):
+                raise ValueError(
+                    f"delta_threshold must be a positive float, got {dt!r}."
+                )
+            cl = self.params.get('confidence_level')
+            if cl is not None and (not isinstance(cl, (int, float)) or not (0 < cl < 1)):
+                raise ValueError(
+                    f"confidence_level must be a float in (0, 1), got {cl!r}."
+                )
 
     def apply_defaults(self):
         """Populates missing parameters in base_params with defaults."""

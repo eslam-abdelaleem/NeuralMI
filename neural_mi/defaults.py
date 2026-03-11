@@ -36,7 +36,7 @@ BASE_PARAMS_SCHEMA = {
     'estimator_name': {'type': str, 'default': 'infonce'},
     'estimator_params': {'type': dict, 'default': {}},
     'use_variational': {'type': bool, 'default': False},
-    'beta': {'type': float, 'default': 1024.0},
+    'beta': {'type': float, 'min': 0.0, 'default': 1024.0},
     'train_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
     'n_test_blocks': {'type': int, 'min': 1, 'default': 5},
     'max_index_reduction': {'type': float, 'min': 0.0, 'default': 0.05},
@@ -107,7 +107,11 @@ MODE_KWARGS_SCHEMA = {
         'corruption_method': {'type': str, 'default': 'rounding'},
         'n_noise_samples': {'type': int, 'default': 50},
         'threshold_ratio': {'type': float, 'default': 0.9},
-    }
+    },
+    'transfer': {
+        'n_workers': {'type': int, 'default': 1},
+        'bidirectional_te': {'type': bool, 'default': False},
+    },
 }
 
 PROCESSOR_PARAMS_SCHEMA = {

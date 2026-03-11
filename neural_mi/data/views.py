@@ -84,9 +84,9 @@ class SubsetView:
             self.times = None
             self.indices = np.sort(np.asarray(indices)) if indices is not None else None
         
-        # Ensure indices are LongTensor
-        if self.indices is not None:
-            self.indices = torch.tensor(self.indices, device=self.dataset.x_dataset.device, dtype=torch.long)
+        # Ensure indices are LongTensor (handle both numpy arrays and pre-converted tensors)
+        if self.indices is not None and not isinstance(self.indices, torch.Tensor):
+            self.indices = torch.as_tensor(self.indices, device=self.dataset.x_dataset.device, dtype=torch.long)
     
     def _get_valid_window_times(self):
         """Helper to get only the valid window times from manager."""

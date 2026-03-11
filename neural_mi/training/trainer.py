@@ -62,8 +62,12 @@ class Trainer:
             loss term, which will be incorporated into the total loss.
             Defaults to False.
         beta : float, optional
-            The weight to apply to the KL divergence term in the loss function,
-            if `use_variational` is True. Defaults to 1024.0.
+            Weight applied to the MI term in the variational loss:
+            ``L = KL - beta * MI``.  A large ``beta`` (default 1024.0) causes
+            MI maximisation to dominate while the KL term acts as a mild
+            regulariser on the embedding distributions.  Decrease ``beta``
+            to increase the influence of the KL prior relative to MI.
+            Only used when ``use_variational=True``.  Defaults to 1024.0.
         estimator_params : dict, optional
             Additional keyword arguments for the estimator function.
         custom_smoothing_fn : Callable, optional
@@ -246,9 +250,12 @@ class Trainer:
             for batch_idx in shuffled_train_idx.split(batch_size):
                 self.optimizer.zero_grad()
                 scores, kl_loss = self.model(dataset.x_dataset[batch_idx, ...].to(self.device), dataset.y_dataset[batch_idx, ...].to(self.device))
-                loss = -self.estimator_fn(scores, **self.estimator_params)
+                mi_estimate = self.estimator_fn(scores, **self.estimator_params)
                 if self.use_variational:
-                    loss += self.beta * kl_loss
+                    # L = KL - beta * MI  (consistent with THEORY.md Section 3)
+                    loss = kl_loss - self.beta * mi_estimate
+                else:
+                    loss = -mi_estimate
                 loss.backward()
                 self.optimizer.step()
 

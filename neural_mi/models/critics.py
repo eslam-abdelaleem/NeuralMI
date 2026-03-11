@@ -54,7 +54,7 @@ class BaseCritic(nn.Module):
             
         # Chunked processing to prevent OOM
         x_embeds, y_embeds = [], []
-        total_kl_raw = torch.tensor(0.0)
+        total_kl_raw = torch.tensor(0.0, device=x.device)
         
         for i in range(0, batch_size, max_n_batches):
             end_idx = min(i + max_n_batches, batch_size)
@@ -193,7 +193,7 @@ class ConcatCritic(BaseCritic):
         x_flat, y_flat = x.view(batch_size, -1), y.view(batch_size, -1)
         
         scores = torch.zeros(batch_size * batch_size, device=x.device)
-        total_kl_raw = torch.tensor(0.0)
+        total_kl_raw = torch.tensor(0.0, device=x.device)
         
         pair_batch_size = self.max_n_batches
         

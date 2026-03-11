@@ -133,7 +133,7 @@ def smile_lower_bound(scores: torch.Tensor, clip: Optional[float] = 5.0) -> torc
         is the critic's output for the pair `(x[i], y[j])`.
     clip : float, optional
         The value to which the scores will be clipped. If None, no clipping
-        is applied. Defaults to None.
+        is applied. Defaults to 5.0.
 
     Returns
     -------
