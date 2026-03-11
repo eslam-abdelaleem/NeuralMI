@@ -32,6 +32,8 @@ BASE_PARAMS_SCHEMA = {
     'return_spectrum': {'type': bool, 'default': False},           # deprecated; use spectral_mode
     'return_embeddings': {'type': bool, 'default': False},
     'spectral_whitening': {'type': (str, type(None)), 'default': 'std'},
+    'use_spectral_norm': {'type': bool, 'default': True},
+    'gradient_clip_val': {'type': (float, type(None)), 'default': None},
     'save_best_model_path': {'type': (str, type(None)), 'default': None},
     'estimator_name': {'type': str, 'default': 'infonce'},
     'estimator_params': {'type': dict, 'default': {}},

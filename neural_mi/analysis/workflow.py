@@ -157,7 +157,7 @@ class AnalysisWorkflow:
             A dictionary containing the corrected results and the raw DataFrame
             from all the individual training runs.
         """
-        n_workers = n_workers or mp.cpu_count()
+        n_workers = n_workers if n_workers is not None else 1
         show_progress = self.base_params.get('show_progress', True)
         logger.info(f"Starting rigorous analysis with {n_workers} workers...")
         tasks = self._prepare_tasks(param_grid, gamma_range)
@@ -238,6 +238,10 @@ class AnalysisWorkflow:
                 for i_subset, subset_indices in enumerate(chunks):
                     x_subset = self.x_data[subset_indices]
                     y_subset = self.y_data[subset_indices]
+                    if isinstance(x_subset, torch.Tensor) and x_subset.is_cuda:
+                        x_subset = x_subset.cpu()
+                    if isinstance(y_subset, torch.Tensor) and y_subset.is_cuda:
+                        y_subset = y_subset.cpu()
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
                     tasks.append((x_subset, y_subset, current_params.copy(), task_run_id))
 

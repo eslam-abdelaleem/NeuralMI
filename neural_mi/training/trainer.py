@@ -43,7 +43,8 @@ class Trainer:
                  device: torch.device, use_variational: bool = False, beta: float = 1024,
                  estimator_params: Optional[Dict[str, Any]] = None,
                  custom_smoothing_fn: Optional[Callable] = None,
-                 spectral_whitening: str = 'std'):
+                 spectral_whitening: str = 'std',
+                 gradient_clip_val: Optional[float] = None):
         
         """
         Parameters
@@ -76,6 +77,11 @@ class Trainer:
          spectral_whitening : str, optional
             Method for spectral whitening when computing spectral metrics. Options are 'std' for standard whitening
             and 'zca' for ZCA whitening and None. Defaults to 'std'.
+        gradient_clip_val : float, optional
+            If set, applies ``torch.nn.utils.clip_grad_norm_`` with this value as
+            the maximum gradient norm after each backward pass, before the
+            optimiser step.  Helps prevent gradient explosions with high learning
+            rates or difficult distributions.  ``None`` disables clipping.
        """
         self.device, self.model = device, model.to(device)
         self.estimator_fn, self.optimizer = estimator_fn, optimizer
@@ -83,6 +89,7 @@ class Trainer:
         self.estimator_params = estimator_params if estimator_params is not None else {}
         self.custom_smoothing_fn = custom_smoothing_fn
         self.spectral_whitening = spectral_whitening
+        self.gradient_clip_val = gradient_clip_val
 
     def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
               train_fraction: float = 0.9, n_test_blocks: int = 5,
@@ -252,11 +259,13 @@ class Trainer:
                 scores, kl_loss = self.model(dataset.x_dataset[batch_idx, ...].to(self.device), dataset.y_dataset[batch_idx, ...].to(self.device))
                 mi_estimate = self.estimator_fn(scores, **self.estimator_params)
                 if self.use_variational:
-                    # L = KL - beta * MI  (consistent with THEORY.md Section 3)
+                    # L = KL - beta * MI
                     loss = kl_loss - self.beta * mi_estimate
                 else:
                     loss = -mi_estimate
                 loss.backward()
+                if self.gradient_clip_val is not None:
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_val)
                 self.optimizer.step()
 
             # Fast evaluation using safety chunking
@@ -350,12 +359,31 @@ class Trainer:
                 )
 
         best_ep = np.argmax(self.custom_smoothing_fn(history) if self.custom_smoothing_fn else self._smooth(history, smoothing_sigma, median_window))
+
+        # Detect and warn when the model failed to generalise at all.
+        valid_history = [v for v in history if not np.isnan(v)]
+        _all_mi_negative = bool(valid_history and max(valid_history) < 0)
+        if _all_mi_negative:
+            _raw_train_mi = final_train_mi  # for the warning message only
+            warnings.warn(
+                f"All test MI values in the training history are negative "
+                f"(max test MI = {max(valid_history):.4f} nats at epoch {best_ep}). "
+                f"The model failed to learn a generalising representation — this typically "
+                f"indicates too few epochs, too high a learning rate, or degenerate data. "
+                f"Reporting train MI = 0 nats. The corresponding train MI was "
+                f"{_raw_train_mi:.4f} nats (likely reflecting overfitting, not true MI). "
+                f"Consider increasing n_epochs, reducing learning_rate, or inspecting data quality.",
+                UserWarning,
+                stacklevel=2,
+            )
+            final_train_mi = 0.0  # Positive train MI would be misleading; zero it out.
         
         results = {
             'train_mi': final_train_mi, 
             'test_mi': final_test_mi,
             'best_epoch': best_ep,
-            'test_mi_history': history
+            'test_mi_history': history,
+            'all_mi_negative': _all_mi_negative,
         }
 
         if track_spectral_metrics:

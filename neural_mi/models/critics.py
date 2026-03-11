@@ -220,5 +220,3 @@ class ConcatCritic(BaseCritic):
             kl_tensor = torch.tensor(0.0, device=x.device)
 
         return scores.view(batch_size, batch_size), kl_tensor
-
-

@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import math
 from typing import Tuple
+from torch.nn.utils import spectral_norm as _spectral_norm
 
 class BaseEmbedding(nn.Module):
     """Abstract base class for embedding models.
@@ -58,7 +59,8 @@ class MLP(_BaseMLP):
         The final linear layer that maps to the embedding dimension.
     """
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int,
-                 n_layers: int, activation: str = 'relu'):
+                 n_layers: int, activation: str = 'relu', 
+                 use_spectral_norm: bool = True):
         """
         Parameters
         ----------
@@ -73,12 +75,19 @@ class MLP(_BaseMLP):
         activation : str, optional
             The name of the activation function to use (e.g., 'relu', 'tanh').
             Defaults to 'relu'.
+
+        use_spectral_norm : bool, optional
+            If True, applies spectral normalisation to the hidden ``nn.Linear``
+            layers.  The output layer is left unnormalised to preserve the full 
+            expressive range of the embedding.
+            Defaults to True.
         """
         super().__init__()
         activations = {'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh,
                        'leaky_relu': nn.LeakyReLU, 'silu': nn.SiLU}
         act_fn = activations[activation]
-        layers = [nn.Linear(input_dim, hidden_dim), act_fn()]
+        _wrap = _spectral_norm if use_spectral_norm else (lambda x: x)
+        layers = [_wrap(nn.Linear(input_dim, hidden_dim)), act_fn()]
         for _ in range(n_layers - 1):
             layers.extend([nn.Linear(hidden_dim, hidden_dim), act_fn()])
         self.network = nn.Sequential(*layers)
@@ -398,7 +407,7 @@ class VarMLP(_BaseMLP):
         The layer that produces the log variance of the embedding distribution.
     """
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int,
-                 n_layers: int, activation: str = 'relu'):
+                 n_layers: int, activation: str = 'relu', use_spectral_norm: bool = True):
         """
         Parameters
         ----------
@@ -412,14 +421,17 @@ class VarMLP(_BaseMLP):
             The number of hidden layers in the base network.
         activation : str, optional
             The activation function to use in the base network. Defaults to 'relu'.
+        use_spectral_norm : bool, optional
+            Whether to use spectral normalization for the linear layers. Defaults to True.
         """
         super().__init__()
         activations = {'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh,
                        'leaky_relu': nn.LeakyReLU, 'silu': nn.SiLU}
         act_fn = activations[activation]
-        layers = [nn.Linear(input_dim, hidden_dim), act_fn()]
+        _wrap = _spectral_norm if use_spectral_norm else (lambda x: x)
+        layers = [_wrap(nn.Linear(input_dim, hidden_dim)), act_fn()]
         for _ in range(n_layers - 1):
-            layers.extend([nn.Linear(hidden_dim, hidden_dim), act_fn()])
+            layers.extend([_wrap(nn.Linear(hidden_dim, hidden_dim)), act_fn()])
         self.base_network = nn.Sequential(*layers)
         self.fc_mu = nn.Linear(hidden_dim, embed_dim)
         self.fc_logvar = nn.Linear(hidden_dim, embed_dim)

@@ -174,6 +174,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             model_kwargs['nhead'] = embedding_params.get('nhead', 4)
     else: # MLP
         input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
+        model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
 
     shared_encoder = embedding_params.get('shared_encoder', False)
     if shared_encoder and critic_type == 'concat':

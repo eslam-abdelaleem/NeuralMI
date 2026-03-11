@@ -127,14 +127,3 @@ def run_lag_analysis(
             result['n_windows'] = task[2].get('_n_windows_lag', None)
 
     return results_list
-
-
-
-
-
-
-
-
-
-
-

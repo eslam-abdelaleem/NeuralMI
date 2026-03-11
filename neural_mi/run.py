@@ -118,6 +118,8 @@ def run(
     shared_encoder: Optional[bool] = None,
     return_embeddings: bool = False,
     lag_range: Optional[List] = None,
+    use_spectral_norm: bool = True,
+    gradient_clip_val: Optional[float] = None,
     **analysis_kwargs
 ) -> Results:
     
@@ -178,7 +180,6 @@ def run(
         The units for the final MI estimate.
     estimator : {'infonce', 'smile', 'nwj', 'tuba', 'js'}, default='infonce'
         The MI lower bound estimator to use. Recommended choices:
-
         - **'infonce'** *(default)* — InfoNCE lower bound. Best all-around
           default. Low variance, stable training. Theoretical ceiling at
           ``log(batch_size)`` nats (≈ 5 bits for batch_size=128, ≈ 6.6 bits
@@ -188,9 +189,6 @@ def run(
           Recommended when you expect MI > 3–4 bits or are not sure about the
           scale. Use with ``estimator_params={'clip': 5.0}`` to stabilise
           training: ``nmi.run(..., estimator='smile', estimator_params={'clip': 5.0})``.
-        - 'nwj', 'tuba', 'js' — Other valid lower bounds, included for
-          completeness. Higher variance than InfoNCE and generally not
-          recommended for practical use.
     estimator_params : dict, optional
         Additional keyword arguments for the selected estimator function.
         For example, ``{'clip': 5.0}`` for the 'smile' estimator. Defaults to None.
@@ -256,6 +254,17 @@ def run(
         ``range(-10, 11)`` or ``[-0.1, 0.0, 0.1]``. Can also be passed via
         ``**analysis_kwargs`` for backward compatibility. Required when
         ``mode='lag'``.
+    use_spectral_norm : bool, default=True
+        Apply spectral normalisation to the hidden linear layers of MLP/VarMLP
+        embedding networks.  Spectral norm constrains the Lipschitz constant of
+        each hidden layer (largest singular value = 1), improving training
+        stability — especially for NWJ/TUBA estimators.  Has no effect on
+        non-MLP architectures (CNN, GRU, LSTM, TCN, Transformer).
+    gradient_clip_val : float, optional
+        Maximum norm for gradient clipping (``torch.nn.utils.clip_grad_norm_``).
+        Applied between ``loss.backward()`` and ``optimizer.step()`` each
+        training step.  ``None`` (default) disables clipping.  A value of 1.0
+        is a common starting point for preventing gradient explosions.
     **analysis_kwargs
         Additional keyword arguments passed to the specific analysis engine.
         Common examples include ``n_workers``, ``n_splits``, or ``gamma_range``.
@@ -268,7 +277,6 @@ def run(
         Consolidated control for spectral metric tracking. Replaces the
         deprecated ``track_spectral_metrics`` / ``spectral_output`` /
         ``return_spectrum`` trio.
-
         - ``'none'`` — no spectral metrics computed (default, no overhead).
         - ``'summary'`` — compute participation ratio at the end of training;
           equivalent to ``track_spectral_metrics=True, spectral_output='default',
@@ -377,6 +385,7 @@ def run(
             prediction_horizon=prediction_horizon, bidirectional_te=bidirectional_te,
             n_epochs=n_epochs, batch_size=batch_size, shared_encoder=shared_encoder,
             return_embeddings=return_embeddings, lag_range=lag_range,
+            use_spectral_norm=use_spectral_norm, gradient_clip_val=gradient_clip_val,
             **analysis_kwargs
         )
     finally:
@@ -399,7 +408,7 @@ def _run_inner(
     history_window, prediction_horizon, bidirectional_te=False,
     n_epochs=None, batch_size=None, shared_encoder=None,
     return_embeddings=False, lag_range=None,
-    spectral_mode='none',
+    spectral_mode='none', use_spectral_norm=True, gradient_clip_val=None,
     **analysis_kwargs
 ):
     if random_seed is not None:
@@ -447,10 +456,11 @@ def _run_inner(
     _inject(base_params, 'split_gap_fraction', split_gap_fraction)
     _inject(base_params, 'train_indices', train_indices)
     _inject(base_params, 'test_indices', test_indices)
-    
     # Inject  Trainer pipeline arguments
     _inject(base_params, 'max_eval_samples', max_eval_samples)
     _inject(base_params, 'train_subset_size', train_subset_size)
+    _inject(base_params, 'use_spectral_norm', use_spectral_norm)
+    _inject(base_params, 'gradient_clip_val', gradient_clip_val)
 
     # Validate spectral_mode
     _SPECTRAL_MODES = {'none', 'summary', 'full'}
@@ -609,6 +619,11 @@ def _run_inner(
             return Results(mode=mode, mi_estimate=float('nan'), params=run_params)
         res_dict = results_list[0].copy()
         mi = res_dict.pop('test_mi', float('nan'))
+        # When all training test MI values were negative the model failed to
+        # generalise. Report mi_estimate = 0; the (negative) test MI and the
+        # all_mi_negative flag are preserved in details for diagnostics.
+        if res_dict.get('all_mi_negative'):
+            mi = 0.0
         result = Results(mode=mode,
                          mi_estimate=_convert_mi_units(mi, output_units == 'bits'),
                          params=run_params,
@@ -851,6 +866,7 @@ def _run_permutation_test(x_data, y_data, base_params, mode, sweep_grid,
                 ph = mode_kwargs.get('prediction_horizon', 1)
                 raw = run_transfer_entropy(x_data, y_perm, base_params.copy(),
                                            history_window=hw, prediction_horizon=ph,
+                                           bidirectional=mode_kwargs.get('bidirectional_te', False),
                                            n_workers=analysis_kwargs.get('n_workers', 1))
                 null_mis.append(raw['te_estimate'])
 
