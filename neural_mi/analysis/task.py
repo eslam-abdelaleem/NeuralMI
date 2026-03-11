@@ -68,7 +68,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         beta=params.get('beta', 1024.0),
         estimator_params=params.get('estimator_params'),
         custom_smoothing_fn=params.get('custom_smoothing_fn'),
-        spectral_whitening=params.get('spectral_whitening', 'std')
+        spectral_whitening=params.get('spectral_whitening', 'std'),
         gradient_clip_val=params.get('gradient_clip_val', None),
     )
 

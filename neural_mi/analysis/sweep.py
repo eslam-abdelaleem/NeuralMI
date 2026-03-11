@@ -168,9 +168,9 @@ class ParameterSweep:
                     indices = np.random.choice(self.x_data.shape[0], max_samples_per_task, replace=False)
                     x_to_send = self.x_data[indices]
                     y_to_send = self.y_data[indices] if self.y_data is not None else None
-                if isinstance(x_to_send, torch.Tensor) and x_to_send.is_cuda:
+                if isinstance(x_to_send, torch.Tensor) and x_to_send.is_cuda or (torch.backends.mps.is_available() and x_to_send.is_mps):
                     x_to_send = x_to_send.cpu()
-                if y_to_send is not None and isinstance(y_to_send, torch.Tensor) and y_to_send.is_cuda:
+                if y_to_send is not None and isinstance(y_to_send, torch.Tensor) and y_to_send.is_cuda or (torch.backends.mps.is_available() and y_to_send.is_mps):
                     y_to_send = y_to_send.cpu()
                 task_data_x, task_data_y = x_to_send, y_to_send
 
