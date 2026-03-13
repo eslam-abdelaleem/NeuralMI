@@ -380,6 +380,7 @@ class Trainer:
         
         results = {
             'train_mi': final_train_mi, 
+            'raw_train_mi': _raw_train_mi if _all_mi_negative else final_train_mi,  # for transparency in the warning case
             'test_mi': final_test_mi,
             'best_epoch': best_ep,
             'test_mi_history': history,

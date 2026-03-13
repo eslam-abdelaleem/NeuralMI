@@ -38,12 +38,12 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
     if isinstance(results, float): return results * NATS_TO_BITS
     elif isinstance(results, pd.DataFrame):
         df = results.copy()
-        cols = ['test_mi', 'train_mi', 'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'slope']
+        cols = ['test_mi', 'train_mi', 'raw_train_mi', 'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'slope']
         for col in cols:
             if col in df.columns: df[col] *= NATS_TO_BITS
         return df
     elif isinstance(results, list) and all(isinstance(r, dict) for r in results):
-        keys = ['test_mi', 'train_mi', 'mi_corrected', 'mi_error', 'slope']
+        keys = ['test_mi', 'train_mi', 'raw_train_mi', 'mi_corrected', 'mi_error', 'slope']
         return [{**r, **{k: r.get(k, 0) * NATS_TO_BITS for k in keys if r.get(k) is not None}} for r in results]
     elif isinstance(results, dict):
         new_results = results.copy()
@@ -597,12 +597,13 @@ def _run_inner(
             sweep_grid, is_proc_sweep=is_proc_sweep, **analysis_kwargs
         )
         df = pd.DataFrame(results_list)
+        df = _convert_mi_units(df, output_units == 'bits')
         group_vars = [key for key in sweep_grid.keys() if key != 'run_id']
         agg_df = df.groupby(group_vars)['test_mi'].agg(['mean', 'std']).reset_index().rename(
             columns={'mean': 'mi_mean', 'std': 'mi_std'}).fillna(0) if group_vars else df
         primary_sweep_var = group_vars[0] if group_vars else None
         result = Results(mode=mode,
-                         dataframe=_convert_mi_units(agg_df, output_units == 'bits'),
+                         dataframe=agg_df,
                          params={**run_params, 'sweep_var': primary_sweep_var},
                          details={'raw_results': df})
         if permutation_test:
