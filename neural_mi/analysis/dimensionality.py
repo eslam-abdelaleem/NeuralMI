@@ -52,7 +52,14 @@ def run_dimensionality_analysis(
           structure rather than cross-channel shared information.
         Defaults to 'random'.
     n_splits : int, optional
-        Number of random channel splits (only applies when split_method='random').
+        Number of independent runs.  For intrinsic dimensionality with
+        ``split_method='random'`` this controls how many distinct random
+        channel-split assignments are evaluated.  For interaction
+        dimensionality (``y_data`` provided) there is no channel split, so
+        ``n_splits`` instead controls how many independent model fits are
+        performed — each starting from a different random weight
+        initialisation — giving a proper mean and standard deviation in the
+        output.  Defaults to 5.
     spectral_output : {'default', 'all'}, optional
         'default' returns only participation_ratio; 'all' returns all spectral metrics.
     return_spectrum : bool, optional
@@ -92,13 +99,19 @@ def run_dimensionality_analysis(
 
     # 2. Interaction Dimensionality (X and Y both provided)
     if y_data is not None:
-        logger.info("y_data provided. Computing Interaction Dimensionality.")
-        sweep = ParameterSweep(x_data=x_data, y_data=y_data, base_params=analysis_params)
-        results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers,
-                            is_proc_sweep=False)
-        df = pd.DataFrame(results)
-        df['split_id'] = 0
-        return df
+        logger.info(
+            f"y_data provided. Computing Interaction Dimensionality "
+            f"({n_splits} independent run{'s' if n_splits != 1 else ''})."
+        )
+        all_results = []
+        for i in range(n_splits):
+            if n_splits > 1:
+                logger.info(f"--- Interaction Run {i + 1}/{n_splits} ---")
+            run_rows = _run_single_split(
+                x_data, y_data, analysis_params, sweep_grid, n_workers, split_id=i
+            )
+            all_results.extend(run_rows)
+        return pd.DataFrame(all_results)
 
     # 3. Intrinsic Dimensionality (only X provided — channel split)
     logger.info(f"Computing Intrinsic Dimensionality using '{split_method}' splits.")

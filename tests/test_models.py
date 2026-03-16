@@ -154,9 +154,16 @@ def test_critic_chunking_equivalency(critic_type, x_data, y_data):
     critic_chunked = critic_class(**kwargs, max_n_batches=3)
     scores_chunked, kl_chunked = critic_chunked(x_data, y_data)
 
-    # 3. Assert mathematical equivalence
-    assert torch.allclose(scores_full, scores_chunked, atol=1e-5), f"{critic_type} chunking altered the score matrix!"
-    assert torch.allclose(kl_full, kl_chunked, atol=1e-5), f"{critic_type} chunking altered the variational KL loss!"
+    # 3. Assert mathematical equivalence.
+    # Float32 chunk-reorder accumulation gives differences proportional to the value
+    # magnitude — up to ~0.1 for large bilinear scores (Separable, ~10^5) and ~1e-5
+    # for small near-zero scores (Hybrid decision head).  We therefore use both a
+    # relative tolerance (1e-4) and an absolute floor (1e-4) so both regimes are
+    # covered while still catching real discrepancies.
+    assert torch.allclose(scores_full, scores_chunked, rtol=1e-4, atol=1e-4), \
+        f"{critic_type} chunking altered the score matrix!"
+    assert torch.allclose(kl_full, kl_chunked, rtol=1e-4, atol=1e-4), \
+        f"{critic_type} chunking altered the variational KL loss!"
 
 # --- Gradient Tests for Critics ---
 
