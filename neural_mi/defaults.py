@@ -94,7 +94,7 @@ MODE_KWARGS_SCHEMA = {
     },
     'dimensionality': {
         'n_workers': {'type': int, 'default': 1},
-        'split_method': {'type': str, 'default': 'random'}, # 'random' or 'temporal'
+        'split_method': {'type': str, 'default': 'random'}, # 'random', 'spatial', or 'temporal'
         'n_splits': {'type': int, 'default': 5},
         'lag': {'type': int, 'default': 1}, # if split_method='temporal'
     },

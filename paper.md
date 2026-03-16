@@ -106,8 +106,11 @@ issued when fewer than five gamma points survive.
 **Dimensionality.** `mode='dimensionality'` estimates the intrinsic dimensionality
 of a neural population or of the shared information between two populations. After
 training a Hybrid Critic with a large bottleneck, the library extracts embeddings
-and computes the Participation Ratio from the singular value spectrum of the
-cross-covariance matrix: $\text{PR} = (\sum_i \sigma_i)^2 / \sum_i \sigma_i^2$.
+and computes two Participation Ratio (PR) variants from the singular value spectrum
+of the cross-covariance matrix. The primary metric (`participation_ratio`) weights
+by squared singular values: $\text{PR}_{\text{cov}} = (\sum_i \sigma_i^2)^2 / \sum_i \sigma_i^4$.
+A second variant (`participation_ratio_singular`) weights by singular values directly:
+$\text{PR}_{\text{sv}} = (\sum_i \sigma_i)^2 / \sum_i \sigma_i^2$.
 This avoids the computational cost and geometric artefacts of sweeping bottleneck
 dimension.
 

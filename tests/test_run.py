@@ -238,3 +238,46 @@ def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_pre
     # Ensure the details dictionary has all the metadata
     assert 'baseline_mi' in result.details
     assert 'raw_results' in result.details
+
+
+# --- Processor-level sweep and spike integration ---
+
+BASE_PARAMS_INTEGRATION = {
+    'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
+    'patience': 1, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1
+}
+
+
+def test_run_sweep_mode_processor_param(raw_gaussian_data):
+    """Tests a sweep over a processor parameter (window_size), distinct from model param sweeps."""
+    x, y = raw_gaussian_data
+    results = nmi.run(
+        x_data=x, y_data=y, mode='sweep',
+        processor_type_x='continuous', processor_params_x={},
+        base_params=BASE_PARAMS_INTEGRATION, sweep_grid={'window_size': [5, 10]},
+        random_seed=42, n_workers=1
+    )
+    assert isinstance(results.dataframe, pd.DataFrame)
+    assert len(results.dataframe) == 2
+
+
+def test_rigorous_mode_with_spike_data():
+    """Full end-to-end pipeline: rigorous analysis on synthetic spike data."""
+    x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
+        n_neurons=5, duration=10.0, firing_rate=10.0, delay=0.01, jitter=0.002
+    )
+    base_params = {
+        'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
+        'patience': 1, 'embedding_dim': 8, 'hidden_dim': 16, 'n_layers': 1
+    }
+    results = nmi.run(
+        x_data=x_spikes, y_data=y_spikes, mode='rigorous',
+        processor_type_x='spike', processor_params_x={'window_size': 0.05},
+        base_params=base_params, gamma_range=range(1, 3),
+        n_workers=1, random_seed=42
+    )
+    assert isinstance(results, nmi.results.Results)
+    assert isinstance(results.mi_estimate, float)
+    assert results.dataframe is not None and not results.dataframe.empty
+    assert 'mi_corrected' in results.details
+    assert 'mi_error' in results.details

@@ -10,9 +10,9 @@ sys.path.insert(0, os.path.abspath('../../'))
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'NeuralMI'
-copyright = '2025, Eslam Abdelaleem'
+copyright = '2026, Eslam Abdelaleem'
 author = 'Eslam Abdelaleem'
-release = '2.0.0'
+release = '2.1.0'
 
 # -- General configuration ---------------------------------------------------
 extensions = [

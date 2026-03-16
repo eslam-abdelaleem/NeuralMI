@@ -49,7 +49,9 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
         new_results = results.copy()
         # Scalar MI values stored by analysis modules (transfer entropy, CMI, etc.)
         _MI_SCALAR_KEYS = (
-            'te_estimate', 'i_xypast_yfuture', 'i_ypast_yfuture',
+            'te_estimate', 'te_xy', 'te_yx',
+            'i_xypast_yfuture', 'i_ypast_yfuture',
+            'i_yxpast_xfuture', 'i_xpast_xfuture',
             'cmi_estimate', 'mi_xz_y', 'mi_z_y',
         )
         for k in _MI_SCALAR_KEYS:
@@ -125,6 +127,8 @@ def run(
     scheduler: Union[str, type, None] = None,
     scheduler_params: Optional[Dict[str, Any]] = None,
     eval_train: Union[bool, float, int] = False,
+    dropout: Optional[float] = None,
+    norm_layer: Optional[str] = None,
     **analysis_kwargs
 ) -> Results:
     
@@ -183,7 +187,7 @@ def run(
         Defaults to None.
     output_units : {'bits', 'nats'}, default='bits'
         The units for the final MI estimate.
-    estimator : {'infonce', 'smile', 'nwj', 'tuba', 'js'}, default='infonce'
+    estimator : {'infonce', 'smile'}, default='infonce'
         The MI lower bound estimator to use. Recommended choices:
         - **'infonce'** *(default)* — InfoNCE lower bound. Best all-around
           default. Low variance, stable training. Theoretical ceiling at
@@ -263,8 +267,8 @@ def run(
         Apply spectral normalisation to the hidden linear layers of MLP/VarMLP
         embedding networks.  Spectral norm constrains the Lipschitz constant of
         each hidden layer (largest singular value = 1), improving training
-        stability — especially for NWJ/TUBA estimators.  Has no effect on
-        non-MLP architectures (CNN, GRU, LSTM, TCN, Transformer).
+        stability.  Has no effect on non-MLP architectures (CNN, GRU, LSTM,
+        TCN, Transformer).
     gradient_clip_val : float, optional
         Maximum norm for gradient clipping (``torch.nn.utils.clip_grad_norm_``).
         Applied between ``loss.backward()`` and ``optimizer.step()`` each
@@ -286,7 +290,7 @@ def run(
         Additional keyword arguments forwarded to the optimizer constructor
         (beyond ``lr``, which is always taken from ``base_params['learning_rate']``).
         For example, ``{'weight_decay': 1e-4}`` or ``{'momentum': 0.9}``.
-        Defaults to ``{}``.
+        Defaults to ``None`` (treated as ``{}``).
     scheduler : str, torch.optim.lr_scheduler class, or None, default=None
         A learning-rate scheduler to apply at the end of each training epoch.
         ``None`` (default) disables scheduling. Supported string names:
@@ -311,7 +315,7 @@ def run(
         Additional keyword arguments forwarded to the scheduler constructor.
         For example, ``{'T_max': 100}`` to override the period for ``'cosine'``,
         or ``{'step_size': 20, 'gamma': 0.5}`` for ``'step'``.
-        Defaults to ``{}``.
+        Defaults to ``None`` (treated as ``{}``).
     eval_train : bool, float, or int, default=False
         Controls whether train-set MI is evaluated at every epoch, producing a
         ``'train_mi_history'`` alongside ``'test_mi_history'`` in the results.
@@ -321,6 +325,20 @@ def run(
           ``max_eval_samples``).
         - ``float`` in ``(0, 1)`` — use that fraction of training samples.
         - ``int >= 1`` — use exactly that many training samples.
+    dropout : float, optional
+        Dropout probability applied after each hidden layer of MLP/VarMLP
+        embedding networks.  ``0.0`` disables dropout (default).  Values in
+        ``(0, 1)`` add regularisation, which is particularly helpful for small
+        datasets.  Has no effect on CNN, GRU, LSTM, TCN, or Transformer
+        architectures.  Defaults to ``None`` (use ``base_params`` value or
+        apply the schema default of ``0.0``).
+    norm_layer : {'layer', 'batch'} or None, optional
+        Normalisation layer to insert after each hidden layer of MLP/VarMLP
+        embedding networks.  ``None`` disables normalisation (default).
+        ``'layer'`` inserts ``LayerNorm`` (recommended for small batches);
+        ``'batch'`` inserts ``BatchNorm1d``.  Has no effect on other
+        architectures.  Defaults to ``None`` (use ``base_params`` value or
+        apply the schema default of ``None``).
     **analysis_kwargs
         Additional keyword arguments passed to the specific analysis engine.
         Common examples include ``n_workers``, ``n_splits``, or ``gamma_range``.
@@ -445,6 +463,7 @@ def run(
             optimizer=optimizer, optimizer_params=optimizer_params,
             scheduler=scheduler, scheduler_params=scheduler_params,
             eval_train=eval_train,
+            dropout=dropout, norm_layer=norm_layer,
             **analysis_kwargs
         )
     finally:
@@ -520,6 +539,7 @@ def _run_inner(
     optimizer='adam', optimizer_params=None,
     scheduler=None, scheduler_params=None,
     eval_train=False,
+    dropout=None, norm_layer=None,
     **analysis_kwargs
 ):
     if random_seed is not None:
@@ -577,6 +597,8 @@ def _run_inner(
     _inject(base_params, 'scheduler', scheduler)
     _inject(base_params, 'scheduler_params', scheduler_params or {})
     _inject(base_params, 'eval_train', eval_train)
+    _inject(base_params, 'dropout', dropout)
+    _inject(base_params, 'norm_layer', norm_layer)
 
     # Validate spectral_mode
     _SPECTRAL_MODES = {'none', 'summary', 'full'}
@@ -815,6 +837,13 @@ def _run_inner(
         details = prec_results['details']
         details['baseline_mi'] = _convert_mi_units(details['baseline_mi'], output_units == 'bits')
         details['threshold_value'] = _convert_mi_units(details['threshold_value'], output_units == 'bits')
+        # Convert threshold_value inside each entry of the precision_thresholds dict
+        if 'precision_thresholds' in details:
+            for _ratio_dict in details['precision_thresholds'].values():
+                if 'threshold_value' in _ratio_dict and _ratio_dict['threshold_value'] is not None:
+                    _ratio_dict['threshold_value'] = _convert_mi_units(
+                        _ratio_dict['threshold_value'], output_units == 'bits'
+                    )
         details['raw_results'] = df
         return Results(
             mode=mode,
