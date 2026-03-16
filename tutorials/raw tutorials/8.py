@@ -8,24 +8,32 @@
 # is trustworthy, whether the estimator can reach the true MI, and whether the
 # model architecture is right for your data.
 # 
-# We cover four topics:
-# 
+# We cover six topics:
+#
 # 1. **Null distributions.** Before reporting any MI estimate, you should verify
 #    that it is not a statistical artefact. The permutation test provides a
 #    principled null: what MI would you estimate if X and Y were independent?
-# 
+#
 # 2. **The InfoNCE ceiling and SMILE.** The default estimator has a mathematical
 #    upper bound of $\log(N_\text{batch})$ bits. If the true MI exceeds this,
 #    InfoNCE will underestimate it. The SMILE estimator removes this ceiling
 #    at the cost of higher variance.
-# 
+#
 # 3. **Embedding model architectures.** The library offers six embedding models —
 #    MLP, CNN, GRU, LSTM, TCN, and Transformer. Choosing the right one for your
 #    data can meaningfully improve estimation quality.
-# 
+#
 # 4. **Custom models.** For analyses that go beyond the built-in options, you
 #    can supply a completely custom PyTorch embedding or critic and plug it
 #    directly into the `nmi.run` pipeline.
+#
+# 5. **Optimizer, regularization, and training diagnostics.** The optimizer,
+#    dropout, and normalization options let you adapt the training dynamics to
+#    your dataset — particularly important when sample counts are small.
+#
+# 6. **Learning-rate schedulers.** Cosine annealing, warmup, step decay, and
+#    plateau scheduling can improve convergence, especially on longer runs or
+#    when the learning rate needs to settle near a good minimum.
 
 # %% [markdown]
 # ## 1. Validating Results: The Null Distribution
@@ -455,7 +463,227 @@ print(f"Custom critic:            "
       f"{results_custom_critic.mi_estimate:.3f} bits")
 
 # %% [markdown]
-# ## 5. Key Takeaways
+# ## 5. Optimizer, Regularization, and Training Diagnostics
+#
+# ### 5a. Changing the optimizer
+#
+# NeuralMI uses Adam by default (`optimizer='adam'`). You can switch to any
+# supported optimizer by passing its name as a top-level keyword argument.
+# Additional optimizer settings go in `optimizer_params`.
+#
+# Supported names: `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`.
+# You can also pass a `torch.optim.Optimizer` **subclass** directly for full
+# flexibility.
+#
+# **When to change the optimizer:**
+# - `'adamw'` + `weight_decay` is the most common upgrade and a good first
+#   choice when overfitting is suspected (especially on small datasets).
+# - `'sgd'` + momentum can achieve better final generalisation on large
+#   datasets but is more sensitive to the learning rate schedule.
+# - Stick with `'adam'` for most routine analyses.
+
+# %%
+# Default (Adam):
+results_adam = nmi.run(
+    x_data=x_real, y_data=y_real,
+    mode='estimate',
+    split_mode='random',
+    base_params={'n_epochs': 50, 'hidden_dim': 64, 'embedding_dim': 32},
+    random_seed=42,
+    show_progress=False,
+)
+
+# AdamW with weight decay — useful when you suspect overfitting:
+results_adamw = nmi.run(
+    x_data=x_real, y_data=y_real,
+    mode='estimate',
+    split_mode='random',
+    base_params={'n_epochs': 50, 'hidden_dim': 64, 'embedding_dim': 32},
+    optimizer='adamw',
+    optimizer_params={'weight_decay': 1e-4},
+    random_seed=42,
+    show_progress=False,
+)
+
+print(f"Adam:  {results_adam.mi_estimate:.3f} bits")
+print(f"AdamW: {results_adamw.mi_estimate:.3f} bits")
+
+# %% [markdown]
+# ### 5b. MLP regularization for small datasets
+#
+# When you have few samples (< ~500 processed windows), the MLP is prone to
+# overfitting: train MI can be high while test MI stays near zero.
+# Two regularization options address this:
+#
+# - `dropout` (float, default 0.0): adds a dropout layer after each hidden
+#   activation. Values in the 0.1–0.3 range are typical.
+# - `norm_layer` (`None` / `'layer'` / `'batch'`, default `None`): inserts
+#   a normalisation layer between the linear transformation and the activation.
+#   `'layer'` (LayerNorm) is the safer default: it is stable at any batch size.
+#   `'batch'` (BatchNorm1d) can be unstable when batch_size is small (< ~32).
+#
+# These parameters go in `base_params` and apply to the MLP and VarMLP models.
+# They have no effect on CNN, GRU, LSTM, TCN, or Transformer architectures.
+#
+# The library will also emit a `UserWarning` if it detects fewer than 500
+# processed windows, suggesting which parameters might help.
+
+# %%
+# Simulate a small-dataset scenario
+x_small, y_small = nmi.generators.generate_correlated_gaussians(
+    n_samples=300, dim=5, mi=2.0
+)
+
+# No regularization (may overfit)
+results_noreg = nmi.run(
+    x_data=x_small, y_data=y_small,
+    mode='estimate', split_mode='random',
+    base_params={'n_epochs': 100, 'hidden_dim': 64, 'embedding_dim': 32, 'n_layers': 2},
+    random_seed=42, show_progress=False,
+)
+
+# With dropout + LayerNorm + AdamW
+results_reg = nmi.run(
+    x_data=x_small, y_data=y_small,
+    mode='estimate', split_mode='random',
+    base_params={
+        'n_epochs': 100,
+        'hidden_dim': 32,
+        'embedding_dim': 16,
+        'n_layers': 2,
+        'dropout': 0.2,
+        'norm_layer': 'layer',
+    },
+    optimizer='adamw',
+    optimizer_params={'weight_decay': 1e-3},
+    random_seed=42, show_progress=False,
+)
+
+print(f"No regularization: {results_noreg.mi_estimate:.3f} bits  (ground truth 2.0)")
+print(f"With regularization: {results_reg.mi_estimate:.3f} bits")
+
+# %% [markdown]
+# ### 5c. Training diagnostics with `eval_train`
+#
+# By default, only the test-set MI curve is tracked during training. Setting
+# `eval_train` gives you a per-epoch train-set MI curve alongside the test curve,
+# which is the most direct way to diagnose overfitting.
+#
+# `eval_train` accepts:
+# - `False` (default) — no per-epoch train evaluation.
+# - `True` — evaluate on the full training subset (size capped by `max_eval_samples`).
+# - `float` in `(0, 1)` — use that fraction of training samples.
+# - `int >= 1` — use exactly that many training samples.
+#
+# When `eval_train` is set, `result.details['train_mi_history']` is populated
+# and appears automatically on the training curve plot.
+#
+# The result always includes `result.details['raw_train_mi']`: the actual
+# computed train-set MI regardless of whether the model generalised. If the
+# test MI stayed non-positive, `result.details['train_mi']` is set to 0 (the
+# estimate is not meaningful) while `raw_train_mi` preserves the true value
+# for diagnostic inspection.
+
+# %%
+results_diag = nmi.run(
+    x_data=x_real, y_data=y_real,
+    mode='estimate', split_mode='random',
+    base_params={'n_epochs': 80, 'hidden_dim': 64, 'embedding_dim': 32, 'patience': 30},
+    eval_train=True,
+    random_seed=42, show_progress=False,
+)
+
+print(f"Final test MI:       {results_diag.mi_estimate:.3f} bits")
+print(f"Final train MI:      {results_diag.details.get('train_mi', 'n/a'):.3f} bits")
+print(f"Train MI (raw):      {results_diag.details.get('raw_train_mi', 'n/a'):.3f} bits")
+
+train_hist = results_diag.details.get('train_mi_history')
+test_hist  = results_diag.details.get('test_mi_history')
+if train_hist and test_hist:
+    gap = max(train_hist) - max(test_hist)
+    print(f"Train–test gap (peak): {gap:.3f} bits  "
+          f"({'overfitting detected' if gap > 0.5 else 'gap is small'})")
+
+# Plotting automatically shows both curves when train_mi_history is present.
+# results_diag.plot()
+
+# %% [markdown]
+# ### 5d. Learning-rate schedulers
+#
+# By default the learning rate is fixed throughout training. Schedulers decay
+# it over time, which can help the model converge to a better minimum — or at
+# least help it settle rather than oscillating near one.
+#
+# Pass a scheduler name as the top-level `scheduler` keyword (same pattern as
+# `optimizer`). Extra constructor arguments go in `scheduler_params`.
+#
+# Supported names:
+# - **`'cosine'`** — `CosineAnnealingLR`: smoothly decays lr from its initial
+#   value to near zero over `n_epochs`. Best general-purpose choice; adds
+#   almost no risk.
+# - **`'cosine_warmup'`** — linear warm-up for the first 10 % of epochs, then
+#   cosine annealing. Helps when a large lr causes instability in early epochs.
+# - **`'step'`** — `StepLR`: reduces lr by ×0.1 every `n_epochs // 3` epochs
+#   (two drops by default). Useful when you want explicit decay milestones.
+# - **`'plateau'`** — `ReduceLROnPlateau` (monitors test MI, mode='max'):
+#   cuts lr when MI stops improving. Robust when you are unsure how many epochs
+#   you need.
+#
+# You can also pass any `torch.optim.lr_scheduler` subclass directly.
+#
+# **When to use a scheduler:**
+# - `'cosine'` is a safe, no-configuration upgrade to any run. Try it whenever
+#   training seems to stop improving before `n_epochs` is reached.
+# - `'cosine_warmup'` is preferred over plain cosine when `learning_rate > 5e-4`
+#   or when the first few epochs produce NaN MI values.
+# - `'plateau'` is the most conservative option: it only decays when stagnation
+#   is detected, so it is least likely to over-reduce the lr on short runs.
+# - Skip schedulers for very short runs (< 30 epochs) — there is not enough time
+#   for them to have a meaningful effect.
+
+# %%
+# Cosine schedule — smoothly decays lr over the full training run
+results_cosine = nmi.run(
+    x_data=x_real, y_data=y_real,
+    mode='estimate', split_mode='random',
+    base_params={'n_epochs': 80, 'hidden_dim': 64, 'embedding_dim': 32, 'patience': 40},
+    scheduler='cosine',
+    random_seed=42, show_progress=False,
+)
+
+# ReduceLROnPlateau — decays lr only when test MI stagnates
+results_plateau = nmi.run(
+    x_data=x_real, y_data=y_real,
+    mode='estimate', split_mode='random',
+    base_params={'n_epochs': 80, 'hidden_dim': 64, 'embedding_dim': 32, 'patience': 40},
+    scheduler='plateau',
+    scheduler_params={'patience': 10, 'factor': 0.5},
+    random_seed=42, show_progress=False,
+)
+
+print(f"No scheduler:          {results_adam.mi_estimate:.3f} bits")
+print(f"Cosine schedule:       {results_cosine.mi_estimate:.3f} bits")
+print(f"ReduceLROnPlateau:     {results_plateau.mi_estimate:.3f} bits")
+print("(ground truth: 2.000 bits)")
+
+# %% [markdown]
+# The differences between scheduler variants are often small on simple datasets.
+# On harder problems — limited data, high-dimensional inputs, long training runs —
+# a cosine or warmup schedule can meaningfully stabilise convergence and prevent
+# the model from getting stuck in a flat region of the loss landscape.
+#
+# **Practical checklist:**
+# 1. Start with `scheduler=None` (no scheduling). Establish a baseline.
+# 2. Add `scheduler='cosine'` if the training curve plateaus early.
+# 3. Use `scheduler='cosine_warmup'` if you see NaN MI or instability in the
+#    first 5–10 epochs.
+# 4. Use `scheduler='plateau'` with `scheduler_params={'patience': 10}` if you
+#    want automatic adaptation without choosing a schedule shape.
+# 5. Combine with `eval_train=True` to see whether the scheduler is helping
+#    train MI converge to match test MI, or only moving the test curve.
+
+# %% [markdown]
+# ## 6. Key Takeaways
 # 
 # - **Always run `permutation_test=True`** alongside any MI estimate you intend
 #   to report. The null MI — estimated on shuffled data — is the single most
@@ -476,14 +704,34 @@ print(f"Custom critic:            "
 #   order or local waveform structure matters and the MLP is failing to capture
 #   it. The Transformer is a last resort for large datasets with complex
 #   long-range structure.
-# 
+#
 # - **`custom_embedding_cls`** replaces the embedding network while keeping the
 #   library's critic. Pass the class (not an instance). Its `__init__` must
 #   accept `(input_dim, hidden_dim, embed_dim, n_layers)`.
-# 
+#
 # - **`custom_critic`** gives complete control. Pass an instance (not the class).
 #   It must inherit from `nmi.models.BaseCritic` and return `(scores, kl_loss)`
 #   from `forward`.
+#
+# - **For small datasets (< ~500 windows):** add `dropout=0.2` and
+#   `norm_layer='layer'` to `base_params`, reduce `hidden_dim` and
+#   `embedding_dim`, and use `optimizer='adamw'` with
+#   `optimizer_params={'weight_decay': 1e-3}`. The library will warn you
+#   automatically when it detects a small sample count.
+#
+# - **Use `eval_train=True` to diagnose overfitting.** A large gap between
+#   train MI and test MI means the model is memorising the training set.
+#   Reduce model size or add regularization until the gap is small.
+#
+# - **`result.details['raw_train_mi']`** always contains the actual computed
+#   train-set MI, even when the model failed to generalise (in which case
+#   `result.details['train_mi']` is 0 and the raw value is kept for inspection).
+#   Both values are in the same units as `result.mi_estimate`.
+#
+# - **`scheduler='cosine'` is the lowest-risk performance upgrade.** It adds no
+#   hyperparameters and consistently improves or matches the no-scheduler baseline.
+#   Use `'cosine_warmup'` when the early epochs are unstable; `'plateau'` when
+#   you do not know how many epochs to train for.
 
 # %% [markdown]
 # ## Common Mistakes
@@ -547,7 +795,9 @@ print(f"Custom critic:            "
 # 
 # 7. **Validate and refine** (Tutorial 8): run `permutation_test=True`,
 #    check for the InfoNCE ceiling, choose an embedding architecture
-#    appropriate for your data, and use custom models when needed.
+#    appropriate for your data, use custom models when needed, and apply
+#    optimizer / regularization / scheduler options to improve training dynamics
+#    and small-sample robustness.
 # 
 # The library documentation — `theory.md`, `concepts.md`, and the full API
 # reference — provides the mathematical foundations behind each of these steps.

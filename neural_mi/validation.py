@@ -21,7 +21,10 @@ ALLOWED_VALUES = {
     'output_units': ['bits', 'nats'],
     'spectral_mode': ['none', 'summary', 'full'],
     'spectral_output': ['default', 'full', 'all'],
-    'estimator_name': list(ESTIMATORS.keys())
+    'estimator_name': list(ESTIMATORS.keys()),
+    'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
+    'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
+    'norm_layer': [None, 'batch', 'layer'],
 }
 
 class DataValidator:
@@ -169,8 +172,9 @@ class ParameterValidator:
             if 'min' in schema and value is not None and value < schema['min']:
                 raise ValueError(f"Parameter '{key}' must be >= {schema['min']}.")
 
-            # Allowed values check
-            if key in ALLOWED_VALUES and value not in ALLOWED_VALUES[key]:
+            # Allowed values check. If a parameter accepts a class (e.g. a custom
+            # optimizer type), skip the string-based lookup.
+            if key in ALLOWED_VALUES and not isinstance(value, type) and value not in ALLOWED_VALUES[key]:
                 raise ValueError(f"Parameter '{key}' has invalid value '{value}'. Allowed: {ALLOWED_VALUES[key]}")
 
     def _validate_processor(self):

@@ -91,11 +91,27 @@ class ParameterSweep:
     def _prepare_tasks(
         self,
         sweep_grid: Dict[str, List],
-        is_proc_sweep: bool,
-        max_samples_per_task: Optional[int],
+        is_proc_sweep: Optional[bool] = None,
+        max_samples_per_task: Optional[int] = None,
         **kwargs,
     ) -> List[tuple]:
-        """Prepares the tasks for the parameter sweep."""
+        """Prepares the tasks for the parameter sweep.
+
+        Parameters
+        ----------
+        is_proc_sweep : bool or None, optional
+            When ``True``, raw (un-processed) data is forwarded to each task
+            so that each worker runs the processor independently — required
+            when processor parameters are part of the sweep grid.  When
+            ``False``, the pre-processed tensors stored in ``self.x_data`` are
+            forwarded directly (faster; avoids repeated processing).
+            If ``None`` (default), the value is inferred automatically: data
+            that is already a 3-D ``torch.Tensor`` (shape ``(N, C, W)``) is
+            treated as pre-processed; everything else is treated as raw.
+        """
+        # Auto-detect when not provided
+        if is_proc_sweep is None:
+            is_proc_sweep = not (isinstance(self.x_data, torch.Tensor) and self.x_data.ndim == 3)
         tasks = []
         run_id_base = str(uuid.uuid4())
         sweep_grid = sweep_grid or {}
@@ -168,9 +184,9 @@ class ParameterSweep:
                     indices = np.random.choice(self.x_data.shape[0], max_samples_per_task, replace=False)
                     x_to_send = self.x_data[indices]
                     y_to_send = self.y_data[indices] if self.y_data is not None else None
-                if isinstance(x_to_send, torch.Tensor) and x_to_send.is_cuda or (torch.backends.mps.is_available() and x_to_send.is_mps):
+                if isinstance(x_to_send, torch.Tensor) and (x_to_send.is_cuda or (hasattr(x_to_send, 'is_mps') and x_to_send.is_mps)):
                     x_to_send = x_to_send.cpu()
-                if y_to_send is not None and isinstance(y_to_send, torch.Tensor) and y_to_send.is_cuda or (torch.backends.mps.is_available() and y_to_send.is_mps):
+                if y_to_send is not None and isinstance(y_to_send, torch.Tensor) and (y_to_send.is_cuda or (hasattr(y_to_send, 'is_mps') and y_to_send.is_mps)):
                     y_to_send = y_to_send.cpu()
                 task_data_x, task_data_y = x_to_send, y_to_send
 
@@ -180,7 +196,7 @@ class ParameterSweep:
         logger.debug(f"Created {len(tasks)} tasks for the sweep.")
         return tasks
 
-    def run(self, sweep_grid: Dict[str, List], is_proc_sweep: bool = False, n_workers: Optional[int] = None,
+    def run(self, sweep_grid: Dict[str, List], is_proc_sweep: Optional[bool] = None, n_workers: Optional[int] = None,
             max_samples_per_task: Optional[int] = None, **kwargs) -> List[Dict[str, Any]]:
         """Executes the hyperparameter sweep in parallel."""
         tasks = self._prepare_tasks(sweep_grid, is_proc_sweep, max_samples_per_task, **kwargs)

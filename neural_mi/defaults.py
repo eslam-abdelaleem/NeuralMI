@@ -42,6 +42,11 @@ BASE_PARAMS_SCHEMA = {
     'train_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
     'n_test_blocks': {'type': int, 'min': 1, 'default': 5},
     'max_index_reduction': {'type': float, 'min': 0.0, 'default': 0.05},
+    'optimizer': {'type': (str, type), 'default': 'adam'},
+    'optimizer_params': {'type': dict, 'default': {}},
+    'scheduler': {'type': (str, type, type(None)), 'default': None},
+    'scheduler_params': {'type': dict, 'default': {}},
+    'eval_train': {'type': (bool, float, int, type(None)), 'default': False},
 
 
     # Model architecture parameters
@@ -55,6 +60,8 @@ BASE_PARAMS_SCHEMA = {
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
+    'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
+    'norm_layer': {'type': (str, type(None)), 'default': None},
 
     # Internal/Inferred parameters (usually not set by user but passed down)
     'input_dim_x': {'type': int},

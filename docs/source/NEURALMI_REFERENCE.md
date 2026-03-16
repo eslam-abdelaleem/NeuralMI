@@ -272,6 +272,19 @@ result = nmi.run(
     max_eval_samples=5000,           # Max samples used during test eval (memory)
     train_subset_size=None,          # Use subset of training data
 
+    # optimizer / scheduler:
+    optimizer='adam',                # 'adam'|'adamw'|'sgd'|'rmsprop'|'adagrad' or subclass
+    optimizer_params={},             # dict; extra kwargs for optimizer (e.g. weight_decay)
+    scheduler=None,                  # 'cosine'|'cosine_warmup'|'step'|'plateau' or class
+    scheduler_params={},             # dict; extra kwargs for scheduler
+
+    # regularisation (MLP/VarMLP only):
+    dropout=0.0,                     # Dropout probability after each hidden layer
+    norm_layer=None,                 # None | 'layer' | 'batch'
+
+    # training diagnostics:
+    eval_train=False,                # Per-epoch train MI tracking: False|True|float|int
+
     # permutation test (any mode):
     permutation_test=False,
     n_permutations=1,
@@ -692,6 +705,15 @@ Pass any of these in the `base_params` dict:
 | `patience` | int | 1000 | Early stopping patience (epochs without improvement) |
 | `max_n_batches` | int | 512 | Max critic computation chunk (memory control) |
 | `train_subset_size` | int or None | None | Use a random subset of training data |
+| `eval_train` | bool/float/int | False | Per-epoch train MI tracking; `True`, fraction, or sample count |
+
+### Optimizer & Scheduler
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `optimizer` | str or class | `'adam'` | `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`, or `torch.optim.Optimizer` subclass |
+| `optimizer_params` | dict | `{}` | Extra kwargs for optimizer constructor (e.g. `{'weight_decay': 1e-4}`) |
+| `scheduler` | str, class, or None | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or `torch.optim.lr_scheduler` subclass |
+| `scheduler_params` | dict | `{}` | Extra kwargs for scheduler constructor |
 
 ### Architecture
 | Parameter | Type | Default | Options |
@@ -705,6 +727,8 @@ Pass any of these in the `base_params` dict:
 | `bidirectional` | bool | False | For GRU, LSTM |
 | `nhead` | int | 4 | For Transformer |
 | `shared_encoder` | bool | False | Share embedding weights between x and y |
+| `dropout` | float | 0.0 | Dropout after each hidden layer (MLP/VarMLP only) |
+| `norm_layer` | str or None | `None` | `'layer'` (LayerNorm) or `'batch'` (BatchNorm1d); MLP/VarMLP only |
 
 ### Splitting
 | Parameter | Type | Default | Notes |

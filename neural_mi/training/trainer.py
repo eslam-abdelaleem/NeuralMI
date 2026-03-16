@@ -107,7 +107,9 @@ class Trainer:
               track_spectral_metrics: bool = False,
               spectral_output: str = 'default',
               return_spectrum: bool = False,
-              max_index_reduction: float = 0.05) -> Dict[str, Any]:
+              max_index_reduction: float = 0.05,
+              eval_train: Union[bool, float, int] = False,
+              scheduler: Optional[Any] = None) -> Dict[str, Any]:
         
         """Trains the critic model and returns performance metrics.
 
@@ -184,6 +186,22 @@ class Trainer:
             When using temporal datasets with windowing, random time shifting can reduce the number of valid windows
             due to edge effects. This parameter sets a threshold for acceptable reduction in valid windows after shifting.
             If the reduction exceeds this threshold, a warning is logged. Defaults to 0.05 (5%).
+        eval_train : bool, float, or int, optional
+            Controls whether train-set MI is evaluated at every epoch alongside test-set MI,
+            yielding a ``'train_mi_history'`` in the returned results.
+
+            - ``False`` (default) — no per-epoch train evaluation.
+            - ``True`` — evaluate on the same locked-in training evaluation subset
+              used for the final ``train_mi`` (size capped by ``max_eval_samples``).
+            - ``float`` in ``(0, 1)`` — use that fraction of training samples.
+            - ``int >= 1`` — use exactly that many training samples (capped at
+              the available training set size).
+        scheduler : torch.optim.lr_scheduler instance, optional
+            A PyTorch learning-rate scheduler to step at the end of each epoch.
+            ``ReduceLROnPlateau`` is stepped with the current test MI as the metric
+            (maximisation mode); all other schedulers are stepped unconditionally.
+            Build the scheduler via ``task.py`` using the ``scheduler`` /
+            ``scheduler_params`` keys in ``base_params``. Defaults to ``None``.
 
         Returns
         -------
@@ -237,8 +255,25 @@ class Trainer:
         actual_train_subset_size = min(actual_train_subset_size, len(train_idx))
         train_eval_idx = np.random.choice(train_idx, actual_train_subset_size, replace=False)
         train_eval_view = SubsetView(dataset, indices=train_eval_idx, max_index_reduction=max_index_reduction)
-        
-        history, metrics_tracked, best_mi, no_improve = [], [], -float('inf'), 0
+
+        # Determine the subset for per-epoch train MI tracking (eval_train parameter)
+        _do_epoch_train_eval = bool(eval_train is not False and eval_train is not None and eval_train != 0)
+        if _do_epoch_train_eval and len(train_idx) > 0:
+            if eval_train is True:
+                epoch_train_n = min(len(train_idx), max_eval_samples)
+            elif isinstance(eval_train, float) and 0.0 < eval_train < 1.0:
+                epoch_train_n = max(2, min(int(len(train_idx) * eval_train), len(train_idx)))
+            elif isinstance(eval_train, int) and eval_train >= 1:
+                epoch_train_n = min(eval_train, len(train_idx))
+            else:
+                _do_epoch_train_eval = False
+                epoch_train_n = 0
+            if _do_epoch_train_eval:
+                epoch_train_eval_idx = np.random.choice(train_idx, epoch_train_n, replace=False)
+        else:
+            _do_epoch_train_eval = False
+
+        history, train_history, metrics_tracked, best_mi, no_improve = [], [], [], -float('inf'), 0
         best_model_state = None
         nan_streak = 0
         
@@ -274,6 +309,12 @@ class Trainer:
                 x_test = dataset.x_dataset[test_view.indices, ...]
                 y_test = dataset.y_dataset[test_view.indices, ...]
                 mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples)
+
+                if _do_epoch_train_eval:
+                    x_etrain = dataset.x_dataset[epoch_train_eval_idx, ...]
+                    y_etrain = dataset.y_dataset[epoch_train_eval_idx, ...]
+                    train_mi_nats = self._safe_eval_mi(x_etrain, y_etrain, max_eval_samples)
+                    train_history.append(train_mi_nats)
 
                 # Track spectral metrics if requested (can be expensive, so optional)
                 if track_spectral_metrics:
@@ -318,7 +359,16 @@ class Trainer:
 
             if display_progress:
                 epoch_iterator.set_description(f"Run {run_id or ''} | MI: {mi_nats * nats_to_bits:.3f}")
-            
+
+            # LR scheduler step
+            if scheduler is not None:
+                from torch.optim.lr_scheduler import ReduceLROnPlateau as _ROP
+                if isinstance(scheduler, _ROP):
+                    if not np.isnan(mi_nats):
+                        scheduler.step(mi_nats)
+                else:
+                    scheduler.step()
+
             # In-Memory Early Stopping
             if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi) or best_model_state is None):
                 best_mi, no_improve = smoothed_nats, 0
@@ -362,30 +412,32 @@ class Trainer:
 
         # Detect and warn when the model failed to generalise at all.
         valid_history = [v for v in history if not np.isnan(v)]
-        _all_mi_negative = bool(valid_history and max(valid_history) < 0)
+        _all_mi_negative = bool(valid_history and max(valid_history) <= 0)
+        _raw_train_mi = final_train_mi
         if _all_mi_negative:
-            _raw_train_mi = final_train_mi  # for the warning message only
             warnings.warn(
-                f"All test MI values in the training history are negative "
+                f"All test MI values in the training history are non-positive "
                 f"(max test MI = {max(valid_history):.4f} nats at epoch {best_ep}). "
                 f"The model failed to learn a generalising representation — this typically "
                 f"indicates too few epochs, too high a learning rate, or degenerate data. "
-                f"Reporting train MI = 0 nats. The corresponding train MI was "
+                f"Reporting train MI = 0 nats. The raw train MI was "
                 f"{_raw_train_mi:.4f} nats (likely reflecting overfitting, not true MI). "
                 f"Consider increasing n_epochs, reducing learning_rate, or inspecting data quality.",
                 UserWarning,
                 stacklevel=2,
             )
-            final_train_mi = 0.0  # Positive train MI would be misleading; zero it out.
-        
+            final_train_mi = 0.0
+
         results = {
-            'train_mi': final_train_mi, 
-            'raw_train_mi': _raw_train_mi if _all_mi_negative else final_train_mi,  # for transparency in the warning case
+            'train_mi': final_train_mi,
+            'raw_train_mi': _raw_train_mi,
             'test_mi': final_test_mi,
             'best_epoch': best_ep,
             'test_mi_history': history,
             'all_mi_negative': _all_mi_negative,
         }
+        if _do_epoch_train_eval:
+            results['train_mi_history'] = train_history
 
         if track_spectral_metrics:
              results['spectral_metrics_history'] = metrics_tracked

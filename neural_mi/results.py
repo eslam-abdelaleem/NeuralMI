@@ -142,8 +142,9 @@ class Results:
             fig, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
 
         if self.mode == 'estimate':
-            # Training curve: test MI vs epoch, with best-epoch marker.
+            # Training curve: test MI vs epoch, with optional train MI overlay.
             history = self.details.get('test_mi_history')
+            train_history = self.details.get('train_mi_history')
             best_epoch = self.details.get('best_epoch')
             if history is None:
                 raise ValueError(
@@ -155,6 +156,10 @@ class Results:
             epochs = list(range(len(history)))
             ax.plot(epochs, history, color='steelblue', linewidth=1.5,
                     label='Test MI')
+            if train_history is not None and len(train_history) > 0:
+                train_epochs = list(range(len(train_history)))
+                ax.plot(train_epochs, train_history, color='darkorange',
+                        linewidth=1.5, linestyle='--', alpha=0.8, label='Train MI')
             if best_epoch is not None and 0 <= best_epoch < len(history):
                 ax.axvline(best_epoch, color='tomato', linestyle='--',
                            linewidth=1.5, label=f'Best epoch ({best_epoch})')

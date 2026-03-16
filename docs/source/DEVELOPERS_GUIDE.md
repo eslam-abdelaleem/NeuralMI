@@ -6,7 +6,7 @@ This document provides a map of the `NeuralMI` codebase. It's intended for devel
 
 ## Core Philosophy
 
-The library is built around a central `run()` function (`neural_mi/run.py`) that acts as a controller. This function validates parameters, prepares the data, and then delegates the specific analysis to a dedicated module (e.g., `sweep`, `lag`, `rigorous`). This keeps the main entry point clean and makes it easy to add new analysis modes.
+The library is built around a central `run()` function (`neural_mi/run.py`) that acts as a controller. This function validates parameters, prepares the data, and then delegates the specific analysis to a dedicated module (e.g., `sweep`, `lag`, `rigorous`, `precision`). This keeps the main entry point clean and makes it easy to add new analysis modes.
 
 ---
 
@@ -16,7 +16,7 @@ If you want to modify a specific part of the library, here's where to look.
 
 ### `neural_mi/run.py`
 
-This is the main entry point. All user interactions start here. It handles parameter validation and dispatches tasks to the appropriate analysis modules.
+This is the main entry point. All user interactions start here. It handles parameter validation, backwards compatibility (e.g., deprecating old `processor_type` arguments in favor of separate `x` and `y` types), and dispatches tasks to the appropriate analysis modules.
 
 ---
 
@@ -24,11 +24,13 @@ This is the main entry point. All user interactions start here. It handles param
 
 This directory contains the logic for the different analysis `modes`.
 
-- **`workflow.py`**: Implements the `mode='rigorous'` analysis, including subsampling and extrapolation logic.
-- **`sweep.py`**: A general-purpose engine for running parallelized hyperparameter sweeps (`mode='sweep'`).
+- **`rigorous.py`**: Public dispatcher for `mode='rigorous'`. Wraps `AnalysisWorkflow` in the same one-function style used by all other analysis modules.
+- **`workflow.py`**: Internal `AnalysisWorkflow` class that implements the subsampling and extrapolation logic used by `rigorous.py`. Prefer `run_rigorous_analysis` over direct use of this class.
+- **`sweep.py`**: A general-purpose engine for running parallelized hyperparameter sweeps (`mode='sweep'`). It includes **"Smart Model Saving"** logic to dynamically generate safe filenames and prevent race conditions between parallel workers.
 - **`lag.py`**: Contains the logic for `mode='lag'`, which is a specialized `sweep` over the `lag` parameter.
-- **`dimensionality.py`**: Implements the `mode='dimensionality'` analysis.
-- **`task.py`**: A helper module that defines a single, runnable "task" (one training run of the MI estimator), which is used by all analysis modes.
+- **`dimensionality.py`**: Implements the `mode='dimensionality'` analysis. *Note: This module no longer uses sweeps. It orchestrates a single Hybrid Critic training run and triggers the SVD spectral metrics engine to compute the Participation Ratio.*
+- **`precision.py`**: Implements the `mode='precision'` analysis. This module executes a "Train Once, Evaluate Many" pipeline, freezing a baseline network and sweeping over precision levels ($\tau$) using deterministic rounding or additive noise.
+- **`task.py`**: A helper module that defines a single, runnable "task" (one training run of the MI estimator). It unpacks all top-level arguments and funnels them into the `Trainer`.
 
 ---
 
@@ -36,7 +38,7 @@ This directory contains the logic for the different analysis `modes`.
 
 This directory handles all data preprocessing.
 
-- **`handler.py`**: The `DataHandler` class is the main interface. It takes the raw user data and uses the correct processor.
+- **`handler.py`**: The `create_dataset` function is the main interface here, returning `PairedDataset` or `PairedTemporalDataset` objects.
 - **`processors.py`**: Contains the `ContinuousProcessor`, `SpikeProcessor`, and `CategoricalProcessor` classes, which transform raw neural data into a format ready for the models.
 
 ---
@@ -45,7 +47,8 @@ This directory handles all data preprocessing.
 
 This directory defines all the PyTorch neural network architectures.
 
-- **`critics.py`**: Contains the main critic architectures (e.g., `SeparableCritic`, `ConcatCritic`). These are the networks that actually output the MI estimate.
+- **`critics.py`**: Contains the main critic architectures (`SeparableCritic`, `ConcatCritic`, and `HybridCritic`). 
+  - *Crucial API:* All critics now expose a unified `get_embeddings(x, y)` method, allowing developers to easily extract chunked latent representations from saved models.
 - **`embeddings.py`**: Defines the embedding networks (e.g., `MLPEmbedding`, `LSTMEmbedding`) that process the input data before it goes to the critic.
 
 ---
@@ -60,7 +63,11 @@ This is where the mathematical formulas for the different MI lower bounds are im
 
 ### `neural_mi/training/`
 
-- **`trainer.py`**: Contains the `Trainer` class, which handles the entire PyTorch training loop: optimization, validation, early stopping, and checkpointing.
+- **`trainer.py`**: Contains the `Trainer` class, which handles the entire PyTorch training loop. This is the heavy-lifting engine of the library. Key architectural features to note:
+  - **Memory-Safe Evaluation:** Uses $N^2$ flat-mapped chunking (`max_eval_samples`) to prevent Out-Of-Memory (OOM) crashes during full-dataset InfoNCE evaluation.
+  - **Subset Tracking:** Locks in a `train_subset` to fast-track training MI without slowing down epochs.
+  - **In-Memory Checkpointing:** Uses `copy.deepcopy` for early stopping to eliminate disk I/O bottlenecks.
+  - **Spectral Engine:** Contains the `_extract_spectral_metrics` hook that computes cross-covariance SVD math for dimensionality modes.
 
 ---
 

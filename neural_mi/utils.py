@@ -172,9 +172,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
         if model_type in ['transformer']:
             model_kwargs['nhead'] = embedding_params.get('nhead', 4)
-    else: # MLP
+    else: # MLP / VarMLP
         input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
         model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
+        model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
+        model_kwargs['norm_layer'] = embedding_params.get('norm_layer', None)
 
     shared_encoder = embedding_params.get('shared_encoder', False)
     if shared_encoder and critic_type == 'concat':

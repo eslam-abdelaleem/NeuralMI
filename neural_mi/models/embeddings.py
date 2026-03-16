@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 import math
-from typing import Tuple
+from typing import Optional, Tuple
 from torch.nn.utils import spectral_norm as _spectral_norm
 
 class BaseEmbedding(nn.Module):
@@ -59,8 +59,10 @@ class MLP(_BaseMLP):
         The final linear layer that maps to the embedding dimension.
     """
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int,
-                 n_layers: int, activation: str = 'relu', 
-                 use_spectral_norm: bool = True):
+                 n_layers: int, activation: str = 'relu',
+                 use_spectral_norm: bool = True,
+                 dropout: float = 0.0,
+                 norm_layer: Optional[str] = None):
         """
         Parameters
         ----------
@@ -75,21 +77,45 @@ class MLP(_BaseMLP):
         activation : str, optional
             The name of the activation function to use (e.g., 'relu', 'tanh').
             Defaults to 'relu'.
-
         use_spectral_norm : bool, optional
             If True, applies spectral normalisation to the hidden ``nn.Linear``
-            layers.  The output layer is left unnormalised to preserve the full 
+            layers.  The output layer is left unnormalised to preserve the full
             expressive range of the embedding.
             Defaults to True.
+        dropout : float, optional
+            Dropout probability applied after each hidden activation. A value of
+            0.0 (default) disables dropout. Values in (0, 1) are useful for
+            regularisation, especially with small datasets (e.g. 0.1–0.3).
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation to apply inside each hidden block, inserted between the
+            linear transformation and the activation:
+
+            - ``None`` (default) — no normalisation.
+            - ``'layer'`` — ``nn.LayerNorm``. Stable at any batch size; recommended
+              for small datasets where batch statistics are unreliable.
+            - ``'batch'`` — ``nn.BatchNorm1d``. Effective on large batches but can
+              be unstable when batch_size is small (< ~32).
         """
         super().__init__()
         activations = {'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh,
                        'leaky_relu': nn.LeakyReLU, 'silu': nn.SiLU}
         act_fn = activations[activation]
         _wrap = _spectral_norm if use_spectral_norm else (lambda x: x)
-        layers = [_wrap(nn.Linear(input_dim, hidden_dim)), act_fn()]
+
+        def _make_hidden_block(in_dim: int, out_dim: int) -> list:
+            block = [_wrap(nn.Linear(in_dim, out_dim))]
+            if norm_layer == 'batch':
+                block.append(nn.BatchNorm1d(out_dim))
+            elif norm_layer == 'layer':
+                block.append(nn.LayerNorm(out_dim))
+            block.append(act_fn())
+            if dropout > 0.0:
+                block.append(nn.Dropout(p=dropout))
+            return block
+
+        layers = _make_hidden_block(input_dim, hidden_dim)
         for _ in range(n_layers - 1):
-            layers.extend([nn.Linear(hidden_dim, hidden_dim), act_fn()])
+            layers.extend(_make_hidden_block(hidden_dim, hidden_dim))
         self.network = nn.Sequential(*layers)
         self.output_layer = nn.Linear(hidden_dim, embed_dim)
         self._initialize_weights()
@@ -407,7 +433,8 @@ class VarMLP(_BaseMLP):
         The layer that produces the log variance of the embedding distribution.
     """
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int,
-                 n_layers: int, activation: str = 'relu', use_spectral_norm: bool = True):
+                 n_layers: int, activation: str = 'relu', use_spectral_norm: bool = True,
+                 dropout: float = 0.0, norm_layer: Optional[str] = None):
         """
         Parameters
         ----------
@@ -423,15 +450,32 @@ class VarMLP(_BaseMLP):
             The activation function to use in the base network. Defaults to 'relu'.
         use_spectral_norm : bool, optional
             Whether to use spectral normalization for the linear layers. Defaults to True.
+        dropout : float, optional
+            Dropout probability applied after each hidden activation. Defaults to 0.0.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation inserted between linear and activation in each hidden block.
+            ``None`` (default) disables normalisation.
         """
         super().__init__()
         activations = {'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh,
                        'leaky_relu': nn.LeakyReLU, 'silu': nn.SiLU}
         act_fn = activations[activation]
         _wrap = _spectral_norm if use_spectral_norm else (lambda x: x)
-        layers = [_wrap(nn.Linear(input_dim, hidden_dim)), act_fn()]
+
+        def _make_hidden_block(in_dim: int, out_dim: int) -> list:
+            block = [_wrap(nn.Linear(in_dim, out_dim))]
+            if norm_layer == 'batch':
+                block.append(nn.BatchNorm1d(out_dim))
+            elif norm_layer == 'layer':
+                block.append(nn.LayerNorm(out_dim))
+            block.append(act_fn())
+            if dropout > 0.0:
+                block.append(nn.Dropout(p=dropout))
+            return block
+
+        layers = _make_hidden_block(input_dim, hidden_dim)
         for _ in range(n_layers - 1):
-            layers.extend([_wrap(nn.Linear(hidden_dim, hidden_dim)), act_fn()])
+            layers.extend(_make_hidden_block(hidden_dim, hidden_dim))
         self.base_network = nn.Sequential(*layers)
         self.fc_mu = nn.Linear(hidden_dim, embed_dim)
         self.fc_logvar = nn.Linear(hidden_dim, embed_dim)

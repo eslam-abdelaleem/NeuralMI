@@ -120,6 +120,11 @@ def run(
     lag_range: Optional[List] = None,
     use_spectral_norm: bool = True,
     gradient_clip_val: Optional[float] = None,
+    optimizer: Union[str, type] = 'adam',
+    optimizer_params: Optional[Dict[str, Any]] = None,
+    scheduler: Union[str, type, None] = None,
+    scheduler_params: Optional[Dict[str, Any]] = None,
+    eval_train: Union[bool, float, int] = False,
     **analysis_kwargs
 ) -> Results:
     
@@ -265,6 +270,57 @@ def run(
         Applied between ``loss.backward()`` and ``optimizer.step()`` each
         training step.  ``None`` (default) disables clipping.  A value of 1.0
         is a common starting point for preventing gradient explosions.
+    optimizer : str or torch.optim.Optimizer subclass, default='adam'
+        The optimizer to use for training. Can be a string name or a
+        ``torch.optim.Optimizer`` subclass directly.
+
+        Supported names: ``'adam'``, ``'adamw'``, ``'sgd'``, ``'rmsprop'``,
+        ``'adagrad'``.
+
+        - ``'adam'`` *(default)* — good general-purpose choice.
+        - ``'adamw'`` — Adam with decoupled weight decay; preferred when using
+          ``optimizer_params={'weight_decay': 1e-4}`` for regularisation.
+        - ``'sgd'`` — requires setting ``optimizer_params={'momentum': 0.9}``
+          for practical use; may generalise better on large datasets.
+    optimizer_params : dict, optional
+        Additional keyword arguments forwarded to the optimizer constructor
+        (beyond ``lr``, which is always taken from ``base_params['learning_rate']``).
+        For example, ``{'weight_decay': 1e-4}`` or ``{'momentum': 0.9}``.
+        Defaults to ``{}``.
+    scheduler : str, torch.optim.lr_scheduler class, or None, default=None
+        A learning-rate scheduler to apply at the end of each training epoch.
+        ``None`` (default) disables scheduling. Supported string names:
+
+        - ``'cosine'`` — ``CosineAnnealingLR`` completing one full cycle over
+          ``n_epochs``. Best general-purpose choice; smoothly decays lr to near
+          zero by the end of training.
+        - ``'cosine_warmup'`` — linear warm-up for the first 10 % of epochs,
+          then cosine annealing for the remainder. Recommended when using a
+          large learning rate or when training is unstable in early epochs.
+        - ``'step'`` — ``StepLR`` decaying lr by ``gamma=0.1`` every
+          ``n_epochs // 3`` epochs (two decays total by default). Override via
+          ``scheduler_params``.
+        - ``'plateau'`` — ``ReduceLROnPlateau`` monitoring test MI (maximize).
+          Reduces lr when MI stops improving; useful when the optimal number of
+          epochs is unknown.
+
+        You can also pass a ``torch.optim.lr_scheduler`` subclass directly for
+        full control; it will be instantiated with the optimizer and any
+        ``scheduler_params`` kwargs.
+    scheduler_params : dict, optional
+        Additional keyword arguments forwarded to the scheduler constructor.
+        For example, ``{'T_max': 100}`` to override the period for ``'cosine'``,
+        or ``{'step_size': 20, 'gamma': 0.5}`` for ``'step'``.
+        Defaults to ``{}``.
+    eval_train : bool, float, or int, default=False
+        Controls whether train-set MI is evaluated at every epoch, producing a
+        ``'train_mi_history'`` alongside ``'test_mi_history'`` in the results.
+
+        - ``False`` (default) — no per-epoch train evaluation.
+        - ``True`` — evaluate on the full training subset (capped by
+          ``max_eval_samples``).
+        - ``float`` in ``(0, 1)`` — use that fraction of training samples.
+        - ``int >= 1`` — use exactly that many training samples.
     **analysis_kwargs
         Additional keyword arguments passed to the specific analysis engine.
         Common examples include ``n_workers``, ``n_splits``, or ``gamma_range``.
@@ -386,12 +442,64 @@ def run(
             n_epochs=n_epochs, batch_size=batch_size, shared_encoder=shared_encoder,
             return_embeddings=return_embeddings, lag_range=lag_range,
             use_spectral_norm=use_spectral_norm, gradient_clip_val=gradient_clip_val,
+            optimizer=optimizer, optimizer_params=optimizer_params,
+            scheduler=scheduler, scheduler_params=scheduler_params,
+            eval_train=eval_train,
             **analysis_kwargs
         )
     finally:
         logger.setLevel(_prev_level)
         for h, lv in zip(logger.handlers, _prev_handler_levels):
             h.setLevel(lv)
+
+
+def _warn_small_sample(dataset, base_params: dict) -> None:
+    """Emit guidance when the processed dataset has very few samples."""
+    try:
+        n_samples = dataset.x_data.shape[0] if dataset.x_data is not None else 0
+    except AttributeError:
+        return
+    if n_samples <= 0:
+        return
+
+    user_dropout = base_params.get('dropout', 0.0)
+    user_norm = base_params.get('norm_layer', None)
+    user_hidden = base_params.get('hidden_dim', 64)
+    user_embed = base_params.get('embedding_dim', 64)
+
+    if n_samples < 200:
+        tips = []
+        if user_dropout == 0.0:
+            tips.append("dropout=0.2 (adds regularisation)")
+        if user_norm is None:
+            tips.append("norm_layer='layer' (LayerNorm stabilises small-batch training)")
+        if user_hidden > 32:
+            tips.append(f"hidden_dim=32 (current: {user_hidden})")
+        if user_embed > 32:
+            tips.append(f"embedding_dim=32 (current: {user_embed})")
+        tips.append("optimizer='adamw' with optimizer_params={'weight_decay': 1e-3}")
+        hint = "; ".join(tips)
+        warnings.warn(
+            f"Very few samples detected ({n_samples} windows after processing). "
+            f"Neural MI estimators are prone to overfitting and high-variance estimates "
+            f"at this scale. Consider the following additions in base_params: {hint}. "
+            f"See the NeuralMI documentation for small-sample guidance.",
+            UserWarning,
+            stacklevel=4,
+        )
+    elif n_samples < 500:
+        tips = []
+        if user_dropout == 0.0:
+            tips.append("dropout=0.1")
+        if user_norm is None:
+            tips.append("norm_layer='layer'")
+        if tips:
+            warnings.warn(
+                f"Small dataset detected ({n_samples} windows). Regularisation may help: "
+                f"consider adding {' and '.join(tips)} in base_params.",
+                UserWarning,
+                stacklevel=4,
+            )
 
 
 def _run_inner(
@@ -409,6 +517,9 @@ def _run_inner(
     n_epochs=None, batch_size=None, shared_encoder=None,
     return_embeddings=False, lag_range=None,
     spectral_mode='none', use_spectral_norm=True, gradient_clip_val=None,
+    optimizer='adam', optimizer_params=None,
+    scheduler=None, scheduler_params=None,
+    eval_train=False,
     **analysis_kwargs
 ):
     if random_seed is not None:
@@ -461,6 +572,11 @@ def _run_inner(
     _inject(base_params, 'train_subset_size', train_subset_size)
     _inject(base_params, 'use_spectral_norm', use_spectral_norm)
     _inject(base_params, 'gradient_clip_val', gradient_clip_val)
+    _inject(base_params, 'optimizer', optimizer)
+    _inject(base_params, 'optimizer_params', optimizer_params or {})
+    _inject(base_params, 'scheduler', scheduler)
+    _inject(base_params, 'scheduler_params', scheduler_params or {})
+    _inject(base_params, 'eval_train', eval_train)
 
     # Validate spectral_mode
     _SPECTRAL_MODES = {'none', 'summary', 'full'}
@@ -582,6 +698,8 @@ def _run_inner(
         base_params['processor_params_x']['preprocessed'] = True
         base_params['processor_params_y']['preprocessed'] = True
 
+        _warn_small_sample(dataset, base_params)
+
         if mode in ('dimensionality', 'pairwise'):
             # dimensionality and pairwise can operate on x_data alone
             x_run_data = dataset.x_data
@@ -619,14 +737,31 @@ def _run_inner(
         if not results_list:
             return Results(mode=mode, mi_estimate=float('nan'), params=run_params)
         res_dict = results_list[0].copy()
+        to_bits = output_units == 'bits'
+        NATS_TO_BITS = 1 / np.log(2)
+
         mi = res_dict.pop('test_mi', float('nan'))
-        # When all training test MI values were negative the model failed to
-        # generalise. Report mi_estimate = 0; the (negative) test MI and the
-        # all_mi_negative flag are preserved in details for diagnostics.
+        # When all test MI values were non-positive the model failed to generalise.
+        # Report mi_estimate = 0; the all_mi_negative flag is preserved in details.
         if res_dict.get('all_mi_negative'):
             mi = 0.0
+        mi = _convert_mi_units(mi, to_bits)
+
+        # Convert scalar train MI values to the requested units
+        for _key in ('train_mi', 'raw_train_mi'):
+            if _key in res_dict and isinstance(res_dict[_key], (int, float)):
+                res_dict[_key] = res_dict[_key] * NATS_TO_BITS if to_bits else res_dict[_key]
+
+        # Convert MI history lists to the requested units
+        for _key in ('test_mi_history', 'train_mi_history'):
+            if _key in res_dict and isinstance(res_dict[_key], list):
+                res_dict[_key] = [
+                    v * NATS_TO_BITS if (to_bits and not np.isnan(v)) else v
+                    for v in res_dict[_key]
+                ]
+
         result = Results(mode=mode,
-                         mi_estimate=_convert_mi_units(mi, output_units == 'bits'),
+                         mi_estimate=mi,
                          params=run_params,
                          details=res_dict)
         if permutation_test:
