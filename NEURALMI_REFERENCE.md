@@ -12,7 +12,7 @@
 2. [Installation & Quick Start](#2-installation--quick-start)
 3. [Key Concepts](#3-key-concepts)
    - 3.1 Mutual Information & Neural Estimators
-   - 3.2 Estimators (InfoNCE, SMILE, NWJ, TUBA)
+   - 3.2 Estimators (InfoNCE, SMILE)
    - 3.3 Embedding Models
    - 3.4 Critic Architectures
    - 3.5 Bias in Finite-Sample Estimation
@@ -212,7 +212,7 @@ result = nmi.run(
     # ── Model Configuration ────────────────────────────────────────────────
     base_params=None,                # dict; see §8 for full reference
     sweep_grid=None,                 # dict[str, list] for 'sweep' mode
-    estimator='infonce',             # 'infonce' | 'smile' | 'nwj' | 'tuba'
+    estimator='infonce',             # 'infonce' | 'smile'
     estimator_params=None,           # dict; e.g. {'clip': 5.0} for smile
     custom_critic=None,              # Pre-built nn.Module
     custom_embedding_cls=None,       # Custom embedding class (not instance)
@@ -338,7 +338,7 @@ result = nmi.run(x, mode='dimensionality', analysis_kwargs={'n_splits': 10})
 
 **Returns:** `Results` with:
 - `result.mi_estimate` — float, MI in `output_units`
-- `result.details` — dict with `test_mi`, `train_mi`, `best_epoch`, `loss_history`
+- `result.details` — dict with `test_mi`, `train_mi`, `best_epoch`, `loss_history`, `raw_train_mi` (final training MI before smoothing), `train_mi_history` (per-epoch list, present when `eval_train` is set)
 - `result.dataframe` — None
 
 ```python
@@ -482,7 +482,7 @@ peak_lag = result.dataframe.loc[result.dataframe['test_mi'].idxmax(), 'lag']
 
 **Corruption methods:**
 - `'rounding'` — rounds spike times to nearest τ (default; clean and interpretable)
-- `'noise'` — adds Gaussian jitter with std=τ
+- `'noise'` — adds uniform noise drawn from U(−τ/2, τ/2)
 
 **Key parameters:**
 - `corrupt_target='x'` — which signal to corrupt: `'x'`, `'y'`, or `'both'`
@@ -581,6 +581,9 @@ where `x_past`, `y_past` are the `history_window` most recent samples and `y_fut
 
   If `bidirectional_te=True`, additionally:
   - `te_yx` — TE(Y→X) point estimate
+  - `i_yxpast_xfuture` — I(y_past, x_past ; x_future), the joint term for TE(Y→X)
+  - `i_xpast_xfuture` — I(x_past ; x_future), the marginal term for TE(Y→X)
+  - `raw_yxpast_xfuture`, `raw_xpast_xfuture` — per-run lists for the TE(Y→X) terms
   - `directionality_index` — `(TE_xy − TE_yx) / (|TE_xy| + |TE_yx|)`; +1 = pure X→Y, −1 = pure Y→X, 0 = symmetric
 
 ```python
@@ -954,7 +957,7 @@ Modes:
   transfer     → result.mi_estimate  (TE(X→Y)); bidirectional_te=True adds te_yx, directionality_index
   pairwise     → result.dataframe [ch_x, ch_y, mi_estimate]
 
-Estimators: 'infonce' (default, has ceiling), 'smile' (no ceiling), 'nwj', 'tuba'
+Estimators: 'infonce' (default, has ceiling), 'smile' (no ceiling)
 Embeddings:  'mlp' (default), 'cnn', 'gru', 'lstm', 'tcn', 'transformer'
 Critics:     'separable' (default), 'concat', 'hybrid'
 Units:       'bits' (default) or 'nats'

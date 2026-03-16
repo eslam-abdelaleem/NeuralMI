@@ -82,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for LFP/EEG, spike-train, and categorical state data respectively.
 - Embedding models: MLP, CNN1D, GRU, LSTM, TCN, Transformer.
 - Critic architectures: `SeparableCritic`, `ConcatCritic`, `HybridCritic`.
-- MI estimators: InfoNCE, SMILE, NWJ, TUBA.
+- MI estimators: InfoNCE, SMILE.
 - Blocked and random train/test splitting strategies for temporal and IID data.
 - Built-in synthetic data generators (`generate_correlated_gaussians`,
   `generate_nonlinear_from_latent`, `generate_temporally_convolved_data`,

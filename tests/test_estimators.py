@@ -2,7 +2,7 @@
 import pytest
 import torch
 import neural_mi as nmi
-from neural_mi.estimators import infonce_lower_bound, nwj_lower_bound, tuba_lower_bound, smile_lower_bound
+from neural_mi.estimators import infonce_lower_bound, smile_lower_bound
 from neural_mi.training.trainer import Trainer
 from neural_mi.utils import build_critic
 from neural_mi.data.handler import create_dataset
@@ -25,17 +25,16 @@ class TestEstimators:
         mi = infonce_lower_bound(scores)
         assert isinstance(mi, torch.Tensor) and mi.ndim == 0
 
-    def test_nwj_and_tuba_relationship(self, scores):
-        nwj = nwj_lower_bound(scores)
-        tuba = tuba_lower_bound(scores - 1.0)
-        assert torch.isclose(nwj, tuba)
+    def test_smile_bound(self, scores):
+        mi = smile_lower_bound(scores)
+        assert isinstance(mi, torch.Tensor) and mi.ndim == 0
 
-    @pytest.mark.parametrize("estimator_name", ['infonce', 'nwj', 'tuba', 'smile'])
+    @pytest.mark.parametrize("estimator_name", ['infonce', 'smile'])
     def test_estimator_accuracy_on_known_data(self, estimator_name):
         """
         Tests if the estimators can recover a known ground-truth MI.
         """
-        # Fix both torch and numpy seeds for full reproducibility — NWJ and
+        # Fix both torch and numpy seeds for full reproducibility — InfoNCE and
         # SMILE can diverge with unlucky weight initialisation or data splits,
         # so deterministic seeds prevent flaky failures across test orderings.
         import numpy as np

@@ -7,6 +7,8 @@ network and repeatedly evaluates the test set across a grid of precision levels
 find the precision threshold where mutual information degrades.
 """
 import torch
+import torch.optim as optim
+import torch.optim.lr_scheduler as _lr_sched
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional, Union
@@ -16,6 +18,56 @@ from neural_mi.estimators import ESTIMATORS
 from neural_mi.utils import build_critic, get_device
 from neural_mi.data.handler import create_dataset
 from neural_mi.logger import logger
+
+
+def _build_optimizer_and_scheduler(params: Dict[str, Any], critic):
+    """Build optimizer and optional LR scheduler from base_params, mirroring task.py."""
+    _OPTIMIZERS = {
+        'adam': optim.Adam,
+        'adamw': optim.AdamW,
+        'sgd': optim.SGD,
+        'rmsprop': optim.RMSprop,
+        'adagrad': optim.Adagrad,
+    }
+    _opt_val = params.get('optimizer', 'adam')
+    if isinstance(_opt_val, type):
+        OptCls = _opt_val
+    else:
+        OptCls = _OPTIMIZERS.get(str(_opt_val).lower())
+        if OptCls is None:
+            raise ValueError(
+                f"Unknown optimizer '{_opt_val}'. "
+                f"Supported names: {list(_OPTIMIZERS.keys())}."
+            )
+    optimizer = OptCls(
+        critic.parameters(),
+        lr=params.get('learning_rate', 0.001),
+        **params.get('optimizer_params', {}),
+    )
+
+    _sched_val = params.get('scheduler', None)
+    scheduler = None
+    if _sched_val is not None:
+        _sched_params = params.get('scheduler_params', {})
+        n_epochs = params.get('n_epochs', 50)
+        if isinstance(_sched_val, type):
+            scheduler = _sched_val(optimizer, **_sched_params)
+        elif _sched_val == 'cosine':
+            scheduler = _lr_sched.CosineAnnealingLR(optimizer, T_max=n_epochs, **_sched_params)
+        elif _sched_val == 'step':
+            scheduler = _lr_sched.StepLR(optimizer, step_size=max(1, n_epochs // 3), **_sched_params)
+        elif _sched_val == 'plateau':
+            scheduler = _lr_sched.ReduceLROnPlateau(optimizer, mode='max', **_sched_params)
+        elif _sched_val == 'cosine_warmup':
+            warmup = max(1, int(n_epochs * 0.1))
+            warmup_sched = _lr_sched.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup)
+            cosine_sched = _lr_sched.CosineAnnealingLR(optimizer, T_max=max(1, n_epochs - warmup))
+            scheduler = _lr_sched.SequentialLR(
+                optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup]
+            )
+        else:
+            raise ValueError(f"Unknown scheduler '{_sched_val}'.")
+    return optimizer, scheduler
 
 def apply_corruption(data: torch.Tensor, tau: float, method: str) -> torch.Tensor:
     """Applies precision corruption to a tensor."""
@@ -119,9 +171,9 @@ def run_precision_analysis(
         logger.debug("Using provided custom critic.")
     else:
         critic = build_critic(base_params.get('critic_type', 'separable'), base_params, base_params.get('custom_embedding_cls'))
-        
-    optimizer = torch.optim.Adam(critic.parameters(), lr=base_params.get('learning_rate', 0.001))
-    
+
+    optimizer, scheduler = _build_optimizer_and_scheduler(base_params, critic)
+
     trainer = Trainer(
         model=critic.to(device),
         estimator_fn=ESTIMATORS[base_params.get('estimator_name', 'infonce')],
@@ -129,7 +181,8 @@ def run_precision_analysis(
         device=device,
         use_variational=base_params.get('use_variational', False),
         beta=base_params.get('beta', 1024.0),
-        estimator_params=base_params.get('estimator_params')
+        estimator_params=base_params.get('estimator_params'),
+        gradient_clip_val=base_params.get('gradient_clip_val', None),
     )
     
     # Determine train/test splits explicitly so we can reuse the exact test set for evaluation
@@ -144,16 +197,17 @@ def run_precision_analysis(
     # 2. Train the Baseline Model (Zero-Noise)
     logger.info("Training baseline model at maximum precision...")
     baseline_results = trainer.train(
-        dataset, 
+        dataset,
         n_epochs=base_params.get('n_epochs', 50),
         batch_size=base_params.get('batch_size', 256),
-        patience=base_params.get('patience', 10),
+        patience=base_params.get('patience', 1000),
         train_indices=train_idx,
         test_indices=test_idx,
         verbose=base_params.get('verbose', False),
         show_progress=base_params.get('show_progress', True),
         max_eval_samples=base_params.get('max_eval_samples', 5000),
-        track_spectral_metrics=False # Skip dimensionality math to save time
+        track_spectral_metrics=False,  # Skip dimensionality math to save time
+        scheduler=scheduler,
     )
     
     baseline_mi = baseline_results['test_mi']

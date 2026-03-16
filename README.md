@@ -58,7 +58,7 @@ mi_est = results.mi_estimate
 mi_err = results.details.get('mi_error', 0.0)
 print(f"\nCorrected MI: {mi_est:.3f} ± {mi_err:.3f} bits")
 
-# 5. Visualize the bias-correction procedure
+# 4. Visualize the bias-correction procedure
 # This plot shows the extrapolation to an infinite dataset size (1/N -> 0).
 results.plot()
 ```

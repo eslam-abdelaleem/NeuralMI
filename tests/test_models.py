@@ -12,6 +12,10 @@ from neural_mi.models.embeddings import (
     MLP,
     CNN1D,
     VarMLP,
+    GRU,
+    LSTM,
+    TCN,
+    Transformer,
 )
 
 # --- Fixtures ---
@@ -208,10 +212,49 @@ def test_critic_get_embeddings(x_data, y_data):
     zx, zy = critic_sep.get_embeddings(x_data, y_data)
     assert zx.shape == (10, 16)
     assert zy.shape == (10, 16)
-    
+
     # Test Hybrid
     decision_head = MLP(input_dim=32, hidden_dim=16, embed_dim=1, n_layers=1)
     critic_hybrid = HybridCritic(embedding_net_x=net_x, decision_head=decision_head, max_n_batches=5)
     zx_h, zy_h = critic_hybrid.get_embeddings(x_data, y_data)
     assert zx_h.shape == (10, 16)
     assert zy_h.shape == (10, 16)
+
+
+# --- Sequential Embedding Model Tests ---
+
+class TestSequentialEmbeddings:
+    """Tests for RNN, TCN, and Transformer embedding architectures."""
+
+    @pytest.fixture
+    def seq_input(self):
+        # (batch, channels, seq_len)
+        return torch.randn(32, 5, 100)
+
+    def test_gru(self, seq_input):
+        model = GRU(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=1)
+        out = model(seq_input)
+        assert out.shape == (32, 8)
+
+        model_bi = GRU(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=1, bidirectional=True)
+        out_bi = model_bi(seq_input)
+        assert out_bi.shape == (32, 8)
+
+    def test_lstm(self, seq_input):
+        model = LSTM(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=1)
+        out = model(seq_input)
+        assert out.shape == (32, 8)
+
+        model_bi = LSTM(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=1, bidirectional=True)
+        out_bi = model_bi(seq_input)
+        assert out_bi.shape == (32, 8)
+
+    def test_tcn(self, seq_input):
+        model = TCN(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=2, kernel_size=3)
+        out = model(seq_input)
+        assert out.shape == (32, 8)
+
+    def test_transformer(self, seq_input):
+        model = Transformer(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=2, nhead=4)
+        out = model(seq_input)
+        assert out.shape == (32, 8)

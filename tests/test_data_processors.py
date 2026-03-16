@@ -533,3 +533,92 @@ def test_precision_spike(spike_data):
     mask = dataset._data_mask
     values = dataset.data[mask] / precision
     assert torch.allclose(values, torch.round(values), atol=1e-5, rtol=1e-5)
+
+
+# --- Data Splitting Tests ---
+
+import neural_mi as nmi
+
+_BASE_PARAMS_SPLIT = {
+    'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
+    'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 2, 'patience': 1,
+}
+
+
+@pytest.fixture
+def iid_3d_data():
+    """Pre-processed 3D IID Gaussian data: (n_samples, 1, channels)."""
+    x, y = nmi.generators.generate_correlated_gaussians(n_samples=100, dim=2, mi=1.0)
+    return x.unsqueeze(1), y.unsqueeze(1)
+
+
+def test_random_split_mode(iid_3d_data):
+    """Random split mode runs without error and returns a float MI estimate."""
+    x, y = iid_3d_data
+    results = nmi.run(
+        x_data=x, y_data=y, mode='estimate',
+        base_params=_BASE_PARAMS_SPLIT, split_mode='random', verbose=False
+    )
+    assert results.mi_estimate is not None
+    assert not np.isnan(results.mi_estimate)
+
+
+def test_custom_indices_split(iid_3d_data):
+    """Providing explicit train/test indices bypasses automatic splitting."""
+    x, y = iid_3d_data
+    n = x.shape[0]
+    idx = np.random.permutation(n)
+    results = nmi.run(
+        x_data=x, y_data=y, mode='estimate',
+        base_params=_BASE_PARAMS_SPLIT,
+        train_indices=idx[:80], test_indices=idx[80:], verbose=False
+    )
+    assert results.mi_estimate is not None
+    assert not np.isnan(results.mi_estimate)
+
+
+def test_default_blocked_split(iid_3d_data):
+    """Default blocked split mode runs correctly."""
+    x, y = iid_3d_data
+    results = nmi.run(
+        x_data=x, y_data=y, mode='estimate',
+        base_params=_BASE_PARAMS_SPLIT, split_mode='blocked', verbose=False
+    )
+    assert results.mi_estimate is not None
+    assert not np.isnan(results.mi_estimate)
+
+
+# --- Mixed-Modality Alignment Tests ---
+
+from neural_mi.data.handler import create_dataset
+
+
+def test_continuous_and_spike_alignment():
+    """Aligned windows from a continuous stream and a spike stream have equal sample counts."""
+    time_cont = np.arange(1000) / 100.0
+    x_cont = np.random.randn(1000, 2)
+    y_spike, _ = nmi.generators.generate_correlated_spike_trains(duration=10.0)
+
+    dataset = create_dataset(
+        x_data=x_cont, y_data=y_spike,
+        x_time=time_cont,
+        processor_type_x='continuous', processor_params_x={'window_size': 0.1},
+        processor_type_y='spike', processor_params_y={'window_size': 0.1}
+    )
+    assert dataset.x_data.shape[0] == dataset.y_data.shape[0]
+    # 10 s / 0.1 s = 100 windows expected (±10 tolerance)
+    assert 90 <= dataset.x_data.shape[0] <= 110
+
+
+def test_different_continuous_params_alignment():
+    """Two continuous streams with different lengths are aligned to the shorter one."""
+    x_data = np.random.randn(100, 1)
+    y_data = np.random.randn(120, 1)
+
+    dataset = create_dataset(
+        x_data=x_data, y_data=y_data,
+        processor_type_x='continuous', processor_params_x={'window_size': 10},
+        processor_type_y='continuous', processor_params_y={'window_size': 10}
+    )
+    assert dataset.x_data.shape[0] == dataset.y_data.shape[0]
+    assert dataset.x_data.shape[0] >= 9
