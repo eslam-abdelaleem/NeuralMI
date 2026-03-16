@@ -390,24 +390,36 @@ Two sub-modes controlled by whether `y_data` is provided:
 | **Intrinsic** | None | MI between two halves of x channels |
 | **Interaction** | Provided | Direct MI between x and y |
 
-**Split methods** (`split_method` kwarg):
+**Split methods** (`split_method` kwarg — intrinsic mode only):
 - `'random'` — Random channel splits, repeated `n_splits` times (default)
 - `'spatial'` — Single split at channel midpoint
 - `'temporal'` — Correlates x with lag-shifted copy of itself (pass `lag=<int>`)
 
+**`n_splits` kwarg (default 5):**
+- *Intrinsic mode* (`split_method='random'`): number of distinct random channel-split assignments evaluated
+- *Interaction mode* (y_data provided): number of independent model fits from different random weight initialisations — gives a proper mean and std in the aggregated output
+
 **Key kwargs:** `n_workers=1`, `split_method='random'`, `n_splits=5`, `lag=<int>` (for temporal)
 
 **Returns:** `Results` with:
-- `result.dataframe` — columns: `embedding_dim`, `test_mi`, `participation_ratio`, `participation_ratio_singular`, `split_id`
+- `result.dataframe` — columns: `mi_mean`, `mi_std`, `participation_ratio_mean`, `participation_ratio_std` (aggregated over splits/runs); `result.details['raw_results']` contains per-run rows with `split_id`
 - `participation_ratio` — effective dimensionality from eigenvalue (covariance) spectrum: `(Σσᵢ²)² / Σσᵢ⁴` — stricter, weights large singular values more
 - `participation_ratio_singular` — PR from singular-value spectrum: `(Σσᵢ)² / Σσᵢ²` — less strict variant
 
 ```python
+# Intrinsic: MI between two random halves of x channels, 10 splits
 result = nmi.run(x, mode='dimensionality',
                  base_params={'n_epochs': 100},
                  n_splits=10, split_method='random',
                  n_workers=4)
-result.plot()    # MI vs split_id with participation ratio overlay
+result.plot()
+
+# Interaction: MI between x and y, 5 independent fits for mean/std
+result = nmi.run(x, y, mode='dimensionality',
+                 base_params={'n_epochs': 100},
+                 n_splits=5,
+                 n_workers=4)
+print(result.dataframe[['mi_mean', 'mi_std', 'participation_ratio_mean']])
 ```
 
 ---
