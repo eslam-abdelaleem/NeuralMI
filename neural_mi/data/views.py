@@ -208,6 +208,11 @@ class SubsetView:
     def __getitem__(self, idx):
         # Map through index subset if present
         actual_idx = self.indices[idx] if self.indices is not None else idx
+        # self.indices is a CPU LongTensor; indexing it with a Python int
+        # yields a 0-dim CPU tensor.  Convert to a Python int so the index
+        # works on any device tensor (CPU or accelerator).
+        if isinstance(actual_idx, torch.Tensor) and actual_idx.ndim == 0:
+            actual_idx = actual_idx.item()
         x, y = self.dataset[actual_idx]
         
         # Apply channel subsetting

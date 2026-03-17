@@ -44,11 +44,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   monotonic memory growth and system crashes.  The fix moves all dataset tensor
   storage to CPU by default; batch loops in the `Trainer` already call
   `.to(device)` per batch so no training logic changed.
-- **`SubsetView` index tensors now always created on CPU**: previously
-  `SubsetView` created its index tensors on `x_dataset.device` (the compute
-  device), which caused `RuntimeError: indices should be either on cpu or on
-  the same device as the indexed tensor` when dataset data was on CPU but
-  index tensors were on MPS.
+- **`SubsetView`: device-agnostic indexing**: index tensors are now always
+  created as CPU LongTensors, and `__getitem__` converts any 0-dim index
+  tensor to a Python `int` before delegating to the dataset.  Python `int`
+  indices work on any device tensor (CPU or accelerator), eliminating the
+  previous `RuntimeError` when dataset data was on CPU but index tensors were
+  on MPS, and making `SubsetView` safe for use with `dataset_device='auto'`.
+- **`SpikeWindowDataset.apply_precision()` now reads from `data_master`**:
+  previously the method rounded `self.data` in-place while reading from
+  `self.data` as the source.  Calling it twice at different precision levels
+  would compound the rounding error rather than starting from the original
+  spike times.  The fix mirrors the implementation in
+  `ContinuousWindowDataset` and `BinnedSpikeDataset`, which already read from
+  `self.data_master`.
+- **`PairedDataset._align_datasets()` now performs effective truncation**:
+  when X and Y datasets have different sample counts, the method now slices
+  `self.data` on both sides so that `__len__()` (which reads
+  `self.data.shape[0]`) reports the correct length.  The previous
+  implementation set a phantom `n_windows` attribute that `StaticDataset` does
+  not use, leaving mismatched datasets that would crash during training.  Any
+  lazily-allocated `data_master` is also invalidated so it is re-cloned from
+  the truncated data on next use.
+- **`CategoricalWindowDataset._move_full_trajectory()` no longer assigns
+  `data_master` twice**: the method previously set `self.data_master` at the
+  end of its body while `move_data_to_windows()` also set it unconditionally
+  after every encoding method returned.  The redundant internal assignment is
+  removed; all three encoding paths now consistently delegate `data_master`
+  initialization to their single caller.
+- **`DEVELOPERS_GUIDE.md` processor file reference corrected**: entries
+  referring to a non-existent `processors.py` file have been updated to point
+  to the correct files (`handler.py`, `temporal.py`, `static.py`) and the
+  step-by-step guide for adding a new data processor now reflects the actual
+  codebase structure.
 
 ## [2.1.0] - 2026-03-13
 

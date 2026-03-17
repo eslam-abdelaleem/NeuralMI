@@ -266,7 +266,13 @@ class PairedDataset(Dataset):
         return self.y_dataset.data
     
     def _align_datasets(self):
-        """Ensure X and Y have matching number of samples."""
+        """Ensure X and Y have matching number of samples.
+
+        Truncates the longer dataset's ``self.data`` tensor via a leading-
+        dimension slice so that ``len(x_dataset) == len(y_dataset)``.
+        ``StaticDataset.__len__`` reads ``self.data.shape[0]``, so the slice
+        is required for the length change to take effect.
+        """
         n_x = len(self.x_dataset)
         n_y = len(self.y_dataset)
         if n_x != n_y:
@@ -279,8 +285,12 @@ class PairedDataset(Dataset):
                 f"Truncating both to {min_len} samples "
                 f"({lost} samples discarded, {pct:.1f}% of the larger dataset lost)."
             )
-            self.x_dataset.n_windows = min_len
-            self.y_dataset.n_windows = min_len
+            self.x_dataset.data = self.x_dataset.data[:min_len]
+            self.y_dataset.data = self.y_dataset.data[:min_len]
+            # Invalidate lazily-allocated data_master so it is re-cloned from
+            # the truncated data the next time apply_noise/apply_precision runs.
+            self.x_dataset.data_master = None
+            self.y_dataset.data_master = None
     
     def __len__(self):
         return len(self.x_dataset)

@@ -517,7 +517,9 @@ class SpikeWindowDataset(TemporalWindowDataset):
         # If data mask hasn't been created, compute that now
         if not hasattr(self, '_data_mask'):
             self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
-        self.data[self._data_mask] = torch.round(self.data[self._data_mask] / precision_level) * precision_level
+        # Always round from data_master so repeated calls at different precision
+        # levels each start from the original spike times (not re-rounded values).
+        self.data[self._data_mask] = torch.round(self.data_master[self._data_mask] / precision_level) * precision_level
 
 
 class BinnedSpikeDataset(TemporalWindowDataset):
@@ -831,7 +833,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         for i in range(n_channels):
             data[expanded_window_inds, i, expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[mask, i]].flatten()
         self.data = torch.tensor(data, device=self.data_device)
-        self.data_master = self.data.detach().clone()
+        # data_master is set by move_data_to_windows() after this returns.
 
     def validate_window_coverage(self):
         """Check which windows have sufficient data coverage."""

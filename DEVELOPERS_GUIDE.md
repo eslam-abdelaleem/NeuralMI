@@ -42,8 +42,7 @@ This directory handles all data preprocessing.
 
 - **`handler.py`**: The `create_dataset` / `create_single_dataset` factory functions are the main interface here. Both accept a `data_device` parameter (default `'cpu'`) that controls where `self.data` tensors are stored inside the dataset objects. The compute device (`device`) is kept separately.
 - **`static.py`** / **`temporal.py`**: All dataset classes store `self.data` on `self.data_device` (not on the compute device). This is the standard PyTorch pattern: data lives on CPU, batch loops call `.to(device)`. Changing where data lives at construction time has no effect on how training works.
-- **`views.py`**: `SubsetView` index tensors are always created on CPU so that fancy indexing into CPU data tensors works regardless of the compute device.
-- **`processors.py`**: Contains the `ContinuousProcessor`, `SpikeProcessor`, and `CategoricalProcessor` classes, which transform raw neural data into a format ready for the models.
+- **`views.py`**: `SubsetView` index tensors are always stored as CPU LongTensors. `__getitem__` converts any 0-dim index tensor to a Python `int` before delegating to the dataset, making indexing device-agnostic (works whether `data_device` is `'cpu'` or an accelerator).
 
 ---
 
@@ -86,8 +85,9 @@ Here are some common development tasks and the files you would need to edit:
 
 ### Add a new data processor (e.g., for a new data type)
 
-1. Create your new processor class in `neural_mi/data/processors.py`.
-2. Register the processor's name in `neural_mi/data/handler.py`.
+1. Create your new dataset class in `neural_mi/data/temporal.py` (for temporal data) or `neural_mi/data/static.py` (for pre-processed data), subclassing `TemporalWindowDataset` or `BaseStaticDataset` respectively.
+2. Register the new `proc_type` string in `neural_mi/data/handler.py`'s `create_single_dataset()` factory function with a matching `elif proc_type == '...'` branch.
+3. Add the new type's allowed `processor_params` keys to `PROCESSOR_PARAMS_SCHEMA` in `neural_mi/defaults.py`.
 
 ### Change the default neural network architecture
 

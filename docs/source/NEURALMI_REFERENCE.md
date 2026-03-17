@@ -778,11 +778,17 @@ Pass any of these in the `base_params` dict:
 | `use_variational` | bool | False | Enable variational reparameterization for embeddings |
 | `beta` | float | 1024.0 | MI weight in variational loss `L = KL − β·MI`. Large β (≥ 1) makes MI maximization dominate; decrease for stronger KL regularization |
 
+### Memory & Device Layout
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `device` | str or None | None | Compute device: `'cpu'`, `'cuda'`, `'mps'`, or `None` (auto-detect) |
+| `dataset_device` | str or None | `'cpu'` | Where dataset tensors are stored. `'cpu'` (default) keeps data in pageable RAM so the OS can reclaim memory between sweep tasks. `'auto'` co-locates data with the compute device (precision mode default). Any explicit device string is also accepted. |
+
 ### Other
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
 | `output_units` | str | `'bits'` | `'bits'` or `'nats'` |
-| `device` | str or None | None | Auto-detect |
+| `random_seed` | int or None | None | RNG seed for reproducibility; combine with `n_workers=1` for fully deterministic runs |
 | `verbose` | bool | False | |
 | `show_progress` | bool | True | Show tqdm progress bar during training |
 | `return_embeddings` | bool | False | |
