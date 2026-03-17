@@ -27,9 +27,9 @@ BASE_PARAMS_SCHEMA = {
     'train_subset_size': {'type': (int, type(None)), 'min': 1, 'default': None},
     'split_gap_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
     'spectral_mode': {'type': str, 'default': 'none'},  # 'none' | 'summary' | 'full'
-    'track_spectral_metrics': {'type': bool, 'default': False},  # deprecated; use spectral_mode
-    'spectral_output': {'type': str, 'default': 'default'},       # deprecated; use spectral_mode
-    'return_spectrum': {'type': bool, 'default': False},           # deprecated; use spectral_mode
+    'track_spectral_metrics': {'type': bool, 'default': False},
+    'spectral_output': {'type': str, 'default': 'default'},
+    'return_spectrum': {'type': bool, 'default': False},
     'return_embeddings': {'type': bool, 'default': False},
     'spectral_whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},

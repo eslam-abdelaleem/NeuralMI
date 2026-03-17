@@ -104,7 +104,7 @@ def run_pairwise_mi(
             results = sweep.run(
                 sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
             )
-            vals = [r['test_mi'] for r in results if 'test_mi' in r]
+            vals = [r['train_mi'] for r in results if 'train_mi' in r]
             if not vals:
                 logger.warning(f"  Pair x_ch={i}, y_ch={j}: all runs failed, recording NaN.")
                 mi_ij = float('nan')
@@ -147,7 +147,7 @@ def run_pairwise_mi(
             results = sweep.run(
                 sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
             )
-            vals = [r['test_mi'] for r in results if 'test_mi' in r]
+            vals = [r['train_mi'] for r in results if 'train_mi' in r]
             if not vals:
                 logger.warning(f"  Pair ({i}, {j}): all runs failed, recording NaN.")
                 mi_ij = float('nan')

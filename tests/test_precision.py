@@ -74,7 +74,7 @@ def test_run_precision_analysis_end_to_end():
     # 2. Check DataFrame
     assert isinstance(df, pd.DataFrame)
     assert 'tau' in df.columns
-    assert 'test_mi' in df.columns
+    assert 'train_mi' in df.columns
     assert len(df) == 5 # 4 tau values + the 0.0 baseline
     
     # 3. Check Details

@@ -125,7 +125,7 @@ def run_transfer_entropy(
         Dictionary with keys:
 
         - ``'te_xy'`` : float — point estimate of TE(X→Y).
-        - ``'te_estimate'`` : float — backward-compatible alias for ``te_xy``.
+        - ``'te_estimate'`` : float — alias for ``te_xy``.
         - ``'i_xypast_yfuture'`` : float — mean I(x_past, y_past ; y_future).
         - ``'i_ypast_yfuture'`` : float — mean I(y_past ; y_future).
         - ``'raw_xypast_yfuture'`` : list of result dicts.
@@ -191,12 +191,12 @@ def run_transfer_entropy(
         sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
     )
 
-    joint_vals = [r['test_mi'] for r in results_joint if 'test_mi' in r]
-    marginal_vals = [r['test_mi'] for r in results_marginal if 'test_mi' in r]
+    joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
+    marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]
     if not joint_vals:
-        raise RuntimeError("Transfer entropy: all joint MI runs failed — no valid test_mi values.")
+        raise RuntimeError("Transfer entropy: all joint MI runs failed — no valid train_mi values.")
     if not marginal_vals:
-        raise RuntimeError("Transfer entropy: all marginal MI runs failed — no valid test_mi values.")
+        raise RuntimeError("Transfer entropy: all marginal MI runs failed — no valid train_mi values.")
     mi_joint = float(np.mean(joint_vals))
     mi_marginal = float(np.mean(marginal_vals))
     te = mi_joint - mi_marginal
@@ -208,7 +208,7 @@ def run_transfer_entropy(
 
     result = {
         'te_xy': te,
-        'te_estimate': te,            # backward-compatible alias
+        'te_estimate': te,
         'i_xypast_yfuture': mi_joint,
         'i_ypast_yfuture': mi_marginal,
         'raw_xypast_yfuture': results_joint,
@@ -238,12 +238,12 @@ def run_transfer_entropy(
             sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
         )
 
-        joint_vals_yx = [r['test_mi'] for r in results_joint_yx if 'test_mi' in r]
-        marginal_vals_yx = [r['test_mi'] for r in results_marginal_yx if 'test_mi' in r]
+        joint_vals_yx = [r['train_mi'] for r in results_joint_yx if 'train_mi' in r]
+        marginal_vals_yx = [r['train_mi'] for r in results_marginal_yx if 'train_mi' in r]
         if not joint_vals_yx:
-            raise RuntimeError("TE(Y→X): all joint MI runs failed — no valid test_mi values.")
+            raise RuntimeError("TE(Y→X): all joint MI runs failed — no valid train_mi values.")
         if not marginal_vals_yx:
-            raise RuntimeError("TE(Y→X): all marginal MI runs failed — no valid test_mi values.")
+            raise RuntimeError("TE(Y→X): all marginal MI runs failed — no valid train_mi values.")
 
         mi_joint_yx = float(np.mean(joint_vals_yx))
         mi_marginal_yx = float(np.mean(marginal_vals_yx))

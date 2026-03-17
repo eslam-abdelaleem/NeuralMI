@@ -2,9 +2,9 @@
 """Estimates spike-timing precision of a representation relative to a target.
 
 This module trains a baseline mutual information estimator, then freezes the
-network and repeatedly evaluates the test set across a grid of precision levels 
-(tau). It corrupts the data using deterministic rounding or additive noise to 
-find the precision threshold where mutual information degrades.
+network and repeatedly evaluates the *train* partition across a grid of precision
+levels (tau). It corrupts the data using deterministic rounding or additive noise
+to find the precision threshold where mutual information degrades.
 """
 import torch
 import torch.optim as optim
@@ -123,7 +123,7 @@ def run_precision_analysis(
         ``threshold_ratio × baseline_MI``.  Each value must be in (0, 1].
         If a list is provided, thresholds are computed for all ratios and
         returned in the ``precision_thresholds`` dict; the first ratio is
-        used as the primary (backward-compatible) result.
+        used as the primary result reported in ``details['precision_tau']``.
     **kwargs
         Additional keyword arguments forwarded to the trainer
         (e.g., ``n_test_blocks``).
@@ -133,8 +133,8 @@ def run_precision_analysis(
     Dict[str, Any]
         A dictionary with the following keys:
 
-        - ``'dataframe'`` : pd.DataFrame with columns ``tau`` and ``mi_mean``
-          (one row per *tau* value).
+        - ``'dataframe'`` : pd.DataFrame with columns ``tau``, ``train_mi``, and
+          ``train_mi_std`` (one row per *tau* value).
         - ``'details'`` : dict containing:
 
           - ``'baseline_mi'`` — MI at zero corruption (float, nats).
@@ -210,37 +210,39 @@ def run_precision_analysis(
         scheduler=scheduler,
     )
     
-    baseline_mi = baseline_results['test_mi']
+    baseline_mi = baseline_results['train_mi']
     logger.info(f"Baseline MI established: {baseline_mi:.3f} nats")
-    
+
     # 3. The Precision Sweep (Inference Only)
+    # We evaluate on the *train* partition (the larger 90 % slice) to keep
+    # the reported MI consistent with every other mode, which also uses train_mi.
     logger.info(f"Starting precision sweep using '{corruption_method}' on target '{corrupt_target}'...")
     trainer.model.eval()
-    x_test_raw = dataset.x_dataset[test_idx, ...]
-    y_test_raw = dataset.y_dataset[test_idx, ...]
+    x_train_raw = dataset.x_dataset[train_idx, ...]
+    y_train_raw = dataset.y_dataset[train_idx, ...]
     max_eval = base_params.get('max_eval_samples', 5000)
-    
+
     results_list = []
-    
+
     # Force 0.0 into the grid to log the exact baseline
     sorted_tau = sorted(list(set([0.0] + tau_grid)))
-    
+
     with torch.no_grad():
         for tau in sorted_tau:
             if corruption_method == 'rounding':
-                x_c = apply_corruption(x_test_raw, tau, 'rounding') if corrupt_target in ['x', 'both'] else x_test_raw
-                y_c = apply_corruption(y_test_raw, tau, 'rounding') if corrupt_target in ['y', 'both'] else y_test_raw
+                x_c = apply_corruption(x_train_raw, tau, 'rounding') if corrupt_target in ['x', 'both'] else x_train_raw
+                y_c = apply_corruption(y_train_raw, tau, 'rounding') if corrupt_target in ['y', 'both'] else y_train_raw
                 mi = trainer._safe_eval_mi(x_c.to(device), y_c.to(device), max_eval)
-                results_list.append({'tau': tau, 'test_mi': mi, 'test_mi_std': 0.0})
-                
+                results_list.append({'tau': tau, 'train_mi': mi, 'train_mi_std': 0.0})
+
             elif corruption_method == 'noise':
                 # Average over multiple forward passes to stabilize stochastic noise bounds
                 mis = []
                 for _ in range(n_noise_samples if tau > 0 else 1):
-                    x_c = apply_corruption(x_test_raw, tau, 'noise') if corrupt_target in ['x', 'both'] else x_test_raw
-                    y_c = apply_corruption(y_test_raw, tau, 'noise') if corrupt_target in ['y', 'both'] else y_test_raw
+                    x_c = apply_corruption(x_train_raw, tau, 'noise') if corrupt_target in ['x', 'both'] else x_train_raw
+                    y_c = apply_corruption(y_train_raw, tau, 'noise') if corrupt_target in ['y', 'both'] else y_train_raw
                     mis.append(trainer._safe_eval_mi(x_c.to(device), y_c.to(device), max_eval))
-                results_list.append({'tau': tau, 'test_mi': np.mean(mis), 'test_mi_std': np.std(mis)})
+                results_list.append({'tau': tau, 'train_mi': np.mean(mis), 'train_mi_std': np.std(mis)})
 
     df = pd.DataFrame(results_list)
     
@@ -258,7 +260,7 @@ def run_precision_analysis(
         threshold_value_i = baseline_mi * ratio
         tau_i = None
         for _, row in df.iterrows():
-            if row['tau'] > 0 and row['test_mi'] < threshold_value_i:
+            if row['tau'] > 0 and row['train_mi'] < threshold_value_i:
                 tau_i = row['tau']
                 break
         if tau_i is None:
@@ -281,7 +283,7 @@ def run_precision_analysis(
         'dataframe': df,
         'details': {
             'baseline_mi': baseline_mi,
-            'precision_tau': precision_tau,           # primary threshold (backward compat)
+            'precision_tau': precision_tau,
             'threshold_ratio': threshold_ratio,        # original input (scalar or list)
             'threshold_value': threshold_value,        # primary threshold value
             'precision_thresholds': precision_thresholds,  # full multi-threshold dict

@@ -24,8 +24,8 @@ This is the main entry point. All user interactions start here. It handles param
 
 This directory contains the logic for the different analysis `modes`.
 
-- **`rigorous.py`**: Public dispatcher for `mode='rigorous'`. Wraps `AnalysisWorkflow` in the same one-function style used by all other analysis modules.
-- **`workflow.py`**: Internal `AnalysisWorkflow` class that implements the subsampling and extrapolation logic used by `rigorous.py`. Prefer `run_rigorous_analysis` over direct use of this class.
+- **`rigorous.py`**: Implements `mode='rigorous'` — contains `run_rigorous_analysis`, `AnalysisWorkflow`, and the internal helpers `_find_linear_region`, `_extrapolate_mi`, and `_post_process_and_correct`. Use `run_rigorous_analysis` as the primary entry point.
+- **`workflow.py`**: Re-exports from `rigorous.py` for convenience. All analysis logic lives in `rigorous.py`.
 - **`sweep.py`**: A general-purpose engine for running parallelized hyperparameter sweeps (`mode='sweep'`). It includes **"Smart Model Saving"** logic to dynamically generate safe filenames and prevent race conditions between parallel workers.
 - **`lag.py`**: Contains the logic for `mode='lag'`, which is a specialized `sweep` over the `lag` parameter.
 - **`dimensionality.py`**: Implements the `mode='dimensionality'` analysis. *Note: This module no longer uses sweeps. It orchestrates a single Hybrid Critic training run and triggers the SVD spectral metrics engine to compute the Participation Ratio.*

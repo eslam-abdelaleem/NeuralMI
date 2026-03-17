@@ -85,7 +85,7 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
     # Mock run_rigorous_analysis to prevent macOS multiprocessing serialization crashes during routing tests
     with patch('neural_mi.run.run_rigorous_analysis') as mock_rigorous:
         mock_rigorous.return_value = {
-            'raw_results_df': pd.DataFrame([{'gamma': 1.0, 'test_mi': 2.0}]),
+            'raw_results_df': pd.DataFrame([{'gamma': 1.0, 'train_mi': 2.0}]),
             'corrected_results': [{'mi_corrected': 2.5, 'mi_error': 0.1, 'slope': -0.05}]
         }
 
@@ -201,7 +201,7 @@ def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_pre
     
     # Mock the return value of the precision engine
     mock_precision.return_value = {
-        'dataframe': pd.DataFrame([{'tau': 0.0, 'test_mi': 2.0}, {'tau': 1.0, 'test_mi': 0.5}]),
+        'dataframe': pd.DataFrame([{'tau': 0.0, 'train_mi': 2.0}, {'tau': 1.0, 'train_mi': 0.5}]),
         'details': {
             'baseline_mi': 2.0,
             'precision_tau': 1.0,
