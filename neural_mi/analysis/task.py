@@ -182,5 +182,25 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     return_params = params.copy()
     return_params.pop('custom_critic', None)
     return_params.pop('custom_embedding_cls', None)
+    final_result = {**return_params, **results}
 
-    return {**return_params, **results}
+    # Explicitly release device-bound objects so the backend allocator can
+    # reclaim their memory.  Without this, PyTorch's MPS/CUDA caches grow
+    # monotonically across sequential tasks and can exhaust system RAM.
+    import gc as _gc
+    del trainer, critic, optimizer, dataset
+    if scheduler is not None:
+        del scheduler
+
+    _device_type = getattr(device, 'type', 'cpu')
+    if _device_type == 'cuda':
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    elif _device_type == 'mps':
+        if hasattr(torch, 'mps') and hasattr(torch.mps, 'synchronize'):
+            torch.mps.synchronize()
+        if hasattr(torch, 'mps') and hasattr(torch.mps, 'empty_cache'):
+            torch.mps.empty_cache()
+    _gc.collect()
+
+    return final_result
