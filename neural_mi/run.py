@@ -739,7 +739,7 @@ def _run_inner(
         df = pd.DataFrame(results_list)
         df = _convert_mi_units(df, output_units == 'bits')
         group_vars = [key for key in sweep_grid.keys() if key != 'run_id']
-        agg_df = df.groupby(group_vars)['test_mi'].agg(['mean', 'std']).reset_index().rename(
+        agg_df = df.groupby(group_vars)['train_mi'].agg(['mean', 'std']).reset_index().rename(
             columns={'mean': 'mi_mean', 'std': 'mi_std'}).fillna(0) if group_vars else df
         primary_sweep_var = group_vars[0] if group_vars else None
         result = Results(mode=mode,
@@ -762,15 +762,14 @@ def _run_inner(
         to_bits = output_units == 'bits'
         NATS_TO_BITS = 1 / np.log(2)
 
-        mi = res_dict.pop('test_mi', float('nan'))
-        # When all test MI values were non-positive the model failed to generalise.
-        # Report mi_estimate = 0; the all_mi_negative flag is preserved in details.
-        if res_dict.get('all_mi_negative'):
-            mi = 0.0
+        # Report the train MI evaluated at the best-generalising checkpoint.
+        # When all test-MI values are non-positive the Trainer already sets
+        # final_train_mi = 0.0, so no extra guard is needed here.
+        mi = res_dict.pop('train_mi', float('nan'))
         mi = _convert_mi_units(mi, to_bits)
 
-        # Convert scalar train MI values to the requested units
-        for _key in ('train_mi', 'raw_train_mi'):
+        # Keep test_mi and raw_train_mi in details, converting units
+        for _key in ('test_mi', 'raw_train_mi'):
             if _key in res_dict and isinstance(res_dict[_key], (int, float)):
                 res_dict[_key] = res_dict[_key] * NATS_TO_BITS if to_bits else res_dict[_key]
 
@@ -798,21 +797,21 @@ def _run_inner(
                                          sweep_grid=sweep_grid, **analysis_kwargs)
         df = _convert_mi_units(df, output_units == 'bits')
         group_vars = [key for key in (sweep_grid or {}).keys() if key != 'run_id']
-        metrics = ['test_mi', 'participation_ratio']
+        metrics = ['train_mi', 'participation_ratio']
         valid_metrics = [m for m in metrics if m in df.columns]
         if group_vars:
             agg_df = df.groupby(group_vars)[valid_metrics].agg(['mean', 'std']).reset_index()
             agg_df.columns = [f"{col[0]}_{col[1]}" if col[1] else col[0] for col in agg_df.columns.values]
-            rename_map = {f'{m}_mean': 'mi_mean' if m == 'test_mi' else f'{m}_mean' for m in valid_metrics}
-            rename_map.update({f'{m}_std': 'mi_std' if m == 'test_mi' else f'{m}_std' for m in valid_metrics})
+            rename_map = {f'{m}_mean': 'mi_mean' if m == 'train_mi' else f'{m}_mean' for m in valid_metrics}
+            rename_map.update({f'{m}_std': 'mi_std' if m == 'train_mi' else f'{m}_std' for m in valid_metrics})
             agg_df = agg_df.rename(columns=rename_map).fillna(0)
         else:
             agg_data = {f'{m}_mean': df[m].mean() for m in valid_metrics}
             agg_data.update({f'{m}_std': df[m].std() for m in valid_metrics})
-            if 'test_mi_mean' in agg_data:
-                agg_data['mi_mean'] = agg_data.pop('test_mi_mean')
-            if 'test_mi_std' in agg_data:
-                agg_data['mi_std'] = agg_data.pop('test_mi_std')
+            if 'train_mi_mean' in agg_data:
+                agg_data['mi_mean'] = agg_data.pop('train_mi_mean')
+            if 'train_mi_std' in agg_data:
+                agg_data['mi_std'] = agg_data.pop('train_mi_std')
             agg_df = pd.DataFrame([agg_data])
         result = Results(mode=mode, dataframe=agg_df, params={**run_params},
                          details={'raw_results': df})
@@ -885,7 +884,7 @@ def _run_inner(
             group_vars.extend([key for key in sweep_grid.keys() if key != 'run_id'])
         valid_group_vars = [var for var in group_vars if var in df.columns]
         if valid_group_vars:
-            agg_df = df.groupby(valid_group_vars)['test_mi'].agg(['mean', 'std']).reset_index().rename(
+            agg_df = df.groupby(valid_group_vars)['train_mi'].agg(['mean', 'std']).reset_index().rename(
                 columns={'mean': 'mi_mean', 'std': 'mi_std'}).fillna(0)
         else:
             agg_df = df
@@ -1011,14 +1010,14 @@ def _run_permutation_test(x_data, y_data, base_params, mode, sweep_grid,
                     sweep_grid or {}, n_workers=analysis_kwargs.get('n_workers', 1),
                     is_proc_sweep=False
                 )
-                null_mis.append(float(np.mean([r.get('test_mi', float('nan')) for r in res])))
+                null_mis.append(float(np.mean([r.get('train_mi', float('nan')) for r in res])))
 
             elif mode == 'lag':
                 from .analysis.lag import run_lag_analysis as _rla
                 lag_range = mode_kwargs.get('lag_range')
                 res = _rla(x_data, y_perm, base_params.copy(), lag_range=lag_range,
                            n_workers=analysis_kwargs.get('n_workers', 1))
-                null_mis.append(float(np.mean([r.get('test_mi', float('nan')) for r in res])))
+                null_mis.append(float(np.mean([r.get('train_mi', float('nan')) for r in res])))
 
             elif mode == 'conditional':
                 z_data = mode_kwargs.get('z_data')
