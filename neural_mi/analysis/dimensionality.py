@@ -86,8 +86,7 @@ def run_dimensionality_analysis(
     sweep_grid: Optional[Dict[str, Any]] = None,
     split_method: str = 'random',
     n_splits: int = 5,
-    spectral_output: str = 'default',
-    return_spectrum: bool = False,
+    spectral_mode: str = 'summary',
     n_workers: int = 1,
     **kwargs
 ) -> pd.DataFrame:
@@ -108,14 +107,18 @@ def run_dimensionality_analysis(
         If None, computes Intrinsic Dimensionality by splitting x_data channels.
     split_method : {'random', 'spatial', 'temporal'}, optional
         How to split x_data when y_data is None.
-        - 'random': randomly shuffles channels into two halves, repeated n_splits
-          times so the result averages over different channel assignments.
-        - 'spatial': splits channels at the midpoint (first vs second half).
-          Use when channels have a meaningful spatial ordering (e.g. electrode array).
-        - 'temporal': correlates x_data with a lag-shifted copy of itself.
-          Pass lag=<int> (in samples) as a kwarg. Measures autocorrelation
+
+        - ``'random'``: randomly shuffles channels into two halves, repeated
+          ``n_splits`` times so the result averages over different channel
+          assignments.
+        - ``'spatial'``: splits channels at the midpoint (first vs second half).
+          Use when channels have a meaningful spatial ordering (e.g. electrode
+          array).
+        - ``'temporal'``: correlates x_data with a lag-shifted copy of itself.
+          Pass ``lag=<int>`` (in samples) as a kwarg. Measures autocorrelation
           structure rather than cross-channel shared information.
-        Defaults to 'random'.
+
+        Defaults to ``'random'``.
     n_splits : int, optional
         Number of independent runs.  For intrinsic dimensionality with
         ``split_method='random'`` this controls how many distinct random
@@ -125,10 +128,12 @@ def run_dimensionality_analysis(
         performed — each starting from a different random weight
         initialisation — giving a proper mean and standard deviation in the
         output.  Defaults to 5.
-    spectral_output : {'default', 'all'}, optional
-        'default' returns only participation_ratio; 'all' returns all spectral metrics.
-    return_spectrum : bool, optional
-        If True, includes the raw singular values array in each result row.
+    spectral_mode : {'summary', 'full'}, optional
+        Controls which spectral metrics are returned.
+
+        - ``'summary'`` *(default)* — compute the participation ratio only.
+        - ``'full'`` — compute all spectral metrics and include the raw
+          singular values array in each result row.
     n_workers : int, optional
         Number of parallel workers.  When ``n_splits > 1`` the workers are
         distributed *across splits* (each split's inner sweep runs
@@ -148,8 +153,12 @@ def run_dimensionality_analysis(
     analysis_params = base_params.copy()
     analysis_params['critic_type'] = 'hybrid'
     analysis_params['track_spectral_metrics'] = True
-    analysis_params['spectral_output'] = spectral_output
-    analysis_params['return_spectrum'] = return_spectrum
+    if spectral_mode == 'full':
+        analysis_params['spectral_output'] = 'all'
+        analysis_params['return_spectrum'] = True
+    else:  # 'summary' or any unrecognised value defaults to summary
+        analysis_params['spectral_output'] = 'default'
+        analysis_params['return_spectrum'] = False
 
     # Default shared_encoder=True: X and Y are always split halves of the same
     # distribution in dimensionality mode, so tying their embedding weights is

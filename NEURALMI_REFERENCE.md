@@ -505,7 +505,7 @@ peak_lag = result.dataframe.loc[result.dataframe['train_mi'].idxmax(), 'lag']
 - `result.dataframe` — columns: `tau`, `train_mi`, `train_mi_std`
 - `result.details`:
   - `baseline_mi` — MI at τ=0 (uncorrupted)
-  - `precision_tau` — τ* for the primary (first) threshold ratio (backward-compatible)
+  - `precision_tau` — τ* for the primary (first) threshold ratio
   - `threshold_value` — actual MI value at the primary threshold
   - `threshold_ratio` — the original input (scalar or list)
   - `precision_thresholds` — dict mapping each ratio to `{'precision_tau', 'threshold_value'}`
@@ -583,7 +583,7 @@ where `x_past`, `y_past` are the `history_window` most recent samples and `y_fut
 **Returns:** `Results` with:
 - `result.mi_estimate` — float: TE(X→Y) in `output_units`
 - `result.details`:
-  - `te_estimate` — same as `mi_estimate` (backward-compatible alias for `te_xy`)
+  - `te_estimate` — same as `mi_estimate`, alias for `te_xy`
   - `te_xy` — TE(X→Y) point estimate
   - `i_xypast_yfuture` — I(x_past, y_past ; y_future)
   - `i_ypast_yfuture` — I(y_past ; y_future)

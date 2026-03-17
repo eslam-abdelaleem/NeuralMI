@@ -102,9 +102,6 @@ def run(
     max_eval_samples: int = 5000,
     train_subset_size: Optional[int] = None,
     spectral_mode: str = 'none',
-    track_spectral_metrics: bool = False,
-    spectral_output: str = 'default',
-    return_spectrum: bool = False,
     max_index_reduction: float = 0.05,
     tau_grid: Optional[List[float]] = None,
     corrupt_target: str = 'x',
@@ -264,8 +261,7 @@ def run(
         precedence. Defaults to None (use the value in ``base_params``).
     lag_range : iterable of int or float, optional
         For ``mode='lag'``, the range of time-lags to evaluate, e.g.
-        ``range(-10, 11)`` or ``[-0.1, 0.0, 0.1]``. Can also be passed via
-        ``**analysis_kwargs`` for backward compatibility. Required when
+        ``range(-10, 11)`` or ``[-0.1, 0.0, 0.1]``. Required when
         ``mode='lag'``.
     use_spectral_norm : bool, default=True
         Apply spectral normalisation to the hidden linear layers of MLP/VarMLP
@@ -352,24 +348,13 @@ def run(
     train_subset_size : int, optional
         If provided, the number of training samples to use when evaluating at the end of each epoch. This can speed up training on large datasets. Defaults to None (use all training data).
     spectral_mode : {'none', 'summary', 'full'}, default='none'
-        Consolidated control for spectral metric tracking. Replaces the
-        deprecated ``track_spectral_metrics`` / ``spectral_output`` /
-        ``return_spectrum`` trio.
+        Controls spectral metric tracking during training.
+
         - ``'none'`` — no spectral metrics computed (default, no overhead).
-        - ``'summary'`` — compute participation ratio at the end of training;
-          equivalent to ``track_spectral_metrics=True, spectral_output='default',
-          return_spectrum=False``.
-        - ``'full'`` — compute all spectral metrics (participation ratio, all
-          singular values) and include the raw spectrum in results; equivalent to
-          ``track_spectral_metrics=True, spectral_output='all',
-          return_spectrum=True``.
-    track_spectral_metrics : bool, default=False
-        *Deprecated* — use ``spectral_mode='summary'`` instead. If True,
-        spectral metrics will be computed during training.
-    spectral_output : str, default='default'
-        *Deprecated* — use ``spectral_mode`` instead.
-    return_spectrum : bool, default=False
-        *Deprecated* — use ``spectral_mode='full'`` instead.
+        - ``'summary'`` — compute the participation ratio of the joint embedding
+          cross-covariance at the end of training.
+        - ``'full'`` — compute all spectral metrics (participation ratio, effective
+          rank, all singular values) and include the raw spectrum in results.
     max_index_reduction : float, default=0.05
         When using temporal datasets with windowing, random time shifting can reduce the number of valid windows
         due to edge effects. This parameter sets a threshold for acceptable reduction in valid windows after shifting.
@@ -452,9 +437,7 @@ def run(
             test_indices=test_indices, delta_threshold=delta_threshold,
             min_gamma_points=min_gamma_points, confidence_level=confidence_level,
             max_eval_samples=max_eval_samples, train_subset_size=train_subset_size,
-            spectral_mode=spectral_mode,
-            track_spectral_metrics=track_spectral_metrics, spectral_output=spectral_output,
-            return_spectrum=return_spectrum, max_index_reduction=max_index_reduction,
+            spectral_mode=spectral_mode, max_index_reduction=max_index_reduction,
             tau_grid=tau_grid, corrupt_target=corrupt_target,
             corruption_method=corruption_method, n_noise_samples=n_noise_samples,
             threshold_ratio=threshold_ratio, permutation_test=permutation_test,
@@ -532,14 +515,13 @@ def _run_inner(
     save_best_model_path, random_seed, verbose, show_progress, device,
     split_mode, train_fraction, n_test_blocks, split_gap_fraction, train_indices,
     test_indices, delta_threshold, min_gamma_points, confidence_level,
-    max_eval_samples, train_subset_size, track_spectral_metrics, spectral_output,
-    return_spectrum, max_index_reduction, tau_grid, corrupt_target,
-    corruption_method, n_noise_samples, threshold_ratio, permutation_test,
-    n_permutations, z_data, z_processor_type, z_processor_params,
+    max_eval_samples, train_subset_size, spectral_mode, max_index_reduction,
+    tau_grid, corrupt_target, corruption_method, n_noise_samples, threshold_ratio,
+    permutation_test, n_permutations, z_data, z_processor_type, z_processor_params,
     history_window, prediction_horizon, bidirectional_te=False,
     n_epochs=None, batch_size=None, shared_encoder=None,
     return_embeddings=False, lag_range=None,
-    spectral_mode='none', use_spectral_norm=True, gradient_clip_val=None,
+    use_spectral_norm=True, gradient_clip_val=None,
     optimizer='adam', optimizer_params=None,
     scheduler=None, scheduler_params=None,
     eval_train=False,
@@ -604,34 +586,21 @@ def _run_inner(
     _inject(base_params, 'dropout', dropout)
     _inject(base_params, 'norm_layer', norm_layer)
 
-    # Validate spectral_mode
+    # Validate and apply spectral_mode
     _SPECTRAL_MODES = {'none', 'summary', 'full'}
     if spectral_mode not in _SPECTRAL_MODES:
         raise ValueError(
             f"spectral_mode='{spectral_mode}' is not valid. "
             f"Choose from {sorted(_SPECTRAL_MODES)}."
         )
-    if spectral_mode != 'none':
-        if track_spectral_metrics or spectral_output != 'default' or return_spectrum:
-            logger.warning(
-                "Both `spectral_mode` and individual spectral parameters were specified. "
-                "`spectral_mode` takes precedence."
-            )
-        if spectral_mode == 'summary':
-            track_spectral_metrics, spectral_output, return_spectrum = True, 'default', False
-        else:  # 'full'
-            track_spectral_metrics, spectral_output, return_spectrum = True, 'all', True
-    elif track_spectral_metrics or spectral_output != 'default' or return_spectrum:
-        logger.warning(
-            "The `track_spectral_metrics`, `spectral_output`, and `return_spectrum` "
-            "parameters are deprecated. Use spectral_mode='summary' or "
-            "spectral_mode='full' instead. These parameters will be removed in a "
-            "future release."
-        )
-
-    _inject(base_params, 'track_spectral_metrics', track_spectral_metrics)
-    _inject(base_params, 'spectral_output', spectral_output)
-    _inject(base_params, 'return_spectrum', return_spectrum)
+    if spectral_mode == 'summary':
+        _inject(base_params, 'track_spectral_metrics', True)
+        _inject(base_params, 'spectral_output', 'default')
+        _inject(base_params, 'return_spectrum', False)
+    elif spectral_mode == 'full':
+        _inject(base_params, 'track_spectral_metrics', True)
+        _inject(base_params, 'spectral_output', 'all')
+        _inject(base_params, 'return_spectrum', True)
     _inject(base_params, 'max_index_reduction', max_index_reduction)
 
     _inject(base_params, 'processor_type_x', processor_type_x)
@@ -873,7 +842,7 @@ def _run_inner(
                        params=run_params)
 
     elif mode == 'lag':
-        # Accept lag_range as explicit param (preferred) or via **analysis_kwargs (legacy)
+        # Accept lag_range as a top-level argument or from **analysis_kwargs
         lag_range_val = lag_range if lag_range is not None else analysis_kwargs.pop('lag_range', None)
         if lag_range_val is None:
             raise ValueError(

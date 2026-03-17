@@ -123,7 +123,7 @@ def run_precision_analysis(
         ``threshold_ratio × baseline_MI``.  Each value must be in (0, 1].
         If a list is provided, thresholds are computed for all ratios and
         returned in the ``precision_thresholds`` dict; the first ratio is
-        used as the primary (backward-compatible) result.
+        used as the primary result reported in ``details['precision_tau']``.
     **kwargs
         Additional keyword arguments forwarded to the trainer
         (e.g., ``n_test_blocks``).
@@ -283,7 +283,7 @@ def run_precision_analysis(
         'dataframe': df,
         'details': {
             'baseline_mi': baseline_mi,
-            'precision_tau': precision_tau,           # primary threshold (backward compat)
+            'precision_tau': precision_tau,
             'threshold_ratio': threshold_ratio,        # original input (scalar or list)
             'threshold_value': threshold_value,        # primary threshold value
             'precision_thresholds': precision_thresholds,  # full multi-threshold dict

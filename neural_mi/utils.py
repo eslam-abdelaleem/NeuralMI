@@ -235,7 +235,7 @@ def compute_cross_covariance_spectrum(
           variance, independent of embedding output scale.
         - 'zca': full ZCA whitening (sphering). More aggressive; requires
           n_samples >> embedding_dim to be stable.
-        - None: no whitening (legacy behavior). PR will reflect embedding scale.
+        - None: no whitening. PR will reflect raw embedding scale.
     """
     zx_np = zx.detach().cpu().float().numpy()
     zy_np = zy.detach().cpu().float().numpy()

@@ -1,6 +1,6 @@
 # neural_mi/analysis/__init__.py
 """This package contains modules for running different analysis workflows."""
-from .rigorous import AnalysisWorkflow          # kept for backward compat
+from .rigorous import AnalysisWorkflow
 from .rigorous import run_rigorous_analysis
 from .sweep import ParameterSweep
 from .lag import run_lag_analysis
@@ -11,7 +11,7 @@ from .transfer import run_transfer_entropy
 from .pairwise import run_pairwise_mi
 
 __all__ = [
-    'AnalysisWorkflow',          # backward compat
+    'AnalysisWorkflow',
     'run_rigorous_analysis',
     'ParameterSweep',
     'run_lag_analysis',

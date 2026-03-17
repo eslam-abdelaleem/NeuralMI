@@ -125,7 +125,7 @@ def run_transfer_entropy(
         Dictionary with keys:
 
         - ``'te_xy'`` : float — point estimate of TE(X→Y).
-        - ``'te_estimate'`` : float — backward-compatible alias for ``te_xy``.
+        - ``'te_estimate'`` : float — alias for ``te_xy``.
         - ``'i_xypast_yfuture'`` : float — mean I(x_past, y_past ; y_future).
         - ``'i_ypast_yfuture'`` : float — mean I(y_past ; y_future).
         - ``'raw_xypast_yfuture'`` : list of result dicts.
@@ -208,7 +208,7 @@ def run_transfer_entropy(
 
     result = {
         'te_xy': te,
-        'te_estimate': te,            # backward-compatible alias
+        'te_estimate': te,
         'i_xypast_yfuture': mi_joint,
         'i_ypast_yfuture': mi_marginal,
         'raw_xypast_yfuture': results_joint,
