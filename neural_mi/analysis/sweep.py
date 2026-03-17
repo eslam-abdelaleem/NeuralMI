@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Optional
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger
-from neural_mi.utils import _configure_multiprocessing
+from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
@@ -177,18 +177,18 @@ class ParameterSweep:
             })
             
             if is_proc_sweep:
-                task_data_x, task_data_y = self.x_data, self.y_data
+                # Raw data path: processor runs inside the worker, so tensors
+                # must still be on CPU before crossing the process boundary.
+                task_data_x = _ensure_cpu(self.x_data)
+                task_data_y = _ensure_cpu(self.y_data)
             else:
                 x_to_send, y_to_send = self.x_data, self.y_data
                 if max_samples_per_task and self.x_data is not None and self.x_data.shape[0] > max_samples_per_task:
                     indices = np.random.choice(self.x_data.shape[0], max_samples_per_task, replace=False)
                     x_to_send = self.x_data[indices]
                     y_to_send = self.y_data[indices] if self.y_data is not None else None
-                if isinstance(x_to_send, torch.Tensor) and (x_to_send.is_cuda or (hasattr(x_to_send, 'is_mps') and x_to_send.is_mps)):
-                    x_to_send = x_to_send.cpu()
-                if y_to_send is not None and isinstance(y_to_send, torch.Tensor) and (y_to_send.is_cuda or (hasattr(y_to_send, 'is_mps') and y_to_send.is_mps)):
-                    y_to_send = y_to_send.cpu()
-                task_data_x, task_data_y = x_to_send, y_to_send
+                task_data_x = _ensure_cpu(x_to_send)
+                task_data_y = _ensure_cpu(y_to_send)
 
             task_run_id = f"{run_id_base}_c{i_combo}"
             tasks.append((task_data_x, task_data_y, current_params.copy(), task_run_id))

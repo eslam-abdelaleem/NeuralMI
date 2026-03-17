@@ -17,6 +17,21 @@ from neural_mi.models.embeddings import MLP, VarMLP, BaseEmbedding, CNN1D, GRU, 
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
 from neural_mi.logger import logger
 
+def _ensure_cpu(data):
+    """Move *data* to CPU if it is a tensor on a non-CPU device.
+
+    Multiprocessing workers receive data via pickle (spawn context), which
+    requires all tensors to reside on CPU — CUDA and MPS shared-memory
+    mechanisms are not available across process boundaries.  Call this on
+    every tensor before adding it to a Pool task tuple.
+
+    Non-tensor inputs (numpy arrays, None, etc.) are returned unchanged.
+    """
+    if isinstance(data, torch.Tensor) and data.device.type != 'cpu':
+        return data.cpu()
+    return data
+
+
 def get_device(device_str: Optional[str] = None) -> torch.device:
     """Selects the appropriate device, including 'mps' for Apple Silicon."""
     if device_str:
