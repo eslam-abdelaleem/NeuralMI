@@ -237,6 +237,19 @@ result = nmi.run(
     random_seed=None,                # int; use with n_workers=1 for full repro
     device=None,                     # 'cpu' | 'cuda' | 'mps' | None (auto)
 
+    # ── Memory / device layout ───────────────────────────────────────────────
+    # Where dataset tensors live — independent of `device` (the compute device).
+    # The Trainer always moves batches to `device` via .to(device), so this
+    # setting only controls dataset-level allocation.
+    #
+    #   'cpu'  (default) — data in pageable system RAM; OS can reclaim freely
+    #                      between tasks. Use for sweep / dimensionality / lag.
+    #   'auto'           — data on the compute device; avoids host→device copies
+    #                      when evaluating the same dataset many times.
+    #                      Default for precision mode.
+    #   '<device_str>'   — any explicit PyTorch device string ('mps', 'cuda:0').
+    dataset_device='cpu',
+
     # ── Progress & Logging ─────────────────────────────────────────────────
     verbose=False,
     show_progress=True,

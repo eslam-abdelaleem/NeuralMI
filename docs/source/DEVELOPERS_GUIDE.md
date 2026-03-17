@@ -24,13 +24,15 @@ This is the main entry point. All user interactions start here. It handles param
 
 This directory contains the logic for the different analysis `modes`.
 
-- **`rigorous.py`**: Public dispatcher for `mode='rigorous'`. Wraps `AnalysisWorkflow` in the same one-function style used by all other analysis modules.
-- **`workflow.py`**: Internal `AnalysisWorkflow` class that implements the subsampling and extrapolation logic used by `rigorous.py`. Prefer `run_rigorous_analysis` over direct use of this class.
+- **`rigorous.py`**: Implements `mode='rigorous'` — contains `run_rigorous_analysis`, `AnalysisWorkflow`, and the internal helpers `_find_linear_region`, `_extrapolate_mi`, and `_post_process_and_correct`. Use `run_rigorous_analysis` as the primary entry point.
+- **`workflow.py`**: Re-exports from `rigorous.py` for convenience. All analysis logic lives in `rigorous.py`.
 - **`sweep.py`**: A general-purpose engine for running parallelized hyperparameter sweeps (`mode='sweep'`). It includes **"Smart Model Saving"** logic to dynamically generate safe filenames and prevent race conditions between parallel workers.
 - **`lag.py`**: Contains the logic for `mode='lag'`, which is a specialized `sweep` over the `lag` parameter.
 - **`dimensionality.py`**: Implements the `mode='dimensionality'` analysis. *Note: This module no longer uses sweeps. It orchestrates a single Hybrid Critic training run and triggers the SVD spectral metrics engine to compute the Participation Ratio.*
 - **`precision.py`**: Implements the `mode='precision'` analysis. This module executes a "Train Once, Evaluate Many" pipeline, freezing a baseline network and sweeping over precision levels ($\tau$) using deterministic rounding or additive noise.
-- **`task.py`**: A helper module that defines a single, runnable "task" (one training run of the MI estimator). It unpacks all top-level arguments and funnels them into the `Trainer`.
+- **`task.py`**: A helper module that defines a single, runnable "task" (one training run of the MI estimator). It unpacks all top-level arguments and funnels them into the `Trainer`. Key implementation notes:
+  - **`dataset_device` resolution**: the `dataset_device` param (default `'cpu'`) controls where dataset tensors live. `'auto'` resolves to the compute device; any explicit device string is forwarded directly.
+  - **Module-level dataset cache**: static (`PairedDataset`) instances whose data pointer and construction params match a previous task are reused without re-running `create_dataset()`. This eliminates redundant tensor copies in sequential sweeps. Temporal datasets are excluded because they are mutated by `time_shift()` during training. The cache holds at most four entries (LRU eviction).
 
 ---
 
@@ -38,7 +40,9 @@ This directory contains the logic for the different analysis `modes`.
 
 This directory handles all data preprocessing.
 
-- **`handler.py`**: The `create_dataset` function is the main interface here, returning `PairedDataset` or `PairedTemporalDataset` objects.
+- **`handler.py`**: The `create_dataset` / `create_single_dataset` factory functions are the main interface here. Both accept a `data_device` parameter (default `'cpu'`) that controls where `self.data` tensors are stored inside the dataset objects. The compute device (`device`) is kept separately.
+- **`static.py`** / **`temporal.py`**: All dataset classes store `self.data` on `self.data_device` (not on the compute device). This is the standard PyTorch pattern: data lives on CPU, batch loops call `.to(device)`. Changing where data lives at construction time has no effect on how training works.
+- **`views.py`**: `SubsetView` index tensors are always created on CPU so that fancy indexing into CPU data tensors works regardless of the compute device.
 - **`processors.py`**: Contains the `ContinuousProcessor`, `SpikeProcessor`, and `CategoricalProcessor` classes, which transform raw neural data into a format ready for the models.
 
 ---
@@ -93,6 +97,26 @@ Here are some common development tasks and the files you would need to edit:
 
 1. Create a new file in `neural_mi/analysis/` to contain the logic for your mode.
 2. Import your new function into `neural_mi/run.py` and add a new `elif mode == 'your_new_mode':` block to call it.
+
+### Understand the `dataset_device` / `device` split
+
+NeuralMI separates two concerns that are often conflated:
+
+| Concept | Parameter | Default | Where used |
+|---|---|---|---|
+| **Compute device** — where model & optimizer live | `device` | `None` → auto-detect | `Trainer`, `run_training_task` |
+| **Data storage device** — where `self.data` tensors live | `dataset_device` | `'cpu'` | `StaticDataset`, temporal datasets, `create_dataset` |
+
+The `Trainer` already calls `.to(device)` on every batch and every evaluation call, so changing `dataset_device` from `'cpu'` to the compute device has no effect on training correctness — only on memory layout.
+
+**Rule of thumb**: keep `dataset_device='cpu'` (the default) unless you have a good reason to co-locate data with the compute device (e.g. precision analysis, which evaluates the same dataset many times).
+
+**Adding a new mode that runs many evaluations on the same dataset**: inject `dataset_device='auto'` as the default in your analysis function, following the pattern in `precision.py`:
+```python
+_data_device_raw = base_params.get('dataset_device', 'auto')
+_data_device = str(device) if _data_device_raw == 'auto' else (_data_device_raw or 'cpu')
+dataset = create_dataset(..., data_device=_data_device)
+```
 
 ---
 

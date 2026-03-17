@@ -2,6 +2,8 @@
 """
 Contains the core, parallelizable training task function.
 """
+import gc as _gc
+import threading
 import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as _lr_sched
@@ -12,7 +14,59 @@ from neural_mi.utils import build_critic, get_device
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger
-from neural_mi.data.handler import create_dataset
+from neural_mi.data.handler import create_dataset, PairedDataset
+
+# ---------------------------------------------------------------------------
+# Module-level dataset cache
+# ---------------------------------------------------------------------------
+# Keyed by (x_data_ptr, y_data_ptr, frozenset_of_construction_params).
+# Only *static* (PairedDataset) instances are cached because temporal datasets
+# are mutated in-place by time_shift() during training and cannot be safely
+# shared across sequential tasks.
+#
+# In sequential sweeps where data and processor params are constant across
+# tasks, this means create_dataset() is called once and every subsequent task
+# reuses the pre-built object — eliminating N-1 redundant tensor copies.
+#
+# In multiprocessing (spawn) mode each worker starts with an empty cache; the
+# first task in a worker populates it and later tasks in the same worker
+# benefit automatically.
+_DATASET_CACHE_LOCK = threading.Lock()
+_DATASET_CACHE: dict = {}       # {cache_key -> PairedDataset}
+_DATASET_CACHE_MAXSIZE = 4      # LRU eviction when this is exceeded
+
+# Keys that fully determine dataset construction (anything else is a model/
+# training hyperparameter and does NOT affect the dataset).
+_DATASET_CONSTRUCTION_KEYS = frozenset([
+    'processor_type_x', 'processor_type_y',
+    'processor_params_x', 'processor_params_y',
+    'dataset_device',
+])
+
+
+def _make_hashable(v):
+    """Recursively convert dicts/lists to hashable tuples."""
+    if isinstance(v, dict):
+        return tuple(sorted((k, _make_hashable(w)) for k, w in v.items()))
+    if isinstance(v, (list, tuple)):
+        return tuple(_make_hashable(i) for i in v)
+    return v
+
+
+def _dataset_cache_key(x_data, y_data, params: dict):
+    """Build a cache key from data identity + construction params."""
+    dp_x = x_data.data_ptr() if isinstance(x_data, torch.Tensor) else id(x_data)
+    if y_data is None:
+        dp_y = None
+    elif isinstance(y_data, torch.Tensor):
+        dp_y = y_data.data_ptr()
+    else:
+        dp_y = id(y_data)
+    construction = tuple(sorted(
+        (k, _make_hashable(params.get(k))) for k in _DATASET_CONSTRUCTION_KEYS
+    ))
+    return (dp_x, dp_y, construction)
+
 
 def run_training_task(args: tuple) -> Dict[str, Any]:
     """A top-level function that can be pickled for multiprocessing."""
@@ -30,15 +84,45 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         torch.manual_seed(task_seed)
         logger.debug(f"Task {run_id} seeded with {task_seed}.")
 
-    
-    # Check if this task needs to process raw data or if it received pre-processed tensors
-    dataset = create_dataset(
-        x_data, y_data,
-        processor_type_x=params.get('processor_type_x'),
-        processor_type_y=params.get('processor_type_y'),
-        processor_params_x=params.get('processor_params_x'),
-        processor_params_y=params.get('processor_params_y')
-    )
+    # ------------------------------------------------------------------
+    # Resolve dataset_device: 'auto' → use the compute device; anything
+    # else is forwarded verbatim ('cpu', 'cuda', 'mps', …).
+    # ------------------------------------------------------------------
+    _compute_device = get_device(params.get('device'))
+    _raw_dd = params.get('dataset_device', 'cpu')
+    _data_device: str = str(_compute_device) if _raw_dd == 'auto' else (_raw_dd or 'cpu')
+
+    # ------------------------------------------------------------------
+    # Dataset construction — with module-level cache for static datasets.
+    # ------------------------------------------------------------------
+    _cache_key = _dataset_cache_key(x_data, y_data,
+                                    {**params, 'dataset_device': _data_device})
+    dataset = None
+    with _DATASET_CACHE_LOCK:
+        dataset = _DATASET_CACHE.get(_cache_key)
+
+    if dataset is None:
+        dataset = create_dataset(
+            x_data, y_data,
+            processor_type_x=params.get('processor_type_x'),
+            processor_type_y=params.get('processor_type_y'),
+            processor_params_x=params.get('processor_params_x'),
+            processor_params_y=params.get('processor_params_y'),
+            data_device=_data_device,
+        )
+        # Only cache immutable static datasets — temporal datasets are mutated
+        # by time_shift() during training and must not be shared.
+        if isinstance(dataset, PairedDataset):
+            with _DATASET_CACHE_LOCK:
+                if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
+                    # Evict the oldest entry (dict preserves insertion order).
+                    _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
+                _DATASET_CACHE[_cache_key] = dataset
+            logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
+        else:
+            logger.debug("Temporal dataset — skipping cache (mutable via time_shift).")
+    else:
+        logger.debug("Dataset cache hit — reusing pre-built dataset.")
 
     if dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
         params['input_dim_x'] = dataset.x_data.shape[1] * dataset.x_data.shape[2]
@@ -103,7 +187,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 f"You can also pass a torch.optim.lr_scheduler class directly."
             )
 
-    device = get_device(params.get('device'))
+    device = _compute_device  # already resolved above
     
     # Inject custom smoothing into Trainer init
     trainer = Trainer(
@@ -184,11 +268,17 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     return_params.pop('custom_embedding_cls', None)
     final_result = {**return_params, **results}
 
-    # Explicitly release device-bound objects so the backend allocator can
-    # reclaim their memory.  Without this, PyTorch's MPS/CUDA caches grow
-    # monotonically across sequential tasks and can exhaust system RAM.
-    import gc as _gc
-    del trainer, critic, optimizer, dataset
+    # ------------------------------------------------------------------
+    # Release device-bound objects so the backend allocator can reclaim
+    # memory.  Model + optimizer are always on the compute device; dataset
+    # tensors are on data_device (usually CPU, so this is a no-op for them).
+    # ------------------------------------------------------------------
+    del trainer, critic, optimizer
+    # Only delete the dataset reference if it is NOT in the shared cache —
+    # cached datasets are intentionally kept alive for reuse by future tasks.
+    _cached = _DATASET_CACHE.get(_cache_key)
+    if _cached is not dataset:
+        del dataset
     if scheduler is not None:
         del scheduler
 
@@ -202,5 +292,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         if hasattr(torch, 'mps') and hasattr(torch.mps, 'empty_cache'):
             torch.mps.empty_cache()
     _gc.collect()
+
 
     return final_result
