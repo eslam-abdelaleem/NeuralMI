@@ -4,6 +4,7 @@
 This module defines the core logic for executing multiple training runs in
 parallel across a grid of hyperparameters.
 """
+import warnings
 import torch
 import itertools
 import uuid
@@ -73,6 +74,30 @@ class ParameterSweep:
 
         if effective_workers <= 1:
             logger.info("Starting parameter sweep sequentially (n_workers=1)...")
+            # Pre-flight memory warning: on-device dataset storage with many tasks
+            # can exhaust accelerator/unified memory (see dataset_device param).
+            _dd = self.base_params.get('dataset_device', 'cpu')
+            _dd_str = str(_dd).lower()
+            if _dd_str not in ('cpu', 'none') and len(tasks) > 20:
+                _ds_bytes = 0
+                for _arr in (self.x_data, self.y_data):
+                    if _arr is None:
+                        continue
+                    if isinstance(_arr, torch.Tensor):
+                        _ds_bytes += _arr.element_size() * _arr.nelement()
+                    elif hasattr(_arr, 'nbytes'):
+                        _ds_bytes += _arr.nbytes
+                if _ds_bytes > 0:
+                    warnings.warn(
+                        f"Running {len(tasks)} sequential tasks with "
+                        f"dataset_device='{_dd}' (dataset ≈ {_ds_bytes / 1e9:.2f} GB). "
+                        f"On accelerators, freed tensors may linger in the allocator "
+                        f"cache between tasks and exhaust system memory. If you "
+                        f"experience slowdown or a system freeze, add "
+                        f"dataset_device='cpu' to base_params.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
             all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sequential Sweep Progress", disable=not show_progress)]
         else:
             logger.info(f"Starting parameter sweep with {effective_workers} workers...")

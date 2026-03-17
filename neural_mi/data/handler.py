@@ -266,7 +266,13 @@ class PairedDataset(Dataset):
         return self.y_dataset.data
     
     def _align_datasets(self):
-        """Ensure X and Y have matching number of samples."""
+        """Ensure X and Y have matching number of samples.
+
+        Truncates the longer dataset's ``self.data`` tensor via a leading-
+        dimension slice so that ``len(x_dataset) == len(y_dataset)``.
+        ``StaticDataset.__len__`` reads ``self.data.shape[0]``, so the slice
+        is required for the length change to take effect.
+        """
         n_x = len(self.x_dataset)
         n_y = len(self.y_dataset)
         if n_x != n_y:
@@ -279,8 +285,12 @@ class PairedDataset(Dataset):
                 f"Truncating both to {min_len} samples "
                 f"({lost} samples discarded, {pct:.1f}% of the larger dataset lost)."
             )
-            self.x_dataset.n_windows = min_len
-            self.y_dataset.n_windows = min_len
+            self.x_dataset.data = self.x_dataset.data[:min_len]
+            self.y_dataset.data = self.y_dataset.data[:min_len]
+            # Invalidate lazily-allocated data_master so it is re-cloned from
+            # the truncated data the next time apply_noise/apply_precision runs.
+            self.x_dataset.data_master = None
+            self.y_dataset.data_master = None
     
     def __len__(self):
         return len(self.x_dataset)
@@ -305,26 +315,39 @@ class PairedDataset(Dataset):
 
 
 
-def create_single_dataset(data, time, proc_type, proc_params, device=None):
-    """Create dataset for single variable."""
+def create_single_dataset(data, time, proc_type, proc_params, device=None, data_device='cpu'):
+    """Create dataset for a single variable.
+
+    Parameters
+    ----------
+    data_device : str, optional
+        Device on which dataset tensors are stored.  Defaults to ``'cpu'``
+        (safe default; trainer batch loops already call ``.to(device)``).
+        Pass ``'auto'`` to store on the compute device, which avoids repeated
+        host→device transfers when the same dataset is evaluated many times
+        (e.g. precision analysis).
+    """
     if proc_type is None:
-        return StaticDataset(data, device=device)
+        return StaticDataset(data, device=device, data_device=data_device)
     if proc_type == 'continuous':
         min_cov = (proc_params or {}).get('min_coverage_fraction', 0.2)
         return ContinuousWindowDataset(data, time, device=device,
-                                       min_coverage_fraction=min_cov)
+                                       min_coverage_fraction=min_cov,
+                                       data_device=data_device)
     elif proc_type == 'spike':
         bin_size = (proc_params or {}).get('bin_size', None)
         if bin_size is not None:
             normalize = (proc_params or {}).get('normalize_bins', True)
             return BinnedSpikeDataset(data, bin_size=bin_size, device=device,
-                                      normalize=normalize)
+                                      normalize=normalize, data_device=data_device)
         no_spike_val = (proc_params or {}).get('no_spike_value', -1.0)
-        return SpikeWindowDataset(data, time, device=device, no_spike_value=no_spike_val)
-
+        return SpikeWindowDataset(data, time, device=device,
+                                  no_spike_value=no_spike_val, data_device=data_device)
     elif proc_type == 'categorical':
         min_cov = (proc_params or {}).get('min_coverage_fraction', 0.2)
-        return CategoricalWindowDataset(data, time, device=device, min_coverage_fraction=min_cov)
+        return CategoricalWindowDataset(data, time, device=device,
+                                        min_coverage_fraction=min_cov,
+                                        data_device=data_device)
     else:
         raise ValueError(f"Unknown processor type: {proc_type}")
 
@@ -333,9 +356,18 @@ def create_dataset(
         x_time=None, y_time=None,
         processor_type_x=None, processor_params_x=None,
         processor_type_y=None, processor_params_y=None,
-        device=None
+        device=None,
+        data_device='cpu',
     ):
-    """Factory function for creating appropriate dataset objects."""
+    """Factory function for creating appropriate dataset objects.
+
+    Parameters
+    ----------
+    data_device : str, optional
+        Device on which dataset tensors are stored.  ``'cpu'`` (default) keeps
+        large arrays in pageable system RAM; ``'auto'`` co-locates data with the
+        compute device.  See :func:`create_single_dataset` for details.
+    """
     proc_type_x = processor_type_x
     proc_params_x = (processor_params_x or {}).copy()
     proc_type_y = processor_type_y if processor_type_y else processor_type_x
@@ -346,9 +378,11 @@ def create_dataset(
             "Pre-processed data detected. Skipping compatibility check. "
             "Ensure X and Y have compatible representations."
         )
-    
-    x_dataset = create_single_dataset(x_data, x_time, proc_type_x, proc_params_x, device=device)
-    y_dataset = create_single_dataset(y_data, y_time, proc_type_y, proc_params_y, device=device) if y_data is not None else None
+
+    x_dataset = create_single_dataset(x_data, x_time, proc_type_x, proc_params_x,
+                                      device=device, data_device=data_device)
+    y_dataset = create_single_dataset(y_data, y_time, proc_type_y, proc_params_y,
+                                      device=device, data_device=data_device) if y_data is not None else None
 
     if proc_type_x is not None or proc_type_y is not None:
         window_size = proc_params_x.pop('window_size', None)

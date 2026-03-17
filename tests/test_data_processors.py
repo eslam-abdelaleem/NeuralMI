@@ -622,3 +622,234 @@ def test_different_continuous_params_alignment():
     )
     assert dataset.x_data.shape[0] == dataset.y_data.shape[0]
     assert dataset.x_data.shape[0] >= 9
+
+
+# ---------------------------------------------------------------------------
+# dataset_device tests
+# ---------------------------------------------------------------------------
+
+class TestDatasetDevice:
+    """Verify the dataset_device parameter correctly controls tensor placement."""
+
+    def test_static_dataset_defaults_to_cpu(self):
+        """StaticDataset should store data on CPU by default."""
+        data = np.random.randn(50, 4)
+        ds = StaticDataset(data)
+        assert ds.data.device.type == 'cpu'
+        assert ds.data_device == torch.device('cpu')
+
+    def test_static_dataset_explicit_cpu(self):
+        """Explicit data_device='cpu' keeps data on CPU."""
+        data = np.random.randn(50, 4)
+        ds = StaticDataset(data, data_device='cpu')
+        assert ds.data.device.type == 'cpu'
+
+    def test_static_dataset_auto_uses_compute_device(self):
+        """data_device='auto' should place data on the compute device."""
+        from neural_mi.utils import get_device
+        compute_dev = get_device()
+        data = np.random.randn(50, 4)
+        ds = StaticDataset(data, data_device='auto')
+        assert ds.data.device.type == compute_dev.type
+
+    def test_create_dataset_cpu_default(self):
+        """create_dataset default keeps both x and y data on CPU."""
+        x = np.random.randn(60, 3)
+        y = np.random.randn(60, 3)
+        dataset = create_dataset(x, y)
+        assert dataset.x_data.device.type == 'cpu'
+        assert dataset.y_data.device.type == 'cpu'
+
+    def test_create_dataset_explicit_cpu(self):
+        """Explicit data_device='cpu' in create_dataset keeps data on CPU."""
+        x = np.random.randn(60, 3)
+        y = np.random.randn(60, 3)
+        dataset = create_dataset(x, y, data_device='cpu')
+        assert dataset.x_data.device.type == 'cpu'
+        assert dataset.y_data.device.type == 'cpu'
+
+    def test_create_dataset_auto(self):
+        """data_device='auto' in create_dataset uses the compute device."""
+        from neural_mi.utils import get_device
+        compute_dev = get_device()
+        x = np.random.randn(60, 3)
+        y = np.random.randn(60, 3)
+        dataset = create_dataset(x, y, data_device='auto')
+        assert dataset.x_data.device.type == compute_dev.type
+        assert dataset.y_data.device.type == compute_dev.type
+
+    def test_temporal_dataset_defaults_to_cpu(self):
+        """ContinuousWindowDataset should store windowed data on CPU by default."""
+        data = np.random.randn(100, 2)
+        time = np.arange(100, dtype=float)
+        wm = WindowManager(window_size=10, t_start=0, t_end=100)
+        ds = ContinuousWindowDataset(data, time, window_manager=wm)
+        ds.move_data_to_windows()
+        assert ds.data.device.type == 'cpu'
+        assert ds.data_master.device.type == 'cpu'
+
+    def test_temporal_dataset_auto(self):
+        """ContinuousWindowDataset with data_device='auto' uses compute device."""
+        from neural_mi.utils import get_device
+        compute_dev = get_device()
+        data = np.random.randn(100, 2)
+        time = np.arange(100, dtype=float)
+        wm = WindowManager(window_size=10, t_start=0, t_end=100)
+        ds = ContinuousWindowDataset(data, time, window_manager=wm, data_device='auto')
+        ds.move_data_to_windows()
+        assert ds.data.device.type == compute_dev.type
+
+    def test_noise_buffer_device_matches_data(self):
+        """Noise buffer in apply_noise must be on the same device as self.data."""
+        data = np.random.randn(100, 2)
+        time = np.arange(100, dtype=float)
+        wm = WindowManager(window_size=10, t_start=0, t_end=100)
+        ds = ContinuousWindowDataset(data, time, window_manager=wm)
+        ds.move_data_to_windows()
+        ds.apply_noise(0.01)
+        # After apply_noise the noise buffer should share device with self.data
+        assert ds._noise_buffer.device == ds.data.device
+
+    def test_dataset_device_propagates_through_run(self):
+        """run() with dataset_device='cpu' in base_params completes without error."""
+        import neural_mi as nmi
+        x = np.random.randn(80, 4, 1)
+        y = np.random.randn(80, 4, 1)
+        result = nmi.run(x, y, base_params={
+            'n_epochs': 1, 'batch_size': 32, 'patience': 1,
+            'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
+            'dataset_device': 'cpu',
+        }, n_workers=1)
+        assert hasattr(result, 'mi_estimate')
+
+    def test_dataset_device_auto_in_run(self):
+        """run() with dataset_device='auto' in base_params completes without error."""
+        import neural_mi as nmi
+        x = np.random.randn(80, 4, 1)
+        y = np.random.randn(80, 4, 1)
+        result = nmi.run(x, y, base_params={
+            'n_epochs': 1, 'batch_size': 32, 'patience': 1,
+            'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
+            'dataset_device': 'auto',
+        }, n_workers=1)
+        assert hasattr(result, 'mi_estimate')
+
+
+# ---------------------------------------------------------------------------
+# Regression tests
+# ---------------------------------------------------------------------------
+
+class TestBugFixes:
+    """Regression tests for correctness invariants across the data pipeline."""
+
+    # --- SubsetView: device-agnostic indexing ---
+
+    def test_subset_view_getitem_returns_tensors(self):
+        """SubsetView.__getitem__ with an integer idx returns tensors."""
+        from neural_mi.data.views import SubsetView
+        x = np.random.randn(40, 3)
+        y = np.random.randn(40, 3)
+        ds = create_dataset(x, y, data_device='cpu')
+        view = SubsetView(ds, indices=np.arange(20))
+        x_item, y_item = view[0]
+        assert isinstance(x_item, torch.Tensor)
+        assert isinstance(y_item, torch.Tensor)
+
+    def test_subset_view_index_is_cpu_long(self):
+        """SubsetView index tensor is always a CPU LongTensor."""
+        from neural_mi.data.views import SubsetView
+        ds = create_dataset(np.random.randn(40, 3), np.random.randn(40, 3))
+        view = SubsetView(ds, indices=np.arange(20))
+        assert view.indices.device.type == 'cpu'
+        assert view.indices.dtype == torch.long
+
+    def test_subset_view_all_indices_accessible(self):
+        """Every index in the subset is reachable via __getitem__."""
+        from neural_mi.data.views import SubsetView
+        ds = create_dataset(np.random.randn(40, 3), np.random.randn(40, 3))
+        view = SubsetView(ds, indices=list(range(20)))
+        for i in range(len(view)):
+            xi, yi = view[i]
+            assert xi.shape[0] == 3
+
+    # --- SpikeWindowDataset.apply_precision: always reads data_master ---
+
+    def test_spike_apply_precision_idempotent(self, spike_data):
+        """apply_precision is idempotent: calling it twice at the same level
+        gives the same result as calling it once."""
+        wm = WindowManager(window_size=1.0, t_start=0, t_end=100)
+        ds = SpikeWindowDataset(spike_data, window_manager=wm)
+        ds.move_data_to_windows()
+        ds.apply_precision(0.05)
+        result_first = ds.data.clone()
+        ds.apply_precision(0.05)
+        assert torch.allclose(ds.data, result_first)
+
+    def test_spike_apply_precision_independent_of_call_order(self, spike_data):
+        """Applying precision A then B equals applying B alone (data_master is
+        always the reference, never the previously rounded data)."""
+        wm = WindowManager(window_size=1.0, t_start=0, t_end=100)
+
+        ds_ab = SpikeWindowDataset(spike_data, window_manager=wm)
+        ds_ab.move_data_to_windows()
+        ds_ab.apply_precision(0.1)
+        ds_ab.apply_precision(0.05)
+
+        ds_b = SpikeWindowDataset(spike_data, window_manager=wm)
+        ds_b.move_data_to_windows()
+        ds_b.apply_precision(0.05)
+
+        assert torch.allclose(ds_ab.data, ds_b.data)
+
+    # --- PairedDataset._align_datasets: effective truncation ---
+
+    def test_align_datasets_truncates_len(self):
+        """PairedDataset with mismatched X/Y lengths truncates to the shorter."""
+        x_data = np.random.randn(100, 3).astype(np.float32)
+        y_data = np.random.randn(80, 3).astype(np.float32)
+        paired = PairedDataset(StaticDataset(x_data), StaticDataset(y_data))
+        assert len(paired) == 80
+        assert paired.x_data.shape[0] == 80
+        assert paired.y_data.shape[0] == 80
+
+    def test_align_datasets_preserves_data_values(self):
+        """After truncation the retained samples are identical to the originals."""
+        x_data = np.random.randn(100, 3).astype(np.float32)
+        y_data = np.random.randn(80, 3).astype(np.float32)
+        paired = PairedDataset(StaticDataset(x_data), StaticDataset(y_data))
+        np.testing.assert_allclose(
+            paired.x_data[:, :, 0].numpy(), x_data[:80], rtol=1e-5
+        )
+
+    def test_align_datasets_no_op_when_equal(self):
+        """Equal-length datasets are unchanged by _align_datasets."""
+        x_data = np.random.randn(100, 3).astype(np.float32)
+        y_data = np.random.randn(100, 3).astype(np.float32)
+        paired = PairedDataset(StaticDataset(x_data), StaticDataset(y_data))
+        assert len(paired) == 100
+
+    # --- CategoricalWindowDataset: data_master consistency ---
+
+    def test_categorical_full_trajectory_data_master_equals_data(self):
+        """data_master matches data immediately after move_data_to_windows."""
+        data = np.random.randint(0, 3, size=(100, 2))
+        time = np.arange(100, dtype=float)
+        wm = WindowManager(window_size=10, t_start=0, t_end=100)
+        ds = CategoricalWindowDataset(data, time, window_manager=wm,
+                                      encoding='full_trajectory')
+        ds.move_data_to_windows()
+        assert hasattr(ds, 'data_master')
+        assert torch.equal(ds.data, ds.data_master)
+
+    def test_categorical_full_trajectory_reset_restores_data(self):
+        """reset() restores data to data_master after in-place modification."""
+        data = np.random.randint(0, 3, size=(100, 2))
+        time = np.arange(100, dtype=float)
+        wm = WindowManager(window_size=10, t_start=0, t_end=100)
+        ds = CategoricalWindowDataset(data, time, window_manager=wm,
+                                      encoding='full_trajectory')
+        ds.move_data_to_windows()
+        saved = ds.data_master.clone()
+        ds.data = torch.zeros_like(ds.data)
+        ds.reset()
+        assert torch.equal(ds.data, saved)

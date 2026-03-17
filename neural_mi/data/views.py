@@ -86,7 +86,7 @@ class SubsetView:
         
         # Ensure indices are LongTensor (handle both numpy arrays and pre-converted tensors)
         if self.indices is not None and not isinstance(self.indices, torch.Tensor):
-            self.indices = torch.as_tensor(self.indices, device=self.dataset.x_dataset.device, dtype=torch.long)
+            self.indices = torch.as_tensor(self.indices, device='cpu', dtype=torch.long)
     
     def _get_valid_window_times(self):
         """Helper to get only the valid window times from manager."""
@@ -108,7 +108,7 @@ class SubsetView:
         # Convert time ranges to indices using valid window times
         window_times = self._get_valid_window_times()
         if window_times is None or len(window_times) == 0:
-             self.indices = torch.tensor([], device=self.dataset.x_dataset.device, dtype=torch.long)
+             self.indices = torch.tensor([], device='cpu', dtype=torch.long)
         else:
             # Use 'right' for start to include windows starting at or before the start time
             # (conceptually we want windows overlapping the interval, so windows starting before 'start'
@@ -140,7 +140,7 @@ class SubsetView:
             else:
                 indices = np.array([], dtype=np.int64)
 
-            self.indices = torch.tensor(indices, device=self.dataset.x_dataset.device, dtype=torch.long)
+            self.indices = torch.tensor(indices, device='cpu', dtype=torch.long)
     
     def _update_times_from_indices(self):
         """Convert indices to time ranges. Called once during initialization."""
@@ -208,6 +208,11 @@ class SubsetView:
     def __getitem__(self, idx):
         # Map through index subset if present
         actual_idx = self.indices[idx] if self.indices is not None else idx
+        # self.indices is a CPU LongTensor; indexing it with a Python int
+        # yields a 0-dim CPU tensor.  Convert to a Python int so the index
+        # works on any device tensor (CPU or accelerator).
+        if isinstance(actual_idx, torch.Tensor) and actual_idx.ndim == 0:
+            actual_idx = actual_idx.item()
         x, y = self.dataset[actual_idx]
         
         # Apply channel subsetting

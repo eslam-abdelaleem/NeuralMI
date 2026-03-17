@@ -9,24 +9,35 @@ from neural_mi.logger import logger
 
 class BaseStaticDataset(Dataset, ABC):
     """Base class for all non-temporal, static datasets."""
-    
-    def __init__(self, device=None):
+
+    def __init__(self, device=None, data_device='cpu'):
         """
         Parameters
         ----------
         device : str, optional
-            Device for tensor operations
+            Compute device used by the model (CPU/CUDA/MPS).  Datasets do not
+            use this for data storage; it is kept for reference only.
+        data_device : str, optional
+            Device on which ``self.data`` tensors are stored.  Defaults to
+            ``'cpu'``, which keeps large dataset allocations in pageable system
+            RAM and lets the OS reclaim memory freely between tasks.  Pass
+            ``'auto'`` to co-locate data with the compute device (useful when
+            the same dataset is evaluated many times without reloading, e.g.
+            precision analysis).
         """
-        if device:
-            self.device = device
+        self.device = get_device() if not device else torch.device(str(device))
+        # Resolve data storage device separately from compute device.
+        if data_device == 'auto':
+            self.data_device = self.device
+        elif data_device is None or str(data_device) == 'cpu':
+            self.data_device = torch.device('cpu')
         else:
-            self.device = get_device()
-        # Three versions of data are kept
-        # 1. data: A numpy master matching the original but which can be modified (n_channels, n_timepoints)
-        # 2. data_master: A clean tensor copy of data (n_windows, n_channels)
-        # This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
-        self.data = None # Allocated when sub-method called
-        self.data_master = None # # Allocated as needed or when sub-method called
+            self.data_device = torch.device(str(data_device))
+        # Two versions of data are kept:
+        # 1. data        : working tensor, may have noise/precision applied
+        # 2. data_master : clean clone, used to restore data after modifications
+        self.data = None        # Allocated when sub-method called
+        self.data_master = None # Allocated as needed or when sub-method called
 
     @abstractmethod
     def __getitem__(self, idx):
@@ -53,18 +64,21 @@ class BaseStaticDataset(Dataset, ABC):
 
 
 class StaticDataset(BaseStaticDataset):
-    """Base class for all non-temporal, static datasets."""
-    
-    def __init__(self, data, device=None):
+    """Dataset for pre-processed, non-temporal data."""
+
+    def __init__(self, data, device=None, data_device='cpu'):
         """
         Parameters
         ----------
         data : array-like or torch.Tensor
             Data of shape (n_observations, n_channels, ...)
         device : str, optional
-            Device for tensor operations
+            Compute device (kept for reference; not used for data storage).
+        data_device : str, optional
+            Device for storing ``self.data``.  Defaults to ``'cpu'``.
+            Pass ``'auto'`` to use the compute device instead.
         """
-        super().__init__(device)
+        super().__init__(device, data_device)
         
         # Validate input type and convert to numpy if it's a list
         if isinstance(data, list):
@@ -90,7 +104,7 @@ class StaticDataset(BaseStaticDataset):
             # Not possible to infer which dim is channel vs observation vs extra, 
             # so leaving to original shape (on user to get correct)
             reshaped = data
-        self.data = torch.tensor(reshaped, device=self.device, dtype=torch.float32)
+        self.data = torch.tensor(reshaped, device=self.data_device, dtype=torch.float32)
 
     def __getitem__(self, idx):
         """Return data at index."""

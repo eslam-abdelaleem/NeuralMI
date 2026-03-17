@@ -48,23 +48,32 @@ class TemporalWindowDataset(Dataset, ABC):
     This is less memory-efficient but makes actions like applying noise repeatedly FAR faster
     """
     
-    def __init__(self, window_manager=None, device=None):
+    def __init__(self, window_manager=None, device=None, data_device='cpu'):
         """
         Parameters
         ----------
         window_manager : WindowManager, optional
             External window manager for alignment.
         device : str, optional
-            Device for tensor operations
+            Compute device used by the model.  Kept for reference; not used
+            for data tensor storage.
+        data_device : str, optional
+            Device on which ``self.data`` tensors are stored.  Defaults to
+            ``'cpu'`` so that large windowed arrays live in pageable system RAM
+            and the OS can reclaim memory freely between training tasks.  Pass
+            ``'auto'`` to co-locate data with the compute device.
         """
         self.window_manager = window_manager
-        if device:
-            self.device = device
+        self.device = get_device() if not device else torch.device(str(device))
+        if data_device == 'auto':
+            self.data_device = self.device
+        elif data_device is None or str(data_device) == 'cpu':
+            self.data_device = torch.device('cpu')
         else:
-            self.device = get_device()
-        self.data_master = None # Will be allocated when moving to windows
-        self.data = None # Will be allocated when moving to windows
-        self.time_offset = 0 # By default, no offset is applied
+            self.data_device = torch.device(str(data_device))
+        self.data_master = None  # Allocated when moving to windows
+        self.data = None         # Allocated when moving to windows
+        self.time_offset = 0     # No offset by default
 
     # ------ Window handling
     def set_window_manager(self, window_manager):
@@ -140,26 +149,29 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     but assumes a constant sample rate.
     """
     
-    def __init__(self, data, time_vector=None, window_manager=None, device=None, min_coverage_fraction=0.2):
+    def __init__(self, data, time_vector=None, window_manager=None, device=None,
+                 min_coverage_fraction=0.2, data_device='cpu'):
         """
         Parameters
         ----------
         data : array-like
-            Continuous data of shape (n_timepoints, n_channels)
-            If more than 3D (n_timepoints, n_channels, *extra_dims), it will be flattened to (n_timepoints, n_channels*...)
+            Continuous data of shape (n_timepoints, n_channels).
+            If more than 3D (n_timepoints, n_channels, *extra_dims), it will
+            be flattened to (n_timepoints, n_channels*...).
         time_vector : array-like, optional
-            Time stamps for each sample. 
-            If None, assumes data sampled on positive integers in time [0, 1, 2, etc.]
+            Time stamps for each sample.
+            If None, assumes data sampled on positive integers [0, 1, 2, ...].
         window_manager : WindowManager, optional
-            External window manager for alignment
+            External window manager for alignment.
         device : str, optional
-            Device for tensor operations
+            Compute device (kept for reference; not used for data storage).
         min_coverage_fraction : float, optional
-            Minimum fraction of a window that must be covered by actual data (vs. padded) for the window to be considered valid.
-            This is used in validate_window_coverage to filter out windows that are mostly empty due to large jumps in time.
+            Minimum fraction of a window that must be covered by actual data
+            for the window to be considered valid.
+        data_device : str, optional
+            Device for storing ``self.data``.  Defaults to ``'cpu'``.
         """
-        # Call super init first to set device and window_manager
-        super().__init__(window_manager, device)
+        super().__init__(window_manager, device, data_device)
 
         if isinstance(data, list):
             data = np.array(data)
@@ -278,7 +290,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             # Reshape back to (n_windows, max_samples) and assign
             data[:, i, :] = interp_vals.reshape(self.window_manager.n_windows, self.max_samples_per_window)
 
-        self.data = torch.tensor(data, device=self.device)
+        self.data = torch.tensor(data, device=self.data_device)
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
@@ -333,7 +345,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         if not hasattr(self, '_data_mask'):
             self._data_mask = torch.nonzero(self.data, as_tuple=True)
         if not hasattr(self, '_noise_buffer') or len(self._noise_buffer) != len(self._data_mask[0]):
-            self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.device, dtype=self.data.dtype)
+            self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.data.device, dtype=self.data.dtype)
         self._noise_buffer.normal_(mean=0, std=amplitude)
         self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
 
@@ -350,13 +362,14 @@ class ContinuousWindowDataset(TemporalWindowDataset):
 class SpikeWindowDataset(TemporalWindowDataset):
     """Dataset for spike train data."""
     
-    def __init__(self, spike_times, 
+    def __init__(self, spike_times,
                  window_manager=None,
                  no_spike_value=-1.0, device=None,
                  exclude_bursty_neurons: bool = False,
-                 burst_threshold_multiplier: float = 5.0):
-        
-        super().__init__(window_manager, device)
+                 burst_threshold_multiplier: float = 5.0,
+                 data_device='cpu'):
+
+        super().__init__(window_manager, device, data_device)
 
         self.data_orig = [np.array(st) for st in spike_times]
         # Ensure spike times are sorted within each neuron (safe: copy already made via np.array above)
@@ -454,8 +467,8 @@ class SpikeWindowDataset(TemporalWindowDataset):
             column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
             data[window_inds,i,column_inds] = self.data_orig[i][mask] - self.window_manager.window_times[window_inds]
             self._cached_window_inds.append(window_inds)
-        # Convert to tensor, move to device. Make copies that noise will be applied on
-        self.data = torch.tensor(data, device=self.device)
+        # Convert to tensor on data_device. Keep a master clone for noise/precision ops.
+        self.data = torch.tensor(data, device=self.data_device)
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
@@ -491,10 +504,10 @@ class SpikeWindowDataset(TemporalWindowDataset):
         if not hasattr(self, '_data_mask'):
             self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
         if not hasattr(self, '_noise_buffer') or len(self._noise_buffer) != len(self._data_mask[0]):
-            self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.device, dtype=self.data.dtype)
+            self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.data.device, dtype=self.data.dtype)
         self._noise_buffer.uniform_(-amplitude / 2, amplitude / 2)
         self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
-    
+
     def apply_precision(self, precision_level):
         """Round spike times to a specific resolution/precision level."""
         # Reset to master copy if zero. Avoids divide by zero, useful as interface to undo changes
@@ -504,7 +517,9 @@ class SpikeWindowDataset(TemporalWindowDataset):
         # If data mask hasn't been created, compute that now
         if not hasattr(self, '_data_mask'):
             self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
-        self.data[self._data_mask] = torch.round(self.data[self._data_mask] / precision_level) * precision_level
+        # Always round from data_master so repeated calls at different precision
+        # levels each start from the original spike times (not re-rounded values).
+        self.data[self._data_mask] = torch.round(self.data_master[self._data_mask] / precision_level) * precision_level
 
 
 class BinnedSpikeDataset(TemporalWindowDataset):
@@ -525,8 +540,9 @@ class BinnedSpikeDataset(TemporalWindowDataset):
     """
 
     def __init__(self, spike_times, bin_size: float,
-                 window_manager=None, device=None, normalize: bool = True):
-        super().__init__(window_manager, device)
+                 window_manager=None, device=None, normalize: bool = True,
+                 data_device='cpu'):
+        super().__init__(window_manager, device, data_device)
         self.data_orig = [np.array(st) for st in spike_times]
         self.bin_size = bin_size
         self.normalize = normalize
@@ -589,9 +605,9 @@ class BinnedSpikeDataset(TemporalWindowDataset):
             if self.normalize:
                 data[:, i, :] /= self.bin_size
 
-        self.data = torch.tensor(data, device=self.device)
+        self.data = torch.tensor(data, device=self.data_device)
         self.data_master = self.data.detach().clone()
-    
+
     def validate_window_coverage(self):
         """Mark a window valid if at least one neuron fired in it."""
         n_windows = self.window_manager.n_windows
@@ -640,26 +656,30 @@ class BinnedSpikeDataset(TemporalWindowDataset):
 class CategoricalWindowDataset(TemporalWindowDataset):
     """Dataset for categorical time series data with one-hot encoding."""
     
-    def __init__(self, data, time_vector=None, window_manager=None, device=None, min_coverage_fraction=0.2, encoding: str = 'majority_vote'):
+    def __init__(self, data, time_vector=None, window_manager=None, device=None,
+                 min_coverage_fraction=0.2, encoding: str = 'majority_vote',
+                 data_device='cpu'):
         """
         Parameters
         ----------
         data : array-like
-            Categorical data of shape (n_timepoints, n_channels) with integer category labels
+            Categorical data of shape (n_timepoints, n_channels) with integer category labels.
         time_vector : array-like, optional
-            Time stamps for each sample. 
-            If None, assumes data sampled on positive integers in time [0, 1, 2, etc.]
+            Time stamps for each sample.
+            If None, assumes data sampled on positive integers [0, 1, 2, ...].
         window_manager : WindowManager, optional
-            External window manager for alignment
+            External window manager for alignment.
         device : str, optional
-            Device for tensor operations.
+            Compute device (kept for reference; not used for data storage).
         min_coverage_fraction : float, optional
-            Minimum fraction of a window that must be covered by actual data (vs. padded) for the window to be considered valid.
-            This is used in validate_window_coverage to filter out windows that are mostly empty due to large jumps in time.
+            Minimum fraction of a window covered by actual data for it to be
+            considered valid.
         encoding : str, optional
             Method for encoding categorical data into windows.
+        data_device : str, optional
+            Device for storing ``self.data``.  Defaults to ``'cpu'``.
         """
-        super().__init__(window_manager, device)
+        super().__init__(window_manager, device, data_device)
 
         # Store original categorical data, convert to ints if not
         arr = np.array(data)
@@ -760,7 +780,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
                 result[w, c, np.argmax(counts)] = 1.0
 
         self._cached_window_inds = win_idx
-        self.data = torch.tensor(result, device=self.device)
+        self.data = torch.tensor(result, device=self.data_device)
 
     def _move_probability(self):
         """Empirical category probabilities per window. Shape: (n_windows, n_channels, n_categories)"""
@@ -785,7 +805,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
                     result[w, c, :] = counts / total
 
         self._cached_window_inds = win_idx
-        self.data = torch.tensor(result, device=self.device)
+        self.data = torch.tensor(result, device=self.data_device)
 
     def _move_full_trajectory(self):
         """Original behavior: full one-hot trajectory. Shape: (n_windows, n_channels, n_categories * max_samples)"""
@@ -812,8 +832,8 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         expanded_window_inds = np.repeat(window_inds, self.n_categories)
         for i in range(n_channels):
             data[expanded_window_inds, i, expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[mask, i]].flatten()
-        self.data = torch.tensor(data, device=self.device)
-        self.data_master = self.data.detach().clone()
+        self.data = torch.tensor(data, device=self.data_device)
+        # data_master is set by move_data_to_windows() after this returns.
 
     def validate_window_coverage(self):
         """Check which windows have sufficient data coverage."""

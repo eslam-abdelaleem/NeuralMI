@@ -146,14 +146,24 @@ def run_precision_analysis(
           - ``'raw_results'`` — same DataFrame as ``'dataframe'``.
     """
     logger.info("Initializing Precision Analysis...")
-    
+
     # 1. Prepare Data & Model
+    # Precision analysis trains once then runs many forward passes on the same
+    # dataset at different corruption levels.  Keeping data on the compute
+    # device ('auto') avoids repeated host→device transfers and is therefore
+    # the default here.  Users can override by setting dataset_device='cpu'
+    # in base_params if memory is a concern.
+    device = get_device(base_params.get('device'))
+    _data_device_raw = base_params.get('dataset_device', 'auto')
+    _data_device = str(device) if _data_device_raw == 'auto' else (_data_device_raw or 'cpu')
+
     dataset = create_dataset(
         x_data, y_data,
         processor_type_x=base_params.get('processor_type_x'),
         processor_type_y=base_params.get('processor_type_y'),
         processor_params_x=base_params.get('processor_params_x'),
-        processor_params_y=base_params.get('processor_params_y')
+        processor_params_y=base_params.get('processor_params_y'),
+        data_device=_data_device,
     )
     
     # Update dimensions in base_params based on the dataset
@@ -164,8 +174,6 @@ def run_precision_analysis(
         base_params['input_dim_y'] = dataset.y_data.shape[1] * dataset.y_data.shape[2]
         base_params['n_channels_y'] = dataset.y_data.shape[1]
 
-    device = get_device(base_params.get('device'))
-    
     if base_params.get('custom_critic') is not None:
         critic = base_params['custom_critic']
         logger.debug("Using provided custom critic.")

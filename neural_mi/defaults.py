@@ -81,6 +81,13 @@ BASE_PARAMS_SCHEMA = {
     'lag': {'type': int}, # Lag
     # Reproducibility — used by run() and task.py workers
     'random_seed': {'type': (int, type(None)), 'default': None},
+
+    # Memory / device layout
+    # 'cpu'  — store dataset tensors on CPU (default; safe for long sweeps).
+    # 'auto' — store on the compute device (faster repeated evaluation, e.g. precision mode).
+    # Any explicit device string is also accepted.
+    # Precision mode overrides this to 'auto' unless the user sets it explicitly.
+    'dataset_device': {'type': (str, type(None)), 'default': 'cpu'},
 }
 
 # Parameters allowed in analysis_kwargs for each mode

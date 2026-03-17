@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`dataset_device` parameter**: controls where dataset tensors are stored in
+  memory, independent of the compute device (`device` param).  Default is
+  `'cpu'` for all modes, which keeps large arrays in pageable system RAM so the
+  OS can reclaim memory freely between tasks.  Pass `'auto'` to co-locate data
+  with the compute device (MPS / CUDA), which avoids repeated host→device
+  transfers when the same dataset is evaluated many times — precision analysis
+  uses `'auto'` by default for exactly this reason.  Any explicit device string
+  is also accepted.  Added to `BASE_PARAMS_SCHEMA` in `defaults.py`.
+- **Module-level dataset cache in `task.py`**: sequential sweep tasks that share
+  identical data and dataset-construction parameters (processor type / params /
+  `dataset_device`) now reuse a single pre-built `PairedDataset` object instead
+  of re-running `create_dataset()` for every task.  The cache is keyed by data
+  memory address and construction fingerprint; LRU eviction keeps at most four
+  entries.  Temporal datasets (`PairedTemporalDataset`) are intentionally
+  excluded from caching because they are mutated in-place by `time_shift()`
+  during training.  The cache is process-local and also benefits
+  `multiprocessing` workers that handle more than one task.
+- **Memory-pressure warning in `ParameterSweep`**: when `dataset_device` is not
+  `'cpu'` and a sequential sweep has more than 20 tasks, a `UserWarning` is
+  emitted before training starts, estimating dataset size and advising the user
+  to set `dataset_device='cpu'` if memory pressure is a concern.
+
+### Fixed
+
+- **Root-cause fix for MPS/CUDA memory exhaustion during long sweeps**: all
+  dataset classes (`StaticDataset`, `ContinuousWindowDataset`,
+  `SpikeWindowDataset`, `BinnedSpikeDataset`, `CategoricalWindowDataset`)
+  previously stored `self.data` on the accelerator device by default (via
+  `get_device()`).  On Apple Silicon (unified DRAM) this caused the full
+  dataset to be allocated on MPS for every training task in a sequential sweep,
+  and PyTorch's MPS allocator does not return freed tensors to the OS without
+  an explicit `torch.mps.empty_cache()` call.  With 300 tasks this caused
+  monotonic memory growth and system crashes.  The fix moves all dataset tensor
+  storage to CPU by default; batch loops in the `Trainer` already call
+  `.to(device)` per batch so no training logic changed.
+- **`SubsetView`: device-agnostic indexing**: index tensors are now always
+  created as CPU LongTensors, and `__getitem__` converts any 0-dim index
+  tensor to a Python `int` before delegating to the dataset.  Python `int`
+  indices work on any device tensor (CPU or accelerator), eliminating the
+  previous `RuntimeError` when dataset data was on CPU but index tensors were
+  on MPS, and making `SubsetView` safe for use with `dataset_device='auto'`.
+- **`SpikeWindowDataset.apply_precision()` now reads from `data_master`**:
+  previously the method rounded `self.data` in-place while reading from
+  `self.data` as the source.  Calling it twice at different precision levels
+  would compound the rounding error rather than starting from the original
+  spike times.  The fix mirrors the implementation in
+  `ContinuousWindowDataset` and `BinnedSpikeDataset`, which already read from
+  `self.data_master`.
+- **`PairedDataset._align_datasets()` now performs effective truncation**:
+  when X and Y datasets have different sample counts, the method now slices
+  `self.data` on both sides so that `__len__()` (which reads
+  `self.data.shape[0]`) reports the correct length.  The previous
+  implementation set a phantom `n_windows` attribute that `StaticDataset` does
+  not use, leaving mismatched datasets that would crash during training.  Any
+  lazily-allocated `data_master` is also invalidated so it is re-cloned from
+  the truncated data on next use.
+- **`CategoricalWindowDataset._move_full_trajectory()` no longer assigns
+  `data_master` twice**: the method previously set `self.data_master` at the
+  end of its body while `move_data_to_windows()` also set it unconditionally
+  after every encoding method returned.  The redundant internal assignment is
+  removed; all three encoding paths now consistently delegate `data_master`
+  initialization to their single caller.
+- **`DEVELOPERS_GUIDE.md` processor file reference corrected**: entries
+  referring to a non-existent `processors.py` file have been updated to point
+  to the correct files (`handler.py`, `temporal.py`, `static.py`) and the
+  step-by-step guide for adding a new data processor now reflects the actual
+  codebase structure.
+
 ## [2.1.0] - 2026-03-13
 
 ### Added
