@@ -38,7 +38,11 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
     if isinstance(results, float): return results * NATS_TO_BITS
     elif isinstance(results, pd.DataFrame):
         df = results.copy()
-        cols = ['test_mi', 'train_mi', 'raw_train_mi', 'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'slope']
+        cols = [
+            'test_mi', 'train_mi', 'raw_train_mi',
+            'test_mi_std', 'train_mi_std',          # precision-mode std columns
+            'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'slope',
+        ]
         for col in cols:
             if col in df.columns: df[col] *= NATS_TO_BITS
         return df
