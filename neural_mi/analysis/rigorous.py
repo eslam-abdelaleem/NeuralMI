@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger
 from neural_mi.exceptions import InsufficientDataError, TrainingError
-from neural_mi.utils import _configure_multiprocessing
+from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 
 
 # ---------------------------------------------------------------------------
@@ -267,12 +267,8 @@ class AnalysisWorkflow:
                     )
 
                 for i_subset, subset_indices in enumerate(chunks):
-                    x_subset = self.x_data[subset_indices]
-                    y_subset = self.y_data[subset_indices]
-                    if isinstance(x_subset, torch.Tensor) and x_subset.is_cuda or (torch.backends.mps.is_available() and x_subset.is_mps):
-                        x_subset = x_subset.cpu()
-                    if isinstance(y_subset, torch.Tensor) and y_subset.is_cuda or (torch.backends.mps.is_available() and y_subset.is_mps):
-                        y_subset = y_subset.cpu()
+                    x_subset = _ensure_cpu(self.x_data[subset_indices])
+                    y_subset = _ensure_cpu(self.y_data[subset_indices])
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
                     tasks.append((x_subset, y_subset, current_params.copy(), task_run_id))
 

@@ -14,7 +14,7 @@ from tqdm.auto import tqdm
 
 from .sweep import ParameterSweep
 from neural_mi.logger import logger
-from neural_mi.utils import _configure_multiprocessing
+from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +183,9 @@ def run_dimensionality_analysis(
             f"y_data provided. Computing Interaction Dimensionality "
             f"({n_splits} independent run{'s' if n_splits != 1 else ''})."
         )
+        x_cpu, y_cpu = _ensure_cpu(x_data), _ensure_cpu(y_data)
         split_tasks = [
-            (x_data, y_data, analysis_params, sweep_grid, i)
+            (x_cpu, y_cpu, analysis_params, sweep_grid, i)
             for i in range(n_splits)
         ]
         all_results = _dispatch_splits(split_tasks, n_workers, show_progress)
@@ -211,7 +212,7 @@ def run_dimensionality_analysis(
             f"Temporal split at lag={lag} samples: {x_a.shape[0]} aligned sample pairs."
         )
         # Only one temporal split — forward n_workers into the inner ParameterSweep
-        split_tasks = [(x_a, x_b, analysis_params, sweep_grid, 0)]
+        split_tasks = [(_ensure_cpu(x_a), _ensure_cpu(x_b), analysis_params, sweep_grid, 0)]
         all_results = _dispatch_splits(split_tasks, n_workers, show_progress)
 
     elif split_method in ('random', 'spatial'):
@@ -242,7 +243,7 @@ def run_dimensionality_analysis(
                 else:  # 3D (N, C, W)
                     x_a = x_data[:, :half, :]
                     x_b = x_data[:, half:, :]
-            split_tasks.append((x_a, x_b, analysis_params, sweep_grid, i))
+            split_tasks.append((_ensure_cpu(x_a), _ensure_cpu(x_b), analysis_params, sweep_grid, i))
 
         all_results = _dispatch_splits(split_tasks, n_workers, show_progress)
 
