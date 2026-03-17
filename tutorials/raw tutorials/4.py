@@ -314,7 +314,7 @@ plt.show()
 # %%
 # Access raw per-run results before averaging.
 # VERIFY: model_results.details['raw_results'] is a DataFrame with one row per
-# individual run combination. The per-run MI column is 'test_mi' (the test-set
+# individual run combination. The per-run MI column is 'train_mi' (the train-partition
 # MI at the best epoch), not 'mi_mean' which only appears in the aggregated
 # dataframe after averaging over run_id.
 best_hidden = df_model.loc[df_model['mi_mean'].idxmax(), 'hidden_dim']
@@ -322,13 +322,13 @@ best_embed  = df_model.loc[df_model['mi_mean'].idxmax(), 'embedding_dim']
 
 raw_df = model_results.details.get('raw_results', model_results.dataframe)
 mask = (raw_df['hidden_dim'] == best_hidden) & (raw_df['embedding_dim'] == best_embed)
-subset = raw_df[mask][['run_id', 'hidden_dim', 'embedding_dim', 'test_mi']]
+subset = raw_df[mask][['run_id', 'hidden_dim', 'embedding_dim', 'train_mi']]
 
 print(f"Three independent runs for hidden_dim={best_hidden}, "
       f"embedding_dim={best_embed}:")
 print(subset.to_string(index=False))
-print(f"\nMean: {subset['test_mi'].mean():.3f} bits")
-print(f"Std:  {subset['test_mi'].std():.3f} bits")
+print(f"\nMean: {subset['train_mi'].mean():.3f} bits")
+print(f"Std:  {subset['train_mi'].std():.3f} bits")
 
 # %% [markdown]
 # ## 5. Reading the Sweep Dataframe

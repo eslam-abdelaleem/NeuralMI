@@ -763,9 +763,11 @@ def _run_inner(
         NATS_TO_BITS = 1 / np.log(2)
 
         # Report the train MI evaluated at the best-generalising checkpoint.
-        # When all test-MI values are non-positive the Trainer already sets
-        # final_train_mi = 0.0, so no extra guard is needed here.
+        # Model selection used test MI; if all test-MI values were non-positive,
+        # the Trainer already zeroes train_mi — preserve that guard explicitly.
         mi = res_dict.pop('train_mi', float('nan'))
+        if res_dict.get('all_mi_negative'):
+            mi = 0.0
         mi = _convert_mi_units(mi, to_bits)
 
         # Keep test_mi and raw_train_mi in details, converting units

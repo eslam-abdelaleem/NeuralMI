@@ -1,6 +1,6 @@
 # neural_mi/analysis/__init__.py
 """This package contains modules for running different analysis workflows."""
-from .workflow import AnalysisWorkflow          # kept for backward compat
+from .rigorous import AnalysisWorkflow          # kept for backward compat
 from .rigorous import run_rigorous_analysis
 from .sweep import ParameterSweep
 from .lag import run_lag_analysis

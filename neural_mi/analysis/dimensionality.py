@@ -9,9 +9,74 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional
 import torch
+import torch.multiprocessing as mp
+from tqdm.auto import tqdm
 
 from .sweep import ParameterSweep
 from neural_mi.logger import logger
+from neural_mi.utils import _configure_multiprocessing
+
+
+# ---------------------------------------------------------------------------
+# Module-level picklable wrapper — must be defined at module scope so that
+# multiprocessing can serialise it via its qualified name.
+# ---------------------------------------------------------------------------
+
+def _run_single_split_task(args):
+    """Top-level wrapper for Pool.map — must be module-level for pickling.
+
+    Each split is executed with ``n_workers=1`` internally to avoid nested
+    multiprocessing pools.
+    """
+    x_a, x_b, analysis_params, sweep_grid, split_id = args
+    return _run_single_split(x_a, x_b, analysis_params, sweep_grid,
+                             n_workers=1, split_id=split_id)
+
+
+def _dispatch_splits(split_tasks, n_workers, show_progress):
+    """Execute split tasks, parallelising *across splits* when ``n_workers > 1``.
+
+    Strategy
+    --------
+    * **Single split** (``len(split_tasks) == 1``): run sequentially and
+      forward ``n_workers`` into the inner ``ParameterSweep`` so that any
+      sweep-grid parallelism still uses the available workers.
+    * **Multiple splits, ``n_workers > 1``**: dispatch splits to a
+      ``Pool(n_workers)`` — each split's inner ``ParameterSweep`` gets
+      ``n_workers=1`` to prevent nested pools.
+    * **``n_workers <= 1``**: fully sequential.
+    """
+    n_tasks = len(split_tasks)
+
+    if n_workers <= 1 or n_tasks <= 1:
+        # Sequential path.
+        # When there is only one split, pass n_workers through so the inner
+        # ParameterSweep can use them for sweep-grid parallelism.
+        inner_workers = n_workers if n_tasks == 1 else 1
+        all_results = []
+        for args in tqdm(split_tasks, desc="Dimensionality Splits",
+                         disable=not show_progress or n_tasks == 1):
+            x_a, x_b, analysis_params, sweep_grid, split_id = args
+            rows = _run_single_split(x_a, x_b, analysis_params, sweep_grid,
+                                     n_workers=inner_workers, split_id=split_id)
+            all_results.extend(rows)
+        return all_results
+
+    # Parallel path — splits dispatched to a Pool, inner sweeps sequential.
+    logger.info(f"Parallelising {n_tasks} dimensionality splits across {n_workers} workers...")
+    _configure_multiprocessing()
+    with mp.get_context('spawn').Pool(processes=n_workers) as pool:
+        results_per_split = list(tqdm(
+            pool.imap(_run_single_split_task, split_tasks),
+            total=n_tasks,
+            desc="Dimensionality Splits",
+            disable=not show_progress,
+        ))
+
+    all_results = []
+    for rows in results_per_split:
+        all_results.extend(rows)
+    return all_results
 
 
 def run_dimensionality_analysis(
@@ -65,13 +130,17 @@ def run_dimensionality_analysis(
     return_spectrum : bool, optional
         If True, includes the raw singular values array in each result row.
     n_workers : int, optional
-        Number of parallel workers. Defaults to 1.
+        Number of parallel workers.  When ``n_splits > 1`` the workers are
+        distributed *across splits* (each split's inner sweep runs
+        sequentially to avoid nested pools).  When ``n_splits == 1`` the
+        workers are forwarded into the inner ``ParameterSweep`` to
+        parallelise any sweep-grid combinations.  Defaults to 1.
 
     Returns
     -------
     pd.DataFrame
         One row per split (and per sweep combination). Columns include split_id,
-        test_mi, participation_ratio, and any additional spectral metrics.
+        train_mi, participation_ratio, and any additional spectral metrics.
 
     """
 
@@ -97,20 +166,19 @@ def run_dimensionality_analysis(
     if n_workers is None:
         n_workers = 1
 
+    show_progress = analysis_params.get('show_progress', True)
+
     # 2. Interaction Dimensionality (X and Y both provided)
     if y_data is not None:
         logger.info(
             f"y_data provided. Computing Interaction Dimensionality "
             f"({n_splits} independent run{'s' if n_splits != 1 else ''})."
         )
-        all_results = []
-        for i in range(n_splits):
-            if n_splits > 1:
-                logger.info(f"--- Interaction Run {i + 1}/{n_splits} ---")
-            run_rows = _run_single_split(
-                x_data, y_data, analysis_params, sweep_grid, n_workers, split_id=i
-            )
-            all_results.extend(run_rows)
+        split_tasks = [
+            (x_data, y_data, analysis_params, sweep_grid, i)
+            for i in range(n_splits)
+        ]
+        all_results = _dispatch_splits(split_tasks, n_workers, show_progress)
         return pd.DataFrame(all_results)
 
     # 3. Intrinsic Dimensionality (only X provided — channel split)
@@ -133,8 +201,9 @@ def run_dimensionality_analysis(
         logger.info(
             f"Temporal split at lag={lag} samples: {x_a.shape[0]} aligned sample pairs."
         )
-        all_results = _run_single_split(x_a, x_b, analysis_params,
-                                        sweep_grid, n_workers, split_id=0)
+        # Only one temporal split — forward n_workers into the inner ParameterSweep
+        split_tasks = [(x_a, x_b, analysis_params, sweep_grid, 0)]
+        all_results = _dispatch_splits(split_tasks, n_workers, show_progress)
 
     elif split_method in ('random', 'spatial'):
         if n_channels < 2:
@@ -143,11 +212,10 @@ def run_dimensionality_analysis(
                 f"x_data has shape {tuple(x_data.shape)}."
             )
         loops = n_splits if split_method == 'random' else 1
-        all_results = []
 
+        # Pre-compute all (x_a, x_b) pairs before dispatching.
+        split_tasks = []
         for i in range(loops):
-            logger.info(f"--- Running Split {i + 1}/{loops} ---")
-
             if split_method == 'random':
                 indices = np.random.permutation(n_channels)
                 half = n_channels // 2
@@ -165,10 +233,9 @@ def run_dimensionality_analysis(
                 else:  # 3D (N, C, W)
                     x_a = x_data[:, :half, :]
                     x_b = x_data[:, half:, :]
+            split_tasks.append((x_a, x_b, analysis_params, sweep_grid, i))
 
-            split_rows = _run_single_split(x_a, x_b, analysis_params,
-                                           sweep_grid, n_workers, split_id=i)
-            all_results.extend(split_rows)
+        all_results = _dispatch_splits(split_tasks, n_workers, show_progress)
 
     else:
         raise ValueError(

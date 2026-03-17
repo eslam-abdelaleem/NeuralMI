@@ -289,13 +289,13 @@ df_prec = precision_results.dataframe
 tau_ms  = df_prec['tau'] * 1000   # convert to milliseconds for plotting
 
 fig, ax = plt.subplots(figsize=(10, 5))
-ax.plot(tau_ms, df_prec['test_mi'], 'o-', color='darkorange', linewidth=2,
+ax.plot(tau_ms, df_prec['train_mi'], 'o-', color='darkorange', linewidth=2,
         label='MI vs. jitter')
 
-if 'test_mi_std' in df_prec.columns:
+if 'train_mi_std' in df_prec.columns:
     ax.fill_between(tau_ms,
-                    df_prec['test_mi'] - df_prec['test_mi_std'],
-                    df_prec['test_mi'] + df_prec['test_mi_std'],
+                    df_prec['train_mi'] - df_prec['train_mi_std'],
+                    df_prec['train_mi'] + df_prec['train_mi_std'],
                     color='darkorange', alpha=0.2)
 
 ax.axhline(y=baseline_mi, color='black', linestyle='--',
@@ -407,13 +407,13 @@ else:
 df_cont = prec_cont.dataframe
 
 fig, ax = plt.subplots(figsize=(10, 5))
-ax.plot(df_cont['tau'], df_cont['test_mi'], 'o-', color='steelblue', linewidth=2,
+ax.plot(df_cont['tau'], df_cont['train_mi'], 'o-', color='steelblue', linewidth=2,
         label='MI vs. noise level')
 
-if 'test_mi_std' in df_cont.columns:
+if 'train_mi_std' in df_cont.columns:
     ax.fill_between(df_cont['tau'],
-                    df_cont['test_mi'] - df_cont['test_mi_std'],
-                    df_cont['test_mi'] + df_cont['test_mi_std'],
+                    df_cont['train_mi'] - df_cont['train_mi_std'],
+                    df_cont['train_mi'] + df_cont['train_mi_std'],
                     color='steelblue', alpha=0.2)
 
 ax.axhline(y=bl_cont,  color='black', linestyle='--',

@@ -108,7 +108,7 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     ----------
     raw_results_df : pd.DataFrame
         A DataFrame containing the raw results from all training runs in the
-        rigorous analysis. Must contain 'gamma' and 'test_mi' columns.
+        rigorous analysis. Must contain 'gamma' and 'train_mi' columns.
     corrected_result : Dict[str, Any]
         A dictionary containing the results of the bias correction, including
         the 'slope', 'mi_corrected', 'mi_error', and 'gammas_used'.
@@ -121,9 +121,9 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     """
     if ax is None: fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
-    sns.stripplot(x='gamma', y='test_mi', data=raw_results_df, ax=ax, color='gray', alpha=0.5)
-    agg = raw_results_df.groupby('gamma')['test_mi'].mean().reset_index()
-    ax.plot(agg['gamma'] - 1, agg['test_mi'], 'o-', color='black', label='Mean MI per Gamma')
+    sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color='gray', alpha=0.5)
+    agg = raw_results_df.groupby('gamma')['train_mi'].mean().reset_index()
+    ax.plot(agg['gamma'] - 1, agg['train_mi'], 'o-', color='black', label='Mean MI per Gamma')
 
     slope, intercept = corrected_result['slope'], corrected_result['mi_corrected']
     mi_error, gammas_used = corrected_result.get('mi_error', 0), corrected_result['gammas_used']

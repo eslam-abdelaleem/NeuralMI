@@ -219,11 +219,14 @@ class Results:
             if self.dataframe is None or self.dataframe.empty:
                 raise ValueError(
                     "Cannot plot precision results: dataframe is missing or empty. "
-                    "Expected columns: 'tau' and 'mi_mean' (or 'test_mi')."
+                    "Expected columns: 'tau' and 'mi_mean' (or 'train_mi')."
                 )
             df = self.dataframe.copy()
-            if 'mi_mean' not in df.columns and 'test_mi' in df.columns:
-                df = df.rename(columns={'test_mi': 'mi_mean'})
+            if 'mi_mean' not in df.columns:
+                if 'train_mi' in df.columns:
+                    df = df.rename(columns={'train_mi': 'mi_mean'})
+                elif 'test_mi' in df.columns:  # backward compat
+                    df = df.rename(columns={'test_mi': 'mi_mean'})
 
             precision_tau   = self.details.get('precision_tau')
             baseline_mi     = self.details.get('baseline_mi')

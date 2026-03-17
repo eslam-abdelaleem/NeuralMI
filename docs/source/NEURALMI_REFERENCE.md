@@ -472,7 +472,7 @@ result.plot()   # MI vs 1/gamma with fit line and extrapolation point
 - `equalize_n=True` — truncate all lag windows to the minimum sample count (for fair comparison)
 
 **Returns:** `Results` with:
-- `result.dataframe` — columns: `lag`, `test_mi`, `train_mi`, `n_windows`, plus any sweep params
+- `result.dataframe` — columns: `lag`, `train_mi`, `test_mi`, `n_windows`, plus any sweep params
 - `result.mi_estimate` — None
 
 ```python
@@ -481,7 +481,7 @@ result = nmi.run(x, y, mode='lag',
                  base_params={'n_epochs': 50},
                  n_workers=8)
 result.plot()   # MI vs lag; peak indicates best offset
-peak_lag = result.dataframe.loc[result.dataframe['test_mi'].idxmax(), 'lag']
+peak_lag = result.dataframe.loc[result.dataframe['train_mi'].idxmax(), 'lag']
 ```
 
 ---
@@ -502,7 +502,7 @@ peak_lag = result.dataframe.loc[result.dataframe['test_mi'].idxmax(), 'lag']
 - `n_noise_samples=50` — for `'noise'` method: repeated samples per τ
 
 **Returns:** `Results` with:
-- `result.dataframe` — columns: `tau`, `test_mi`, `test_mi_std`
+- `result.dataframe` — columns: `tau`, `train_mi`, `train_mi_std`
 - `result.details`:
   - `baseline_mi` — MI at τ=0 (uncorrupted)
   - `precision_tau` — τ* for the primary (first) threshold ratio (backward-compatible)
@@ -927,7 +927,7 @@ All internal computations are in **nats** (natural log). Conversion to bits (`×
 - **`'random'`**: IID random split. Use only when temporal correlations are not a concern.
 
 ### Rigorous Mode — 1/γ Space
-The `rigorous` mode trains on subsets of size `N/γ`. The bias correction works in `1/γ` space (not `γ` space) because the bias is approximately linear in `1/N`, hence linear in `1/γ` when `N` is fixed. The functions `_find_linear_region` and `_extrapolate_mi` (in `analysis/workflow.py`) operate in this space.
+The `rigorous` mode trains on subsets of size `N/γ`. The bias correction works in `1/γ` space (not `γ` space) because the bias is approximately linear in `1/N`, hence linear in `1/γ` when `N` is fixed. The functions `_find_linear_region` and `_extrapolate_mi` (in `analysis/rigorous.py`) operate in this space using the per-run `train_mi` as the dependent variable, consistent with every other mode.
 
 ### Pairwise Mode — Channel Naming
 The output DataFrame uses columns `ch_x`, `ch_y`, `mi_estimate` (integer channel indices). The MI matrix is `result.details['mi_matrix']`:
@@ -961,10 +961,10 @@ nmi.run(x, y, mode=..., **kwargs) → Results
 Modes:
   estimate     → result.mi_estimate
   sweep        → result.dataframe [sweep_var, mi_mean, mi_std]
-  dimensionality → result.dataframe [embedding_dim, test_mi, participation_ratio]
+  dimensionality → result.dataframe [embedding_dim, train_mi, participation_ratio]
   rigorous     → result.mi_estimate ± result.details['mi_error']
-  lag          → result.dataframe [lag, test_mi]
-  precision    → result.dataframe [tau, test_mi]; result.details['precision_tau'], ['precision_thresholds']
+  lag          → result.dataframe [lag, train_mi]
+  precision    → result.dataframe [tau, train_mi]; result.details['precision_tau'], ['precision_thresholds']
   conditional  → result.mi_estimate  (I(X;Y|Z))
   transfer     → result.mi_estimate  (TE(X→Y)); bidirectional_te=True adds te_yx, directionality_index
   pairwise     → result.dataframe [ch_x, ch_y, mi_estimate]

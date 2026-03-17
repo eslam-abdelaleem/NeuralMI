@@ -31,8 +31,8 @@ def sweep_results_df():
 def rigorous_results_df():
     """Provides a sample DataFrame from a rigorous analysis."""
     gammas = np.repeat(np.arange(1, 6), 5)
-    test_mi = 1.0 / gammas + 0.5 + np.random.randn(len(gammas)) * 0.1
-    data = {'gamma': gammas, 'test_mi': test_mi}
+    train_mi = 1.0 / gammas + 0.5 + np.random.randn(len(gammas)) * 0.1
+    data = {'gamma': gammas, 'train_mi': train_mi}
     return pd.DataFrame(data)
 
 @patch('matplotlib.pyplot.show')
