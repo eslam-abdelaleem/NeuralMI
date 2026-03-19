@@ -29,6 +29,7 @@ from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .utils import get_device
 from .logger import logger, set_verbosity
+from .defaults import PROCESSOR_PARAMS_SCHEMA
 
 
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
@@ -667,7 +668,9 @@ def _run_inner(
                   "min_gamma_points": min_gamma_points, "confidence_level": confidence_level,
                   **analysis_kwargs}
 
-    processor_param_keys = ['window_size', 'n_seconds', 'max_spikes_per_window', 'data_format']
+    # Build the complete set of processor-level keys from the schema so that
+    # any schema addition automatically triggers the deferred-processing path.
+    processor_param_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
     is_proc_sweep = mode == 'sweep' and any(key in (sweep_grid or {}) for key in processor_param_keys)
     
     if is_proc_sweep or mode == 'lag':

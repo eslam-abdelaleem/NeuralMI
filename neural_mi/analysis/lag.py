@@ -60,7 +60,7 @@ def run_lag_analysis(
     all_tasks = []
 
     proc_type_y = base_params.get('processor_type_y')
-    if not proc_type_y:
+    if proc_type_y is None:
         proc_type_y = base_params.get('processor_type_x')
         logger.info("`processor_type_y` not specified in `base_params`, using the same as for x.")
 

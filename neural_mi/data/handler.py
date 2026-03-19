@@ -341,12 +341,19 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
             return BinnedSpikeDataset(data, bin_size=bin_size, device=device,
                                       normalize=normalize, data_device=data_device)
         no_spike_val = (proc_params or {}).get('no_spike_value', -1.0)
+        excl_bursty = (proc_params or {}).get('exclude_bursty_neurons', False)
+        burst_mult = (proc_params or {}).get('burst_threshold_multiplier', 5.0)
         return SpikeWindowDataset(data, time, device=device,
-                                  no_spike_value=no_spike_val, data_device=data_device)
+                                  no_spike_value=no_spike_val,
+                                  exclude_bursty_neurons=excl_bursty,
+                                  burst_threshold_multiplier=burst_mult,
+                                  data_device=data_device)
     elif proc_type == 'categorical':
         min_cov = (proc_params or {}).get('min_coverage_fraction', 0.2)
+        encoding = (proc_params or {}).get('encoding', 'majority_vote')
         return CategoricalWindowDataset(data, time, device=device,
                                         min_coverage_fraction=min_cov,
+                                        encoding=encoding,
                                         data_device=data_device)
     else:
         raise ValueError(f"Unknown processor type: {proc_type}")
@@ -370,11 +377,11 @@ def create_dataset(
     """
     proc_type_x = processor_type_x
     proc_params_x = (processor_params_x or {}).copy()
-    proc_type_y = processor_type_y if processor_type_y else processor_type_x
+    proc_type_y = processor_type_y if processor_type_y is not None else processor_type_x
     proc_params_y = (processor_params_y or {}).copy() if processor_params_y else proc_params_x.copy()
 
     if proc_type_x is None or proc_type_y is None:
-        logger.warning(
+        logger.debug(
             "Pre-processed data detected. Skipping compatibility check. "
             "Ensure X and Y have compatible representations."
         )
