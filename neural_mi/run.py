@@ -112,6 +112,7 @@ def run(
     permutation_test: bool = False,
     n_permutations: int = 1,
     z_data: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    z_time: Optional[np.ndarray] = None,
     z_processor_type: Optional[str] = None,
     z_processor_params: Optional[Dict[str, Any]] = None,
     history_window: Optional[int] = None,
@@ -442,7 +443,8 @@ def run(
             tau_grid=tau_grid, corrupt_target=corrupt_target,
             corruption_method=corruption_method, n_noise_samples=n_noise_samples,
             threshold_ratio=threshold_ratio, permutation_test=permutation_test,
-            n_permutations=n_permutations, z_data=z_data, z_processor_type=z_processor_type,
+            n_permutations=n_permutations, z_data=z_data, z_time=z_time,
+            z_processor_type=z_processor_type,
             z_processor_params=z_processor_params, history_window=history_window,
             prediction_horizon=prediction_horizon, bidirectional_te=bidirectional_te,
             n_epochs=n_epochs, batch_size=batch_size, shared_encoder=shared_encoder,
@@ -518,7 +520,7 @@ def _run_inner(
     test_indices, delta_threshold, min_gamma_points, confidence_level,
     max_eval_samples, train_subset_size, spectral_mode, max_index_reduction,
     tau_grid, corrupt_target, corruption_method, n_noise_samples, threshold_ratio,
-    permutation_test, n_permutations, z_data, z_processor_type, z_processor_params,
+    permutation_test, n_permutations, z_data, z_time, z_processor_type, z_processor_params,
     history_window, prediction_horizon, bidirectional_te=False,
     n_epochs=None, batch_size=None, shared_encoder=None,
     return_embeddings=False, lag_range=None,
@@ -673,9 +675,50 @@ def _run_inner(
     processor_param_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
     is_proc_sweep = mode == 'sweep' and any(key in (sweep_grid or {}) for key in processor_param_keys)
     
+    def _to_tensor(arr):
+        """Convert array-like to a float32 tensor; expand 2-D (N, C) to (N, C, 1)."""
+        if torch.is_tensor(arr):
+            t = arr.float()
+        else:
+            t = torch.from_numpy(np.asarray(arr, dtype=np.float32))
+        if t.ndim == 2:
+            t = t.unsqueeze(-1)
+        return t
+
     if is_proc_sweep or mode == 'lag':
         logger.info("Detected sweep over processor or lag parameters. Deferring data processing to workers.")
         x_run_data, y_run_data = x_data, y_data
+    elif processor_type_x is None and processor_type_y is None:
+        # Fast path: data is already pre-processed. Convert to tensors inline and skip
+        # the full create_dataset / PairedDataset allocation.
+        x_run_data = _to_tensor(x_data)
+        y_run_data = _to_tensor(y_data) if y_data is not None else None
+        if y_run_data is not None and x_run_data.shape[0] != y_run_data.shape[0]:
+            _min_n = min(x_run_data.shape[0], y_run_data.shape[0])
+            logger.warning(
+                f"X ({x_run_data.shape[0]}) and Y ({y_run_data.shape[0]}) differ in sample count; "
+                f"truncating both to {_min_n}."
+            )
+            x_run_data = x_run_data[:_min_n]
+            y_run_data = y_run_data[:_min_n]
+        base_params['processor_type_x'] = None
+        base_params['processor_type_y'] = None
+        if base_params.get('processor_params_x') is None:
+            base_params['processor_params_x'] = {}
+        if base_params.get('processor_params_y') is None:
+            base_params['processor_params_y'] = {}
+        base_params['processor_params_x']['preprocessed'] = True
+        base_params['processor_params_y']['preprocessed'] = True
+        n_samples = x_run_data.shape[0]
+        if n_samples < 200:
+            warnings.warn(
+                f"Very few samples detected ({n_samples} samples). "
+                f"Neural MI estimators are prone to overfitting at this scale. "
+                f"Consider adding regularisation (dropout, norm_layer) in base_params.",
+                UserWarning, stacklevel=4,
+            )
+        if mode not in ('dimensionality', 'pairwise') and y_run_data is None:
+            raise ValueError(f"y_data must be provided for mode '{mode}'.")
     else:
         dataset = create_dataset(
             x_data=x_data,
@@ -824,7 +867,7 @@ def _run_inner(
         details['raw_results'] = df
         return Results(
             mode=mode,
-            mi_estimate=details['precision_tau'],
+            mi_estimate=details['baseline_mi'],  # baseline MI at zero corruption; precision_tau is in details
             dataframe=df,
             params={**run_params, 'tau_grid': tau_grid},
             details=details
@@ -885,6 +928,7 @@ def _run_inner(
             from .data.handler import create_dataset as _cds
             z_dataset = _cds(
                 x_data=z_data, y_data=None,
+                x_time=z_time,
                 processor_type_x=z_processor_type,
                 processor_params_x=z_processor_params or {}
             )
@@ -931,7 +975,7 @@ def _run_inner(
                                    history_window=history_window,
                                    prediction_horizon=prediction_horizon,
                                    sweep_grid=sweep_grid, n_workers=n_workers,
-                                   bidirectional=analysis_kwargs.pop('bidirectional_te', bidirectional_te))
+                                   bidirectional=bidirectional_te)
         raw = _convert_mi_units(raw, output_units == 'bits')  # convert all MI scalars at once
         te = raw['te_estimate']
         result = Results(mode=mode, mi_estimate=te, params=run_params, details=raw)
@@ -939,22 +983,48 @@ def _run_inner(
             result.details['null_distribution'] = _run_permutation_test(
                 _x_te, _y_te, base_params, 'transfer', sweep_grid,
                 n_permutations, analysis_kwargs,
-                history_window=history_window, prediction_horizon=prediction_horizon
+                history_window=history_window, prediction_horizon=prediction_horizon,
+                bidirectional_te=bidirectional_te,
             )
         return result
 
     elif mode == 'pairwise':
         n_workers = analysis_kwargs.get('n_workers', 1)
         pairs = analysis_kwargs.get('pairs', None)
+        if permutation_test:
+            n_ch_x = x_run_data.shape[1] if x_run_data.ndim >= 2 else 1
+            pairwise_y_for_warn = y_run_data if y_data is not None else None
+            if pairwise_y_for_warn is not None:
+                n_pairs_est = n_ch_x * pairwise_y_for_warn.shape[1]
+            else:
+                n_pairs_est = n_ch_x * (n_ch_x - 1) // 2
+            warnings.warn(
+                f"Permutation test requested for mode='pairwise'. This will run the full "
+                f"pairwise matrix estimation {n_permutations} time(s), which is computationally "
+                f"expensive ({n_pairs_est} pairs × {n_permutations} permutation(s) = "
+                f"{n_pairs_est * n_permutations} MI estimations total). "
+                f"Allow additional time or reduce n_permutations.",
+                UserWarning,
+                stacklevel=2,
+            )
         # Pass y_run_data when provided to enable cross-pairwise mode.
         pairwise_y = y_run_data if y_data is not None else None
         raw = run_pairwise_mi(x_run_data, base_params, y_data=pairwise_y,
                               sweep_grid=sweep_grid, n_workers=n_workers, pairs=pairs)
-        # Convert mi_matrix and dataframe
-        raw['mi_matrix'] = raw['mi_matrix'] * (1 / np.log(2) if output_units == 'bits' else 1.0)
-        raw['dataframe']['mi_estimate'] *= (1 / np.log(2) if output_units == 'bits' else 1.0)
-        return Results(mode=mode, params=run_params, details=raw,
-                       dataframe=raw['dataframe'])
+        # Convert mi_matrix and DataFrame columns to the requested output units
+        if output_units == 'bits':
+            _nats_to_bits = 1 / np.log(2)
+            raw['mi_matrix'] = raw['mi_matrix'] * _nats_to_bits
+            raw['dataframe']['mi_mean'] = raw['dataframe']['mi_mean'] * _nats_to_bits
+            raw['dataframe']['mi_std']  = raw['dataframe']['mi_std']  * _nats_to_bits
+        result = Results(mode=mode, params=run_params, details=raw,
+                         dataframe=raw['dataframe'])
+        if permutation_test:
+            result.details['null_distribution'] = _run_permutation_test(
+                x_run_data, pairwise_y if pairwise_y is not None else x_run_data,
+                base_params, mode, sweep_grid, n_permutations, analysis_kwargs
+            )
+        return result
 
     else:
         raise ValueError(

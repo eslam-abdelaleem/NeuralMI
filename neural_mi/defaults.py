@@ -78,7 +78,7 @@ BASE_PARAMS_SCHEMA = {
     'test_indices': {'type': (object, type(None))},
     'gamma': {'type': (int, float)}, # Rigorous
     'min_reliable_samples': {'type': int, 'min': 1, 'default': 1000},
-    'lag': {'type': int}, # Lag
+    'lag': {'type': int},  # Result label: injected by run_lag_analysis per task; not a user-settable parameter.
     # Reproducibility — used by run() and task.py workers
     'random_seed': {'type': (int, type(None)), 'default': None},
 
@@ -126,7 +126,6 @@ MODE_KWARGS_SCHEMA = {
     },
     'transfer': {
         'n_workers': {'type': int, 'default': 1},
-        'bidirectional_te': {'type': bool, 'default': False},
     },
 }
 

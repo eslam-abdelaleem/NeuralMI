@@ -187,3 +187,21 @@ def test_g3_plot_embeddings_3d():
     # 3-D axes have a set_zlabel method
     assert hasattr(ax, 'set_zlabel')
     plt.close('all')
+
+
+# ---------------------------------------------------------------------------
+# Build params keys — norm_layer / dropout / use_spectral_norm
+# ---------------------------------------------------------------------------
+
+def test_build_params_keys_include_norm_and_dropout():
+    """_BUILD_PARAMS_KEYS must include dropout, norm_layer, and use_spectral_norm.
+
+    Without these keys, models saved with BatchNorm/LayerNorm/dropout cannot
+    be correctly reconstructed by extract_embeddings().
+    """
+    from neural_mi.analysis.task import _BUILD_PARAMS_KEYS
+    for key in ('dropout', 'norm_layer', 'use_spectral_norm'):
+        assert key in _BUILD_PARAMS_KEYS, (
+            f"'{key}' is missing from _BUILD_PARAMS_KEYS. "
+            f"Models using this setting cannot be reloaded via extract_embeddings()."
+        )

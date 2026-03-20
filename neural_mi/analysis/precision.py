@@ -200,7 +200,7 @@ def run_precision_analysis(
     if split_mode == 'random':
         train_idx, test_idx = trainer._create_random_split(n_samples, train_frac)
     else:
-        train_idx, test_idx = trainer._create_blocked_split(n_samples, train_frac, kwargs.get('n_test_blocks', 5))
+        train_idx, test_idx = trainer._create_blocked_split(n_samples, train_frac, base_params.get('n_test_blocks', 5))
         
     # 2. Train the Baseline Model (Zero-Noise)
     logger.info("Training baseline model at maximum precision...")

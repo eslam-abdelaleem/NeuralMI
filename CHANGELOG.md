@@ -76,6 +76,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the correct files (`handler.py`, `temporal.py`, `static.py`) and the
   step-by-step guide for adding a new data processor now reflects the actual
   codebase structure.
+- **`z_time` parameter in `run()`**: a time vector can now be passed for the
+  conditioning variable Z in `mode='conditional'` when `z_processor_type` is a
+  temporal processor (e.g. `'continuous'`). Forwarded to `create_dataset` as
+  `x_time=z_time`.
+- **`Results.save(path=None)`**: serialises a Results object to a pickle file.
+  Auto-generates a timestamped filename (`neuralmi_{mode}_{YYYYMMDD_HHMMSS}.pkl`)
+  in the current directory when no path is given; never overwrites existing files
+  (appends a numeric suffix). Returns the absolute path of the saved file.
+- **`Results.load(path)`**: classmethod that deserialises a Results object
+  previously saved with `save()`.
+- **`Results.to_json(path=None)`**: exports a human-readable JSON snapshot of
+  scalar fields (`mode`, `mi_estimate`, `params`) and the DataFrame. Large objects
+  in `details` (numpy arrays, raw result lists) are summarised by type and shape.
+  Auto-naming and no-overwrite logic follow the same convention as `save()`.
+- **`sample_rate` parameter wired** into `ContinuousWindowDataset` and
+  `CategoricalWindowDataset`. When provided it overrides the period inferred from
+  the time vector; now propagated from `processor_params_x/y` via `handler.py`.
+- **`max_spikes_per_window` and `n_seconds` parameters wired** into
+  `SpikeWindowDataset`. `max_spikes_per_window` caps the allocated spike slot
+  count; `n_seconds` sets an explicit recording duration for temporal extent
+  inference. Both are now propagated from `processor_params_x/y` via `handler.py`.
+
+### Changed
+- **Precision mode `Results.mi_estimate`**: now holds the baseline MI (at zero
+  corruption) rather than the precision threshold τ. The threshold τ remains in
+  `Results.details['precision_tau']`. `Results.summary()` for precision mode
+  now shows baseline MI, τ, and the threshold MI value explicitly.
+- **Pairwise mode DataFrame columns**: the `mi_estimate` column is replaced by
+  `mi_mean` and `mi_std` (consistent with sweep/lag modes). The MI matrix
+  continues to hold per-pair means.
+- **`Results.summary()`** for `conditional`, `transfer`, and `pairwise` modes
+  now prints mode-relevant detail (component MI values, directionality index,
+  matrix range) in addition to the generic DataFrame shape.
+- **`bidirectional_te` is exclusively a top-level `run()` parameter**. It has
+  been removed from `MODE_KWARGS_SCHEMA['transfer']` to eliminate the
+  dual-pathway inconsistency where the same parameter could be set in two places.
+- **Non-processor, non-lag calls skip an intermediate `PairedDataset`**
+  allocation when both `processor_type_x` and `processor_type_y` are `None`.
+  Tensor conversion and length alignment now happen inline in `run._run_inner`,
+  removing a redundant object construction on every non-temporal call.
+
+### Fixed
+- **`_initialize_windows` min/max inversion** (`handler.py`): the `min` and `max`
+  operators were swapped, causing the temporal window range to *expand* beyond the
+  original recording after `time_shift()` instead of being clamped to it.
+- **`_BUILD_PARAMS_KEYS`** (`task.py`): `dropout`, `norm_layer`, and
+  `use_spectral_norm` were missing. Models saved with `norm_layer='batch'` or
+  `norm_layer='layer'` can now be reloaded correctly via `extract_embeddings()`.
+- **Precision mode `n_test_blocks`** (`precision.py`): was read from `**kwargs`
+  (ignored when set in `base_params`). Now reads from `base_params`.
+- **Noise mask in `apply_noise`**: `ContinuousWindowDataset` and
+  `SpikeWindowDataset` derived the non-zero position mask from `self.data` (the
+  working copy), causing repeated noise applications to compound. Both now derive
+  the mask from `self.data_master`.
+- **`window_size` in `processor_params_y`** was silently ignored when Y specified
+  a different value. Now emits a clear warning and uses X's `window_size` (shared
+  `WindowManager` constraint).
+- **Pairwise permutation test** was silently discarded when `permutation_test=True`.
+  Now emits a `UserWarning` about computation cost and populates
+  `results.details['null_distribution']` with the null MI samples.
+- **Conditional MI log message** incorrectly annotated MI values as being in
+  `output_units`; values are always in nats at that point in the code.
+- **Transfer entropy `bidirectional=False` log level**: demoted from `warning`
+  to `info` (this is the normal, expected default — not a user-facing warning).
+- **`trainer.py` variable name**: `is_first_valid_epoch` renamed to
+  `has_valid_baseline` to reflect its actual semantics (True once a baseline MI
+  has been established, not on the first valid epoch).
 
 ## [2.1.0] - 2026-03-13
 

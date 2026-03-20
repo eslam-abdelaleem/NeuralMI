@@ -348,8 +348,8 @@ class Trainer:
             else:
                 smoothed_nats = self._smooth(history, smoothing_sigma, median_window)[-1]
             
-            is_first_valid_epoch = not np.isinf(best_mi)
-            improvement = (smoothed_nats - best_mi) / (abs(best_mi) + 1e-8) if is_first_valid_epoch else float('inf')
+            has_valid_baseline = not np.isinf(best_mi)
+            improvement = (smoothed_nats - best_mi) / (abs(best_mi) + 1e-8) if has_valid_baseline else float('inf')
 
             # Data Augmentation: Temporal Shifting
             if is_temporal and random_time_shifting:

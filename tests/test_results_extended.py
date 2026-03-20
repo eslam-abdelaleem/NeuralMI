@@ -1,4 +1,6 @@
 # tests/test_results_extended.py
+import json
+import os
 import pytest
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -168,3 +170,140 @@ class TestResults:
         ax = r.plot(show=False)
         assert 'nats' in ax.get_ylabel()
         plt.close('all')
+
+    # ------------------------------------------------------------------ #
+    # save() / load() / to_json()                                         #
+    # ------------------------------------------------------------------ #
+
+    def test_save_creates_pkl_file(self, tmp_path):
+        """save() creates a .pkl file in the specified directory."""
+        r = Results(mode='estimate', mi_estimate=1.5, params={'output_units': 'bits'})
+        filepath = r.save(str(tmp_path))
+        assert os.path.exists(filepath)
+        assert filepath.endswith('.pkl')
+        assert 'estimate' in filepath
+
+    def test_save_no_overwrite(self, tmp_path):
+        """save() appends a numeric suffix rather than overwriting an existing file."""
+        r = Results(mode='estimate', mi_estimate=0.5)
+        path1 = r.save(str(tmp_path))
+        # Force the second save to the same exact filename (simulate clash)
+        path2 = r.save(path1)
+        assert path2 != path1
+        assert '_1' in path2
+        assert os.path.exists(path1)
+        assert os.path.exists(path2)
+
+    def test_load_roundtrip(self, tmp_path):
+        """load() restores a Results object saved with save()."""
+        r = Results(
+            mode='sweep',
+            mi_estimate=2.0,
+            params={'output_units': 'nats'},
+            dataframe=pd.DataFrame({'mi_mean': [1.0, 2.0]}),
+        )
+        filepath = r.save(str(tmp_path))
+        r2 = Results.load(filepath)
+        assert r2.mode == r.mode
+        assert r2.mi_estimate == r.mi_estimate
+        assert list(r2.dataframe.columns) == list(r.dataframe.columns)
+
+    def test_load_wrong_type_raises(self, tmp_path):
+        """load() raises TypeError when the file does not contain a Results object."""
+        import pickle
+        bad_path = str(tmp_path / 'bad.pkl')
+        with open(bad_path, 'wb') as f:
+            pickle.dump({'not': 'a results'}, f)
+        with pytest.raises(TypeError, match="Results"):
+            Results.load(bad_path)
+
+    def test_to_json_creates_json_file(self, tmp_path):
+        """to_json() creates a valid .json file."""
+        r = Results(mode='estimate', mi_estimate=1.23, params={'output_units': 'bits'})
+        filepath = r.to_json(str(tmp_path))
+        assert os.path.exists(filepath)
+        assert filepath.endswith('.json')
+        with open(filepath) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+
+    def test_to_json_contents(self, tmp_path):
+        """to_json() output contains mode, mi_estimate, and dataframe keys."""
+        df = pd.DataFrame({'mi_mean': [0.5, 1.0], 'mi_std': [0.1, 0.2]})
+        r = Results(mode='lag', mi_estimate=0.75, dataframe=df,
+                    params={'output_units': 'bits'})
+        filepath = r.to_json(str(tmp_path))
+        with open(filepath) as f:
+            data = json.load(f)
+        assert data['mode'] == 'lag'
+        assert abs(data['mi_estimate'] - 0.75) < 1e-9
+        assert data['dataframe'] is not None
+        assert len(data['dataframe']) == 2
+
+    # ------------------------------------------------------------------ #
+    # summary() — precision and mode-specific sections                    #
+    # ------------------------------------------------------------------ #
+
+    def test_summary_precision_shows_baseline_mi(self, capsys):
+        """summary() for precision mode prints Baseline MI and Precision tau."""
+        r = Results(
+            mode='precision',
+            mi_estimate=1.20,
+            params={'output_units': 'bits'},
+            details={
+                'baseline_mi': 1.20,
+                'precision_tau': 0.005,
+                'threshold_value': 1.08,
+            },
+        )
+        r.summary()
+        captured = capsys.readouterr().out
+        assert "precision" in captured.lower()
+        assert "Baseline MI" in captured
+        assert "1.2000" in captured
+        assert "Precision" in captured
+        assert "0.005" in captured
+
+    def test_precision_mi_estimate_is_baseline(self):
+        """mi_estimate for precision results should equal baseline_mi, not precision_tau."""
+        baseline = 1.234
+        tau = 0.007
+        r = Results(
+            mode='precision',
+            mi_estimate=baseline,
+            details={'baseline_mi': baseline, 'precision_tau': tau},
+        )
+        assert r.mi_estimate == baseline
+        assert r.mi_estimate != tau
+
+    def test_summary_conditional_shows_components(self, capsys):
+        """summary() for conditional mode shows CMI and component MI values."""
+        r = Results(
+            mode='conditional',
+            mi_estimate=0.82,
+            params={'output_units': 'bits'},
+            details={'cmi_estimate': 0.82, 'mi_xz_y': 1.25, 'mi_z_y': 0.43},
+        )
+        r.summary()
+        captured = capsys.readouterr().out
+        assert "conditional" in captured.lower()
+        assert "CMI" in captured
+        assert "I(XZ;Y)" in captured
+        assert "I(Z;Y)" in captured
+
+    def test_summary_transfer_shows_te(self, capsys):
+        """summary() for transfer mode shows TE(X→Y) and directionality when present."""
+        r = Results(
+            mode='transfer',
+            mi_estimate=0.56,
+            params={'output_units': 'bits'},
+            details={
+                'te_xy': 0.56, 'te_yx': 0.12,
+                'directionality_index': 0.65,
+            },
+        )
+        r.summary()
+        captured = capsys.readouterr().out
+        assert "transfer" in captured.lower()
+        assert "TE(X" in captured
+        assert "Directionality" in captured

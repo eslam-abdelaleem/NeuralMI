@@ -68,6 +68,17 @@ def _dataset_cache_key(x_data, y_data, params: dict):
     return (dp_x, dp_y, construction)
 
 
+# Keys needed to reconstruct a saved model's architecture for extract_embeddings().
+# Exposed at module scope so external code can inspect or verify the set.
+_BUILD_PARAMS_KEYS = [
+    'critic_type', 'embedding_model', 'hidden_dim', 'embedding_dim', 'n_layers',
+    'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
+    'use_variational', 'shared_encoder',
+    'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
+    'dropout', 'norm_layer', 'use_spectral_norm',
+]
+
+
 def run_training_task(args: tuple) -> Dict[str, Any]:
     """A top-level function that can be pickled for multiprocessing."""
     import random as _random
@@ -206,12 +217,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # Intercept save_best_model_path to use the extended format
     # which includes build_params alongside state_dict for later extract_embeddings()
     _save_path = params.get('save_best_model_path')
-    _BUILD_PARAMS_KEYS = [
-        'critic_type', 'embedding_model', 'hidden_dim', 'embedding_dim', 'n_layers',
-        'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
-        'use_variational', 'shared_encoder',
-        'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
-    ]
 
     # Inject memory, logging, and spectral metrics parameters into train
     results = trainer.train(

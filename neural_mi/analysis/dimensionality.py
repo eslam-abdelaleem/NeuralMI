@@ -152,6 +152,10 @@ def run_dimensionality_analysis(
     # 1. Force correct configuration for dimensionality
     analysis_params = base_params.copy()
     analysis_params['critic_type'] = 'hybrid'
+    logger.info(
+        "Dimensionality mode: using critic_type='hybrid' (required for spectral analysis "
+        "via cross-covariance SVD)."
+    )
     analysis_params['track_spectral_metrics'] = True
     if spectral_mode == 'full':
         analysis_params['spectral_output'] = 'all'
@@ -166,6 +170,11 @@ def run_dimensionality_analysis(
     # Users who want independent encoders can override via base_params.
     if 'shared_encoder' not in analysis_params:
         analysis_params['shared_encoder'] = True
+        logger.info(
+            "Dimensionality mode: using shared_encoder=True by default, as X and Y are "
+            "treated as split views of the same data source. Set shared_encoder=False in "
+            "base_params if the two data sources have structurally different representations."
+        )
 
     if 'embedding_dim' not in analysis_params and 'embedding_dim' not in (sweep_grid or {}):
         logger.info("No embedding_dim specified. Defaulting to 64 for robust dimensionality capacity.")

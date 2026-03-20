@@ -274,6 +274,7 @@ result = nmi.run(
 
     # conditional mode:
     z_data=None,                     # Conditioning variable. REQUIRED for conditional.
+    z_time=None,                     # Time vector for z_data (passed to create_dataset as x_time).
     z_processor_type=None,
     z_processor_params=None,
 
@@ -646,8 +647,8 @@ print(f"Directionality index = {result.details['directionality_index']:.3f}")
 **Key kwargs:** `n_workers=1`, `pairs=None` (optional explicit list of `(i,j)` tuples)
 
 **Returns:** `Results` with:
-- `result.dataframe` — columns: `ch_x`, `ch_y`, `mi_estimate`
-- `result.details['mi_matrix']` — 2D numpy array; upper triangle filled for self-pairwise
+- `result.dataframe` — columns: `ch_x`, `ch_y`, `mi_mean`, `mi_std`
+- `result.details['mi_matrix']` — 2D numpy array of per-pair means; upper triangle filled for self-pairwise
 - `result.details['n_channels']` — int (self) or tuple (cross)
 
 ```python
@@ -661,7 +662,7 @@ mi_matrix = result.details['mi_matrix']   # shape (n_channels, n_channels)
 result = nmi.run(spike_x, lfp_y, mode='pairwise',
                  processor_type_x='spike', processor_type_y='continuous',
                  n_workers=8)
-df = result.dataframe    # ch_x, ch_y, mi_estimate
+df = result.dataframe    # ch_x, ch_y, mi_mean, mi_std
 ```
 
 ---
@@ -705,7 +706,34 @@ result.plot(ax=ax, title="My analysis", show=False)
 
 #### `result.summary() → None`
 
-Prints a human-readable summary to stdout. Includes mode, MI estimate, confidence intervals where applicable.
+Prints a human-readable summary to stdout. Includes mode, MI estimate, confidence intervals where applicable, and mode-specific detail (component MI values for `conditional`/`transfer`, matrix range for `pairwise`, baseline MI and τ for `precision`).
+
+#### `result.save(path=None) → str`
+
+Serialises the Results object to a pickle file. When `path` is `None` or a directory, a timestamped filename (`neuralmi_{mode}_{YYYYMMDD_HHMMSS}.pkl`) is generated automatically in the current working directory. Existing files are never overwritten — a numeric suffix is appended instead. Returns the absolute path of the saved file.
+
+```python
+filepath = result.save()            # auto-named in cwd
+filepath = result.save('/data/')    # auto-named in /data/
+filepath = result.save('/data/my_result.pkl')  # explicit path
+```
+
+#### `Results.load(path) → Results`
+
+Classmethod. Loads a Results object previously saved with `save()`.
+
+```python
+result = Results.load('/data/my_result.pkl')
+print(result.mi_estimate)
+```
+
+#### `result.to_json(path=None) → str`
+
+Exports a human-readable JSON snapshot containing scalar fields (`mode`, `mi_estimate`, `params`) and the DataFrame. Large objects in `details` (numpy arrays, raw result lists) are summarised by type and shape rather than fully serialised. For complete round-trip fidelity, use `save()` / `load()`. Returns the absolute path of the created file.
+
+```python
+filepath = result.to_json()         # auto-named .json in cwd
+```
 
 #### `Results.compare(results_list, labels=None, ax=None, **kwargs) → plt.Axes`
 
@@ -949,7 +977,7 @@ All internal computations are in **nats** (natural log). Conversion to bits (`×
 The `rigorous` mode trains on subsets of size `N/γ`. The bias correction works in `1/γ` space (not `γ` space) because the bias is approximately linear in `1/N`, hence linear in `1/γ` when `N` is fixed. The functions `_find_linear_region` and `_extrapolate_mi` (in `analysis/rigorous.py`) operate in this space using the per-run `train_mi` as the dependent variable, consistent with every other mode.
 
 ### Pairwise Mode — Channel Naming
-The output DataFrame uses columns `ch_x`, `ch_y`, `mi_estimate` (integer channel indices). The MI matrix is `result.details['mi_matrix']`:
+The output DataFrame uses columns `ch_x`, `ch_y`, `mi_mean`, `mi_std` (integer channel indices). `mi_mean` holds the mean MI across sweep runs; `mi_std` holds the standard deviation (0 when only one run is performed). The MI matrix in `result.details['mi_matrix']` holds per-pair means:
 - **Self-pairwise**: upper triangle (symmetric; diagonal = 0 by convention)
 - **Cross-pairwise**: full `(n_ch_x, n_ch_y)` matrix
 
@@ -983,10 +1011,10 @@ Modes:
   dimensionality → result.dataframe [embedding_dim, train_mi, participation_ratio]
   rigorous     → result.mi_estimate ± result.details['mi_error']
   lag          → result.dataframe [lag, train_mi]
-  precision    → result.dataframe [tau, train_mi]; result.details['precision_tau'], ['precision_thresholds']
-  conditional  → result.mi_estimate  (I(X;Y|Z))
+  precision    → result.mi_estimate (baseline MI); result.details['precision_tau'], ['precision_thresholds']
+  conditional  → result.mi_estimate  (I(X;Y|Z)); z_time= for temporal Z
   transfer     → result.mi_estimate  (TE(X→Y)); bidirectional_te=True adds te_yx, directionality_index
-  pairwise     → result.dataframe [ch_x, ch_y, mi_estimate]
+  pairwise     → result.dataframe [ch_x, ch_y, mi_mean, mi_std]
 
 Estimators: 'infonce' (default, has ceiling), 'smile' (no ceiling)
 Embeddings:  'mlp' (default), 'cnn', 'gru', 'lstm', 'tcn', 'transformer'
@@ -994,6 +1022,8 @@ Critics:     'separable' (default), 'concat', 'hybrid'
 Units:       'bits' (default) or 'nats'
 
 Processors:  'continuous' | 'spike' | 'categorical' | None (pre-processed)
+  sample_rate= wired for 'continuous' and 'categorical' (overrides period from time vector)
+  max_spikes_per_window= and n_seconds= wired for 'spike'
 
-Results methods:  .plot()  .summary()  Results.compare([r1, r2], labels=[...])
+Results methods:  .plot()  .summary()  .save()  .to_json()  Results.load(path)  Results.compare([r1, r2], labels=[...])
 ```

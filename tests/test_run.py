@@ -232,9 +232,11 @@ def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_pre
     assert result.mode == 'precision'
     assert isinstance(result.dataframe, pd.DataFrame)
     
-    # The mi_estimate should be mapped to the precision_tau
-    assert result.mi_estimate == 1.0
-    
+    # mi_estimate holds baseline_mi (MI at zero corruption), not precision_tau.
+    # precision_tau remains accessible via result.details['precision_tau'].
+    assert result.mi_estimate == result.details['baseline_mi']
+    assert result.details['precision_tau'] == 1.0  # tau is still in details
+
     # Ensure the details dictionary has all the metadata
     assert 'baseline_mi' in result.details
     assert 'raw_results' in result.details

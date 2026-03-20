@@ -150,26 +150,31 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     """
     
     def __init__(self, data, time_vector=None, window_manager=None, device=None,
-                 min_coverage_fraction=0.2, data_device='cpu'):
+                 min_coverage_fraction=0.2, data_device='cpu', sample_rate=None):
         """
         Parameters
         ----------
         data : array-like
-            Continuous data of shape (n_timepoints, n_channels).
-            If more than 3D (n_timepoints, n_channels, *extra_dims), it will
-            be flattened to (n_timepoints, n_channels*...).
+            Continuous data of shape ``(n_timepoints, n_channels)``.  Arrays
+            with additional trailing dimensions are flattened to
+            ``(n_timepoints, n_channels * ...)``.
         time_vector : array-like, optional
-            Time stamps for each sample.
-            If None, assumes data sampled on positive integers [0, 1, 2, ...].
+            Timestamps for each sample.  If None, integer indices
+            ``[0, 1, 2, ...]`` are used.
         window_manager : WindowManager, optional
-            External window manager for alignment.
+            External window manager for temporal alignment with another dataset.
         device : str, optional
             Compute device (kept for reference; not used for data storage).
         min_coverage_fraction : float, optional
             Minimum fraction of a window that must be covered by actual data
-            for the window to be considered valid.
+            for the window to be considered valid.  Defaults to 0.2.
         data_device : str, optional
             Device for storing ``self.data``.  Defaults to ``'cpu'``.
+        sample_rate : float, optional
+            Explicit sample rate in Hz.  When provided, this overrides the
+            inter-sample period inferred from ``time_vector``, which is useful
+            when the time vector has floating-point rounding noise or when no
+            time vector is supplied.
         """
         super().__init__(window_manager, device, data_device)
 
@@ -181,17 +186,16 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         if data.ndim == 1:
             data = np.expand_dims(data, 1)  # (n_timepoints, 1)
         elif data.ndim >= 3:
-            # Flatten (n_timepoints, n_channels, *extra_dims) -> (n_timepoints, n_channels*...)
             n_timepoints = data.shape[0]
             data = data.reshape(n_timepoints, -1)
-        self.data_orig = data  # Now (n_timepoints, n_channels)
+        self.data_orig = data  # (n_timepoints, n_channels)
 
-        # Time vector handling. If no time vector given, assuming sampled on positive integers
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
         else:
             self.time_vector = np.arange(0, self.data_orig.shape[0])
-        # Infer sample rate from time vector
+
+        # Derive the inter-sample period from the time vector.
         diffs = np.diff(self.time_vector)
         self.period = float(np.median(diffs)) if len(diffs) > 0 else 1.0
         if len(diffs) > 1:
@@ -200,18 +204,22 @@ class ContinuousWindowDataset(TemporalWindowDataset):
                 from neural_mi.logger import logger as _logger
                 _logger.warning(
                     f"ContinuousWindowDataset: first inter-sample interval "
-                    f"({first_two:.6g}) differs from median ({self.period:.6g}) by "
-                    f">5%. Using median. Check for boundary artifacts in your time vector."
+                    f"({first_two:.6g}) differs from the median ({self.period:.6g}) by "
+                    f">5%. Using the median. Check your time vector for boundary artifacts."
                 )
+
+        # An explicit sample_rate overrides the inferred period.
+        if sample_rate is not None:
+            self.period = 1.0 / sample_rate
 
         self.min_coverage_fraction = min_coverage_fraction
 
         if len(self.time_vector) != self.data_orig.shape[0]:
             raise ValueError(
-                f"time_vector must be same length as data. "
-                f"Recieved {len(self.time_vector)} time points and {self.data_orig.shape[0]} data points"
+                f"time_vector length ({len(self.time_vector)}) must match the number of "
+                f"data time points ({self.data_orig.shape[0]})."
             )
-        # Process data if window manager is available
+
         if window_manager is not None:
             self.set_window_manager(window_manager)
             self.move_data_to_windows()
@@ -342,8 +350,10 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         if amplitude == 0.0:
             self.reset()
             return
+        # Derive the mask from the master copy so repeated noise applications
+        # at different amplitudes always start from the original non-zero positions.
         if not hasattr(self, '_data_mask'):
-            self._data_mask = torch.nonzero(self.data, as_tuple=True)
+            self._data_mask = torch.nonzero(self.data_master, as_tuple=True)
         if not hasattr(self, '_noise_buffer') or len(self._noise_buffer) != len(self._data_mask[0]):
             self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.data.device, dtype=self.data.dtype)
         self._noise_buffer.normal_(mean=0, std=amplitude)
@@ -367,12 +377,42 @@ class SpikeWindowDataset(TemporalWindowDataset):
                  no_spike_value=-1.0, device=None,
                  exclude_bursty_neurons: bool = False,
                  burst_threshold_multiplier: float = 5.0,
-                 data_device='cpu'):
-
+                 data_device='cpu',
+                 max_spikes_per_window=None,
+                 n_seconds=None):
+        """
+        Parameters
+        ----------
+        spike_times : list of np.ndarray
+            One array of spike timestamps per neuron/channel.
+        window_manager : WindowManager, optional
+            External window manager for temporal alignment.
+        no_spike_value : float, optional
+            Placeholder value for empty spike-time slots.  Defaults to -1.0.
+        device : str, optional
+            Compute device (kept for reference; not used for data storage).
+        exclude_bursty_neurons : bool, optional
+            If True, neurons with a peak spike count exceeding
+            ``burst_threshold_multiplier`` times the median are excluded.
+        burst_threshold_multiplier : float, optional
+            Threshold multiplier for bursty-neuron exclusion.  Defaults to 5.0.
+        data_device : str, optional
+            Device for storing ``self.data``.  Defaults to ``'cpu'``.
+        max_spikes_per_window : int, optional
+            Hard cap on the number of spike-time slots allocated per window.
+            Reduces memory use when a small number of neurons burst
+            occasionally.  The data tensor is always large enough to hold at
+            least one spike; any spikes beyond the cap within a window are
+            silently dropped.
+        n_seconds : float, optional
+            Explicit recording duration in seconds.  When provided, this is
+            used as the temporal end-point by ``get_temporal_extent()``
+            instead of the last observed spike time.  Useful when the
+            recording extends beyond the final spike.
+        """
         super().__init__(window_manager, device, data_device)
 
         self.data_orig = [np.array(st) for st in spike_times]
-        # Ensure spike times are sorted within each neuron (safe: copy already made via np.array above)
         for i, st in enumerate(self.data_orig):
             if len(st) > 1 and not np.all(st[:-1] <= st[1:]):
                 logger.debug(
@@ -384,9 +424,10 @@ class SpikeWindowDataset(TemporalWindowDataset):
         self.exclude_bursty_neurons = exclude_bursty_neurons
         self.burst_threshold_multiplier = burst_threshold_multiplier
         self.time_offset = 0
-        self._excluded_neurons = []  # track which were excluded
+        self._excluded_neurons = []
+        self._max_spikes_cap = max_spikes_per_window
+        self._n_seconds = n_seconds
 
-        # Process data if window manager is available
         if window_manager is not None:
             self.set_window_manager(window_manager)
             self.move_data_to_windows()
@@ -419,7 +460,17 @@ class SpikeWindowDataset(TemporalWindowDataset):
 
         self.max_samples_per_window = int(np.max(per_neuron_max)) if len(per_neuron_max) > 0 else 1
 
-        # Warning (keep existing one, but now on the post-exclusion array)
+        # Apply user-specified cap on allocated spike slots.
+        if self._max_spikes_cap is not None:
+            capped = max(1, int(self._max_spikes_cap))
+            if self.max_samples_per_window > capped:
+                logger.info(
+                    f"SpikeWindowDataset: max_spikes_per_window cap applied "
+                    f"({self.max_samples_per_window} → {capped} slots). "
+                    "Spikes beyond the cap within any window will be dropped."
+                )
+            self.max_samples_per_window = min(self.max_samples_per_window, capped)
+
         if median_max > 0 and self.max_samples_per_window > self.burst_threshold_multiplier * median_max:
             worst_neuron = int(np.argmax(per_neuron_max))
             logger.warning(
@@ -429,12 +480,26 @@ class SpikeWindowDataset(TemporalWindowDataset):
             )
 
     def get_temporal_extent(self):
-        """Return temporal extent of spike data."""
+        """Return (t_start, t_end) of the spike data.
+
+        When ``n_seconds`` was specified at construction, it is used as
+        ``t_end`` instead of the time of the last observed spike, allowing
+        the window manager to cover the full recording even if the recording
+        extends beyond the final spike.
+        """
         valid_trains = [st for st in self.data_orig if len(st) > 0]
         if not valid_trains:
-            return 0, 0
-        t_start = min(st[0] for st in valid_trains)
-        t_end = max(st[-1] for st in valid_trains)
+            t_start = 0.0
+        else:
+            t_start = min(st[0] for st in valid_trains)
+
+        if self._n_seconds is not None:
+            t_end = float(self._n_seconds)
+        elif valid_trains:
+            t_end = max(st[-1] for st in valid_trains)
+        else:
+            t_end = 0.0
+
         return t_start, t_end
     
     def move_data_to_windows(self):
@@ -496,13 +561,14 @@ class SpikeWindowDataset(TemporalWindowDataset):
         # Moving data to windows will be orchestrated by paired dataset class
 
     def apply_noise(self, amplitude):
-        """Add temporal jitter to spike times."""
-        # Reset to master copy if amplitude is zero. Useful as another interface to undo noise
+        """Add uniform temporal jitter to spike times."""
         if amplitude == 0.0:
             self.reset()
             return
+        # Derive the mask from the master copy so that repeated calls at different
+        # amplitudes always start from the original (un-jittered) spike positions.
         if not hasattr(self, '_data_mask'):
-            self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
+            self._data_mask = torch.nonzero(self.data_master != self.no_spike_value, as_tuple=True)
         if not hasattr(self, '_noise_buffer') or len(self._noise_buffer) != len(self._data_mask[0]):
             self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.data.device, dtype=self.data.dtype)
         self._noise_buffer.uniform_(-amplitude / 2, amplitude / 2)
@@ -658,45 +724,51 @@ class CategoricalWindowDataset(TemporalWindowDataset):
     
     def __init__(self, data, time_vector=None, window_manager=None, device=None,
                  min_coverage_fraction=0.2, encoding: str = 'majority_vote',
-                 data_device='cpu'):
+                 data_device='cpu', sample_rate=None):
         """
         Parameters
         ----------
         data : array-like
-            Categorical data of shape (n_timepoints, n_channels) with integer category labels.
+            Categorical data of shape ``(n_timepoints, n_channels)`` with
+            integer category labels.  Non-integer arrays are mapped to
+            consecutive integers automatically.
         time_vector : array-like, optional
-            Time stamps for each sample.
-            If None, assumes data sampled on positive integers [0, 1, 2, ...].
+            Timestamps for each sample.  If None, integer indices are used.
         window_manager : WindowManager, optional
-            External window manager for alignment.
+            External window manager for temporal alignment.
         device : str, optional
             Compute device (kept for reference; not used for data storage).
         min_coverage_fraction : float, optional
             Minimum fraction of a window covered by actual data for it to be
-            considered valid.
-        encoding : str, optional
-            Method for encoding categorical data into windows.
+            considered valid.  Defaults to 0.2.
+        encoding : {'majority_vote', 'probability', 'full_trajectory'}, optional
+            Method for encoding categorical data within each window.
         data_device : str, optional
             Device for storing ``self.data``.  Defaults to ``'cpu'``.
+        sample_rate : float, optional
+            Explicit sample rate in Hz.  Overrides the inter-sample period
+            inferred from ``time_vector`` when provided.
         """
         super().__init__(window_manager, device, data_device)
 
-        # Store original categorical data, convert to ints if not
         arr = np.array(data)
         if not np.issubdtype(arr.dtype, np.integer):
             _, indices = np.unique(arr, return_inverse=True)
             arr = indices
         self.data_orig = np.asarray(arr, dtype=np.int32)
-        
-        # Time vector handling
+
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
         else:
             self.time_vector = np.arange(0, self.data_orig.shape[0])
-        # Infer sample rate from time vector
-        # This class assumes, outside of jumps, a constant sample rate!
+
+        # Derive the inter-sample period from the time vector.
         diffs = np.diff(self.time_vector)
         self.period = float(np.median(diffs)) if len(diffs) > 0 else 1.0
+
+        # An explicit sample_rate overrides the inferred period.
+        if sample_rate is not None:
+            self.period = 1.0 / sample_rate
 
         if len(self.time_vector) != self.data_orig.shape[0]:
             raise ValueError(
