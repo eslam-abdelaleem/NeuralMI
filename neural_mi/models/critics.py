@@ -98,6 +98,33 @@ class BaseCritic(nn.Module):
         zx, zy, _ = self._compute_embeddings_chunked(x, y, net_x, net_y, max_n, use_var)
         return zx, zy
 
+    def get_training_embeddings(self, x: torch.Tensor, y: torch.Tensor) -> tuple:
+        """Return embeddings with gradient flow (for decoder reconstruction loss).
+
+        Unlike :meth:`get_embeddings`, this method does NOT wrap in
+        ``torch.no_grad()`` so gradients can flow back through the encoder.
+        Only called during training when ``use_decoder=True``.
+
+        Parameters
+        ----------
+        x, y : torch.Tensor
+            Input batch tensors.
+
+        Returns
+        -------
+        tuple of (z_x, z_y) : torch.Tensor
+            Embedding tensors, each of shape ``(batch, embed_dim)``.
+        """
+        if hasattr(self, 'embedding_net_x'):
+            net_x, net_y = self.embedding_net_x, self.embedding_net_y
+        else:
+            # ConcatCritic has no separate embedding networks
+            return x.reshape(x.shape[0], -1), y.reshape(y.shape[0], -1)
+        max_n = getattr(self, 'max_n_batches', 512)
+        use_var = getattr(self, 'use_variational', False)
+        zx, zy, _ = self._compute_embeddings_chunked(x, y, net_x, net_y, max_n, use_var)
+        return zx, zy
+
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 

@@ -85,15 +85,49 @@ class Results:
             if self.mode == 'rigorous':
                 mi_err = self.details.get('mi_error')
                 is_reliable = self.details.get('is_reliable')
+                fit_quality_warning = self.details.get('fit_quality_warning')
+                leverage_warning = self.details.get('leverage_warning')
+                r_squared = self.details.get('r_squared')
+                max_abs_residual = self.details.get('max_abs_residual')
+                loo_shift = self.details.get('loo_intercept_shift')
                 if mi_err is not None:
                     print(f"  ± (half CI)   : {mi_err:.4f} {units}")
                 if is_reliable is False:
-                    print("  ⚠  is_reliable = False — extrapolation is unreliable; "
-                          "collect more data or simplify the model.")
+                    print("  ⚠  is_reliable = False — extrapolation is unreliable.")
+                    _reasons = []
+                    if fit_quality_warning:
+                        _r2_str = f", R²={r_squared:.3f}" if r_squared is not None and r_squared == r_squared else ""
+                        _res_str = f", max|residual|={max_abs_residual:.2f}" if max_abs_residual is not None and max_abs_residual == max_abs_residual else ""
+                        _reasons.append(f"fit quality (fit_quality_warning=True{_r2_str}{_res_str})")
+                    if leverage_warning:
+                        _loo_str = f"={loo_shift:.3f}" if loo_shift is not None and loo_shift == loo_shift else ""
+                        _reasons.append(f"γ=1 leverage (leverage_warning=True, LOO shift{_loo_str})")
+                    if _reasons:
+                        print(f"     Reason(s): {'; '.join(_reasons)}")
                 elif is_reliable is True:
                     print("  ✓  is_reliable = True")
+                    if r_squared is not None and r_squared == r_squared:
+                        print(f"     R² = {r_squared:.3f}")
+            elif self.mode in ('conditional', 'transfer') and self.params.get('rigorous'):
+                # Rigorous bias-corrected conditional/transfer
+                mi_err = self.details.get('mi_error')
+                is_reliable = self.details.get('is_reliable')
+                fit_quality_warning = self.details.get('fit_quality_warning')
+                leverage_warning = self.details.get('leverage_warning')
+                if mi_err is not None:
+                    print(f"  ± (half CI)   : {mi_err:.4f} {units}  [bias-corrected]")
+                if is_reliable is False:
+                    print("  ⚠  is_reliable = False — rigorous extrapolation flagged issues.")
+                    if fit_quality_warning:
+                        print("     ↳ fit_quality_warning=True (check residuals / R²)")
+                    if leverage_warning:
+                        print("     ↳ leverage_warning=True (γ=1 point has high leverage)")
+                elif is_reliable is True:
+                    print("  ✓  is_reliable = True  [rigorous bias-corrected estimate]")
         else:
             print("  MI estimate : (none — see result.dataframe or result.details)")
+        if self.details.get('decoder_recon_loss') is not None:
+            print(f"  Decoder MSE : {self.details['decoder_recon_loss']:.6f}  (weighted reconstruction loss)")
         if self.dataframe is not None:
             rows, cols = self.dataframe.shape
             col_names = list(self.dataframe.columns)

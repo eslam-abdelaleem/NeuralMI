@@ -140,6 +140,67 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                               params,
                               params.get('custom_embedding_cls'))
 
+    # Build decoders if use_decoder is enabled
+    decoder_x = None
+    decoder_y = None
+    if params.get('use_decoder', False):
+        from neural_mi.models.decoders import build_decoder
+        _embedding_model = params.get('embedding_model', 'mlp')
+        _embed_dim = params.get('embedding_dim', params.get('hidden_dim', 64))
+        _hidden_dim = params.get('hidden_dim', 64)
+        _n_layers = params.get('n_layers', 2)
+        _dec_act_x = params.get('decoder_output_activation_x', 'linear')
+        _dec_act_y = params.get('decoder_output_activation_y', 'linear')
+
+        _n_channels_x = params.get('n_channels_x', 1)
+        _n_channels_y = params.get('n_channels_y', 1)
+        _input_dim_x = params.get('input_dim_x', _n_channels_x)
+        _input_dim_y = params.get('input_dim_y', _n_channels_y)
+        _window_size_x = max(1, _input_dim_x // _n_channels_x)
+        _window_size_y = max(1, _input_dim_y // _n_channels_y)
+
+        decoder_x = build_decoder(
+            embedding_model=_embedding_model,
+            embed_dim=_embed_dim,
+            hidden_dim=_hidden_dim,
+            n_channels=_n_channels_x,
+            window_size=_window_size_x,
+            n_layers=_n_layers,
+            output_activation=_dec_act_x,
+            kernel_size=params.get('kernel_size', 7),
+            nhead=params.get('nhead', 4),
+        )
+        # Separate decoder for Y if asymmetric architecture or different data type
+        # For shared_encoder=True, we still build separate decoders (X and Y may differ in n_channels)
+        if _n_channels_y != _n_channels_x or _window_size_y != _window_size_x or _dec_act_x != _dec_act_y:
+            decoder_y = build_decoder(
+                embedding_model=_embedding_model,
+                embed_dim=_embed_dim,
+                hidden_dim=_hidden_dim,
+                n_channels=_n_channels_y,
+                window_size=_window_size_y,
+                n_layers=_n_layers,
+                output_activation=_dec_act_y,
+                kernel_size=params.get('kernel_size', 7),
+                nhead=params.get('nhead', 4),
+            )
+        else:
+            decoder_y = build_decoder(
+                embedding_model=_embedding_model,
+                embed_dim=_embed_dim,
+                hidden_dim=_hidden_dim,
+                n_channels=_n_channels_y,
+                window_size=_window_size_y,
+                n_layers=_n_layers,
+                output_activation=_dec_act_y,
+                kernel_size=params.get('kernel_size', 7),
+                nhead=params.get('nhead', 4),
+            )
+        logger.debug(
+            f"Built decoder_x ({type(decoder_x).__name__}) and decoder_y ({type(decoder_y).__name__}) "
+            f"for use_decoder=True."
+        )
+
     _OPTIMIZERS = {
         'adam': optim.Adam,
         'adamw': optim.AdamW,
@@ -158,7 +219,13 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 f"Supported names: {list(_OPTIMIZERS.keys())}. "
                 f"You can also pass a torch.optim.Optimizer subclass directly."
             )
-    optimizer = OptCls(critic.parameters(), lr=params['learning_rate'],
+    # Collect all trainable parameters (critic + optional decoders)
+    _all_params = list(critic.parameters())
+    if decoder_x is not None:
+        _all_params.extend(decoder_x.parameters())
+    if decoder_y is not None:
+        _all_params.extend(decoder_y.parameters())
+    optimizer = OptCls(_all_params, lr=params['learning_rate'],
                        **params.get('optimizer_params', {}))
 
     _SCHEDULER_NAMES = {'cosine', 'step', 'plateau', 'cosine_warmup'}
@@ -201,6 +268,10 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         custom_smoothing_fn=params.get('custom_smoothing_fn'),
         spectral_whitening=params.get('spectral_whitening', 'std'),
         gradient_clip_val=params.get('gradient_clip_val', None),
+        decoder_x=decoder_x,
+        decoder_y=decoder_y,
+        decoder_weight_x=params.get('decoder_weight_x', params.get('decoder_weight', 1.0)),
+        decoder_weight_y=params.get('decoder_weight_y', params.get('decoder_weight', 1.0)),
     )
 
     # Intercept save_best_model_path to use the extended format
@@ -211,6 +282,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
         'use_variational', 'shared_encoder',
         'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
+        'dropout', 'norm_layer', 'use_spectral_norm',
+        'use_decoder', 'decoder_weight', 'decoder_weight_x', 'decoder_weight_y',
+        'decoder_output_activation_x', 'decoder_output_activation_y',
     ]
 
     # Inject memory, logging, and spectral metrics parameters into train
@@ -274,6 +348,10 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # tensors are on data_device (usually CPU, so this is a no-op for them).
     # ------------------------------------------------------------------
     del trainer, critic, optimizer
+    if decoder_x is not None:
+        del decoder_x
+    if decoder_y is not None:
+        del decoder_y
     # Only delete the dataset reference if it is NOT in the shared cache —
     # cached datasets are intentionally kept alive for reuse by future tasks.
     _cached = _DATASET_CACHE.get(_cache_key)

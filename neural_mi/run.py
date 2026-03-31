@@ -113,6 +113,7 @@ def run(
     z_data: Optional[Union[np.ndarray, torch.Tensor]] = None,
     z_processor_type: Optional[str] = None,
     z_processor_params: Optional[Dict[str, Any]] = None,
+    z_time: Optional[np.ndarray] = None,
     history_window: Optional[int] = None,
     prediction_horizon: int = 1,
     bidirectional_te: bool = False,
@@ -442,7 +443,7 @@ def run(
             corruption_method=corruption_method, n_noise_samples=n_noise_samples,
             threshold_ratio=threshold_ratio, permutation_test=permutation_test,
             n_permutations=n_permutations, z_data=z_data, z_processor_type=z_processor_type,
-            z_processor_params=z_processor_params, history_window=history_window,
+            z_processor_params=z_processor_params, z_time=z_time, history_window=history_window,
             prediction_horizon=prediction_horizon, bidirectional_te=bidirectional_te,
             n_epochs=n_epochs, batch_size=batch_size, shared_encoder=shared_encoder,
             return_embeddings=return_embeddings, lag_range=lag_range,
@@ -518,7 +519,8 @@ def _run_inner(
     max_eval_samples, train_subset_size, spectral_mode, max_index_reduction,
     tau_grid, corrupt_target, corruption_method, n_noise_samples, threshold_ratio,
     permutation_test, n_permutations, z_data, z_processor_type, z_processor_params,
-    history_window, prediction_horizon, bidirectional_te=False,
+    z_time=None,
+    history_window=None, prediction_horizon=1, bidirectional_te=False,
     n_epochs=None, batch_size=None, shared_encoder=None,
     return_embeddings=False, lag_range=None,
     use_spectral_norm=True, gradient_clip_val=None,
@@ -882,6 +884,7 @@ def _run_inner(
             from .data.handler import create_dataset as _cds
             z_dataset = _cds(
                 x_data=z_data, y_data=None,
+                x_time=z_time,
                 processor_type_x=z_processor_type,
                 processor_params_x=z_processor_params or {}
             )
@@ -889,9 +892,45 @@ def _run_inner(
         else:
             z_run_data = z_data if torch.is_tensor(z_data) else torch.from_numpy(np.array(z_data)).float()
         n_workers = analysis_kwargs.get('n_workers', 1)
+        use_rigorous = analysis_kwargs.pop('rigorous', False)
+        if use_rigorous:
+            from .analysis.rigorous import run_rigorous_scalar_analysis
+            _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
+            _rig_kwargs = {
+                'gamma_range': _gamma_range,
+                'delta_threshold': analysis_kwargs.pop('delta_threshold', delta_threshold),
+                'min_gamma_points': analysis_kwargs.pop('min_gamma_points', min_gamma_points),
+                'confidence_level': analysis_kwargs.pop('confidence_level', confidence_level),
+                'residual_threshold': analysis_kwargs.pop('residual_threshold', 2.5),
+                'r2_threshold': analysis_kwargs.pop('r2_threshold', 0.90),
+                'leverage_threshold': analysis_kwargs.pop('leverage_threshold', 0.20),
+            }
+            def _cmi_scalar(x_s, y_s, bp, z_data=None, **kw):
+                raw = run_conditional_mi(x_s, y_s, z_data, bp,
+                                         sweep_grid=sweep_grid,
+                                         n_workers=kw.get('n_workers', 1))
+                return raw['cmi_estimate']
+            rig_details = run_rigorous_scalar_analysis(
+                scalar_fn=_cmi_scalar,
+                x_data=x_run_data, y_data=y_run_data, base_params=base_params,
+                extra_data={'z_data': z_run_data},
+                extra_kwargs={'n_workers': n_workers},
+                **_rig_kwargs,
+            )
+            rig_details = _convert_mi_units(rig_details, output_units == 'bits')
+            raw_df = rig_details.pop('raw_results_df', pd.DataFrame())
+            raw_df = _convert_mi_units(raw_df, output_units == 'bits')
+            return Results(
+                mode=mode,
+                mi_estimate=rig_details.get('mi_corrected'),
+                dataframe=raw_df,
+                params={**run_params, 'rigorous': True},
+                details=rig_details,
+            )
+        # Standard (non-rigorous) path
         raw = run_conditional_mi(x_run_data, y_run_data, z_run_data, base_params,
                                  sweep_grid=sweep_grid, n_workers=n_workers)
-        raw = _convert_mi_units(raw, output_units == 'bits')  # convert all MI scalars at once
+        raw = _convert_mi_units(raw, output_units == 'bits')
         cmi = raw['cmi_estimate']
         result = Results(mode=mode, mi_estimate=cmi, params=run_params, details=raw)
         if permutation_test:
@@ -906,8 +945,6 @@ def _run_inner(
             raise ValueError("`history_window` must be provided for mode='transfer'.")
         # For transfer entropy, expect 2-D inputs (T, channels).
         # StaticDataset wraps (T, C) → (T, C, 1); squeeze the trailing 1 back out.
-        # Use .reshape().contiguous() — StaticDataset may produce non-contiguous
-        # views and downstream code uses .view(), which requires contiguous memory.
         def _to_2d(t):
             if hasattr(t, 'ndim') and t.ndim == 3 and t.shape[-1] == 1:
                 return t.reshape(t.shape[0], t.shape[1]).contiguous()
@@ -924,19 +961,61 @@ def _run_inner(
                 "mode='transfer' build its own history/prediction arrays internally."
             )
         n_workers = analysis_kwargs.get('n_workers', 1)
+        use_rigorous = analysis_kwargs.pop('rigorous', False)
+        if use_rigorous:
+            from .analysis.rigorous import run_rigorous_scalar_analysis
+            _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
+            _rig_kwargs = {
+                'gamma_range': _gamma_range,
+                'delta_threshold': analysis_kwargs.pop('delta_threshold', delta_threshold),
+                'min_gamma_points': analysis_kwargs.pop('min_gamma_points', min_gamma_points),
+                'confidence_level': analysis_kwargs.pop('confidence_level', confidence_level),
+                'residual_threshold': analysis_kwargs.pop('residual_threshold', 2.5),
+                'r2_threshold': analysis_kwargs.pop('r2_threshold', 0.90),
+                'leverage_threshold': analysis_kwargs.pop('leverage_threshold', 0.20),
+            }
+            def _te_scalar(x_s, y_s, bp, **kw):
+                raw = run_transfer_entropy(
+                    x_s, y_s, bp,
+                    history_window=history_window,
+                    prediction_horizon=prediction_horizon,
+                    sweep_grid=sweep_grid,
+                    n_workers=kw.get('n_workers', 1),
+                    bidirectional=bidirectional_te,
+                )
+                return raw['te_estimate']
+            rig_details = run_rigorous_scalar_analysis(
+                scalar_fn=_te_scalar,
+                x_data=_x_te, y_data=_y_te, base_params=base_params,
+                extra_data=None,
+                extra_kwargs={'n_workers': n_workers},
+                **_rig_kwargs,
+            )
+            rig_details = _convert_mi_units(rig_details, output_units == 'bits')
+            raw_df = rig_details.pop('raw_results_df', pd.DataFrame())
+            raw_df = _convert_mi_units(raw_df, output_units == 'bits')
+            return Results(
+                mode=mode,
+                mi_estimate=rig_details.get('mi_corrected'),
+                dataframe=raw_df,
+                params={**run_params, 'rigorous': True},
+                details=rig_details,
+            )
+        # Standard (non-rigorous) path
         raw = run_transfer_entropy(_x_te, _y_te, base_params,
                                    history_window=history_window,
                                    prediction_horizon=prediction_horizon,
                                    sweep_grid=sweep_grid, n_workers=n_workers,
-                                   bidirectional=analysis_kwargs.pop('bidirectional_te', bidirectional_te))
-        raw = _convert_mi_units(raw, output_units == 'bits')  # convert all MI scalars at once
+                                   bidirectional=bidirectional_te)
+        raw = _convert_mi_units(raw, output_units == 'bits')
         te = raw['te_estimate']
         result = Results(mode=mode, mi_estimate=te, params=run_params, details=raw)
         if permutation_test:
             result.details['null_distribution'] = _run_permutation_test(
                 _x_te, _y_te, base_params, 'transfer', sweep_grid,
                 n_permutations, analysis_kwargs,
-                history_window=history_window, prediction_horizon=prediction_horizon
+                history_window=history_window, prediction_horizon=prediction_horizon,
+                bidirectional_te=bidirectional_te,
             )
         return result
 
@@ -945,13 +1024,31 @@ def _run_inner(
         pairs = analysis_kwargs.get('pairs', None)
         # Pass y_run_data when provided to enable cross-pairwise mode.
         pairwise_y = y_run_data if y_data is not None else None
+        if permutation_test:
+            n_pairs_estimate = x_run_data.shape[1] * (x_run_data.shape[1] - 1) // 2
+            logger.warning(
+                f"Permutation test requested for mode='pairwise'. This will run the full pairwise "
+                f"matrix n_permutations times, which is computationally expensive "
+                f"(estimated_pairs × n_permutations ≈ {n_pairs_estimate} × {n_permutations} MI "
+                f"estimations). Allow additional time or reduce n_permutations."
+            )
         raw = run_pairwise_mi(x_run_data, base_params, y_data=pairwise_y,
                               sweep_grid=sweep_grid, n_workers=n_workers, pairs=pairs)
-        # Convert mi_matrix and dataframe
-        raw['mi_matrix'] = raw['mi_matrix'] * (1 / np.log(2) if output_units == 'bits' else 1.0)
-        raw['dataframe']['mi_estimate'] *= (1 / np.log(2) if output_units == 'bits' else 1.0)
-        return Results(mode=mode, params=run_params, details=raw,
-                       dataframe=raw['dataframe'])
+        _scale = 1 / np.log(2) if output_units == 'bits' else 1.0
+        raw['mi_matrix'] = raw['mi_matrix'] * _scale
+        df = raw['dataframe'].copy()
+        for _col in ('mi_mean', 'mi_std', 'mi_estimate'):
+            if _col in df.columns:
+                df[_col] = df[_col] * _scale
+        raw['dataframe'] = df
+        result = Results(mode=mode, params=run_params, details=raw,
+                         dataframe=df)
+        if permutation_test:
+            result.details['null_distribution'] = _run_permutation_test(
+                x_run_data, y_run_data, base_params, 'pairwise', sweep_grid,
+                n_permutations, analysis_kwargs
+            )
+        return result
 
     else:
         raise ValueError(

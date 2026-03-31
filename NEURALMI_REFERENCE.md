@@ -997,3 +997,113 @@ Processors:  'continuous' | 'spike' | 'categorical' | None (pre-processed)
 
 Results methods:  .plot()  .summary()  Results.compare([r1, r2], labels=[...])
 ```
+
+---
+
+## Enhanced Rigorous Mode Diagnostics
+
+### New `base_params` keys (rigorous mode)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `residual_threshold` | float | 2.5 | Flag `fit_quality_warning=True` if any externally studentized residual exceeds this value. |
+| `r2_threshold` | float | 0.90 | Flag `fit_quality_warning=True` if WLS R² is below this value. |
+| `leverage_threshold` | float | 0.20 | Flag `leverage_warning=True` if LOO intercept shift `δ = |I_full − I_loo|/(|I_full|+ε)` exceeds this value. |
+
+### New keys in `result.details` (rigorous mode)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `fit_quality_warning` | bool | `True` if max studentized residual > threshold OR R² < threshold. |
+| `leverage_warning` | bool | `True` if LOO γ=1 intercept shift > `leverage_threshold`. |
+| `r_squared` | float | R² of the WLS linear fit. `nan` if fewer than 3 points. |
+| `max_abs_residual` | float | Maximum absolute externally studentized residual. |
+| `loo_intercept_shift` | float | Relative intercept shift when γ=1 is excluded. `nan` if no γ=1 rows or too few LOO points. |
+
+Both `fit_quality_warning` and `leverage_warning` contribute to `is_reliable`:
+if either fires, `is_reliable` is set to `False`.
+
+---
+
+## Optional Decoder (Deep Symmetric IB)
+
+When `use_decoder=True` is set in `base_params`, the Trainer attaches a decoder
+to each encoder and adds a weighted MSE reconstruction loss to the training
+objective:
+
+- **Deterministic:** `L = −MI(Z_X; Z_Y) + w_x·MSE(X, X̂) + w_y·MSE(Y, Ŷ)`
+- **Variational:** `L = KL_X + KL_Y − β·MI + w_x·MSE(X, X̂) + w_y·MSE(Y, Ŷ)`
+
+### New `base_params` keys (all modes)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `use_decoder` | bool | `False` | Enable decoder-augmented training. |
+| `decoder_weight` | float | 1.0 | Shared reconstruction weight for both X and Y decoders. |
+| `decoder_weight_x` | float\|None | `None` | Per-channel weight override for X decoder. Falls back to `decoder_weight` if `None`. |
+| `decoder_weight_y` | float\|None | `None` | Per-channel weight override for Y decoder. Falls back to `decoder_weight` if `None`. |
+| `decoder_output_activation_x` | str | `'linear'` | Output activation for X decoder: `'linear'`, `'sigmoid'`, or `'softmax'`. |
+| `decoder_output_activation_y` | str | `'linear'` | Output activation for Y decoder. |
+
+### Decoder architecture summary
+
+| Encoder | Decoder |
+|---------|---------|
+| `mlp` / `var_mlp` | Mirror MLP (`MLPDecoder`) |
+| `cnn1d` | Linear expansion + `nn.Upsample` + `Conv1d` blocks (`CNN1DDecoder`) |
+| `gru` | Linear projection → repeated sequence → GRU → `Linear` (`GRUDecoder`) |
+| `lstm` | Linear projection → repeated sequence → LSTM → `Linear` (`LSTMDecoder`) |
+| `tcn` | Linear expansion + `nn.Upsample` + dilated `Conv1d` blocks (`TCNDecoder`) |
+| `transformer` | Linear projection + learned position queries + `TransformerDecoder` (`TransformerDecoder`) |
+
+### `result.details` keys (when `use_decoder=True`)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `decoder_recon_loss` | float | Final weighted reconstruction loss `w_x·MSE_x + w_y·MSE_y` evaluated on the training evaluation split. |
+
+---
+
+## Rigorous Bias Correction for Conditional and Transfer Modes
+
+Both `mode='conditional'` and `mode='transfer'` now support `rigorous=True` in
+`analysis_kwargs` (or as a direct keyword to `nmi.run()`):
+
+```python
+result = nmi.run(
+    x, y,
+    mode='conditional',
+    z_data=z,
+    base_params=params,
+    rigorous=True,
+    gamma_range=range(1, 11),   # default
+    min_gamma_points=5,          # default
+    confidence_level=0.68,       # default
+)
+```
+
+The estimator uses a **master permutation** to subsample data consistently at
+each γ, so both component estimates (e.g. I(XZ;Y) and I(Z;Y) for CMI) see
+the same samples and their noise partially cancels in the difference.
+
+### New `analysis_kwargs` for conditional/transfer rigorous mode
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `rigorous` | bool | `False` | Enable rigorous bias correction. |
+| `gamma_range` | range\|list\|None | `range(1,11)` | Subsample ratios to sweep. |
+| `delta_threshold` | float | 0.1 | Max quadratic-to-linear curvature for linear-region detection. |
+| `min_gamma_points` | int | 5 | Minimum γ values required for a reliable fit. |
+| `confidence_level` | float | 0.68 | Coverage for the half-CI error bar. |
+| `residual_threshold` | float | 2.5 | Same as rigorous mode residual threshold. |
+| `r2_threshold` | float | 0.90 | Same as rigorous mode R² threshold. |
+| `leverage_threshold` | float | 0.20 | Same as rigorous mode LOO threshold. |
+
+### `result.details` keys (rigorous conditional/transfer)
+
+Same as `mode='rigorous'`: `mi_corrected`, `mi_error`, `slope`, `is_reliable`,
+`gammas_used`, `fit_quality_warning`, `leverage_warning`, `r_squared`,
+`max_abs_residual`, `loo_intercept_shift`.
+
+`result.params['rigorous']` is set to `True` to distinguish these results from
+standard conditional/transfer results.
