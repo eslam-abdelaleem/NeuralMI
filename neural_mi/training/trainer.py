@@ -554,11 +554,11 @@ class Trainer:
         if activation == 'softmax':
             # recon: (B, C, W) — probability over C channels for each time step.
             # target: (B, C, W) — ground-truth (one-hot or soft target over channels).
-            # Use NLL loss: -sum_c target_c * log(recon_c), averaged over B and W.
-            # argmax(target, dim=1) → (B, W) integer class labels.
-            class_targets = target.argmax(dim=1)  # (B, W)
+            # Use distributional cross-entropy:
+            #   L = -E_{b,w} [ sum_c target_{b,c,w} * log(recon_{b,c,w}) ].
             log_probs = torch.log(recon.clamp(min=1e-8))  # (B, C, W)
-            return nn.functional.nll_loss(log_probs, class_targets)
+            loss_per_timestep = -(target * log_probs).sum(dim=1)  # (B, W)
+            return loss_per_timestep.mean()
         else:
             # 'linear' or 'sigmoid': MSE is appropriate.
             return nn.functional.mse_loss(recon, target)
