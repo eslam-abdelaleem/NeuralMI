@@ -156,7 +156,7 @@ def run_transfer_entropy(
         )
 
     if not bidirectional:
-        logger.warning(
+        logger.info(
             "Computing TE(X→Y) only. In coupled systems, consider also computing TE(Y→X) "
             "by swapping x_data and y_data and comparing both directions. Pass "
             "bidirectional=True to compute both directions automatically and obtain "

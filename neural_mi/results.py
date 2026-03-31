@@ -6,6 +6,10 @@ different analysis modes from the `run` function. The `Results` class acts as
 a container for MI estimates, dataframes, and detailed metadata, and also
 provides a convenient `.plot()` method for visualizing the results.
 """
+import os
+import datetime
+import pickle
+import json
 from dataclasses import dataclass, field
 from typing import Optional, Any, Dict, List
 import pandas as pd
@@ -73,15 +77,67 @@ class Results:
 
         Prints the analysis mode, MI estimate (if available), confidence
         interval (for ``mode='rigorous'``), reliability flag (for
-        ``mode='rigorous'``), and DataFrame shape (if a DataFrame is present).
+        ``mode='rigorous'``), mode-specific component values, and DataFrame
+        shape (if a DataFrame is present).
         """
         SEP = "─" * 50
         units = self.params.get('output_units', 'bits')
         print(SEP)
         print(f"  NeuralMI Results  |  mode = '{self.mode}'")
         print(SEP)
-        if self.mi_estimate is not None:
-            print(f"  MI estimate : {self.mi_estimate:.4f} {units}")
+
+        if self.mode == 'precision':
+            baseline_mi   = self.details.get('baseline_mi')
+            precision_tau = self.details.get('precision_tau')
+            threshold_val = self.details.get('threshold_value')
+            if baseline_mi is not None:
+                print(f"  Baseline MI       : {baseline_mi:.4f} {units}")
+            if precision_tau is not None:
+                print(f"  Precision τ       : {precision_tau:.4g}")
+            if threshold_val is not None:
+                print(f"  Threshold MI      : {threshold_val:.4f} {units}")
+
+        elif self.mode == 'pairwise':
+            mi_matrix = self.details.get('mi_matrix')
+            df = self.dataframe
+            if mi_matrix is not None:
+                import numpy as _np
+                _finite = mi_matrix[_np.isfinite(mi_matrix)]
+                n_ch = self.details.get('n_channels', '?')
+                n_pairs = len(df) if df is not None else '?'
+                shape_str = (f"{n_ch[0]} × {n_ch[1]}" if isinstance(n_ch, tuple) else f"{n_ch} × {n_ch}")
+                print(f"  MI matrix         : {shape_str} channels  ({n_pairs} pairs)")
+                if len(_finite) > 0:
+                    print(f"  MI range          : {_finite.min():.4f} – {_finite.max():.4f} {units}")
+
+        elif self.mode == 'conditional':
+            mi_xz_y = self.details.get('mi_xz_y')
+            mi_z_y  = self.details.get('mi_z_y')
+            cmi     = self.details.get('cmi_estimate')
+            if cmi is not None:
+                print(f"  CMI I(X;Y|Z)      : {cmi:.4f} {units}")
+            if mi_xz_y is not None:
+                print(f"  I(XZ;Y)           : {mi_xz_y:.4f} {units}")
+            if mi_z_y is not None:
+                print(f"  I(Z;Y)            : {mi_z_y:.4f} {units}")
+
+        elif self.mode == 'transfer':
+            te_xy = self.details.get('te_xy')
+            te_yx = self.details.get('te_yx')
+            di    = self.details.get('directionality_index')
+            if te_xy is not None:
+                print(f"  TE(X→Y)           : {te_xy:.4f} {units}")
+            if te_yx is not None:
+                print(f"  TE(Y→X)           : {te_yx:.4f} {units}")
+            if di is not None:
+                print(f"  Directionality    : {di:.4f}  (+1 = X→Y, -1 = Y→X, 0 = symmetric)")
+
+        else:
+            # Generic display for all other modes (estimate, sweep, rigorous, lag, dimensionality)
+            if self.mi_estimate is not None:
+                print(f"  MI estimate : {self.mi_estimate:.4f} {units}")
+            else:
+                print("  MI estimate : (none — see result.dataframe or result.details)")
             if self.mode == 'rigorous':
                 mi_err = self.details.get('mi_error')
                 mi_err_pred = self.details.get('mi_error_pred')
@@ -495,3 +551,137 @@ class Results:
             plt.tight_layout()
             plt.show()
         return ax
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    def save(self, path: Optional[str] = None) -> str:
+        """Serialise this Results object to a pickle file.
+
+        Parameters
+        ----------
+        path : str, optional
+            Target file path or directory.
+
+            - If ``None`` or a directory path, a filename is generated
+              automatically as ``neuralmi_{mode}_{YYYYMMDD_HHMMSS}.pkl``
+              and placed there (defaults to the current working directory).
+            - If a full file path is given, it is used directly.
+
+            Existing files are never overwritten; a numeric suffix
+            (``_1``, ``_2``, …) is appended automatically when needed.
+
+        Returns
+        -------
+        str
+            The absolute path of the saved file.
+        """
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"neuralmi_{self.mode}_{timestamp}.pkl"
+
+        if path is None:
+            filepath = os.path.join(os.getcwd(), base_name)
+        elif os.path.isdir(path):
+            filepath = os.path.join(path, base_name)
+        else:
+            filepath = path
+
+        if os.path.exists(filepath):
+            root, ext = os.path.splitext(filepath)
+            counter = 1
+            while os.path.exists(f"{root}_{counter}{ext}"):
+                counter += 1
+            filepath = f"{root}_{counter}{ext}"
+
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
+
+        logger.info(f"Results saved to {filepath}")
+        return filepath
+
+    @classmethod
+    def load(cls, path: str) -> 'Results':
+        """Load a Results object previously saved with :meth:`save`.
+
+        Parameters
+        ----------
+        path : str
+            Path to a ``.pkl`` file created by :meth:`save`.
+
+        Returns
+        -------
+        Results
+        """
+        with open(path, 'rb') as f:
+            obj = pickle.load(f)
+        if not isinstance(obj, cls):
+            raise TypeError(
+                f"Expected a Results object in '{path}', got {type(obj).__name__}."
+            )
+        return obj
+
+    def to_json(self, path: Optional[str] = None) -> str:
+        """Export a human-readable JSON snapshot of scalar values and the DataFrame.
+
+        Large objects in ``details`` (numpy arrays, lists of dicts) are
+        represented by a type/shape summary rather than their full content.
+        For complete round-trip fidelity, use :meth:`save` / :meth:`load`.
+
+        Parameters
+        ----------
+        path : str, optional
+            Target ``.json`` file path or directory. Auto-naming follows the
+            same convention as :meth:`save` but uses a ``.json`` extension.
+
+        Returns
+        -------
+        str
+            The absolute path of the saved file.
+        """
+        def _make_serialisable(obj):
+            if obj is None or isinstance(obj, (bool, int, float, str)):
+                return obj
+            if isinstance(obj, dict):
+                return {k: _make_serialisable(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_make_serialisable(v) for v in obj]
+            if hasattr(obj, 'tolist'):
+                arr = obj.tolist()
+                if isinstance(arr, (int, float, bool)):
+                    return arr
+                return f"<array shape={getattr(obj, 'shape', '?')} dtype={getattr(obj, 'dtype', '?')}>"
+            if hasattr(obj, 'to_dict'):
+                return obj.to_dict(orient='records')
+            return f"<{type(obj).__name__}>"
+
+        payload = {
+            'mode':        self.mode,
+            'mi_estimate': self.mi_estimate,
+            'params':      _make_serialisable(self.params or {}),
+            'details':     _make_serialisable(self.details or {}),
+            'dataframe':   self.dataframe.to_dict(orient='records') if self.dataframe is not None else None,
+        }
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"neuralmi_{self.mode}_{timestamp}.json"
+
+        if path is None:
+            filepath = os.path.join(os.getcwd(), base_name)
+        elif os.path.isdir(path):
+            filepath = os.path.join(path, base_name)
+        else:
+            filepath = path
+
+        if os.path.exists(filepath):
+            root, ext = os.path.splitext(filepath)
+            counter = 1
+            while os.path.exists(f"{root}_{counter}{ext}"):
+                counter += 1
+            filepath = f"{root}_{counter}{ext}"
+
+        with open(filepath, 'w') as f:
+            json.dump(payload, f, indent=2)
+
+        logger.info(f"Results exported to {filepath}")
+        return filepath

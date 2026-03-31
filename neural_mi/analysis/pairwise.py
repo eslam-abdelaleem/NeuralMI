@@ -10,7 +10,7 @@ triangle of the symmetric MI matrix.
 matrix.
 
 Results are returned as a :class:`pandas.DataFrame` with columns
-``ch_x``, ``ch_y``, ``mi_estimate``.
+``ch_x``, ``ch_y``, ``mi_mean``, ``mi_std``.
 """
 import torch
 import numpy as np
@@ -66,7 +66,7 @@ def run_pairwise_mi(
           Shape ``(n_ch_x, n_ch_x)`` for self-pairwise (symmetric, diagonal 0),
           or ``(n_ch_x, n_ch_y)`` for cross-pairwise.
         - ``'dataframe'`` : pd.DataFrame with columns ``ch_x``, ``ch_y``,
-          ``mi_estimate``.
+          ``mi_mean``, ``mi_std``.
         - ``'n_channels'`` : int or (int, int) — number of channels.
     """
     if x_data.ndim != 3:
@@ -107,11 +107,12 @@ def run_pairwise_mi(
             vals = [r['train_mi'] for r in results if 'train_mi' in r]
             if not vals:
                 logger.warning(f"  Pair x_ch={i}, y_ch={j}: all runs failed, recording NaN.")
-                mi_ij = float('nan')
+                mi_mean, mi_std = float('nan'), float('nan')
             else:
-                mi_ij = float(np.mean(vals))
-            mi_matrix[i, j] = mi_ij
-            records.append({'ch_x': i, 'ch_y': j, 'mi_estimate': mi_ij})
+                mi_mean = float(np.mean(vals))
+                mi_std  = float(np.std(vals)) if len(vals) > 1 else 0.0
+            mi_matrix[i, j] = mi_mean
+            records.append({'ch_x': i, 'ch_y': j, 'mi_mean': mi_mean, 'mi_std': mi_std})
 
         df = pd.DataFrame(records)
         logger.info("Pairwise MI (cross) estimation complete.")
@@ -150,12 +151,13 @@ def run_pairwise_mi(
             vals = [r['train_mi'] for r in results if 'train_mi' in r]
             if not vals:
                 logger.warning(f"  Pair ({i}, {j}): all runs failed, recording NaN.")
-                mi_ij = float('nan')
+                mi_mean, mi_std = float('nan'), float('nan')
             else:
-                mi_ij = float(np.mean(vals))
-            mi_matrix[i, j] = mi_ij
-            mi_matrix[j, i] = mi_ij  # symmetric
-            records.append({'ch_x': i, 'ch_y': j, 'mi_estimate': mi_ij})
+                mi_mean = float(np.mean(vals))
+                mi_std  = float(np.std(vals)) if len(vals) > 1 else 0.0
+            mi_matrix[i, j] = mi_mean
+            mi_matrix[j, i] = mi_mean  # symmetric
+            records.append({'ch_x': i, 'ch_y': j, 'mi_mean': mi_mean, 'mi_std': mi_std})
 
         df = pd.DataFrame(records)
         logger.info("Pairwise MI (self) estimation complete.")

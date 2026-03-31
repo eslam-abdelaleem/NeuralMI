@@ -34,7 +34,7 @@ class TestPairwiseMI:
         assert len(results.dataframe) == expected_pairs
 
     def test_pairwise_self_dataframe_columns(self):
-        """Pairwise DataFrame must have ch_x, ch_y, mi_estimate columns."""
+        """Pairwise DataFrame must have ch_x, ch_y, mi_mean, and mi_std columns."""
         x = torch.from_numpy(np.random.randn(N, N_CH).astype(np.float32))
         results = nmi.run(
             x_data=x,
@@ -42,8 +42,11 @@ class TestPairwiseMI:
             base_params=_PARAMS,
             n_workers=1,
         )
-        for col in ('ch_x', 'ch_y', 'mi_estimate'):
+        for col in ('ch_x', 'ch_y', 'mi_mean', 'mi_std'):
             assert col in results.dataframe.columns, f"Missing column: {col}"
+        assert 'mi_estimate' not in results.dataframe.columns, (
+            "Old column 'mi_estimate' should no longer be present; use 'mi_mean'."
+        )
 
     def test_pairwise_cross_returns_full_matrix(self):
         """With x_data and y_data → (n_ch_x × n_ch_y) pairs."""
@@ -59,7 +62,7 @@ class TestPairwiseMI:
         assert len(results.dataframe) == N_CHX * N_CHY
 
     def test_pairwise_all_estimates_finite(self):
-        """Every MI estimate in the pairwise matrix should be finite."""
+        """Every MI mean in the pairwise matrix should be finite."""
         x = torch.from_numpy(np.random.randn(N, 3).astype(np.float32))
         results = nmi.run(
             x_data=x,
@@ -67,7 +70,8 @@ class TestPairwiseMI:
             base_params=_PARAMS,
             n_workers=1,
         )
-        assert np.all(np.isfinite(results.dataframe['mi_estimate'].values))
+        assert np.all(np.isfinite(results.dataframe['mi_mean'].values))
+        assert np.all(results.dataframe['mi_std'].values >= 0)
 
     def test_pairwise_mode_field(self):
         """Results.mode should be 'pairwise'."""

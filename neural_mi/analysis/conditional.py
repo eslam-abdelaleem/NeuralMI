@@ -113,7 +113,7 @@ def run_conditional_mi(
 
     logger.info(
         f"Conditional MI: I(XZ;Y)={mi_xz_y:.4f}, I(Z;Y)={mi_z_y:.4f}, "
-        f"I(X;Y|Z)={cmi:.4f} (units from base_params['output_units'])"
+        f"I(X;Y|Z)={cmi:.4f} nats (converted to requested output_units by the caller)"
     )
 
     if cmi < 0:

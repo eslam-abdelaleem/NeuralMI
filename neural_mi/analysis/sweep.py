@@ -45,8 +45,8 @@ class ParameterSweep:
             Additional keyword arguments to be added to `base_params`.
         """
         self.x_data, self.y_data = x_data, y_data
-        self.base_params = base_params
-        
+        self.base_params = base_params.copy()
+
         # If data is already a tensor (processed), we can infer dimensions
         if isinstance(x_data, torch.Tensor) and x_data.ndim == 3:
             self.base_params.update({
@@ -179,10 +179,16 @@ class ParameterSweep:
             # Only inject keys that belong to the processor schema — prevents model
             # architecture params (embedding_dim, n_layers, etc.) from bleeding into
             # processor_params_x/y when both processor and model params are swept together.
-            proc_type_x = self.base_params.get('processor_type_x', 'continuous')
+            proc_type_x = self.base_params.get('processor_type_x', None)
             proc_type_y = self.base_params.get('processor_type_y', proc_type_x)
-            valid_proc_keys_x = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_x, []))
-            valid_proc_keys_y = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_y, []))
+            # When processor_type is None (no processor set), fall back to the
+            # union of ALL schema keys so that any legitimate processor param in
+            # the sweep grid (e.g. window_size) can still reach processor_params_x/y.
+            # This prevents model-arch params (embedding_dim, n_layers, …) from
+            # bleeding in while remaining agnostic about which processor is used.
+            _all_proc_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
+            valid_proc_keys_x = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_x, _all_proc_keys if proc_type_x is None else []))
+            valid_proc_keys_y = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_y, _all_proc_keys if proc_type_y is None else []))
             proc_params_from_sweep_x = {k: v for k, v in params.items() if k in valid_proc_keys_x}
             proc_params_from_sweep_y = {k: v for k, v in params.items() if k in valid_proc_keys_y}
 

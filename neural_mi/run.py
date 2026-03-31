@@ -29,6 +29,7 @@ from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .utils import get_device
 from .logger import logger, set_verbosity
+from .defaults import PROCESSOR_PARAMS_SCHEMA
 
 
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
@@ -111,6 +112,7 @@ def run(
     permutation_test: bool = False,
     n_permutations: int = 1,
     z_data: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    z_time: Optional[np.ndarray] = None,
     z_processor_type: Optional[str] = None,
     z_processor_params: Optional[Dict[str, Any]] = None,
     z_time: Optional[np.ndarray] = None,
@@ -690,12 +692,55 @@ def _run_inner(
                   "min_gamma_points": min_gamma_points, "confidence_level": confidence_level,
                   **analysis_kwargs}
 
-    processor_param_keys = ['window_size', 'n_seconds', 'max_spikes_per_window', 'data_format']
+    # Build the complete set of processor-level keys from the schema so that
+    # any schema addition automatically triggers the deferred-processing path.
+    processor_param_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
     is_proc_sweep = mode == 'sweep' and any(key in (sweep_grid or {}) for key in processor_param_keys)
     
+    def _to_tensor(arr):
+        """Convert array-like to a float32 tensor; expand 2-D (N, C) to (N, C, 1)."""
+        if torch.is_tensor(arr):
+            t = arr.float()
+        else:
+            t = torch.from_numpy(np.asarray(arr, dtype=np.float32))
+        if t.ndim == 2:
+            t = t.unsqueeze(-1)
+        return t
+
     if is_proc_sweep or mode == 'lag':
         logger.info("Detected sweep over processor or lag parameters. Deferring data processing to workers.")
         x_run_data, y_run_data = x_data, y_data
+    elif processor_type_x is None and processor_type_y is None:
+        # Fast path: data is already pre-processed. Convert to tensors inline and skip
+        # the full create_dataset / PairedDataset allocation.
+        x_run_data = _to_tensor(x_data)
+        y_run_data = _to_tensor(y_data) if y_data is not None else None
+        if y_run_data is not None and x_run_data.shape[0] != y_run_data.shape[0]:
+            _min_n = min(x_run_data.shape[0], y_run_data.shape[0])
+            logger.warning(
+                f"X ({x_run_data.shape[0]}) and Y ({y_run_data.shape[0]}) differ in sample count; "
+                f"truncating both to {_min_n}."
+            )
+            x_run_data = x_run_data[:_min_n]
+            y_run_data = y_run_data[:_min_n]
+        base_params['processor_type_x'] = None
+        base_params['processor_type_y'] = None
+        if base_params.get('processor_params_x') is None:
+            base_params['processor_params_x'] = {}
+        if base_params.get('processor_params_y') is None:
+            base_params['processor_params_y'] = {}
+        base_params['processor_params_x']['preprocessed'] = True
+        base_params['processor_params_y']['preprocessed'] = True
+        n_samples = x_run_data.shape[0]
+        if n_samples < 200:
+            warnings.warn(
+                f"Very few samples detected ({n_samples} samples). "
+                f"Neural MI estimators are prone to overfitting at this scale. "
+                f"Consider adding regularisation (dropout, norm_layer) in base_params.",
+                UserWarning, stacklevel=4,
+            )
+        if mode not in ('dimensionality', 'pairwise') and y_run_data is None:
+            raise ValueError(f"y_data must be provided for mode '{mode}'.")
     else:
         dataset = create_dataset(
             x_data=x_data,
@@ -844,7 +889,7 @@ def _run_inner(
         details['raw_results'] = df
         return Results(
             mode=mode,
-            mi_estimate=details['precision_tau'],
+            mi_estimate=details['baseline_mi'],  # baseline MI at zero corruption; precision_tau is in details
             dataframe=df,
             params={**run_params, 'tau_grid': tau_grid},
             details=details
@@ -1043,6 +1088,22 @@ def _run_inner(
     elif mode == 'pairwise':
         n_workers = analysis_kwargs.get('n_workers', 1)
         pairs = analysis_kwargs.get('pairs', None)
+        if permutation_test:
+            n_ch_x = x_run_data.shape[1] if x_run_data.ndim >= 2 else 1
+            pairwise_y_for_warn = y_run_data if y_data is not None else None
+            if pairwise_y_for_warn is not None:
+                n_pairs_est = n_ch_x * pairwise_y_for_warn.shape[1]
+            else:
+                n_pairs_est = n_ch_x * (n_ch_x - 1) // 2
+            warnings.warn(
+                f"Permutation test requested for mode='pairwise'. This will run the full "
+                f"pairwise matrix estimation {n_permutations} time(s), which is computationally "
+                f"expensive ({n_pairs_est} pairs × {n_permutations} permutation(s) = "
+                f"{n_pairs_est * n_permutations} MI estimations total). "
+                f"Allow additional time or reduce n_permutations.",
+                UserWarning,
+                stacklevel=2,
+            )
         # Pass y_run_data when provided to enable cross-pairwise mode.
         pairwise_y = y_run_data if y_data is not None else None
         if permutation_test:

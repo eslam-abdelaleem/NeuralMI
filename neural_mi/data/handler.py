@@ -121,13 +121,14 @@ class PairedTemporalDataset(Dataset):
             data_start, data_end = max(x_start, y_start), min(x_end, y_end)
         else:
             data_start, data_end = x_start, x_end
-        # Store data time extents to be used when time shifting, but only once!
+        # Record the original recording bounds on the first call so they can
+        # be used to clamp the range after time-shifts.
         if not hasattr(self, 'original_data_start'):
             self.original_data_start = data_start
             self.original_data_end = data_end
-        # Bound data time extents by original
-        data_start = min(data_start, self.original_data_start)
-        data_end = max(data_end, self.original_data_end)
+        # Clamp the shifted extent so it cannot exceed the original recording.
+        data_start = max(data_start, self.original_data_start)
+        data_end   = min(data_end,   self.original_data_end)
         # Apply user-specified bounds if provided
         final_start = t_start if t_start is not None else data_start
         final_end = t_end if t_end is not None else data_end
@@ -316,40 +317,68 @@ class PairedDataset(Dataset):
 
 
 def create_single_dataset(data, time, proc_type, proc_params, device=None, data_device='cpu'):
-    """Create dataset for a single variable.
+    """Create a dataset for a single variable.
 
     Parameters
     ----------
+    data : array-like
+        Raw data for this variable.
+    time : array-like or None
+        Time vector; required for temporal processors.
+    proc_type : str or None
+        Processor type: ``'continuous'``, ``'spike'``, ``'categorical'``, or
+        ``None`` for pre-processed static data.
+    proc_params : dict or None
+        Processor-specific parameters extracted from ``processor_params_x/y``.
+    device : str, optional
+        Compute device (reference only).
     data_device : str, optional
-        Device on which dataset tensors are stored.  Defaults to ``'cpu'``
-        (safe default; trainer batch loops already call ``.to(device)``).
-        Pass ``'auto'`` to store on the compute device, which avoids repeated
-        host→device transfers when the same dataset is evaluated many times
-        (e.g. precision analysis).
+        Device for storing dataset tensors.  Defaults to ``'cpu'``.  Pass
+        ``'auto'`` to co-locate data with the compute device (useful for
+        precision analysis where the same dataset is evaluated many times).
     """
     if proc_type is None:
         return StaticDataset(data, device=device, data_device=data_device)
+
     if proc_type == 'continuous':
-        min_cov = (proc_params or {}).get('min_coverage_fraction', 0.2)
+        min_cov    = (proc_params or {}).get('min_coverage_fraction', 0.2)
+        sample_rate = (proc_params or {}).get('sample_rate', None)
         return ContinuousWindowDataset(data, time, device=device,
                                        min_coverage_fraction=min_cov,
-                                       data_device=data_device)
+                                       data_device=data_device,
+                                       sample_rate=sample_rate)
+
     elif proc_type == 'spike':
         bin_size = (proc_params or {}).get('bin_size', None)
         if bin_size is not None:
             normalize = (proc_params or {}).get('normalize_bins', True)
             return BinnedSpikeDataset(data, bin_size=bin_size, device=device,
                                       normalize=normalize, data_device=data_device)
-        no_spike_val = (proc_params or {}).get('no_spike_value', -1.0)
+        no_spike_val        = (proc_params or {}).get('no_spike_value', -1.0)
+        excl_bursty         = (proc_params or {}).get('exclude_bursty_neurons', False)
+        burst_mult          = (proc_params or {}).get('burst_threshold_multiplier', 5.0)
+        max_spikes_per_win  = (proc_params or {}).get('max_spikes_per_window', None)
+        n_seconds           = (proc_params or {}).get('n_seconds', None)
         return SpikeWindowDataset(data, time, device=device,
-                                  no_spike_value=no_spike_val, data_device=data_device)
+                                  no_spike_value=no_spike_val,
+                                  exclude_bursty_neurons=excl_bursty,
+                                  burst_threshold_multiplier=burst_mult,
+                                  data_device=data_device,
+                                  max_spikes_per_window=max_spikes_per_win,
+                                  n_seconds=n_seconds)
+
     elif proc_type == 'categorical':
-        min_cov = (proc_params or {}).get('min_coverage_fraction', 0.2)
+        min_cov     = (proc_params or {}).get('min_coverage_fraction', 0.2)
+        encoding    = (proc_params or {}).get('encoding', 'majority_vote')
+        sample_rate = (proc_params or {}).get('sample_rate', None)
         return CategoricalWindowDataset(data, time, device=device,
                                         min_coverage_fraction=min_cov,
-                                        data_device=data_device)
+                                        encoding=encoding,
+                                        data_device=data_device,
+                                        sample_rate=sample_rate)
+
     else:
-        raise ValueError(f"Unknown processor type: {proc_type}")
+        raise ValueError(f"Unknown processor type: '{proc_type}'.")
 
 def create_dataset(
         x_data, y_data=None,
@@ -370,11 +399,11 @@ def create_dataset(
     """
     proc_type_x = processor_type_x
     proc_params_x = (processor_params_x or {}).copy()
-    proc_type_y = processor_type_y if processor_type_y else processor_type_x
+    proc_type_y = processor_type_y if processor_type_y is not None else processor_type_x
     proc_params_y = (processor_params_y or {}).copy() if processor_params_y else proc_params_x.copy()
 
     if proc_type_x is None or proc_type_y is None:
-        logger.warning(
+        logger.debug(
             "Pre-processed data detected. Skipping compatibility check. "
             "Ensure X and Y have compatible representations."
         )
@@ -385,7 +414,16 @@ def create_dataset(
                                       device=device, data_device=data_device) if y_data is not None else None
 
     if proc_type_x is not None or proc_type_y is not None:
-        window_size = proc_params_x.pop('window_size', None)
+        # X and Y share a single WindowManager, so they must use the same window_size.
+        # Extract it from both param dicts; warn if the user supplied conflicting values.
+        window_size   = proc_params_x.pop('window_size', None)
+        y_window_size = proc_params_y.pop('window_size', None)
+        if y_window_size is not None and y_window_size != window_size:
+            logger.warning(
+                f"processor_params_y specifies window_size={y_window_size}, but X and Y "
+                f"share a single WindowManager and must use the same window size. "
+                f"Using window_size={window_size} from processor_params_x."
+            )
         valid_kwargs = inspect.signature(PairedTemporalDataset).parameters
         filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
         return PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size, **filtered_kwargs)

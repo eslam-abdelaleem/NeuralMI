@@ -68,6 +68,17 @@ def _dataset_cache_key(x_data, y_data, params: dict):
     return (dp_x, dp_y, construction)
 
 
+# Keys needed to reconstruct a saved model's architecture for extract_embeddings().
+# Exposed at module scope so external code can inspect or verify the set.
+_BUILD_PARAMS_KEYS = [
+    'critic_type', 'embedding_model', 'hidden_dim', 'embedding_dim', 'n_layers',
+    'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
+    'use_variational', 'shared_encoder',
+    'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
+    'dropout', 'norm_layer', 'use_spectral_norm',
+]
+
+
 def run_training_task(args: tuple) -> Dict[str, Any]:
     """A top-level function that can be pickled for multiprocessing."""
     import random as _random
@@ -294,7 +305,14 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         dataset,
         params['n_epochs'],
         params['batch_size'],
+        train_fraction=params.get('train_fraction', 0.9),
+        n_test_blocks=params.get('n_test_blocks', 5),
+        random_time_shifting=params.get('random_time_shifting', False),
+        epochs_to_max_shift=params.get('epochs_to_max_shift', 5),
         patience=params['patience'],
+        smoothing_sigma=params.get('smoothing_sigma', 1.0),
+        median_window=params.get('median_window', 5),
+        min_improvement=params.get('min_improvement', 0.001),
         run_id=run_id,
         output_units=params.get('output_units', 'nats'),
         verbose=params.get('verbose', False),
@@ -309,6 +327,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         track_spectral_metrics=params.get('track_spectral_metrics', False),
         spectral_output=params.get('spectral_output', 'default'),
         return_spectrum=params.get('return_spectrum', False),
+        max_index_reduction=params.get('max_index_reduction', 0.05),
         eval_train=params.get('eval_train', False),
         scheduler=scheduler,
     )
