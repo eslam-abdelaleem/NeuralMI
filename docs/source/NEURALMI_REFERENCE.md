@@ -291,7 +291,7 @@ result = nmi.run(
     scheduler=None,                  # 'cosine'|'cosine_warmup'|'step'|'plateau' or class
     scheduler_params={},             # dict; extra kwargs for scheduler
 
-    # regularisation (MLP/VarMLP only):
+    # regularisation (MLP only):
     dropout=0.0,                     # Dropout probability after each hidden layer
     norm_layer=None,                 # None | 'layer' | 'batch'
 
@@ -755,8 +755,8 @@ Pass any of these in the `base_params` dict:
 | `bidirectional` | bool | False | For GRU, LSTM |
 | `nhead` | int | 4 | For Transformer |
 | `shared_encoder` | bool | False | Share embedding weights between x and y |
-| `dropout` | float | 0.0 | Dropout after each hidden layer (MLP/VarMLP only) |
-| `norm_layer` | str or None | `None` | `'layer'` (LayerNorm) or `'batch'` (BatchNorm1d); MLP/VarMLP only |
+| `dropout` | float | 0.0 | Dropout after each hidden layer (MLP only) |
+| `norm_layer` | str or None | `None` | `'layer'` (LayerNorm) or `'batch'` (BatchNorm1d); MLP only |
 
 ### Splitting
 | Parameter | Type | Default | Notes |
@@ -775,7 +775,7 @@ Pass any of these in the `base_params` dict:
 ### Variational Training
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
-| `use_variational` | bool | False | Enable variational reparameterization for embeddings |
+| `use_variational` | bool | False | Enable variational reparameterization for *any* embedding model. When `True`, `build_critic` wraps the selected encoder with `VariationalWrapper`, adding μ and log σ² heads. Works with all `embedding_model` choices: `'mlp'`, `'cnn'`, `'gru'`, `'lstm'`, `'tcn'`, `'transformer'`. |
 | `beta` | float | 1024.0 | MI weight in variational loss `L = KL − β·MI`. Large β (≥ 1) makes MI maximization dominate; decrease for stronger KL regularization |
 
 ### Memory & Device Layout

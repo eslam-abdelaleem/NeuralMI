@@ -11,7 +11,7 @@ from neural_mi.models.critics import (
 from neural_mi.models.embeddings import (
     MLP,
     CNN1D,
-    VarMLP,
+    VariationalWrapper,
     GRU,
     LSTM,
     TCN,
@@ -62,25 +62,117 @@ def test_cnn1d_embedding(x_data_cnn, cnn1d_embedding):
     assert isinstance(output, torch.Tensor)
     assert output.shape == (10, 8)
 
-def test_varmlp_embedding(x_data):
-    """Test the VarMLP embedding network returns a tuple with correct shapes."""
-    var_mlp = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-    var_mlp.train()
-    output = var_mlp(x_data)
-    assert isinstance(output, tuple)
-    embedding, kl_loss = output
-    assert embedding.shape == (10, 16)
-    assert kl_loss.shape == ()
+# --- VariationalWrapper Tests ---
 
-def test_varmlp_kl_loss(x_data):
-    """Test the KL loss calculation in VarMLP."""
-    var_mlp = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-    var_mlp.train()
-    _, kl_loss_train = var_mlp(x_data)
-    assert kl_loss_train > 0.0
-    var_mlp.eval()
-    _, kl_loss_eval = var_mlp(x_data)
-    assert kl_loss_eval == 0.0
+def test_variational_wrapper_embedding(x_data):
+    """VariationalWrapper wrapping MLP returns a tuple (z, kl) with correct shapes."""
+    base = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+    wrapper = VariationalWrapper(base, embed_dim=16)
+    wrapper.train()
+    output = wrapper(x_data)
+    assert isinstance(output, tuple), "VariationalWrapper should return a (z, kl) tuple"
+    embedding, kl_loss = output
+    assert embedding.shape == (10, 16), f"Expected (10, 16), got {embedding.shape}"
+    assert kl_loss.shape == (), "KL loss should be a scalar"
+
+def test_variational_wrapper_kl_loss(x_data):
+    """KL loss is positive at training time and exactly 0 at eval time."""
+    base = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+    wrapper = VariationalWrapper(base, embed_dim=16)
+    wrapper.train()
+    _, kl_loss_train = wrapper(x_data)
+    assert kl_loss_train > 0.0, "KL loss should be positive during training"
+    wrapper.eval()
+    _, kl_loss_eval = wrapper(x_data)
+    assert kl_loss_eval == 0.0, "KL loss should be 0.0 during evaluation"
+
+def test_variational_wrapper_eval_returns_mu(x_data):
+    """At eval time the wrapper returns the deterministic mean (no sampling noise)."""
+    base = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+    wrapper = VariationalWrapper(base, embed_dim=16)
+    wrapper.eval()
+    with torch.no_grad():
+        z1, _ = wrapper(x_data)
+        z2, _ = wrapper(x_data)
+    # Deterministic at eval time: two calls produce identical results
+    assert torch.allclose(z1, z2), "eval-mode forward should be deterministic"
+
+def test_variational_wrapper_gradients_flow(x_data):
+    """Gradients must flow through both the base encoder and the mu/log_var heads."""
+    base = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+    wrapper = VariationalWrapper(base, embed_dim=16)
+    wrapper.train()
+    z, kl = wrapper(x_data)
+    loss = z.mean() + kl
+    loss.backward()
+    # Check that mu_head and log_var_head received gradients
+    assert wrapper.mu_head.weight.grad is not None
+    assert wrapper.log_var_head.weight.grad is not None
+    # Check that base encoder received gradients
+    for p in wrapper.base_encoder.parameters():
+        if p.requires_grad:
+            assert p.grad is not None
+            break
+
+
+# --- VariationalWrapper with all encoder types ---
+
+class TestVariationalWrapperAllEncoders:
+    """Ensure VariationalWrapper produces correct (z, kl) for every encoder type."""
+
+    EMBED_DIM = 8
+    HIDDEN_DIM = 16
+
+    @pytest.fixture
+    def mlp_input(self):
+        return torch.randn(10, 32)   # (batch, flat_input)
+
+    @pytest.fixture
+    def seq_input(self):
+        return torch.randn(10, 4, 20)  # (batch, channels, seq_len)
+
+    def _check_variational_output(self, wrapper, x, embed_dim):
+        wrapper.train()
+        z, kl = wrapper(x)
+        assert z.shape == (x.shape[0], embed_dim), \
+            f"Expected z shape ({x.shape[0]}, {embed_dim}), got {z.shape}"
+        assert kl.shape == (), "KL loss must be a scalar"
+        assert kl > 0.0, "KL loss must be positive during training"
+        wrapper.eval()
+        z_eval, kl_eval = wrapper(x)
+        assert z_eval.shape == (x.shape[0], embed_dim)
+        assert kl_eval == 0.0, "KL must be 0.0 in eval mode"
+
+    def test_mlp_variational(self, mlp_input):
+        base = MLP(input_dim=32, hidden_dim=self.HIDDEN_DIM, embed_dim=self.EMBED_DIM, n_layers=1)
+        wrapper = VariationalWrapper(base, embed_dim=self.EMBED_DIM)
+        self._check_variational_output(wrapper, mlp_input, self.EMBED_DIM)
+
+    def test_cnn1d_variational(self, seq_input):
+        base = CNN1D(input_dim=4, hidden_dim=self.HIDDEN_DIM, embed_dim=self.EMBED_DIM, n_layers=2, kernel_size=3)
+        wrapper = VariationalWrapper(base, embed_dim=self.EMBED_DIM)
+        self._check_variational_output(wrapper, seq_input, self.EMBED_DIM)
+
+    def test_gru_variational(self, seq_input):
+        base = GRU(input_dim=4, hidden_dim=self.HIDDEN_DIM, embed_dim=self.EMBED_DIM, n_layers=1)
+        wrapper = VariationalWrapper(base, embed_dim=self.EMBED_DIM)
+        self._check_variational_output(wrapper, seq_input, self.EMBED_DIM)
+
+    def test_lstm_variational(self, seq_input):
+        base = LSTM(input_dim=4, hidden_dim=self.HIDDEN_DIM, embed_dim=self.EMBED_DIM, n_layers=1)
+        wrapper = VariationalWrapper(base, embed_dim=self.EMBED_DIM)
+        self._check_variational_output(wrapper, seq_input, self.EMBED_DIM)
+
+    def test_tcn_variational(self, seq_input):
+        base = TCN(input_dim=4, hidden_dim=self.HIDDEN_DIM, embed_dim=self.EMBED_DIM, n_layers=2, kernel_size=3)
+        wrapper = VariationalWrapper(base, embed_dim=self.EMBED_DIM)
+        self._check_variational_output(wrapper, seq_input, self.EMBED_DIM)
+
+    def test_transformer_variational(self, seq_input):
+        base = Transformer(input_dim=4, hidden_dim=self.HIDDEN_DIM, embed_dim=self.EMBED_DIM, n_layers=2, nhead=4)
+        wrapper = VariationalWrapper(base, embed_dim=self.EMBED_DIM)
+        self._check_variational_output(wrapper, seq_input, self.EMBED_DIM)
+
 
 # --- Critic Model Tests ---
 
@@ -91,10 +183,11 @@ def test_separable_critic(x_data, y_data, mlp_embedding):
     assert scores.shape == (10, 10)
     assert kl_loss == 0.0
 
-def test_separable_critic_with_varmlp(x_data, y_data):
-    """Test SeparableCritic with VarMLP returns a positive KL loss."""
-    var_mlp = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-    critic = SeparableCritic(embedding_net_x=var_mlp, use_variational=True)
+def test_separable_critic_with_variational_wrapper(x_data, y_data):
+    """SeparableCritic wrapping MLP with VariationalWrapper returns positive KL."""
+    base = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+    wrapped = VariationalWrapper(base, embed_dim=16)
+    critic = SeparableCritic(embedding_net_x=wrapped, use_variational=True)
     critic.train()
     scores, kl_loss = critic(x_data, y_data)
     assert scores.shape == (10, 10)
@@ -116,10 +209,11 @@ def test_concat_critic(x_data, y_data):
     assert scores.shape == (10, 10)
     assert kl_loss == 0.0
 
-def test_concat_critic_with_varmlp(x_data, y_data):
-    """Test ConcatCritic with VarMLP returns a positive KL loss."""
-    embedding_net = VarMLP(input_dim=64, hidden_dim=128, embed_dim=1, n_layers=2)
-    critic = ConcatCritic(embedding_net=embedding_net, use_variational=True)
+def test_concat_critic_with_variational_wrapper(x_data, y_data):
+    """ConcatCritic wrapping MLP with VariationalWrapper returns positive KL."""
+    base = MLP(input_dim=64, hidden_dim=128, embed_dim=1, n_layers=2)
+    wrapped = VariationalWrapper(base, embed_dim=1)
+    critic = ConcatCritic(embedding_net=wrapped, use_variational=True)
     critic.train()
     scores, kl_loss = critic(x_data, y_data)
     assert scores.shape == (10, 10)
@@ -130,14 +224,15 @@ def test_concat_critic_with_varmlp(x_data, y_data):
 @pytest.mark.parametrize("critic_type", ["Separable", "Hybrid"])
 def test_critic_chunking_equivalency(critic_type, x_data, y_data):
     """Proves that chunked processing yields the EXACT same math as full-batch processing."""
-    net_x = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-    
+    base = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+    net_x = VariationalWrapper(base, embed_dim=16)
+
     # Force identical weights/seeds for deterministic output
-    net_x.eval() 
+    net_x.eval()
     torch.manual_seed(42)
 
     kwargs = {'embedding_net_x': net_x, 'use_variational': True}
-    
+
     if critic_type == "Hybrid":
         decision_head = MLP(input_dim=32, hidden_dim=16, embed_dim=1, n_layers=1)
         decision_head.eval()
@@ -174,9 +269,10 @@ def critic_and_data(request, x_data, y_data):
         embedding_net = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
         critic = SeparableCritic(embedding_net_x=embedding_net)
         return critic, x_data, y_data
-    elif request.param == "SeparableVarMLP":
-        embedding_net = VarMLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
-        critic = SeparableCritic(embedding_net_x=embedding_net, use_variational=True)
+    elif request.param == "SeparableVariational":
+        base = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
+        wrapped = VariationalWrapper(base, embed_dim=16)
+        critic = SeparableCritic(embedding_net_x=wrapped, use_variational=True)
         return critic, x_data, y_data
     elif request.param == "Hybrid":
         embedding_net = MLP(input_dim=32, hidden_dim=64, embed_dim=16, n_layers=2)
@@ -191,7 +287,7 @@ def critic_and_data(request, x_data, y_data):
 
 @pytest.mark.parametrize(
     "critic_and_data",
-    ["Separable", "Hybrid", "Concat", "SeparableVarMLP"],
+    ["Separable", "Hybrid", "Concat", "SeparableVariational"],
     indirect=True
 )
 def test_critic_gradients(critic_and_data):
@@ -199,7 +295,7 @@ def test_critic_gradients(critic_and_data):
     critic, x, y = critic_and_data
     if critic is None:
         pytest.skip("Invalid critic specified.")
-        
+
     critic.train()
 
     scores, kl_loss = critic(x, y)

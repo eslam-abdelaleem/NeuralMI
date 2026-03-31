@@ -9,6 +9,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Generic Variational Wrapper (`use_variational=True` for all encoders)
+- **Removed `VarMLP`** — the purpose-built variational MLP is gone entirely.
+  All `use_variational=True` runs now use `VariationalWrapper` instead.
+- **New `VariationalWrapper` class** in `neural_mi/models/embeddings.py`:
+  wraps *any* base encoder (MLP, CNN1D, GRU, LSTM, TCN, Transformer, or a
+  custom module) with μ and log σ² projection heads plus the reparameterization
+  trick.  At training time returns `(z_sampled, kl_loss / batch_size)`; at eval
+  time returns `(μ, 0.0)` — identical protocol to the former `VarMLP`.
+- **`build_critic()` updated**: when `use_variational=True`, `build_critic`
+  builds the selected base encoder normally and then wraps it with
+  `VariationalWrapper(base_encoder, embed_dim)`.  This applies to all six
+  `embedding_model` choices: `'mlp'`, `'cnn'`, `'gru'`, `'lstm'`, `'tcn'`,
+  `'transformer'`.
+- **`shared_encoder` remains fully compatible** with variational mode: the
+  shared encoder is built once and wrapped once; both `net_x` and `net_y`
+  point to the same `VariationalWrapper` instance.
+- `neural_mi/models/__init__.py`: exports `VariationalWrapper`; no longer
+  exports `VarMLP`.
+
+### Changed
+
+#### Generic Variational Wrapper
+- `neural_mi/utils.py`: `build_critic()` no longer has a special `VarMLP`
+  branch for variational mode.  The model-selection tree is now strictly
+  by `embedding_model` name; variational wrapping is a post-construction step.
+- `neural_mi/models/decoders.py`: removed `'var_mlp'` from the name aliases in
+  `build_decoder()` — it was never needed in practice.
+- `neural_mi/run.py`: updated `use_spectral_norm`, `dropout`, and `norm_layer`
+  docstrings to reference "MLP" rather than "MLP/VarMLP".
+
+### Tests Added
+
+#### Generic Variational Wrapper
+- `tests/test_models.py` fully updated:
+  - `test_varmlp_embedding` → `test_variational_wrapper_embedding`
+  - `test_varmlp_kl_loss` → `test_variational_wrapper_kl_loss`
+  - New `test_variational_wrapper_eval_returns_mu` — checks determinism in eval mode.
+  - New `test_variational_wrapper_gradients_flow` — verifies gradients reach
+    both the mu/log_var heads and the base encoder.
+  - New class `TestVariationalWrapperAllEncoders` — 6 parametrized tests
+    (one per encoder type) each checking output shape, positive KL in training
+    mode, and zero KL in eval mode.
+  - Critic tests updated: `test_separable_critic_with_varmlp` →
+    `test_separable_critic_with_variational_wrapper`,
+    `test_concat_critic_with_varmlp` →
+    `test_concat_critic_with_variational_wrapper`.
+  - `test_critic_chunking_equivalency` now builds `VariationalWrapper(MLP(…), embed_dim)`.
+  - `critic_and_data` fixture: `"SeparableVarMLP"` renamed to `"SeparableVariational"`.
+
+#### Item 1 — Enhanced Rigorous Mode Diagnostics
+- **Standardized-residual check (Check A):** After the WLS bias-correction fit,
+  `rigorous` mode now computes externally studentized residuals.  If
+  `max(|rᵢ|) > residual_threshold` (default 2.5) **or** R² < `r2_threshold`
+  (default 0.90), `fit_quality_warning=True` is stored in `result.details` and
+  `is_reliable` is set to `False`.
+- **LOO γ=1 intercept-stability check (Check B):** Refits WLS excluding all γ=1
+  rows and measures the relative intercept shift
+  `δ = |I_full − I_loo| / (|I_full| + ε)`.  If `δ > leverage_threshold`
+  (default 0.20), `leverage_warning=True` is stored in `result.details` and
+  `is_reliable` is set to `False`.
+- Both checks store their source in `result.details`:
+  `fit_quality_warning`, `leverage_warning`, `r_squared`, `max_abs_residual`,
+  `loo_intercept_shift`.
+- New configurable thresholds in `base_params` / `analysis_kwargs`:
+  `residual_threshold` (default 2.5), `r2_threshold` (default 0.90),
+  `leverage_threshold` (default 0.20).
+- `Results.summary()` now prints diagnostic reasons when `is_reliable=False`.
+
+#### Item 2 — Optional Decoder (Deep Symmetric Information Bottleneck)
+- New `use_decoder=True` flag in `base_params` enables decoder-augmented training
+  for all analysis modes.
+- New `base_params` keys:
+  - `use_decoder` (bool, default `False`)
+  - `decoder_weight` (float, default 1.0) — reconstruction weight applied to both X and Y.
+  - `decoder_weight_x` / `decoder_weight_y` (float | None, default `None`) —
+    per-channel overrides; when `None` the shared `decoder_weight` is used.
+  - `decoder_output_activation_x` / `decoder_output_activation_y` (str,
+    default `'linear'`) — `'linear'` for continuous, `'sigmoid'` for binary/spike,
+    `'softmax'` for categorical.
+- New module `neural_mi/models/decoders.py` with decoder variants for all six
+  embedding architectures: `MLPDecoder`, `CNN1DDecoder`, `GRUDecoder`,
+  `LSTMDecoder`, `TCNDecoder`, `TransformerDecoder`, and a `build_decoder()`
+  factory function.
+- Training objective:
+  - Deterministic: `L = −MI(Z_X; Z_Y) + w_x·MSE(X, X̂) + w_y·MSE(Y, Ŷ)`
+  - Variational: `L = KL_X + KL_Y − β·MI(Z_X; Z_Y) + w_x·MSE + w_y·MSE`
+- Decoder and encoder parameters are optimised jointly by the same optimizer.
+- `result.details['decoder_recon_loss']` reports the weighted reconstruction loss.
+- `Results.summary()` prints decoder reconstruction loss when present.
+
+#### Item 3 — Rigorous Bias Correction for Conditional and Transfer Modes
+- `mode='conditional'` and `mode='transfer'` now accept `rigorous=True` in
+  `analysis_kwargs` (or as a top-level `run()` keyword) to produce a
+  bias-corrected, extrapolated estimate.
+- Uses correlated subsampling (same master permutation index for all component
+  estimates at each γ) so noise partially cancels in the difference.
+- New parameters for conditional/transfer rigorous mode: `gamma_range`,
+  `delta_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`,
+  `r2_threshold`, `leverage_threshold`.
+- Returns a full rigorous details dict: `mi_corrected`, `mi_error`, `slope`,
+  `is_reliable`, `gammas_used`, `fit_quality_warning`, `leverage_warning`,
+  `r_squared`, `max_abs_residual`, `loo_intercept_shift`, `raw_results_df`.
+- Graceful fallback: when the linear-region finder prunes too aggressively (noisy
+  data with no clear 1/γ trend), `run_rigorous_scalar_analysis` falls back to
+  using all available γ values and sets `is_reliable=False`.
+- New public function `run_rigorous_scalar_analysis()` in
+  `neural_mi/analysis/rigorous.py` for use with any scalar MI-derived quantity.
+- Pairwise mode: per-pair rigorous estimation will be addressed in a future release.
+
+### Changed
+- `neural_mi/models/critics.py`: Added `get_training_embeddings(x, y)` method to
+  `BaseCritic` — returns embeddings with gradient flow (used by decoders during
+  training).
+- `neural_mi/training/trainer.py`: Added `decoder_x`, `decoder_y`,
+  `decoder_weight_x`, `decoder_weight_y` constructor parameters; training loop
+  now incorporates decoder reconstruction loss when decoders are present.
+- `neural_mi/analysis/task.py`: Builds and passes decoders to `Trainer`; added
+  decoder keys to `_BUILD_PARAMS_KEYS` for model serialisation.
+- `neural_mi/run.py`: Pairwise mode unit conversion now correctly handles
+  `mi_mean`/`mi_std` columns in addition to legacy `mi_estimate`.
+- `neural_mi/defaults.py`: `MODE_KWARGS_SCHEMA` now includes a `'conditional'`
+  entry (previously missing); `'transfer'` entry extended with rigorous params.
+- `neural_mi/results.py`: `Results.summary()` extended to display rigorous
+  diagnostic reasons and decoder reconstruction loss.
+
+### Tests Added
+- `tests/test_rigorous_diagnostics.py` — unit and integration tests for
+  `_compute_fit_diagnostics`, `_post_process_and_correct`, decoder shapes,
+  output activations, end-to-end decoder training, and
+  `run_rigorous_scalar_analysis`.
+- `tests/test_conditional_transfer_rigorous.py` — end-to-end tests for
+  `rigorous=True` in conditional and transfer modes.
+
+## [Unreleased]
+
+### Added
+
 - **`dataset_device` parameter**: controls where dataset tensors are stored in
   memory, independent of the compute device (`device` param).  Default is
   `'cpu'` for all modes, which keeps large arrays in pageable system RAM so the
@@ -159,7 +296,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `torch.optim.lr_scheduler` subclasses also accepted. Scheduler steps at the
   end of each training epoch; `ReduceLROnPlateau` receives the current test MI.
 - **MLP regularisation**: `dropout` (float, default 0.0) and `norm_layer`
-  (`None`/`'layer'`/`'batch'`, default `None`) parameters for MLP and VarMLP
+  (`None`/`'layer'`/`'batch'`, default `None`) parameters for MLP
   embedding networks, applied in the order Linear → Norm → Activation → Dropout.
 - **Per-epoch train MI tracking**: `eval_train` parameter (`False` / `True` /
   fraction / sample count) records train-set MI at every epoch, populating

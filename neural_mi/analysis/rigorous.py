@@ -65,8 +65,25 @@ def _extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
     """Extrapolates MI to infinite data limit (gamma→0, i.e. 1/N→0).
 
     Fits ``train_mi = intercept + slope * (1/gamma)`` via WLS and returns
-    ``(intercept, mi_error, slope)``.  The intercept is the bias-corrected MI
-    estimate at infinite data.
+    ``(intercept, mi_error, mi_error_pred, slope)``.
+
+    Two uncertainty intervals are computed at the extrapolation point
+    (``1/gamma = 0``):
+
+    **Confidence interval** (``mi_error``, default reported)
+        Uncertainty in the *fitted mean* at the extrapolation point.  This is
+        the correct interval to report when you want to quantify how well the
+        bias-corrected MI estimate is determined by the data.  It only reflects
+        uncertainty in the regression coefficients.
+
+    **Prediction interval** (``mi_error_pred``)
+        Uncertainty for a *single new observation* at the extrapolation point.
+        Always wider than the confidence interval because it also accounts for
+        residual noise.  Useful if you want a conservative bound that would
+        also cover a hypothetical individual training run at infinite data.
+
+    The ``mi_error`` (confidence interval half-width) is returned as the
+    primary uncertainty measure; ``mi_error_pred`` is provided for completeness.
     """
     final_subset = group[group['gamma'].isin(gammas_to_fit)].copy()
     if len(final_subset) < 2:
@@ -77,14 +94,124 @@ def _extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
     X_linear = sm.add_constant(final_subset['inv_gamma'])
     fit_linear = sm.WLS(final_subset['train_mi'], X_linear, weights=weights).fit()
     intercept, slope = fit_linear.params
-    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=1 - confidence_level)[0]
-    mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
-    return intercept, mi_error, slope
+
+    pred = fit_linear.get_prediction(exog=[1, 0])
+    alpha = 1 - confidence_level
+
+    # Confidence interval: uncertainty in the fitted mean at 1/gamma = 0
+    ci = pred.conf_int(obs=False, alpha=alpha)[0]
+    mi_error = (ci[1] - ci[0]) / 2.0
+
+    # Prediction interval: also accounts for residual noise (always wider)
+    pi = pred.conf_int(obs=True, alpha=alpha)[0]
+    mi_error_pred = (pi[1] - pi[0]) / 2.0
+
+    return intercept, mi_error, mi_error_pred, slope
+
+
+def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
+                               residual_threshold: float = 2.5,
+                               r2_threshold: float = 0.90,
+                               leverage_threshold: float = 0.20) -> Dict[str, Any]:
+    """Computes fit diagnostics for the WLS linear extrapolation.
+
+    Performs two checks:
+
+    Check A — Residual quality: fits the WLS line on the final subset and
+    examines externally studentized residuals and R².  Flags if
+    ``max(|r_i|) > residual_threshold`` or ``R² < r2_threshold``.
+
+    Check B — LOO γ=1 stability: refits WLS excluding all rows where
+    ``gamma == 1`` and measures the relative shift in the intercept.  Flags
+    if ``|I_full - I_loo| / (|I_full| + 1e-8) > leverage_threshold``.
+
+    Parameters
+    ----------
+    group : pd.DataFrame
+        DataFrame with at least 'gamma' and 'train_mi' columns.
+    gammas_used : list of int
+        The gamma values retained after ``_find_linear_region``.
+    residual_threshold : float
+        Maximum allowed absolute externally studentized residual.
+    r2_threshold : float
+        Minimum acceptable R² for the linear fit.
+    leverage_threshold : float
+        Maximum allowed relative shift in intercept when γ=1 is left out.
+
+    Returns
+    -------
+    dict
+        Keys: ``fit_quality_warning``, ``leverage_warning``, ``r_squared``,
+        ``max_abs_residual``, ``loo_intercept_shift``.
+    """
+    _empty = {
+        'fit_quality_warning': False,
+        'leverage_warning': False,
+        'r_squared': float('nan'),
+        'max_abs_residual': float('nan'),
+        'loo_intercept_shift': float('nan'),
+    }
+
+    final_subset = group[group['gamma'].isin(gammas_used)].copy()
+    if len(final_subset) < 3:
+        return _empty
+
+    final_subset['inv_gamma'] = 1.0 / final_subset['gamma']
+    weights = 1 / final_subset['gamma'].map(final_subset['gamma'].value_counts())
+    X_linear = sm.add_constant(final_subset['inv_gamma'])
+    fit_linear = sm.WLS(final_subset['train_mi'], X_linear, weights=weights).fit()
+
+    # ------------------------------------------------------------------
+    # Check A: residual quality
+    # ------------------------------------------------------------------
+    r_squared = fit_linear.rsquared
+
+    try:
+        influence = fit_linear.get_influence()
+        ext_resids = influence.resid_studentized_external
+    except Exception:
+        denom = np.sqrt(fit_linear.mse_resid) + 1e-12
+        ext_resids = fit_linear.resid / denom
+
+    max_abs_residual = float(np.max(np.abs(ext_resids)))
+    fit_quality_warning = (max_abs_residual > residual_threshold) or (r_squared < r2_threshold)
+
+    # ------------------------------------------------------------------
+    # Check B: LOO γ=1 stability
+    # ------------------------------------------------------------------
+    leverage_warning = False
+    loo_intercept_shift = float('nan')
+
+    gamma1_mask = final_subset['gamma'] == 1
+    if gamma1_mask.any():
+        loo_subset = final_subset[~gamma1_mask].copy()
+        if len(loo_subset) >= 2:
+            loo_weights = 1 / loo_subset['gamma'].map(loo_subset['gamma'].value_counts())
+            X_loo = sm.add_constant(loo_subset['inv_gamma'])
+            fit_loo = sm.WLS(loo_subset['train_mi'], X_loo, weights=loo_weights).fit()
+
+            I_full = fit_linear.params.iloc[0]   # intercept ('const')
+            I_loo = fit_loo.params.iloc[0]
+            delta_loo = abs(I_full - I_loo) / (abs(I_full) + 1e-8)
+            loo_intercept_shift = float(delta_loo)
+            leverage_warning = delta_loo > leverage_threshold
+        # else: fewer than 2 points after removing γ=1 — skip silently
+
+    return {
+        'fit_quality_warning': bool(fit_quality_warning),
+        'leverage_warning': bool(leverage_warning),
+        'r_squared': float(r_squared),
+        'max_abs_residual': max_abs_residual,
+        'loo_intercept_shift': loo_intercept_shift,
+    }
 
 
 def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                                delta_threshold: float, min_gamma_points: int,
-                               confidence_level: float, verbose: bool) -> List[Dict[str, Any]]:
+                               confidence_level: float, verbose: bool,
+                               residual_threshold: float = 2.5,
+                               r2_threshold: float = 0.90,
+                               leverage_threshold: float = 0.20) -> List[Dict[str, Any]]:
     """Groups results and performs bias correction for each group."""
     valid_df = df.dropna(subset=['gamma', 'train_mi'])
     if valid_df.empty:
@@ -113,11 +240,32 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             if not is_reliable:
                 logger.warning(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
 
-            mi_corrected, mi_error, slope = _extrapolate_mi(group, gammas_used, confidence_level)
+            mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
+                group, gammas_used, confidence_level
+            )
+
+            diagnostics = _compute_fit_diagnostics(
+                group, gammas_used, residual_threshold, r2_threshold, leverage_threshold
+            )
+
+            if diagnostics['fit_quality_warning'] or diagnostics['leverage_warning']:
+                is_reliable = False
+                logger.warning(
+                    f"Fit diagnostics triggered for {param_dict}: "
+                    f"fit_quality_warning={diagnostics['fit_quality_warning']}, "
+                    f"leverage_warning={diagnostics['leverage_warning']}."
+                )
+
             param_dict.update({
-                'mi_corrected': mi_corrected, 'mi_error': mi_error, 'slope': slope,
-                'is_reliable': is_reliable, 'gammas_used': gammas_used
+                'mi_corrected': mi_corrected,
+                'mi_error': mi_error,
+                'mi_error_pred': mi_error_pred,
+                'slope': slope,
+                'is_reliable': is_reliable,
+                'gammas_used': gammas_used,
             })
+            param_dict.update(diagnostics)
+            param_dict.pop('dummy_group', None)
             corrected_results.append(param_dict)
         except InsufficientDataError as e:
             logger.error(f"Could not perform extrapolation for params {param_dict}: {e}")
@@ -175,7 +323,8 @@ class AnalysisWorkflow:
             The number of worker processes to use. Defaults to 1.
         **kwargs : Dict[str, Any]
             Additional keyword arguments for the bias correction, such as
-            ``delta_threshold``, ``min_gamma_points``, and ``confidence_level``.
+            ``delta_threshold``, ``min_gamma_points``, ``confidence_level``,
+            ``residual_threshold``, ``r2_threshold``, and ``leverage_threshold``.
 
         Returns
         -------
@@ -216,7 +365,10 @@ class AnalysisWorkflow:
             'delta_threshold': kwargs.pop('delta_threshold', 0.1),
             'min_gamma_points': kwargs.pop('min_gamma_points', 5),
             'confidence_level': kwargs.pop('confidence_level', 0.68),
-            'verbose': kwargs.get('verbose', False)
+            'verbose': kwargs.get('verbose', False),
+            'residual_threshold': kwargs.pop('residual_threshold', 2.5),
+            'r2_threshold': kwargs.pop('r2_threshold', 0.90),
+            'leverage_threshold': kwargs.pop('leverage_threshold', 0.20),
         }
 
         corrected_results = _post_process_and_correct(raw_results_df, **correction_kwargs)
@@ -277,7 +429,7 @@ class AnalysisWorkflow:
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry points
 # ---------------------------------------------------------------------------
 
 def run_rigorous_analysis(
@@ -313,7 +465,8 @@ def run_rigorous_analysis(
         Number of parallel workers. ``None`` uses a single process.
     **kwargs
         Additional keyword arguments forwarded to ``AnalysisWorkflow.run()``.
-        Common ones: ``delta_threshold``, ``min_gamma_points``, ``confidence_level``.
+        Common ones: ``delta_threshold``, ``min_gamma_points``, ``confidence_level``,
+        ``residual_threshold``, ``r2_threshold``, ``leverage_threshold``.
 
     Returns
     -------
@@ -330,3 +483,170 @@ def run_rigorous_analysis(
         n_workers=n_workers,
         **kwargs,
     )
+
+
+def run_rigorous_scalar_analysis(
+    scalar_fn,
+    x_data,
+    y_data,
+    base_params: Dict[str, Any],
+    extra_data: Optional[Dict[str, Any]] = None,
+    extra_kwargs: Optional[Dict[str, Any]] = None,
+    gamma_range=range(1, 11),
+    delta_threshold: float = 0.1,
+    min_gamma_points: int = 5,
+    confidence_level: float = 0.68,
+    residual_threshold: float = 2.5,
+    r2_threshold: float = 0.90,
+    leverage_threshold: float = 0.20,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    """Bias-corrected estimation of a compound scalar quantity via rigorous extrapolation.
+
+    Used by conditional and transfer MI modes to apply the same finite-data
+    bias correction to arbitrary scalar functions of the data (e.g. conditional
+    MI, transfer entropy) without requiring a full ``AnalysisWorkflow`` training
+    loop.
+
+    The function calls ``scalar_fn`` on progressively smaller subsets of the
+    data (controlled by *gamma*), collects the scalar outputs, and extrapolates
+    to the infinite-data limit using the same WLS linear fit as the standard
+    rigorous analysis.
+
+    Parameters
+    ----------
+    scalar_fn : callable
+        A function with signature
+        ``scalar_fn(x_sub, y_sub, params, **extra_sub, **extra_kwargs) -> float``.
+        It must return a single scalar MI (or MI-like) value.
+    x_data : array-like, shape (N, ...)
+        Data for variable X.  The first axis is the sample axis.
+    y_data : array-like, shape (N, ...)
+        Data for variable Y.  Same leading dimension as *x_data*.
+    base_params : Dict[str, Any]
+        Fixed parameters passed to ``scalar_fn`` as the ``params`` positional
+        argument.  A shallow copy is made for each call.
+    extra_data : dict of array-like, optional
+        Additional arrays (keyed by name) to subsample alongside *x_data* and
+        *y_data*.  Each array must have the same leading dimension N.  The
+        subsampled arrays are passed as keyword arguments to ``scalar_fn``.
+    extra_kwargs : dict, optional
+        Fixed keyword arguments forwarded verbatim to every ``scalar_fn`` call
+        (not subsampled).
+    gamma_range : range or sequence of int, optional
+        Values of *gamma* to sweep over.  Defaults to ``range(1, 11)``.
+    delta_threshold : float, optional
+        Curvature threshold for ``_find_linear_region``.  Defaults to ``0.1``.
+    min_gamma_points : int, optional
+        Minimum number of distinct gamma values required for a reliable fit.
+        Defaults to ``5``.
+    confidence_level : float, optional
+        Confidence level for the extrapolation error interval.  Defaults to
+        ``0.68`` (roughly ±1 σ).
+    residual_threshold : float, optional
+        Passed to ``_compute_fit_diagnostics``.  Defaults to ``2.5``.
+    r2_threshold : float, optional
+        Passed to ``_compute_fit_diagnostics``.  Defaults to ``0.90``.
+    leverage_threshold : float, optional
+        Passed to ``_compute_fit_diagnostics``.  Defaults to ``0.20``.
+    verbose : bool, optional
+        Passed to ``_find_linear_region``.  Defaults to ``False``.
+
+    Returns
+    -------
+    Dict[str, Any]
+        A dictionary with the following keys:
+
+        - ``'mi_corrected'`` : float — bias-corrected scalar estimate.
+        - ``'mi_error'`` : float — half-width of the confidence interval.
+        - ``'slope'`` : float — slope of the WLS fit (bias per unit 1/gamma).
+        - ``'is_reliable'`` : bool — True if the fit passes all quality checks.
+        - ``'gammas_used'`` : list of int — gamma values in the linear region.
+        - ``'raw_results_df'`` : pd.DataFrame — one row per successful chunk call.
+        - ``'fit_quality_warning'`` : bool
+        - ``'leverage_warning'`` : bool
+        - ``'r_squared'`` : float
+        - ``'max_abs_residual'`` : float
+        - ``'loo_intercept_shift'`` : float
+
+    Raises
+    ------
+    InsufficientDataError
+        If fewer than ``min_gamma_points`` rows are collected across all gamma
+        values (i.e. almost every ``scalar_fn`` call failed).
+    """
+    N = x_data.shape[0]
+    master_perm = np.random.permutation(N)
+
+    rows = []
+    for gamma in gamma_range:
+        chunks = np.array_split(master_perm, gamma)
+        for chunk_idx in chunks:
+            x_sub = x_data[chunk_idx]
+            y_sub = y_data[chunk_idx]
+
+            extra_sub = {}
+            if extra_data:
+                for key, arr in extra_data.items():
+                    extra_sub[key] = arr[chunk_idx]
+
+            try:
+                scalar_value = scalar_fn(
+                    x_sub, y_sub, base_params.copy(),
+                    **extra_sub,
+                    **(extra_kwargs or {})
+                )
+                rows.append({'gamma': gamma, 'train_mi': scalar_value})
+            except Exception as exc:
+                logger.warning(
+                    f"run_rigorous_scalar_analysis: scalar_fn call failed for "
+                    f"gamma={gamma} (chunk size={len(chunk_idx)}): {exc}"
+                )
+
+    if len(rows) < min_gamma_points:
+        raise InsufficientDataError(
+            f"run_rigorous_scalar_analysis collected only {len(rows)} successful "
+            f"scalar_fn calls, which is fewer than min_gamma_points={min_gamma_points}. "
+            f"Cannot perform reliable extrapolation."
+        )
+
+    df = pd.DataFrame(rows, columns=['gamma', 'train_mi'])
+
+    gammas_used = _find_linear_region(df, delta_threshold, min_gamma_points, verbose)
+    try:
+        mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
+            df, gammas_used, confidence_level
+        )
+    except InsufficientDataError:
+        # Pruning left too few points — fall back to all available gammas and mark
+        # the result as unreliable so callers are warned.
+        gammas_used = sorted(df['gamma'].unique().tolist())
+        logger.warning(
+            "run_rigorous_scalar_analysis: linear region too small after pruning; "
+            "falling back to all %d gamma values (is_reliable will be False).",
+            len(gammas_used),
+        )
+        mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
+            df, gammas_used, confidence_level
+        )
+    diagnostics = _compute_fit_diagnostics(df, gammas_used, residual_threshold, r2_threshold, leverage_threshold)
+
+    is_reliable = len(gammas_used) >= min_gamma_points
+    if diagnostics['fit_quality_warning'] or diagnostics['leverage_warning']:
+        is_reliable = False
+        logger.warning(
+            f"run_rigorous_scalar_analysis: fit diagnostics triggered: "
+            f"fit_quality_warning={diagnostics['fit_quality_warning']}, "
+            f"leverage_warning={diagnostics['leverage_warning']}."
+        )
+
+    return {
+        'mi_corrected': mi_corrected,
+        'mi_error': mi_error,
+        'mi_error_pred': mi_error_pred,
+        'slope': slope,
+        'is_reliable': is_reliable,
+        'gammas_used': gammas_used,
+        'raw_results_df': df,
+        **diagnostics,
+    }

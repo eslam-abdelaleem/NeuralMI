@@ -88,17 +88,69 @@ def test_trainer_spectral_metrics(dummy_data, dummy_model):
 def test_trainer_custom_smoothing(dummy_data, dummy_model):
     """Tests the custom smoothing hook for early stopping."""
     optimizer = torch.optim.Adam(dummy_model.parameters(), lr=0.01)
-    
+
     # A custom smoothing function that does absolutely nothing (identity)
     identity_smooth = lambda arr: np.array(arr)
-    
+
     trainer = Trainer(
-        dummy_model, 
-        dummy_estimator, 
-        optimizer, 
-        torch.device('cpu'), 
+        dummy_model,
+        dummy_estimator,
+        optimizer,
+        torch.device('cpu'),
         custom_smoothing_fn=identity_smooth
     )
-    
+
     results = trainer.train(dummy_data, n_epochs=2, batch_size=20, verbose=False)
     assert 'test_mi' in results
+
+
+class TestDecoderLoss:
+    """Unit tests for Trainer._decoder_loss."""
+
+    def test_linear_activation_returns_mse(self):
+        """'linear' activation uses MSE loss."""
+        B, C, W = 4, 3, 8
+        recon = torch.randn(B, C, W)
+        target = torch.randn(B, C, W)
+        loss = Trainer._decoder_loss(recon, target, 'linear')
+        expected = torch.nn.functional.mse_loss(recon, target)
+        assert torch.isclose(loss, expected)
+
+    def test_sigmoid_activation_returns_mse(self):
+        """'sigmoid' activation uses MSE loss."""
+        B, C, W = 4, 3, 8
+        recon = torch.sigmoid(torch.randn(B, C, W))
+        target = torch.sigmoid(torch.randn(B, C, W))
+        loss = Trainer._decoder_loss(recon, target, 'sigmoid')
+        expected = torch.nn.functional.mse_loss(recon, target)
+        assert torch.isclose(loss, expected)
+
+    def test_softmax_activation_returns_nll(self):
+        """'softmax' activation uses NLL loss; scalar, finite, non-negative."""
+        B, C, W = 4, 5, 8
+        # recon: probability distribution over C channels per time step
+        recon = torch.softmax(torch.randn(B, C, W), dim=1)
+        # target: one-hot over channels
+        class_idx = torch.randint(0, C, (B, W))
+        target = torch.zeros(B, C, W)
+        target.scatter_(1, class_idx.unsqueeze(1), 1.0)
+        loss = Trainer._decoder_loss(recon, target, 'softmax')
+        assert loss.ndim == 0           # scalar
+        assert torch.isfinite(loss)
+        assert loss.item() >= 0.0
+
+    def test_softmax_loss_lower_for_perfect_prediction(self):
+        """NLL loss is lower when predictions match targets perfectly."""
+        B, C, W = 4, 5, 8
+        # Perfect prediction: prob≈1 on the correct class
+        class_idx = torch.randint(0, C, (B, W))
+        target = torch.zeros(B, C, W)
+        target.scatter_(1, class_idx.unsqueeze(1), 1.0)
+        # Nearly-perfect recon: high probability on true class
+        perfect_logits = target * 10.0
+        recon_good = torch.softmax(perfect_logits, dim=1)
+        # Random (bad) prediction
+        recon_bad = torch.softmax(torch.randn(B, C, W), dim=1)
+        loss_good = Trainer._decoder_loss(recon_good, target, 'softmax')
+        loss_bad = Trainer._decoder_loss(recon_bad, target, 'softmax')
+        assert loss_good.item() < loss_bad.item()

@@ -81,3 +81,35 @@ def test_run_precision_analysis_end_to_end():
     assert 'baseline_mi' in details
     assert 'precision_tau' in details
     assert details['corrupt_target'] == 'x'
+
+
+def test_run_precision_analysis_corrupt_target_both():
+    """corrupt_target='both' should run without error and tag results correctly."""
+    x_data = torch.randn(100, 2)
+    y_data = torch.randn(100, 2)
+    base_params = {
+        'critic_type': 'separable',
+        'n_epochs': 1,
+        'batch_size': 10,
+        'device': 'cpu',
+        'input_dim_x': 2,
+        'input_dim_y': 2,
+        'hidden_dim': 8,
+        'embedding_dim': 4,
+        'n_layers': 1,
+        'use_variational': False,
+        'embedding_model': 'mlp',
+        'max_n_batches': 512,
+        'kernel_size': 3,
+        'bidirectional': False,
+        'nhead': 4,
+    }
+    results = run_precision_analysis(
+        x_data, y_data, base_params,
+        tau_grid=[0.5, 1.0],
+        corrupt_target='both',
+        corruption_method='rounding',
+        threshold_ratio=0.9,
+    )
+    assert results['details']['corrupt_target'] == 'both'
+    assert 'dataframe' in results

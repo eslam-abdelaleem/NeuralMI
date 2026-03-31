@@ -42,13 +42,13 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
         cols = [
             'test_mi', 'train_mi', 'raw_train_mi',
             'test_mi_std', 'train_mi_std',          # precision-mode std columns
-            'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'slope',
+            'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'mi_error_pred', 'slope',
         ]
         for col in cols:
             if col in df.columns: df[col] *= NATS_TO_BITS
         return df
     elif isinstance(results, list) and all(isinstance(r, dict) for r in results):
-        keys = ['test_mi', 'train_mi', 'raw_train_mi', 'mi_corrected', 'mi_error', 'slope']
+        keys = ['test_mi', 'train_mi', 'raw_train_mi', 'mi_corrected', 'mi_error', 'mi_error_pred', 'slope']
         return [{**r, **{k: r.get(k, 0) * NATS_TO_BITS for k in keys if r.get(k) is not None}} for r in results]
     elif isinstance(results, dict):
         new_results = results.copy()
@@ -115,6 +115,7 @@ def run(
     z_time: Optional[np.ndarray] = None,
     z_processor_type: Optional[str] = None,
     z_processor_params: Optional[Dict[str, Any]] = None,
+    z_time: Optional[np.ndarray] = None,
     history_window: Optional[int] = None,
     prediction_horizon: int = 1,
     bidirectional_te: bool = False,
@@ -266,7 +267,7 @@ def run(
         ``range(-10, 11)`` or ``[-0.1, 0.0, 0.1]``. Required when
         ``mode='lag'``.
     use_spectral_norm : bool, default=True
-        Apply spectral normalisation to the hidden linear layers of MLP/VarMLP
+        Apply spectral normalisation to the hidden linear layers of MLP
         embedding networks.  Spectral norm constrains the Lipschitz constant of
         each hidden layer (largest singular value = 1), improving training
         stability.  Has no effect on non-MLP architectures (CNN, GRU, LSTM,
@@ -328,22 +329,40 @@ def run(
         - ``float`` in ``(0, 1)`` — use that fraction of training samples.
         - ``int >= 1`` — use exactly that many training samples.
     dropout : float, optional
-        Dropout probability applied after each hidden layer of MLP/VarMLP
+        Dropout probability applied after each hidden layer of MLP
         embedding networks.  ``0.0`` disables dropout (default).  Values in
         ``(0, 1)`` add regularisation, which is particularly helpful for small
         datasets.  Has no effect on CNN, GRU, LSTM, TCN, or Transformer
         architectures.  Defaults to ``None`` (use ``base_params`` value or
         apply the schema default of ``0.0``).
     norm_layer : {'layer', 'batch'} or None, optional
-        Normalisation layer to insert after each hidden layer of MLP/VarMLP
+        Normalisation layer to insert after each hidden layer of MLP
         embedding networks.  ``None`` disables normalisation (default).
         ``'layer'`` inserts ``LayerNorm`` (recommended for small batches);
         ``'batch'`` inserts ``BatchNorm1d``.  Has no effect on other
         architectures.  Defaults to ``None`` (use ``base_params`` value or
         apply the schema default of ``None``).
+    history_window : int, optional
+        For ``mode='transfer'``, the number of past samples used as history
+        context.  **Required** when ``mode='transfer'``.  The raw inputs
+        ``x_data`` and ``y_data`` must be 2-D arrays of shape
+        ``(T, n_channels)`` — no prior windowing should be applied, as the
+        transfer-entropy module builds all sliding windows internally.
+    prediction_horizon : int, default=1
+        For ``mode='transfer'``, how many future samples to predict.
+    bidirectional_te : bool, default=False
+        For ``mode='transfer'``, if True, also compute TE(Y→X) and return a
+        directionality index ``(TE_xy - TE_yx) / (|TE_xy| + |TE_yx|)``.
     **analysis_kwargs
-        Additional keyword arguments passed to the specific analysis engine.
-        Common examples include ``n_workers``, ``n_splits``, or ``gamma_range``.
+        Mode-specific keyword arguments forwarded to the corresponding analysis
+        engine.  These differ from ``base_params`` in scope:
+
+        - **``base_params``** controls model architecture and training
+          (``n_epochs``, ``learning_rate``, ``embedding_dim``, etc.) and is
+          shared across all runs inside a single call.
+        - **``analysis_kwargs``** controls the analysis logic itself (e.g.,
+          ``n_workers``, ``n_splits``, ``gamma_range``).  Accepted keys for
+          each mode are listed in ``neural_mi.defaults.MODE_KWARGS_SCHEMA``.
     max_eval_samples : int, default=5000
         The maximum number of samples to use for evaluation during training.
         This is a computational safeguard and does not affect the training data size.
@@ -367,8 +386,11 @@ def run(
         ``corruption_method='rounding'`` (default), values are quantized to the nearest
         multiple of *tau*. With ``corruption_method='noise'``, additive uniform noise drawn
         from U(-tau/2, tau/2) is applied. Defaults to None.
-    corrupt_target : {'x', 'y'}, default='x'
-        For ``mode='precision'``, which variable to apply noise corruption to during the precision sweep. Defaults to 'x'.
+    corrupt_target : {'x', 'y', 'both'}, default='x'
+        For ``mode='precision'``, which variable to apply corruption to during
+        the precision sweep.  ``'x'`` corrupts only X, ``'y'`` only Y, and
+        ``'both'`` applies the same corruption level simultaneously to X and Y
+        (useful for measuring shared spike-timing precision).
     corruption_method : {'rounding', 'noise'}, default='rounding'
         The method for corrupting the target variable in the precision sweep. 'rounding' rounds values to the nearest multiple of tau, while 'noise' adds uniform noise in the range [-tau/2, tau/2]. Defaults to 'rounding'.
     n_noise_samples : int, default=50
@@ -443,9 +465,8 @@ def run(
             tau_grid=tau_grid, corrupt_target=corrupt_target,
             corruption_method=corruption_method, n_noise_samples=n_noise_samples,
             threshold_ratio=threshold_ratio, permutation_test=permutation_test,
-            n_permutations=n_permutations, z_data=z_data, z_time=z_time,
-            z_processor_type=z_processor_type,
-            z_processor_params=z_processor_params, history_window=history_window,
+            n_permutations=n_permutations, z_data=z_data, z_processor_type=z_processor_type,
+            z_processor_params=z_processor_params, z_time=z_time, history_window=history_window,
             prediction_horizon=prediction_horizon, bidirectional_te=bidirectional_te,
             n_epochs=n_epochs, batch_size=batch_size, shared_encoder=shared_encoder,
             return_embeddings=return_embeddings, lag_range=lag_range,
@@ -520,8 +541,9 @@ def _run_inner(
     test_indices, delta_threshold, min_gamma_points, confidence_level,
     max_eval_samples, train_subset_size, spectral_mode, max_index_reduction,
     tau_grid, corrupt_target, corruption_method, n_noise_samples, threshold_ratio,
-    permutation_test, n_permutations, z_data, z_time, z_processor_type, z_processor_params,
-    history_window, prediction_horizon, bidirectional_te=False,
+    permutation_test, n_permutations, z_data, z_processor_type, z_processor_params,
+    z_time=None,
+    history_window=None, prediction_horizon=1, bidirectional_te=False,
     n_epochs=None, batch_size=None, shared_encoder=None,
     return_embeddings=False, lag_range=None,
     use_spectral_norm=True, gradient_clip_val=None,
@@ -936,9 +958,45 @@ def _run_inner(
         else:
             z_run_data = z_data if torch.is_tensor(z_data) else torch.from_numpy(np.array(z_data)).float()
         n_workers = analysis_kwargs.get('n_workers', 1)
+        use_rigorous = analysis_kwargs.pop('rigorous', False)
+        if use_rigorous:
+            from .analysis.rigorous import run_rigorous_scalar_analysis
+            _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
+            _rig_kwargs = {
+                'gamma_range': _gamma_range,
+                'delta_threshold': analysis_kwargs.pop('delta_threshold', delta_threshold),
+                'min_gamma_points': analysis_kwargs.pop('min_gamma_points', min_gamma_points),
+                'confidence_level': analysis_kwargs.pop('confidence_level', confidence_level),
+                'residual_threshold': analysis_kwargs.pop('residual_threshold', 2.5),
+                'r2_threshold': analysis_kwargs.pop('r2_threshold', 0.90),
+                'leverage_threshold': analysis_kwargs.pop('leverage_threshold', 0.20),
+            }
+            def _cmi_scalar(x_s, y_s, bp, z_data=None, **kw):
+                raw = run_conditional_mi(x_s, y_s, z_data, bp,
+                                         sweep_grid=sweep_grid,
+                                         n_workers=kw.get('n_workers', 1))
+                return raw['cmi_estimate']
+            rig_details = run_rigorous_scalar_analysis(
+                scalar_fn=_cmi_scalar,
+                x_data=x_run_data, y_data=y_run_data, base_params=base_params,
+                extra_data={'z_data': z_run_data},
+                extra_kwargs={'n_workers': n_workers},
+                **_rig_kwargs,
+            )
+            rig_details = _convert_mi_units(rig_details, output_units == 'bits')
+            raw_df = rig_details.pop('raw_results_df', pd.DataFrame())
+            raw_df = _convert_mi_units(raw_df, output_units == 'bits')
+            return Results(
+                mode=mode,
+                mi_estimate=rig_details.get('mi_corrected'),
+                dataframe=raw_df,
+                params={**run_params, 'rigorous': True},
+                details=rig_details,
+            )
+        # Standard (non-rigorous) path
         raw = run_conditional_mi(x_run_data, y_run_data, z_run_data, base_params,
                                  sweep_grid=sweep_grid, n_workers=n_workers)
-        raw = _convert_mi_units(raw, output_units == 'bits')  # convert all MI scalars at once
+        raw = _convert_mi_units(raw, output_units == 'bits')
         cmi = raw['cmi_estimate']
         result = Results(mode=mode, mi_estimate=cmi, params=run_params, details=raw)
         if permutation_test:
@@ -953,8 +1011,6 @@ def _run_inner(
             raise ValueError("`history_window` must be provided for mode='transfer'.")
         # For transfer entropy, expect 2-D inputs (T, channels).
         # StaticDataset wraps (T, C) → (T, C, 1); squeeze the trailing 1 back out.
-        # Use .reshape().contiguous() — StaticDataset may produce non-contiguous
-        # views and downstream code uses .view(), which requires contiguous memory.
         def _to_2d(t):
             if hasattr(t, 'ndim') and t.ndim == 3 and t.shape[-1] == 1:
                 return t.reshape(t.shape[0], t.shape[1]).contiguous()
@@ -971,12 +1027,53 @@ def _run_inner(
                 "mode='transfer' build its own history/prediction arrays internally."
             )
         n_workers = analysis_kwargs.get('n_workers', 1)
+        use_rigorous = analysis_kwargs.pop('rigorous', False)
+        if use_rigorous:
+            from .analysis.rigorous import run_rigorous_scalar_analysis
+            _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
+            _rig_kwargs = {
+                'gamma_range': _gamma_range,
+                'delta_threshold': analysis_kwargs.pop('delta_threshold', delta_threshold),
+                'min_gamma_points': analysis_kwargs.pop('min_gamma_points', min_gamma_points),
+                'confidence_level': analysis_kwargs.pop('confidence_level', confidence_level),
+                'residual_threshold': analysis_kwargs.pop('residual_threshold', 2.5),
+                'r2_threshold': analysis_kwargs.pop('r2_threshold', 0.90),
+                'leverage_threshold': analysis_kwargs.pop('leverage_threshold', 0.20),
+            }
+            def _te_scalar(x_s, y_s, bp, **kw):
+                raw = run_transfer_entropy(
+                    x_s, y_s, bp,
+                    history_window=history_window,
+                    prediction_horizon=prediction_horizon,
+                    sweep_grid=sweep_grid,
+                    n_workers=kw.get('n_workers', 1),
+                    bidirectional=bidirectional_te,
+                )
+                return raw['te_estimate']
+            rig_details = run_rigorous_scalar_analysis(
+                scalar_fn=_te_scalar,
+                x_data=_x_te, y_data=_y_te, base_params=base_params,
+                extra_data=None,
+                extra_kwargs={'n_workers': n_workers},
+                **_rig_kwargs,
+            )
+            rig_details = _convert_mi_units(rig_details, output_units == 'bits')
+            raw_df = rig_details.pop('raw_results_df', pd.DataFrame())
+            raw_df = _convert_mi_units(raw_df, output_units == 'bits')
+            return Results(
+                mode=mode,
+                mi_estimate=rig_details.get('mi_corrected'),
+                dataframe=raw_df,
+                params={**run_params, 'rigorous': True},
+                details=rig_details,
+            )
+        # Standard (non-rigorous) path
         raw = run_transfer_entropy(_x_te, _y_te, base_params,
                                    history_window=history_window,
                                    prediction_horizon=prediction_horizon,
                                    sweep_grid=sweep_grid, n_workers=n_workers,
                                    bidirectional=bidirectional_te)
-        raw = _convert_mi_units(raw, output_units == 'bits')  # convert all MI scalars at once
+        raw = _convert_mi_units(raw, output_units == 'bits')
         te = raw['te_estimate']
         result = Results(mode=mode, mi_estimate=te, params=run_params, details=raw)
         if permutation_test:
@@ -1009,20 +1106,29 @@ def _run_inner(
             )
         # Pass y_run_data when provided to enable cross-pairwise mode.
         pairwise_y = y_run_data if y_data is not None else None
+        if permutation_test:
+            n_pairs_estimate = x_run_data.shape[1] * (x_run_data.shape[1] - 1) // 2
+            logger.warning(
+                f"Permutation test requested for mode='pairwise'. This will run the full pairwise "
+                f"matrix n_permutations times, which is computationally expensive "
+                f"(estimated_pairs × n_permutations ≈ {n_pairs_estimate} × {n_permutations} MI "
+                f"estimations). Allow additional time or reduce n_permutations."
+            )
         raw = run_pairwise_mi(x_run_data, base_params, y_data=pairwise_y,
                               sweep_grid=sweep_grid, n_workers=n_workers, pairs=pairs)
-        # Convert mi_matrix and DataFrame columns to the requested output units
-        if output_units == 'bits':
-            _nats_to_bits = 1 / np.log(2)
-            raw['mi_matrix'] = raw['mi_matrix'] * _nats_to_bits
-            raw['dataframe']['mi_mean'] = raw['dataframe']['mi_mean'] * _nats_to_bits
-            raw['dataframe']['mi_std']  = raw['dataframe']['mi_std']  * _nats_to_bits
+        _scale = 1 / np.log(2) if output_units == 'bits' else 1.0
+        raw['mi_matrix'] = raw['mi_matrix'] * _scale
+        df = raw['dataframe'].copy()
+        for _col in ('mi_mean', 'mi_std', 'mi_estimate'):
+            if _col in df.columns:
+                df[_col] = df[_col] * _scale
+        raw['dataframe'] = df
         result = Results(mode=mode, params=run_params, details=raw,
-                         dataframe=raw['dataframe'])
+                         dataframe=df)
         if permutation_test:
             result.details['null_distribution'] = _run_permutation_test(
-                x_run_data, pairwise_y if pairwise_y is not None else x_run_data,
-                base_params, mode, sweep_grid, n_permutations, analysis_kwargs
+                x_run_data, y_run_data, base_params, 'pairwise', sweep_grid,
+                n_permutations, analysis_kwargs
             )
         return result
 

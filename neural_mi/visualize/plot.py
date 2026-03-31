@@ -222,10 +222,20 @@ def plot_embeddings(
             )
         z_plot = z[:, :dim]
     elif method == 'pca':
-        from sklearn.decomposition import PCA
+        try:
+            from sklearn.decomposition import PCA
+        except ImportError:
+            raise ImportError(
+                "PCA requires scikit-learn. Install it with: pip install neural_mi[sklearn]"
+            )
         z_plot = PCA(n_components=dim).fit_transform(z)
     elif method == 'tsne':
-        from sklearn.manifold import TSNE
+        try:
+            from sklearn.manifold import TSNE
+        except ImportError:
+            raise ImportError(
+                "t-SNE requires scikit-learn. Install it with: pip install neural_mi[sklearn]"
+            )
         z_plot = TSNE(n_components=dim, **{k: v for k, v in kwargs.items()
                                             if k in ('perplexity', 'learning_rate', 'n_iter',
                                                       'random_state', 'init')}).fit_transform(z)

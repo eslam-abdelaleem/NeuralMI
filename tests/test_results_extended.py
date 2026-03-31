@@ -81,18 +81,19 @@ class TestResults:
         assert "none" in captured.lower()
 
     def test_summary_rigorous_reliable(self, capsys):
-        """summary() shows half-CI and reliability flag for rigorous mode."""
+        """summary() shows CI half-width, PI half-width, and reliability for rigorous mode."""
         r = Results(
             mode='rigorous',
             mi_estimate=0.8,
             params={'output_units': 'nats'},
-            details={'mi_error': 0.05, 'is_reliable': True},
+            details={'mi_error': 0.05, 'mi_error_pred': 0.09, 'is_reliable': True},
         )
         r.summary()
         captured = capsys.readouterr().out
         assert "rigorous" in captured
         assert "0.8000" in captured
-        assert "0.0500" in captured
+        assert "0.0500" in captured   # CI half-width
+        assert "0.0900" in captured   # PI half-width
         assert "is_reliable = True" in captured
 
     def test_summary_rigorous_unreliable(self, capsys):
@@ -172,6 +173,34 @@ class TestResults:
         plt.close('all')
 
     # ------------------------------------------------------------------ #
+    # plot() — mode='pairwise'                                           #
+    # ------------------------------------------------------------------ #
+
+    @patch('matplotlib.pyplot.show')
+    def test_plot_pairwise_returns_axes(self, mock_show):
+        """plot() for mode='pairwise' renders a heatmap without raising."""
+        import numpy as np
+        n = 4
+        mi_matrix = np.abs(np.random.randn(n, n))
+        np.fill_diagonal(mi_matrix, 0.0)
+        mi_matrix = (mi_matrix + mi_matrix.T) / 2  # symmetric
+        df = pd.DataFrame({'ch_x': [0], 'ch_y': [1], 'mi_estimate': [0.5]})
+        r = Results(
+            mode='pairwise',
+            params={'output_units': 'bits'},
+            dataframe=df,
+            details={'mi_matrix': mi_matrix},
+        )
+        ax = r.plot(show=False)
+        assert ax is not None
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.show')
+    def test_plot_pairwise_missing_matrix_raises(self, mock_show):
+        """plot() for mode='pairwise' raises ValueError when mi_matrix is missing."""
+        r = Results(mode='pairwise', details={})
+        with pytest.raises(ValueError, match="mi_matrix"):
+            r.plot()
     # save() / load() / to_json()                                         #
     # ------------------------------------------------------------------ #
 

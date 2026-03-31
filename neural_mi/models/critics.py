@@ -39,47 +39,56 @@ class BaseCritic(nn.Module):
         return x_embedded, y_embedded, total_kl_loss
 
     def _compute_embeddings_chunked(self, x, y, net_x, net_y, max_n_batches, use_variational):
-        """Computes embeddings efficiently, with a single consistent KL normalization."""
+        """Computes embeddings efficiently, accumulating KL from the variational wrappers.
+
+        ``VariationalWrapper.forward`` already returns a per-sample-mean KL (raw KL
+        summed over the embedding dimensions and batch, then divided by batch size).
+        We accumulate those per-sample means across chunks and average them — no
+        additional division by the full batch size is applied, as that would
+        double-count the normalization already performed inside the wrapper.
+        """
         batch_size = x.shape[0]
-        
-        # Fast path for small datasets
+        n_chunks = 0
+
+        # Fast path for small datasets — wrapper already gives per-sample mean KL.
         if batch_size <= max_n_batches:
             x_out = net_x(x)
             y_out = net_y(y)
             x_embedded, y_embedded, total_kl = self._get_embeddings_and_kl(x_out, y_out)
-            # Apply single consistent normalization by batch size
-            if use_variational and not isinstance(total_kl, float):
-                total_kl = total_kl / batch_size
             return x_embedded, y_embedded, total_kl
-            
+
         # Chunked processing to prevent OOM
         x_embeds, y_embeds = [], []
-        total_kl_raw = torch.tensor(0.0, device=x.device)
-        
+        total_kl_acc = torch.tensor(0.0, device=x.device)
+
         for i in range(0, batch_size, max_n_batches):
             end_idx = min(i + max_n_batches, batch_size)
-            
+            chunk_size = end_idx - i
+
             x_out = net_x(x[i:end_idx])
             y_out = net_y(y[i:end_idx])
-            
+
             x_emb, y_emb, kl = self._get_embeddings_and_kl(x_out, y_out)
-            
+
             x_embeds.append(x_emb)
             y_embeds.append(y_emb)
-            
+
             if use_variational and not isinstance(kl, float):
-                # Accumulate raw KL — normalize once after all chunks
-                total_kl_raw = total_kl_raw + kl
-                
+                # kl is already per-sample mean for this chunk; weight by chunk size
+                # so we recover the true sum of KL values across the chunk.
+                total_kl_acc = total_kl_acc + kl * chunk_size
+                n_chunks += 1
+
         x_embedded = torch.cat(x_embeds, dim=0)
         y_embedded = torch.cat(y_embeds, dim=0)
-        
-        if use_variational and not isinstance(total_kl_raw, float):
-            # Single normalization by full batch size — consistent with fast path
-            total_kl = total_kl_raw.to(x_embedded.device) / batch_size
+
+        if use_variational and n_chunks > 0:
+            # Divide by total batch_size to get the true per-sample mean over the
+            # full batch (weighted average across possibly unequal chunk sizes).
+            total_kl = total_kl_acc.to(x_embedded.device) / batch_size
         else:
             total_kl = torch.tensor(0.0, device=x_embedded.device)
-            
+
         return x_embedded, y_embedded, total_kl
 
     
@@ -95,6 +104,33 @@ class BaseCritic(nn.Module):
         max_n = getattr(self, 'max_n_batches', 512)
         use_var = getattr(self, 'use_variational', False)
         
+        zx, zy, _ = self._compute_embeddings_chunked(x, y, net_x, net_y, max_n, use_var)
+        return zx, zy
+
+    def get_training_embeddings(self, x: torch.Tensor, y: torch.Tensor) -> tuple:
+        """Return embeddings with gradient flow (for decoder reconstruction loss).
+
+        Unlike :meth:`get_embeddings`, this method does NOT wrap in
+        ``torch.no_grad()`` so gradients can flow back through the encoder.
+        Only called during training when ``use_decoder=True``.
+
+        Parameters
+        ----------
+        x, y : torch.Tensor
+            Input batch tensors.
+
+        Returns
+        -------
+        tuple of (z_x, z_y) : torch.Tensor
+            Embedding tensors, each of shape ``(batch, embed_dim)``.
+        """
+        if hasattr(self, 'embedding_net_x'):
+            net_x, net_y = self.embedding_net_x, self.embedding_net_y
+        else:
+            # ConcatCritic has no separate embedding networks
+            return x.reshape(x.shape[0], -1), y.reshape(y.shape[0], -1)
+        max_n = getattr(self, 'max_n_batches', 512)
+        use_var = getattr(self, 'use_variational', False)
         zx, zy, _ = self._compute_embeddings_chunked(x, y, net_x, net_y, max_n, use_var)
         return zx, zy
 
@@ -175,11 +211,30 @@ class HybridCritic(BaseCritic):
         return scores.view(batch_size, batch_size), total_kl_loss
 
 class ConcatCritic(BaseCritic):
-    """A critic that processes raw concatenated input pairs."""
-    def __init__(self, 
+    """A critic that processes raw concatenated input pairs.
+
+    The network receives ``[x_i, y_j]`` for every (i, j) pair and learns a scalar
+    score directly from the concatenation.  This makes it the most expressive critic
+    but also the most expensive (O(N²) forward passes per batch).
+
+    .. note:: **Variational mode with ConcatCritic**
+
+        Setting ``use_variational=True`` together with ``critic_type='concat'`` is
+        supported but has a different theoretical interpretation than with separable
+        or hybrid critics.  Here the variational wrapper is applied to the
+        *concatenated pair* ``[x_i, y_j]``, not to individual samples, so the KL
+        term measures uncertainty over the *pair* representation rather than over
+        each variable's marginal distribution.  This departs from the standard
+        Information Bottleneck formulation described in the docs.  The training will
+        run without error, but the KL regularisation effect is weaker and harder to
+        interpret.  Unless you have a specific reason to use this combination,
+        prefer ``critic_type='separable'`` or ``'hybrid'`` when
+        ``use_variational=True``.
+    """
+    def __init__(self,
                  embedding_net: nn.Module,
-                 embed_dim: int = None, 
-                 max_n_batches: int = 512, 
+                 embed_dim: int = None,
+                 max_n_batches: int = 512,
                  use_variational: bool = False,
                  **kwargs):
         super().__init__()
@@ -191,31 +246,38 @@ class ConcatCritic(BaseCritic):
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = x.size(0)
         x_flat, y_flat = x.view(batch_size, -1), y.view(batch_size, -1)
-        
+
         scores = torch.zeros(batch_size * batch_size, device=x.device)
-        total_kl_raw = torch.tensor(0.0, device=x.device)
-        
+        total_kl_acc = torch.tensor(0.0, device=x.device)
+        n_pair_chunks = 0
+
         pair_batch_size = self.max_n_batches
-        
+
         for i in range(0, batch_size * batch_size, pair_batch_size):
             end_idx = min(i + pair_batch_size, batch_size * batch_size)
+            pair_chunk_size = end_idx - i
             idx = torch.arange(i, end_idx, device=x.device)
             row_idx = idx // batch_size
             col_idx = idx % batch_size
             pairs = torch.cat([x_flat[row_idx], y_flat[col_idx]], dim=1)
             out = self.embedding_net(pairs)
-            
+
             if isinstance(out, tuple):
                 chunk_scores, kl = out
                 if self.use_variational and not isinstance(kl, float):
-                    total_kl_raw = total_kl_raw + kl
+                    # kl is per-sample mean for this pair chunk; weight by chunk size
+                    # to accumulate the true sum of KL values across the chunk.
+                    total_kl_acc = total_kl_acc + kl * pair_chunk_size
+                    n_pair_chunks += 1
             else:
                 chunk_scores = out
-                
+
             scores[i:end_idx] = chunk_scores.squeeze()
 
-        if self.use_variational and not isinstance(total_kl_raw, float):
-            kl_tensor = total_kl_raw.to(x.device) / (batch_size * batch_size)
+        if self.use_variational and n_pair_chunks > 0:
+            # Divide by total number of pairs for a true per-sample mean over the
+            # full pair batch (weighted average across possibly unequal chunk sizes).
+            kl_tensor = total_kl_acc.to(x.device) / (batch_size * batch_size)
         else:
             kl_tensor = torch.tensor(0.0, device=x.device)
 

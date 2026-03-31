@@ -20,7 +20,7 @@ from neural_mi.logger import logger
 # sweep/hyperparameter variables. Used when inferring the x-axis of a sweep plot.
 _RESULT_COLS: frozenset = frozenset({
     'mi_mean', 'mi_std', 'test_mi', 'train_mi', 'mi_corrected',
-    'mi_error', 'slope', 'run_id', 'is_reliable', 'gammas_used',
+    'mi_error', 'mi_error_pred', 'slope', 'run_id', 'is_reliable', 'gammas_used',
     'n_windows', 'lag',
 })
 
@@ -139,16 +139,56 @@ class Results:
             else:
                 print("  MI estimate : (none — see result.dataframe or result.details)")
             if self.mode == 'rigorous':
-                mi_err     = self.details.get('mi_error')
+                mi_err = self.details.get('mi_error')
+                mi_err_pred = self.details.get('mi_error_pred')
                 is_reliable = self.details.get('is_reliable')
+                fit_quality_warning = self.details.get('fit_quality_warning')
+                leverage_warning = self.details.get('leverage_warning')
+                r_squared = self.details.get('r_squared')
+                max_abs_residual = self.details.get('max_abs_residual')
+                loo_shift = self.details.get('loo_intercept_shift')
                 if mi_err is not None:
-                    print(f"  ± (half CI)   : {mi_err:.4f} {units}")
+                    print(f"  CI half-width : {mi_err:.4f} {units}  [confidence interval on the fitted mean]")
+                if mi_err_pred is not None:
+                    print(f"  PI half-width : {mi_err_pred:.4f} {units}  [prediction interval, more conservative]")
                 if is_reliable is False:
-                    print("  ⚠  is_reliable = False — extrapolation is unreliable; "
-                          "collect more data or simplify the model.")
+                    print("  ⚠  is_reliable = False — extrapolation is unreliable.")
+                    _reasons = []
+                    if fit_quality_warning:
+                        _r2_str = f", R²={r_squared:.3f}" if r_squared is not None and r_squared == r_squared else ""
+                        _res_str = f", max|residual|={max_abs_residual:.2f}" if max_abs_residual is not None and max_abs_residual == max_abs_residual else ""
+                        _reasons.append(f"fit quality (fit_quality_warning=True{_r2_str}{_res_str})")
+                    if leverage_warning:
+                        _loo_str = f"={loo_shift:.3f}" if loo_shift is not None and loo_shift == loo_shift else ""
+                        _reasons.append(f"gamma=1 leverage (leverage_warning=True, LOO shift{_loo_str})")
+                    if _reasons:
+                        print(f"     Reason(s): {'; '.join(_reasons)}")
                 elif is_reliable is True:
                     print("  ✓  is_reliable = True")
-
+                    if r_squared is not None and r_squared == r_squared:
+                        print(f"     R² = {r_squared:.3f}")
+            elif self.mode in ('conditional', 'transfer') and self.params.get('rigorous'):
+                mi_err = self.details.get('mi_error')
+                mi_err_pred = self.details.get('mi_error_pred')
+                is_reliable = self.details.get('is_reliable')
+                fit_quality_warning = self.details.get('fit_quality_warning')
+                leverage_warning = self.details.get('leverage_warning')
+                if mi_err is not None:
+                    print(f"  CI half-width : {mi_err:.4f} {units}  [bias-corrected, confidence interval]")
+                if mi_err_pred is not None:
+                    print(f"  PI half-width : {mi_err_pred:.4f} {units}  [prediction interval, more conservative]")
+                if is_reliable is False:
+                    print("  ⚠  is_reliable = False — rigorous extrapolation flagged issues.")
+                    if fit_quality_warning:
+                        print("     ↳ fit_quality_warning=True (check residuals / R²)")
+                    if leverage_warning:
+                        print("     ↳ leverage_warning=True (gamma=1 point has high leverage)")
+                elif is_reliable is True:
+                    print("  ✓  is_reliable = True  [rigorous bias-corrected estimate]")
+        else:
+            print("  MI estimate : (none — see result.dataframe or result.details)")
+        if self.details.get('decoder_recon_loss') is not None:
+            print(f"  Decoder MSE : {self.details['decoder_recon_loss']:.6f}  (weighted reconstruction loss)")
         if self.dataframe is not None:
             rows, cols = self.dataframe.shape
             col_names = list(self.dataframe.columns)
@@ -319,6 +359,55 @@ class Results:
             ax.set_title('Precision Analysis: MI vs Corruption', fontsize=13)
             ax.legend(fontsize=9)
             ax.grid(True, alpha=0.3)
+
+        elif self.mode == 'pairwise':
+            # Pairwise mode: render the MI matrix as a heatmap.
+            mi_matrix = self.details.get('mi_matrix')
+            if mi_matrix is None:
+                raise ValueError(
+                    "Cannot plot pairwise results: 'mi_matrix' key is missing from result.details. "
+                    "Expected a 2-D numpy array."
+                )
+            import numpy as np
+            import seaborn as sns
+            units = kwargs.pop('units', self.params.get('output_units', 'bits'))
+            title = kwargs.pop('title', 'Pairwise MI Matrix')
+            fmt = kwargs.pop('fmt', '.3f')
+            cmap = kwargs.pop('cmap', 'viridis')
+            figsize = kwargs.pop('figsize', None)
+
+            n_rows, n_cols = mi_matrix.shape
+            # Default figure sizing: ~0.6 in per cell, minimum 4 × 3
+            if figsize is None:
+                figsize = (max(4, n_cols * 0.65 + 1.2), max(3, n_rows * 0.65 + 1.0))
+
+            # Only create a new figure if no axes were provided; otherwise, draw into the given axes.
+            if ax is None:
+                fig, ax = plt.subplots(1, 1, figsize=figsize)
+
+            # Build annotation mask: hide zero entries on diagonal (self-pairs) when symmetric
+            _is_symmetric = (n_rows == n_cols and np.allclose(mi_matrix, mi_matrix.T, equal_nan=True))
+            mask = np.zeros_like(mi_matrix, dtype=bool)
+            if _is_symmetric:
+                np.fill_diagonal(mask, True)  # mask out self-pairs
+
+            # Axis labels: use channel indices or user-supplied variable_names
+            var_names_x = self.details.get('variable_names_x') or [str(i) for i in range(n_cols)]
+            var_names_y = self.details.get('variable_names_y') or [str(i) for i in range(n_rows)]
+
+            sns.heatmap(
+                mi_matrix,
+                mask=mask,
+                annot=True, fmt=fmt, cmap=cmap,
+                xticklabels=var_names_x,
+                yticklabels=var_names_y,
+                cbar_kws={'label': f'MI ({units})'},
+                ax=ax,
+                **kwargs,
+            )
+            ax.set_title(title, fontsize=13)
+            ax.set_xlabel('Channel Y', fontsize=11)
+            ax.set_ylabel('Channel X', fontsize=11)
 
         else:
             raise NotImplementedError(f"Plotting is not implemented for mode: '{self.mode}'")

@@ -11,6 +11,7 @@ Both component MI values are estimated with ``ParameterSweep``.
 The past/future arrays are built internally from the raw time series using
 sliding windows controlled by ``history_window`` and ``prediction_horizon``.
 """
+import warnings
 import torch
 import numpy as np
 from typing import Dict, Any, Optional
@@ -206,6 +207,20 @@ def run_transfer_entropy(
         f"I(y_past;y_future)={mi_marginal:.4f}, TE={te:.4f}"
     )
 
+    if te < 0:
+        warnings.warn(
+            f"Transfer entropy estimate TE(X→Y) is negative (TE = {te:.4f}).  "
+            "This is theoretically impossible and arises from noise in the two "
+            "independent MI estimates whose difference defines TE.  Common causes: "
+            "too few training runs (increase sweep_grid run_id range), high "
+            "estimator variance (try more epochs or a larger batch_size), or very "
+            "small true TE close to zero.  The raw component estimates are available "
+            "in the returned dict ('i_xypast_yfuture', 'i_ypast_yfuture') for "
+            "manual inspection.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     result = {
         'te_xy': te,
         'te_estimate': te,
@@ -248,6 +263,16 @@ def run_transfer_entropy(
         mi_joint_yx = float(np.mean(joint_vals_yx))
         mi_marginal_yx = float(np.mean(marginal_vals_yx))
         te_yx = mi_joint_yx - mi_marginal_yx
+
+        if te_yx < 0:
+            warnings.warn(
+                f"Transfer entropy estimate TE(Y→X) is negative (TE = {te_yx:.4f}).  "
+                "This is theoretically impossible and arises from noise in the two "
+                "independent MI estimates whose difference defines TE.  See the "
+                "warning for TE(X→Y) for common causes.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Directionality index: +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric
         te_sum = abs(te) + abs(te_yx)

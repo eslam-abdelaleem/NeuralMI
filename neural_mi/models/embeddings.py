@@ -415,91 +415,88 @@ class Transformer(BaseEmbedding):
                 nn.init.xavier_uniform_(p)
 
 
-class VarMLP(_BaseMLP):
-    """A Variational MLP that produces a distribution over embeddings.
+class VariationalWrapper(nn.Module):
+    """Generic variational wrapper for any embedding model.
 
-    This model learns an embedding by parameterizing a Gaussian distribution (mu and logvar).
-    During training, it uses the reparameterization trick to sample from this
-    distribution and returns the sample and the KL loss. During evaluation,
-    it returns the mean (mu) of the distribution and a KL loss of 0.
+    Adds a reparameterized Gaussian latent variable on top of any deterministic
+    base encoder.  The base encoder is treated as a feature extractor that maps
+    inputs to a deterministic representation of shape ``(batch, embed_dim)``.
+    Two linear heads then project that representation to the mean ``μ`` and
+    log-variance ``log σ²`` of a Gaussian distribution.
+
+    At **training time** the forward pass returns a sample
+    ``z = μ + ε·σ`` (reparameterization trick) together with the
+    per-sample-averaged KL divergence ``KL(N(μ, σ²) ‖ N(0, I))``.
+
+    At **evaluation time** the forward pass returns ``μ`` directly and a KL
+    contribution of exactly ``0.0``, giving a deterministic, stable embedding
+    for downstream tasks.
+
+    This class replaces the former ``VarMLP`` and generalises variational
+    embeddings to *all* encoder architectures (MLP, CNN1D, GRU, LSTM, TCN,
+    Transformer, and any custom encoder).  Enable it by setting
+    ``use_variational=True`` in ``base_params``; ``build_critic`` wraps the
+    selected encoder automatically.
+
+    Parameters
+    ----------
+    base_encoder : nn.Module
+        Any embedding model whose ``forward`` method returns a tensor of shape
+        ``(batch, embed_dim)``.
+    embed_dim : int
+        The dimensionality of the embedding produced by ``base_encoder``.
 
     Attributes
     ----------
-    base_network : nn.Sequential
-        The shared MLP base that processes the input.
-    fc_mu : nn.Linear
-        The layer that produces the mean of the embedding distribution.
-    fc_logvar : nn.Linear
-        The layer that produces the log variance of the embedding distribution.
+    base_encoder : nn.Module
+        The wrapped deterministic encoder.
+    mu_head : nn.Linear
+        Linear projection from ``embed_dim → embed_dim`` producing the mean.
+    log_var_head : nn.Linear
+        Linear projection from ``embed_dim → embed_dim`` producing the
+        log-variance.  Output is clamped to ``[−10, 4]`` for numerical
+        stability.
     """
-    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int,
-                 n_layers: int, activation: str = 'relu', use_spectral_norm: bool = True,
-                 dropout: float = 0.0, norm_layer: Optional[str] = None):
-        """
-        Parameters
-        ----------
-        input_dim : int
-            The dimensionality of the flattened input.
-        hidden_dim : int
-            The number of units in each hidden layer of the base network.
-        embed_dim : int
-            The dimensionality of the output embedding.
-        n_layers : int
-            The number of hidden layers in the base network.
-        activation : str, optional
-            The activation function to use in the base network. Defaults to 'relu'.
-        use_spectral_norm : bool, optional
-            Whether to use spectral normalization for the linear layers. Defaults to True.
-        dropout : float, optional
-            Dropout probability applied after each hidden activation. Defaults to 0.0.
-        norm_layer : {None, 'batch', 'layer'}, optional
-            Normalisation inserted between linear and activation in each hidden block.
-            ``None`` (default) disables normalisation.
-        """
+
+    def __init__(self, base_encoder: nn.Module, embed_dim: int):
         super().__init__()
-        activations = {'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh,
-                       'leaky_relu': nn.LeakyReLU, 'silu': nn.SiLU}
-        act_fn = activations[activation]
-        _wrap = _spectral_norm if use_spectral_norm else (lambda x: x)
-
-        def _make_hidden_block(in_dim: int, out_dim: int) -> list:
-            block = [_wrap(nn.Linear(in_dim, out_dim))]
-            if norm_layer == 'batch':
-                block.append(nn.BatchNorm1d(out_dim))
-            elif norm_layer == 'layer':
-                block.append(nn.LayerNorm(out_dim))
-            block.append(act_fn())
-            if dropout > 0.0:
-                block.append(nn.Dropout(p=dropout))
-            return block
-
-        layers = _make_hidden_block(input_dim, hidden_dim)
-        for _ in range(n_layers - 1):
-            layers.extend(_make_hidden_block(hidden_dim, hidden_dim))
-        self.base_network = nn.Sequential(*layers)
-        self.fc_mu = nn.Linear(hidden_dim, embed_dim)
-        self.fc_logvar = nn.Linear(hidden_dim, embed_dim)
-        self._initialize_weights()
+        self.base_encoder = base_encoder
+        self.mu_head = nn.Linear(embed_dim, embed_dim)
+        self.log_var_head = nn.Linear(embed_dim, embed_dim)
+        # Xavier uniform + zero-bias for both projection heads
+        for head in (self.mu_head, self.log_var_head):
+            nn.init.xavier_uniform_(head.weight)
+            nn.init.zeros_(head.bias)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes the embedding and KL divergence.
+        """Encode ``x`` through the base encoder and sample from the posterior.
 
-        In training mode, it samples from the learned distribution and returns
-        the sample and the KL loss. In evaluation mode, it returns the mean of
-        the distribution and a KL loss of 0.
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor accepted by ``base_encoder`` (any shape).
+
+        Returns
+        -------
+        z : torch.Tensor
+            Shape ``(batch, embed_dim)``.  Sampled embedding at training time;
+            mean embedding at evaluation time.
+        kl_loss : torch.Tensor
+            Scalar KL divergence ``KL(N(μ, σ²) ‖ N(0, I))`` normalised by
+            batch size.  Returns ``0.0`` at evaluation time.
         """
-        h = self.base_network(x.reshape(x.shape[0], -1))
-        mu, logvar = self.fc_mu(h), self.fc_logvar(h)
+        h = self.base_encoder(x)                     # (batch, embed_dim)
+        mu = self.mu_head(h)                          # (batch, embed_dim)
+        log_var = self.log_var_head(h).clamp(-10.0, 4.0)
+
         if not self.training:
-            return mu, torch.tensor(0.0, device=mu.device)
+            return mu, mu.new_tensor(0.0)
 
-        # Reparameterization trick
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        z = mu + eps * std
+        # Reparameterization trick: z = μ + ε·σ
+        std = torch.exp(0.5 * log_var)
+        z = mu + torch.randn_like(std) * std
 
-        # Calculate KL loss, normalized by batch size for training stability
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        kl_loss = kl_loss / x.size(0)
+        # KL divergence normalised by batch size for training stability
+        kl_loss = -0.5 * torch.sum(1.0 + log_var - mu.pow(2) - log_var.exp())
+        kl_loss = kl_loss / x.shape[0]
         return z, kl_loss

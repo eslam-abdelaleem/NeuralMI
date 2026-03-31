@@ -13,7 +13,7 @@ import platform
 import tempfile
 
 from neural_mi.estimators import ESTIMATORS
-from neural_mi.models.embeddings import MLP, VarMLP, BaseEmbedding, CNN1D, GRU, LSTM, TCN, Transformer
+from neural_mi.models.embeddings import MLP, VariationalWrapper, BaseEmbedding, CNN1D, GRU, LSTM, TCN, Transformer
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
 from neural_mi.logger import logger
 
@@ -148,10 +148,10 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     max_n_batches = embedding_params['max_n_batches']
 
     # --- Model Selection Logic ---
+    # Select the deterministic base encoder class first; variational wrapping is
+    # applied after construction so all encoder architectures benefit uniformly.
     if custom_embedding_cls:
         EmbeddingModel = custom_embedding_cls
-    elif use_variational:
-        EmbeddingModel = VarMLP
     elif model_type == 'cnn':
         EmbeddingModel = CNN1D
     elif model_type == 'gru':
@@ -166,7 +166,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         EmbeddingModel = MLP
     else:
         raise ValueError(f"Unknown embedding_model: {model_type}")
-    
+
     # --- Parameter Preparation ---
     model_kwargs = {
         'hidden_dim': hidden_dim,
@@ -187,7 +187,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
         if model_type in ['transformer']:
             model_kwargs['nhead'] = embedding_params.get('nhead', 4)
-    else: # MLP / VarMLP
+    else:  # MLP (and custom cls with MLP-like signature)
         input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
         model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
         model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
@@ -201,8 +201,16 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             "embedding networks to share. Switch to critic_type='separable' or 'hybrid'."
         )
 
-    net_x = EmbeddingModel(input_dim_x, **model_kwargs)
-    net_y = net_x if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs)
+    # Build the base (deterministic) encoders
+    net_x_base = EmbeddingModel(input_dim_x, **model_kwargs)
+    net_y_base = net_x_base if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs)
+
+    # Optionally wrap with VariationalWrapper — works for every encoder type
+    if use_variational:
+        net_x = VariationalWrapper(net_x_base, embed_dim)
+        net_y = net_x if shared_encoder else VariationalWrapper(net_y_base, embed_dim)
+    else:
+        net_x, net_y = net_x_base, net_y_base
 
     # Warn when the first embedding layer is severely overparameterized.
     # Large first layers (input_dim * hidden_dim) are the most common cause of

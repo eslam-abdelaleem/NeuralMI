@@ -6,7 +6,7 @@ It is organized into two main submodules:
 - `critics`: Contains models that use embeddings to compute MI estimates.
 """
 from .embeddings import (
-    MLP, VarMLP, BaseEmbedding, CNN1D, 
+    MLP, VariationalWrapper, BaseEmbedding, CNN1D,
     GRU, LSTM, TCN, Transformer
 )
 from .critics import (
