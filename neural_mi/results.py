@@ -381,9 +381,9 @@ class Results:
             if figsize is None:
                 figsize = (max(4, n_cols * 0.65 + 1.2), max(3, n_rows * 0.65 + 1.0))
 
-            # Close the empty axes created above and replace with a properly sized figure
-            plt.close(ax.figure)
-            fig, ax = plt.subplots(1, 1, figsize=figsize)
+            # Only create a new figure if no axes were provided; otherwise, draw into the given axes.
+            if ax is None:
+                fig, ax = plt.subplots(1, 1, figsize=figsize)
 
             # Build annotation mask: hide zero entries on diagonal (self-pairs) when symmetric
             _is_symmetric = (n_rows == n_cols and np.allclose(mi_matrix, mi_matrix.T, equal_nan=True))
