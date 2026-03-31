@@ -65,8 +65,25 @@ def _extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
     """Extrapolates MI to infinite data limit (gamma→0, i.e. 1/N→0).
 
     Fits ``train_mi = intercept + slope * (1/gamma)`` via WLS and returns
-    ``(intercept, mi_error, slope)``.  The intercept is the bias-corrected MI
-    estimate at infinite data.
+    ``(intercept, mi_error, mi_error_pred, slope)``.
+
+    Two uncertainty intervals are computed at the extrapolation point
+    (``1/gamma = 0``):
+
+    **Confidence interval** (``mi_error``, default reported)
+        Uncertainty in the *fitted mean* at the extrapolation point.  This is
+        the correct interval to report when you want to quantify how well the
+        bias-corrected MI estimate is determined by the data.  It only reflects
+        uncertainty in the regression coefficients.
+
+    **Prediction interval** (``mi_error_pred``)
+        Uncertainty for a *single new observation* at the extrapolation point.
+        Always wider than the confidence interval because it also accounts for
+        residual noise.  Useful if you want a conservative bound that would
+        also cover a hypothetical individual training run at infinite data.
+
+    The ``mi_error`` (confidence interval half-width) is returned as the
+    primary uncertainty measure; ``mi_error_pred`` is provided for completeness.
     """
     final_subset = group[group['gamma'].isin(gammas_to_fit)].copy()
     if len(final_subset) < 2:
@@ -77,9 +94,19 @@ def _extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
     X_linear = sm.add_constant(final_subset['inv_gamma'])
     fit_linear = sm.WLS(final_subset['train_mi'], X_linear, weights=weights).fit()
     intercept, slope = fit_linear.params
-    conf_interval = fit_linear.get_prediction(exog=[1, 0]).conf_int(obs=True, alpha=1 - confidence_level)[0]
-    mi_error = (conf_interval[1] - conf_interval[0]) / 2.0
-    return intercept, mi_error, slope
+
+    pred = fit_linear.get_prediction(exog=[1, 0])
+    alpha = 1 - confidence_level
+
+    # Confidence interval: uncertainty in the fitted mean at 1/gamma = 0
+    ci = pred.conf_int(obs=False, alpha=alpha)[0]
+    mi_error = (ci[1] - ci[0]) / 2.0
+
+    # Prediction interval: also accounts for residual noise (always wider)
+    pi = pred.conf_int(obs=True, alpha=alpha)[0]
+    mi_error_pred = (pi[1] - pi[0]) / 2.0
+
+    return intercept, mi_error, mi_error_pred, slope
 
 
 def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
@@ -213,7 +240,9 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             if not is_reliable:
                 logger.warning(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
 
-            mi_corrected, mi_error, slope = _extrapolate_mi(group, gammas_used, confidence_level)
+            mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
+                group, gammas_used, confidence_level
+            )
 
             diagnostics = _compute_fit_diagnostics(
                 group, gammas_used, residual_threshold, r2_threshold, leverage_threshold
@@ -228,8 +257,12 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                 )
 
             param_dict.update({
-                'mi_corrected': mi_corrected, 'mi_error': mi_error, 'slope': slope,
-                'is_reliable': is_reliable, 'gammas_used': gammas_used
+                'mi_corrected': mi_corrected,
+                'mi_error': mi_error,
+                'mi_error_pred': mi_error_pred,
+                'slope': slope,
+                'is_reliable': is_reliable,
+                'gammas_used': gammas_used,
             })
             param_dict.update(diagnostics)
             param_dict.pop('dummy_group', None)
@@ -581,7 +614,9 @@ def run_rigorous_scalar_analysis(
 
     gammas_used = _find_linear_region(df, delta_threshold, min_gamma_points, verbose)
     try:
-        mi_corrected, mi_error, slope = _extrapolate_mi(df, gammas_used, confidence_level)
+        mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
+            df, gammas_used, confidence_level
+        )
     except InsufficientDataError:
         # Pruning left too few points — fall back to all available gammas and mark
         # the result as unreliable so callers are warned.
@@ -591,7 +626,9 @@ def run_rigorous_scalar_analysis(
             "falling back to all %d gamma values (is_reliable will be False).",
             len(gammas_used),
         )
-        mi_corrected, mi_error, slope = _extrapolate_mi(df, gammas_used, confidence_level)
+        mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
+            df, gammas_used, confidence_level
+        )
     diagnostics = _compute_fit_diagnostics(df, gammas_used, residual_threshold, r2_threshold, leverage_threshold)
 
     is_reliable = len(gammas_used) >= min_gamma_points
@@ -606,6 +643,7 @@ def run_rigorous_scalar_analysis(
     return {
         'mi_corrected': mi_corrected,
         'mi_error': mi_error,
+        'mi_error_pred': mi_error_pred,
         'slope': slope,
         'is_reliable': is_reliable,
         'gammas_used': gammas_used,

@@ -41,13 +41,13 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
         cols = [
             'test_mi', 'train_mi', 'raw_train_mi',
             'test_mi_std', 'train_mi_std',          # precision-mode std columns
-            'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'slope',
+            'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'mi_error_pred', 'slope',
         ]
         for col in cols:
             if col in df.columns: df[col] *= NATS_TO_BITS
         return df
     elif isinstance(results, list) and all(isinstance(r, dict) for r in results):
-        keys = ['test_mi', 'train_mi', 'raw_train_mi', 'mi_corrected', 'mi_error', 'slope']
+        keys = ['test_mi', 'train_mi', 'raw_train_mi', 'mi_corrected', 'mi_error', 'mi_error_pred', 'slope']
         return [{**r, **{k: r.get(k, 0) * NATS_TO_BITS for k in keys if r.get(k) is not None}} for r in results]
     elif isinstance(results, dict):
         new_results = results.copy()
@@ -340,9 +340,27 @@ def run(
         ``'batch'`` inserts ``BatchNorm1d``.  Has no effect on other
         architectures.  Defaults to ``None`` (use ``base_params`` value or
         apply the schema default of ``None``).
+    history_window : int, optional
+        For ``mode='transfer'``, the number of past samples used as history
+        context.  **Required** when ``mode='transfer'``.  The raw inputs
+        ``x_data`` and ``y_data`` must be 2-D arrays of shape
+        ``(T, n_channels)`` — no prior windowing should be applied, as the
+        transfer-entropy module builds all sliding windows internally.
+    prediction_horizon : int, default=1
+        For ``mode='transfer'``, how many future samples to predict.
+    bidirectional_te : bool, default=False
+        For ``mode='transfer'``, if True, also compute TE(Y→X) and return a
+        directionality index ``(TE_xy - TE_yx) / (|TE_xy| + |TE_yx|)``.
     **analysis_kwargs
-        Additional keyword arguments passed to the specific analysis engine.
-        Common examples include ``n_workers``, ``n_splits``, or ``gamma_range``.
+        Mode-specific keyword arguments forwarded to the corresponding analysis
+        engine.  These differ from ``base_params`` in scope:
+
+        - **``base_params``** controls model architecture and training
+          (``n_epochs``, ``learning_rate``, ``embedding_dim``, etc.) and is
+          shared across all runs inside a single call.
+        - **``analysis_kwargs``** controls the analysis logic itself (e.g.,
+          ``n_workers``, ``n_splits``, ``gamma_range``).  Accepted keys for
+          each mode are listed in ``neural_mi.defaults.MODE_KWARGS_SCHEMA``.
     max_eval_samples : int, default=5000
         The maximum number of samples to use for evaluation during training.
         This is a computational safeguard and does not affect the training data size.
@@ -366,8 +384,11 @@ def run(
         ``corruption_method='rounding'`` (default), values are quantized to the nearest
         multiple of *tau*. With ``corruption_method='noise'``, additive uniform noise drawn
         from U(-tau/2, tau/2) is applied. Defaults to None.
-    corrupt_target : {'x', 'y'}, default='x'
-        For ``mode='precision'``, which variable to apply noise corruption to during the precision sweep. Defaults to 'x'.
+    corrupt_target : {'x', 'y', 'both'}, default='x'
+        For ``mode='precision'``, which variable to apply corruption to during
+        the precision sweep.  ``'x'`` corrupts only X, ``'y'`` only Y, and
+        ``'both'`` applies the same corruption level simultaneously to X and Y
+        (useful for measuring shared spike-timing precision).
     corruption_method : {'rounding', 'noise'}, default='rounding'
         The method for corrupting the target variable in the precision sweep. 'rounding' rounds values to the nearest multiple of tau, while 'noise' adds uniform noise in the range [-tau/2, tau/2]. Defaults to 'rounding'.
     n_noise_samples : int, default=50

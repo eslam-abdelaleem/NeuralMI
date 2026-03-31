@@ -5,6 +5,7 @@ This module forces the use of a Hybrid critic with a large bottleneck and
 analyzes the cross-covariance spectrum of the resulting embeddings to
 determine Intrinsic or Interaction Dimensionality.
 """
+import warnings
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional
@@ -189,7 +190,9 @@ def run_dimensionality_analysis(
             for i in range(n_splits)
         ]
         all_results = _dispatch_splits(split_tasks, n_workers, show_progress)
-        return pd.DataFrame(all_results)
+        df_out = pd.DataFrame(all_results)
+        _warn_if_near_embed_ceiling(df_out, analysis_params)
+        return df_out
 
     # 3. Intrinsic Dimensionality (only X provided — channel split)
     logger.info(f"Computing Intrinsic Dimensionality using '{split_method}' splits.")
@@ -254,8 +257,36 @@ def run_dimensionality_analysis(
         )
 
     df = pd.DataFrame(all_results)
+    _warn_if_near_embed_ceiling(df, analysis_params)
     logger.info("--- Dimensionality Analysis Complete ---")
     return df
+
+
+def _warn_if_near_embed_ceiling(df: pd.DataFrame, analysis_params: Dict[str, Any]) -> None:
+    """Issue a UserWarning when the participation ratio is close to the embedding ceiling.
+
+    The participation ratio (PR) is bounded above by ``embedding_dim``.  If the
+    estimated PR exceeds 80 % of that ceiling the measurement is likely truncated:
+    the true dimensionality may be higher.
+    """
+    if 'participation_ratio' not in df.columns:
+        return
+    valid_prs = df['participation_ratio'].dropna()
+    if valid_prs.empty:
+        return
+    mean_pr = float(valid_prs.mean())
+    embed_dim = analysis_params.get('embedding_dim', 64)
+    threshold = 0.8 * embed_dim
+    if mean_pr >= threshold:
+        warnings.warn(
+            f"The estimated participation ratio ({mean_pr:.1f}) is close to the "
+            f"embedding dimension ceiling (embedding_dim={embed_dim}).  The true "
+            f"dimensionality may be higher.  Consider increasing embedding_dim "
+            f"(e.g. embedding_dim={embed_dim * 2}) in base_params to obtain an "
+            f"untruncated estimate.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _run_single_split(

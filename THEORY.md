@@ -94,6 +94,8 @@ architecture variant for each.
 
 **Choosing $\beta$:** The default value of $\beta = 1024$ reflects the typical use-case where MI maximisation should strongly dominate over KL regularisation. With this setting the loss is effectively $\mathcal{L} \approx -1024\,\hat{I}$, which drives the embeddings to extract maximal shared information while the KL term still gently penalises degenerate distributions. Decreasing $\beta$ increases the relative influence of the KL prior; setting $\beta \ll 1$ can collapse the embeddings toward the prior and reduce estimated MI.
 
+> **Implementation note (normalization):** Internally, the `VariationalWrapper` returns the KL divergence already normalized per sample (i.e., $\frac{1}{B}\sum_{i=1}^{B} D_\text{KL}^{(i)}$). The Trainer then computes $\mathcal{L} = \overline{D}_\text{KL} - \beta\,\hat{I}$ directly. As a result, $\beta$ has a direct and stable interpretation across different batch sizes: a tenfold change in $\beta$ always produces a tenfold change in the relative weight of MI, regardless of how many samples are in the batch.
+
 ---
 
 ## 4. The Problem of Finite-Sampling Bias
@@ -201,3 +203,56 @@ $$I(\tilde{X}^{\tau^*}; Y) < \rho \cdot I(X; Y)$$
 The default ratio $\rho = 0.9$ (90%) is deliberately conservative: it identifies the coarsest timing resolution at which 90% of the available information is still preserved, providing an upper bound on the temporal precision required for faithful information transmission. This approach mirrors methods established in prior work on neural coding precision (Abdelaleem et al., "An information theoretic method to resolve millisecond-scale spike timing precision in a comprehensive motor program").
 
 Multiple threshold ratios can be specified simultaneously — e.g., `threshold_ratio=[0.9, 0.75, 0.5]` — to characterise the full degradation profile of the representation and identify, for instance, both the onset of information loss (90%) and the point of catastrophic degradation (50%).
+
+---
+
+## 8. The Information Bottleneck Extension: Decoder-Augmented Training
+
+The standard NeuralMI objective trains the critic purely to maximise MI:
+
+$$\mathcal{L}_\text{standard} = -\hat{I}(Z_X; Z_Y)$$
+
+When `use_decoder=True`, NeuralMI appends a **reconstruction decoder** for each variable. A decoder $d_X$ maps the embedding $Z_X$ back to the input space and is trained simultaneously with the critic. The augmented **Deep Symmetric Information Bottleneck** objective is:
+
+$$\mathcal{L}_\text{decoder} = -\hat{I}(Z_X; Z_Y) + w_X \cdot \mathcal{L}_\text{rec}(X,\hat{X}) + w_Y \cdot \mathcal{L}_\text{rec}(Y,\hat{Y})$$
+
+where $w_X, w_Y \ge 0$ are the reconstruction weights (`decoder_weight_x`, `decoder_weight_y`) and $\hat{X} = d_X(Z_X)$, $\hat{Y} = d_Y(Z_Y)$.
+
+### Reconstruction Loss Selection
+
+The appropriate reconstruction loss depends on the output activation of the decoder, which is set via `decoder_output_activation_x` / `decoder_output_activation_y`:
+
+| Output activation | Data type | Loss |
+|---|---|---|
+| `'linear'` (default) | Continuous (float) | Mean Squared Error (MSE) |
+| `'sigmoid'` | Binary / spike presence | Mean Squared Error (MSE) |
+| `'softmax'` | Categorical (one-hot over channels) | Negative Log-Likelihood (NLL), equivalent to cross-entropy |
+
+For the softmax case, the decoder outputs a probability distribution $p_c$ over channels at each time step, and the loss is $\mathcal{L}_\text{rec} = -\sum_c y_c \log p_c$ where $y_c$ is the ground-truth one-hot label.
+
+### Combined with Variational Training
+
+When both `use_variational=True` and `use_decoder=True` are set, the full loss is:
+
+$$\mathcal{L}_\text{full} = \underbrace{\overline{D}_\text{KL}(Z_X) + \overline{D}_\text{KL}(Z_Y)}_\text{IB regularisation} - \beta\,\hat{I}(Z_X; Z_Y) + w_X \cdot \mathcal{L}_\text{rec}(X,\hat{X}) + w_Y \cdot \mathcal{L}_\text{rec}(Y,\hat{Y})$$
+
+Here the KL terms push the embeddings towards a standard Gaussian prior (information bottleneck regularisation), $\beta$ controls how strongly MI maximisation dominates, and the decoder terms enforce that each embedding retains enough information to reconstruct its own input. The combined objective therefore encourages embeddings that are: **(i)** informative about the other variable, **(ii)** compact/regular in distribution, and **(iii)** reconstructive of their own input.
+
+> **Note on ConcatCritic + use_variational:** When `critic_type='concat'` is combined with `use_variational=True`, the variational wrapper is applied to the concatenated pair representation $[Z_X, Z_Y]$ rather than to the individual marginals. This means the KL term measures the complexity of the joint pair embedding, not the marginal IB objective. The loss is still valid but does not correspond to the classic symmetric IB. Use `critic_type='separable'` or `critic_type='hybrid'` for the theoretically clean IB formulation.
+
+---
+
+## 9. Primary MI Estimate: `train_mi` in `mode='estimate'`
+
+After training, NeuralMI reports two MI values:
+
+- **`test_mi`** — the MI estimated on the held-out test set at the best epoch. This is the metric used to select the best model checkpoint during training (via early stopping on the smoothed test MI).
+- **`train_mi`** — the MI estimated on a locked-in subset of the training data using the final (best-checkpoint) model. This is reported as `result.mi_estimate` and is the **primary point estimate**.
+
+**Why `train_mi` is preferred as the final estimate:**
+
+1. *Larger evaluation set.* The training subset used for `train_mi` is typically larger than the test set (default `train_fraction=0.9`), so the estimate has lower variance.
+2. *No selection bias.* Because `train_mi` is computed on data the model was trained on, it reflects the capacity of the learned representation rather than the noisier generalisation signal. For bias-correction purposes (`mode='rigorous'`), the same principle applies — the bias correction is performed on the set of `train_mi` values across gamma values.
+3. *Consistency with the `mode='rigorous'` pipeline.* The rigorous pipeline trains models at multiple data fractions and extrapolates `train_mi` values to infinite data, so `train_mi` is the natural quantity for that extrapolation.
+
+The `test_mi` value is still accessible via `result.details['test_mi']` and is the more conservative, lower-variance bound if generalisation to held-out data is the primary concern.

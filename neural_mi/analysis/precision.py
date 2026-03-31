@@ -18,6 +18,7 @@ from neural_mi.estimators import ESTIMATORS
 from neural_mi.utils import build_critic, get_device
 from neural_mi.data.handler import create_dataset
 from neural_mi.logger import logger
+from neural_mi.defaults import BASE_PARAMS_SCHEMA
 
 
 def _build_optimizer_and_scheduler(params: Dict[str, Any], critic):
@@ -109,8 +110,10 @@ def run_precision_analysis(
     tau_grid : list of float
         Corruption levels to sweep over (ascending order recommended).  Each value
         is applied to the target variable according to *corruption_method*.
-    corrupt_target : {'x', 'y'}, default='x'
-        Which variable to corrupt during the sweep.
+    corrupt_target : {'x', 'y', 'both'}, default='x'
+        Which variable to corrupt during the sweep.  Use ``'both'`` to apply
+        the same corruption level simultaneously to X and Y (e.g. to measure
+        shared temporal precision).
     corruption_method : {'rounding', 'noise'}, default='rounding'
         How corruption is applied.  ``'rounding'`` quantizes values to the nearest
         multiple of *tau* (deterministic).  ``'noise'`` adds uniform noise drawn
@@ -195,7 +198,8 @@ def run_precision_analysis(
     
     # Determine train/test splits explicitly so we can reuse the exact test set for evaluation
     n_samples = len(dataset)
-    train_frac = base_params.get('train_fraction', 0.9)
+    _train_frac_default = BASE_PARAMS_SCHEMA['train_fraction']['default']
+    train_frac = base_params.get('train_fraction', _train_frac_default)
     split_mode = base_params.get('split_mode', 'blocked')
     if split_mode == 'random':
         train_idx, test_idx = trainer._create_random_split(n_samples, train_frac)

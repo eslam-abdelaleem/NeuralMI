@@ -16,7 +16,7 @@ ESTIMATORS = {
     'smile': smile_lower_bound,
 }
 
-# Default parameters for estimators to enhance usability
+# Default keyword arguments for estimators.  Override via ``estimator_params`` in base_params.
 ESTIMATOR_DEFAULTS = {
-    'smile': {'clip': 5.0},   # Users can override this. If we want to change default behavior we can change it here.
+    'smile': {'clip': 5.0},
 }

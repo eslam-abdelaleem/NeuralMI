@@ -12,7 +12,10 @@ BASE_PARAMS_SCHEMA = {
     'n_epochs': {'type': int, 'min': 1, 'default': 50},
     'learning_rate': {'type': float, 'min': 0.0, 'default': 5e-4},
     'batch_size': {'type': int, 'min': 1, 'default': 128},
-    'patience': {'type': int, 'min': 0, 'default': 1000}, # Very large number, no early stopping by default
+    # Default of 1000 effectively disables early stopping for the default n_epochs=50.
+    # To enable early stopping, set patience to a value smaller than n_epochs
+    # (e.g. patience=20 with n_epochs=200).
+    'patience': {'type': int, 'min': 0, 'default': 1000},
     'output_units': {'type': str, 'default': 'bits'},
     'verbose': {'type': bool, 'default': True},
     'show_progress': {'type': bool, 'default': True},
@@ -128,6 +131,8 @@ MODE_KWARGS_SCHEMA = {
     'precision': {
         'n_workers': {'type': int, 'default': 1},
         'tau_grid': {'type': list, 'required': True},
+        # corrupt_target: 'x' corrupts only X, 'y' only Y, 'both' corrupts both
+        # simultaneously (useful for measuring shared spike-timing precision).
         'corrupt_target': {'type': str, 'default': 'x'},
         'corruption_method': {'type': str, 'default': 'rounding'},
         'n_noise_samples': {'type': int, 'default': 50},
@@ -154,6 +159,9 @@ MODE_KWARGS_SCHEMA = {
         'residual_threshold': {'type': float, 'default': 2.5},
         'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
+    },
+    'pairwise': {
+        'n_workers': {'type': int, 'default': 1},
     },
 }
 

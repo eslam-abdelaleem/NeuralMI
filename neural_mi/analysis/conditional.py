@@ -9,6 +9,7 @@ existing MI machinery (estimators, critics, augmentation) is reused verbatim.
 The conditioning variable Z is concatenated with X at the data level before
 any windowing or embedding.
 """
+import warnings
 import torch
 import numpy as np
 import pandas as pd
@@ -114,6 +115,19 @@ def run_conditional_mi(
         f"Conditional MI: I(XZ;Y)={mi_xz_y:.4f}, I(Z;Y)={mi_z_y:.4f}, "
         f"I(X;Y|Z)={cmi:.4f} (units from base_params['output_units'])"
     )
+
+    if cmi < 0:
+        warnings.warn(
+            f"Conditional MI estimate is negative (I(X;Y|Z) = {cmi:.4f}).  "
+            "This is theoretically impossible and is caused by noise in the two "
+            "independent MI estimates whose difference defines CMI.  Common causes: "
+            "too few training runs (increase sweep_grid run_id range), high "
+            "estimator variance (try more epochs or a larger batch_size), or very "
+            "small true CMI close to zero.  The raw component estimates are available "
+            "in the returned dict ('mi_xz_y', 'mi_z_y') for manual inspection.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     return {
         'cmi_estimate': cmi,

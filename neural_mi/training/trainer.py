@@ -48,7 +48,9 @@ class Trainer:
                  decoder_x: Optional[nn.Module] = None,
                  decoder_y: Optional[nn.Module] = None,
                  decoder_weight_x: float = 1.0,
-                 decoder_weight_y: float = 1.0):
+                 decoder_weight_y: float = 1.0,
+                 decoder_output_activation_x: str = 'linear',
+                 decoder_output_activation_y: str = 'linear'):
         
         """
         Parameters
@@ -96,6 +98,12 @@ class Trainer:
             Weight for the X reconstruction loss. Defaults to 1.0.
         decoder_weight_y : float, optional
             Weight for the Y reconstruction loss. Defaults to 1.0.
+        decoder_output_activation_x : str, optional
+            Output activation of decoder_x: ``'linear'``, ``'sigmoid'``, or ``'softmax'``.
+            When ``'softmax'``, NLL loss (equivalent to cross-entropy) is used instead of MSE.
+            Defaults to ``'linear'``.
+        decoder_output_activation_y : str, optional
+            Output activation of decoder_y.  Same options as above.  Defaults to ``'linear'``.
        """
         self.device, self.model = device, model.to(device)
         self.estimator_fn, self.optimizer = estimator_fn, optimizer
@@ -108,6 +116,8 @@ class Trainer:
         self.decoder_y = decoder_y.to(device) if decoder_y is not None else None
         self.decoder_weight_x = decoder_weight_x if decoder_weight_x is not None else 1.0
         self.decoder_weight_y = decoder_weight_y if decoder_weight_y is not None else 1.0
+        self.decoder_output_activation_x = decoder_output_activation_x or 'linear'
+        self.decoder_output_activation_y = decoder_output_activation_y or 'linear'
 
     def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
               train_fraction: float = 0.9, n_test_blocks: int = 5,
@@ -332,10 +342,12 @@ class Trainer:
                     z_x, z_y = self.model.get_training_embeddings(x_batch, y_batch)
                     if self.decoder_x is not None:
                         recon_x = self.decoder_x(z_x)
-                        loss = loss + self.decoder_weight_x * nn.functional.mse_loss(recon_x, x_batch)
+                        loss = loss + self.decoder_weight_x * self._decoder_loss(
+                            recon_x, x_batch, self.decoder_output_activation_x)
                     if self.decoder_y is not None:
                         recon_y = self.decoder_y(z_y)
-                        loss = loss + self.decoder_weight_y * nn.functional.mse_loss(recon_y, y_batch)
+                        loss = loss + self.decoder_weight_y * self._decoder_loss(
+                            recon_y, y_batch, self.decoder_output_activation_y)
                 loss.backward()
                 if self.gradient_clip_val is not None:
                     # Clip gradients across model + decoder parameters
@@ -500,10 +512,12 @@ class Trainer:
                 _recon_loss = 0.0
                 if self.decoder_x is not None:
                     _recon_x = self.decoder_x(_zx)
-                    _recon_loss += self.decoder_weight_x * float(nn.functional.mse_loss(_recon_x, _tx).item())
+                    _recon_loss += self.decoder_weight_x * float(
+                        self._decoder_loss(_recon_x, _tx, self.decoder_output_activation_x).item())
                 if self.decoder_y is not None:
                     _recon_y = self.decoder_y(_zy)
-                    _recon_loss += self.decoder_weight_y * float(nn.functional.mse_loss(_recon_y, _ty).item())
+                    _recon_loss += self.decoder_weight_y * float(
+                        self._decoder_loss(_recon_y, _ty, self.decoder_output_activation_y).item())
             results['decoder_recon_loss'] = _recon_loss
 
         # 5. Final Spectral Metrics (Dimensionality)
@@ -515,6 +529,39 @@ class Trainer:
         results.update(metrics_final)
 
         return results
+
+    @staticmethod
+    def _decoder_loss(recon: torch.Tensor, target: torch.Tensor, activation: str) -> torch.Tensor:
+        """Compute decoder reconstruction loss appropriate for the output activation.
+
+        Parameters
+        ----------
+        recon : torch.Tensor
+            Decoder output, shape ``(batch, n_channels, window_size)``.
+            For ``activation='softmax'`` this is a probability distribution over
+            channels (already post-softmax).
+        target : torch.Tensor
+            Ground-truth input, same shape as *recon*.
+        activation : str
+            Output activation used by the decoder: ``'linear'``, ``'sigmoid'``,
+            or ``'softmax'``.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar loss value.
+        """
+        if activation == 'softmax':
+            # recon: (B, C, W) — probability over C channels for each time step.
+            # target: (B, C, W) — ground-truth (one-hot or soft target over channels).
+            # Use NLL loss: -sum_c target_c * log(recon_c), averaged over B and W.
+            # argmax(target, dim=1) → (B, W) integer class labels.
+            class_targets = target.argmax(dim=1)  # (B, W)
+            log_probs = torch.log(recon.clamp(min=1e-8))  # (B, C, W)
+            return nn.functional.nll_loss(log_probs, class_targets)
+        else:
+            # 'linear' or 'sigmoid': MSE is appropriate.
+            return nn.functional.mse_loss(recon, target)
 
     def _safe_eval_mi(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> float:
         """Evaluates MI on at most max_samples samples, drawn as a single random subset.

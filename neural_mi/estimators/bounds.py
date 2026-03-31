@@ -85,7 +85,7 @@ def infonce_lower_bound(scores: torch.Tensor) -> torch.Tensor:
         A scalar tensor representing the estimated MI lower bound.
     """
     nll = scores.diag() - torch.logsumexp(scores, dim=1)
-    mi = torch.log(torch.tensor(scores.size(0), device=scores.device)) + nll.mean()
+    mi = torch.log(torch.tensor(float(scores.size(0)), device=scores.device)) + nll.mean()
     return mi
 
 def js_fgan_lower_bound(scores: torch.Tensor) -> torch.Tensor:

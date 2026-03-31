@@ -272,6 +272,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         decoder_y=decoder_y,
         decoder_weight_x=params.get('decoder_weight_x', params.get('decoder_weight', 1.0)),
         decoder_weight_y=params.get('decoder_weight_y', params.get('decoder_weight', 1.0)),
+        decoder_output_activation_x=params.get('decoder_output_activation_x', 'linear'),
+        decoder_output_activation_y=params.get('decoder_output_activation_y', 'linear'),
     )
 
     # Intercept save_best_model_path to use the extended format

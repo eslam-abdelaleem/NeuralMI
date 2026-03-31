@@ -22,16 +22,22 @@ class TestWorkflowInternals:
 
     def test_extrapolate_mi(self):
         # _extrapolate_mi fits train_mi = intercept + slope * (1/gamma) and
-        # returns (intercept, error, slope).  Data must be linear in 1/gamma.
-        # train_mi = 6 - 1/gamma  →  intercept = 6, slope = -1 at 1/gamma → 0.
+        # now returns (intercept, mi_error, mi_error_pred, slope).
+        # mi_error  = confidence-interval half-width on the fitted mean.
+        # mi_error_pred = prediction-interval half-width (more conservative).
+        # Data: train_mi = 6 - 1/gamma  →  intercept = 6, slope = -1.
         gammas = [1, 2, 3, 4, 5]
         df = pd.DataFrame({
             'gamma': gammas,
             'train_mi': [6.0 - 1.0 / g for g in gammas],
         })
-        intercept, error, slope = extrapolate_mi(df, [1, 2, 3, 4, 5], confidence_level=0.95)
+        intercept, mi_error, mi_error_pred, slope = extrapolate_mi(
+            df, [1, 2, 3, 4, 5], confidence_level=0.95
+        )
         assert np.isclose(intercept, 6.0)
         assert np.isclose(slope, -1.0)
+        # prediction interval must be at least as wide as the confidence interval
+        assert mi_error_pred >= mi_error - 1e-9
 
     def test_post_process_and_correct(self):
         df = pd.DataFrame({
