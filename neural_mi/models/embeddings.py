@@ -490,7 +490,7 @@ class VariationalWrapper(nn.Module):
         log_var = self.log_var_head(h).clamp(-10.0, 4.0)
 
         if not self.training:
-            return mu, torch.tensor(0.0, device=mu.device)
+            return mu, mu.new_tensor(0.0)
 
         # Reparameterization trick: z = μ + ε·σ
         std = torch.exp(0.5 * log_var)
