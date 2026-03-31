@@ -63,6 +63,7 @@ class BaseCritic(nn.Module):
 
         for i in range(0, batch_size, max_n_batches):
             end_idx = min(i + max_n_batches, batch_size)
+            chunk_size = end_idx - i
 
             x_out = net_x(x[i:end_idx])
             y_out = net_y(y[i:end_idx])
@@ -73,15 +74,18 @@ class BaseCritic(nn.Module):
             y_embeds.append(y_emb)
 
             if use_variational and not isinstance(kl, float):
-                total_kl_acc = total_kl_acc + kl
+                # kl is already per-sample mean for this chunk; weight by chunk size
+                # so we recover the true sum of KL values across the chunk.
+                total_kl_acc = total_kl_acc + kl * chunk_size
                 n_chunks += 1
 
         x_embedded = torch.cat(x_embeds, dim=0)
         y_embedded = torch.cat(y_embeds, dim=0)
 
         if use_variational and n_chunks > 0:
-            # Average per-sample-mean KL across chunks for a consistent per-sample estimate.
-            total_kl = total_kl_acc.to(x_embedded.device) / n_chunks
+            # Divide by total batch_size to get the true per-sample mean over the
+            # full batch (weighted average across possibly unequal chunk sizes).
+            total_kl = total_kl_acc.to(x_embedded.device) / batch_size
         else:
             total_kl = torch.tensor(0.0, device=x_embedded.device)
 
@@ -251,6 +255,7 @@ class ConcatCritic(BaseCritic):
 
         for i in range(0, batch_size * batch_size, pair_batch_size):
             end_idx = min(i + pair_batch_size, batch_size * batch_size)
+            pair_chunk_size = end_idx - i
             idx = torch.arange(i, end_idx, device=x.device)
             row_idx = idx // batch_size
             col_idx = idx % batch_size
@@ -260,8 +265,9 @@ class ConcatCritic(BaseCritic):
             if isinstance(out, tuple):
                 chunk_scores, kl = out
                 if self.use_variational and not isinstance(kl, float):
-                    # kl is already per-sample mean for this pair chunk (from VariationalWrapper)
-                    total_kl_acc = total_kl_acc + kl
+                    # kl is per-sample mean for this pair chunk; weight by chunk size
+                    # to accumulate the true sum of KL values across the chunk.
+                    total_kl_acc = total_kl_acc + kl * pair_chunk_size
                     n_pair_chunks += 1
             else:
                 chunk_scores = out
@@ -269,8 +275,9 @@ class ConcatCritic(BaseCritic):
             scores[i:end_idx] = chunk_scores.squeeze()
 
         if self.use_variational and n_pair_chunks > 0:
-            # Average per-chunk per-sample-mean KL across pair chunks.
-            kl_tensor = total_kl_acc.to(x.device) / n_pair_chunks
+            # Divide by total number of pairs for a true per-sample mean over the
+            # full pair batch (weighted average across possibly unequal chunk sizes).
+            kl_tensor = total_kl_acc.to(x.device) / (batch_size * batch_size)
         else:
             kl_tensor = torch.tensor(0.0, device=x.device)
 
