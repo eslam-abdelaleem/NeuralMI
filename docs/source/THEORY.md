@@ -83,6 +83,15 @@ $$
 
 This regularization can improve the quality of the learned representations and lead to more stable and robust MI estimates, particularly in complex, high-dimensional settings.
 
+**Implementation note:** In NeuralMI, variational training is enabled by setting
+`use_variational=True` in `base_params`.  Internally, a `VariationalWrapper` is
+placed *on top of* the chosen base encoder: the base encoder first maps the input
+to a deterministic embedding of shape `(batch, embed_dim)`, and the wrapper then
+applies two linear heads (μ and log σ²) plus the reparameterization trick.  This
+design generalises the variational approach to **all** embedding architectures —
+MLP, CNN, GRU, LSTM, TCN, and Transformer — without requiring a separate
+architecture variant for each.
+
 **Choosing $\beta$:** The default value of $\beta = 1024$ reflects the typical use-case where MI maximisation should strongly dominate over KL regularisation. With this setting the loss is effectively $\mathcal{L} \approx -1024\,\hat{I}$, which drives the embeddings to extract maximal shared information while the KL term still gently penalises degenerate distributions. Decreasing $\beta$ increases the relative influence of the KL prior; setting $\beta \ll 1$ can collapse the embeddings toward the prior and reduce estimated MI.
 
 ---

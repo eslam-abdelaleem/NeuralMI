@@ -265,7 +265,7 @@ def run(
         ``range(-10, 11)`` or ``[-0.1, 0.0, 0.1]``. Required when
         ``mode='lag'``.
     use_spectral_norm : bool, default=True
-        Apply spectral normalisation to the hidden linear layers of MLP/VarMLP
+        Apply spectral normalisation to the hidden linear layers of MLP
         embedding networks.  Spectral norm constrains the Lipschitz constant of
         each hidden layer (largest singular value = 1), improving training
         stability.  Has no effect on non-MLP architectures (CNN, GRU, LSTM,
@@ -327,14 +327,14 @@ def run(
         - ``float`` in ``(0, 1)`` — use that fraction of training samples.
         - ``int >= 1`` — use exactly that many training samples.
     dropout : float, optional
-        Dropout probability applied after each hidden layer of MLP/VarMLP
+        Dropout probability applied after each hidden layer of MLP
         embedding networks.  ``0.0`` disables dropout (default).  Values in
         ``(0, 1)`` add regularisation, which is particularly helpful for small
         datasets.  Has no effect on CNN, GRU, LSTM, TCN, or Transformer
         architectures.  Defaults to ``None`` (use ``base_params`` value or
         apply the schema default of ``0.0``).
     norm_layer : {'layer', 'batch'} or None, optional
-        Normalisation layer to insert after each hidden layer of MLP/VarMLP
+        Normalisation layer to insert after each hidden layer of MLP
         embedding networks.  ``None`` disables normalisation (default).
         ``'layer'`` inserts ``LayerNorm`` (recommended for small batches);
         ``'batch'`` inserts ``BatchNorm1d``.  Has no effect on other

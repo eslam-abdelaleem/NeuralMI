@@ -418,7 +418,7 @@ def build_decoder(
         output_activation=output_activation,
     )
     name = embedding_model.lower()
-    if name in ('mlp', 'var_mlp'):
+    if name == 'mlp':
         return MLPDecoder(**common)
     elif name == 'cnn1d':
         return CNN1DDecoder(**common, kernel_size=kwargs.get('kernel_size', 7))

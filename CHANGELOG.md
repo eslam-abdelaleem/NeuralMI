@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Generic Variational Wrapper (`use_variational=True` for all encoders)
+- **Removed `VarMLP`** — the purpose-built variational MLP is gone entirely.
+  All `use_variational=True` runs now use `VariationalWrapper` instead.
+- **New `VariationalWrapper` class** in `neural_mi/models/embeddings.py`:
+  wraps *any* base encoder (MLP, CNN1D, GRU, LSTM, TCN, Transformer, or a
+  custom module) with μ and log σ² projection heads plus the reparameterization
+  trick.  At training time returns `(z_sampled, kl_loss / batch_size)`; at eval
+  time returns `(μ, 0.0)` — identical protocol to the former `VarMLP`.
+- **`build_critic()` updated**: when `use_variational=True`, `build_critic`
+  builds the selected base encoder normally and then wraps it with
+  `VariationalWrapper(base_encoder, embed_dim)`.  This applies to all six
+  `embedding_model` choices: `'mlp'`, `'cnn'`, `'gru'`, `'lstm'`, `'tcn'`,
+  `'transformer'`.
+- **`shared_encoder` remains fully compatible** with variational mode: the
+  shared encoder is built once and wrapped once; both `net_x` and `net_y`
+  point to the same `VariationalWrapper` instance.
+- `neural_mi/models/__init__.py`: exports `VariationalWrapper`; no longer
+  exports `VarMLP`.
+
+### Changed
+
+#### Generic Variational Wrapper
+- `neural_mi/utils.py`: `build_critic()` no longer has a special `VarMLP`
+  branch for variational mode.  The model-selection tree is now strictly
+  by `embedding_model` name; variational wrapping is a post-construction step.
+- `neural_mi/models/decoders.py`: removed `'var_mlp'` from the name aliases in
+  `build_decoder()` — it was never needed in practice.
+- `neural_mi/run.py`: updated `use_spectral_norm`, `dropout`, and `norm_layer`
+  docstrings to reference "MLP" rather than "MLP/VarMLP".
+
+### Tests Added
+
+#### Generic Variational Wrapper
+- `tests/test_models.py` fully updated:
+  - `test_varmlp_embedding` → `test_variational_wrapper_embedding`
+  - `test_varmlp_kl_loss` → `test_variational_wrapper_kl_loss`
+  - New `test_variational_wrapper_eval_returns_mu` — checks determinism in eval mode.
+  - New `test_variational_wrapper_gradients_flow` — verifies gradients reach
+    both the mu/log_var heads and the base encoder.
+  - New class `TestVariationalWrapperAllEncoders` — 6 parametrized tests
+    (one per encoder type) each checking output shape, positive KL in training
+    mode, and zero KL in eval mode.
+  - Critic tests updated: `test_separable_critic_with_varmlp` →
+    `test_separable_critic_with_variational_wrapper`,
+    `test_concat_critic_with_varmlp` →
+    `test_concat_critic_with_variational_wrapper`.
+  - `test_critic_chunking_equivalency` now builds `VariationalWrapper(MLP(…), embed_dim)`.
+  - `critic_and_data` fixture: `"SeparableVarMLP"` renamed to `"SeparableVariational"`.
+
 #### Item 1 — Enhanced Rigorous Mode Diagnostics
 - **Standardized-residual check (Check A):** After the WLS bias-correction fit,
   `rigorous` mode now computes externally studentized residuals.  If
@@ -180,7 +229,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `torch.optim.lr_scheduler` subclasses also accepted. Scheduler steps at the
   end of each training epoch; `ReduceLROnPlateau` receives the current test MI.
 - **MLP regularisation**: `dropout` (float, default 0.0) and `norm_layer`
-  (`None`/`'layer'`/`'batch'`, default `None`) parameters for MLP and VarMLP
+  (`None`/`'layer'`/`'batch'`, default `None`) parameters for MLP
   embedding networks, applied in the order Linear → Norm → Activation → Dropout.
 - **Per-epoch train MI tracking**: `eval_train` parameter (`False` / `True` /
   fraction / sample count) records train-set MI at every epoch, populating
