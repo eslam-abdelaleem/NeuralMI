@@ -5,17 +5,331 @@ This module forces the use of a Hybrid critic with a large bottleneck and
 analyzes the cross-covariance spectrum of the resulting embeddings to
 determine Intrinsic or Interaction Dimensionality.
 """
+import hashlib
 import warnings
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 import torch
 import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 
 from .sweep import ParameterSweep
 from neural_mi.logger import logger
-from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
+from neural_mi.utils import _configure_multiprocessing, _ensure_cpu, anscombe_transform
+
+
+# ---------------------------------------------------------------------------
+# Noise-injection feature (noise_injection_dimensionality_spec.md).
+#
+# Ceiling-escape via observation-space noise: `dimensionality` mode gains an
+# optional `sigma_add` control that adds fixed, independent, per-channel
+# Gaussian noise (in measured-per-channel-std units) to the observations once,
+# so a saturated InfoNCE estimate can be de-saturated without moving the
+# saturation dimension.
+# ---------------------------------------------------------------------------
+
+def _infer_modality(processor_type: Optional[str], processor_params: Optional[Dict[str, Any]]) -> str:
+    """Classify data modality for the noise-injection / stabilization guards.
+
+    Returns one of ``'continuous'``, ``'binned_spike'``, ``'raw_spike'``,
+    ``'categorical'``. Unrecognised or ``None`` processor types are treated
+    as ``'continuous'`` (the default, always-supported case).
+    """
+    if processor_type is None or processor_type == 'continuous':
+        return 'continuous'
+    if processor_type == 'spike':
+        bin_size = (processor_params or {}).get('bin_size', None)
+        return 'binned_spike' if bin_size is not None else 'raw_spike'
+    if processor_type == 'categorical':
+        return 'categorical'
+    return 'continuous'
+
+
+def _check_noise_modality(modality: str, label: str) -> None:
+    """Reject modalities where sigma_add noise injection is undefined.
+
+    Only called when ``sigma_add is not None`` — plain (no-noise) dimensionality
+    analysis on these modalities is unaffected by this feature.
+    """
+    if modality == 'raw_spike':
+        raise ValueError(
+            f"sigma_add noise injection is not supported for raw spike-timestamp data "
+            f"({label}): additive observation noise there perturbs timing precision "
+            f"(a different axis, the substrate of 'precision' mode), not a canonical "
+            f"correlation. Bin the spikes first (processor_type='{label.lower()}' "
+            f"with a 'bin_size' in processor_params) to use the supported binned-count case."
+        )
+    if modality == 'categorical':
+        raise ValueError(
+            f"sigma_add noise injection is undefined for categorical data ({label}): "
+            f"a label has no metric, so 'adding noise' can only mean label flipping, "
+            f"which alters shared cross-covariance mass instead of merely scaling it "
+            f"and breaks the rank-preservation guarantee this feature relies on."
+        )
+
+
+def _deterministic_seed(*parts: Any) -> int:
+    """Derive a deterministic 31-bit seed from arbitrary hashable parts."""
+    material = "_".join(str(p) for p in parts)
+    return int(hashlib.md5(material.encode()).hexdigest(), 16) % (2 ** 31)
+
+
+def _draw_base_noise(shape: Tuple[int, ...], global_seed: Any, split_id: int, view_tag: str) -> np.ndarray:
+    """Deterministically reconstruct the base standard-normal tensor E for (split, view).
+
+    ``sigma_add`` must NOT enter this seed — the same E is reused, scaled by
+    every level on the ladder, so adjacent rungs differ only by scale.
+    Depends only on primitive arguments (no live/shared RNG state), so every
+    worker process reconstructs the identical E under parallelism.
+    """
+    rng = np.random.default_rng(_deterministic_seed(global_seed, split_id, view_tag, 'E'))
+    return rng.standard_normal(size=shape).astype(np.float32)
+
+
+def _deterministic_channel_permutation(n_channels: int, global_seed: Any, split_id: int) -> np.ndarray:
+    """Deterministic per-split channel permutation, used only when sigma_add is engaged.
+
+    (When sigma_add is unset, split_method='random' keeps its existing live-RNG
+    permutation — unchanged behavior for users not using this feature.)
+    """
+    rng = np.random.default_rng(_deterministic_seed(global_seed, split_id, 'channel_perm'))
+    return rng.permutation(n_channels)
+
+
+def _per_channel_std(x: torch.Tensor) -> np.ndarray:
+    """Per-channel standard deviation, pooling over samples (and window, if 3-D).
+
+    ``x`` : shape ``(N, C)`` or ``(N, C, W)``. Returns a ``(C,)`` numpy array.
+    """
+    arr = x.detach().cpu().numpy() if torch.is_tensor(x) else np.asarray(x)
+    if arr.ndim == 2:
+        return arr.std(axis=0)
+    return arr.std(axis=(0, 2))
+
+
+def _broadcast_channel_scale(scale_c: np.ndarray, ndim: int) -> np.ndarray:
+    """Reshape a per-channel ``(C,)`` scale array to broadcast against ``(N, C)`` or ``(N, C, W)``."""
+    if ndim == 2:
+        return scale_c.reshape(1, -1)
+    return scale_c.reshape(1, -1, 1)
+
+
+def _resolve_absolute_scale(level: float, units: str, per_channel_std: np.ndarray) -> np.ndarray:
+    """Resolve a sigma_add level to an absolute per-channel noise scale.
+
+    ``'relative'`` (default): level is a multiple of measured per-channel std.
+    ``'absolute'``: level is the actual noise std in the data's native units,
+    applied uniformly to every channel.
+    """
+    if units == 'absolute':
+        return np.full_like(per_channel_std, float(level))
+    if units == 'relative':
+        return level * per_channel_std
+    raise ValueError(f"sigma_add_units must be 'relative' or 'absolute', got {units!r}.")
+
+
+def _classify_regime(mi_value: float, ceiling: float, margin: float, floor: float) -> Tuple[str, bool]:
+    """Classify an MI estimate relative to the log(eval_size) ceiling.
+
+    Returns ``(regime, detached)`` where regime is one of
+    ``'pinned'``, ``'collapsed'``, ``'detached'``.
+    """
+    if not np.isfinite(mi_value):
+        return 'collapsed', False
+    if mi_value >= ceiling - margin:
+        return 'pinned', False
+    if mi_value <= floor:
+        return 'collapsed', False
+    return 'detached', True
+
+
+def _resolve_sigma_add_levels(sigma_add: Any) -> Tuple[List[float], bool]:
+    """Resolve the ``sigma_add`` argument to a concrete list of levels.
+
+    Returns ``(levels, is_auto)``.
+    """
+    if isinstance(sigma_add, str) and sigma_add == 'auto':
+        return list(np.geomspace(0.25, 5.0, 7)), True
+    if isinstance(sigma_add, (int, float)):
+        return [float(sigma_add)], False
+    return [float(v) for v in sigma_add], False
+
+
+def _make_noise_ladder_tasks(
+    x_data: torch.Tensor,
+    y_data: Optional[torch.Tensor],
+    analysis_params: Dict[str, Any],
+    sweep_grid: Optional[Dict[str, Any]],
+    split_method: str,
+    n_splits: int,
+    levels: List[float],
+    sigma_add_units: str,
+    global_seed: Any,
+) -> list:
+    """Build one dispatchable split-task per (split_id, sigma_add level).
+
+    Noise metadata (``sigma_add``, resolved absolute scales, ``sigma_add_units``)
+    is baked into each task's own copy of ``analysis_params`` so it is echoed
+    back as ordinary columns in the result rows — the same mechanism every
+    other base_params value already uses to reach the output dataframe. No
+    change to ``_run_single_split`` / ``_dispatch_splits`` is required.
+    """
+    tasks = []
+    for split_id in range(n_splits):
+        if y_data is not None:
+            x_view, y_view = x_data, y_data
+        else:
+            n_channels = x_data.shape[1]
+            if split_method == 'random':
+                perm = _deterministic_channel_permutation(n_channels, global_seed, split_id)
+            else:  # 'spatial' — fixed, deterministic split; no permutation needed
+                perm = np.arange(n_channels)
+            half = n_channels // 2
+            idx_a, idx_b = perm[:half], perm[half:]
+            if x_data.ndim == 2:
+                x_view, y_view = x_data[:, idx_a], x_data[:, idx_b]
+            else:
+                x_view, y_view = x_data[:, idx_a, :], x_data[:, idx_b, :]
+
+        std_x = _per_channel_std(x_view)
+        std_y = _per_channel_std(y_view)
+        E_x = _draw_base_noise(tuple(x_view.shape), global_seed, split_id, 'x')
+        E_y = _draw_base_noise(tuple(y_view.shape), global_seed, split_id, 'y')
+
+        for level in levels:
+            abs_x = _resolve_absolute_scale(level, sigma_add_units, std_x)
+            abs_y = _resolve_absolute_scale(level, sigma_add_units, std_y)
+            x_noised = x_view + torch.as_tensor(
+                _broadcast_channel_scale(abs_x, x_view.ndim) * E_x, dtype=x_view.dtype)
+            y_noised = y_view + torch.as_tensor(
+                _broadcast_channel_scale(abs_y, y_view.ndim) * E_y, dtype=y_view.dtype)
+
+            task_params = analysis_params.copy()
+            task_params['sigma_add'] = level
+            task_params['log_sigma_add'] = float(np.log(level)) if level > 0 else float('-inf')
+            task_params['sigma_add_units'] = sigma_add_units
+            task_params['sigma_add_absolute_x'] = float(np.mean(abs_x))
+            task_params['sigma_add_absolute_y'] = float(np.mean(abs_y))
+            tasks.append((_ensure_cpu(x_noised), _ensure_cpu(y_noised), task_params, sweep_grid, split_id))
+    return tasks
+
+
+def _summarize_noise_ladder(all_results: list, ceiling_margin: float = 0.75,
+                             ceiling_floor_frac: float = 0.05) -> pd.DataFrame:
+    """Aggregate per-(split, level) rows into a per-rung ladder summary with regime labels.
+
+    The ceiling is ``log(eval_size)`` (the InfoNCE evaluation denominator),
+    read from each row's ``eval_size`` (set by ``Trainer.train`` — see
+    ``training/trainer.py``), never ``log(batch_size)``.
+    """
+    df = pd.DataFrame(all_results)
+    rows = []
+    for level, grp in df.groupby('sigma_add'):
+        mi_mean = float(grp['test_mi'].mean())
+        mi_std = float(grp['test_mi'].std()) if len(grp) > 1 else 0.0
+        row = {
+            'sigma_add': level,
+            'log_sigma_add': float(np.log(level)) if level > 0 else float('-inf'),
+            'sigma_add_absolute_x_mean': float(grp['sigma_add_absolute_x'].mean()),
+            'sigma_add_absolute_y_mean': float(grp['sigma_add_absolute_y'].mean()),
+            'mi_mean': mi_mean,
+            'mi_std': mi_std,
+        }
+        for metric in ('pr_eig', 'pr_singular'):
+            if metric in grp.columns:
+                row[f'{metric}_mean'] = float(grp[metric].mean())
+                row[f'{metric}_std'] = float(grp[metric].std()) if len(grp) > 1 else 0.0
+        if 'eval_size' in grp.columns and grp['eval_size'].notna().any():
+            eval_size = float(grp['eval_size'].mean())
+            ceiling = float(np.log(eval_size))
+            floor = ceiling_floor_frac * ceiling
+            regime, detached = _classify_regime(mi_mean, ceiling, ceiling_margin, floor)
+        else:
+            ceiling, regime, detached = None, 'unknown', False
+        row['ceiling_nats'] = ceiling
+        row['regime'] = regime
+        row['detached'] = detached
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values('sigma_add').reset_index(drop=True)
+
+
+def _run_noise_ladder(
+    x_data: torch.Tensor,
+    y_data: Optional[torch.Tensor],
+    analysis_params: Dict[str, Any],
+    sweep_grid: Optional[Dict[str, Any]],
+    split_method: str,
+    n_splits: int,
+    n_workers: int,
+    show_progress: bool,
+    sigma_add: Any,
+    sigma_add_units: str,
+) -> Tuple[list, pd.DataFrame, Optional[Dict[str, Any]]]:
+    """Run the sigma_add ladder (scalar, list, or 'auto') and build the output contract.
+
+    Returns ``(all_results, ladder_summary, suggestion)`` — ``all_results`` is
+    the flat list of per-(split, level) result dicts (fed through the same
+    embedding-extraction / stripping pipeline as the no-noise path);
+    ``ladder_summary`` is the per-rung table (Section 6 of the spec);
+    ``suggestion`` is the top-level suggested operating level (only when
+    ``sigma_add == 'auto'``), or ``None``.
+    """
+    estimator_name = str(analysis_params.get('estimator_name', 'infonce')).lower()
+    if estimator_name != 'infonce':
+        warnings.warn(
+            f"sigma_add ceiling calibration (log(eval_size)) is derived for InfoNCE. "
+            f"estimator_name='{estimator_name}' has a different, non-constant bias, so "
+            f"the 'auto' bracketing and detached flags may not be meaningful here. "
+            f"Proceeding anyway.",
+            UserWarning, stacklevel=3,
+        )
+
+    global_seed = analysis_params.get('random_seed')
+    levels, is_auto = _resolve_sigma_add_levels(sigma_add)
+
+    def _dispatch(level_list):
+        tasks = _make_noise_ladder_tasks(
+            x_data, y_data, analysis_params, sweep_grid, split_method, n_splits,
+            level_list, sigma_add_units, global_seed,
+        )
+        return _dispatch_splits(tasks, n_workers, show_progress)
+
+    all_results = _dispatch(levels)
+    ladder_summary = _summarize_noise_ladder(all_results)
+
+    suggestion = None
+    if is_auto:
+        detached = ladder_summary[ladder_summary['regime'] == 'detached']
+        if detached.empty:
+            all_pinned = (ladder_summary['regime'] == 'pinned').all()
+            all_collapsed = (ladder_summary['regime'] == 'collapsed').all()
+            if all_pinned:
+                widened = list(np.geomspace(1.0, 20.0, 7))
+            elif all_collapsed:
+                widened = list(np.geomspace(0.05, 1.0, 7))
+            else:
+                widened = list(np.geomspace(0.1, 10.0, 9))
+            logger.info(
+                f"'auto' sigma_add titration did not bracket a detached band on the "
+                f"initial grid; widening once to {widened[0]:.3g}-{widened[-1]:.3g}."
+            )
+            all_results = all_results + _dispatch(widened)
+            ladder_summary = _summarize_noise_ladder(all_results)
+            detached = ladder_summary[ladder_summary['regime'] == 'detached']
+            if detached.empty:
+                warnings.warn(
+                    "'auto' sigma_add titration did not bracket a detached regime even "
+                    "after widening the search grid. Returning all rungs found; consider "
+                    "specifying sigma_add as an explicit list instead of 'auto'.",
+                    UserWarning, stacklevel=3,
+                )
+        if not detached.empty:
+            lv = detached['sigma_add'].to_numpy()
+            suggested_level = float(np.sqrt(lv.min() * lv.max()))  # geometric midpoint
+            suggestion = {'sigma_add': suggested_level, 'regime': 'detached'}
+
+    return all_results, ladder_summary, suggestion
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +403,11 @@ def run_dimensionality_analysis(
     n_splits: int = 5,
     spectral_mode: str = 'summary',
     n_workers: int = 1,
+    processor_type_x: Optional[str] = None,
+    processor_type_y: Optional[str] = None,
+    sigma_add: Any = None,
+    sigma_add_units: str = 'relative',
+    stabilize_counts: bool = True,
     **kwargs
 ) -> pd.DataFrame:
     """Estimates dimensionality via embedding cross-covariance.
@@ -167,6 +486,40 @@ def run_dimensionality_analysis(
         sequentially to avoid nested pools).  When ``n_splits == 1`` the
         workers are forwarded into the inner ``ParameterSweep`` to
         parallelise any sweep-grid combinations.  Defaults to 1.
+    processor_type_x, processor_type_y : str, optional
+        The processor type(s) originally used to build ``x_data``/``y_data``
+        (e.g. ``'continuous'``, ``'spike'``, ``'categorical'``), used only to
+        classify data modality for the ``sigma_add`` / ``stabilize_counts``
+        guards below. Not needed for plain (no-noise) dimensionality runs.
+    sigma_add : float, list of float, 'auto', or None, optional
+        Ceiling-escape noise injection (see ``noise_injection_dimensionality_spec.md``).
+        With it unset (default), non-binned-spike modalities behave exactly as
+        before this feature existed. When set, fixed, independent, per-channel
+        Gaussian noise (in units of measured per-channel std) is added once to
+        the observations, before the embedding, identically for train and eval:
+
+        - A scalar runs that single noise level.
+        - A list/range runs the full ladder, one result row per level.
+        - ``'auto'`` searches a geometric ladder (~0.25x-5x per-channel std) to
+          locate the regime where the InfoNCE estimate has detached from the
+          ``log(eval_size)`` ceiling (never ``log(batch_size)``).
+
+        Only supported for intrinsic ``split_method in ('random', 'spatial')``
+        or interaction mode (``y_data`` provided); raw-spike (timestamp) and
+        categorical data raise a clear error since observation-space noise is
+        undefined for them. Permutation-test p-values are not yet computed
+        per rung for the ladder (omitted, not fabricated, per spec Section 8).
+    sigma_add_units : {'relative', 'absolute'}, optional
+        ``'relative'`` (default): ``sigma_add`` is a multiple of measured
+        per-channel std. ``'absolute'``: ``sigma_add`` is the noise std in
+        the data's native units.
+    stabilize_counts : bool, optional
+        For binned-spike data only: apply the canonical Anscombe
+        variance-stabilizing transform before measuring per-channel std /
+        injecting noise. Defaults to ``True`` and fires on every binned-spike
+        dimensionality run regardless of ``sigma_add`` (documented default-on
+        toggle; set ``False`` for plain, un-stabilized counts). Has no effect
+        on non-binned-spike modalities.
 
     Returns
     -------
@@ -227,6 +580,82 @@ def run_dimensionality_analysis(
         n_workers = 1
 
     show_progress = analysis_params.get('show_progress', True)
+
+    # 1b. Noise-injection modality guards + binned-spike stabilization.
+    # Stabilization fires for binned-spike data regardless of sigma_add (Section 2
+    # override: default-on toggle, not automatic-unconditional). Modality rejection
+    # (raw-spike / categorical) only fires when sigma_add is actually engaged — plain
+    # dimensionality analysis on those modalities is untouched by this feature.
+    modality_x = _infer_modality(processor_type_x, analysis_params.get('processor_params_x'))
+    modality_y = (_infer_modality(processor_type_y, analysis_params.get('processor_params_y'))
+                  if y_data is not None else modality_x)
+
+    if sigma_add is not None:
+        _check_noise_modality(modality_x, 'X')
+        if y_data is not None:
+            _check_noise_modality(modality_y, 'Y')
+        if y_data is None and split_method not in ('random', 'spatial'):
+            raise ValueError(
+                f"sigma_add is only supported for split_method in ('random', 'spatial') in "
+                f"intrinsic mode, or interaction mode (y_data provided). Got "
+                f"split_method='{split_method}' with y_data=None."
+            )
+        if sigma_add_units not in ('relative', 'absolute'):
+            raise ValueError(f"sigma_add_units must be 'relative' or 'absolute', got {sigma_add_units!r}.")
+
+    is_binned_x = modality_x == 'binned_spike'
+    is_binned_y = (y_data is not None) and (modality_y == 'binned_spike')
+    if is_binned_x or is_binned_y:
+        if stabilize_counts:
+            if is_binned_x:
+                x_data = anscombe_transform(x_data)
+            if is_binned_y:
+                y_data = anscombe_transform(y_data)
+            logger.info(
+                "Dimensionality mode: binned-spike counts stabilized via the Anscombe "
+                "transform (2*sqrt(x + 3/8)); this applies to this dimensionality run "
+                "regardless of sigma_add. sigma_add, if used, is in units of stabilized "
+                "per-channel standard deviation."
+            )
+        else:
+            if sigma_add is not None:
+                warnings.warn(
+                    "stabilize_counts=False while injecting noise on binned-spike counts: "
+                    "additive noise on raw counts is heteroscedastic and the per-channel-std "
+                    "unit is not portable across channels, so the noise ladder may be uneven.",
+                    UserWarning, stacklevel=2,
+                )
+            logger.info(
+                "Dimensionality mode: binned-spike counts NOT stabilized "
+                "(stabilize_counts=False); using plain counts."
+            )
+
+    # 1c. Noise-injection ladder dispatch (bypasses the plain split_method chain below).
+    if sigma_add is not None:
+        x_for_noise = _ensure_cpu(x_data)
+        y_for_noise = _ensure_cpu(y_data) if y_data is not None else None
+        all_results, ladder_summary, suggestion = _run_noise_ladder(
+            x_for_noise, y_for_noise, analysis_params, sweep_grid, split_method, n_splits,
+            n_workers, show_progress, sigma_add, sigma_add_units,
+        )
+        embeddings = _extract_last_split_embeddings(
+            all_results, n_splits, analysis_params,
+            split_method=('interaction' if y_data is not None else split_method),
+        )
+        embed_history = _extract_embedding_history(all_results)
+        _strip_embeddings(all_results)
+        df = pd.DataFrame(all_results)
+        _warn_if_near_embed_ceiling(df, analysis_params)
+        logger.info("--- Dimensionality Analysis Complete (noise ladder) ---")
+
+        embeddings = embeddings or {}
+        embeddings['sigma_add_ladder'] = ladder_summary
+        if suggestion is not None:
+            embeddings['sigma_add_suggestion'] = suggestion
+        if embed_history:
+            embeddings['embedding_history_x'] = embed_history['embedding_history_x']
+            embeddings['embedding_history_y'] = embed_history['embedding_history_y']
+        return df, embeddings
 
     # 2. Interaction Dimensionality (X and Y both provided)
     if y_data is not None:

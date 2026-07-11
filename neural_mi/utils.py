@@ -481,3 +481,27 @@ def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[s
         metrics["spectral_entropy"] = 0.0
 
     return metrics
+
+
+def anscombe_transform(counts: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+    """Canonical Anscombe variance-stabilizing transform for count data: ``2*sqrt(x + 3/8)``.
+
+    Maps heteroscedastic (Poisson-like) counts to an approximately unit-variance
+    scale so that downstream per-channel standard deviations are comparable
+    across channels with different firing rates. This is the single canonical
+    stabilizer for the library; any binned-spike processing that needs
+    variance stabilization should call this rather than reimplementing it.
+
+    Parameters
+    ----------
+    counts : np.ndarray or torch.Tensor
+        Non-negative count data, any shape.
+
+    Returns
+    -------
+    Same type and shape as ``counts``.
+    """
+    if torch.is_tensor(counts):
+        return 2.0 * torch.sqrt(counts.clamp(min=0) + 0.375)
+    arr = np.asarray(counts, dtype=np.float64)
+    return 2.0 * np.sqrt(np.clip(arr, 0, None) + 0.375)

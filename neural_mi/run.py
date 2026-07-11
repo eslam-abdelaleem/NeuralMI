@@ -946,9 +946,15 @@ def _run_inner(
     elif mode == 'dimensionality':
         df, _dim_embeddings = run_dimensionality_analysis(
             x_run_data, base_params, y_data=y_run_data,
-            sweep_grid=sweep_grid, **analysis_kwargs)
+            sweep_grid=sweep_grid,
+            processor_type_x=processor_type_x, processor_type_y=processor_type_y,
+            **analysis_kwargs)
         df = _convert_mi_units(df, output_units == 'bits')
         group_vars = [key for key in (sweep_grid or {}).keys() if key != 'run_id']
+        if 'sigma_add' in df.columns and 'sigma_add' not in group_vars:
+            # Noise-injection ladder: group per rung so mi_mean/pr_*_mean reflect
+            # the across-split spread at each sigma_add level, not a mix of levels.
+            group_vars.append('sigma_add')
         metrics = ['train_mi', 'pr_eig', 'pr_singular']
         valid_metrics = [m for m in metrics if m in df.columns]
         if group_vars:
@@ -968,6 +974,11 @@ def _run_inner(
         result = Results(mode=mode, dataframe=agg_df, params={**run_params},
                          details={'raw_results': df})
         if _dim_embeddings is not None:
+            if 'sigma_add_ladder' in _dim_embeddings:
+                # Keep the ladder's mi_mean/mi_std in the same units as
+                # result.dataframe (ceiling_nats is always nats, by name).
+                _dim_embeddings['sigma_add_ladder'] = _convert_mi_units(
+                    _dim_embeddings['sigma_add_ladder'], output_units == 'bits')
             result.details.update(_dim_embeddings)
         if permutation_test and y_run_data is not None:
             _null_clipped, _null_raw = _run_permutation_test(

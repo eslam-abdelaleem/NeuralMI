@@ -466,6 +466,24 @@ When the two halves have unequal flat sizes, `shared_encoder=True` is disabled w
 - `result.details['embedding_rotation_x']`, `result.details['embedding_rotation_y']` — rotation matrices (global mode, when `return_rotation_matrices=True`).
 - `result.details['embedding_rotation_history_x']`, `result.details['embedding_rotation_history_y']` — per-epoch rotation matrices (per-epoch mode, when `return_rotation_matrices=True`).
 
+**Ceiling-escape noise injection (`sigma_add` kwarg):**
+
+When the true MI exceeds the InfoNCE ceiling (`log(eval_size)`, where `eval_size = min(len(test_idx), max_eval_samples)`), the spectral readout becomes unreliable. `sigma_add` adds fixed, independent, per-channel Gaussian noise (in measured-per-channel-std units) to the observations once — before the embedding, identical for train and eval of a fit — to lower the MI below the ceiling while leaving the true dimensionality unchanged.
+
+- `sigma_add=None` *(default)*: no noise; non-binned-spike modalities behave exactly as without this feature.
+- `sigma_add=<float>`: inject that single noise level.
+- `sigma_add=[<float>, ...]`: run the full ladder, one result row per level.
+- `sigma_add='auto'`: search a geometric ladder (~0.25x–5x per-channel std) for the regime where MI has detached from the ceiling; widens the search once if the initial grid doesn't bracket it, then warns if it still doesn't.
+- `sigma_add_units`: `'relative'` *(default)* — a multiple of measured per-channel std; `'absolute'` — the noise std in native units.
+- `stabilize_counts` (bool, default `True`): for binned-spike data only, applies the Anscombe transform before measuring std / injecting noise. Fires on every binned-spike dimensionality run regardless of `sigma_add` (default-on toggle; set `False` for plain, un-stabilized counts — a warning is emitted if noise is also injected in that case).
+- Supported for intrinsic `split_method in ('random', 'spatial')` or interaction mode only. Raw spike-timestamp and categorical data raise a clear `ValueError` when `sigma_add` is set (bin the spikes first for the former).
+
+**Output** (in addition to the standard `result.dataframe` / `result.details['raw_results']`, both of which gain a `sigma_add` grouping column):
+- `result.details['sigma_add_ladder']` — one row per rung: `sigma_add`, `log_sigma_add`, `sigma_add_absolute_x_mean`, `sigma_add_absolute_y_mean`, `mi_mean`/`mi_std`, `pr_eig_mean`/`_std`, `pr_singular_mean`/`_std`, `ceiling_nats` (= `log(eval_size)`), `regime` (`'pinned'`/`'detached'`/`'collapsed'`), `detached` (bool).
+- `result.details['sigma_add_suggestion']` — `{'sigma_add': <float>, 'regime': 'detached'}`, only when `sigma_add='auto'` found a detached band; a suggestion, never a silent override of the reported estimates.
+- `result.plot()` automatically dispatches to `plot_noise_ladder` (both PR variants vs. `log(sigma_add)`, detached band shaded) when a noise ladder is present.
+- Permutation-test p-values are not yet computed per rung for the ladder (omitted, not fabricated).
+
 ```python
 # Intrinsic: MI between two random halves of x channels, 10 splits
 result = nmi.run(x, mode='dimensionality',

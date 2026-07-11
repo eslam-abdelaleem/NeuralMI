@@ -633,8 +633,10 @@ class Trainer:
                 dataset.y_dataset[train_eval_view.indices, ...], max_eval_samples)
         
         from neural_mi.estimators import infonce_lower_bound
+        _eval_size = None
         if self.estimator_fn is infonce_lower_bound:
             n_eval = min(len(test_idx), max_eval_samples)
+            _eval_size = n_eval
             eval_ceiling_nats = np.log(n_eval)
             if final_test_mi > 0.85 * eval_ceiling_nats:
                 _scale = nats_to_bits  # 1/ln(2) for bits, 1.0 for nats
@@ -720,6 +722,12 @@ class Trainer:
             'test_mi_history': history,
             'all_mi_negative': _all_mi_negative,
         }
+        if _eval_size is not None:
+            # eval_size = min(len(test_idx), max_eval_samples): the InfoNCE evaluation
+            # denominator. The ceiling is log(eval_size), NOT log(batch_size) — exposed
+            # here so callers (e.g. the dimensionality noise-injection ladder) can key
+            # ceiling comparisons on it without recomputing the train/test split.
+            results['eval_size'] = _eval_size
         if _conservative_ep is not None:
             results['conservative_epoch'] = _conservative_ep
             results['train_mi_at_peak'] = _best_ep_train_mi

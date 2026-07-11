@@ -236,6 +236,7 @@ class Results:
         """
         from neural_mi.visualize.plot import (
             plot_sweep_curve, plot_bias_correction_fit, plot_dimensionality_curve,
+            plot_noise_ladder,
         )
 
         show = kwargs.pop('show', True)
@@ -315,15 +316,21 @@ class Results:
         elif self.mode == 'dimensionality':
             if self.dataframe is None:
                 raise ValueError("Cannot plot: results do not contain a DataFrame.")
-            sweep_var = self.params.get('sweep_var')
-            if not sweep_var:
-                possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
-                sweep_var = possible[0] if len(possible) == 1 else None
-                if sweep_var:
-                    logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
-            ax = plot_dimensionality_curve(
-                self.dataframe, sweep_var=sweep_var, units=units, axes=ax, show=show, **kwargs,
-            )
+            if 'sigma_add_ladder' in self.details:
+                # Noise-injection ladder: d_hat (both PR variants) vs log(sigma_add),
+                # with the detached band shaded (spec Section 6), not the generic
+                # sweep-variable plot.
+                ax = plot_noise_ladder(self.details['sigma_add_ladder'], ax=ax, show=show, **kwargs)
+            else:
+                sweep_var = self.params.get('sweep_var')
+                if not sweep_var:
+                    possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
+                    sweep_var = possible[0] if len(possible) == 1 else None
+                    if sweep_var:
+                        logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
+                ax = plot_dimensionality_curve(
+                    self.dataframe, sweep_var=sweep_var, units=units, axes=ax, show=show, **kwargs,
+                )
 
         elif self.mode == 'rigorous':
             if self.dataframe is None or not self.details:

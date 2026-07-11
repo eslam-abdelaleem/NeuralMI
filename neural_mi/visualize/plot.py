@@ -266,6 +266,77 @@ def plot_dimensionality_curve(
     return ax_mi
 
 
+def plot_noise_ladder(ladder_df: pd.DataFrame, ax: Optional[plt.Axes] = None,
+                      overlay_mi: bool = False, show: bool = True) -> plt.Axes:
+    """Plots the ceiling-escape noise-injection ladder (both PR variants vs. log(sigma_add)).
+
+    This is the plot for ``noise_injection_dimensionality_spec.md`` Section 6:
+    ``d_hat`` from both ``pr_eig`` and ``pr_singular`` against ``log(sigma_add)``,
+    with the detached band shaded. Not the per-``k_z`` MI curve.
+
+    Parameters
+    ----------
+    ladder_df : pd.DataFrame
+        The per-rung table from ``result.details['sigma_add_ladder']``. Expected
+        columns: ``sigma_add``, ``pr_eig_mean``, ``pr_singular_mean``, ``regime``,
+        and (if ``overlay_mi=True``) ``mi_mean``.
+    ax : plt.Axes, optional
+        Axes to plot on. Creates a new figure if ``None``.
+    overlay_mi : bool, optional
+        If True, overlays MI vs sigma_add on a secondary y-axis. Defaults to False.
+    show : bool, optional
+        Whether to call ``plt.show()``. Defaults to True.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    df = ladder_df.sort_values('sigma_add').reset_index(drop=True)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+    # Shade the contiguous detached band.
+    detached_mask = (df['regime'] == 'detached').to_numpy()
+    if detached_mask.any():
+        x = df['sigma_add'].to_numpy()
+        idx = np.where(detached_mask)[0]
+        lo, hi = x[idx.min()], x[idx.max()]
+        ax.axvspan(lo, hi, color='mediumseagreen', alpha=0.15, label='Detached band', zorder=0)
+
+    if 'pr_eig_mean' in df.columns:
+        ax.plot(df['sigma_add'], df['pr_eig_mean'], 'o-', color='tab:blue', label=r'$\hat{d}$ (pr_eig)')
+        if 'pr_eig_std' in df.columns:
+            ax.fill_between(df['sigma_add'], df['pr_eig_mean'] - df['pr_eig_std'],
+                            df['pr_eig_mean'] + df['pr_eig_std'], alpha=0.15, color='tab:blue')
+    if 'pr_singular_mean' in df.columns:
+        ax.plot(df['sigma_add'], df['pr_singular_mean'], 's-', color='tab:orange', label=r'$\hat{d}$ (pr_singular)')
+        if 'pr_singular_std' in df.columns:
+            ax.fill_between(df['sigma_add'], df['pr_singular_mean'] - df['pr_singular_std'],
+                            df['pr_singular_mean'] + df['pr_singular_std'], alpha=0.15, color='tab:orange')
+
+    ax.set_xscale('log')
+    ax.set_xlabel(r'$\sigma_{add}$ (log scale, per-channel std units)')
+    ax.set_ylabel(r'Estimated dimension $\hat{d}$')
+    ax.set_title('Noise-Injection Ladder')
+    ax.grid(True, linestyle=':')
+    sns.despine(ax=ax)
+
+    if overlay_mi and 'mi_mean' in df.columns:
+        ax2 = ax.twinx()
+        ax2.plot(df['sigma_add'], df['mi_mean'], 'd--', color='gray', alpha=0.7, label='MI')
+        ax2.set_ylabel('MI')
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, fontsize=9)
+    else:
+        ax.legend(fontsize=9)
+
+    if show:
+        plt.show()
+    return ax
+
+
 def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dict[str, Any],
                              ax: Optional[plt.Axes] = None, units: str = 'bits',
                              show: bool = True, **kwargs):
