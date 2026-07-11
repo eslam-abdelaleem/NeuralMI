@@ -143,14 +143,6 @@ class CNN1D(BaseEmbedding):
     ``AdaptiveAvgPool1d`` instead of lazy linear layers makes the model fully
     picklable at construction time (important for multiprocessing).
 
-    When ``use_depthwise=True`` the first convolutional layer is replaced by a
-    **depthwise-separable** block: a depthwise convolution (one filter per input
-    channel, ``groups=input_dim``) followed immediately by a pointwise 1×1
-    convolution that mixes channels. This enforces the per-channel-first
-    ordering — each electrode/neuron's temporal dynamics are filtered
-    independently before any cross-channel mixing occurs. Subsequent layers are
-    standard convolutions operating on the ``hidden_dim`` feature space.
-
     Attributes
     ----------
     conv_layers : nn.Sequential
@@ -163,7 +155,7 @@ class CNN1D(BaseEmbedding):
         The number of feature channels after the CNN layers.
     """
     def __init__(self, input_dim: int, hidden_dim, embed_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = 7, use_depthwise: bool = False):
+                 activation: str = 'relu', kernel_size: int = 7):
         """
         Parameters
         ----------
@@ -182,11 +174,6 @@ class CNN1D(BaseEmbedding):
             The activation function to use after convolutional layers. Defaults to 'relu'.
         kernel_size : int, optional
             The size of the convolutional kernel. Must be an odd number. Defaults to 7.
-        use_depthwise : bool, optional
-            If True, the first convolutional layer uses a depthwise-separable
-            decomposition (depthwise + pointwise 1×1) to enforce per-channel
-            temporal filtering before cross-channel mixing. Subsequent layers
-            remain standard convolutions. Defaults to False.
         """
         super().__init__()
         if kernel_size % 2 == 0:
@@ -195,20 +182,10 @@ class CNN1D(BaseEmbedding):
         activation_fn = {'relu': nn.ReLU, 'leaky_relu': nn.LeakyReLU}.get(activation, nn.ReLU)
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
-        # First layer: depthwise-separable or standard
-        if use_depthwise:
-            first_block = [
-                # Depthwise: filter each channel independently in time
-                nn.Conv1d(input_dim, input_dim, kernel_size, padding='same', groups=input_dim),
-                # Pointwise: mix channels (no temporal extent)
-                nn.Conv1d(input_dim, ch[0], kernel_size=1),
-                activation_fn(),
-            ]
-        else:
-            first_block = [
-                nn.Conv1d(in_channels=input_dim, out_channels=ch[0], kernel_size=kernel_size, padding='same'),
-                activation_fn(),
-            ]
+        first_block = [
+            nn.Conv1d(in_channels=input_dim, out_channels=ch[0], kernel_size=kernel_size, padding='same'),
+            activation_fn(),
+        ]
 
         layers = list(first_block)
         for i in range(1, len(ch)):
@@ -700,7 +677,11 @@ class SincEmbedding(BaseEmbedding):
         sinc_out = nn.functional.conv1d(x_rep, kernel, padding=pad,
                                         groups=C * self.n_sinc_filters)  # (N, C*F, T)
         features = self.body(sinc_out)   # (N, hidden_dim, T)
-        pooled = features.mean(dim=-1)   # (N, hidden_dim)
+        # Band-power pooling, not mean pooling: a bandpassed oscillation is
+        # ~zero-mean, so a plain mean over time discards the band amplitude
+        # the filterbank exists to expose. log(mean(square) + eps) survives
+        # pooling and keeps the scale reasonable across widely varying bands.
+        pooled = torch.log(features.pow(2).mean(dim=-1) + 1e-6)   # (N, hidden_dim)
         if self.feature_fusion == 'concat':
             pooled = torch.cat([pooled, x.mean(dim=-1)], dim=-1)
         return self.head(pooled)
@@ -730,142 +711,6 @@ class SincEmbedding(BaseEmbedding):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-
-
-class SpikePhysicsEmbedding(BaseEmbedding):
-    """Embedding for raw spike-timestamp data with physics-informed feature extraction.
-
-    Input shape: ``(N, n_neurons, max_spikes)`` — spike times relative to the
-    window start, with invalid slots filled by ``no_spike_value`` (default -1.0).
-    This is the tensor produced by ``SpikeWindowDataset``.
-
-    **Stage 1 — per-neuron feature extraction (no learned parameters):**
-    For each neuron, the following four scalar features are computed from the
-    valid (non-padding) spike times:
-
-    - *Firing rate*: ``n_valid_spikes / window_size``
-    - *Mean spike time*: mean of valid spike times, normalized by ``window_size``
-    - *Mean ISI*: mean inter-spike interval across consecutive valid spikes
-    - *ISI variance*: variance of the inter-spike intervals
-
-    All four are zero when a neuron fires 0 (or 1) spikes in the window.
-    This produces a ``(N, n_neurons, 4)`` tensor with no trainable parameters.
-
-    **Stage 2 — optional fusion (``feature_fusion='concat'``):**
-    If enabled, the raw spike times (padding replaced with 0, divided by
-    ``window_size``) are concatenated with the physics features, giving a
-    ``(N, n_neurons, 4 + max_spikes)`` tensor. This preserves fine timing
-    information that the summary statistics may lose.
-
-    **Stage 3 — learned mixer:**
-    The feature tensor is flattened and passed through a small MLP
-    (same ``hidden_dim``, ``embed_dim``, ``n_layers`` as the standard MLP)
-    to produce the final embedding of shape ``(N, embed_dim)``.
-
-    Parameters
-    ----------
-    input_dim : int
-        Number of neurons / channels (``n_channels_x``).
-    hidden_dim : int
-        Hidden size of the mixer MLP.
-    embed_dim : int
-        Embedding dimensionality.
-    n_layers : int
-        Number of hidden layers in the mixer MLP.
-    max_spikes : int
-        Size of the spike-slot dimension (last dim of input tensor).
-    no_spike_value : float, optional
-        Sentinel used to mark empty spike slots. Defaults to -1.0.
-    window_size : float, optional
-        Duration of each window in seconds, used to compute firing rate
-        and to normalise spike times. Defaults to 1.0.
-    feature_fusion : {'features', 'concat'}, optional
-        - ``'features'``: use only the four physics features (default).
-        - ``'concat'``: concatenate features with (normalised) raw spike times.
-    """
-
-    _K_FEATURES = 4  # firing_rate, mean_spike_time, isi_mean, isi_var
-
-    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int,
-                 max_spikes: int = 50, no_spike_value: float = -1.0,
-                 window_size: float = 1.0, feature_fusion: str = 'features', **kwargs):
-        super().__init__()
-        self.n_neurons = input_dim
-        self.max_spikes = max_spikes
-        self.no_spike_value = no_spike_value
-        self.window_size = max(float(window_size), 1e-6)
-        self.feature_fusion = feature_fusion
-
-        if feature_fusion == 'concat':
-            mlp_input_dim = input_dim * (self._K_FEATURES + max_spikes)
-        else:
-            mlp_input_dim = input_dim * self._K_FEATURES
-
-        self.mixer = MLP(mlp_input_dim, hidden_dim, embed_dim, n_layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract physics features and embed via the mixer MLP.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Shape ``(N, n_neurons, max_spikes)``.
-
-        Returns
-        -------
-        torch.Tensor
-            Shape ``(N, embed_dim)``.
-        """
-        N = x.shape[0]
-        valid_mask = (x != self.no_spike_value)  # (N, n_neurons, max_spikes)
-
-        # --- Firing rate ---
-        n_spikes = valid_mask.float().sum(dim=-1)           # (N, n_neurons)
-        firing_rate = n_spikes / self.window_size
-
-        # --- Sort spikes in time; push padding slots to the end ---
-        times = x.float()
-        # Replace padding with +inf so it sorts after all real spikes
-        times_for_sort = torch.where(valid_mask, times, torch.full_like(times, float('inf')))
-        sorted_times, sort_idx = torch.sort(times_for_sort, dim=-1)
-        sorted_mask = valid_mask.gather(-1, sort_idx)       # (N, n_neurons, max_spikes)
-
-        # --- Mean spike time (normalized to [0, 1]) ---
-        valid_times = torch.where(sorted_mask, sorted_times, torch.zeros_like(sorted_times))
-        n_valid_safe = n_spikes.unsqueeze(-1).clamp(min=1.0)
-        mean_spike_time = valid_times.sum(dim=-1) / n_valid_safe.squeeze(-1) / self.window_size
-        mean_spike_time = mean_spike_time * (n_spikes > 0).float()
-
-        # --- ISIs ---
-        if self.max_spikes > 1:
-            # ISI[k] = t[k+1] - t[k] for consecutive valid spike pairs
-            isi_raw = sorted_times[:, :, 1:] - sorted_times[:, :, :-1]  # (N, n_neurons, max_spikes-1)
-            isi_pair_mask = sorted_mask[:, :, 1:] & sorted_mask[:, :, :-1]
-            # Zero out invalid pairs (avoids inf - t = inf contaminating sums)
-            isi = torch.where(isi_pair_mask, isi_raw, torch.zeros_like(isi_raw))
-            n_isi = isi_pair_mask.float().sum(dim=-1).clamp(min=1.0)   # (N, n_neurons)
-            isi_mean_val = isi.sum(dim=-1) / n_isi
-            isi_mean_val = isi_mean_val * isi_pair_mask.any(dim=-1).float()
-            isi_centered = isi - isi_mean_val.unsqueeze(-1)
-            isi_centered = torch.where(isi_pair_mask, isi_centered, torch.zeros_like(isi_centered))
-            isi_var_val = (isi_centered ** 2).sum(dim=-1) / n_isi
-            isi_var_val = isi_var_val * isi_pair_mask.any(dim=-1).float()
-        else:
-            isi_mean_val = torch.zeros_like(firing_rate)
-            isi_var_val = torch.zeros_like(firing_rate)
-
-        # --- Stack physics features: (N, n_neurons, 4) ---
-        features = torch.stack([firing_rate, mean_spike_time, isi_mean_val, isi_var_val], dim=-1)
-
-        if self.feature_fusion == 'concat':
-            # Normalised raw spike times (padding → 0)
-            raw = torch.where(valid_mask, times / self.window_size, torch.zeros_like(times))
-            combined = torch.cat([features, raw], dim=-1)  # (N, n_neurons, 4+max_spikes)
-            flat = combined.reshape(N, -1)
-        else:
-            flat = features.reshape(N, -1)                 # (N, n_neurons * 4)
-
-        return self.mixer(flat)
 
 
 class PretrainedBackboneEmbedding(BaseEmbedding):

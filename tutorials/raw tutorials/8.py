@@ -238,11 +238,11 @@ plt.show()
 # shape `(batch, embedding_dim)`. The choice of architecture determines what
 # kinds of temporal patterns the network can detect. NeuralMI provides six
 # general-purpose architectures via the `embedding_model` parameter in
-# `base_params`, plus three **physics-informed (inductive bias)** variants
+# `base_params`, plus two **physics-informed (inductive bias)** variants
 # that encode domain knowledge about specific recording modalities directly
 # into the model structure. This tutorial covers the general-purpose models.
-# For the physics-informed variants (`'sinc_cnn'`, `'spike_physics'`,
-# `'pretrained_backbone'`), see **Tutorial 10**.
+# For the physics-informed variants (`'sinc_cnn'`, `'pretrained_backbone'`),
+# see **Tutorial 10**.
 # 
 # **MLP** (`embedding_model='mlp'`, default): flattens the input and processes
 # it through fully connected layers. Has no explicit notion of temporal order —
@@ -298,7 +298,6 @@ plt.show()
 # | Raw spike times (via spike processor) | `'gru'` |
 # | Large dataset, long windows, complex relationships | `'transformer'` |
 # | LFP / EEG (sample rate known, want frequency priors) | `'sinc_cnn'` — see Tutorial 10 |
-# | Raw spike timestamps (rate/ISI code) | `'spike_physics'` — see Tutorial 10 |
 # | Images (large dataset, pretrained features) | `'pretrained_backbone'` — see Tutorial 10 |
 #
 # In all cases, start with the MLP and switch only if you have evidence that

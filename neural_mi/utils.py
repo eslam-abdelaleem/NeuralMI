@@ -16,7 +16,7 @@ from neural_mi.estimators import ESTIMATORS
 from neural_mi.models.embeddings import (
     MLP, VariationalWrapper, BaseEmbedding,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
-    SpikePhysicsEmbedding, SincEmbedding,
+    SincEmbedding,
     PretrainedBackboneEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
@@ -183,8 +183,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         EmbeddingModel = Transformer
     elif model_type == 'mlp':
         EmbeddingModel = MLP
-    elif model_type == 'spike_physics':
-        EmbeddingModel = SpikePhysicsEmbedding
     elif model_type == 'sinc_cnn':
         EmbeddingModel = SincEmbedding
     elif model_type == 'pretrained_backbone':
@@ -206,28 +204,19 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # CNN1D, CNN2D, and all sequence models use n_channels as input_dim
     # (they operate on the channel dimension, not a flattened feature vector).
-    # Inductive-bias models (spike_physics, sinc_cnn, pretrained_backbone)
-    # also use n_channels as input_dim.
+    # Inductive-bias models (sinc_cnn, pretrained_backbone) also use n_channels
+    # as input_dim.
     # MLP (and custom cls) use the fully-flattened input_dim.
     _sequential_types = {'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                         'spike_physics', 'sinc_cnn', 'pretrained_backbone'}
+                         'sinc_cnn', 'pretrained_backbone'}
     if model_type in _sequential_types:
         input_dim_x, input_dim_y = embedding_params['n_channels_x'], embedding_params['n_channels_y']
         if model_type in ['cnn', 'tcn', 'cnn2d']:
             model_kwargs['kernel_size'] = embedding_params.get('kernel_size', 7 if model_type == 'cnn' else 3)
-        if model_type == 'cnn':
-            model_kwargs['use_depthwise'] = embedding_params.get('use_depthwise', False)
         if model_type in ['gru', 'lstm']:
             model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
         if model_type == 'transformer':
             model_kwargs['nhead'] = embedding_params.get('nhead', 4)
-        if model_type == 'spike_physics':
-            _n_ch = embedding_params.get('n_channels_x', 1)
-            _in_tot = embedding_params.get('input_dim_x', _n_ch)
-            model_kwargs['max_spikes'] = max(1, _in_tot // max(1, _n_ch))
-            model_kwargs['no_spike_value'] = embedding_params.get('no_spike_value', -1.0)
-            model_kwargs['window_size'] = float(embedding_params.get('embedding_window_size') or 1.0)
-            model_kwargs['feature_fusion'] = embedding_params.get('feature_fusion', 'features')
         if model_type == 'sinc_cnn':
             model_kwargs['n_sinc_filters'] = embedding_params.get('n_sinc_filters', 8)
             model_kwargs['sample_rate'] = embedding_params.get('sample_rate_x')
@@ -250,14 +239,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         )
 
     # Build the base (deterministic) encoders.
-    # For spike_physics, max_spikes may differ between X and Y when the two
-    # populations have different firing rates (leading to different tensor shapes).
-    # Compute Y-specific kwargs to avoid a shape mismatch in the mixer MLP.
     model_kwargs_y = model_kwargs.copy()
-    if model_type == 'spike_physics':
-        _n_ch_y = embedding_params.get('n_channels_y', embedding_params.get('n_channels_x', 1))
-        _in_tot_y = embedding_params.get('input_dim_y', _n_ch_y)
-        model_kwargs_y['max_spikes'] = max(1, _in_tot_y // max(1, _n_ch_y))
     net_x_base = EmbeddingModel(input_dim_x, **model_kwargs)
     net_y_base = net_x_base if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs_y)
 

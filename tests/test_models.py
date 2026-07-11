@@ -16,7 +16,6 @@ from neural_mi.models.embeddings import (
     LSTM,
     TCN,
     Transformer,
-    SpikePhysicsEmbedding,
     SincEmbedding,
 )
 
@@ -64,50 +63,6 @@ def test_cnn1d_embedding(x_data_cnn, cnn1d_embedding):
     assert isinstance(output, torch.Tensor)
     assert output.shape == (10, 8)
 
-
-class TestCNN1DDepthwise:
-    """Tests for CNN1D with use_depthwise=True (depthwise-separable first layer)."""
-
-    @pytest.fixture
-    def seq_input_multichannel(self):
-        # (batch, n_channels, seq_len) — multiple channels to exercise depthwise split
-        return torch.randn(16, 4, 100)
-
-    def test_output_shape(self, seq_input_multichannel):
-        model = CNN1D(input_dim=4, hidden_dim=16, embed_dim=8, n_layers=2,
-                      kernel_size=7, use_depthwise=True)
-        out = model(seq_input_multichannel)
-        assert out.shape == (16, 8)
-
-    def test_gradients_flow(self, seq_input_multichannel):
-        model = CNN1D(input_dim=4, hidden_dim=16, embed_dim=8, n_layers=2,
-                      kernel_size=7, use_depthwise=True)
-        out = model(seq_input_multichannel)
-        out.sum().backward()
-        for p in model.parameters():
-            assert p.grad is not None
-
-    def test_single_channel(self):
-        # Depthwise on a single channel must also work (groups=1 == standard conv)
-        x = torch.randn(8, 1, 50)
-        model = CNN1D(input_dim=1, hidden_dim=8, embed_dim=4, n_layers=1,
-                      kernel_size=3, use_depthwise=True)
-        out = model(x)
-        assert out.shape == (8, 4)
-
-    def test_default_unchanged(self, seq_input_multichannel):
-        """use_depthwise=False (default) must produce the same architecture as before."""
-        model_standard = CNN1D(input_dim=4, hidden_dim=16, embed_dim=8, n_layers=2,
-                               kernel_size=7, use_depthwise=False)
-        model_default = CNN1D(input_dim=4, hidden_dim=16, embed_dim=8, n_layers=2,
-                              kernel_size=7)
-        # Both should produce (batch, embed_dim) output
-        torch.manual_seed(0)
-        out_std = model_standard(seq_input_multichannel)
-        torch.manual_seed(0)
-        out_def = model_default(seq_input_multichannel)
-        assert out_std.shape == (16, 8)
-        assert out_def.shape == (16, 8)
 
 # --- VariationalWrapper Tests ---
 
@@ -373,78 +328,6 @@ def test_critic_get_embeddings(x_data, y_data):
 
 
 # --- Sequential Embedding Model Tests ---
-
-class TestSpikePhysicsEmbedding:
-    """Tests for SpikePhysicsEmbedding."""
-
-    NO_SPIKE = -1.0
-    WINDOW_SIZE = 0.5  # seconds
-    N_NEURONS = 4
-    MAX_SPIKES = 10
-    BATCH = 16
-
-    @pytest.fixture
-    def spike_input(self):
-        """Synthetic spike tensor: random times in [0, window_size), randomly masked."""
-        torch.manual_seed(42)
-        t = torch.rand(self.BATCH, self.N_NEURONS, self.MAX_SPIKES) * self.WINDOW_SIZE
-        # Randomly zero out some slots (simulate sparse firing)
-        mask = torch.rand_like(t) < 0.5
-        t[mask] = self.NO_SPIKE
-        return t
-
-    @pytest.fixture
-    def spike_input_all_silent(self):
-        """All slots are padding — tests zero-spike handling."""
-        return torch.full((self.BATCH, self.N_NEURONS, self.MAX_SPIKES), self.NO_SPIKE)
-
-    def test_output_shape_features(self, spike_input):
-        model = SpikePhysicsEmbedding(
-            input_dim=self.N_NEURONS, hidden_dim=16, embed_dim=8, n_layers=2,
-            max_spikes=self.MAX_SPIKES, no_spike_value=self.NO_SPIKE,
-            window_size=self.WINDOW_SIZE, feature_fusion='features')
-        out = model(spike_input)
-        assert out.shape == (self.BATCH, 8)
-
-    def test_output_shape_concat(self, spike_input):
-        model = SpikePhysicsEmbedding(
-            input_dim=self.N_NEURONS, hidden_dim=16, embed_dim=8, n_layers=2,
-            max_spikes=self.MAX_SPIKES, no_spike_value=self.NO_SPIKE,
-            window_size=self.WINDOW_SIZE, feature_fusion='concat')
-        out = model(spike_input)
-        assert out.shape == (self.BATCH, 8)
-
-    def test_all_silent_does_not_crash(self, spike_input_all_silent):
-        """When all spikes are padding, features should be all zero and no NaN/inf."""
-        model = SpikePhysicsEmbedding(
-            input_dim=self.N_NEURONS, hidden_dim=16, embed_dim=8, n_layers=1,
-            max_spikes=self.MAX_SPIKES, no_spike_value=self.NO_SPIKE,
-            window_size=self.WINDOW_SIZE, feature_fusion='features')
-        model.eval()
-        with torch.no_grad():
-            out = model(spike_input_all_silent)
-        assert out.shape == (self.BATCH, 8)
-        assert not torch.isnan(out).any(), "NaN in output for all-silent input"
-        assert not torch.isinf(out).any(), "Inf in output for all-silent input"
-
-    def test_gradients_flow(self, spike_input):
-        model = SpikePhysicsEmbedding(
-            input_dim=self.N_NEURONS, hidden_dim=16, embed_dim=8, n_layers=2,
-            max_spikes=self.MAX_SPIKES, no_spike_value=self.NO_SPIKE,
-            window_size=self.WINDOW_SIZE, feature_fusion='features')
-        out = model(spike_input)
-        out.sum().backward()
-        for p in model.parameters():
-            assert p.grad is not None
-
-    def test_no_nan_inf_in_output(self, spike_input):
-        model = SpikePhysicsEmbedding(
-            input_dim=self.N_NEURONS, hidden_dim=16, embed_dim=8, n_layers=2,
-            max_spikes=self.MAX_SPIKES, no_spike_value=self.NO_SPIKE,
-            window_size=self.WINDOW_SIZE, feature_fusion='features')
-        out = model(spike_input)
-        assert not torch.isnan(out).any()
-        assert not torch.isinf(out).any()
 
 
 class TestSincEmbedding:

@@ -84,11 +84,11 @@ _BUILD_PARAMS_KEYS = [
     'use_decoder', 'decoder_weight', 'decoder_weight_x', 'decoder_weight_y',
     'decoder_output_activation_x', 'decoder_output_activation_y',
     # Inductive-bias architecture parameters
-    'use_depthwise', 'n_sinc_filters', 'feature_fusion',
+    'n_sinc_filters', 'feature_fusion',
     'pytorch_predefined', 'pretrained',
     # Modality metadata injected from processor_params (needed to reconstruct
-    # SpikePhysicsEmbedding and SincEmbedding architectures)
-    'sample_rate_x', 'sample_rate_y', 'no_spike_value', 'embedding_window_size',
+    # SincEmbedding architecture)
+    'sample_rate_x', 'sample_rate_y', 'no_spike_value',
 ]
 
 
@@ -204,8 +204,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     params['sample_rate_y'] = _pp_y.get('sample_rate')
     # no_spike_value: default -1.0 matches SpikeWindowDataset's default sentinel
     params['no_spike_value'] = _pp_x.get('no_spike_value', _pp_y.get('no_spike_value', -1.0))
-    # embedding_window_size: window duration in seconds (for firing-rate computation)
-    params['embedding_window_size'] = _pp_x.get('window_size', _pp_y.get('window_size'))
 
     if params.get('custom_critic') is not None:
         critic = params['custom_critic']

@@ -132,3 +132,22 @@ def test_run_defaults_logging_suppressed_if_not_verbose(small_data, caplog):
     with caplog.at_level('INFO'):
         nmi.run(x, y, base_params={'n_epochs': 1, 'batch_size': 16}, verbose=False, n_workers=1)
     assert "Parameter 'n_layers' not specified" not in caplog.text
+
+
+@pytest.mark.parametrize('key,value,extra', [
+    ('optimizer_params', {'weight_decay': 1e-2}, {}),
+    ('estimator_params', {'clip': 5.0}, {'estimator': 'smile'}),
+    ('scheduler_params', {'gamma': 0.5}, {'scheduler': 'step'}),
+])
+def test_run_preserves_dict_kwargs_set_only_in_base_params(small_data, key, value, extra):
+    """Regression test: `_inject` used to be called as `_inject(base_params, key,
+    top_level_kwarg or {})` for these three params, which converts an un-passed
+    (None) top-level kwarg into `{}` and silently overwrites a caller-supplied
+    base_params[key] -- since apply_defaults() only fills in *missing* keys,
+    the top-level kwarg must stay a raw None passthrough so base_params[key]
+    survives when the caller never touches the top-level kwarg."""
+    x, y = small_data
+    result = nmi.run(
+        x, y, base_params={'n_epochs': 1, 'batch_size': 16, key: value}, n_workers=1, **extra,
+    )
+    assert result.params['base_params'][key] == value

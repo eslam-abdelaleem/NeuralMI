@@ -10,7 +10,8 @@ Windowed generators with analytically known MI
 - :func:`generate_windowed_oscillatory` — amplitude-modulated oscillation at a
   single carrier frequency; MI is carried in amplitude correlation. Tests sinc_cnn.
 - :func:`generate_windowed_multichannel` — per-channel different carrier
-  frequencies; total MI = sum of per-channel MIs. Tests depthwise CNN.
+  frequencies; total MI = sum of per-channel MIs. Used to gate the (since
+  removed) depthwise CNN1D inductive bias; see `results/gate/decision_log.md`.
 """
 
 import numpy as np
@@ -82,8 +83,8 @@ def generate_correlated_gaussians(
     return x, y
 
 def generate_nonlinear_from_latent(
-    n_samples: int, latent_dim: int, observed_dim: int, mi: float, 
-    hidden_dim: int = 64, use_torch: bool = True
+    n_samples: int, latent_dim: int, observed_dim: int, mi: float,
+    hidden_dim: int = 64, use_torch: bool = True, return_latents: bool = False
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Generates two nonlinearly related datasets from a shared latent variable.
 
@@ -105,6 +106,9 @@ def generate_nonlinear_from_latent(
         The hidden dimension of the transforming MLPs. Defaults to 64.
     use_torch : bool, optional
         If True, returns torch.Tensors. Defaults to True.
+    return_latents : bool, optional
+        If True, also return the shared latents `(z_x, z_y)` used to
+        construct `x` and `y`. Defaults to False.
 
     Returns
     -------
@@ -112,9 +116,11 @@ def generate_nonlinear_from_latent(
         A tuple containing:
         - **x** (*np.ndarray* or *torch.Tensor*): The first dataset, of shape `(n_samples, observed_dim)`.
         - **y** (*np.ndarray* or *torch.Tensor*): The second dataset, of shape `(n_samples, observed_dim)`.
+        - **z_x**, **z_y** (*np.ndarray* or *torch.Tensor*, optional): The shared latents,
+          of shape `(n_samples, latent_dim)`, only if `return_latents=True`.
     """
     z_x, z_y = generate_correlated_gaussians(n_samples, latent_dim, mi, use_torch=True)
-    
+
     mlp_x = torch.nn.Sequential(
         torch.nn.Linear(latent_dim, hidden_dim), torch.nn.Softplus(),
         torch.nn.Linear(hidden_dim, observed_dim)
@@ -123,13 +129,16 @@ def generate_nonlinear_from_latent(
         torch.nn.Linear(latent_dim, hidden_dim), torch.nn.Softplus(),
         torch.nn.Linear(hidden_dim, observed_dim)
     )
-    
+
     with torch.no_grad():
         x = mlp_x(z_x)
         y = mlp_y(z_y)
-        
+
     if not use_torch:
-        return x.numpy(), y.numpy()
+        x, y = x.numpy(), y.numpy()
+        z_x, z_y = z_x.numpy(), z_y.numpy()
+    if return_latents:
+        return x, y, z_x, z_y
     return x, y
 
 def generate_temporally_convolved_data(
@@ -615,8 +624,8 @@ def generate_modulated_spike_trains(
 
     Both population X and population Y have firing rates that are co-modulated
     by the same low-frequency oscillatory latent signal.  The MI is carried in
-    the *firing rate* — not in precise spike timing — making this the ideal
-    scenario for ``embedding_model='spike_physics'``.
+    the *firing rate* — not in precise spike timing. Used to gate the (since
+    removed) `spike_physics` inductive bias; see `results/gate/decision_log.md`.
 
     This is complementary to :func:`generate_correlated_spike_trains`, which
     creates a precise delay-based timing correlation.
@@ -887,6 +896,98 @@ def generate_windowed_oscillatory(
     return X.astype(np.float32), Y.astype(np.float32), true_mi
 
 
+def generate_windowed_bandpower_interference(
+    n_windows: int,
+    n_channels: int = 1,
+    window_size: int = 256,
+    f_carrier_hz: float = 8.0,
+    f_distractor_hz: float = 40.0,
+    sample_rate: float = 256.0,
+    latent_mi: float = 1.0,
+    snr: float = 3.0,
+    interference_amplitude: float = 5.0,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Generate windowed oscillations like :func:`generate_windowed_oscillatory`,
+    plus a strong, independent out-of-band sinusoidal distractor.
+
+    The MI-carrying signal is constructed identically to
+    :func:`generate_windowed_oscillatory` (amplitude-modulated carrier at
+    ``f_carrier_hz``). A second sinusoid at ``f_distractor_hz`` is added with
+    random amplitude and phase drawn independently per window and independently
+    for X and Y, so it carries no MI and does not change the analytical
+    observable MI -- it exists only to test whether a bandpass front-end can
+    structurally reject out-of-band interference that a short-kernel generic
+    conv cannot as cleanly. Favorable regime for ``sinc_cnn``.
+
+    Parameters
+    ----------
+    n_windows : int
+        Number of independent windows.
+    n_channels : int, optional
+        Number of channels. Defaults to 1.
+    window_size : int, optional
+        Number of timepoints per window. Defaults to 256.
+    f_carrier_hz : float, optional
+        Carrier frequency of the MI-carrying signal in Hz. Defaults to 8.0.
+    f_distractor_hz : float, optional
+        Frequency of the independent, non-MI-carrying distractor in Hz.
+        Defaults to 40.0.
+    sample_rate : float, optional
+        Sampling rate in Hz. Defaults to 256.0.
+    latent_mi : float, optional
+        Desired MI in bits between the scalar latents. Defaults to 1.0.
+    snr : float, optional
+        Signal amplitude relative to noise std. Defaults to 3.0.
+    interference_amplitude : float, optional
+        Distractor amplitude scale relative to the signal latents (std 1).
+        Defaults to 5.0 (strong interference).
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, float]
+        ``(X, Y, true_mi)`` where X and Y have shape
+        ``(n_windows, n_channels, window_size)`` and ``true_mi`` is in bits
+        (unaffected by the distractor, since it is orthogonal in frequency and
+        independent of the signal).
+    """
+    rho = mi_to_rho(1, latent_mi)
+    cov = np.array([[1.0, rho], [rho, 1.0]])
+    latents = np.random.multivariate_normal([0.0, 0.0], cov, size=(n_windows, n_channels))
+    z_x = latents[:, :, 0]
+    z_y = latents[:, :, 1]
+
+    t = np.arange(window_size) / sample_rate
+    carrier = np.sin(2.0 * np.pi * f_carrier_hz * t)
+    v_sq = float(np.dot(carrier, carrier))
+
+    noise_std = 1.0 / snr
+    X = z_x[:, :, None] * carrier[None, None, :]
+    Y = z_y[:, :, None] * carrier[None, None, :]
+    X = X + noise_std * np.random.randn(*X.shape)
+    Y = Y + noise_std * np.random.randn(*Y.shape)
+
+    # Independent, random-phase distractor at a different frequency: carries no
+    # MI (independent draws for X and Y) and is orthogonal-in-frequency to the
+    # carrier, so it does not change the analytical MI -- only what a
+    # non-spectrally-selective encoder observes.
+    phase_x = np.random.uniform(0, 2 * np.pi, size=(n_windows, n_channels))
+    phase_y = np.random.uniform(0, 2 * np.pi, size=(n_windows, n_channels))
+    amp_x = np.random.randn(n_windows, n_channels)
+    amp_y = np.random.randn(n_windows, n_channels)
+    distractor_phase_x = f_distractor_hz * t[None, None, :] * 2.0 * np.pi + phase_x[:, :, None]
+    distractor_phase_y = f_distractor_hz * t[None, None, :] * 2.0 * np.pi + phase_y[:, :, None]
+    X = X + interference_amplitude * amp_x[:, :, None] * np.sin(distractor_phase_x)
+    Y = Y + interference_amplitude * amp_y[:, :, None] * np.sin(distractor_phase_y)
+
+    sigma_sq = noise_std ** 2
+    rho_obs = rho * v_sq / (v_sq + sigma_sq)
+    rho_obs = float(np.clip(rho_obs, -1 + 1e-8, 1 - 1e-8))
+    mi_per_channel = -0.5 * np.log2(1.0 - rho_obs ** 2)
+    true_mi = float(n_channels * mi_per_channel)
+
+    return X.astype(np.float32), Y.astype(np.float32), true_mi
+
+
 def generate_windowed_multichannel(
     n_windows: int,
     n_channels: int = 8,
@@ -905,8 +1006,9 @@ def generate_windowed_multichannel(
     independently for each channel from correlated Gaussians with MI ``latent_mi``.
     Total observable MI = sum of per-channel observable MIs.
 
-    This is the ideal scenario for depthwise CNN: each channel's MI lives at a
-    different frequency, so mixing channels creates interference.
+    Used to gate the (since removed) depthwise CNN1D inductive bias: each
+    channel's MI lives at a different frequency, so mixing channels creates
+    interference. See `results/gate/decision_log.md`.
 
     Parameters
     ----------

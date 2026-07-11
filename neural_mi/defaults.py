@@ -99,7 +99,7 @@ BASE_PARAMS_SCHEMA = {
     'hidden_dim_head': {'type': (int, list, type(None)), 'default': None},  # Hybrid critic head; None → min(64, hidden_dim)
     'critic_type': {'type': str, 'default': 'separable'},
     'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'
-                                                          # inductive-bias: 'sinc_cnn'|'spike_physics'|'pretrained_backbone'
+                                                          # inductive-bias: 'sinc_cnn'|'pretrained_backbone'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
@@ -108,9 +108,6 @@ BASE_PARAMS_SCHEMA = {
     'norm_layer': {'type': (str, type(None)), 'default': None},
 
     # --- Inductive bias parameters ---
-    # CNN1D depthwise-separable first layer (use_depthwise=True enforces per-channel
-    # temporal filtering before cross-channel mixing; works with embedding_model='cnn').
-    'use_depthwise': {'type': bool, 'default': False},
     # SincEmbedding: number of learnable sinc bandpass filters per input channel.
     'n_sinc_filters': {'type': int, 'min': 1, 'default': 8},
     # SincEmbedding: feature fusion mode.

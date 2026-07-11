@@ -652,7 +652,12 @@ def _run_inner(
     if 'device' not in base_params:
         base_params['device'] = get_device()
     _inject(base_params, 'estimator_name', estimator)
-    _inject(base_params, 'estimator_params', estimator_params or {})
+    # No `or {}` here: that would convert an un-passed (None) top-level kwarg
+    # into a real value, defeating _inject's "leave base_params alone if not
+    # explicitly given" guard and silently overwriting a caller-supplied
+    # base_params['estimator_params'] with {}. apply_defaults() already backstops
+    # the case where the key is absent from both.
+    _inject(base_params, 'estimator_params', estimator_params)
     _inject(base_params, 'custom_critic', custom_critic)
     _inject(base_params, 'custom_embedding_cls', custom_embedding_cls)
     _inject(base_params, 'save_best_model_path', save_best_model_path)
@@ -668,9 +673,10 @@ def _run_inner(
     _inject(base_params, 'use_spectral_norm', use_spectral_norm)
     _inject(base_params, 'gradient_clip_val', gradient_clip_val)
     _inject(base_params, 'optimizer', optimizer)
-    _inject(base_params, 'optimizer_params', optimizer_params or {})
+    # See the estimator_params comment above -- same bug shape, same fix.
+    _inject(base_params, 'optimizer_params', optimizer_params)
     _inject(base_params, 'scheduler', scheduler)
-    _inject(base_params, 'scheduler_params', scheduler_params or {})
+    _inject(base_params, 'scheduler_params', scheduler_params)
     _inject(base_params, 'eval_train', eval_train)
     _inject(base_params, 'peak_fraction', peak_fraction)
     _inject(base_params, 'dropout', dropout)
@@ -761,7 +767,13 @@ def _run_inner(
     
     _processor = base_params.get('processor_type_x', None)
     _embedding = base_params.get('embedding_model', 'mlp')
-    if _processor is None and str(_embedding).lower() in ('gru', 'lstm'):
+    # A 3-D array/tensor passed with processor_type=None is already
+    # pre-windowed (N, C, W) sequential data, not a StaticDataset -- this
+    # matches the same auto-detection ParameterSweep uses (`is_proc_sweep`)
+    # to allow 'gru'/'lstm' on pre-processed data without re-running a
+    # processor.
+    _has_time_dim = hasattr(x_data, 'ndim') and x_data.ndim == 3
+    if _processor is None and str(_embedding).lower() in ('gru', 'lstm') and not _has_time_dim:
         raise ValueError(
             f"embedding_model='{_embedding}' requires sequential input but "
             f"processor_type=None produces a StaticDataset with no time dimension. "

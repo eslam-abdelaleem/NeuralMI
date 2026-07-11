@@ -25,8 +25,14 @@
 # Each section covers one embedding model and includes:
 # - A visualisation of the synthetic data
 # - The sample efficiency curves for the biased vs. baseline model
-# - A diagnostic of the learned physics parameters (Section 2)
+# - A diagnostic of the learned physics parameters (Section 1)
 # - A brief scientific interpretation
+#
+# (A depthwise-separable CNN1D section and a SpikePhysicsEmbedding section
+# originally appeared here too. Both were evaluated empirically against
+# generic encoders and did not survive that gate; see
+# `results/gate/decision_log.md`. They have been removed from the library and
+# this tutorial.)
 
 # %% [markdown]
 # ## Setup
@@ -198,97 +204,7 @@ def plot_sample_efficiency(
 
 
 # %% [markdown]
-# ## Section 1: Depthwise CNN for Multi-Channel Continuous Data
-#
-# ### Scientific motivation
-#
-# A standard Conv1D filter in the first layer sees *all channels simultaneously*.
-# When channel 1 carries 8 Hz activity and channel 7 carries 30 Hz activity, the
-# standard filter must somehow avoid learning a response to the 30 Hz content when
-# estimating MI for channel 1.  This cross-channel interference wastes capacity
-# and slows convergence.
-#
-# **Depthwise-separable CNN** (``use_depthwise=True``) processes each channel's
-# temporal axis *independently* with a dedicated filter before any cross-channel
-# mixing.  When MI is structured per-channel — different frequencies per channel —
-# depthwise should converge faster because it does not have to learn to ignore
-# cross-channel interference.
-#
-# ### Data
-#
-# ``generate_windowed_multichannel`` produces IID window pairs where channel ``c``
-# carries MI at frequency ``f_c``.  Because the channels are independent and each
-# has MI 0.5 bits, the total true MI is 8 × 0.5 = 4.0 bits.  The ground truth is
-# analytically exact, enabling a proper quantitative comparison.
-
-# %%
-np.random.seed(100)
-print("Generating multichannel oscillatory data (8 channels, per-channel MI = 0.5 bits)...")
-
-N_CH_MC = 8
-X_mc, Y_mc, true_mi_mc = nmi.generators.generate_windowed_multichannel(
-    n_windows=3000,
-    n_channels=N_CH_MC,
-    window_size=200,
-    f_min_hz=4.0,
-    f_max_hz=40.0,
-    sample_rate=500.0,
-    latent_mi=0.5,
-    snr=3.0,
-)
-print(f"  X shape: {X_mc.shape}   True MI: {true_mi_mc:.3f} bits")
-
-# %%
-# Visualise two example windows (one channel per channel)
-fig, axes = plt.subplots(2, 4, figsize=(16, 5), sharex=True)
-t_ms = np.arange(200) / 500.0 * 1000.0
-for ch, ax in enumerate(axes.flat):
-    ax.plot(t_ms, X_mc[0, ch, :], label='X', lw=1.2)
-    ax.plot(t_ms, Y_mc[0, ch, :], label='Y', lw=1.2, alpha=0.7)
-    ax.set_title(f'Channel {ch+1}')
-    ax.set_xlabel('Time (ms)' if ch >= 4 else '')
-    if ch == 0:
-        ax.legend(fontsize=9)
-plt.suptitle('Multichannel data: each channel carries MI at a different frequency')
-plt.tight_layout()
-plt.show()
-
-# %%
-print("\n=== Section 1: Standard CNN vs Depthwise-Separable CNN ===")
-
-N_VALUES_MC = [50, 100, 200, 400, 800, 1500, 3000]
-
-models_mc = [
-    ('CNN (standard)',   {'embedding_model': 'cnn', 'use_depthwise': False}),
-    ('CNN (depthwise)',  {'embedding_model': 'cnn', 'use_depthwise': True}),
-]
-
-df_mc = run_sample_efficiency(
-    X_mc, Y_mc, N_VALUES_MC, models_mc, true_mi_mc,
-    base_train=BASE_TRAIN,
-)
-
-# %%
-fig, ax = plt.subplots(figsize=(9, 5))
-print("\nCrossover N values (Section 1):")
-plot_sample_efficiency(df_mc, true_mi_mc, 'Section 1: Depthwise CNN — Multi-Channel Oscillatory Data', ax=ax)
-plt.tight_layout()
-plt.show()
-
-# %% [markdown]
-# **Interpretation:** The depthwise CNN should reach 90% of the true MI (4 bits)
-# at a lower N than standard CNN.  With 8 channels each at a different frequency,
-# standard Conv1D must allocate capacity to disentangle cross-channel interference
-# before it can learn the per-channel MI.  Depthwise Conv1D does not have this
-# problem — it filters each channel independently first.
-#
-# The crossover N printed above quantifies this advantage.  If your data has
-# many channels with channel-specific temporal structure, ``use_depthwise=True``
-# is a free win.
-
-
-# %% [markdown]
-# ## Section 2: SincCNN for Band-Limited EEG/LFP
+# ## Section 1: SincCNN for Band-Limited EEG/LFP
 #
 # ### Scientific motivation
 #
@@ -350,7 +266,7 @@ plt.tight_layout()
 plt.show()
 
 # %%
-print("\n=== Section 2: Standard CNN vs SincCNN on alpha-band LFP ===")
+print("\n=== Section 1: Standard CNN vs SincCNN on alpha-band LFP ===")
 
 N_VALUES_SINC = [50, 100, 200, 400, 800, 1500, 3000]
 
@@ -371,8 +287,8 @@ df_sinc = run_sample_efficiency(
 
 # %%
 fig, ax = plt.subplots(figsize=(9, 5))
-print("\nCrossover N values (Section 2):")
-plot_sample_efficiency(df_sinc, true_mi_sinc, 'Section 2: SincCNN — Alpha-Band LFP', ax=ax)
+print("\nCrossover N values (Section 1):")
+plot_sample_efficiency(df_sinc, true_mi_sinc, 'Section 1: SincCNN — Alpha-Band LFP', ax=ax)
 plt.tight_layout()
 plt.show()
 
@@ -434,193 +350,7 @@ else:
 
 
 # %% [markdown]
-# ## Section 3: SpikePhysicsEmbedding — Rate Code vs. Timing Code
-#
-# ### Why this section is qualitative
-#
-# Unlike Sections 1–2, we do not have an analytically known ground-truth MI for
-# spike train generators.  The Poisson spike process with complex population
-# statistics does not yield a simple closed-form MI.  We therefore interpret
-# the results qualitatively: *which model gets higher MI in each scenario?*
-# We cannot draw a true_mi horizontal line, but we can ask whether
-# SpikePhysics or GRU is more appropriate.
-#
-# ### Rate code
-#
-# The MI is carried in the *firing rate* — X and Y populations are co-modulated
-# by the same low-frequency latent signal.  ``spike_physics`` computes firing
-# rate directly and analytically; it only needs to learn the projector head.
-# GRU must process the full spike-time sequence and discover that the relevant
-# statistic is the count.
-#
-# ### Timing code
-#
-# The MI is carried in *precise spike timing*: for each signal spike in X[i],
-# Y[i] fires 15 ms later with 3 ms jitter.  But signal spikes are buried in 3×
-# more background Poisson noise, so all four SpikePhysics features (firing rate,
-# mean spike time, ISI mean, ISI variance) are dominated by background and
-# cannot reliably detect the correlation.  GRU processes the actual spike-time
-# sequence and can learn to detect the short-latency co-firing pattern.
-#
-# ### feature_fusion='concat'
-#
-# The ``feature_fusion='concat'`` option provides SpikePhysics features *plus*
-# the raw spike timestamps as input to the mixer MLP.  This hybrid should bridge
-# both scenarios and is tested as a third comparison in the timing-code section.
-
-# %%
-np.random.seed(400)
-DURATION = 200.0     # seconds
-WINDOW_SZ = 0.5      # seconds per window  → ~800 windows
-STEP_SZ = 0.25       # 50% overlap
-
-proc_spike = dict(
-    window_size=WINDOW_SZ, step_size=STEP_SZ,
-    max_spikes_per_window=20, n_seconds=DURATION,
-    no_spike_value=-1.0,
-)
-
-# ── Rate-code scenario ──────────────────────────────────────────────────────
-print("Generating rate-code spike trains...")
-pop_x_rate, pop_y_rate = nmi.generators.generate_modulated_spike_trains(
-    n_neurons=8, duration=DURATION,
-    baseline_rate=5.0, modulation_depth=0.8, modulation_freq=1.0,
-)
-
-SPIKE_PARAMS = dict(**BASE_TRAIN, n_epochs=200, patience=40)
-
-print("--- Rate code: GRU vs SpikePhysics vs SpikePhysics+concat ---")
-result_gru_rate = nmi.run(
-    x_data=pop_x_rate, y_data=pop_y_rate,
-    mode='sweep',
-    sweep_grid={'run_id': range(5)},
-    processor_type_x='spike', processor_params_x=proc_spike,
-    processor_type_y='spike', processor_params_y=proc_spike,
-    split_mode='blocked',
-    base_params={**SPIKE_PARAMS, 'embedding_model': 'gru'},
-    n_workers=N_WORKERS, show_progress=False,
-)
-
-result_phys_rate = nmi.run(
-    x_data=pop_x_rate, y_data=pop_y_rate,
-    mode='sweep',
-    sweep_grid={'run_id': range(5)},
-    processor_type_x='spike', processor_params_x=proc_spike,
-    processor_type_y='spike', processor_params_y=proc_spike,
-    split_mode='blocked',
-    base_params={**SPIKE_PARAMS, 'embedding_model': 'spike_physics'},
-    n_workers=N_WORKERS, show_progress=False,
-)
-
-gru_rate_mi = result_gru_rate.dataframe['mi_mean'].iloc[0]
-phys_rate_mi = result_phys_rate.dataframe['mi_mean'].iloc[0]
-print(f"  GRU:             {gru_rate_mi:.3f} ± {result_gru_rate.dataframe['mi_std'].iloc[0]:.3f} bits")
-print(f"  SpikePhysics:    {phys_rate_mi:.3f} ± {result_phys_rate.dataframe['mi_std'].iloc[0]:.3f} bits")
-
-# ── Timing-code scenario ────────────────────────────────────────────────────
-proc_spike_timing = dict(
-    window_size=WINDOW_SZ, step_size=STEP_SZ,
-    max_spikes_per_window=30, n_seconds=DURATION,
-    no_spike_value=-1.0,
-)
-
-print("\nGenerating timing-code spike trains (signal buried in 3× background noise)...")
-pop_x_timing, pop_y_timing = nmi.generators.generate_timing_code_spike_trains(
-    n_neurons=8, duration=DURATION,
-    signal_rate=5.0, background_rate=15.0,
-    delay=0.015, jitter=0.003,
-)
-
-TIMING_PARAMS = dict(**BASE_TRAIN, n_epochs=200, patience=40)
-
-print("--- Timing code: GRU vs SpikePhysics vs SpikePhysics+concat ---")
-result_gru_timing = nmi.run(
-    x_data=pop_x_timing, y_data=pop_y_timing,
-    mode='sweep',
-    sweep_grid={'run_id': range(5)},
-    processor_type_x='spike', processor_params_x=proc_spike_timing,
-    processor_type_y='spike', processor_params_y=proc_spike_timing,
-    split_mode='blocked',
-    base_params={**TIMING_PARAMS, 'embedding_model': 'gru'},
-    n_workers=N_WORKERS, show_progress=False,
-)
-
-result_phys_timing = nmi.run(
-    x_data=pop_x_timing, y_data=pop_y_timing,
-    mode='sweep',
-    sweep_grid={'run_id': range(5)},
-    processor_type_x='spike', processor_params_x=proc_spike_timing,
-    processor_type_y='spike', processor_params_y=proc_spike_timing,
-    split_mode='blocked',
-    base_params={**TIMING_PARAMS, 'embedding_model': 'spike_physics'},
-    n_workers=N_WORKERS, show_progress=False,
-)
-
-result_concat_timing = nmi.run(
-    x_data=pop_x_timing, y_data=pop_y_timing,
-    mode='sweep',
-    sweep_grid={'run_id': range(5)},
-    processor_type_x='spike', processor_params_x=proc_spike_timing,
-    processor_type_y='spike', processor_params_y=proc_spike_timing,
-    split_mode='blocked',
-    base_params={**TIMING_PARAMS, 'embedding_model': 'spike_physics',
-                 'feature_fusion': 'concat'},
-    n_workers=N_WORKERS, show_progress=False,
-)
-
-gru_t = result_gru_timing.dataframe['mi_mean'].iloc[0]
-phys_t = result_phys_timing.dataframe['mi_mean'].iloc[0]
-concat_t = result_concat_timing.dataframe['mi_mean'].iloc[0]
-print(f"  GRU:                        {gru_t:.3f} ± {result_gru_timing.dataframe['mi_std'].iloc[0]:.3f} bits")
-print(f"  SpikePhysics (features):    {phys_t:.3f} ± {result_phys_timing.dataframe['mi_std'].iloc[0]:.3f} bits")
-print(f"  SpikePhysics (concat):      {concat_t:.3f} ± {result_concat_timing.dataframe['mi_std'].iloc[0]:.3f} bits")
-
-# %%
-# Summary bar chart for Section 3
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-
-axes[0].bar(['GRU', 'SpikePhysics'], [gru_rate_mi, phys_rate_mi],
-            color=['tab:blue', 'tab:orange'], alpha=0.8)
-axes[0].set_title('Rate-code scenario')
-axes[0].set_ylabel('Estimated MI (bits)')
-axes[0].set_ylim(0, max(gru_rate_mi, phys_rate_mi) * 1.3)
-
-axes[1].bar(['GRU', 'SpikePhysics\n(features)', 'SpikePhysics\n(concat)'],
-            [gru_t, phys_t, concat_t],
-            color=['tab:blue', 'tab:orange', 'tab:green'], alpha=0.8)
-axes[1].set_title('Timing-code scenario')
-axes[1].set_ylabel('Estimated MI (bits)')
-axes[1].set_ylim(0, max(gru_t, phys_t, concat_t) * 1.3)
-
-plt.suptitle('Section 3: SpikePhysics vs GRU\n(qualitative — no analytically known true MI)')
-plt.tight_layout()
-plt.show()
-
-# %% [markdown]
-# **Interpretation:**
-#
-# *Rate code:* ``spike_physics`` should perform comparably or better than GRU.
-# It computes firing rate directly from the spike count — the optimal sufficient
-# statistic for rate-coded MI — with zero learned parameters in the feature
-# extraction stage.  The MLP head only needs to learn the projector.
-#
-# *Timing code:* GRU should outperform ``spike_physics (features)`` because
-# the four summary statistics (firing rate, mean spike time, ISI mean, ISI var)
-# are dominated by the 3× background noise and cannot detect the 15 ms latency
-# correlation.  GRU processes the actual timestamp sequence and can learn to
-# detect co-firing patterns.
-#
-# *SpikePhysics (concat):* By concatenating raw spike times alongside the
-# physics features, the model retains fine timing information while preserving
-# the efficient physics features.  This hybrid should bridge both scenarios.
-#
-# **Important caveat:** Results have high variance at N ≈ 800 windows for the
-# timing-code scenario.  Run multiple seeds and increase duration for more
-# reliable comparisons in real analyses.
-
-
-# %% [markdown]
-# ## Section 4: Pretrained Backbone for Image Data
+# ## Section 2: Pretrained Backbone for Image Data
 #
 # This section has two scenarios that tell a complete, scientifically honest story.
 #
@@ -650,7 +380,7 @@ plt.show()
 # help when the pretraining domain aligns with the MI-relevant structure.
 
 # %%
-print("\n=== Section 4: Pretrained Backbone — MNIST (Alignment) ===")
+print("\n=== Section 2: Pretrained Backbone — MNIST (Alignment) ===")
 
 try:
     import torchvision
@@ -739,13 +469,13 @@ if _HAS_TORCHVISION:
     fig, ax = plt.subplots(figsize=(9, 5))
     print("\nCrossover N values (Scenario A — MNIST):")
     plot_sample_efficiency(df_mnist, TRUE_MI_MNIST,
-                           'Section 4A: Pretrained Backbone — MNIST (Alignment)', ax=ax)
+                           'Section 2A: Pretrained Backbone — MNIST (Alignment)', ax=ax)
     plt.tight_layout()
     plt.show()
 
 # %%
 # --- Scenario B: Gaussian blobs (misalignment / negative control) ---
-print("\n=== Section 4B: Pretrained Backbone — Gaussian Blobs (Misalignment) ===")
+print("\n=== Section 2B: Pretrained Backbone — Gaussian Blobs (Misalignment) ===")
 
 np.random.seed(600)
 N_BLOBS = 800
@@ -784,9 +514,9 @@ df_blobs = run_sample_efficiency(
 fig, ax = plt.subplots(figsize=(9, 5))
 print("\nCrossover N values (Scenario B — blobs):")
 plot_sample_efficiency(df_blobs, ref_mi_blobs,
-                       'Section 4B: Pretrained Backbone — Gaussian Blobs (Misalignment)',
+                       'Section 2B: Pretrained Backbone — Gaussian Blobs (Misalignment)',
                        ax=ax)
-ax.set_title('Section 4B: Gaussian Blobs (Misalignment)\n'
+ax.set_title('Section 2B: Gaussian Blobs (Misalignment)\n'
              'Dashed line = CNN2D reference estimate (not analytically exact)')
 plt.tight_layout()
 plt.show()
@@ -820,14 +550,16 @@ plt.show()
 #
 # | Section | Data | Baseline | Biased model | Expected crossover advantage |
 # |---------|------|----------|--------------|------------------------------|
-# | 1 | Multi-channel oscillatory (8 ch, different frequencies) | CNN | CNN depthwise | Depthwise lower crossover N |
-# | 2 | Alpha-band LFP (10 Hz) | CNN | SincCNN | SincCNN lower crossover N |
-# | 3 (rate) | Rate-modulated spikes | GRU | SpikePhysics | SpikePhysics ≥ GRU |
-# | 3 (timing) | Signal spikes in noise | GRU | SpikePhysics | GRU > SpikePhysics |
-# | 4A | MNIST digits 0/1 | CNN2D random | ResNet18 pretrained | Pretrained lower crossover N |
-# | 4B | Gaussian blobs | CNN2D random | ResNet18 pretrained | CNN2D random wins (misalignment) |
+# | 1 | Alpha-band LFP (10 Hz) | CNN | SincCNN | SincCNN lower crossover N |
+# | 2A | MNIST digits 0/1 | CNN2D random | ResNet18 pretrained | Pretrained lower crossover N |
+# | 2B | Gaussian blobs | CNN2D random | ResNet18 pretrained | CNN2D random wins (misalignment) |
 #
 # The core message: **inductive biases lower sample complexity when the bias
 # matches the data structure, and are either neutral or harmful when it does not.**
 # Measuring sample efficiency curves with known ground-truth MI is the principled
 # way to validate this claim quantitatively.
+#
+# (A depthwise-separable CNN1D section and a SpikePhysicsEmbedding section were
+# evaluated empirically against generic encoders in this same framework and did
+# not survive that gate -- both have been removed from the library. See
+# `results/gate/decision_log.md` for the deciding evidence.)

@@ -52,7 +52,7 @@ This directory defines all the PyTorch neural network architectures.
 
 - **`critics.py`**: Contains the main critic architectures (`SeparableCritic`, `ConcatCritic`, and `HybridCritic`). 
   - *Crucial API:* All critics now expose a unified `get_embeddings(x, y)` method, allowing developers to easily extract chunked latent representations from saved models.
-- **`embeddings.py`**: Defines the embedding networks that process the input data before it goes to the critic.  Standard models: `MLP`, `CNN1D`, `CNN2D`, `GRU`, `LSTM`, `TCN`, `Transformer`.  Physics-informed models: `SincEmbedding` (`'sinc_cnn'`), `SpikePhysicsEmbedding` (`'spike_physics'`), `PretrainedBackboneEmbedding` (`'pretrained_backbone'`).  To add a new model, subclass `BaseEmbedding`, register it in `build_critic()` in `utils.py`, add it to `ALLOWED_VALUES['embedding_model']` in `validation.py`, and add the relevant schema keys to `BASE_PARAMS_SCHEMA` in `defaults.py`.
+- **`embeddings.py`**: Defines the embedding networks that process the input data before it goes to the critic.  Standard models: `MLP`, `CNN1D`, `CNN2D`, `GRU`, `LSTM`, `TCN`, `Transformer`.  Physics-informed models: `SincEmbedding` (`'sinc_cnn'`), `PretrainedBackboneEmbedding` (`'pretrained_backbone'`).  To add a new model, subclass `BaseEmbedding`, register it in `build_critic()` in `utils.py`, add it to `ALLOWED_VALUES['embedding_model']` in `validation.py`, and add the relevant schema keys to `BASE_PARAMS_SCHEMA` in `defaults.py`.
 
 ---
 
