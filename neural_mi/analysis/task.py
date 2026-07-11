@@ -4,17 +4,22 @@ Contains the core, parallelizable training task function.
 """
 import gc as _gc
 import threading
+import warnings
 import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as _lr_sched
 import numpy as np
 from typing import Dict, Any, Tuple
 
-from neural_mi.utils import build_critic, get_device
+from neural_mi.utils import build_critic, get_device, compute_cross_covariance_rotation
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger
 from neural_mi.data.handler import create_dataset, PairedDataset
+
+# Batch size used for embedding extraction (no effect on training).
+# Large enough to keep GPU utilisation high; small enough to avoid OOM.
+_EMBEDDING_BATCH = 512
 
 # ---------------------------------------------------------------------------
 # Module-level dataset cache
@@ -76,6 +81,15 @@ _BUILD_PARAMS_KEYS = [
     'use_variational', 'shared_encoder',
     'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
     'dropout', 'norm_layer', 'use_spectral_norm',
+    'use_decoder', 'decoder_weight', 'decoder_weight_x', 'decoder_weight_y',
+    'decoder_output_activation_x', 'decoder_output_activation_y',
+    # Inductive-bias architecture parameters
+    'use_depthwise', 'n_sinc_filters', 'feature_fusion',
+    'tau_rise', 'tau_decay', 'learn_calcium_kernel',
+    'pytorch_predefined', 'pretrained',
+    # Modality metadata injected from processor_params (needed to reconstruct
+    # SpikePhysicsEmbedding and CalciumEmbedding / SincEmbedding architectures)
+    'sample_rate_x', 'sample_rate_y', 'no_spike_value', 'embedding_window_size',
 ]
 
 
@@ -135,13 +149,64 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     else:
         logger.debug("Dataset cache hit — reusing pre-built dataset.")
 
+    # Models that natively support 4-D input (N, C, H, W):
+    #   'cnn2d' — Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
+    #   'mlp'   — flattens C*H*W into a feature vector; spatial structure ignored.
+    # Models that require 3-D input (N, C, W):
+    #   'cnn'        — raises ValueError for 4-D (ambiguous channel/spatial axes).
+    #   sequence models (gru, lstm, tcn, transformer) — emit UserWarning; their
+    #                   forward() methods expect 3-D and will fail at the first batch
+    #                   if the user proceeds.  Use 'cnn2d' or 'mlp' instead.
+    _4D_NATIVE = {'cnn2d', 'mlp', 'pretrained_backbone'}
+
     if dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
-        params['input_dim_x'] = dataset.x_data.shape[1] * dataset.x_data.shape[2]
-        params['n_channels_x'] = dataset.x_data.shape[1]
+        _x = dataset.x_data
+        params['n_channels_x'] = _x.shape[1]
+        if _x.ndim == 4:
+            params['input_dim_x'] = _x.shape[1] * _x.shape[2] * _x.shape[3]
+            _emb = params.get('embedding_model', 'mlp')
+            if _emb == 'cnn':
+                raise ValueError(
+                    f"embedding_model='cnn' (CNN1D) does not support 4-D input "
+                    f"(shape {tuple(_x.shape)}). "
+                    "Use embedding_model='cnn2d' to preserve spatial structure, "
+                    "or embedding_model='mlp' to process flattened C×H×W features."
+                )
+            elif _emb not in _4D_NATIVE:
+                warnings.warn(
+                    f"embedding_model='{_emb}' received 4-D input "
+                    f"(shape {tuple(_x.shape)}). "
+                    "Spatial dimensions H×W are not preserved by this model. "
+                    "Consider embedding_model='cnn2d' for spatially-structured data.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        else:
+            params['input_dim_x'] = _x.shape[1] * _x.shape[2]
 
     if dataset.y_data is not None and hasattr(dataset.y_data, 'shape'):
-        params['input_dim_y'] = dataset.y_data.shape[1] * dataset.y_data.shape[2]
-        params['n_channels_y'] = dataset.y_data.shape[1]
+        _y = dataset.y_data
+        params['n_channels_y'] = _y.shape[1]
+        if _y.ndim == 4:
+            params['input_dim_y'] = _y.shape[1] * _y.shape[2] * _y.shape[3]
+        else:
+            params['input_dim_y'] = _y.shape[1] * _y.shape[2]
+
+    # ------------------------------------------------------------------
+    # Inject modality metadata for inductive-bias embedding constructors.
+    # Extracted from processor_params here (after dataset is built) so
+    # build_critic() can pass them to model constructors without needing
+    # direct access to the dataset or processor_params dicts.
+    # Keys are prefixed/named to avoid collisions with existing params.
+    # ------------------------------------------------------------------
+    _pp_x = params.get('processor_params_x') or {}
+    _pp_y = params.get('processor_params_y') or {}
+    params['sample_rate_x'] = _pp_x.get('sample_rate')
+    params['sample_rate_y'] = _pp_y.get('sample_rate')
+    # no_spike_value: default -1.0 matches SpikeWindowDataset's default sentinel
+    params['no_spike_value'] = _pp_x.get('no_spike_value', _pp_y.get('no_spike_value', -1.0))
+    # embedding_window_size: window duration in seconds (for firing-rate computation)
+    params['embedding_window_size'] = _pp_x.get('window_size', _pp_y.get('window_size'))
 
     if params.get('custom_critic') is not None:
         critic = params['custom_critic']
@@ -230,14 +295,29 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 f"Supported names: {list(_OPTIMIZERS.keys())}. "
                 f"You can also pass a torch.optim.Optimizer subclass directly."
             )
-    # Collect all trainable parameters (critic + optional decoders)
-    _all_params = list(critic.parameters())
+    # Collect all trainable parameters (critic + optional decoders).
+    # When lr_head_multiplier is set and the critic has a decision_head (i.e. hybrid),
+    # split into two param groups so the head can train at a different rate.
+    _base_lr = params['learning_rate']
+    _head_mult = params.get('lr_head_multiplier')
+    _decoder_params = []
     if decoder_x is not None:
-        _all_params.extend(decoder_x.parameters())
+        _decoder_params.extend(decoder_x.parameters())
     if decoder_y is not None:
-        _all_params.extend(decoder_y.parameters())
-    optimizer = OptCls(_all_params, lr=params['learning_rate'],
-                       **params.get('optimizer_params', {}))
+        _decoder_params.extend(decoder_y.parameters())
+
+    if _head_mult is not None and _head_mult != 1.0 and hasattr(critic, 'decision_head'):
+        _head_ids = {id(p) for p in critic.decision_head.parameters()}
+        _encoder_params = [p for p in critic.parameters() if id(p) not in _head_ids]
+        _encoder_params.extend(_decoder_params)
+        _param_groups = [
+            {'params': _encoder_params,                        'lr': _base_lr},
+            {'params': list(critic.decision_head.parameters()), 'lr': _base_lr * _head_mult},
+        ]
+        optimizer = OptCls(_param_groups, **params.get('optimizer_params', {}))
+    else:
+        _all_params = list(critic.parameters()) + _decoder_params
+        optimizer = OptCls(_all_params, lr=_base_lr, **params.get('optimizer_params', {}))
 
     _SCHEDULER_NAMES = {'cosine', 'step', 'plateau', 'cosine_warmup'}
     _sched_val = params.get('scheduler', None)
@@ -266,7 +346,15 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             )
 
     device = _compute_device  # already resolved above
-    
+
+    # Resolve augmentation params: shared baseline, per-variable override.
+    # None means "fall back to shared"; {} means "explicitly no augmentation".
+    _aug_shared = params.get('augmentation_params', {})
+    _aug_x = params.get('augmentation_params_x')
+    _aug_y = params.get('augmentation_params_y')
+    aug_x = _aug_x if _aug_x is not None else _aug_shared
+    aug_y = _aug_y if _aug_y is not None else _aug_shared
+
     # Inject custom smoothing into Trainer init
     trainer = Trainer(
         model=critic.to(device),
@@ -285,20 +373,14 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         decoder_weight_y=params.get('decoder_weight_y', params.get('decoder_weight', 1.0)),
         decoder_output_activation_x=params.get('decoder_output_activation_x', 'linear'),
         decoder_output_activation_y=params.get('decoder_output_activation_y', 'linear'),
+        use_amp=params.get('use_amp', 'auto'),
+        augmentation_params_x=aug_x,
+        augmentation_params_y=aug_y,
     )
 
     # Intercept save_best_model_path to use the extended format
     # which includes build_params alongside state_dict for later extract_embeddings()
     _save_path = params.get('save_best_model_path')
-    _BUILD_PARAMS_KEYS = [
-        'critic_type', 'embedding_model', 'hidden_dim', 'embedding_dim', 'n_layers',
-        'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
-        'use_variational', 'shared_encoder',
-        'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
-        'dropout', 'norm_layer', 'use_spectral_norm',
-        'use_decoder', 'decoder_weight', 'decoder_weight_x', 'decoder_weight_y',
-        'decoder_output_activation_x', 'decoder_output_activation_y',
-    ]
 
     # Inject memory, logging, and spectral metrics parameters into train
     results = trainer.train(
@@ -329,7 +411,13 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         return_spectrum=params.get('return_spectrum', False),
         max_index_reduction=params.get('max_index_reduction', 0.05),
         eval_train=params.get('eval_train', False),
+        peak_fraction=params.get('peak_fraction', 1.0),
         scheduler=scheduler,
+        track_embeddings=params.get('track_embeddings', False),
+        return_rotated_embeddings=params.get('return_rotated_embeddings', False),
+        rotated_embeddings_whitening=params.get('rotated_embeddings_whitening', 'std'),
+        rotated_embeddings_per_epoch=params.get('rotated_embeddings_per_epoch', False),
+        return_rotation_matrices=params.get('return_rotation_matrices', False),
     )
 
     # Save model in extended format {'state_dict': ..., 'build_params': {...}}
@@ -339,7 +427,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                    _save_path)
         logger.debug(f"Model saved (extended format) to {_save_path}.")
 
-    # Optionally extract embeddings from the trained model
+    # Optionally extract embeddings from the trained model.
+    # Uses the full dataset in original sample order — no capping, no shuffling —
+    # so the returned arrays align index-for-index with the caller's raw data.
     if params.get('return_embeddings', False):
         _all_x = dataset.x_data
         _all_y = dataset.y_data
@@ -347,16 +437,44 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             logger.warning("return_embeddings=True but y_data is None. Skipping embedding extraction.")
         else:
             trainer.model.eval()
+            _n = _all_x.shape[0]
+            _zx_parts, _zy_parts = [], []
             with torch.no_grad():
-                _max_emb = params.get('max_eval_samples', 5000)
-                _n = _all_x.shape[0]
-                if _n > _max_emb:
-                    _idx = np.random.choice(_n, _max_emb, replace=False)
-                    _all_x = _all_x[_idx]
-                    _all_y = _all_y[_idx]
-                _zx, _zy = trainer.model.get_embeddings(_all_x.to(device), _all_y.to(device))
-                results['embeddings_x'] = _zx.detach().cpu().numpy()
-                results['embeddings_y'] = _zy.detach().cpu().numpy()
+                for _start in range(0, _n, _EMBEDDING_BATCH):
+                    _end = min(_start + _EMBEDDING_BATCH, _n)
+                    _bzx, _bzy = trainer.model.get_embeddings(
+                        _all_x[_start:_end].to(device),
+                        _all_y[_start:_end].to(device),
+                    )
+                    _zx_parts.append(_bzx.detach().cpu())
+                    _zy_parts.append(_bzy.detach().cpu())
+            results['embeddings_x'] = torch.cat(_zx_parts, dim=0).numpy()
+            results['embeddings_y'] = torch.cat(_zy_parts, dim=0).numpy()
+            logger.debug(
+                f"Extracted embeddings for all {_n} samples in original order "
+                f"(shape: {results['embeddings_x'].shape})."
+            )
+
+            if params.get('return_rotated_embeddings', False):
+                if params.get('critic_type', 'separable') == 'concat':
+                    warnings.warn(
+                        "return_rotated_embeddings=True has no effect for ConcatCritic, "
+                        "which has no separate embedding networks. Skipping rotation.",
+                        UserWarning, stacklevel=2,
+                    )
+                else:
+                    _whitening = params.get('rotated_embeddings_whitening', 'std')
+                    _rot = compute_cross_covariance_rotation(
+                        results['embeddings_x'], results['embeddings_y'],
+                        whitening=_whitening,
+                    )
+                    results['embeddings_x_rotated'] = _rot['zx_rotated']
+                    results['embeddings_y_rotated'] = _rot['zy_rotated']
+                    results['embeddings_rotation_singular_values'] = _rot['singular_values']
+                    if params.get('return_rotation_matrices', False):
+                        results['embeddings_rotation_x'] = _rot['rotation_x']
+                        results['embeddings_rotation_y'] = _rot['rotation_y']
+                    logger.debug("Computed rotated embeddings (whitening=%r).", _whitening)
 
     return_params = params.copy()
     return_params.pop('custom_critic', None)

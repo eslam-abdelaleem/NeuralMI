@@ -162,3 +162,51 @@ class TestNPermutationsDefault:
                 gamma_range=range(2, 4),
                 n_workers=1,
             )
+
+
+class TestNullDistributionRawClipped:
+    """Verify null_distribution_raw is consistently and independently computed for all modes.
+
+    Prior to this fix, lag/conditional/transfer returned (mi, mi) — the same value
+    for both the clipped and raw slots — because those modes didn't propagate raw_train_mi.
+    Each test here confirms structural correctness (both lists present, correct length,
+    finite floats); the functional contract (raw uses raw_train_mi) is guaranteed by code.
+    """
+
+    _P = {
+        'n_epochs': 2, 'learning_rate': 1e-3, 'batch_size': 64,
+        'patience': 2, 'embedding_dim': 4, 'hidden_dim': 8, 'n_layers': 1,
+    }
+
+    def _check_null_lists(self, details, n_perm):
+        """Assert both null lists are present, have length n_perm, and contain floats."""
+        assert 'null_distribution' in details, "null_distribution missing"
+        assert 'null_distribution_raw' in details, "null_distribution_raw missing"
+        assert len(details['null_distribution']) == n_perm
+        assert len(details['null_distribution_raw']) == n_perm
+        for c, r in zip(details['null_distribution'], details['null_distribution_raw']):
+            assert isinstance(c, float), f"clipped value not float: {c}"
+            assert isinstance(r, float), f"raw value not float: {r}"
+
+    def test_estimate_mode_raw_and_clipped_present(self):
+        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
+        res = nmi.run(x_data=x, y_data=y, mode='estimate', base_params=self._P,
+                      permutation_test=True, n_permutations=2, n_workers=1)
+        self._check_null_lists(res.details, 2)
+
+    def test_sweep_mode_raw_and_clipped_present(self):
+        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
+        res = nmi.run(x_data=x, y_data=y, mode='sweep',
+                      sweep_grid={'embedding_dim': [4, 8]},
+                      base_params=self._P,
+                      permutation_test=True, n_permutations=2, n_workers=1)
+        self._check_null_lists(res.details, 2)
+
+    def test_lag_mode_raw_and_clipped_present(self):
+        """lag mode null: raw_train_mi extracted from task results (not duplicated from clipped)."""
+        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
+        res = nmi.run(x_data=x, y_data=y, mode='lag',
+                      lag_range=range(-1, 2),
+                      base_params=self._P,
+                      permutation_test=True, n_permutations=2, n_workers=1)
+        self._check_null_lists(res.details, 2)

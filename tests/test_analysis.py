@@ -69,17 +69,17 @@ def test_dimensionality_forces_hybrid_and_metrics(mock_sweep):
     # The user asks for a simple separable critic, but the orchestrator MUST override this
     base_params = {'critic_type': 'separable'} 
     
-    df = run_dimensionality_analysis(x_data, base_params, split_method='spatial')
-    
+    df, _embeddings = run_dimensionality_analysis(x_data, base_params, split_method='spatial')
+
     # Extract the parameters that were actually passed to the Sweep Engine
     call_args = mock_sweep.call_args[1]
     analysis_params = call_args['base_params']
-    
+
     # Assertions for overriding behavior
     assert analysis_params['critic_type'] == 'hybrid', "Failed to force Hybrid critic."
     assert analysis_params['track_spectral_metrics'] is True, "Failed to enable spectral metrics."
     assert analysis_params['embedding_dim'] == 64, "Failed to inject large default bottleneck."
-    
+
     assert isinstance(df, pd.DataFrame)
 
 def test_dimensionality_interaction_no_split(mock_sweep):
@@ -91,7 +91,7 @@ def test_dimensionality_interaction_no_split(mock_sweep):
     base_params = {'embedding_dim': 16} 
     
     run_dimensionality_analysis(x_data, base_params, y_data=y_data)
-    
+
     call_args = mock_sweep.call_args[1]
     analysis_params = call_args['base_params']
     

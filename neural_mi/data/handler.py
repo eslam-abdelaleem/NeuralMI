@@ -11,9 +11,10 @@ from neural_mi.logger import logger
 
 class WindowManager:
     """Centralized manager for creating and aligning temporal windows."""
-    
-    def __init__(self, window_size, t_start=None, t_end=None):
+
+    def __init__(self, window_size, t_start=None, t_end=None, step_size=None):
         self.window_size = window_size
+        self.step_size = step_size  # None = non-overlapping (step = window_size)
         self.t_start = t_start
         self.t_end = t_end
         self.window_times = None
@@ -33,24 +34,41 @@ class WindowManager:
         for observer in self._observers:
             observer._on_window_manager_updated()
 
-    def update_parameters(self, window_size=None, t_start=None, t_end=None):
+    def update_parameters(self, window_size=None, t_start=None, t_end=None, step_size=None):
         """Update window parameters and regenerate windows."""
         if window_size is not None:
             self.window_size = window_size
+        if step_size is not None:
+            self.step_size = step_size
         if t_start is not None:
             self.t_start = t_start
         if t_end is not None:
             self.t_end = t_end
-        
+
         if self.t_start is not None and self.t_end is not None:
             self.create_windows()
             self._notify_observers()
-    
+
+    def _resolve_step(self):
+        """Return the actual step size in time units.
+
+        - None or step >= 1 : absolute step (None defaults to window_size).
+        - 0 < step < 1      : fraction of window_size used as step.
+        """
+        if self.step_size is None:
+            return self.window_size
+        if 0 < self.step_size < 1:
+            return self.step_size * self.window_size
+        if self.step_size >= 1:
+            return float(self.step_size)
+        raise ValueError(f"step_size must be > 0, got {self.step_size}")
+
     def create_windows(self):
         """Create window times for a given temporal range."""
         if self.t_start is None or self.t_end is None:
             raise RuntimeError("t_start and t_end parameters need to be set to create windows")
-        self.window_times = np.arange(self.t_start, self.t_end, self.window_size)
+        step = self._resolve_step()
+        self.window_times = np.arange(self.t_start, self.t_end, step)
         self.n_windows = len(self.window_times)
         # Initialize all windows as valid - will be updated by datasets
         self.valid_windows = np.full(self.window_times.size, True, dtype=bool)
@@ -66,7 +84,8 @@ class PairedTemporalDataset(Dataset):
     def __init__(self, x_dataset, y_dataset=None,
                  window_size=None,
                  t_start=None, t_end=None,
-                 validate_windows=True):
+                 validate_windows=True,
+                 step_size=None):
         """
         Parameters
         ----------
@@ -83,6 +102,12 @@ class PairedTemporalDataset(Dataset):
         validate_windows : bool, optional
             Whether to return/use only "valid" windows where data is present
             Akin to a conditional MI on the presence of data
+        step_size : float or int, optional
+            Step between consecutive window starts.  ``None`` (default) gives
+            non-overlapping windows (step = window_size).  Values in ``(0, 1)``
+            are treated as a fraction of ``window_size`` (e.g. 0.5 → 50%
+            overlap).  Values ≥ 1 are used as an absolute step in the same
+            time units as ``window_size``.
         """
         self.x_dataset = x_dataset
         self.y_dataset = y_dataset
@@ -92,7 +117,7 @@ class PairedTemporalDataset(Dataset):
         if window_size is None:
             raise ValueError("window_size must be provided")
         # Determine temporal extent and create windows
-        self.window_manager = WindowManager(window_size)
+        self.window_manager = WindowManager(window_size, step_size=step_size)
         self._initialize_windows(t_start, t_end)
         # Attach window manager to datasets
         self.x_dataset.set_window_manager(self.window_manager)
@@ -424,9 +449,12 @@ def create_dataset(
                 f"share a single WindowManager and must use the same window size. "
                 f"Using window_size={window_size} from processor_params_x."
             )
+        step_size   = proc_params_x.pop('step_size', None)
+        proc_params_y.pop('step_size', None)  # discard y-side; x-side controls step
         valid_kwargs = inspect.signature(PairedTemporalDataset).parameters
         filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}
-        return PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size, **filtered_kwargs)
+        return PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size,
+                                     step_size=step_size, **filtered_kwargs)
     else:
         valid_kwargs = inspect.signature(PairedDataset).parameters
         filtered_kwargs = {k: v for k, v in proc_params_x.items() if k in valid_kwargs}

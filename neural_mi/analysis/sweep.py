@@ -98,7 +98,7 @@ class ParameterSweep:
                         UserWarning,
                         stacklevel=3,
                     )
-            all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sequential Sweep Progress", disable=not show_progress)]
+            all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sequential Sweep Progress", disable=not show_progress or len(tasks) == 1)]
         else:
             logger.info(f"Starting parameter sweep with {effective_workers} workers...")
             _configure_multiprocessing()
@@ -150,11 +150,18 @@ class ParameterSweep:
             )
 
         param_combinations = _product_dict(**sweep_grid) if sweep_grid else [{}]
-        
+
+        # When data has already been pre-processed (processor ran upstream in run()),
+        # the sequential-model check below is not applicable — the tensor is already
+        # shaped correctly for GRU/LSTM regardless of what processor_type_x says.
+        _already_preprocessed = bool(
+            self.base_params.get('processor_params_x', {}) and
+            self.base_params.get('processor_params_x', {}).get('preprocessed', False)
+        )
         for combo in param_combinations:
             _emb = combo.get('embedding_model', self.base_params.get('embedding_model', 'mlp'))
             _proc = combo.get('processor_type_x', self.base_params.get('processor_type_x', None))
-            if _proc is None and str(_emb).lower() in ('gru', 'lstm'):
+            if not _already_preprocessed and _proc is None and str(_emb).lower() in ('gru', 'lstm'):
                 raise ValueError(
                     f"sweep_grid contains embedding_model='{_emb}' but processor_type_x=None "
                     f"produces a StaticDataset with no time dimension. Remove 'gru'/'lstm' "

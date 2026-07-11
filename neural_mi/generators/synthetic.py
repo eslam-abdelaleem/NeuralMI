@@ -4,11 +4,20 @@
 This module provides functions to create various kinds of synthetic datasets
 with known or expected properties. These are useful for tutorials, debugging,
 and validating the behavior of different MI estimators and models.
+
+Windowed generators with analytically known MI
+----------------------------------------------
+- :func:`generate_windowed_oscillatory` — amplitude-modulated oscillation at a
+  single carrier frequency; MI is carried in amplitude correlation. Tests sinc_cnn.
+- :func:`generate_windowed_multichannel` — per-channel different carrier
+  frequencies; total MI = sum of per-channel MIs. Tests depthwise CNN.
+- :func:`generate_windowed_calcium` — fluorescence traces convolved with a
+  calcium indicator kernel; true MI approximated via CCA. Tests calcium_cnn.
 """
 
 import numpy as np
 import torch
-from typing import Tuple, List, Union
+from typing import Tuple, List, Union, Optional
 
 def mi_to_rho(dim: int, mi: float) -> float:
     """Calculates the correlation coefficient `rho` for a given MI and dimension.
@@ -590,3 +599,487 @@ def generate_full_data(
     y_data += np.random.randn(n_samples) * noise_level
 
     return x_data.reshape(-1, 1), y_data.reshape(-1, 1)
+
+
+# ---------------------------------------------------------------------------
+# Inductive-bias generators
+# ---------------------------------------------------------------------------
+
+def generate_modulated_spike_trains(
+    n_neurons: int = 8,
+    duration: float = 100.0,
+    baseline_rate: float = 5.0,
+    modulation_depth: float = 0.7,
+    modulation_freq: float = 1.0,
+    n_neurons_y: int = None,
+) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    """Generate spike trains with shared rate modulation (rate-code scenario).
+
+    Both population X and population Y have firing rates that are co-modulated
+    by the same low-frequency oscillatory latent signal.  The MI is carried in
+    the *firing rate* — not in precise spike timing — making this the ideal
+    scenario for ``embedding_model='spike_physics'``.
+
+    This is complementary to :func:`generate_correlated_spike_trains`, which
+    creates a precise delay-based timing correlation.
+
+    Parameters
+    ----------
+    n_neurons : int, optional
+        Number of neurons in population X. Defaults to 8.
+    duration : float, optional
+        Recording duration in seconds. Defaults to 100.0.
+    baseline_rate : float, optional
+        Mean firing rate in Hz. Defaults to 5.0.
+    modulation_depth : float, optional
+        Depth of rate modulation in (0, 1).  0.7 means rates vary between
+        30 % and 170 % of the baseline. Defaults to 0.7.
+    modulation_freq : float, optional
+        Frequency of the shared rate modulation in Hz. Defaults to 1.0.
+    n_neurons_y : int, optional
+        Number of neurons in population Y. Defaults to ``n_neurons``.
+
+    Returns
+    -------
+    Tuple[List[np.ndarray], List[np.ndarray]]
+        ``(pop_x, pop_y)`` — two lists of spike-time arrays (one per neuron),
+        compatible with ``processor_type='spike'``.
+    """
+    if n_neurons_y is None:
+        n_neurons_y = n_neurons
+    modulation_depth = float(np.clip(modulation_depth, 0.0, 0.99))
+    # 1 ms resolution evaluation grid for the rate modulation
+    t_eval = np.linspace(0.0, duration, int(duration * 1000))
+    phase = np.random.uniform(0, 2 * np.pi)
+    shared_mod = 1.0 + modulation_depth * np.sin(2.0 * np.pi * modulation_freq * t_eval + phase)
+
+    def _gen_pop(n_cells: int) -> List[np.ndarray]:
+        pop = []
+        max_rate = baseline_rate * (1.0 + modulation_depth)
+        dt = t_eval[1] - t_eval[0]
+        for _ in range(n_cells):
+            # Thinning method for inhomogeneous Poisson process
+            n_cand = np.random.poisson(max_rate * duration * 2)
+            cand = np.sort(np.random.uniform(0.0, duration, n_cand))
+            idx = np.searchsorted(t_eval, cand).clip(0, len(t_eval) - 1)
+            p_accept = (baseline_rate * shared_mod[idx]) / max_rate
+            pop.append(cand[np.random.rand(len(cand)) < p_accept])
+        return pop
+
+    return _gen_pop(n_neurons), _gen_pop(n_neurons_y)
+
+
+def generate_noisy_image_pairs(
+    n_samples: int,
+    image_size: int = 64,
+    n_channels: int = 3,
+    signal_strength: float = 2.0,
+    noise_level: float = 1.0,
+    use_torch: bool = True,
+) -> Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
+    """Generate pairs of noisy images sharing a common visual structure.
+
+    Each sample pair ``(x_i, y_i)`` shares the *same* Gaussian blob at the
+    *same* random location, embedded in independent Gaussian noise.  The MI is
+    carried in the blob's position and shape — exactly the kind of visual
+    structure that a pretrained backbone detects in far fewer training samples
+    than a network trained from scratch.
+
+    The output shape is ``(n_samples, n_channels, image_size, image_size)``,
+    ready for ``embedding_model='pretrained_backbone'`` with no processor
+    (``processor_type=None``).
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of image pairs.
+    image_size : int, optional
+        Spatial resolution (height = width). Defaults to 64.
+    n_channels : int, optional
+        Number of colour channels. Defaults to 3.
+    signal_strength : float, optional
+        Peak amplitude of the Gaussian blob. Defaults to 2.0.
+    noise_level : float, optional
+        Standard deviation of additive Gaussian noise. Defaults to 1.0.
+    use_torch : bool, optional
+        If True, returns ``torch.Tensor`` objects. Defaults to True.
+
+    Returns
+    -------
+    Tuple
+        ``(x, y)`` each of shape
+        ``(n_samples, n_channels, image_size, image_size)``.
+    """
+    H = W = image_size
+    yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+    x_imgs = np.zeros((n_samples, n_channels, H, W), dtype=np.float32)
+    y_imgs = np.zeros((n_samples, n_channels, H, W), dtype=np.float32)
+
+    for i in range(n_samples):
+        cy = np.random.uniform(H * 0.2, H * 0.8)
+        cx = np.random.uniform(W * 0.2, W * 0.8)
+        sigma = np.random.uniform(H * 0.05, H * 0.15)
+        blob = signal_strength * np.exp(
+            -((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sigma ** 2)
+        ).astype(np.float32)
+        for ch in range(n_channels):
+            x_imgs[i, ch] = blob + noise_level * np.random.randn(H, W).astype(np.float32)
+            y_imgs[i, ch] = blob + noise_level * np.random.randn(H, W).astype(np.float32)
+
+    if use_torch:
+        return torch.from_numpy(x_imgs), torch.from_numpy(y_imgs)
+    else:
+        return x_imgs, y_imgs
+
+
+def generate_timing_code_spike_trains(
+    n_neurons: int = 8,
+    duration: float = 200.0,
+    signal_rate: float = 5.0,
+    background_rate: float = 15.0,
+    delay: float = 0.015,
+    jitter: float = 0.003,
+) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    """Generates spike trains with a precise-timing code embedded in noise.
+
+    Each neuron pair (X[i], Y[i]) shares a set of *signal* spikes: for every
+    signal spike in X[i], Y[i] fires at the same time plus a fixed ``delay``
+    and small Gaussian ``jitter``.  Both populations are additionally driven
+    by independent high-rate background Poisson noise that dominates all
+    single-window summary statistics.
+
+    Because ``background_rate >> signal_rate``, the signal spikes represent
+    only a small fraction of each window's spike count.  As a result:
+
+    - **Firing rate**: X and Y rates are correlated (same signal spikes boost
+      both), but the shared variance is small relative to total variance.
+    - **Mean spike time**: the delay ``delay`` is diluted by the background to
+      roughly ``signal_rate / (signal_rate + background_rate) * delay``,
+      which is near zero for typical parameters.
+    - **ISI statistics**: dominated by the background Poisson process.
+
+    None of the four ``SpikePhysicsEmbedding`` features (firing rate, mean
+    spike time, ISI mean, ISI variance) reliably captures the signal.
+    A sequence model such as GRU, which processes actual spike timestamps,
+    can learn to detect the precise timing correlation between X[i] and Y[i].
+
+    This complements :func:`generate_modulated_spike_trains` (rate code) and
+    :func:`generate_correlated_spike_trains` (delay code captured by
+    mean spike time).
+
+    Parameters
+    ----------
+    n_neurons : int, optional
+        Number of neurons per population. Defaults to 8.
+    duration : float, optional
+        Recording duration in seconds. Defaults to 200.0.
+    signal_rate : float, optional
+        Rate of shared signal spike events per neuron (Hz). These events are
+        correlated between X[i] and Y[i]. Defaults to 5.0.
+    background_rate : float, optional
+        Rate of independent background Poisson spikes per neuron (Hz).
+        Should be several times larger than ``signal_rate`` so summary
+        statistics are dominated by noise. Defaults to 15.0.
+    delay : float, optional
+        Mean delay (seconds) from each X signal spike to the corresponding
+        Y signal spike. Defaults to 0.015.
+    jitter : float, optional
+        Standard deviation (seconds) of the Gaussian jitter added to the
+        delay. Defaults to 0.003.
+
+    Returns
+    -------
+    Tuple[List[np.ndarray], List[np.ndarray]]
+        ``(pop_x, pop_y)`` — two lists of spike-time arrays (one per neuron),
+        compatible with ``processor_type='spike'``.
+    """
+    pop_x, pop_y = [], []
+    for _ in range(n_neurons):
+        # Signal spikes: X[i] → Y[i] with delay + jitter
+        n_sig = np.random.poisson(signal_rate * duration)
+        sig_x = np.sort(np.random.uniform(0, duration, n_sig))
+        sig_y = sig_x + delay + np.random.normal(0, jitter, n_sig)
+        sig_y = sig_y[(sig_y > 0) & (sig_y < duration)]
+
+        # Independent background Poisson for each population
+        n_bg_x = np.random.poisson(background_rate * duration)
+        n_bg_y = np.random.poisson(background_rate * duration)
+        bg_x = np.random.uniform(0, duration, n_bg_x)
+        bg_y = np.random.uniform(0, duration, n_bg_y)
+
+        pop_x.append(np.sort(np.concatenate([sig_x, bg_x])))
+        pop_y.append(np.sort(np.concatenate([sig_y, bg_y])))
+
+    return pop_x, pop_y
+
+
+# ---------------------------------------------------------------------------
+# Windowed generators with analytically known MI
+# ---------------------------------------------------------------------------
+
+def generate_windowed_oscillatory(
+    n_windows: int,
+    n_channels: int = 1,
+    window_size: int = 256,
+    f_carrier_hz: float = 10.0,
+    sample_rate: float = 512.0,
+    latent_mi: float = 1.0,
+    snr: float = 3.0,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Generate IID windows of amplitude-modulated oscillations with known MI.
+
+    Each window pair ``(X[i], Y[i])`` shares a scalar latent amplitude drawn
+    from correlated Gaussians.  The observable is:
+
+        X[i, ch, t] = z_x[i] * sin(2π f t / fs) + ε_t
+
+    The MI between X and Y is analytically computable from the SNR:
+
+        ρ_obs = ρ_latent * v² / (v² + σ²/1)
+        I_obs = −½ log₂(1 − ρ_obs²) per channel
+
+    where v is the carrier template norm and σ = amplitude_std / snr.
+
+    Parameters
+    ----------
+    n_windows : int
+        Number of independent windows.
+    n_channels : int, optional
+        Number of channels. Defaults to 1.
+    window_size : int, optional
+        Number of timepoints per window. Defaults to 256.
+    f_carrier_hz : float, optional
+        Carrier frequency in Hz. Defaults to 10.0.
+    sample_rate : float, optional
+        Sampling rate in Hz. Defaults to 512.0.
+    latent_mi : float, optional
+        Desired MI in bits between the scalar latents. Defaults to 1.0.
+    snr : float, optional
+        Signal amplitude relative to noise std. Defaults to 3.0.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, float]
+        ``(X, Y, true_mi)`` where X and Y have shape
+        ``(n_windows, n_channels, window_size)`` and ``true_mi`` is in bits.
+    """
+    rho = mi_to_rho(1, latent_mi)
+    cov = np.array([[1.0, rho], [rho, 1.0]])
+    latents = np.random.multivariate_normal([0.0, 0.0], cov, size=(n_windows, n_channels))
+    z_x = latents[:, :, 0]  # (n_windows, n_channels) — independent per channel
+    z_y = latents[:, :, 1]  # (n_windows, n_channels)
+
+    t = np.arange(window_size) / sample_rate
+    carrier = np.sin(2.0 * np.pi * f_carrier_hz * t)  # (window_size,)
+    v_sq = float(np.dot(carrier, carrier))             # ||v||²
+
+    noise_std = 1.0 / snr
+    X = z_x[:, :, None] * carrier[None, None, :]      # (n_windows, n_channels, window_size)
+    Y = z_y[:, :, None] * carrier[None, None, :]
+    X = X + noise_std * np.random.randn(*X.shape)
+    Y = Y + noise_std * np.random.randn(*Y.shape)
+
+    # Analytical observable MI per channel
+    sigma_sq = noise_std ** 2
+    rho_obs = rho * v_sq / (v_sq + sigma_sq)
+    rho_obs = float(np.clip(rho_obs, -1 + 1e-8, 1 - 1e-8))
+    mi_per_channel = -0.5 * np.log2(1.0 - rho_obs ** 2)
+    true_mi = float(n_channels * mi_per_channel)
+
+    return X.astype(np.float32), Y.astype(np.float32), true_mi
+
+
+def generate_windowed_multichannel(
+    n_windows: int,
+    n_channels: int = 8,
+    window_size: int = 200,
+    f_min_hz: float = 4.0,
+    f_max_hz: float = 40.0,
+    sample_rate: float = 500.0,
+    latent_mi: float = 0.5,
+    snr: float = 3.0,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Generate IID multi-channel windows where each channel has a different carrier.
+
+    Channel ``c`` uses carrier frequency
+    ``f_c = f_min + c * (f_max - f_min) / (n_channels - 1)``.
+    The per-channel latents are independent: ``(z_{x,c}, z_{y,c})`` are drawn
+    independently for each channel from correlated Gaussians with MI ``latent_mi``.
+    Total observable MI = sum of per-channel observable MIs.
+
+    This is the ideal scenario for depthwise CNN: each channel's MI lives at a
+    different frequency, so mixing channels creates interference.
+
+    Parameters
+    ----------
+    n_windows : int
+        Number of independent windows.
+    n_channels : int, optional
+        Number of channels. Defaults to 8.
+    window_size : int, optional
+        Number of timepoints per window. Defaults to 200.
+    f_min_hz : float, optional
+        Carrier frequency for channel 0 in Hz. Defaults to 4.0.
+    f_max_hz : float, optional
+        Carrier frequency for the last channel in Hz. Defaults to 40.0.
+    sample_rate : float, optional
+        Sampling rate in Hz. Defaults to 500.0.
+    latent_mi : float, optional
+        Desired MI per channel in bits. Defaults to 0.5.
+    snr : float, optional
+        Signal amplitude relative to noise std. Defaults to 3.0.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, float]
+        ``(X, Y, true_mi)`` where X and Y have shape
+        ``(n_windows, n_channels, window_size)`` and ``true_mi`` is total bits.
+    """
+    rho = mi_to_rho(1, latent_mi)
+    t = np.arange(window_size) / sample_rate
+    noise_std = 1.0 / snr
+
+    n_ch = max(n_channels, 2)
+    freqs = [f_min_hz + c * (f_max_hz - f_min_hz) / (n_ch - 1) for c in range(n_channels)]
+
+    X = np.zeros((n_windows, n_channels, window_size), dtype=np.float32)
+    Y = np.zeros((n_windows, n_channels, window_size), dtype=np.float32)
+    total_mi = 0.0
+
+    for c, fc in enumerate(freqs):
+        carrier = np.sin(2.0 * np.pi * fc * t)
+        v_sq = float(np.dot(carrier, carrier))
+        cov = np.array([[1.0, rho], [rho, 1.0]])
+        latents = np.random.multivariate_normal([0.0, 0.0], cov, size=n_windows)
+        z_x, z_y = latents[:, 0], latents[:, 1]
+        X[:, c, :] = (z_x[:, None] * carrier[None, :] +
+                      noise_std * np.random.randn(n_windows, window_size))
+        Y[:, c, :] = (z_y[:, None] * carrier[None, :] +
+                      noise_std * np.random.randn(n_windows, window_size))
+        rho_obs = float(np.clip(rho * v_sq / (v_sq + noise_std ** 2), -1 + 1e-8, 1 - 1e-8))
+        total_mi += -0.5 * np.log2(1.0 - rho_obs ** 2)
+
+    return X, Y, float(total_mi)
+
+
+def generate_windowed_calcium(
+    n_windows: int,
+    n_channels: int = 3,
+    window_size: int = 90,
+    sample_rate: float = 30.0,
+    tau_rise: float = 0.05,
+    tau_decay: float = 0.4,
+    latent_mi: float = 1.0,
+    noise_level: float = 0.05,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Generate IID windows of calcium fluorescence traces with approximately known MI.
+
+    Each window pair ``(X[i], Y[i])`` shares a scalar latent firing rate
+    drawn from correlated Gaussians (clipped to positive via softplus).
+    Spikes are drawn from a Poisson process with that rate; fluorescence is
+    the convolution of spikes with a GCaMP-style kernel plus additive noise.
+
+    The true MI is not analytically computable due to the Poisson + nonlinear
+    kernel transformation.  Instead, a large-N (N=5000) empirical CCA lower
+    bound is computed on the per-channel mean fluorescence and returned as the
+    approximate ground truth.
+
+    Parameters
+    ----------
+    n_windows : int
+        Number of independent windows.
+    n_channels : int, optional
+        Number of channels. Defaults to 3.
+    window_size : int, optional
+        Number of timepoints per window (= seconds * sample_rate). Defaults to 90.
+    sample_rate : float, optional
+        Frame rate in Hz. Defaults to 30.0.
+    tau_rise : float, optional
+        Rise time constant in seconds. Defaults to 0.05.
+    tau_decay : float, optional
+        Decay time constant in seconds. Defaults to 0.4.
+    latent_mi : float, optional
+        Desired MI between latent firing rates in bits. Defaults to 1.0.
+    noise_level : float, optional
+        Standard deviation of additive observation noise. Defaults to 0.05.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, float]
+        ``(X, Y, approx_true_mi)`` where X and Y have shape
+        ``(n_windows, n_channels, window_size)`` and ``approx_true_mi`` is a
+        CCA lower-bound estimate of the true MI in bits.
+    """
+    rho = mi_to_rho(1, latent_mi)
+
+    # Build calcium kernel h(t) = exp(-t/tau_decay) - exp(-t/tau_rise)
+    dt = 1.0 / sample_rate
+    kernel_len = min(int(6.0 * tau_decay / dt) + 1, window_size)
+    t_k = np.arange(kernel_len) * dt
+    h = np.exp(-t_k / tau_decay) - np.exp(-t_k / tau_rise)
+    h = np.clip(h, 0.0, None)
+    h = h / (h.sum() + 1e-8)  # normalise to unit area
+
+    def _make_windows(n: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Draw n window pairs and return fluorescence arrays."""
+        cov = np.array([[1.0, rho], [rho, 1.0]])
+        latents = np.random.multivariate_normal([0.0, 0.0], cov, size=(n, n_channels))
+        # softplus to ensure positive firing rates; scale to ~5 Hz mean
+        rate_x = 5.0 * np.log1p(np.exp(latents[:, :, 0]))  # (n, n_channels)
+        rate_y = 5.0 * np.log1p(np.exp(latents[:, :, 1]))
+
+        window_dur = window_size / sample_rate
+        X_arr = np.zeros((n, n_channels, window_size), dtype=np.float32)
+        Y_arr = np.zeros((n, n_channels, window_size), dtype=np.float32)
+
+        for i in range(n):
+            for c in range(n_channels):
+                # Spikes as binary array, then convolve
+                n_spk_x = np.random.poisson(rate_x[i, c] * window_dur)
+                n_spk_y = np.random.poisson(rate_y[i, c] * window_dur)
+                spk_x = np.zeros(window_size)
+                spk_y = np.zeros(window_size)
+                if n_spk_x > 0:
+                    idxs = np.random.randint(0, window_size, n_spk_x)
+                    np.add.at(spk_x, idxs, 1)
+                if n_spk_y > 0:
+                    idxs = np.random.randint(0, window_size, n_spk_y)
+                    np.add.at(spk_y, idxs, 1)
+                X_arr[i, c] = np.convolve(spk_x, h, mode='full')[:window_size]
+                Y_arr[i, c] = np.convolve(spk_y, h, mode='full')[:window_size]
+
+        X_arr += (noise_level * np.random.randn(*X_arr.shape)).astype(np.float32)
+        Y_arr += (noise_level * np.random.randn(*Y_arr.shape)).astype(np.float32)
+        return X_arr, Y_arr
+
+    X, Y = _make_windows(n_windows)
+
+    # Empirical CCA lower bound on a large-N set (5000 windows)
+    # Use per-channel mean fluorescence as a scalar summary
+    _N_ref = 5000
+    Xr, Yr = _make_windows(_N_ref)
+    # Per-channel mean as scalar features → (N, n_channels)
+    fx = Xr.mean(axis=-1)   # (N_ref, n_channels)
+    fy = Yr.mean(axis=-1)
+    # CCA MI lower bound via multivariate Gaussian fit
+    # MI = -0.5 * log2(det(I - rho_hat^2)) summed over canonical correlations
+    # Use sklearn CCA if available, else fallback to channel-wise Pearson sum
+    approx_mi = 0.0
+    try:
+        from sklearn.cross_decomposition import CCA as _CCA
+        n_comp = min(n_channels, _N_ref // 10)
+        _cca = _CCA(n_components=n_comp)
+        _cca.fit(fx, fy)
+        _Xc, _Yc = _cca.transform(fx, fy)
+        for k in range(n_comp):
+            _r = float(np.corrcoef(_Xc[:, k], _Yc[:, k])[0, 1])
+            _r = np.clip(_r, -1 + 1e-8, 1 - 1e-8)
+            approx_mi += -0.5 * np.log2(1.0 - _r ** 2)
+    except ImportError:
+        # Fallback: sum of per-channel Pearson correlations
+        for c in range(n_channels):
+            _r = float(np.corrcoef(fx[:, c], fy[:, c])[0, 1])
+            _r = np.clip(_r, -1 + 1e-8, 1 - 1e-8)
+            approx_mi += -0.5 * np.log2(1.0 - _r ** 2)
+
+    return X, Y, float(approx_mi)

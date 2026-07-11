@@ -16,7 +16,8 @@ from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR
 
 ALLOWED_VALUES = {
     'critic_type': ['separable', 'concat', 'hybrid'],
-    'embedding_model': ['mlp', 'cnn', 'gru', 'lstm', 'tcn', 'transformer'],
+    'embedding_model': ['mlp', 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
+                        'sinc_cnn', 'calcium_cnn', 'spike_physics', 'pretrained_backbone'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
     'spectral_mode': ['none', 'summary', 'full'],
@@ -25,6 +26,7 @@ ALLOWED_VALUES = {
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
     'norm_layer': [None, 'batch', 'layer'],
+    'feature_fusion': ['features', 'concat'],
 }
 
 class DataValidator:
@@ -168,8 +170,8 @@ class ParameterValidator:
             if not isinstance(value, expected_type):
                 raise TypeError(f"Parameter '{key}' must be of type {expected_type}, got {type(value)}.")
 
-            # Min value check
-            if 'min' in schema and value is not None and value < schema['min']:
+            # Min value check (skip for non-scalar types like list/dict)
+            if 'min' in schema and value is not None and not isinstance(value, (list, dict)) and value < schema['min']:
                 raise ValueError(f"Parameter '{key}' must be >= {schema['min']}.")
 
             # Allowed values check. If a parameter accepts a class (e.g. a custom
@@ -209,6 +211,14 @@ class ParameterValidator:
                         raise ValueError(
                             f"processor_params_{suffix}['sample_rate'] must be a positive number, "
                             f"got {sr!r}."
+                        )
+                ss = proc_params.get('step_size')
+                if ss is not None:
+                    if not isinstance(ss, (int, float)) or not np.isfinite(ss) or ss <= 0:
+                        raise ValueError(
+                            f"processor_params_{suffix}['step_size'] must be a positive number "
+                            f"(fraction of window_size if < 1, absolute time units if >= 1), "
+                            f"got {ss!r}."
                         )
 
     def _validate_sweep(self):

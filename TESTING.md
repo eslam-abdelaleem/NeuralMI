@@ -53,7 +53,7 @@ The test suite is organized into **22 files** grouped by functional area:
 ### 4. Models & Architecture
 | File | What it covers |
 |------|---------------|
-| `test_models.py` | Embedding networks (MLP, CNN1D, GRU, LSTM, TCN, Transformer), `VariationalWrapper` for all 6 encoder types, critic architectures (Separable, Concat, Hybrid), chunking equivalency, gradient computation, `get_embeddings()` |
+| `test_models.py` | Embedding networks (MLP, CNN1D, GRU, LSTM, TCN, Transformer), physics-informed models (CNN1D depthwise, SincEmbedding, CalciumEmbedding, SpikePhysicsEmbedding, PretrainedBackboneEmbedding), `VariationalWrapper` for all encoder types, critic architectures (Separable, Concat, Hybrid), chunking equivalency, gradient computation, `get_embeddings()` |
 | `test_shared_encoder.py` | Phase F: shared/siamese encoder — weight identity, parameter count, concat+shared incompatibility, dimensionality-mode default, `run()` shortcut |
 
 ### 5. Training

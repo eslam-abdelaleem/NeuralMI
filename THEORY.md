@@ -118,15 +118,15 @@ The `mode='rigorous'` in `NeuralMI` automates a principled, multi-step workflow 
 
 1. **Subsampling:** The library repeatedly runs the MI estimation on different fractions of the data. For example, it might split the data into $\gamma=2$ halves, then $\gamma=3$ thirds, and so on.
 
-2. **Fitting:** It calculates the mean MI estimate for each data fraction size ($1/N$). Because the bias is linear in $1/N$, it fits a weighted linear regression to these points.
+2. **Fitting:** Substituting $N_{\text{chunk}} = N/\gamma$ into the bias formula gives $I_{\text{estimated}} \approx I_{\text{true}} + \frac{a}{N}\,\gamma$, so the estimated MI is **linear in $\gamma$** (the number of subsets). The library fits a weighted linear regression of MI vs. $\gamma$ to these points.
 
-3. **Extrapolation:** It extrapolates this line back to the y-intercept, which corresponds to $1/N = 0$—an infinite dataset. This intercept is the final, bias-corrected MI estimate. The confidence interval of this intercept provides the error bars.
+3. **Extrapolation:** It extrapolates the fitted line back to $\gamma = 0$, which corresponds to using the entire dataset as a single chunk ($N_{\text{chunk}} \to \infty$, $1/N \to 0$). The y-intercept at $\gamma = 0$ is the final, bias-corrected MI estimate. The confidence interval of this intercept provides the error bars.
 
 This procedure effectively subtracts the bias that is dependent on sample size, yielding a more accurate and scientifically rigorous result.
 
 ### Quadratic Curvature Filtering
 
-In practice, the $1/N$ relationship is only approximately linear; at very large $\gamma$ (very small sample sizes), finite-sample effects and network under-fitting introduce measurable curvature. `NeuralMI` applies an automatic **quadratic curvature filter**: it fits a quadratic polynomial to the MI-vs-$1/\gamma$ curve and excludes any $\gamma$ point whose estimated quadratic coefficient exceeds the `delta_threshold` parameter (default 0.1). Only the remaining approximately-linear points are used for the final regression. A minimum of `min_gamma_points` (default 5) such points must survive for the estimate to be considered reliable; if fewer remain the result is flagged as unreliable.
+In practice, the MI-vs-$\gamma$ relationship is only approximately linear; at very large $\gamma$ (very small chunk sizes), finite-sample effects and network under-fitting introduce measurable curvature. `NeuralMI` applies an automatic **quadratic curvature filter**: it fits a quadratic polynomial to the MI-vs-$\gamma$ curve and excludes any $\gamma$ point whose estimated quadratic coefficient exceeds the `delta_threshold` parameter (default 0.1). Only the remaining approximately-linear points are used for the final regression. A minimum of `min_gamma_points` (default 5) such points must survive for the estimate to be considered reliable; if fewer remain the result is flagged as unreliable.
 
 :::{admonition} References
 :class: note

@@ -100,7 +100,7 @@ direction_2d = direction[:, np.newaxis].astype(int)   # (T, 1)
 # before you invest computation in sweeps and rigorous estimation.
 
 # %%
-PROC_PARAMS = {'window_size': 50, 'sample_rate': SAMPLE_RATE}   # 500 ms windows
+PROC_PARAMS = {'window_size': 0.5, 'sample_rate': SAMPLE_RATE}   # 500 ms windows
 
 # Quick estimate
 result_quick = nmi.run(
@@ -134,18 +134,20 @@ if null_mi is not None:
 # Too small → the model cannot see the relevant pattern; too large → you create
 # too few windows and the model overfits.
 #
-# We sweep over a range of window sizes (in samples at 100 Hz) and look for the
+# We sweep over a range of window sizes (in seconds) and look for the
 # plateau — the region where MI stops increasing as the window grows. The optimal
 # window size is the smallest one in the plateau region.
 
 # %%
-window_sizes = [10, 20, 30, 50, 75, 100]  # in samples = 100–1000 ms at 100 Hz
+window_sizes = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0]  # in seconds = 100–1000 ms at 100 Hz
 
 result_window_sweep = nmi.run(
     x_data=spikes, y_data=pos_2d,
     mode='sweep',
     processor_type_x='continuous',
+    processor_params_x={'sample_rate': SAMPLE_RATE},
     processor_type_y='continuous',
+    processor_params_y={'sample_rate': SAMPLE_RATE},
     split_mode='blocked',
     base_params={'n_epochs': 60, 'patience': 15, 'hidden_dim': 64, 'embedding_dim': 32},
     sweep_grid={'window_size': window_sizes},
@@ -159,10 +161,10 @@ print(df_window[['window_size', 'mi_mean']].to_string(index=False))
 # Find plateau: first window where MI is within 5% of the max
 max_mi = df_window['mi_mean'].max()
 plateau_ws = df_window.loc[df_window['mi_mean'] >= 0.95 * max_mi, 'window_size'].min()
-print(f"\nOptimal window size (95% plateau): {plateau_ws} samples "
-      f"({plateau_ws / SAMPLE_RATE * 1000:.0f} ms)")
+print(f"\nOptimal window size (95% plateau): {plateau_ws:.2f} s "
+      f"({plateau_ws * 1000:.0f} ms)")
 
-BEST_WINDOW = int(plateau_ws)
+BEST_WINDOW = float(plateau_ws)
 PROC_PARAMS_BEST = {'window_size': BEST_WINDOW, 'sample_rate': SAMPLE_RATE}
 
 # %% [markdown]
@@ -277,8 +279,8 @@ if not is_reliable:
 # = neural activity lags behavior).
 
 # %%
-# Lag in samples; with window_size=BEST_WINDOW at 100 Hz
-# We sweep ±5 windows (each window is BEST_WINDOW samples / 100 Hz seconds long)
+# Lag in windows; BEST_WINDOW is in seconds, so lag * BEST_WINDOW * 1000 gives milliseconds
+# We sweep ±5 windows
 lag_range_s = np.arange(-5, 6)  # in windows
 
 result_lag = nmi.run(
@@ -302,7 +304,7 @@ peak_lag_row = df_lag.loc[df_lag['mi_mean'].idxmax()]
 print("--- Lag Analysis ---")
 print(df_lag[['lag', 'mi_mean']].to_string(index=False))
 print(f"\nPeak MI at lag = {peak_lag_row['lag']} windows "
-      f"({peak_lag_row['lag'] * BEST_WINDOW / SAMPLE_RATE * 1000:.0f} ms) "
+      f"({peak_lag_row['lag'] * BEST_WINDOW * 1000:.0f} ms) "
       f": {peak_lag_row['mi_mean']:.3f} bits")
 print("(lag=0 = simultaneous; negative = neural leads behavioral variable)")
 
@@ -361,7 +363,7 @@ print("=" * 60)
 print("  NeuralMI Full Pipeline — Summary Report")
 print("=" * 60)
 print(f"  Recording:       {N_NEURONS} neurons × {N_TIMEPOINTS} time steps @ {SAMPLE_RATE} Hz")
-print(f"  Window size:     {BEST_WINDOW} samples ({BEST_WINDOW / SAMPLE_RATE * 1000:.0f} ms)")
+print(f"  Window size:     {BEST_WINDOW:.2f} s ({BEST_WINDOW * 1000:.0f} ms)")
 print(f"  Embedding dim:   {BEST_EMB}")
 print()
 print(f"  MI (quick):      {result_quick.mi_estimate:.3f} bits")
@@ -373,7 +375,7 @@ print(f"  MI (rigorous):   {mi_corrected:.3f} ± {mi_error:.3f} bits  "
 print()
 peak_l = peak_lag_row['lag']
 print(f"  Peak lag:        {peak_l:+d} windows "
-      f"({peak_l * BEST_WINDOW / SAMPLE_RATE * 1000:+.0f} ms)")
+      f"({peak_l * BEST_WINDOW * 1000:+.0f} ms)")
 print()
 print(f"  Conditional MI:  {cmi:.3f} bits  (position | direction)")
 print("=" * 60)
@@ -400,9 +402,9 @@ ax.set_ylim(bottom=0)
 ax = axes[0, 1]
 ws_vals = df_window['window_size'].values
 mi_vals = df_window['mi_mean'].values
-ax.plot(ws_vals / SAMPLE_RATE * 1000, mi_vals, 'o-', color='steelblue', linewidth=2, markersize=7)
-ax.axvline(BEST_WINDOW / SAMPLE_RATE * 1000, color='tomato', linestyle='--', linewidth=1.5,
-           label=f'Chosen: {BEST_WINDOW / SAMPLE_RATE * 1000:.0f} ms')
+ax.plot(ws_vals * 1000, mi_vals, 'o-', color='steelblue', linewidth=2, markersize=7)
+ax.axvline(BEST_WINDOW * 1000, color='tomato', linestyle='--', linewidth=1.5,
+           label=f'Chosen: {BEST_WINDOW * 1000:.0f} ms')
 ax.set_xlabel('Window size (ms)')
 ax.set_ylabel('MI (bits)')
 ax.set_title('Window-Size Sweep')
@@ -411,9 +413,9 @@ ax.grid(True, alpha=0.3)
 
 # Panel 3: Lag curve
 ax = axes[1, 0]
-lags_ms = df_lag['lag'].values * BEST_WINDOW / SAMPLE_RATE * 1000
+lags_ms = df_lag['lag'].values * BEST_WINDOW * 1000
 ax.plot(lags_ms, df_lag['mi_mean'].values, 'o-', color='darkorange', linewidth=2, markersize=7)
-ax.axvline(peak_lag_row['lag'] * BEST_WINDOW / SAMPLE_RATE * 1000,
+ax.axvline(peak_lag_row['lag'] * BEST_WINDOW * 1000,
            color='tomato', linestyle='--', linewidth=1.5, label=f"Peak: {peak_l:+d} windows")
 ax.set_xlabel('Lag (ms); negative = neural leads')
 ax.set_ylabel('MI (bits)')

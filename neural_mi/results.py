@@ -22,6 +22,9 @@ _RESULT_COLS: frozenset = frozenset({
     'mi_mean', 'mi_std', 'test_mi', 'train_mi', 'mi_corrected',
     'mi_error', 'mi_error_pred', 'slope', 'run_id', 'is_reliable', 'gammas_used',
     'n_windows', 'lag',
+    # Dimensionality-specific columns
+    'participation_ratio', 'participation_ratio_mean', 'participation_ratio_std',
+    'participation_ratio_singular', 'split_id',
 })
 
 
@@ -55,8 +58,14 @@ class Results:
         Print a human-readable summary to stdout.
     plot(ax=None, **kwargs)
         Generate a mode-appropriate figure.
+    animate(**kwargs)
+        Animate the training history as a GIF or MP4.
     compare(results_list, labels=None, ax=None, **kwargs)
         Static method; overlay multiple Results on a shared axis.
+    to_dict()
+        Return a fully serialisable dict (arrays as nested lists).
+    to_json(path=None)
+        Export to a JSON file; arrays serialised as nested lists.
     """
     mode: str
     params: Dict[str, Any] = field(default_factory=dict)
@@ -185,8 +194,6 @@ class Results:
                         print("     ↳ leverage_warning=True (gamma=1 point has high leverage)")
                 elif is_reliable is True:
                     print("  ✓  is_reliable = True  [rigorous bias-corrected estimate]")
-        else:
-            print("  MI estimate : (none — see result.dataframe or result.details)")
         if self.details.get('decoder_recon_loss') is not None:
             print(f"  Decoder MSE : {self.details['decoder_recon_loss']:.6f}  (weighted reconstruction loss)")
         if self.dataframe is not None:
@@ -227,20 +234,29 @@ class Results:
         NotImplementedError
             If plotting is not supported for the analysis mode.
         """
-        from neural_mi.visualize.plot import plot_sweep_curve, plot_bias_correction_fit
-        
+        from neural_mi.visualize.plot import (
+            plot_sweep_curve, plot_bias_correction_fit, plot_dimensionality_curve,
+        )
+
         show = kwargs.pop('show', True)
 
         units = kwargs.pop('units', self.params.get('output_units', 'bits'))
 
-        if ax is None:
+        # For modes that create their own multi-panel figure, skip creating a
+        # top-level axes here (dimensionality creates two panels internally).
+        _multi_panel_modes = ('dimensionality',)
+        if ax is None and self.mode not in _multi_panel_modes:
             fig, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
+        elif self.mode in _multi_panel_modes:
+            # Consume figsize so it can be forwarded to the multi-panel function
+            pass  # figsize stays in kwargs and is popped inside plot_dimensionality_curve
 
         if self.mode == 'estimate':
             # Training curve: test MI vs epoch, with optional train MI overlay.
             history = self.details.get('test_mi_history')
             train_history = self.details.get('train_mi_history')
             best_epoch = self.details.get('best_epoch')
+            conservative_epoch = self.details.get('conservative_epoch')
             if history is None:
                 raise ValueError(
                     "Results.plot() for mode='estimate' requires 'test_mi_history' "
@@ -260,6 +276,12 @@ class Results:
                            linewidth=1.5, label=f'Best epoch ({best_epoch})')
                 ax.scatter([best_epoch], [history[best_epoch]],
                            color='tomato', zorder=5, s=60)
+            if conservative_epoch is not None and 0 <= conservative_epoch < len(history):
+                ax.axvline(conservative_epoch, color='mediumseagreen', linestyle=':',
+                           linewidth=1.5,
+                           label=f'Conservative epoch ({conservative_epoch}) — used for estimate')
+                ax.scatter([conservative_epoch], [history[conservative_epoch]],
+                           color='mediumseagreen', zorder=5, s=60, marker='D')
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel(f'MI ({units})', fontsize=12)
             title = kwargs.pop('title', 'Training curve')
@@ -267,12 +289,12 @@ class Results:
             ax.legend(fontsize=9)
             ax.grid(True, alpha=0.3)
 
-        elif self.mode in ['sweep', 'dimensionality', 'lag']:
+        elif self.mode in ('sweep', 'lag'):
             if self.dataframe is None:
                 raise ValueError("Cannot plot: results do not contain a DataFrame.")
 
             # Infer sweep_var more robustly by excluding all known result columns
-            sweep_var = self.params.get('sweep_var', 'embedding_dim' if self.mode == 'dimensionality' else None)
+            sweep_var = self.params.get('sweep_var')
             if not sweep_var:
                 possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
                 if len(possible) == 1:
@@ -290,6 +312,19 @@ class Results:
                     )
             plot_sweep_curve(self.dataframe, param_col=sweep_var, units=units, ax=ax, **kwargs)
 
+        elif self.mode == 'dimensionality':
+            if self.dataframe is None:
+                raise ValueError("Cannot plot: results do not contain a DataFrame.")
+            sweep_var = self.params.get('sweep_var')
+            if not sweep_var:
+                possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
+                sweep_var = possible[0] if len(possible) == 1 else None
+                if sweep_var:
+                    logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
+            ax = plot_dimensionality_curve(
+                self.dataframe, sweep_var=sweep_var, units=units, axes=ax, show=show, **kwargs,
+            )
+
         elif self.mode == 'rigorous':
             if self.dataframe is None or not self.details:
                 raise ValueError("Rigorous results are incomplete and cannot be plotted.")
@@ -306,6 +341,82 @@ class Results:
                     f"This may indicate the rigorous run failed or produced only partial results."
                 )
             plot_bias_correction_fit(self.dataframe, self.details, units=units, ax=ax, **kwargs)
+            # Annotate when extrapolation is flagged as unreliable
+            if self.details.get('is_reliable') is False:
+                ax.text(
+                    0.02, 0.98, '⚠ Extrapolation unreliable (leverage_warning)',
+                    transform=ax.transAxes, va='top', ha='left', fontsize=9,
+                    color='firebrick',
+                    bbox=dict(facecolor='lightyellow', edgecolor='firebrick',
+                              alpha=0.85, boxstyle='round,pad=0.3'),
+                )
+
+        elif self.mode == 'conditional':
+            # Bar chart showing the three CMI components.
+            cmi = self.details.get('cmi_estimate')
+            mi_xz_y = self.details.get('mi_xz_y')
+            mi_z_y = self.details.get('mi_z_y')
+            if cmi is None and mi_xz_y is None:
+                raise ValueError(
+                    "Cannot plot conditional results: 'cmi_estimate' and 'mi_xz_y' "
+                    "are missing from result.details. "
+                    f"Present keys: {sorted(self.details.keys())}."
+                )
+            _labels = ['I(XZ;Y)', 'I(Z;Y)', 'CMI  I(X;Y|Z)']
+            _values = [mi_xz_y, mi_z_y, cmi]
+            _colors = ['steelblue', 'darkorange', 'mediumseagreen']
+            valid = [(l, v, c) for l, v, c in zip(_labels, _values, _colors) if v is not None]
+            _labels, _values, _colors = (list(x) for x in zip(*valid))
+            bars = ax.bar(_labels, _values, color=_colors, width=0.45, edgecolor='white')
+            ax.set_ylabel(f'Mutual Information ({units})', fontsize=12)
+            ax.set_title('Conditional MI Components', fontsize=13)
+            ax.grid(True, axis='y', alpha=0.3)
+            for bar, val in zip(bars, _values):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + max(_values) * 0.02,
+                    f'{val:.3f}', ha='center', va='bottom', fontsize=9,
+                )
+            import seaborn as _sns
+            _sns.despine(ax=ax)
+
+        elif self.mode == 'transfer':
+            # Bar chart showing TE(X→Y), TE(Y→X) and the directionality index.
+            te_xy = self.details.get('te_xy')
+            te_yx = self.details.get('te_yx')
+            di = self.details.get('directionality_index')
+            if te_xy is None:
+                raise ValueError(
+                    "Cannot plot transfer results: 'te_xy' is missing from result.details. "
+                    f"Present keys: {sorted(self.details.keys())}."
+                )
+            _labels = ['TE(X→Y)']
+            _values = [te_xy]
+            _colors = ['steelblue']
+            if te_yx is not None:
+                _labels.append('TE(Y→X)')
+                _values.append(te_yx)
+                _colors.append('darkorange')
+            bars = ax.bar(_labels, _values, color=_colors, width=0.35, edgecolor='white')
+            ax.set_ylabel(f'Transfer Entropy ({units})', fontsize=12)
+            _title = 'Transfer Entropy'
+            if di is not None:
+                _dir_str = (
+                    'X → Y dominates' if di > 0.1 else
+                    'Y → X dominates' if di < -0.1 else
+                    '≈ symmetric'
+                )
+                _title += f'\nDirectionality Index = {di:.3f}  ({_dir_str})'
+            ax.set_title(_title, fontsize=13)
+            ax.grid(True, axis='y', alpha=0.3)
+            for bar, val in zip(bars, _values):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + max(_values) * 0.02,
+                    f'{val:.3f}', ha='center', va='bottom', fontsize=9,
+                )
+            import seaborn as _sns
+            _sns.despine(ax=ax)
 
         elif self.mode == 'precision':
             # Precision mode produces a MI-vs-tau curve. The curve shows MI as a function of
@@ -427,6 +538,8 @@ class Results:
         """Overlay-plots multiple Results objects on a shared axis for comparison.
 
         All Results objects in the list must share the same analysis mode.
+        For ``'estimate'`` mode, the test-MI training curves are overlaid with
+        distinct colours; best-epoch markers are shown as dashed vertical lines.
         For ``'sweep'``, ``'lag'``, and ``'dimensionality'`` modes, the sweep
         curves are overlaid with distinct colours and a legend.  For
         ``'rigorous'`` mode, the bias-correction fits are overlaid.
@@ -492,7 +605,29 @@ class Results:
         # Use matplotlib's default colour cycle
         colours = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
 
-        if mode in ('sweep', 'lag', 'dimensionality'):
+        if mode == 'estimate':
+            for i, (res, label) in enumerate(zip(results_list, labels)):
+                history = res.details.get('test_mi_history')
+                if history is None:
+                    raise ValueError(
+                        f"Result '{label}' (index {i}) is missing 'test_mi_history' "
+                        f"in details. This key is populated automatically during training."
+                    )
+                ax.plot(
+                    range(len(history)), history,
+                    color=colours[i % len(colours)], linewidth=1.5, label=label,
+                )
+                best_epoch = res.details.get('best_epoch')
+                if best_epoch is not None and 0 <= best_epoch < len(history):
+                    ax.axvline(best_epoch, color=colours[i % len(colours)],
+                               linestyle='--', linewidth=1, alpha=0.6)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel(f'Test MI ({units})', fontsize=12)
+            ax.set_title('Training Curves Comparison', fontsize=13)
+            ax.legend(fontsize=9)
+            ax.grid(True, alpha=0.3)
+
+        elif mode in ('sweep', 'lag', 'dimensionality'):
             for i, (res, label) in enumerate(zip(results_list, labels)):
                 if res.dataframe is None:
                     raise ValueError(
@@ -544,13 +679,47 @@ class Results:
         else:
             raise NotImplementedError(
                 f"Results.compare() is not supported for mode='{mode}'. "
-                f"Supported modes: 'sweep', 'lag', 'dimensionality', 'rigorous'."
+                f"Supported modes: 'estimate', 'sweep', 'lag', 'dimensionality', 'rigorous'."
             )
 
         if show:
             plt.tight_layout()
             plt.show()
         return ax
+
+    def animate(self, **kwargs):
+        """Animate the training history as a GIF or MP4.
+
+        Convenience wrapper around :func:`neural_mi.visualize.animate_training`.
+        All keyword arguments are forwarded unchanged.
+
+        Common parameters
+        -----------------
+        panels : list of str, optional
+            Which panels to include (auto-detected when omitted).
+            Options: ``'mi'``, ``'spectral_metrics'``, ``'spectrum'``,
+            ``'embeddings'``.
+        fps : int
+            Frames per second (default 10).
+        output_path : str, optional
+            Path to save the animation (``.gif`` or ``.mp4``).
+            When ``None`` the animation is returned without saving.
+        show : bool
+            Whether to call ``plt.show()`` (default ``True``).
+        n_components : {2, 3}
+            Dimensionality for embedding scatter plots (default 2).
+        reduction : {'pca', 'umap', 'none'}
+            Dimensionality-reduction method for embedding panels (default ``'pca'``).
+        embedding_labels : array-like or dict, optional
+            Labels for colouring embedding scatter points.  Either a 1-D array
+            (one subplot) or a dict ``{name: array}`` (one subplot per entry).
+
+        Returns
+        -------
+        matplotlib.animation.FuncAnimation
+        """
+        from neural_mi.visualize.animate import animate_training
+        return animate_training(self, **kwargs)
 
     # ------------------------------------------------------------------
     # Persistence helpers
@@ -621,12 +790,51 @@ class Results:
             )
         return obj
 
-    def to_json(self, path: Optional[str] = None) -> str:
-        """Export a human-readable JSON snapshot of scalar values and the DataFrame.
+    def to_dict(self) -> dict:
+        """Return a fully serialisable dictionary representation.
 
-        Large objects in ``details`` (numpy arrays, lists of dicts) are
-        represented by a type/shape summary rather than their full content.
-        For complete round-trip fidelity, use :meth:`save` / :meth:`load`.
+        All numpy arrays and torch tensors are converted to nested Python
+        lists via ``.tolist()``.  DataFrames are converted to
+        ``orient='records'`` lists of dicts.  Suitable for JSON export,
+        logging, or downstream inspection.
+
+        Returns
+        -------
+        dict
+            Keys: ``'mode'``, ``'mi_estimate'``, ``'params'``, ``'details'``,
+            ``'dataframe'``.  Training history lists (``'test_mi_history'``,
+            ``'train_mi_history'``, etc.) are included in full under
+            ``'details'``.
+        """
+        def _cvt(obj):
+            if obj is None or isinstance(obj, (bool, int, float, str)):
+                return obj
+            if isinstance(obj, dict):
+                return {k: _cvt(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_cvt(v) for v in obj]
+            if hasattr(obj, 'tolist'):
+                return obj.tolist()  # numpy array / torch tensor → nested list
+            if hasattr(obj, 'to_dict'):
+                return obj.to_dict(orient='records')  # DataFrame
+            return f"<{type(obj).__name__}>"
+
+        return {
+            'mode':        self.mode,
+            'mi_estimate': self.mi_estimate,
+            'params':      _cvt(self.params or {}),
+            'details':     _cvt(self.details or {}),
+            'dataframe':   (self.dataframe.to_dict(orient='records')
+                            if self.dataframe is not None else None),
+        }
+
+    def to_json(self, path: Optional[str] = None) -> str:
+        """Export a human-readable JSON snapshot of all results.
+
+        All numpy arrays are serialised as nested Python lists (not shape
+        summaries).  Training history lists (``'test_mi_history'``,
+        ``'train_mi_history'``, etc.) are included in full.  For binary
+        round-trip fidelity, use :meth:`save` / :meth:`load`.
 
         Parameters
         ----------
@@ -639,29 +847,7 @@ class Results:
         str
             The absolute path of the saved file.
         """
-        def _make_serialisable(obj):
-            if obj is None or isinstance(obj, (bool, int, float, str)):
-                return obj
-            if isinstance(obj, dict):
-                return {k: _make_serialisable(v) for k, v in obj.items()}
-            if isinstance(obj, (list, tuple)):
-                return [_make_serialisable(v) for v in obj]
-            if hasattr(obj, 'tolist'):
-                arr = obj.tolist()
-                if isinstance(arr, (int, float, bool)):
-                    return arr
-                return f"<array shape={getattr(obj, 'shape', '?')} dtype={getattr(obj, 'dtype', '?')}>"
-            if hasattr(obj, 'to_dict'):
-                return obj.to_dict(orient='records')
-            return f"<{type(obj).__name__}>"
-
-        payload = {
-            'mode':        self.mode,
-            'mi_estimate': self.mi_estimate,
-            'params':      _make_serialisable(self.params or {}),
-            'details':     _make_serialisable(self.details or {}),
-            'dataframe':   self.dataframe.to_dict(orient='records') if self.dataframe is not None else None,
-        }
+        payload = self.to_dict()
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         base_name = f"neuralmi_{self.mode}_{timestamp}.json"

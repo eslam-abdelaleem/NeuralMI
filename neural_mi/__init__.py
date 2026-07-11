@@ -1,6 +1,12 @@
 # Expose the main run function and other key components at the top level
 __version__ = "2.1.0"
 
+# Suppress the tqdm "IProgress not found" warning that fires when ipywidgets is
+# absent (e.g. plain terminal use).  tqdm.auto still falls back to the standard
+# text bar; this just silences the noisy one-time warning.
+import warnings as _warnings
+_warnings.filterwarnings("ignore", message="IProgress not found", category=UserWarning)
+
 from .run import run
 from .logger import logger, set_verbosity, set_verbose
 from .results import Results

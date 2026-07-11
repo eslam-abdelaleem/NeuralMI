@@ -336,3 +336,84 @@ class TestResults:
         assert "transfer" in captured.lower()
         assert "TE(X" in captured
         assert "Directionality" in captured
+
+
+class TestToDict:
+    """Tests for Results.to_dict() and the updated Results.to_json()."""
+
+    def test_to_dict_returns_dict(self):
+        """to_dict() always returns a plain dict."""
+        r = Results(mode='estimate', mi_estimate=1.0)
+        assert isinstance(r.to_dict(), dict)
+
+    def test_to_dict_keys(self):
+        """to_dict() has exactly the expected top-level keys."""
+        r = Results(mode='estimate', mi_estimate=1.0)
+        assert set(r.to_dict().keys()) == {'mode', 'mi_estimate', 'params', 'details', 'dataframe'}
+
+    def test_to_dict_arrays_as_nested_lists(self):
+        """numpy arrays must be nested lists, not shape-summary strings."""
+        import numpy as np
+        arr = np.array([0.1, 0.2, 0.3])
+        r = Results(mode='estimate', mi_estimate=0.5, details={'history': arr})
+        d = r.to_dict()
+        assert isinstance(d['details']['history'], list)
+        assert len(d['details']['history']) == 3
+        assert abs(d['details']['history'][0] - 0.1) < 1e-6
+
+    def test_to_dict_2d_array_as_nested_lists(self):
+        """2-D numpy arrays become nested lists, not shape strings."""
+        import numpy as np
+        mat = np.eye(3)
+        r = Results(mode='pairwise', details={'mi_matrix': mat})
+        d = r.to_dict()
+        assert isinstance(d['details']['mi_matrix'], list)
+        assert isinstance(d['details']['mi_matrix'][0], list)
+
+    def test_to_dict_training_history_included(self):
+        """test_mi_history and train_mi_history appear in full in to_dict output."""
+        r = Results(
+            mode='estimate', mi_estimate=0.5,
+            details={
+                'test_mi_history': [0.1, 0.2, 0.3, 0.25],
+                'train_mi_history': [0.15, 0.25, 0.35, 0.30],
+            }
+        )
+        d = r.to_dict()
+        assert 'test_mi_history' in d['details']
+        assert len(d['details']['test_mi_history']) == 4
+        assert 'train_mi_history' in d['details']
+        assert len(d['details']['train_mi_history']) == 4
+
+    def test_to_dict_dataframe_as_records(self):
+        """DataFrames in details are converted to list-of-dicts."""
+        df = pd.DataFrame({'a': [1, 2], 'b': [3, 4]})
+        r = Results(mode='sweep', dataframe=df)
+        d = r.to_dict()
+        assert d['dataframe'] == [{'a': 1, 'b': 3}, {'a': 2, 'b': 4}]
+
+    def test_to_dict_none_dataframe(self):
+        """to_dict() returns None for dataframe when not set."""
+        r = Results(mode='estimate', mi_estimate=0.5)
+        assert r.to_dict()['dataframe'] is None
+
+    def test_to_json_arrays_are_lists(self, tmp_path):
+        """to_json() must serialise arrays as lists, not shape-summary strings."""
+        import numpy as np
+        r = Results(mode='estimate', mi_estimate=0.5,
+                    details={'arr': np.array([1.0, 2.0, 3.0])})
+        fp = r.to_json(str(tmp_path))
+        with open(fp) as f:
+            data = json.load(f)
+        assert isinstance(data['details']['arr'], list)
+        assert data['details']['arr'] == pytest.approx([1.0, 2.0, 3.0])
+
+    def test_to_json_history_roundtrip(self, tmp_path):
+        """test_mi_history survives a to_json → json.load roundtrip intact."""
+        history = [0.1, 0.2, 0.35, 0.3]
+        r = Results(mode='estimate', mi_estimate=0.35,
+                    details={'test_mi_history': history})
+        fp = r.to_json(str(tmp_path))
+        with open(fp) as f:
+            data = json.load(f)
+        assert data['details']['test_mi_history'] == pytest.approx(history)

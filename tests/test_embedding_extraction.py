@@ -76,6 +76,30 @@ def test_g1_return_embeddings_false_no_keys(simple_data):
     assert 'embeddings_y' not in results.details
 
 
+def test_g1_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
+    """max_eval_samples must not cap embedding extraction (it only controls eval MI).
+
+    Previously, the embedding extraction block reused max_eval_samples (default
+    5000) and randomly subsampled the dataset when n > threshold.  Setting a
+    tiny max_eval_samples should no longer affect the embedding count.
+    """
+    x, y = simple_data  # 500 samples
+    results = nmi.run(
+        x_data=x, y_data=y,
+        mode='estimate',
+        base_params={**_BASE, 'max_eval_samples': 10},
+        return_embeddings=True,
+        n_workers=1,
+    )
+    n_emb = results.details['embeddings_x'].shape[0]
+    # With max_eval_samples=10 the old code would have returned ≤10 rows.
+    # Now all ~500 windows must be embedded.
+    assert n_emb > 10, (
+        f"Expected all dataset windows embedded, got {n_emb}. "
+        "max_eval_samples must not gate embedding extraction."
+    )
+
+
 # ---------------------------------------------------------------------------
 # G2 — extract_embeddings() from a saved model file
 # ---------------------------------------------------------------------------
@@ -122,6 +146,21 @@ def test_g2_extract_embeddings_old_format_without_params_raises(tmp_path):
     torch.save(dummy_state, model_path)
     with pytest.raises(ValueError, match="base_params"):
         nmi.extract_embeddings(model_path, np.zeros((10, 4)), np.zeros((10, 4)))
+
+
+def test_g2_extract_embeddings_no_max_samples_param(simple_data, tmp_path):
+    """extract_embeddings no longer accepts max_samples — it must raise TypeError."""
+    x, y = simple_data
+    model_path = str(tmp_path / 'model_ms.pt')
+    nmi.run(
+        x_data=x, y_data=y,
+        mode='estimate',
+        base_params=_BASE,
+        save_best_model_path=model_path,
+        n_workers=1,
+    )
+    with pytest.raises(TypeError, match="max_samples"):
+        nmi.extract_embeddings(model_path, x, y, max_samples=100)
 
 
 # ---------------------------------------------------------------------------

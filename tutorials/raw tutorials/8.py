@@ -232,12 +232,17 @@ plt.show()
 
 # %% [markdown]
 # ## 3. Embedding Model Architectures
-# 
+#
 # The embedding model maps raw windowed data from shape
 # `(batch, n_channels, window_size)` to a fixed-size embedding vector of
 # shape `(batch, embedding_dim)`. The choice of architecture determines what
 # kinds of temporal patterns the network can detect. NeuralMI provides six
-# options via the `embedding_model` parameter in `base_params`.
+# general-purpose architectures via the `embedding_model` parameter in
+# `base_params`, plus four **physics-informed (inductive bias)** variants
+# that encode domain knowledge about specific recording modalities directly
+# into the model structure. This tutorial covers the general-purpose models.
+# For the physics-informed variants (`'sinc_cnn'`, `'calcium_cnn'`,
+# `'spike_physics'`, `'pretrained_backbone'`), see **Tutorial 10**.
 # 
 # **MLP** (`embedding_model='mlp'`, default): flattens the input and processes
 # it through fully connected layers. Has no explicit notion of temporal order —
@@ -283,7 +288,7 @@ plt.show()
 # number of attention heads.
 # 
 # **Practical decision guide:**
-# 
+#
 # | Data type | Recommended starting model |
 # |-----------|---------------------------|
 # | Binned spike counts (short windows, ≤ 50 bins) | `'mlp'` |
@@ -292,12 +297,18 @@ plt.show()
 # | LFP / EEG (long windows, > 200 samples) | `'tcn'` |
 # | Raw spike times (via spike processor) | `'gru'` |
 # | Large dataset, long windows, complex relationships | `'transformer'` |
-# 
+# | LFP / EEG (sample rate known, want frequency priors) | `'sinc_cnn'` — see Tutorial 10 |
+# | Calcium imaging | `'calcium_cnn'` — see Tutorial 10 |
+# | Raw spike timestamps (rate/ISI code) | `'spike_physics'` — see Tutorial 10 |
+# | Images (large dataset, pretrained features) | `'pretrained_backbone'` — see Tutorial 10 |
+#
 # In all cases, start with the MLP and switch only if you have evidence that
 # the architecture is the limiting factor — for example, if a sweep over
 # `hidden_dim` and `embedding_dim` shows that MI plateaus at a low value
 # regardless of capacity, suggesting the network cannot extract the relevant
-# features.
+# features. The physics-informed models in the bottom four rows encode domain
+# knowledge directly into the architecture, which can help especially when
+# training data is limited.
 
 # %% [markdown]
 # ## 4. Custom Models

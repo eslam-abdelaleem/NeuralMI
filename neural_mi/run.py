@@ -15,6 +15,7 @@ import tempfile
 import torch.multiprocessing as mp
 from typing import Union, Optional, Dict, Any, List
 import random
+from tqdm.auto import tqdm
 
 from .analysis.rigorous import run_rigorous_analysis
 from .analysis.dimensionality import run_dimensionality_analysis
@@ -40,7 +41,7 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
     elif isinstance(results, pd.DataFrame):
         df = results.copy()
         cols = [
-            'test_mi', 'train_mi', 'raw_train_mi',
+            'test_mi', 'train_mi', 'raw_train_mi', 'train_mi_at_peak',
             'test_mi_std', 'train_mi_std',          # precision-mode std columns
             'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'mi_error_pred', 'slope',
         ]
@@ -48,7 +49,8 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
             if col in df.columns: df[col] *= NATS_TO_BITS
         return df
     elif isinstance(results, list) and all(isinstance(r, dict) for r in results):
-        keys = ['test_mi', 'train_mi', 'raw_train_mi', 'mi_corrected', 'mi_error', 'mi_error_pred', 'slope']
+        keys = ['test_mi', 'train_mi', 'raw_train_mi', 'train_mi_at_peak',
+                'mi_corrected', 'mi_error', 'mi_error_pred', 'slope']
         return [{**r, **{k: r.get(k, 0) * NATS_TO_BITS for k in keys if r.get(k) is not None}} for r in results]
     elif isinstance(results, dict):
         new_results = results.copy()
@@ -115,7 +117,6 @@ def run(
     z_time: Optional[np.ndarray] = None,
     z_processor_type: Optional[str] = None,
     z_processor_params: Optional[Dict[str, Any]] = None,
-    z_time: Optional[np.ndarray] = None,
     history_window: Optional[int] = None,
     prediction_horizon: int = 1,
     bidirectional_te: bool = False,
@@ -131,8 +132,19 @@ def run(
     scheduler: Union[str, type, None] = None,
     scheduler_params: Optional[Dict[str, Any]] = None,
     eval_train: Union[bool, float, int] = False,
+    peak_fraction: float = 1.0,
     dropout: Optional[float] = None,
     norm_layer: Optional[str] = None,
+    use_amp: Union[bool, str] = 'auto',
+    track_embeddings: Optional[Union[bool, float, int, str]] = None,
+    return_rotated_embeddings: Optional[bool] = None,
+    rotated_embeddings_whitening: Optional[str] = None,
+    rotated_embeddings_per_epoch: Optional[bool] = None,
+    return_rotation_matrices: Optional[bool] = None,
+    x_name: Optional[str] = None,
+    y_name: Optional[str] = None,
+    channel_names_x: Optional[List[str]] = None,
+    channel_names_y: Optional[List[str]] = None,
     **analysis_kwargs
 ) -> Results:
     
@@ -246,7 +258,7 @@ def run(
         Specific indices for the test set.
     delta_threshold : float, default=0.1
         For ``mode='rigorous'``, the curvature threshold for determining the
-        linear region of the MI vs. 1/gamma plot. Lower values enforce
+        linear region of the MI vs. gamma plot. Lower values enforce
         stricter linearity.
     min_gamma_points : int, default=5
         For ``mode='rigorous'``, the minimum number of gamma values required to
@@ -328,6 +340,40 @@ def run(
           ``max_eval_samples``).
         - ``float`` in ``(0, 1)`` — use that fraction of training samples.
         - ``int >= 1`` — use exactly that many training samples.
+    peak_fraction : float, default=1.0
+        Controls which epoch's train MI is reported as the final estimate.
+
+        - ``1.0`` (default) — report train MI at the epoch where smoothed test
+          MI is maximised.  Fully backward-compatible.
+        - ``< 1.0`` — report train MI at the *first improvement checkpoint*
+          where smoothed test MI reaches ``peak_fraction × max_test_mi``.
+          Both the conservative and best-epoch estimates are fresh full
+          evaluations performed at the end of training (no per-epoch train
+          tracking is required; ``eval_train`` need not be set).
+          ``result.details`` will contain ``'conservative_epoch'`` (the epoch
+          used) and ``'train_mi_at_peak'`` (train MI at the actual peak epoch
+          for comparison).
+    use_amp : bool or str, default='auto'
+        Mixed-precision (AMP) training.  ``'auto'`` (default) enables AMP when
+        a CUDA GPU is detected and is a silent no-op on CPU / MPS.  ``True``
+        enables explicitly (CUDA only; ignored on other devices).  ``False``
+        disables entirely.  AMP typically gives 1.5–2× speed-up on modern
+        NVIDIA GPUs with negligible impact on MI estimates.
+    x_name : str, optional
+        Short human-readable name for variable X (e.g. ``'LFP'``).  Stored in
+        ``result.params['x_name']`` and used as a plot-label hint for custom
+        visualisations.  Defaults to None (no label).
+    y_name : str, optional
+        Short human-readable name for variable Y (e.g. ``'spikes'``).  Same
+        semantics as ``x_name``.  Defaults to None.
+    channel_names_x : list of str, optional
+        Names for each channel of ``x_data``.  For ``mode='pairwise'``, these
+        appear as axis tick labels on the MI heatmap.  Length must match the
+        number of channels; if shorter, only the first *k* channels are named.
+        Defaults to None (integer indices used as labels).
+    channel_names_y : list of str, optional
+        Names for each channel of ``y_data`` in cross-pairwise mode.  Same
+        semantics as ``channel_names_x``.  Defaults to None.
     dropout : float, optional
         Dropout probability applied after each hidden layer of MLP
         embedding networks.  ``0.0`` disables dropout (default).  Values in
@@ -474,7 +520,16 @@ def run(
             optimizer=optimizer, optimizer_params=optimizer_params,
             scheduler=scheduler, scheduler_params=scheduler_params,
             eval_train=eval_train,
+            peak_fraction=peak_fraction,
             dropout=dropout, norm_layer=norm_layer,
+            use_amp=use_amp,
+            track_embeddings=track_embeddings,
+            return_rotated_embeddings=return_rotated_embeddings,
+            rotated_embeddings_whitening=rotated_embeddings_whitening,
+            rotated_embeddings_per_epoch=rotated_embeddings_per_epoch,
+            return_rotation_matrices=return_rotation_matrices,
+            x_name=x_name, y_name=y_name,
+            channel_names_x=channel_names_x, channel_names_y=channel_names_y,
             **analysis_kwargs
         )
     finally:
@@ -550,7 +605,16 @@ def _run_inner(
     optimizer='adam', optimizer_params=None,
     scheduler=None, scheduler_params=None,
     eval_train=False,
+    peak_fraction=1.0,
     dropout=None, norm_layer=None,
+    use_amp='auto',
+    track_embeddings=None,
+    return_rotated_embeddings=None,
+    rotated_embeddings_whitening=None,
+    rotated_embeddings_per_epoch=None,
+    return_rotation_matrices=None,
+    x_name=None, y_name=None,
+    channel_names_x=None, channel_names_y=None,
     **analysis_kwargs
 ):
     if random_seed is not None:
@@ -608,8 +672,10 @@ def _run_inner(
     _inject(base_params, 'scheduler', scheduler)
     _inject(base_params, 'scheduler_params', scheduler_params or {})
     _inject(base_params, 'eval_train', eval_train)
+    _inject(base_params, 'peak_fraction', peak_fraction)
     _inject(base_params, 'dropout', dropout)
     _inject(base_params, 'norm_layer', norm_layer)
+    _inject(base_params, 'use_amp', use_amp)
 
     # Validate and apply spectral_mode
     _SPECTRAL_MODES = {'none', 'summary', 'full'}
@@ -641,6 +707,11 @@ def _run_inner(
     _inject(base_params, 'shared_encoder', shared_encoder)
     if return_embeddings:
         base_params['return_embeddings'] = True
+    _inject(base_params, 'track_embeddings', track_embeddings)
+    _inject(base_params, 'return_rotated_embeddings', return_rotated_embeddings)
+    _inject(base_params, 'rotated_embeddings_whitening', rotated_embeddings_whitening)
+    _inject(base_params, 'rotated_embeddings_per_epoch', rotated_embeddings_per_epoch)
+    _inject(base_params, 'return_rotation_matrices', return_rotation_matrices)
 
     if permutation_test and n_permutations < 50:
         warnings.warn(
@@ -669,9 +740,22 @@ def _run_inner(
         )
 
     # Validate parameters and apply defaults to base_params
+    _pre_default_keys = set(base_params.keys())
     param_validator = ParameterValidator(locals())
     param_validator.validate()
     param_validator.apply_defaults()
+
+    # Warn about n_layers/hidden_dim list mismatch only when the user explicitly
+    # set n_layers (i.e., it was in base_params before defaults were applied).
+    _hd = base_params.get('hidden_dim')
+    if isinstance(_hd, list) and 'n_layers' in _pre_default_keys:
+        _nl = base_params.get('n_layers')
+        if _nl != len(_hd):
+            warnings.warn(
+                f"hidden_dim is a list of length {len(_hd)}, so n_layers={_nl} is "
+                f"ignored. The network will have {len(_hd)} hidden layer(s).",
+                UserWarning, stacklevel=3,
+            )
 
     DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
     
@@ -691,6 +775,10 @@ def _run_inner(
                   "estimator": estimator, "random_seed": random_seed, "delta_threshold": delta_threshold,
                   "min_gamma_points": min_gamma_points, "confidence_level": confidence_level,
                   **analysis_kwargs}
+    if x_name is not None: run_params['x_name'] = x_name
+    if y_name is not None: run_params['y_name'] = y_name
+    if channel_names_x is not None: run_params['channel_names_x'] = channel_names_x
+    if channel_names_y is not None: run_params['channel_names_y'] = channel_names_y
 
     # Build the complete set of processor-level keys from the schema so that
     # any schema addition automatically triggers the deferred-processing path.
@@ -777,6 +865,20 @@ def _run_inner(
         results_list = ParameterSweep(x_run_data, y_run_data, base_params).run(
             sweep_grid, is_proc_sweep=is_proc_sweep, **analysis_kwargs
         )
+        # Strip embedding arrays from raw results before building the DataFrame.
+        # In sweep mode every sweep config trains a different model and produces
+        # its own embedding array; storing 2-D numpy arrays as DataFrame columns
+        # would corrupt aggregation.  The embeddings from the last result are
+        # surfaced in result.details instead.
+        _sweep_embeddings = None
+        for _r in reversed(results_list):
+            if 'embeddings_x' in _r:
+                _sweep_embeddings = {'embeddings_x': _r.pop('embeddings_x'),
+                                     'embeddings_y': _r.pop('embeddings_y', None)}
+                break
+        for _r in results_list:
+            _r.pop('embeddings_x', None)
+            _r.pop('embeddings_y', None)
         df = pd.DataFrame(results_list)
         df = _convert_mi_units(df, output_units == 'bits')
         group_vars = [key for key in sweep_grid.keys() if key != 'run_id']
@@ -787,11 +889,15 @@ def _run_inner(
                          dataframe=agg_df,
                          params={**run_params, 'sweep_var': primary_sweep_var},
                          details={'raw_results': df})
+        if _sweep_embeddings is not None:
+            result.details.update(_sweep_embeddings)
         if permutation_test:
-            result.details['null_distribution'] = _run_permutation_test(
+            _null_clipped, _null_raw = _run_permutation_test(
                 x_run_data, y_run_data, base_params, mode, sweep_grid,
                 n_permutations, analysis_kwargs
             )
+            result.details['null_distribution'] = _null_clipped
+            result.details['null_distribution_raw'] = _null_raw
         return result
 
     elif mode == 'estimate':
@@ -811,8 +917,8 @@ def _run_inner(
             mi = 0.0
         mi = _convert_mi_units(mi, to_bits)
 
-        # Keep test_mi and raw_train_mi in details, converting units
-        for _key in ('test_mi', 'raw_train_mi'):
+        # Keep test_mi, raw_train_mi, and train_mi_at_peak in details, converting units
+        for _key in ('test_mi', 'raw_train_mi', 'train_mi_at_peak'):
             if _key in res_dict and isinstance(res_dict[_key], (int, float)):
                 res_dict[_key] = res_dict[_key] * NATS_TO_BITS if to_bits else res_dict[_key]
 
@@ -829,15 +935,18 @@ def _run_inner(
                          params=run_params,
                          details=res_dict)
         if permutation_test:
-            result.details['null_distribution'] = _run_permutation_test(
+            _null_clipped, _null_raw = _run_permutation_test(
                 x_run_data, y_run_data, base_params, mode, sweep_grid,
                 n_permutations, analysis_kwargs
             )
+            result.details['null_distribution'] = _null_clipped
+            result.details['null_distribution_raw'] = _null_raw
         return result
 
     elif mode == 'dimensionality':
-        df = run_dimensionality_analysis(x_run_data, base_params, y_data=y_run_data,
-                                         sweep_grid=sweep_grid, **analysis_kwargs)
+        df, _dim_embeddings = run_dimensionality_analysis(
+            x_run_data, base_params, y_data=y_run_data,
+            sweep_grid=sweep_grid, **analysis_kwargs)
         df = _convert_mi_units(df, output_units == 'bits')
         group_vars = [key for key in (sweep_grid or {}).keys() if key != 'run_id']
         metrics = ['train_mi', 'participation_ratio']
@@ -858,11 +967,15 @@ def _run_inner(
             agg_df = pd.DataFrame([agg_data])
         result = Results(mode=mode, dataframe=agg_df, params={**run_params},
                          details={'raw_results': df})
+        if _dim_embeddings is not None:
+            result.details.update(_dim_embeddings)
         if permutation_test and y_run_data is not None:
-            result.details['null_distribution'] = _run_permutation_test(
+            _null_clipped, _null_raw = _run_permutation_test(
                 x_run_data, y_run_data, base_params, mode, sweep_grid,
                 n_permutations, analysis_kwargs
             )
+            result.details['null_distribution'] = _null_clipped
+            result.details['null_distribution_raw'] = _null_raw
         return result
 
     elif mode == 'precision':
@@ -936,10 +1049,12 @@ def _run_inner(
                          params={**run_params, 'sweep_var': 'lag'},
                          details={'raw_results': df})
         if permutation_test:
-            result.details['null_distribution'] = _run_permutation_test(
+            _null_clipped, _null_raw = _run_permutation_test(
                 x_run_data, y_run_data, base_params, mode, sweep_grid,
                 n_permutations, analysis_kwargs, lag_range=lag_range_val
             )
+            result.details['null_distribution'] = _null_clipped
+            result.details['null_distribution_raw'] = _null_raw
         return result
 
     elif mode == 'conditional':
@@ -1000,10 +1115,12 @@ def _run_inner(
         cmi = raw['cmi_estimate']
         result = Results(mode=mode, mi_estimate=cmi, params=run_params, details=raw)
         if permutation_test:
-            result.details['null_distribution'] = _run_permutation_test(
+            _null_clipped, _null_raw = _run_permutation_test(
                 x_run_data, y_run_data, base_params, 'conditional', sweep_grid,
                 n_permutations, analysis_kwargs, z_data=z_run_data
             )
+            result.details['null_distribution'] = _null_clipped
+            result.details['null_distribution_raw'] = _null_raw
         return result
 
     elif mode == 'transfer':
@@ -1077,12 +1194,14 @@ def _run_inner(
         te = raw['te_estimate']
         result = Results(mode=mode, mi_estimate=te, params=run_params, details=raw)
         if permutation_test:
-            result.details['null_distribution'] = _run_permutation_test(
+            _null_clipped, _null_raw = _run_permutation_test(
                 _x_te, _y_te, base_params, 'transfer', sweep_grid,
                 n_permutations, analysis_kwargs,
                 history_window=history_window, prediction_horizon=prediction_horizon,
                 bidirectional_te=bidirectional_te,
             )
+            result.details['null_distribution'] = _null_clipped
+            result.details['null_distribution_raw'] = _null_raw
         return result
 
     elif mode == 'pairwise':
@@ -1123,13 +1242,27 @@ def _run_inner(
             if _col in df.columns:
                 df[_col] = df[_col] * _scale
         raw['dataframe'] = df
+        # Inject channel names for heatmap axis labels when provided.
+        n_ch = raw.get('n_channels')
+        if isinstance(n_ch, tuple):
+            # Cross-pairwise: rows = x channels, cols = y channels
+            if channel_names_x is not None:
+                raw['variable_names_y'] = list(channel_names_x)[:n_ch[0]]
+            if channel_names_y is not None:
+                raw['variable_names_x'] = list(channel_names_y)[:n_ch[1]]
+        elif isinstance(n_ch, int) and channel_names_x is not None:
+            # Self-pairwise: same channel set for both axes
+            raw['variable_names_x'] = list(channel_names_x)[:n_ch]
+            raw['variable_names_y'] = list(channel_names_x)[:n_ch]
         result = Results(mode=mode, params=run_params, details=raw,
                          dataframe=df)
         if permutation_test:
-            result.details['null_distribution'] = _run_permutation_test(
+            _null_clipped, _null_raw = _run_permutation_test(
                 x_run_data, y_run_data, base_params, 'pairwise', sweep_grid,
                 n_permutations, analysis_kwargs
             )
+            result.details['null_distribution'] = _null_clipped
+            result.details['null_distribution_raw'] = _null_raw
         return result
 
     else:
@@ -1140,64 +1273,145 @@ def _run_inner(
         )
 
 
+def _run_single_permutation(args):
+    """Top-level picklable function for one permutation trial.
+
+    Parameters
+    ----------
+    args : tuple
+        ``(x_data, y_data, base_params, mode, sweep_grid, perm_seed, mode_kwargs)``
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(mi_clipped, mi_raw)`` where *mi_clipped* matches the main-run
+        convention (negatives zeroed by the trainer's ``all_mi_negative`` guard)
+        and *mi_raw* retains the actual value including negatives.
+    """
+    import numpy as _np
+    import torch as _torch
+    x_data, y_data, base_params, mode, sweep_grid, perm_seed, mode_kwargs = args
+    _np.random.seed(perm_seed)
+    n = y_data.shape[0] if hasattr(y_data, 'shape') else len(y_data)
+    shuffle_idx = _np.random.permutation(n)
+    if _torch.is_tensor(y_data):
+        y_perm = y_data[shuffle_idx]
+    else:
+        y_perm = [y_data[i] for i in shuffle_idx]
+
+    _nan = float('nan')
+    try:
+        if mode in ('estimate', 'sweep', 'dimensionality'):
+            from neural_mi.analysis.sweep import ParameterSweep
+            res = ParameterSweep(x_data, y_perm, base_params.copy()).run(
+                sweep_grid or {}, n_workers=1, is_proc_sweep=False
+            )
+            mi_clipped = float(_np.nanmean([r.get('train_mi', _nan) for r in res]))
+            mi_raw = float(_np.nanmean([r.get('raw_train_mi', _nan) for r in res]))
+            return mi_clipped, mi_raw
+
+        elif mode == 'lag':
+            from neural_mi.analysis.lag import run_lag_analysis as _rla
+            lag_range = mode_kwargs.get('lag_range')
+            res = _rla(x_data, y_perm, base_params.copy(),
+                       lag_range=lag_range, n_workers=1)
+            # Each task result dict contains both train_mi (zeroed for all-neg runs) and
+            # raw_train_mi (actual value), matching the estimate/sweep convention.
+            mi_clipped = float(_np.nanmean([r.get('train_mi', _nan) for r in res]))
+            mi_raw = float(_np.nanmean([r.get('raw_train_mi', _nan) for r in res]))
+            return mi_clipped, mi_raw
+
+        elif mode == 'conditional':
+            from neural_mi.analysis.conditional import run_conditional_mi as _rcmi
+            z_data = mode_kwargs.get('z_data')
+            raw = _rcmi(x_data, y_perm, z_data, base_params.copy(), n_workers=1)
+            mi_clipped = raw['cmi_estimate']
+            # Raw CMI = mean(raw_train_mi of XZ→Y sweep) − mean(raw_train_mi of Z→Y sweep)
+            _rxz = [r.get('raw_train_mi', _nan) for r in raw.get('raw_xz_y', [])]
+            _rz = [r.get('raw_train_mi', _nan) for r in raw.get('raw_z_y', [])]
+            mi_raw = (float(_np.nanmean(_rxz)) - float(_np.nanmean(_rz))
+                      if _rxz and _rz else mi_clipped)
+            return mi_clipped, mi_raw
+
+        elif mode == 'transfer':
+            from neural_mi.analysis.transfer import run_transfer_entropy as _rte
+            raw = _rte(
+                x_data, y_perm, base_params.copy(),
+                history_window=mode_kwargs.get('history_window'),
+                prediction_horizon=mode_kwargs.get('prediction_horizon', 1),
+                bidirectional=mode_kwargs.get('bidirectional_te', False),
+                n_workers=1,
+            )
+            mi_clipped = raw['te_estimate']
+            # Raw TE = mean(raw_train_mi of joint sweep) − mean(raw_train_mi of marginal sweep)
+            _rjoint = [r.get('raw_train_mi', _nan) for r in raw.get('raw_xypast_yfuture', [])]
+            _rmarg = [r.get('raw_train_mi', _nan) for r in raw.get('raw_ypast_yfuture', [])]
+            mi_raw = (float(_np.nanmean(_rjoint)) - float(_np.nanmean(_rmarg))
+                      if _rjoint and _rmarg else mi_clipped)
+            return mi_clipped, mi_raw
+
+        else:
+            return _nan, _nan
+
+    except Exception as exc:
+        return _nan, _nan
+
+
 def _run_permutation_test(x_data, y_data, base_params, mode, sweep_grid,
                           n_permutations, analysis_kwargs, **mode_kwargs):
-    """Runs the permutation test by shuffling y_data n_permutations times.
+    """Run the permutation null test by shuffling y_data *n_permutations* times.
 
-    Returns a list of null MI estimates (one per permutation).
+    When ``analysis_kwargs['n_workers'] > 1`` the permutation trials are
+    dispatched to a multiprocessing pool so they run in parallel (each
+    individual trial uses a single worker internally to avoid nested pools).
+
+    Returns
+    -------
+    tuple[list[float], list[float]]
+        ``(null_distribution, null_distribution_raw)``
+
+        *null_distribution* — per-permutation mean MI with negatives clipped to
+        zero (matching the library's main-run reporting convention).
+
+        *null_distribution_raw* — per-permutation mean MI retaining actual
+        values (including negatives), mirroring ``details['raw_train_mi']``.
     """
-    from .analysis.sweep import ParameterSweep
-    null_mis = []
-    logger.info(f"Permutation test: running {n_permutations} permutations for mode='{mode}'...")
-    n = y_data.shape[0] if hasattr(y_data, 'shape') else len(y_data)
+    n_workers = analysis_kwargs.get('n_workers', 1)
+    logger.info(
+        f"Permutation test: running {n_permutations} permutations for "
+        f"mode='{mode}' (n_workers={n_workers})..."
+    )
 
-    for perm_idx in range(n_permutations):
-        shuffle_idx = np.random.permutation(n)
-        if torch.is_tensor(y_data):
-            y_perm = y_data[shuffle_idx]
-        else:
-            y_perm = [y_data[i] for i in shuffle_idx]
+    # Generate independent seeds so parallel workers produce different shuffles
+    perm_seeds = [int(np.random.randint(0, 2**31)) for _ in range(n_permutations)]
+    perm_args = [
+        (x_data, y_data, base_params.copy(), mode, sweep_grid, seed, dict(mode_kwargs))
+        for seed in perm_seeds
+    ]
 
-        try:
-            if mode in ('estimate', 'sweep', 'dimensionality'):
-                res = ParameterSweep(x_data, y_perm, base_params.copy()).run(
-                    sweep_grid or {}, n_workers=analysis_kwargs.get('n_workers', 1),
-                    is_proc_sweep=False
-                )
-                null_mis.append(float(np.mean([r.get('train_mi', float('nan')) for r in res])))
+    if n_workers > 1:
+        with mp.get_context("spawn").Pool(processes=n_workers) as pool:
+            raw_results = list(tqdm(
+                pool.imap(_run_single_permutation, perm_args),
+                total=n_permutations,
+                desc="Permutation test",
+                leave=False,
+            ))
+    else:
+        raw_results = [
+            _run_single_permutation(args)
+            for args in tqdm(perm_args, desc="Permutation test", leave=False)
+        ]
 
-            elif mode == 'lag':
-                from .analysis.lag import run_lag_analysis as _rla
-                lag_range = mode_kwargs.get('lag_range')
-                res = _rla(x_data, y_perm, base_params.copy(), lag_range=lag_range,
-                           n_workers=analysis_kwargs.get('n_workers', 1))
-                null_mis.append(float(np.mean([r.get('train_mi', float('nan')) for r in res])))
+    null_distribution = [r[0] for r in raw_results]
+    null_distribution_raw = [r[1] for r in raw_results]
 
-            elif mode == 'conditional':
-                z_data = mode_kwargs.get('z_data')
-                raw = run_conditional_mi(x_data, y_perm, z_data, base_params.copy(),
-                                         n_workers=analysis_kwargs.get('n_workers', 1))
-                null_mis.append(raw['cmi_estimate'])
-
-            elif mode == 'transfer':
-                hw = mode_kwargs.get('history_window')
-                ph = mode_kwargs.get('prediction_horizon', 1)
-                raw = run_transfer_entropy(x_data, y_perm, base_params.copy(),
-                                           history_window=hw, prediction_horizon=ph,
-                                           bidirectional=mode_kwargs.get('bidirectional_te', False),
-                                           n_workers=analysis_kwargs.get('n_workers', 1))
-                null_mis.append(raw['te_estimate'])
-
-            else:
-                null_mis.append(float('nan'))
-
-        except Exception as e:
-            logger.warning(f"Permutation {perm_idx + 1} failed: {e}")
-            null_mis.append(float('nan'))
-
-    logger.info(f"Permutation test complete. Null MI: mean={np.nanmean(null_mis):.4f}, "
-                f"std={np.nanstd(null_mis):.4f}")
-    return null_mis
+    logger.info(
+        f"Permutation test complete. "
+        f"Null MI (clipped): mean={np.nanmean(null_distribution):.4f}, "
+        f"std={np.nanstd(null_distribution):.4f}"
+    )
+    return null_distribution, null_distribution_raw
 
 
 

@@ -46,6 +46,12 @@ BASE_PARAMS_SCHEMA = {
     'save_best_model_path': {'type': (str, type(None)), 'default': None},
     'estimator_name': {'type': str, 'default': 'infonce'},
     'estimator_params': {'type': dict, 'default': {}},
+    # Online augmentations applied per-batch during training only.
+    # augmentation_params applies to both X and Y unless overridden by _x/_y.
+    # Set augmentation_params_x or augmentation_params_y to {} to disable for one variable.
+    'augmentation_params':   {'type': dict, 'default': {}},
+    'augmentation_params_x': {'type': (dict, type(None)), 'default': None},
+    'augmentation_params_y': {'type': (dict, type(None)), 'default': None},
     'use_variational': {'type': bool, 'default': False},
     'beta': {'type': float, 'min': 0.0, 'default': 1024.0},
     'train_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
@@ -53,24 +59,72 @@ BASE_PARAMS_SCHEMA = {
     'max_index_reduction': {'type': float, 'min': 0.0, 'default': 0.05},
     'optimizer': {'type': (str, type), 'default': 'adam'},
     'optimizer_params': {'type': dict, 'default': {}},
+    'lr_head_multiplier': {'type': (float, int, type(None)), 'min': 0.0, 'default': None},  # Hybrid only; None → same LR as encoders
     'scheduler': {'type': (str, type, type(None)), 'default': None},
     'scheduler_params': {'type': dict, 'default': {}},
     'eval_train': {'type': (bool, float, int, type(None)), 'default': False},
 
+    # Per-epoch embedding tracking.
+    # Controls whether embeddings are extracted and stored at every epoch.
+    # Mirroring eval_train style:
+    #   False         — no tracking (global default; dimensionality mode defaults to 512).
+    #   True          — track first 512 samples.
+    #   int >= 1      — track exactly that many samples (first N in the dataset).
+    #   float (0, 1)  — track that fraction of the dataset.
+    #   'full'        — track all samples (emits a UserWarning about memory cost).
+    # The tracked subset is always the *first* N samples so that user-supplied
+    # labels (passed to result.animate()) align with the original data ordering.
+    'track_embeddings': {'type': (bool, float, int, str, type(None)), 'default': False},
+    'return_rotated_embeddings': {'type': bool, 'default': False},
+    # Whitening applied to the cross-covariance before SVD to derive the rotation axes.
+    # Does NOT affect the scale of the returned embeddings (which are always in the
+    # original embedding space, just re-projected).  Matches the default used by PR.
+    'rotated_embeddings_whitening': {'type': (str, type(None)), 'default': 'std'},
+    # False (default): one global rotation derived from the best epoch, applied to all
+    # tracked epochs uniformly (consistent coordinate system across epochs).
+    # True: each tracked epoch gets its own SVD-based rotation (shows structure emerging).
+    'rotated_embeddings_per_epoch': {'type': bool, 'default': False},
+    # Whether to include U and V (the rotation matrices) in the result.
+    'return_rotation_matrices': {'type': bool, 'default': False},
 
     # Model architecture parameters
     'shared_encoder': {'type': bool, 'default': False},
     'embedding_dim': {'type': int, 'min': 1, 'default': 64},
-    'hidden_dim': {'type': int, 'min': 1, 'default': 64},
+    # hidden_dim may be an int (uniform width) or a list of ints (per-layer widths).
+    # When a list is given, n_layers is inferred from the list length and any
+    # explicit n_layers value is ignored for the layers that receive a list.
+    'hidden_dim': {'type': (int, list), 'default': 64},
     'n_layers': {'type': int, 'min': 0, 'default': 2},
+    'n_layers_head': {'type': (int, type(None)), 'min': 1, 'default': None},  # Hybrid critic head; None → max(1, n_layers-1)
+    'hidden_dim_head': {'type': (int, list, type(None)), 'default': None},  # Hybrid critic head; None → min(64, hidden_dim)
     'critic_type': {'type': str, 'default': 'separable'},
-    'embedding_model': {'type': str, 'default': 'mlp'},
+    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'
+                                                          # inductive-bias: 'sinc_cnn'|'calcium_cnn'|'spike_physics'|'pretrained_backbone'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
     'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
     'norm_layer': {'type': (str, type(None)), 'default': None},
+
+    # --- Inductive bias parameters ---
+    # CNN1D depthwise-separable first layer (use_depthwise=True enforces per-channel
+    # temporal filtering before cross-channel mixing; works with embedding_model='cnn').
+    'use_depthwise': {'type': bool, 'default': False},
+    # SincEmbedding: number of learnable sinc bandpass filters per input channel.
+    'n_sinc_filters': {'type': int, 'min': 1, 'default': 8},
+    # SincEmbedding / CalciumEmbedding: feature fusion mode.
+    # 'features'       — physics-derived features only (default, pure inductive bias).
+    # 'concat'         — physics features concatenated with processed raw input.
+    'feature_fusion': {'type': str, 'default': 'features'},
+    # CalciumEmbedding: indicator rise/decay time constants in seconds.
+    # Defaults approximate GCaMP6f. Set learn_calcium_kernel=True to learn them.
+    'tau_rise': {'type': float, 'min': 0.0, 'default': 0.05},
+    'tau_decay': {'type': float, 'min': 0.0, 'default': 0.4},
+    'learn_calcium_kernel': {'type': bool, 'default': False},
+    # PretrainedBackboneEmbedding: torchvision model name and pretrained flag.
+    'pytorch_predefined': {'type': (str, type(None)), 'default': None},
+    'pretrained': {'type': bool, 'default': False},
 
     # Internal/Inferred parameters (usually not set by user but passed down)
     'input_dim_x': {'type': int},
@@ -91,6 +145,20 @@ BASE_PARAMS_SCHEMA = {
     # Reproducibility — used by run() and task.py workers
     'random_seed': {'type': (int, type(None)), 'default': None},
 
+    # Conservative epoch selection:
+    # 1.0 (default) → use the epoch where smoothed test MI is maximised (current behaviour).
+    # < 1.0          → use the first epoch where smoothed test MI ≥ peak_fraction * max_test_mi.
+    #                  This gives a more conservative train-MI estimate by avoiding the final
+    #                  noisy peak.  When < 1.0, the train MI at the actual peak epoch is also
+    #                  returned in details as 'train_mi_at_peak'.
+    'peak_fraction': {'type': float, 'min': 0.0, 'default': 1.0},
+
+    # Mixed-precision (AMP) training.
+    # 'auto' — enable on CUDA, no-op on CPU/MPS (safe default).
+    # True   — explicitly enable (CUDA only; silently no-ops on other devices).
+    # False  — explicitly disable.
+    'use_amp': {'type': (bool, str), 'default': 'auto'},
+
     # Memory / device layout
     # 'cpu'  — store dataset tensors on CPU (default; safe for long sweeps).
     # 'auto' — store on the compute device (faster repeated evaluation, e.g. precision mode).
@@ -110,9 +178,12 @@ MODE_KWARGS_SCHEMA = {
     },
     'dimensionality': {
         'n_workers': {'type': int, 'default': 1},
-        'split_method': {'type': str, 'default': 'random'}, # 'random', 'spatial', or 'temporal'
+        'split_method': {'type': str, 'default': 'random'}, # 'random'|'spatial'|'temporal'|'index'|'horizontal'|'vertical'|'row_interleaved'|'col_interleaved'|'diagonal'|'antidiagonal'
         'n_splits': {'type': int, 'default': 5},
         'lag': {'type': int, 'default': 1}, # if split_method='temporal'
+        # Required when split_method='index': list of channel indices assigned to X.
+        # Y is automatically the complement (all remaining channels).
+        'channel_indices_x': {'type': (list, type(None)), 'default': None},
     },
     'rigorous': {
         'n_workers': {'type': int, 'default': 1},
@@ -166,8 +237,8 @@ MODE_KWARGS_SCHEMA = {
 }
 
 PROCESSOR_PARAMS_SCHEMA = {
-    'continuous': ['window_size', 'min_coverage_fraction', 'sample_rate'],
-    'spike': ['window_size', 'max_spikes_per_window', 'n_seconds', 'sample_rate',
+    'continuous': ['window_size', 'step_size', 'min_coverage_fraction', 'sample_rate'],
+    'spike': ['window_size', 'step_size', 'max_spikes_per_window', 'n_seconds', 'sample_rate',
               'no_spike_value', 'bin_size', 'normalize_bins', 'exclude_bursty_neurons', 'burst_threshold_multiplier'],
-    'categorical': ['window_size', 'sample_rate', 'min_coverage_fraction', 'encoding'],
+    'categorical': ['window_size', 'step_size', 'sample_rate', 'min_coverage_fraction', 'encoding'],
 }

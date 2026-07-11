@@ -13,7 +13,12 @@ import platform
 import tempfile
 
 from neural_mi.estimators import ESTIMATORS
-from neural_mi.models.embeddings import MLP, VariationalWrapper, BaseEmbedding, CNN1D, GRU, LSTM, TCN, Transformer
+from neural_mi.models.embeddings import (
+    MLP, VariationalWrapper, BaseEmbedding,
+    CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
+    SpikePhysicsEmbedding, SincEmbedding, CalciumEmbedding,
+    PretrainedBackboneEmbedding,
+)
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
 from neural_mi.logger import logger
 
@@ -129,7 +134,7 @@ def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
     return x_data, y_data
 
     
-def build_critic(critic_type: str, embedding_params: Dict[str, Any], 
+def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                  custom_embedding_cls: Optional[type] = None) -> BaseCritic:
     """Builds and returns a critic model based on the provided parameters.
 
@@ -137,6 +142,18 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     defaults (e.g., via `ParameterValidator.apply_defaults`). It strictly
     accesses required parameters and will raise a KeyError if something is missing,
     preventing silent failures from missing defaults.
+
+    For ``critic_type='hybrid'``, the decision head MLP that scores the
+    concatenated embeddings can be configured independently of the embedding
+    networks via two optional keys in ``embedding_params``:
+
+    - ``hidden_dim_head`` (int or None): hidden width of the decision head.
+      Defaults to ``None``, which resolves to ``min(64, hidden_dim)``.
+    - ``n_layers_head`` (int or None): number of hidden layers in the decision
+      head.  Defaults to ``None``, which resolves to ``max(1, n_layers - 1)``.
+
+    These parameters have no effect for ``critic_type`` values other than
+    ``'hybrid'``.
     """
     
     # Access parameters strictly to ensure defaults were applied
@@ -154,6 +171,8 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         EmbeddingModel = custom_embedding_cls
     elif model_type == 'cnn':
         EmbeddingModel = CNN1D
+    elif model_type == 'cnn2d':
+        EmbeddingModel = CNN2D
     elif model_type == 'gru':
         EmbeddingModel = GRU
     elif model_type == 'lstm':
@@ -164,6 +183,14 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         EmbeddingModel = Transformer
     elif model_type == 'mlp':
         EmbeddingModel = MLP
+    elif model_type == 'spike_physics':
+        EmbeddingModel = SpikePhysicsEmbedding
+    elif model_type == 'sinc_cnn':
+        EmbeddingModel = SincEmbedding
+    elif model_type == 'calcium_cnn':
+        EmbeddingModel = CalciumEmbedding
+    elif model_type == 'pretrained_backbone':
+        EmbeddingModel = PretrainedBackboneEmbedding
     else:
         raise ValueError(f"Unknown embedding_model: {model_type}")
 
@@ -179,14 +206,43 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         'use_variational': use_variational
     }
 
-    if model_type in ['cnn', 'gru', 'lstm', 'tcn', 'transformer']:
+    # CNN1D, CNN2D, and all sequence models use n_channels as input_dim
+    # (they operate on the channel dimension, not a flattened feature vector).
+    # Inductive-bias models (spike_physics, sinc_cnn, calcium_cnn, pretrained_backbone)
+    # also use n_channels as input_dim.
+    # MLP (and custom cls) use the fully-flattened input_dim.
+    _sequential_types = {'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
+                         'spike_physics', 'sinc_cnn', 'calcium_cnn', 'pretrained_backbone'}
+    if model_type in _sequential_types:
         input_dim_x, input_dim_y = embedding_params['n_channels_x'], embedding_params['n_channels_y']
-        if model_type in ['cnn', 'tcn']:
+        if model_type in ['cnn', 'tcn', 'cnn2d']:
             model_kwargs['kernel_size'] = embedding_params.get('kernel_size', 7 if model_type == 'cnn' else 3)
+        if model_type == 'cnn':
+            model_kwargs['use_depthwise'] = embedding_params.get('use_depthwise', False)
         if model_type in ['gru', 'lstm']:
             model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
-        if model_type in ['transformer']:
+        if model_type == 'transformer':
             model_kwargs['nhead'] = embedding_params.get('nhead', 4)
+        if model_type == 'spike_physics':
+            _n_ch = embedding_params.get('n_channels_x', 1)
+            _in_tot = embedding_params.get('input_dim_x', _n_ch)
+            model_kwargs['max_spikes'] = max(1, _in_tot // max(1, _n_ch))
+            model_kwargs['no_spike_value'] = embedding_params.get('no_spike_value', -1.0)
+            model_kwargs['window_size'] = float(embedding_params.get('embedding_window_size') or 1.0)
+            model_kwargs['feature_fusion'] = embedding_params.get('feature_fusion', 'features')
+        if model_type == 'sinc_cnn':
+            model_kwargs['n_sinc_filters'] = embedding_params.get('n_sinc_filters', 8)
+            model_kwargs['sample_rate'] = embedding_params.get('sample_rate_x')
+            model_kwargs['feature_fusion'] = embedding_params.get('feature_fusion', 'features')
+        if model_type == 'calcium_cnn':
+            model_kwargs['tau_rise'] = embedding_params.get('tau_rise', 0.05)
+            model_kwargs['tau_decay'] = embedding_params.get('tau_decay', 0.4)
+            model_kwargs['learn_calcium_kernel'] = embedding_params.get('learn_calcium_kernel', False)
+            model_kwargs['sample_rate'] = embedding_params.get('sample_rate_x')
+            model_kwargs['feature_fusion'] = embedding_params.get('feature_fusion', 'features')
+        if model_type == 'pretrained_backbone':
+            model_kwargs['pytorch_predefined'] = embedding_params.get('pytorch_predefined')
+            model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
     else:  # MLP (and custom cls with MLP-like signature)
         input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
         model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
@@ -201,9 +257,17 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             "embedding networks to share. Switch to critic_type='separable' or 'hybrid'."
         )
 
-    # Build the base (deterministic) encoders
+    # Build the base (deterministic) encoders.
+    # For spike_physics, max_spikes may differ between X and Y when the two
+    # populations have different firing rates (leading to different tensor shapes).
+    # Compute Y-specific kwargs to avoid a shape mismatch in the mixer MLP.
+    model_kwargs_y = model_kwargs.copy()
+    if model_type == 'spike_physics':
+        _n_ch_y = embedding_params.get('n_channels_y', embedding_params.get('n_channels_x', 1))
+        _in_tot_y = embedding_params.get('input_dim_y', _n_ch_y)
+        model_kwargs_y['max_spikes'] = max(1, _in_tot_y // max(1, _n_ch_y))
     net_x_base = EmbeddingModel(input_dim_x, **model_kwargs)
-    net_y_base = net_x_base if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs)
+    net_y_base = net_x_base if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs_y)
 
     # Optionally wrap with VariationalWrapper — works for every encoder type
     if use_variational:
@@ -216,7 +280,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # Large first layers (input_dim * hidden_dim) are the most common cause of
     # overfitting in neuroscience datasets where windows are high-dimensional but
     # sample counts are modest. 500k is a practical threshold — not a hard limit.
-    first_layer_params = input_dim_x * hidden_dim
+    _first_hidden = hidden_dim[0] if isinstance(hidden_dim, list) else hidden_dim
+    _last_hidden  = hidden_dim[-1] if isinstance(hidden_dim, list) else hidden_dim
+    first_layer_params = input_dim_x * _first_hidden
     if first_layer_params > 500_000:
         logger.warning(
             f"Large first embedding layer detected: input_dim_x={input_dim_x} x "
@@ -230,7 +296,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         return SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y, **critic_kwargs)
     elif critic_type == 'hybrid':
         decision_head_input_dim = embed_dim * 2
-        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=hidden_dim, embed_dim=1, n_layers=max(1, n_layers - 1))
+        _head_hidden_dim = embedding_params.get('hidden_dim_head') or min(64, _last_hidden)
+        _head_n_layers = embedding_params.get('n_layers_head') or max(1, n_layers - 1)
+        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=_head_hidden_dim, embed_dim=1, n_layers=_head_n_layers)
         return HybridCritic(embedding_net_x=net_x, embedding_net_y=net_y, decision_head=decision_head, **critic_kwargs)
     elif critic_type == 'concat':
         concat_input_dim = input_dim_x + input_dim_y
@@ -293,6 +361,106 @@ def compute_cross_covariance_spectrum(
     _, s_xy, _ = np.linalg.svd(cov_xy)
 
     return s_xy
+
+
+def compute_cross_covariance_rotation(
+    zx: np.ndarray,
+    zy: np.ndarray,
+    whitening: Optional[str] = 'std'
+) -> Dict[str, np.ndarray]:
+    """Computes a rotation that orders embedding dimensions by shared variance.
+
+    The rotation matrices U and V are derived from the SVD of the (optionally
+    whitened) cross-covariance matrix C = ZX_w.T @ ZY_w / (N-1).  The whitening
+    is applied **only** to compute the rotation axes — it is NOT applied to the
+    returned embeddings.  What is returned is ZX_centered @ U and ZY_centered @ V,
+    i.e. the original-scale embeddings simply re-expressed in the new basis.
+
+    This means dimension 0 of the rotated embeddings captures the most shared
+    variance between the two spaces, dimension 1 the second most, and so on —
+    consistent with how the Participation Ratio (PR) dimensionality estimate
+    orders dimensions.
+
+    Parameters
+    ----------
+    zx, zy : np.ndarray
+        Embeddings, each of shape (N, d).  May also be passed as torch.Tensor;
+        they will be converted automatically.
+    whitening : {'std', 'zca', None}, optional
+        Normalization applied before computing the cross-covariance (default
+        ``'std'``).  Matches the default used by
+        :func:`compute_cross_covariance_spectrum` so that the rotation is
+        consistent with PR-based dimensionality estimates.
+        - ``'std'``: divide each dimension by its standard deviation.
+        - ``'zca'``: full ZCA whitening (sphering); requires N >> d for stability.
+        - ``None``: no whitening; rotation reflects raw shared variance.
+
+    Returns
+    -------
+    dict with keys:
+
+    ``'zx_rotated'`` : np.ndarray, shape (N, d)
+        Centered ZX projected onto the left singular vectors U.
+    ``'zy_rotated'`` : np.ndarray, shape (N, d)
+        Centered ZY projected onto the right singular vectors V.
+    ``'singular_values'`` : np.ndarray, shape (min(d_x, d_y),)
+        Singular values of the (whitened) cross-covariance, largest first.
+    ``'rotation_x'`` : np.ndarray, shape (d_x, min(d_x, d_y))
+        Left singular vectors U.  Apply as ``ZX_new @ U`` to project new data.
+    ``'rotation_y'`` : np.ndarray, shape (d_y, min(d_x, d_y))
+        Right singular vectors V.  Apply as ``ZY_new @ V`` to project new data.
+    """
+    # Accept both torch.Tensor and np.ndarray
+    if hasattr(zx, 'detach'):
+        zx = zx.detach().cpu().float().numpy()
+    if hasattr(zy, 'detach'):
+        zy = zy.detach().cpu().float().numpy()
+    zx = np.asarray(zx, dtype=np.float64)
+    zy = np.asarray(zy, dtype=np.float64)
+
+    # Center (mean-subtract per dimension)
+    zx_c = zx - zx.mean(axis=0, keepdims=True)
+    zy_c = zy - zy.mean(axis=0, keepdims=True)
+
+    N = zx_c.shape[0]
+    d_x, d_y = zx_c.shape[1], zy_c.shape[1]
+    if N <= 1:
+        return {
+            'zx_rotated': zx_c,
+            'zy_rotated': zy_c,
+            'singular_values': np.array([]),
+            'rotation_x': np.eye(d_x),
+            'rotation_y': np.eye(d_y),
+        }
+
+    # Whiten copies for computing rotation axes only — zx_c / zy_c are unchanged
+    zx_w, zy_w = zx_c.copy(), zy_c.copy()
+    if whitening == 'std':
+        std_x = zx_w.std(axis=0, keepdims=True)
+        std_y = zy_w.std(axis=0, keepdims=True)
+        zx_w = zx_w / np.where(std_x > 1e-8, std_x, 1.0)
+        zy_w = zy_w / np.where(std_y > 1e-8, std_y, 1.0)
+    elif whitening == 'zca':
+        def _zca(Z):
+            cov = (Z.T @ Z) / (Z.shape[0] - 1)
+            Uz, Sz, _ = np.linalg.svd(cov)
+            W = Uz @ np.diag(1.0 / np.sqrt(np.maximum(Sz, 1e-8))) @ Uz.T
+            return Z @ W.T
+        zx_w, zy_w = _zca(zx_w), _zca(zy_w)
+    elif whitening is not None:
+        raise ValueError(f"Unknown whitening: '{whitening}'. Expected 'std', 'zca', or None.")
+
+    cov_xy = (zx_w.T @ zy_w) / (N - 1)
+    U, s, Vt = np.linalg.svd(cov_xy, full_matrices=False)
+    V = Vt.T  # (d_y, min(d_x, d_y))
+
+    return {
+        'zx_rotated': zx_c @ U,   # centered, original scale, rotated
+        'zy_rotated': zy_c @ V,
+        'singular_values': s,
+        'rotation_x': U,
+        'rotation_y': V,
+    }
 
 
 def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[str, float]:

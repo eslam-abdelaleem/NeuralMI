@@ -111,12 +111,19 @@ Before computing critic scores, each input passes through an **embedding model**
 |-------|------------------------|-------|
 | Multi-layer Perceptron | `'mlp'` (default) | Flattens input; good default |
 | 1D Convolutional | `'cnn'` | Uses `kernel_size` param |
+| 2D Convolutional | `'cnn2d'` | For image-like `(N,C,H,W)` input |
 | Gated Recurrent Unit | `'gru'` | For sequences; `bidirectional` option |
 | Long Short-Term Memory | `'lstm'` | For sequences; `bidirectional` option |
 | Temporal Convolutional Net | `'tcn'` | Dilated 1D conv; good for long windows |
 | Transformer | `'transformer'` | Self-attention; needs `nhead` param |
+| *— Physics-Informed (Inductive Bias) —* | | |
+| Depthwise-separable CNN | `'cnn'` + `use_depthwise=True` | Per-channel filtering before cross-channel mixing |
+| Sinc Bandpass CNN | `'sinc_cnn'` | Learnable FIR bandpass filters for EEG/LFP; requires `sample_rate` |
+| Calcium Deconvolution CNN | `'calcium_cnn'` | FIR deconvolution of GCaMP indicator; requires `sample_rate` |
+| Spike Physics | `'spike_physics'` | Firing rate, mean ISI, ISI variance from raw spike timestamps |
+| Pretrained Backbone | `'pretrained_backbone'` | Frozen torchvision backbone + trainable MLP head; for images |
 
-All embeddings output a vector of size `embedding_dim` (default 64).
+All embeddings output a vector of size `embedding_dim` (default 64). See **Tutorial 10** for physics-informed model examples.
 
 ### 3.4 Critic Architectures
 
@@ -126,18 +133,20 @@ The critic `f(x, y)` combines the two embeddings into a score. Three architectur
 |--------|--------------------|-|
 | **Separable** | `'separable'` (default) | `f(x,y) = gₓ(embed(x))ᵀ g_y(embed(y))` — bilinear product of separate head networks |
 | **Concat** | `'concat'` | Concatenates raw inputs before any embedding; ignores `embedding_dim` |
-| **Hybrid** | `'hybrid'` | Similar to Separable with a concat embeddings instead of dot product; used automatically by `dimensionality` mode |
+| **Hybrid** | `'hybrid'` | Embeds X and Y independently, concatenates the embeddings, then passes them through a small MLP decision head; used automatically by `dimensionality` mode |
 
-**Choosing:** `separable` is the best general choice. `concat` is the most flexible but doesn't allow for embedding dimensionality and very costly to train. `hybrid` is reserved for dimensionality analysis (library sets it automatically).
+**Choosing:** `separable` is the best general choice. `concat` is the most flexible but doesn't allow for embedding dimensionality and is very costly to train. `hybrid` is required for dimensionality analysis (set automatically by that mode) and can also be used when you want the geometric flexibility of a learned scoring function on top of the embeddings.
+
+The decision head of the hybrid critic can be sized independently of the embedding networks via `hidden_dim_head` and `n_layers_head` (see parameter table below).
 
 ### 3.5 Bias in Finite-Sample Estimation
 
 Neural MI estimators are **biased upward** at small sample sizes — the critic can memorize rather than generalize. The bias scales roughly as `O(1/N)`. The `rigorous` mode exploits this:
 
 1. Train models on subsets of size `N/γ` for γ = 1, 2, …, 10.
-2. Plot estimated MI vs `1/γ`.
-3. Fit a line to the linear portion: `MI(1/γ) = MI_true + slope × (1/γ)`.
-4. Extrapolate to `1/γ → 0` (infinite data): `MI_true ≈ intercept`.
+2. Plot estimated MI vs `γ`. (Since `N_chunk = N/γ`, the bias `a/N_chunk = (a/N)γ` is linear in γ.)
+3. Fit a line to the linear portion: `MI(γ) = MI_true + slope × γ`.
+4. Extrapolate to `γ → 0` (infinite data): `MI_true ≈ intercept`.
 
 This gives a **bias-corrected estimate** with a confidence interval from the fit variance.
 
@@ -439,7 +448,7 @@ print(result.dataframe[['mi_mean', 'mi_std', 'participation_ratio_mean']])
 
 ### 6.4 `rigorous` — Bias-Corrected Estimate
 
-**What it does:** Implements the bias extrapolation procedure (§3.5). Trains models on `N/γ` data subsets for each γ in `gamma_range` (default 1–10), fits MI vs 1/γ, and extrapolates to γ→∞.
+**What it does:** Implements the bias extrapolation procedure (§3.5). Trains models on `N/γ` data subsets for each γ in `gamma_range` (default 1–10), fits MI vs γ, and extrapolates to γ→0 (infinite data).
 
 **Key parameters:**
 - `gamma_range`: range or list of denominators (default `range(1, 11)`)
@@ -465,7 +474,7 @@ result = nmi.run(x, y, mode='rigorous',
                  confidence_level=0.95,
                  n_workers=4)
 print(f"MI = {result.mi_estimate:.3f} ± {result.details['mi_error']:.3f} bits")
-result.plot()   # MI vs 1/gamma with fit line and extrapolation point
+result.plot()   # MI vs gamma with fit line and extrapolation point
 ```
 
 **Typical workflow:** Run `estimate` or `sweep` first to find good hyperparameters, then run `rigorous` with those parameters for the final publication-quality estimate.
@@ -695,7 +704,7 @@ Generates a mode-appropriate figure:
 | `estimate` | Test MI vs epoch; best epoch marked with vertical dashed line |
 | `sweep` / `lag` | MI vs swept variable; multiple lines if multi-param |
 | `dimensionality` | MI vs embedding_dim with participation ratio |
-| `rigorous` | MI vs 1/γ with linear fit and extrapolated point |
+| `rigorous` | MI vs γ with linear fit and extrapolated point at γ=0 |
 | `precision` | MI vs τ with baseline and threshold lines |
 
 ```python
@@ -739,6 +748,7 @@ Pass any of these in the `base_params` dict:
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
 | `optimizer` | str or class | `'adam'` | `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`, or `torch.optim.Optimizer` subclass |
+| `lr_head_multiplier` | float or None | `None` | Multiplier on `learning_rate` for the hybrid critic's decision head. `None` or `1.0` → same LR as the encoders. Values > 1 (e.g. `5.0`) make the head adapt faster relative to the encoders, which can reduce staircase convergence plateaus. Ignored for `separable` and `concat` critics. |
 | `optimizer_params` | dict | `{}` | Extra kwargs for optimizer constructor (e.g. `{'weight_decay': 1e-4}`) |
 | `scheduler` | str, class, or None | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or `torch.optim.lr_scheduler` subclass |
 | `scheduler_params` | dict | `{}` | Extra kwargs for scheduler constructor |
@@ -747,11 +757,21 @@ Pass any of these in the `base_params` dict:
 | Parameter | Type | Default | Options |
 |-----------|------|---------|---------|
 | `embedding_dim` | int | 64 | Size of embedding vectors |
-| `hidden_dim` | int | 64 | Hidden layer width |
-| `n_layers` | int | 2 | Depth of embedding network |
-| `embedding_model` | str | `'mlp'` | `'mlp'`, `'cnn'`, `'gru'`, `'lstm'`, `'tcn'`, `'transformer'` |
+| `hidden_dim` | int or list of int | 64 | Hidden layer width. An integer gives uniform-width layers; a list (e.g. `[256, 1024, 256]`) sets per-layer widths explicitly — `n_layers` is ignored in this case. Supported for MLP, CNN1D, CNN2D, and TCN. |
+| `n_layers` | int | 2 | Depth of embedding network. Ignored when `hidden_dim` is a list. |
+| `embedding_model` | str | `'mlp'` | `'mlp'`, `'cnn'`, `'cnn2d'`, `'gru'`, `'lstm'`, `'tcn'`, `'transformer'`, `'sinc_cnn'`, `'calcium_cnn'`, `'spike_physics'`, `'pretrained_backbone'` |
 | `critic_type` | str | `'separable'` | `'separable'`, `'concat'`, `'hybrid'` |
-| `kernel_size` | int | 3 | For CNN, TCN |
+| `hidden_dim_head` | int, list of int, or None | `None` | Hidden width of the hybrid critic's decision head. Accepts the same int-or-list form as `hidden_dim`. `None` → `min(64, hidden_dim)` |
+| `n_layers_head` | int or None | `None` | Depth of the hybrid critic's decision head. `None` → `max(1, n_layers - 1)` |
+| `kernel_size` | int | 3 | For CNN, CNN2D, TCN |
+| `use_depthwise` | bool | `False` | For `'cnn'`: depthwise-separable first layer |
+| `n_sinc_filters` | int | `8` | For `'sinc_cnn'`: learnable bandpass filters per channel |
+| `feature_fusion` | str | `'features'` | For `'sinc_cnn'`, `'calcium_cnn'`, `'spike_physics'`: `'features'` or `'concat'` |
+| `tau_rise` | float | `0.05` | For `'calcium_cnn'`: GCaMP rise time constant (s) |
+| `tau_decay` | float | `0.4` | For `'calcium_cnn'`: GCaMP decay time constant (s) |
+| `learn_calcium_kernel` | bool | `False` | For `'calcium_cnn'`: make tau_rise/tau_decay learnable |
+| `pytorch_predefined` | str or None | `None` | For `'pretrained_backbone'`: torchvision model name (e.g. `'resnet18'`) |
+| `pretrained` | bool | `False` | For `'pretrained_backbone'`: load ImageNet pretrained weights |
 | `bidirectional` | bool | False | For GRU, LSTM |
 | `nhead` | int | 4 | For Transformer |
 | `shared_encoder` | bool | False | Share embedding weights between x and y |
@@ -775,7 +795,7 @@ Pass any of these in the `base_params` dict:
 ### Variational Training
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
-| `use_variational` | bool | False | Enable variational reparameterization for *any* embedding model. When `True`, `build_critic` wraps the selected encoder with `VariationalWrapper`, adding μ and log σ² heads. Works with all `embedding_model` choices: `'mlp'`, `'cnn'`, `'gru'`, `'lstm'`, `'tcn'`, `'transformer'`. |
+| `use_variational` | bool | False | Enable variational reparameterization for *any* embedding model. When `True`, `build_critic` wraps the selected encoder with `VariationalWrapper`, adding μ and log σ² heads. Works with all `embedding_model` choices. |
 | `beta` | float | 1024.0 | MI weight in variational loss `L = KL − β·MI`. Large β (≥ 1) makes MI maximization dominate; decrease for stronger KL regularization |
 
 ### Memory & Device Layout
@@ -792,6 +812,10 @@ Pass any of these in the `base_params` dict:
 | `verbose` | bool | False | |
 | `show_progress` | bool | True | Show tqdm progress bar during training |
 | `return_embeddings` | bool | False | |
+| `return_rotated_embeddings` | bool | `False` | Compute SVD-aligned embeddings where dimension 0 has the most shared variance. Works alongside `return_embeddings` and/or `track_embeddings`. No effect for `concat` critics. Adds `embeddings_x_rotated`, `embeddings_y_rotated`, `embeddings_rotation_singular_values` (and per-epoch equivalents) to `result.details`. |
+| `rotated_embeddings_whitening` | str or None | `'std'` | Whitening for computing rotation axes only (`'std'`, `'zca'`, or `None`). Does not affect the scale of returned embeddings. |
+| `rotated_embeddings_per_epoch` | bool | `False` | `False`: one global rotation from the best epoch applied to all tracked epochs. `True`: per-epoch SVD (shows emerging structure). Only relevant when `track_embeddings` is also set. |
+| `return_rotation_matrices` | bool | `False` | Include rotation matrices U/V in `result.details` for projecting new data. |
 | `save_best_model_path` | str or None | None | |
 | `max_eval_samples` | int | 5000 | Max samples used for eval (GPU memory) |
 | `max_index_reduction` | float | 0.05 | Max allowed loss of MI index during eval |
@@ -850,20 +874,39 @@ rho = generators.mi_to_rho(dim=4, mi=1.5)
 
 ### Embeddings (`neural_mi.models`)
 
-All embedding models take tensors of shape `(batch, n_channels, window_size)` and output `(batch, embedding_dim)`.
+Most embedding models take tensors of shape `(batch, n_channels, window_size)` and output `(batch, embedding_dim)`. `CNN2D` and `PretrainedBackboneEmbedding` expect 4-D input `(batch, n_channels, H, W)`.
 
 ```python
-from neural_mi.models import MLP, CNN1D, GRU, LSTM, TCN, Transformer
+# Standard models
+from neural_mi.models import MLP, CNN1D, CNN2D, GRU, LSTM, TCN, Transformer
+
+# Physics-informed (inductive bias) models
+from neural_mi.models import (
+    SincEmbedding, CalciumEmbedding,
+    SpikePhysicsEmbedding, PretrainedBackboneEmbedding,
+)
 ```
 
-| Class | Key init params |
-|-------|----------------|
-| `MLP` | `input_dim, embedding_dim, hidden_dim, n_layers` |
-| `CNN1D` | `input_dim, embedding_dim, hidden_dim, kernel_size` |
-| `GRU` | `input_dim, embedding_dim, hidden_dim, n_layers, bidirectional` |
-| `LSTM` | `input_dim, embedding_dim, hidden_dim, n_layers, bidirectional` |
-| `TCN` | `input_dim, embedding_dim, hidden_dim, kernel_size` |
-| `Transformer` | `input_dim, embedding_dim, nhead, n_layers` |
+**Standard models:**
+
+| Class | Input shape | Key init params |
+|-------|-------------|----------------|
+| `MLP` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, n_layers` |
+| `CNN1D` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, kernel_size, use_depthwise` |
+| `CNN2D` | `(N, C, H, W)` | `input_dim, embedding_dim, hidden_dim, kernel_size` |
+| `GRU` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, n_layers, bidirectional` |
+| `LSTM` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, n_layers, bidirectional` |
+| `TCN` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, kernel_size` |
+| `Transformer` | `(N, C, W)` | `input_dim, embedding_dim, nhead, n_layers` |
+
+**Physics-informed (inductive bias) models:**
+
+| Class | `embedding_model` | Input shape | Key init params |
+|-------|------------------|-------------|----------------|
+| `SincEmbedding` | `'sinc_cnn'` | `(N, C, W)` | `input_dim, embedding_dim, n_sinc_filters, sample_rate, feature_fusion` |
+| `CalciumEmbedding` | `'calcium_cnn'` | `(N, C, W)` | `input_dim, embedding_dim, sample_rate, tau_rise, tau_decay, learn_calcium_kernel, feature_fusion` |
+| `SpikePhysicsEmbedding` | `'spike_physics'` | `(N, C, W)` | `input_dim, embedding_dim, max_spikes, no_spike_value, window_size, feature_fusion` |
+| `PretrainedBackboneEmbedding` | `'pretrained_backbone'` | `(N, C, H, W)` | `input_dim, embedding_dim, pytorch_predefined, pretrained` |
 
 ### Critics (`neural_mi.models`)
 
@@ -945,8 +988,8 @@ All internal computations are in **nats** (natural log). Conversion to bits (`×
 - **`'blocked'`** (default): Test set consists of `n_test_blocks` contiguous blocks distributed across the recording. A `split_gap_fraction` buffer is excluded from training on either side of each block. Appropriate for time series with temporal correlations.
 - **`'random'`**: IID random split. Use only when temporal correlations are not a concern.
 
-### Rigorous Mode — 1/γ Space
-The `rigorous` mode trains on subsets of size `N/γ`. The bias correction works in `1/γ` space (not `γ` space) because the bias is approximately linear in `1/N`, hence linear in `1/γ` when `N` is fixed. The functions `_find_linear_region` and `_extrapolate_mi` (in `analysis/rigorous.py`) operate in this space using the per-run `train_mi` as the dependent variable, consistent with every other mode.
+### Rigorous Mode — γ Space
+The `rigorous` mode trains on subsets of size `N/γ`. The bias correction works in `γ` space because the bias `a/N_chunk = (a/N)γ` is linear in γ when `N` is fixed. The functions `_find_linear_region` and `_extrapolate_mi` (in `analysis/rigorous.py`) fit MI vs γ, extrapolate to γ=0 (infinite data), and use the per-run `train_mi` as the dependent variable, consistent with every other mode.
 
 ### Pairwise Mode — Channel Naming
 The output DataFrame uses columns `ch_x`, `ch_y`, `mi_estimate` (integer channel indices). The MI matrix is `result.details['mi_matrix']`:
@@ -989,7 +1032,8 @@ Modes:
   pairwise     → result.dataframe [ch_x, ch_y, mi_estimate]
 
 Estimators: 'infonce' (default, has ceiling), 'smile' (no ceiling)
-Embeddings:  'mlp' (default), 'cnn', 'gru', 'lstm', 'tcn', 'transformer'
+Embeddings:  'mlp' (default), 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer'
+             physics-informed: 'sinc_cnn', 'calcium_cnn', 'spike_physics', 'pretrained_backbone'
 Critics:     'separable' (default), 'concat', 'hybrid'
 Units:       'bits' (default) or 'nats'
 

@@ -16,12 +16,16 @@ dependencies = [
     "statsmodels>=0.13.0",
     "torch>=2.0.0",
     "tqdm>=4.60.0",
+    "umap-learn>=0.5.0",
 ]
 
 [project.optional-dependencies]
 # scikit-learn is used only for PCA/t-SNE in plot_embeddings().
 # Install with: pip install neural_mi[sklearn]
 sklearn = ["scikit-learn>=1.0.0"]
+# torchvision is required only for PretrainedBackboneEmbedding.
+# Install with: pip install neural_mi[vision]
+vision = ["torchvision>=0.15.0"]
 dev = [
     "ipykernel>=6.0.0",
     "myst-parser>=0.18.0",

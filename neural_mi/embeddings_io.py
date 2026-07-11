@@ -25,15 +25,21 @@ _REQUIRED_BUILD_KEYS = (
 )
 
 
+_EMBEDDING_BATCH = 512  # internal batch size; no effect on results
+
+
 def extract_embeddings(
     model_path: str,
     x_data,
     y_data,
     base_params: Optional[Dict[str, Any]] = None,
     device: Optional[str] = None,
-    max_samples: int = 10_000,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Load a saved critic and extract embeddings for (x_data, y_data).
+
+    All samples are embedded in original order — no subsampling, no shuffling —
+    so the returned arrays are index-aligned with the input arrays.  Inference
+    is performed in mini-batches to avoid OOM errors on large datasets.
 
     NeuralMI saves models in one of two formats:
 
@@ -58,9 +64,6 @@ def extract_embeddings(
         all keys needed by :func:`~neural_mi.utils.build_critic`.
     device : str, optional
         Compute device (e.g., ``'cpu'``, ``'cuda'``).  Auto-detected if None.
-    max_samples : int, optional
-        If the dataset has more rows, a random subset of this size is used.
-        Defaults to 10 000.
 
     Returns
     -------
@@ -128,15 +131,17 @@ def extract_embeddings(
             f"got {x_t.shape[0]} and {y_t.shape[0]}."
         )
 
+    # --- Extract embeddings in mini-batches, preserving sample order ---
     n = x_t.shape[0]
-    if n > max_samples:
-        idx = np.random.choice(n, max_samples, replace=False)
-        idx_t = torch.from_numpy(idx)
-        x_t, y_t = x_t[idx_t], y_t[idx_t]
-        logger.debug(f"Subsampled to {max_samples} rows for embedding extraction.")
-
-    # --- Extract embeddings ---
+    zx_parts, zy_parts = [], []
     with torch.no_grad():
-        zx, zy = critic.get_embeddings(x_t.to(_device), y_t.to(_device))
+        for start in range(0, n, _EMBEDDING_BATCH):
+            end = min(start + _EMBEDDING_BATCH, n)
+            bzx, bzy = critic.get_embeddings(
+                x_t[start:end].to(_device),
+                y_t[start:end].to(_device),
+            )
+            zx_parts.append(bzx.detach().cpu())
+            zy_parts.append(bzy.detach().cpu())
 
-    return zx.detach().cpu().numpy(), zy.detach().cpu().numpy()
+    return torch.cat(zx_parts, dim=0).numpy(), torch.cat(zy_parts, dim=0).numpy()

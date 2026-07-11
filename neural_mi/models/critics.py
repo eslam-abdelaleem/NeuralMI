@@ -185,30 +185,24 @@ class HybridCritic(BaseCritic):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = x.size(0)
-        
-        # 1. Embed inputs using the efficient chunked method
+
+        # 1. Embed inputs (chunked over samples to bound encoder memory).
         x_embedded, y_embedded, total_kl_loss = self._compute_embeddings_chunked(
-            x, y, self.embedding_net_x, self.embedding_net_y, 
+            x, y, self.embedding_net_x, self.embedding_net_y,
             self.max_n_batches, self.use_variational
         )
-        
-        # 2. Compute the N^2 score matrix safely by generating pairs dynamically
-        scores = torch.zeros(batch_size * batch_size, device=x_embedded.device)
-        pair_batch_size = self.max_n_batches
-        
-        for i in range(0, batch_size * batch_size, pair_batch_size):
-            end_idx = min(i + pair_batch_size, batch_size * batch_size)
-            
-            # Map flat index back to row (x) and column (y)
-            idx = torch.arange(i, end_idx, device=x_embedded.device)
-            row_idx = idx // batch_size
-            col_idx = idx % batch_size
-            
-            pairs = torch.cat([x_embedded[row_idx], y_embedded[col_idx]], dim=1)
-            chunk_scores = self.decision_head(pairs).squeeze()
-            scores[i:end_idx] = chunk_scores
-            
-        return scores.view(batch_size, batch_size), total_kl_loss
+
+        # 2. Score all N² pairs in a single forward pass.
+        #    Pairs live in embedding space (N² × 2d), which is small relative to
+        #    raw input space, so full vectorization is safe for all typical batch sizes.
+        pairs = torch.cat(
+            [x_embedded.unsqueeze(1).expand(-1, batch_size, -1),   # (N, N, d)
+             y_embedded.unsqueeze(0).expand(batch_size, -1, -1)],  # (N, N, d)
+            dim=2
+        ).reshape(batch_size * batch_size, -1)                      # (N², 2d)
+        scores = self.decision_head(pairs).view(batch_size, batch_size)
+
+        return scores, total_kl_loss
 
 class ConcatCritic(BaseCritic):
     """A critic that processes raw concatenated input pairs.
@@ -245,40 +239,45 @@ class ConcatCritic(BaseCritic):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = x.size(0)
-        x_flat, y_flat = x.view(batch_size, -1), y.view(batch_size, -1)
+        x_flat = x.view(batch_size, -1)
+        y_flat = y.view(batch_size, -1)
 
-        scores = torch.zeros(batch_size * batch_size, device=x.device)
+        # Row-wise chunking: process chunk_rows rows of x per iteration.
+        # Each chunk contains chunk_rows * N pairs, bounding peak memory to
+        # max_n_batches pairs — same budget as the original flat-index loop.
+        chunk_rows = max(1, self.max_n_batches // batch_size)
+        scores = torch.zeros(batch_size, batch_size, device=x.device)
         total_kl_acc = torch.tensor(0.0, device=x.device)
         n_pair_chunks = 0
+        y_exp = y_flat.unsqueeze(0)  # (1, N, dy) — shared view, no copy
 
-        pair_batch_size = self.max_n_batches
-
-        for i in range(0, batch_size * batch_size, pair_batch_size):
-            end_idx = min(i + pair_batch_size, batch_size * batch_size)
-            pair_chunk_size = end_idx - i
-            idx = torch.arange(i, end_idx, device=x.device)
-            row_idx = idx // batch_size
-            col_idx = idx % batch_size
-            pairs = torch.cat([x_flat[row_idx], y_flat[col_idx]], dim=1)
+        for start in range(0, batch_size, chunk_rows):
+            end = min(start + chunk_rows, batch_size)
+            n_rows = end - start
+            n_pairs = n_rows * batch_size
+            pairs = torch.cat(
+                [x_flat[start:end].unsqueeze(1).expand(-1, batch_size, -1),
+                 y_exp.expand(n_rows, -1, -1)],
+                dim=2
+            ).reshape(n_pairs, -1)
             out = self.embedding_net(pairs)
 
             if isinstance(out, tuple):
                 chunk_scores, kl = out
                 if self.use_variational and not isinstance(kl, float):
-                    # kl is per-sample mean for this pair chunk; weight by chunk size
-                    # to accumulate the true sum of KL values across the chunk.
-                    total_kl_acc = total_kl_acc + kl * pair_chunk_size
+                    # kl is per-sample mean for this pair chunk; weight by n_pairs
+                    # to recover the true KL sum, matching the accumulation in
+                    # _compute_embeddings_chunked.
+                    total_kl_acc = total_kl_acc + kl * n_pairs
                     n_pair_chunks += 1
             else:
                 chunk_scores = out
 
-            scores[i:end_idx] = chunk_scores.squeeze()
+            scores[start:end] = chunk_scores.squeeze(-1).view(n_rows, batch_size)
 
         if self.use_variational and n_pair_chunks > 0:
-            # Divide by total number of pairs for a true per-sample mean over the
-            # full pair batch (weighted average across possibly unequal chunk sizes).
             kl_tensor = total_kl_acc.to(x.device) / (batch_size * batch_size)
         else:
             kl_tensor = torch.tensor(0.0, device=x.device)
 
-        return scores.view(batch_size, batch_size), kl_tensor
+        return scores, kl_tensor

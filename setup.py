@@ -14,12 +14,16 @@ setup(
         "tqdm>=4.60.0",
         "matplotlib>=3.5.0",
         "seaborn>=0.12.0",
+        "umap-learn>=0.5.0",
     ],
     extras_require={
         "dev": [
             "pytest>=7.0.0",
             "pytest-cov>=3.0.0",
             "ipykernel>=6.0.0",
+        ],
+        "vision": [
+            "torchvision>=0.15.0",
         ],
     },
 )

@@ -9,6 +9,487 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SVD-aligned rotated embeddings (`return_rotated_embeddings`)** (`neural_mi/utils.py`, `neural_mi/training/trainer.py`, `neural_mi/analysis/task.py`):
+  A new `compute_cross_covariance_rotation()` utility and four new `base_params` keys enable returning embeddings re-projected so that dimension 0 captures the most shared variance between the two modalities, dimension 1 the next most, and so on — consistent with the Participation Ratio ordering. This makes the first *k* dimensions directly interpretable without separately inspecting the SVD.
+
+  New parameters:
+  - `return_rotated_embeddings` (bool, default `False`) — enable the feature. Works alongside `return_embeddings` and/or `track_embeddings`; has no effect for `concat` critics (emits a `UserWarning`).
+  - `rotated_embeddings_whitening` (str or None, default `'std'`) — whitening applied to the cross-covariance before SVD to derive the rotation axes. Does **not** affect the scale of the returned embeddings (which are always `ZX_centered @ U`/`ZY_centered @ V` in original embedding space). Matches the default used by `compute_cross_covariance_spectrum` for consistency with PR estimates.
+  - `rotated_embeddings_per_epoch` (bool, default `False`) — when `track_embeddings` is also enabled: `False` (default) derives one global rotation from the best epoch's embeddings and applies it to all tracked epochs (consistent coordinate system across epochs); `True` computes a fresh SVD per tracked epoch (shows how latent structure emerges).
+  - `return_rotation_matrices` (bool, default `False`) — include U and V in `result.details` so new data can be projected into the same aligned basis.
+
+  New `result.details` keys:
+  - `embeddings_x_rotated`, `embeddings_y_rotated`, `embeddings_rotation_singular_values` (+ optional `embeddings_rotation_x/y`) — from `return_embeddings` path.
+  - `embedding_history_x_rotated`, `embedding_history_y_rotated`, `embedding_rotation_singular_values` (+ optional rotation matrices) — from `track_embeddings` path.
+
+- **Physics parameter tracking (`sinc_cnn`, `calcium_cnn`)** (`neural_mi/models/embeddings.py`, `neural_mi/training/trainer.py`):
+  Added `get_physics_params()` method to `SincEmbedding` and `CalciumEmbedding`. The trainer now
+  calls this method after every evaluation epoch and stores results in `result.details`:
+  - `result.details['physics_params_history']` — dict of per-epoch parameter lists (keys prefixed by
+    `x_` or `y_`, e.g. `x_f_low_hz`, `x_f_high_hz` for sinc; `x_tau_rise_s`, `x_tau_decay_s` for
+    calcium when `learn_calcium_kernel=True`).
+  - `result.details['physics_params_final']` — same keys with values from the best epoch.
+  Both keys are absent for non-learnable embeddings (standard CNN, or `learn_calcium_kernel=False`).
+
+- **Pretrained backbone spatial dimension mismatch handling** (`neural_mi/models/embeddings.py`):
+  `PretrainedBackboneEmbedding` now automatically inserts a bilinear `nn.Upsample` layer when input
+  images are not 224×224 (standard ImageNet resolution). The upsample is created lazily on the first
+  forward pass and emits a `UserWarning` with the input and expected sizes.
+
+- **Three new windowed generators with analytically known MI** (`neural_mi/generators/synthetic.py`):
+  - `generate_windowed_oscillatory(n_windows, n_channels, window_size, f_carrier_hz, sample_rate, latent_mi, snr)` —
+    windowed oscillatory LFP with shared latent carrier; MI computed from the linear-Gaussian
+    `ρ_obs = ρ_latent × SNR² / (SNR² + 1)` formula.
+  - `generate_windowed_multichannel(n_windows, n_channels, window_size, f_min_hz, f_max_hz, sample_rate, latent_mi, snr)` —
+    same model with per-channel carrier frequencies uniformly spaced in `[f_min_hz, f_max_hz]`; total
+    MI = sum over channels.
+  - `generate_windowed_calcium(n_windows, n_channels, window_size, sample_rate, tau_rise, tau_decay, latent_mi, noise_level)` —
+    GCaMP-convolved fluorescence traces from a shared Poisson spike process; returns a CCA lower
+    bound as the approximate true MI.
+  All three return `(X, Y, true_mi)` and are exported from `neural_mi.generators`.
+
+- **Tutorial 11 — Inductive Biases: Quantitative Validation** (`tutorials/raw tutorials/11_Inductive_Biases_Quantitative.py`,
+  `tutorials/11_Inductive_Biases_Quantitative.ipynb`):
+  Sample-efficiency curves (MI vs. N windows) comparing biased models to standard CNN baselines,
+  with analytically known ground-truth MI. Covers: depthwise CNN (multichannel LFP), SincCNN (10 Hz
+  LFP with filter convergence diagnostic), CalciumCNN (fluorescence traces with τ trajectory),
+  SpikePhysics (qualitative rate vs timing code), and pretrained backbone (MNIST vs Gaussian blobs).
+
+- **`generate_timing_code_spike_trains` generator** (`neural_mi/generators/synthetic.py`):
+  new function for generating a precise-timing spike code embedded in high-rate
+  independent background Poisson noise.  Each neuron pair shares signal spikes
+  (`signal_rate` Hz) that Y fires with a fixed `delay` + Gaussian `jitter`;
+  both populations are additionally driven by `background_rate` Hz background.
+  With `background_rate >> signal_rate`, all four `SpikePhysicsEmbedding`
+  summary features are dominated by noise, so GRU's ability to process actual
+  spike timestamps gives it a detectable advantage.  Exported from
+  `neural_mi.generators`.
+
+- **`torchvision` optional dependency** (`setup.py`, `pyproject.toml`):
+  added `vision` extras group (`pip install neural_mi[vision]`) for
+  `PretrainedBackboneEmbedding`.  Was previously an undeclared dependency.
+
+### Removed
+
+- **`generate_oscillatory_lfp`** (`neural_mi/generators/synthetic.py`): replaced by
+  `generate_windowed_oscillatory`, which returns IID pre-windowed arrays and an analytically
+  computed true MI value.
+- **`generate_calcium_traces`** (`neural_mi/generators/synthetic.py`): replaced by
+  `generate_windowed_calcium`, which returns pre-windowed arrays and a CCA lower-bound
+  estimate of true MI.
+
+### Fixed
+
+- **`SpikePhysicsEmbedding` shape mismatch with `feature_fusion='concat'`**
+  (`neural_mi/utils.py`): when X and Y populations have different numbers of
+  spikes per window (e.g., different firing rates), `net_y` was built with X's
+  `max_spikes`, making its `mlp_input_dim` incompatible with Y's tensor shape.
+  Fixed by computing `max_spikes_y` from `input_dim_y / n_channels_y` and
+  using it to build `net_y_base`.
+
+- **`ContinuousWindowDataset` / `CategoricalWindowDataset` time-vector units**
+  (`neural_mi/data/temporal.py`): when `sample_rate` is given but no
+  `time_vector`, both datasets now construct a seconds-based time vector
+  (`np.arange(N) / sample_rate`) instead of an integer-index vector.  With
+  integer indices, a `window_size` in seconds (e.g., 0.5 s) was less than one
+  sample, producing zero valid windows.
+
+- **GRU/LSTM validation false-positive in `ParameterSweep`**
+  (`neural_mi/analysis/sweep.py`): the check that errors when
+  `embedding_model='gru'` and `processor_type_x=None` no longer fires when
+  data has already been pre-processed upstream (detected via
+  `processor_params_x['preprocessed'] == True`).
+
+- **`'cnn2d'` missing from `ALLOWED_VALUES`** (`neural_mi/validation.py`):
+  `embedding_model='cnn2d'` raised a validation error; added to the allowed
+  list.
+
+### Changed
+
+- **Tutorial 10 — SincEmbedding section** (`tutorials/raw tutorials/10.py`):
+  increased LFP signal SNR from 2.0 to 3.0 and added `LFP_PARAMS` (250
+  epochs, patience 50) for both CNN and `sinc_cnn` comparisons.  `FAST_PARAMS`
+  (60 epochs) was insufficient for sinc filters to converge; updated commentary
+  explains this.
+
+- **Tutorial 10 — timing-code section** (`tutorials/raw tutorials/10.py`):
+  replaced `generate_correlated_spike_trains(delay=0.02)` (a mean-spike-time
+  code, captured directly by `SpikePhysicsEmbedding`) with
+  `generate_timing_code_spike_trains(signal_rate=5, background_rate=15)`
+  (signal spikes buried in noise, where summary statistics fail and GRU has an
+  advantage).  Added `TIMING_PARAMS` and `proc_spike_timing`.
+
+- **Online data augmentations (Batch 3)**: per-batch augmentations applied
+  during training only (never at eval time).  Three new `base_params` keys:
+  - `augmentation_params` — shared augmentation spec for both X and Y.
+  - `augmentation_params_x` — per-variable override for X (`None` = use shared,
+    `{}` = explicitly disable).
+  - `augmentation_params_y` — per-variable override for Y (same semantics).
+  Available augmentation keys (`neural_mi/augmentations.py`):
+  - *Spatial (4-D input only)*: `random_flip_h`, `random_flip_v`,
+    `random_rotation_90`, `random_crop`, `random_erase`, `time_mask`,
+    `freq_mask`, `gaussian_blur`.
+  - *Non-spatial (any ndim)*: `gaussian_noise`, `intensity_scale`,
+    `channel_dropout`.
+  - *Custom*: `custom` — a single callable or list of callables, each
+    accepting an `(N, ...)` tensor and returning a tensor of the same shape.
+  Application order is always: spatial → non-spatial → custom.  Spatial
+  augmentations requested on non-4-D input emit a `UserWarning` and are
+  skipped gracefully.
+
+- **Plotting — `estimate` mode: `conservative_epoch` marker**: when
+  `peak_fraction < 1.0` is used, `result.details` contains
+  `'conservative_epoch'` (the epoch whose train MI is reported as the final
+  estimate).  `Results.plot()` now draws a green dotted vertical line and a
+  diamond scatter marker at that epoch alongside the existing red best-epoch
+  marker.  Without `peak_fraction`, the plot is unchanged.
+
+- **Plotting — `dimensionality` mode: dedicated two-panel figure**: a new
+  `plot_dimensionality_curve()` function (also exported from
+  `neural_mi.visualize`) replaces the previous `plot_sweep_curve` call for
+  dimensionality results.  When participation-ratio data is available (always
+  the case from `run()`), the figure has two stacked panels: MI on top and
+  Participation Ratio (effective dimensionality) on the bottom — both sharing
+  the same sweep x-axis when a sweep grid was used.  Without a sweep, scalar
+  results are shown as annotated error-bar points.
+
+- **Plotting — `conditional` mode**: `Results.plot()` now renders a vertical
+  bar chart showing the three CMI components: `I(XZ;Y)`, `I(Z;Y)`, and
+  `CMI I(X;Y|Z)`.  Bars are labelled with numeric values.  Previously raised
+  `NotImplementedError`.
+
+- **Plotting — `transfer` mode**: `Results.plot()` now renders a bar chart
+  showing `TE(X→Y)` and (when available) `TE(Y→X)`.  The plot title includes
+  the directionality index and a plain-English direction label when present.
+  Previously raised `NotImplementedError`.
+
+- **Plotting — `Results.compare()` for `estimate` mode**: overlay of test-MI
+  training curves across multiple runs.  Each curve is drawn in a distinct
+  colour with best-epoch markers as faint dashed vertical lines.  Previously
+  raised `NotImplementedError`.
+
+- **`plot_bias_correction_fit` now returns `ax`**: the function previously
+  returned `None`; it now returns the `matplotlib.axes.Axes` used for the
+  plot, enabling composability.
+
+- **`plot_cross_correlation` composability**: added `ax`, `show`, and `xlim`
+  parameters; function now returns the axes.  The previously hard-coded
+  `xlim=(-100, 100)` is gone — the full lag range is shown by default.
+
+- **`analyze_mi_heatmap` composability**: added `ax` and `show` parameters;
+  function now returns the axes.  All `print()` statements replaced with
+  `logger.info()` / `logger.warning()` calls so the function is silent in
+  library use.
+
+- **`_RESULT_COLS` extended**: `participation_ratio`, `participation_ratio_mean`,
+  `participation_ratio_std`, `participation_ratio_singular`, and `split_id`
+  added to the frozenset.  These were previously missing, causing the
+  dimensionality sweep-variable inference to consider them as candidate
+  x-axis columns and fail silently.
+
+- **Rigorous plot `is_reliable=False` annotation**: when `is_reliable` is
+  `False` in `result.details`, `Results.plot()` adds a red text box to the
+  bias-correction figure so unreliable extrapolations are immediately visible
+  without checking `result.summary()`.
+
+- **`use_amp` parameter** (`'auto'` / `True` / `False`): mixed-precision (AMP)
+  training via `torch.cuda.amp.autocast` + `GradScaler`. Enabled automatically
+  on CUDA devices (`'auto'`); a no-op on CPU and MPS so all existing workflows
+  are unaffected. Added to `BASE_PARAMS_SCHEMA` in `defaults.py`; wired through
+  `run()`, `task.py`, and `Trainer`. On CUDA the forward pass runs in float16,
+  reducing memory by ~2× and improving throughput on Ampere+ GPUs.
+
+- **`Results.to_dict()`**: returns a fully JSON-serialisable `dict` with keys
+  `mode`, `mi_estimate`, `params`, `details`, and `dataframe`. All numpy arrays
+  are converted to nested Python lists; DataFrames are exported in `records`
+  orientation; non-serialisable objects fall back to a `"<TypeName>"` string.
+
+- **`Results.to_json()` now uses `to_dict()`**: arrays are serialised as nested
+  lists (previously as `"<array shape=... dtype=...>"` strings), making the JSON
+  output both human-readable and round-trippable. Existing call signatures and
+  the auto-naming / no-overwrite behaviour are unchanged.
+
+- **Named variable support in `run()`**: four new optional top-level arguments —
+  `x_name` (str), `y_name` (str), `channel_names_x` (list of str),
+  `channel_names_y` (list of str). Stored in `result.params` for use in plot
+  axis labels. In pairwise mode, `channel_names_x/y` are injected into
+  `result.details['variable_names_x/y']`, which drives the MI-matrix heatmap
+  tick labels. Fallback when omitted is the current integer-index behaviour.
+
+- **`return_embeddings` — full dataset, original order**: `result.details['embeddings_x']`
+  and `result.details['embeddings_y']` now contain embeddings for **all** windows in
+  original sample order, with no subsampling or shuffling. Previously the extraction
+  block reused `max_eval_samples` (default 5000) and drew a random subset via
+  `np.random.choice`, making the returned arrays impossible to align with
+  time-indexed behavioural signals. Inference is now performed in mini-batches of
+  512 (internal constant `_EMBEDDING_BATCH`) to avoid OOM on large datasets.
+  `max_eval_samples` continues to control only the epoch-level evaluation MI estimate
+  and has no effect on embedding extraction. Applies to all modes: `estimate`,
+  `sweep`, and `dimensionality`.
+
+- **`extract_embeddings()` — full dataset, original order**: same fix applied to the
+  standalone function in `embeddings_io.py`. The `max_samples` parameter has been
+  removed entirely; inference uses mini-batched ordered iteration over the full
+  input. Code that previously passed `max_samples=N` will receive a `TypeError` and
+  should be updated (pass the desired subset of the data directly).
+
+- **Dimensionality mode — embedding arrays no longer corrupt the results DataFrame**:
+  `run_dimensionality_analysis()` now strips `embeddings_x`/`embeddings_y` from the
+  per-split result dicts before constructing the `pd.DataFrame`. Previously, if
+  `return_embeddings=True` was set, 2-D numpy arrays would end up as object-dtype
+  columns in the aggregated DataFrame, breaking groupby aggregation. The embeddings
+  are now returned as a second value `(df, embeddings_dict_or_None)` from
+  `run_dimensionality_analysis()`; `run()` unpacks this and places the arrays in
+  `result.details['embeddings_x/y']`. With `n_splits > 1`, embeddings come from the
+  last split's model (logged explicitly).
+
+- **`show` parameter for plot utilities**: `plot_sweep_curve`, `plot_dimensionality_curve`,
+  and `plot_bias_correction_fit` now accept `show: bool = True`. When `False`,
+  `plt.show()` is suppressed, enabling these functions to be embedded in multi-panel
+  figures or called in Jupyter notebooks without blocking execution.
+
+- **Dimensionality mode — `split_method='index'`**: new channel-split option for
+  `run_dimensionality_analysis()` / `run(..., mode='dimensionality')`.  Pass
+  `channel_indices_x=[0, 1, 4, 5, 7]` as a keyword argument; Y is automatically the
+  complement set.  Works for both 2-D `(N, C)` and 3-D `(N, C, W)` data.  When X and
+  Y have different channel counts, `shared_encoder=True` is automatically disabled with
+  a logger warning; this can be suppressed by explicitly setting `shared_encoder=False`
+  in `base_params`.  Multiple `n_splits` independent model initialisations are still
+  performed (same fixed channel assignment, different weight initialisation) so the
+  output DataFrame retains the same mean/std structure as other split methods.
+
+- **`track_embeddings` parameter**: controls per-epoch embedding extraction during
+  training.  Accepted in `base_params` for all analysis modes; in `dimensionality` mode
+  the default is `512` (track the first 512 samples each epoch); in all other modes the
+  default is `False` (disabled).  Accepted values mirror the existing `eval_train`
+  syntax: `False` (off), `True` (first 512 samples), a positive `int` (exact sample
+  count), a `float` in `(0, 1)` (fraction of dataset), or `'full'` (entire dataset,
+  emits a `UserWarning` about memory cost).  Embeddings are always extracted from the
+  first N samples in original order (deterministic, aligns with user-provided labels).
+  Per-epoch arrays are stored in `result.details['embedding_history_x']` and
+  `result.details['embedding_history_y']` (each a list of `(n_tracked, embed_dim)`
+  numpy arrays, one per epoch).
+
+- **`animate_training()` and `result.animate()`**: new animation utility in
+  `neural_mi.visualize.animate` that creates frame-by-frame GIF / MP4 animations from
+  training history stored in `result.details`.  Panels are auto-detected from available
+  data or specified explicitly via `panels=['mi', 'spectral_metrics', 'spectrum', 'embeddings']`.
+  The `'mi'` panel always shows test MI vs epoch; train MI is overlaid when present.
+  The `'spectral_metrics'` panel plots participation ratio vs epoch.  The `'spectrum'`
+  panel shows an animated bar chart of singular values (requires `spectral_mode='full'`).
+  The `'embeddings'` panel renders a 2-D or 3-D scatter of learned embeddings at each
+  epoch, with PCA or UMAP reduction fitted jointly on all frames for consistent
+  coordinates.  Pass `embedding_labels` as a 1-D array or a `dict` of name → array for
+  categorical (tab10 palette) or continuous (viridis) point colouring; each dict entry
+  produces its own subplot column.  Output is saved as a GIF via `PillowWriter` or MP4
+  via `FFMpegWriter` when `output_path` is supplied.  `result.animate(**kwargs)` is a
+  thin wrapper around `animate_training(result, **kwargs)`.
+
+- **`umap-learn >= 0.5.0` added as a hard dependency**: required for UMAP dimensionality
+  reduction in `animate_training()`.  Added to both `setup.py` and `pyproject.toml`.
+
+- **`CNN2D` encoder — `embedding_model='cnn2d'`**: new 2-D convolutional encoder for
+  image-like input of shape `(N, C, H, W)`. Architecture: stacked `Conv2d` blocks (same
+  padding) → `AdaptiveAvgPool2d(1)` → `Flatten` → two `Linear` layers. The adaptive
+  pooling head collapses any spatial size to a fixed `(1, 1)` representation so no
+  `input_shape` parameter is needed — only `n_channels` is used, exactly as for `CNN1D`.
+  Reuses the existing `kernel_size` base parameter (must be odd, default 3).  Exported
+  from `neural_mi.models` and selectable via `embedding_model='cnn2d'` in any analysis
+  mode.
+
+- **4-D input support in `task.py`**: `run_training_task()` now handles 4-D tensors
+  `(N, C, H, W)` when computing `input_dim_x/y` (previously assumed `(N, C, W)`).
+  Behaviour by model type:
+  - `'cnn2d'` — handled natively; no warning.
+  - `'mlp'` — flattened to `C×H×W` features silently; no warning.
+  - `'cnn'` (CNN1D) — raises `ValueError` (spatial axes are ambiguous for a 1-D kernel).
+  - all other sequence/graph models (`'gru'`, `'lstm'`, `'tcn'`, `'transformer'`) —
+    emit a `UserWarning` noting that spatial dimensions are not preserved.
+
+- **Dimensionality mode — spatial split methods for 4-D data**: six new/updated
+  `split_method` values for `run_dimensionality_analysis()` / `run(..., mode='dimensionality')`:
+  - `'horizontal'` — top half vs. bottom half (height axis).
+  - `'vertical'` — left half vs. right half (width axis).
+  - `'row_interleaved'` — even-indexed rows → X, odd-indexed rows → Y. Fine-grained
+    horizontal stripes; avoids contiguous spatial bias.
+  - `'col_interleaved'` — even-indexed columns → X, odd-indexed columns → Y.
+    Column-wise counterpart to `'row_interleaved'`.
+  - `'diagonal'` — true geometric split: upper-left triangle + main diagonal → X
+    (`row ≤ col`), lower-right triangle → Y. Works with `'mlp'` and sequence models;
+    raises `ValueError` for `'cnn2d'` / `'cnn'`. Rectangular input (H ≠ W) is allowed
+    with a warning; `shared_encoder` is always disabled (diagonal pixels go to X).
+  - `'antidiagonal'` — true geometric split: upper-right triangle + anti-diagonal → X
+    (`row + col ≤ W−1`), lower-left triangle → Y. Same constraints as `'diagonal'`.
+  All six require 4-D input `(N, C, H, W)`. Unequal flat sizes disable `shared_encoder`
+  automatically.
+
+  > **Note:** what was previously called `'diagonal'` (interleaved rows) has been renamed
+  > `'row_interleaved'`, and `'antidiagonal'` (interleaved columns) has been renamed
+  > `'col_interleaved'`.  The names `'diagonal'` and `'antidiagonal'` now refer to the
+  > true geometric triangular splits.
+
+- **Dimensionality mode — `split_method='index'` extended to 4-D**: the existing index
+  split now handles 4-D tensors `(N, C, H, W)` in addition to 2-D `(N, C)` and 3-D
+  `(N, C, W)` data.
+
+#### Physics-Informed (Inductive Bias) Embedding Models
+
+- **`use_depthwise=True` for `embedding_model='cnn'`**: new option on `CNN1D` that
+  replaces the first `Conv1d` layer with a depthwise (per-channel groups) convolution
+  followed by a pointwise 1×1 convolution.  Enforces per-channel temporal filtering
+  before any cross-channel mixing without adding parameters.  Set via
+  `base_params={'use_depthwise': True}`.
+
+- **`SincEmbedding` — `embedding_model='sinc_cnn'`**: learnable FIR bandpass filters
+  for EEG / LFP data.  Filter cutoffs are parameterised as `log(f_low)` / `log(f_high)`
+  and initialised to the five canonical neural frequency bands (δ, θ, α, β, γ) plus
+  high-γ bands.  A Hamming window is applied to each filter to reduce spectral leakage.
+  `n_sinc_filters` (default 8) controls the number of filters per channel.  Requires
+  `sample_rate` (injected automatically from `processor_params_x/y`).  Supports
+  `feature_fusion='features'` (default) or `'concat'`.
+
+- **`CalciumEmbedding` — `embedding_model='calcium_cnn'`**: FIR deconvolution of the
+  GCaMP indicator impulse response `h(t) = exp(−t/τ_decay) − exp(−t/τ_rise)`.  Default
+  `tau_rise=0.05 s`, `tau_decay=0.4 s` (GCaMP6s).  Set `learn_calcium_kernel=True` to
+  make the time constants learnable parameters.  Requires `sample_rate`.  Supports
+  `feature_fusion`.
+
+- **`SpikePhysicsEmbedding` — `embedding_model='spike_physics'`**: handcrafted feature
+  extractor for raw spike timestamps produced by the spike processor.  Extracts four
+  per-neuron statistics (firing rate, mean spike time, mean ISI, ISI variance) without
+  any learned parameters in the feature stage.  Handles the `no_spike_value` sentinel
+  correctly (injected automatically from `processor_params_x/y`).  Supports
+  `feature_fusion`.
+
+- **`PretrainedBackboneEmbedding` — `embedding_model='pretrained_backbone'`**: frozen
+  torchvision backbone (e.g. ResNet18, EfficientNet-B0) used as a fixed feature
+  extractor, followed by a trainable MLP head mapping to `embedding_dim`.  Set
+  `pytorch_predefined` to the torchvision model name and `pretrained=True` to load
+  ImageNet weights.  Expects 4-D input `(N, C, H, W)`.
+
+- **Modality metadata plumbing** (`task.py`): `run_training_task()` now injects
+  `sample_rate_x`, `sample_rate_y`, `no_spike_value`, and `embedding_window_size` into
+  the params dict from `processor_params_x/y` before calling `build_critic()`.  These
+  values are consumed by the inductive-bias constructors and do not need to be set
+  manually by the user.
+
+- **New synthetic data generators** (`neural_mi/generators/synthetic.py`):
+  `generate_oscillatory_lfp`, `generate_calcium_traces`,
+  `generate_modulated_spike_trains`, `generate_noisy_image_pairs`.  All four are
+  exported from `neural_mi.generators`.
+
+- **Tutorial 10 — Inductive Biases**: new tutorial (`tutorials/raw tutorials/10.py`)
+  covering all five physics-informed models with worked examples and the
+  `feature_fusion` parameter.
+
+### Fixed
+
+- **`test_critic_chunking_equivalency[Separable]` flaky failure**: the test used
+  unseeded `x_data`/`y_data` fixtures; in the full suite their values depended on
+  cumulative RNG state, occasionally producing bilinear critic scores of magnitude
+  10⁵+ where float32 differences between chunked and non-chunked forward passes
+  exceeded the `atol=1e-4` tolerance.  Fix: move `torch.manual_seed(42)` to the
+  very first line of the test body and construct `x_data`/`y_data` locally,
+  making the test fully deterministic regardless of execution order.
+
+- **`test_paired_time_shift_positive` flaky failure**: after undoing a time shift
+  (`+d` then `−d`) the spike-time float64 round-trip can shift the reconstructed
+  window range by ε, yielding ±1 window vs. the original and an index-offset in
+  the window tensor (so `after_undo[i] ≈ original[i−1]`).  Fix: replace the
+  fragile `torch.allclose` data comparison with a check that (1) the continuous
+  time vector is approximately restored (`np.allclose(..., atol=1e-6)`) and (2)
+  the window count is within ±1 of the original.
+
+- **`_BUILD_PARAMS_KEYS` consolidation** (`task.py`): the module-level constant was missing
+  all six decoder keys (`use_decoder`, `decoder_weight`, `decoder_weight_x`,
+  `decoder_weight_y`, `decoder_output_activation_x`, `decoder_output_activation_y`). A
+  redundant local redefinition inside `run_training_task()` held the complete list. The
+  local redefinition has been removed; the module-level constant is now the single
+  authoritative source used by both `run_training_task()` and `extract_embeddings()`.
+
+- **`spectral_output` docstring** (`trainer.py`): the docstring incorrectly stated `'full'`
+  as the value that returns all spectral metrics. The actual code checks for `== 'all'`;
+  the docstring has been corrected to match.
+
+- **Rigorous mode `is_reliable` false-positive for large datasets (R² gate)**:
+  R² of the WLS linear fit was previously a condition for `fit_quality_warning`
+  (and therefore `is_reliable=False`). With large N, the finite-sampling bias
+  across gamma values is inherently small, producing a near-flat MI vs. gamma
+  curve where R² collapses toward zero even when the fit and extrapolation are
+  sound (observed: R²=0.10 at N=10 000, R²=0.00 at N=1 000 on well-behaved
+  data). R² is now computed and stored in `result.details['r_squared']` for
+  transparency but no longer affects `fit_quality_warning`. The `r2_threshold`
+  parameter is retained in all public APIs for backward compatibility but is a
+  no-op.
+
+- **Rigorous mode `is_reliable` false-positive for large datasets (residual
+  gate)**: `fit_quality_warning` (max externally studentized residual >
+  threshold) was also a condition for `is_reliable=False`. The heteroscedastic
+  WLS structure of rigorous mode — where low-gamma rows dominate the MSE while
+  high-gamma training runs have natural noise — routinely produces large
+  studentized residuals even for perfectly valid fits (observed: residuals of
+  4.63, 9.03, and 3.22 at N=1 000/5 000/10 000 with threshold 2.5).
+  `fit_quality_warning` is now **informational only** and does not affect
+  `is_reliable`. `is_reliable` is now governed solely by (1) sufficient gamma
+  points and (2) `leverage_warning` (LOO γ=1 intercept-stability check), which
+  is scale-invariant and directly tests whether the extrapolation anchor is
+  stable.
+
+### Changed
+
+- **`NEURALMI_REFERENCE.md`** updated to document recently added parameters: `peak_fraction`
+  added to Training table; `track_spectral_metrics` and `return_spectrum` added to
+  Spectral/Whitening table; new Decoder section covering `use_decoder`, `decoder_weight`,
+  `decoder_weight_x/y`, and `decoder_output_activation_x/y`; `use_amp` added to Memory &
+  Device table; `plot_dimensionality_curve` and `plot_bias_correction_fit` signatures in
+  the Low-Level Utilities section updated to reflect the new `show` parameter; new Online
+  Data Augmentations section covering all 11 built-in keys, the three `base_params`
+  augmentation keys, application order, and usage examples; §4 extended with 4-D input
+  note for CNN2D and spatial augmentations; §5 `run()` signature annotated with
+  augmentation params; §10 CNN2D input shape corrected to 4-D; Quick Reference Card
+  updated; §12 Design Decisions augmented with augmentation note.
+
+### Tests Added
+
+- `tests/test_augmentations.py`: 32 tests covering all 11 built-in augmentation
+  types (shape preservation for 3-D and 4-D inputs, spatial-on-3D `UserWarning`,
+  Gaussian noise / intensity scale / channel dropout semantics, time mask / freq
+  mask / random erase / Gaussian blur correctness, custom callable and list of
+  callables, `custom` invalid-type error, application order, and `True` shortcut
+  defaults).
+
+- `tests/test_amp_and_names.py`: 14 tests covering `use_amp` (`'auto'`, `True`,
+  `False` on CPU; schema presence; sweep-mode passthrough) and named variables
+  (`x_name`/`y_name` stored in params; pairwise `channel_names_x/y` injected
+  into details; clean params when names are omitted; signature reflection).
+- `tests/test_results_extended.py`: 9 new tests in `TestToDict` covering
+  `to_dict()` return type, required keys, 1-D and 2-D numpy arrays as nested
+  lists, training-history inclusion, DataFrame as records, `None` DataFrame, and
+  `to_json()` round-trip fidelity.
+- `tests/test_rigorous_diagnostics.py`: added `test_low_r2_does_not_trigger_fit_quality_warning`
+  — regression test confirming that a near-flat MI curve (large N, tiny bias)
+  with low R² does not set `fit_quality_warning=True`. Also added
+  `test_gamma1_outlier_sets_is_reliable_false` — confirms that `leverage_warning`
+  (not `fit_quality_warning`) is the gate for `is_reliable`.
+- `tests/test_dimensionality.py`: 17 new tests covering `_extract_embedding_history`,
+  `_strip_embeddings`, `split_method='index'` input validation (missing/empty/out-of-range
+  `channel_indices_x`, all-channels-to-X, unknown split_method), the `shared_encoder`
+  auto-disable guard (unequal vs equal channel counts), correct 2-D and 3-D channel
+  slicing, `n_splits` task-count, and the `track_embeddings=512` auto-default.
+- `tests/test_animate.py`: 27 new tests covering `_auto_panels`, `_fit_reducer` (no-op when
+  `embed_dim ≤ n_components`; `reduction='none'`; PCA; empty input; unknown reduction),
+  `_resolve_scatter_color` (None, float, categorical int, categorical str), and
+  `animate_training()` smoke tests for MI-only, auto-panels, spectral, spectrum, train MI
+  overlay, missing `test_mi_history` error, empty panel list error, single-array and dict
+  embedding labels, missing embedding history warning, 3-D embeddings, `reduction='none'`,
+  and the `result.animate()` delegate.
+
+---
+
+## [Unreleased]
+
+### Added
+
 #### Generic Variational Wrapper (`use_variational=True` for all encoders)
 - **Removed `VarMLP`** — the purpose-built variational MLP is gone entirely.
   All `use_variational=True` runs now use `VariationalWrapper` instead.
@@ -112,7 +593,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `is_reliable`, `gammas_used`, `fit_quality_warning`, `leverage_warning`,
   `r_squared`, `max_abs_residual`, `loo_intercept_shift`, `raw_results_df`.
 - Graceful fallback: when the linear-region finder prunes too aggressively (noisy
-  data with no clear 1/γ trend), `run_rigorous_scalar_analysis` falls back to
+  data with no clear γ trend), `run_rigorous_scalar_analysis` falls back to
   using all available γ values and sets `is_reliable=False`.
 - New public function `run_rigorous_scalar_analysis()` in
   `neural_mi/analysis/rigorous.py` for use with any scalar MI-derived quantity.

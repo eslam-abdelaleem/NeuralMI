@@ -192,6 +192,10 @@ class ContinuousWindowDataset(TemporalWindowDataset):
 
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
+        elif sample_rate is not None:
+            # When sample_rate is given without a time vector, construct a
+            # seconds-based time vector so that window_size is also in seconds.
+            self.time_vector = np.arange(0, self.data_orig.shape[0]) / float(sample_rate)
         else:
             self.time_vector = np.arange(0, self.data_orig.shape[0])
 
@@ -504,41 +508,67 @@ class SpikeWindowDataset(TemporalWindowDataset):
     
     def move_data_to_windows(self):
         """
-        Convert spike times into windowed format. 
-        Spike data of form [(n_channels, n_spikes)] is reshaped to 
-        (n_windows, n_channels, n_timepoints_in_window)
-        
-        Requires an attached window manager
+        Convert spike times into windowed format.
+        Spike data of form [(n_channels, n_spikes)] is reshaped to
+        (n_windows, n_channels, n_timepoints_in_window).
+
+        Supports both non-overlapping and overlapping windows (step_size < window_size).
+        Each spike is assigned to every window whose time range contains it.
+
+        Requires an attached window manager.
         """
         if self.window_manager is None:
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
-        
+
+        wt = self.window_manager.window_times   # sorted window start times
+        ws = self.window_manager.window_size
+        n_windows = self.window_manager.n_windows
+
         # Preallocate
-        data_shape = (self.window_manager.n_windows, len(self.data_orig), self.max_samples_per_window)
+        data_shape = (n_windows, len(self.data_orig), self.max_samples_per_window)
         data = np.full(data_shape, self.no_spike_value, dtype=np.float32)
         self._cached_window_inds = []
-        # Loop over channels/neurons/muscles
-        for i in range(len(self.data_orig)):
-            # Don't move data that occurs after the last window
-            mask = np.logical_and(
-                self.data_orig[i] >= self.window_manager.t_start,
-                self.data_orig[i] <= self.window_manager.t_end 
-            )
-            # Use searchsorted on each neuron/muscle to assign to chunks
-            # For millions of spikes, this is by far the slowest part of this whole function!
-            window_inds = np.searchsorted(self.window_manager.window_times, self.data_orig[i][mask]) - 1
 
-            _, counts = np.unique(window_inds, return_counts=True)
-            column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
-            data[window_inds,i,column_inds] = self.data_orig[i][mask] - self.window_manager.window_times[window_inds]
-            self._cached_window_inds.append(window_inds)
+        # Two-pointer loop: O(n_spikes + n_windows) per neuron.
+        # Works correctly for both overlapping and non-overlapping windows:
+        # a spike belongs to window w iff  wt[w] <= spike_time < wt[w] + ws.
+        for i in range(len(self.data_orig)):
+            spikes = self.data_orig[i]  # pre-sorted
+
+            # Restrict to spikes that could fall in any window
+            if len(spikes) == 0 or n_windows == 0:
+                self._cached_window_inds.append(np.array([], dtype=np.intp))
+                continue
+
+            spikes = spikes[(spikes >= wt[0]) & (spikes < wt[-1] + ws)]
+            has_data = np.zeros(n_windows, dtype=bool)
+
+            L = R = 0
+            for w in range(n_windows):
+                w_start = wt[w]
+                w_end = w_start + ws
+                # Advance L past spikes that ended before this window
+                while L < len(spikes) and spikes[L] < w_start:
+                    L += 1
+                # Advance R to include all spikes in this window
+                while R < len(spikes) and spikes[R] < w_end:
+                    R += 1
+                # spikes[L:R] all fall in [w_start, w_end)
+                n_sp = min(R - L, self.max_samples_per_window)
+                if n_sp > 0:
+                    data[w, i, :n_sp] = spikes[L:L + n_sp] - w_start
+                    has_data[w] = True
+
+            self._cached_window_inds.append(np.where(has_data)[0])
+
         # Convert to tensor on data_device. Keep a master clone for noise/precision ops.
         self.data = torch.tensor(data, device=self.data_device)
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
-        """Check which windows have sufficient data coverage. Assumes window manager attached"""
-        windows_with_spikes = np.unique(np.concatenate(self._cached_window_inds))
+        """Check which windows have sufficient data coverage. Assumes window manager attached."""
+        windows_with_spikes = np.unique(np.concatenate(self._cached_window_inds)) \
+            if any(len(w) > 0 for w in self._cached_window_inds) else np.array([], dtype=np.intp)
         valid = np.full(self.window_manager.window_times.shape, False, bool)
         valid[windows_with_spikes] = True
         return valid
@@ -643,30 +673,29 @@ class BinnedSpikeDataset(TemporalWindowDataset):
 
         data = np.zeros((n_windows, n_neurons, n_bins), dtype=np.float32)
 
+        # Two-pointer loop: correctly handles overlapping windows.
+        # Each spike contributes to every window whose range contains it.
         for i, spikes in enumerate(self.data_orig):
+            if len(spikes) == 0 or n_windows == 0:
+                continue
+
+            spikes = spikes[(spikes >= wt[0]) & (spikes < wt[-1] + ws)]
             if len(spikes) == 0:
                 continue
 
-            # Vectorized: find which window each spike belongs to
-            # searchsorted gives index such that wt[idx-1] <= spike < wt[idx]
-            # subtract 1 to get the window index (spikes before first window get -1)
-            win_idx = np.searchsorted(wt, spikes, side='right') - 1
-
-            # Keep only spikes that fall within a valid window
-            in_range = (win_idx >= 0) & (win_idx < n_windows)
-            spikes_in = spikes[in_range]
-            win_idx_in = win_idx[in_range]
-
-            if len(spikes_in) == 0:
-                continue
-
-            # Compute relative spike time within window, then bin index
-            rel_times = spikes_in - wt[win_idx_in]
-            bin_idx = np.floor(rel_times / ws * n_bins).astype(np.int32)
-            bin_idx = np.clip(bin_idx, 0, n_bins - 1)  # guard against floating point at boundary
-
-            # Accumulate counts using np.add.at (handles repeated indices correctly)
-            np.add.at(data[:, i, :], (win_idx_in, bin_idx), 1.0)
+            L = R = 0
+            for w in range(n_windows):
+                w_start = wt[w]
+                w_end = w_start + ws
+                while L < len(spikes) and spikes[L] < w_start:
+                    L += 1
+                while R < len(spikes) and spikes[R] < w_end:
+                    R += 1
+                if R > L:
+                    rel_times = spikes[L:R] - w_start
+                    bin_idx = np.floor(rel_times / ws * n_bins).astype(np.int32)
+                    bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+                    np.add.at(data[w, i, :], bin_idx, 1.0)
 
             if self.normalize:
                 data[:, i, :] /= self.bin_size
@@ -676,19 +705,8 @@ class BinnedSpikeDataset(TemporalWindowDataset):
 
     def validate_window_coverage(self):
         """Mark a window valid if at least one neuron fired in it."""
-        n_windows = self.window_manager.n_windows
-        valid = np.zeros(n_windows, dtype=bool)
-        wt = self.window_manager.window_times
-
-        all_spikes = np.concatenate([st for st in self.data_orig if len(st) > 0]) \
-            if any(len(st) > 0 for st in self.data_orig) else np.array([])
-
-        if len(all_spikes) > 0:
-            win_idx = np.searchsorted(wt, all_spikes, side='right') - 1
-            in_range = (win_idx >= 0) & (win_idx < n_windows)
-            valid[win_idx[in_range]] = True
-
-        return valid
+        # Use the filled data tensor: any window with a non-zero bin has data.
+        return (self.data.sum(dim=(1, 2)).numpy() > 0)
     
     def __getitem__(self, idx):
         return self.data[idx]
@@ -759,6 +777,10 @@ class CategoricalWindowDataset(TemporalWindowDataset):
 
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
+        elif sample_rate is not None:
+            # When sample_rate is given without a time vector, construct a
+            # seconds-based time vector so that window_size is also in seconds.
+            self.time_vector = np.arange(0, self.data_orig.shape[0]) / float(sample_rate)
         else:
             self.time_vector = np.arange(0, self.data_orig.shape[0])
 
@@ -832,78 +854,125 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         self.data_master = self.data.detach().clone()
 
     def _move_majority_vote(self):
-        """One-hot of the most common category per window. Shape: (n_windows, n_channels, n_categories)"""
+        """One-hot of the most common category per window. Shape: (n_windows, n_channels, n_categories)
+
+        Uses a two-pointer sliding window so each time point is included in
+        every window whose range [wt[w], wt[w]+window_size) it falls in.
+        Supports overlapping windows (step_size < window_size).
+        """
         n_channels = self.data_orig.shape[1]
+        wt = self.window_manager.window_times
+        ws = self.window_manager.window_size
+        n_windows = self.window_manager.n_windows
+
         mask = (self.time_vector >= self.window_manager.t_start) & \
-            (self.time_vector <= self.window_manager.t_end)
-        win_idx = np.searchsorted(self.window_manager.window_times,
-                                self.time_vector[mask], side='right') - 1
+            (self.time_vector < self.window_manager.t_end + ws)
+        times_in = self.time_vector[mask]
         data_in = self.data_orig[mask]
 
-        n_windows = self.window_manager.n_windows
         result = np.zeros((n_windows, n_channels, self.n_categories), dtype=np.float32)
+        window_counts = np.zeros(n_windows, dtype=int)
 
+        L = R = 0
         for w in range(n_windows):
-            rows = data_in[win_idx == w]
-            if len(rows) == 0:
+            w_start = wt[w]
+            w_end = w_start + ws
+            while L < len(times_in) and times_in[L] < w_start:
+                L += 1
+            while R < len(times_in) and times_in[R] < w_end:
+                R += 1
+            if R <= L:
                 continue
+            rows = data_in[L:R]
+            window_counts[w] = R - L
             for c in range(n_channels):
                 counts = np.bincount(rows[:, c], minlength=self.n_categories)
                 result[w, c, np.argmax(counts)] = 1.0
 
-        self._cached_window_inds = win_idx
+        self._window_counts = window_counts
         self.data = torch.tensor(result, device=self.data_device)
 
     def _move_probability(self):
-        """Empirical category probabilities per window. Shape: (n_windows, n_channels, n_categories)"""
+        """Empirical category probabilities per window. Shape: (n_windows, n_channels, n_categories)
+
+        Uses a two-pointer sliding window so each time point is included in
+        every window whose range [wt[w], wt[w]+window_size) it falls in.
+        Supports overlapping windows (step_size < window_size).
+        """
         n_channels = self.data_orig.shape[1]
+        wt = self.window_manager.window_times
+        ws = self.window_manager.window_size
+        n_windows = self.window_manager.n_windows
+
         mask = (self.time_vector >= self.window_manager.t_start) & \
-            (self.time_vector <= self.window_manager.t_end)
-        win_idx = np.searchsorted(self.window_manager.window_times,
-                                self.time_vector[mask], side='right') - 1
+            (self.time_vector < self.window_manager.t_end + ws)
+        times_in = self.time_vector[mask]
         data_in = self.data_orig[mask]
 
-        n_windows = self.window_manager.n_windows
         result = np.zeros((n_windows, n_channels, self.n_categories), dtype=np.float32)
+        window_counts = np.zeros(n_windows, dtype=int)
 
+        L = R = 0
         for w in range(n_windows):
-            rows = data_in[win_idx == w]
-            if len(rows) == 0:
+            w_start = wt[w]
+            w_end = w_start + ws
+            while L < len(times_in) and times_in[L] < w_start:
+                L += 1
+            while R < len(times_in) and times_in[R] < w_end:
+                R += 1
+            if R <= L:
                 continue
+            rows = data_in[L:R]
+            window_counts[w] = R - L
             for c in range(n_channels):
                 counts = np.bincount(rows[:, c], minlength=self.n_categories).astype(np.float32)
                 total = counts.sum()
                 if total > 0:
                     result[w, c, :] = counts / total
 
-        self._cached_window_inds = win_idx
+        self._window_counts = window_counts
         self.data = torch.tensor(result, device=self.data_device)
 
     def _move_full_trajectory(self):
-        """Original behavior: full one-hot trajectory. Shape: (n_windows, n_channels, n_categories * max_samples)"""
-        # Preallocate output (one-hot encoded) (n_windows, window_size * n_categories, n_channels)
+        """Full one-hot trajectory per window. Shape: (n_windows, n_channels, n_categories * max_samples)
+
+        Uses a two-pointer sliding window so each time point is included in
+        every window whose range [wt[w], wt[w]+window_size) it falls in.
+        Supports overlapping windows (step_size < window_size).
+        """
         n_channels = self.data_orig.shape[1]
-        data_shape = (self.window_manager.n_windows, n_channels, self.n_categories * self.max_samples_per_window)
+        wt = self.window_manager.window_times
+        ws = self.window_manager.window_size
+        n_windows = self.window_manager.n_windows
+        data_shape = (n_windows, n_channels, self.n_categories * self.max_samples_per_window)
         data = np.zeros(data_shape, dtype=np.float32)
-        
-        # Don't move data that occurs after the last window
-        mask = np.logical_and(
-            self.time_vector <= self.window_manager.t_end, 
-            self.time_vector >= self.window_manager.t_start
-        )
-        # Get indices of which window time points belong to
-        self._cached_window_inds = np.searchsorted(self.window_manager.window_times, self.time_vector[mask], side='right') - 1
-        window_inds = self._cached_window_inds
-        # Compute column indices for placement
-        _, counts = np.unique(window_inds, return_counts=True)
-        column_inds = np.concatenate(list(map(np.arange, counts)), axis=0)
-        # Expand column inds for one-hot encoding
-        expanded = column_inds[:,None] * self.n_categories + np.arange(self.n_categories)
-        expanded_column_inds = expanded.ravel()
-        # Expand window indices for one-hot encoding
-        expanded_window_inds = np.repeat(window_inds, self.n_categories)
-        for i in range(n_channels):
-            data[expanded_window_inds, i, expanded_column_inds] = np.eye(self.n_categories)[self.data_orig[mask, i]].flatten()
+
+        mask = (self.time_vector >= self.window_manager.t_start) & \
+            (self.time_vector < self.window_manager.t_end + ws)
+        times_in = self.time_vector[mask]
+        data_in = self.data_orig[mask]
+
+        window_counts = np.zeros(n_windows, dtype=int)
+        L = R = 0
+        for w in range(n_windows):
+            w_start = wt[w]
+            w_end = w_start + ws
+            while L < len(times_in) and times_in[L] < w_start:
+                L += 1
+            while R < len(times_in) and times_in[R] < w_end:
+                R += 1
+            n_pts = min(R - L, self.max_samples_per_window)
+            if n_pts == 0:
+                continue
+            window_counts[w] = R - L
+            # Vectorised one-hot placement: position p → columns [p*K .. p*K+K)
+            slice_data = data_in[L:L + n_pts, :]        # (n_pts, n_channels)
+            pos_offsets = np.arange(n_pts) * self.n_categories  # (n_pts,)
+            col_indices = pos_offsets[:, None] + slice_data      # (n_pts, n_channels)
+            for c in range(n_channels):
+                data[w, c, col_indices[:, c]] = 1.0
+
+        self._window_counts = window_counts
         self.data = torch.tensor(data, device=self.data_device)
         # data_master is set by move_data_to_windows() after this returns.
 
@@ -913,12 +982,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
             return None
         max_samples = self.max_samples_per_window
         min_count = max(1, int(np.ceil(self.min_coverage_fraction * max_samples)))
-        _, counts = np.unique(self._cached_window_inds, return_counts=True)
-        # Build per-window count array (windows with no samples have count 0)
-        window_counts = np.zeros(len(self.window_manager.window_times), dtype=int)
-        unique_wins, win_counts = np.unique(self._cached_window_inds, return_counts=True)
-        window_counts[unique_wins] = win_counts
-        return window_counts >= min_count
+        return self._window_counts >= min_count
     
     def time_shift(self, offset):
         """Apply time shift to data."""

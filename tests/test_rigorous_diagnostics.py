@@ -32,8 +32,8 @@ class TestComputeFitDiagnostics:
     def test_clean_linear_fit_no_warnings(self):
         """A perfect linear relationship should not trigger any warnings."""
         gammas = [1, 2, 3, 4, 5]
-        # MI = 2.0 - 0.5 / gamma  (perfect linear in 1/gamma)
-        mi_vals = [2.0 - 0.5 / g for g in gammas]
+        # MI = 1.5 + 0.1 * gamma  (perfect linear in gamma, I_true = 1.5)
+        mi_vals = [1.5 + 0.1 * g for g in gammas]
         df = _make_df(gammas, mi_vals)
         result = self._fn(df, gammas)
         assert not result['fit_quality_warning'], "Clean linear fit should not flag residuals."
@@ -44,7 +44,7 @@ class TestComputeFitDiagnostics:
         """When gamma=1 is a strong outlier, leverage_warning should fire."""
         gammas = [1, 2, 3, 4, 5]
         # Normal linear trend except gamma=1 is a huge outlier
-        mi_vals = [2.0 - 0.5 / g for g in gammas]
+        mi_vals = [1.5 + 0.1 * g for g in gammas]
         mi_vals[0] = 10.0  # gamma=1 is an extreme outlier
         df = _make_df(gammas, mi_vals)
         result = self._fn(df, gammas, leverage_threshold=0.10)
@@ -53,15 +53,33 @@ class TestComputeFitDiagnostics:
         )
 
     def test_noisy_data_can_trigger_residual_warning(self):
-        """Highly scattered data around the line should trigger fit_quality_warning."""
-        rng = np.random.default_rng(42)
+        """Highly scattered data (large studentized residuals) should trigger fit_quality_warning."""
+        # Seed chosen so at least one residual exceeds the default threshold of 2.5.
+        rng = np.random.default_rng(0)
         gammas = list(range(1, 8))
-        mi_vals = [2.0 - 0.5 / g + rng.normal(0, 2.0) for g in gammas]  # very noisy
+        mi_vals = [1.5 + 0.1 * g + rng.normal(0, 2.0) for g in gammas]  # very noisy
         df = _make_df(gammas, mi_vals)
-        result = self._fn(df, gammas, r2_threshold=0.95)
-        # With high noise, R² should be low → fit_quality_warning should fire
-        # (This might not always fire depending on random noise — check r_squared)
+        result = self._fn(df, gammas)
+        # R² is still reported regardless.
         assert result['r_squared'] is not None
+        # fit_quality_warning is driven only by studentized residuals, not R².
+
+    def test_low_r2_does_not_trigger_fit_quality_warning(self):
+        """Near-flat MI curve (large N, tiny bias) has low R² but must NOT flag fit_quality_warning."""
+        # Simulate the large-N scenario: slope ≈ 0, all values clustered ≈ 0.93,
+        # residuals small.  R² collapses because SS_tot ≈ noise variance >> signal variance.
+        rng = np.random.default_rng(7)
+        gammas = list(range(1, 8))
+        mi_vals = [0.93 + 0.002 * g + rng.normal(0, 0.05) for g in gammas]
+        df = _make_df(gammas, mi_vals)
+        result = self._fn(df, gammas)
+        assert result['r_squared'] < 0.5, (
+            f"Near-flat line should have low R², got {result['r_squared']:.3f}"
+        )
+        assert not result['fit_quality_warning'], (
+            "Low R² alone must not trigger fit_quality_warning; "
+            "only large studentized residuals do."
+        )
 
     def test_too_few_points_returns_safe_defaults(self):
         """With fewer than 3 points, diagnostics should return safe (no-flag) defaults."""
@@ -76,7 +94,7 @@ class TestComputeFitDiagnostics:
     def test_no_gamma1_skips_loo_check(self):
         """When no gamma=1 rows exist, LOO check should be skipped (no penalty)."""
         gammas = [2, 3, 4, 5, 6]
-        mi_vals = [2.0 - 0.5 / g for g in gammas]
+        mi_vals = [1.5 + 0.1 * g for g in gammas]
         df = _make_df(gammas, mi_vals)
         result = self._fn(df, gammas)
         assert not result['leverage_warning']
@@ -104,7 +122,7 @@ class TestDiagnosticsInCorrectedResults:
         rows = []
         for gamma in range(1, 8):
             for rep in range(3):
-                mi = 2.0 - 0.5 / gamma + np.random.normal(0, 0.02)
+                mi = 1.5 + 0.1 * gamma + np.random.normal(0, 0.02)
                 rows.append({'gamma': gamma, 'train_mi': mi})
         df = pd.DataFrame(rows)
         results = _post_process_and_correct(
@@ -123,7 +141,7 @@ class TestDiagnosticsInCorrectedResults:
         from neural_mi.analysis.rigorous import _post_process_and_correct
         rows = []
         for gamma in range(1, 8):
-            mi = 2.0 - 0.5 / gamma + np.random.normal(0, 0.01)
+            mi = 1.5 + 0.1 * gamma + np.random.normal(0, 0.01)
             rows.append({'gamma': gamma, 'train_mi': mi})
         # Make gamma=1 an extreme outlier
         rows[0]['train_mi'] = 20.0
@@ -188,9 +206,9 @@ class TestRigorousScalarAnalysis:
         def _scalar_fn(x_s, y_s, bp, z_data=None, **kw):
             if z_data is not None:
                 received_z_sizes.append(z_data.shape[0])
-            # Return values with proper 1/gamma trend so WLS fitting converges.
+            # Return values linear in gamma so WLS fitting converges cleanly.
             gamma_approx = N_full / max(x_s.shape[0], 1)
-            return float(2.0 - 0.5 / gamma_approx + np.random.normal(0, 0.01))
+            return float(1.5 + 0.1 * gamma_approx + np.random.normal(0, 0.01))
 
         x, y = self._make_tensors(N=N_full)
         z = torch.randn(N_full, 1, 1)
