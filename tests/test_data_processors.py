@@ -82,7 +82,23 @@ def test_categorical_window_dataset(categorical_data):
     assert dataset.data.shape[0] == 10
     assert dataset.data.shape[1] == 2
     assert dataset.data.shape[2] > 0
-    
+
+def test_categorical_window_dataset_rejects_negative_integer_labels():
+    """Integer-typed labels with negative values must raise a clear error
+    (they would otherwise reach np.bincount unvalidated via n_categories)."""
+    data = np.array([[-1, 0], [1, 2], [0, -1]], dtype=np.int64)
+    time = np.arange(3)
+    with pytest.raises(ValueError, match="non-negative"):
+        CategoricalWindowDataset(data, time)
+
+def test_categorical_window_dataset_float_labels_still_relabeled():
+    """Non-integer labels (e.g. floats) are still auto-relabeled, unaffected
+    by the new negative-integer guard."""
+    data = np.array([1.5, 2.5, 2.5, 1.5], dtype=np.float64)
+    time = np.arange(4)
+    dataset = CategoricalWindowDataset(data, time)
+    assert dataset.data_orig.min() >= 0
+
 # PairedTemporalDataset Tests
 def test_paired_temporal_dataset(continuous_data, spike_data):
     """Test PairedTemporalDataset alignment and windowing."""

@@ -143,6 +143,8 @@ def smile_lower_bound(scores: torch.Tensor, clip: Optional[float] = 5.0) -> torc
     scores_clipped = torch.clamp(scores, -clip, clip) if clip is not None else scores
     z = logmeanexp_nodiag(scores_clipped, dim=(0, 1))
     dv = scores_clipped.diag().mean() - z
+    # JS is computed on the clipped scores (not the raw scores) -- a minor,
+    # intentional deviation from the canonical SMILE formulation.
     js = js_fgan_lower_bound(scores_clipped)
     with torch.no_grad():
         dv_js = dv - js
@@ -170,7 +172,10 @@ def logmeanexp_nodiag(x: torch.Tensor, dim: Optional[Union[int, Tuple[int, ...]]
     """
     batch_size = x.size(0)
     inf_diag = torch.diag(float('inf') * torch.ones(batch_size, device=x.device))
-    logsumexp = torch.logsumexp(x - inf_diag, dim=dim or (0,1))
-    
+    # `dim if dim is not None else (0,1)`, not `dim or (0,1)`: dim=0 is falsy and
+    # would otherwise silently fall through to (0,1), reducing over both axes
+    # instead of just dim 0.
+    logsumexp = torch.logsumexp(x - inf_diag, dim=dim if dim is not None else (0, 1))
+
     num_elem = batch_size * (batch_size - 1.) if dim is None or isinstance(dim, tuple) else batch_size - 1.
     return logsumexp - torch.log(torch.tensor(num_elem, device=x.device))

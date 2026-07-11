@@ -11,6 +11,14 @@ matrix.
 
 Results are returned as a :class:`pandas.DataFrame` with columns
 ``ch_x``, ``ch_y``, ``mi_mean``, ``mi_std``.
+
+.. note::
+   Each channel pair here trains a full neural MI estimator. For
+   single-time-bin channels (no temporal structure within the window) this is
+   more expensive and higher-variance than a classical (e.g. correlation- or
+   histogram-based) estimator would be. Left as-is since neural estimation is
+   what generalizes across modalities; consider a classical estimator instead
+   if you know your channels are single-time-bin and need speed.
 """
 import torch
 import numpy as np

@@ -526,7 +526,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
         if self._max_spikes_cap is not None:
             capped = max(1, int(self._max_spikes_cap))
             if self.max_samples_per_window > capped:
-                logger.info(
+                logger.warning(
                     f"SpikeWindowDataset: max_spikes_per_window cap applied "
                     f"({self.max_samples_per_window} → {capped} slots). "
                     "Spikes beyond the cap within any window will be dropped."
@@ -831,6 +831,19 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         if not np.issubdtype(arr.dtype, np.integer):
             _, indices = np.unique(arr, return_inverse=True)
             arr = indices
+        elif arr.size > 0 and arr.min() < 0:
+            # Integer-typed input skips the relabeling above, so a negative
+            # label would otherwise reach np.bincount downstream (via
+            # n_categories = data.max() + 1) and raise an opaque error there.
+            raise ValueError(
+                f"CategoricalWindowDataset: integer-typed labels must be "
+                f"non-negative (they are used directly as category indices "
+                f"for np.bincount); got a minimum value of {arr.min()}. "
+                f"Non-integer labels (e.g. strings or floats) are relabeled "
+                f"to consecutive non-negative integers automatically -- if "
+                f"these values are meant to be category codes, remap them "
+                f"to [0, n_categories) first."
+            )
         self.data_orig = np.asarray(arr, dtype=np.int32)
 
         if time_vector is not None:

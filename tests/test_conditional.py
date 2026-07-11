@@ -89,3 +89,15 @@ class TestConditionalMI:
         )
         expected = results.details['mi_xz_y'] - results.details['mi_z_y']
         assert abs(results.mi_estimate - expected) < 1e-6
+
+    def test_mismatched_x_z_window_sizes_raises_clear_error(self):
+        """X and Z with different window sizes must raise a clear ValueError
+        before the concatenation into XZ, not a bare torch.cat shape error."""
+        from neural_mi.analysis.conditional import run_conditional_mi
+
+        x = torch.randn(N, 2, 5)   # window size 5
+        y = torch.randn(N, 2, 5)
+        z = torch.randn(N, 2, 3)   # window size 3 -- mismatched
+
+        with pytest.raises(ValueError, match="window size"):
+            run_conditional_mi(x, y, z, base_params=_PARAMS, n_workers=1)

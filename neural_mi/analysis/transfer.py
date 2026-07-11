@@ -63,20 +63,14 @@ def _build_te_arrays(
             f"{history_window + prediction_horizon}, got T={T}."
         )
 
-    # Build sliding windows: shape (n_valid, n_channels, history_window)
-    x_past = torch.stack(
-        [x_data[i: i + history_window] for i in range(n_valid)], dim=0
-    ).permute(0, 2, 1)  # (n_valid, n_channels_x, history_window)
-
-    y_past = torch.stack(
-        [y_data[i: i + history_window] for i in range(n_valid)], dim=0
-    ).permute(0, 2, 1)  # (n_valid, n_channels_y, history_window)
-
-    y_future = torch.stack(
-        [y_data[i + history_window: i + history_window + prediction_horizon]
-         for i in range(n_valid)],
-        dim=0
-    ).permute(0, 2, 1)  # (n_valid, n_channels_y, prediction_horizon)
+    # Build sliding windows via unfold (a view, not a copy) instead of a
+    # Python list comprehension + torch.stack, which would materialize three
+    # large intermediate window arrays. unfold(0, size, 1) on a (T, C) tensor
+    # already produces the (n_windows, C, size) layout directly, so no permute
+    # is needed either.
+    x_past = x_data.unfold(0, history_window, 1)[:n_valid]        # (n_valid, n_channels_x, history_window)
+    y_past = y_data.unfold(0, history_window, 1)[:n_valid]        # (n_valid, n_channels_y, history_window)
+    y_future = y_data[history_window:].unfold(0, prediction_horizon, 1)  # (n_valid, n_channels_y, prediction_horizon)
 
     return x_past, y_past, y_future
 

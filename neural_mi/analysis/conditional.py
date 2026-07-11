@@ -85,6 +85,12 @@ def run_conditional_mi(
             "x_data, y_data, and z_data must have the same number of samples. "
             f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(z_data.shape)}."
         )
+    if x_data.shape[2] != z_data.shape[2]:
+        raise ValueError(
+            "x_data and z_data must have the same window size to be concatenated "
+            f"into XZ. Got window sizes {x_data.shape[2]} and {z_data.shape[2]} "
+            f"(full shapes {tuple(x_data.shape)}, {tuple(z_data.shape)})."
+        )
 
     # Build XZ by concatenating along the channel dimension (dim=1)
     xz_data = torch.cat([x_data, z_data], dim=1)

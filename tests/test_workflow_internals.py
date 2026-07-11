@@ -2,9 +2,11 @@
 import pytest
 import pandas as pd
 import numpy as np
+import torch
 from neural_mi.analysis.rigorous import _find_linear_region as find_linear_region
 from neural_mi.analysis.rigorous import _extrapolate_mi as extrapolate_mi
 from neural_mi.analysis.rigorous import _post_process_and_correct
+from neural_mi.analysis.rigorous import AnalysisWorkflow
 
 class TestWorkflowInternals:
     def test_find_linear_region(self):
@@ -53,3 +55,20 @@ class TestWorkflowInternals:
         )
         assert len(results) == 2
         assert results[0]['mi_corrected'] is not None
+
+    def test_input_dim_uses_full_flattened_shape_for_4d_data(self):
+        """input_dim_x/y must be the product of ALL trailing dims (C*H*W for
+        4-D cnn2d-shaped input), not just shape[1]*shape[2] which silently
+        drops the width axis for 4-D data."""
+        x_4d = torch.randn(20, 3, 8, 8)   # (N, C, H, W)
+        y_4d = torch.randn(20, 3, 8, 8)
+        workflow = AnalysisWorkflow(x_4d, y_4d, base_params={})
+        assert workflow.base_params['input_dim_x'] == 3 * 8 * 8
+        assert workflow.base_params['input_dim_y'] == 3 * 8 * 8
+
+        # 3-D data must be unaffected (same value as the old shape[1]*shape[2]).
+        x_3d = torch.randn(20, 4, 16)
+        y_3d = torch.randn(20, 4, 16)
+        workflow_3d = AnalysisWorkflow(x_3d, y_3d, base_params={})
+        assert workflow_3d.base_params['input_dim_x'] == 4 * 16
+        assert workflow_3d.base_params['input_dim_y'] == 4 * 16

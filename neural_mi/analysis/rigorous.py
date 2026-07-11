@@ -314,8 +314,8 @@ class AnalysisWorkflow:
         self.x_data, self.y_data = x_data, y_data
         self.base_params = base_params
         self.base_params.update({
-            'input_dim_x': x_data.shape[1] * x_data.shape[2],
-            'input_dim_y': y_data.shape[1] * y_data.shape[2],
+            'input_dim_x': int(np.prod(x_data.shape[1:])),
+            'input_dim_y': int(np.prod(y_data.shape[1:])),
             'n_channels_x': x_data.shape[1],
             'n_channels_y': y_data.shape[1],
             **kwargs
