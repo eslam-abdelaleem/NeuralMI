@@ -25,7 +25,7 @@
 # Each section covers one embedding model and includes:
 # - A visualisation of the synthetic data
 # - The sample efficiency curves for the biased vs. baseline model
-# - A diagnostic of the learned physics parameters (Sections 2 and 3)
+# - A diagnostic of the learned physics parameters (Section 2)
 # - A brief scientific interpretation
 
 # %% [markdown]
@@ -46,7 +46,7 @@ np.random.seed(42)
 torch.manual_seed(42)
 
 # Training settings for sample efficiency sweeps.
-# n_epochs >= 150 so that physics parameters (sinc cutoffs, calcium tau) have
+# n_epochs >= 150 so that physics parameters (sinc cutoffs) have
 # time to converge from their initialisation to the true signal band.
 BASE_TRAIN = dict(
     n_epochs=200,
@@ -434,165 +434,11 @@ else:
 
 
 # %% [markdown]
-# ## Section 3: CalciumCNN for Calcium Imaging
-#
-# ### Scientific motivation
-#
-# Calcium indicators (GCaMP, jGCaMP, etc.) report neural activity through
-# fluorescence, but the relationship is not instantaneous.  The indicator's
-# impulse response is a slow exponential kernel:
-#
-# h(t) = exp(−t/τ_decay) − exp(−t/τ_rise)
-#
-# The raw fluorescence is a blurred, slow version of the underlying spike rate.
-# The actual MI between neural populations lives in the underlying spike rates,
-# not directly in the raw fluorescence trace.
-#
-# ``calcium_cnn`` inserts a per-channel FIR deconvolution layer as its first
-# step, undoing this blur before the CNN body.  With ``learn_calcium_kernel=True``,
-# the time constants τ_rise and τ_decay are learnable — starting from the
-# user-specified values and being refined during training.  If they converge
-# close to the true values, it is strong evidence the model is learning the
-# correct indicator dynamics.
-#
-# ### Data
-#
-# ``generate_windowed_calcium`` produces 3-channel windows of synthetic GCaMP-
-# style fluorescence.  The true MI is estimated by a large-N CCA lower bound
-# (5000 windows) rather than analytically, because the Poisson + nonlinear
-# kernel makes the true MI intractable.
-
-# %%
-np.random.seed(300)
-print("Generating calcium fluorescence data (3 channels, tau_rise=0.05s, tau_decay=0.4s)...")
-
-SAMPLE_RATE_CA = 30.0
-TRUE_TAU_RISE = 0.05
-TRUE_TAU_DECAY = 0.4
-N_CH_CA = 3
-
-X_ca, Y_ca, true_mi_ca = nmi.generators.generate_windowed_calcium(
-    n_windows=2000,
-    n_channels=N_CH_CA,
-    window_size=90,       # 3 seconds at 30 Hz
-    sample_rate=SAMPLE_RATE_CA,
-    tau_rise=TRUE_TAU_RISE,
-    tau_decay=TRUE_TAU_DECAY,
-    latent_mi=1.0,
-    noise_level=0.05,
-)
-print(f"  X shape: {X_ca.shape}   Approx true MI: {true_mi_ca:.3f} bits (CCA estimate)")
-print(f"  True kernel: tau_rise={TRUE_TAU_RISE}s, tau_decay={TRUE_TAU_DECAY}s")
-
-# %%
-# Visualise two example fluorescence traces per channel
-fig, axes = plt.subplots(1, 3, figsize=(14, 4), sharey=False)
-t_s = np.arange(90) / SAMPLE_RATE_CA
-for ch, ax in enumerate(axes):
-    ax.plot(t_s, X_ca[0, ch, :], label='X', lw=1.5)
-    ax.plot(t_s, Y_ca[0, ch, :], label='Y', lw=1.5, alpha=0.7)
-    ax.set_title(f'Channel {ch+1}')
-    ax.set_xlabel('Time (s)')
-    if ch == 0:
-        ax.set_ylabel('ΔF/F')
-        ax.legend(fontsize=9)
-plt.suptitle('Calcium fluorescence traces (slow, blurred by indicator dynamics)')
-plt.tight_layout()
-plt.show()
-
-# %%
-print("\n=== Section 3: Standard CNN vs CalciumCNN on fluorescence data ===")
-
-N_VALUES_CA = [50, 100, 200, 400, 800, 1500, 2000]
-
-models_ca = [
-    ('CNN',         {'embedding_model': 'cnn'}),
-    ('CalciumCNN',  {'embedding_model': 'calcium_cnn',
-                     'tau_rise': TRUE_TAU_RISE, 'tau_decay': TRUE_TAU_DECAY,
-                     'learn_calcium_kernel': True}),
-]
-
-df_ca = run_sample_efficiency(
-    X_ca, Y_ca, N_VALUES_CA, models_ca, true_mi_ca,
-    base_train=BASE_TRAIN,
-    processor_params={'sample_rate': SAMPLE_RATE_CA},
-)
-
-# %%
-fig, ax = plt.subplots(figsize=(9, 5))
-print("\nCrossover N values (Section 3):")
-plot_sample_efficiency(df_ca, true_mi_ca, 'Section 3: CalciumCNN — GCaMP-Style Fluorescence', ax=ax)
-plt.tight_layout()
-plt.show()
-
-# %%
-# --- Physics diagnostic: did the model learn the correct time constants? ---
-print("\n--- Calcium kernel time-constant diagnostic ---")
-result_ca_diag = nmi.run(
-    x_data=X_ca, y_data=Y_ca,
-    mode='estimate',
-    split_mode='random',
-    processor_params_x={'sample_rate': SAMPLE_RATE_CA},
-    processor_params_y={'sample_rate': SAMPLE_RATE_CA},
-    base_params={**BASE_TRAIN,
-                 'embedding_model': 'calcium_cnn',
-                 'tau_rise': TRUE_TAU_RISE, 'tau_decay': TRUE_TAU_DECAY,
-                 'learn_calcium_kernel': True},
-    random_seed=0,
-    show_progress=True,
-)
-print(f"CalciumCNN MI estimate (full data): {result_ca_diag.mi_estimate:.3f} bits")
-
-if 'physics_params_final' in result_ca_diag.details:
-    pp = result_ca_diag.details['physics_params_final']
-    tau_rise_learned = pp.get('x_tau_rise_s', None)
-    tau_decay_learned = pp.get('x_tau_decay_s', None)
-    print(f"\n  True   tau_rise  = {TRUE_TAU_RISE:.4f} s")
-    print(f"  Learned tau_rise  = {tau_rise_learned:.4f} s" if tau_rise_learned else "  tau_rise not tracked")
-    print(f"  True   tau_decay  = {TRUE_TAU_DECAY:.4f} s")
-    print(f"  Learned tau_decay = {tau_decay_learned:.4f} s" if tau_decay_learned else "  tau_decay not tracked")
-
-    if tau_rise_learned and tau_decay_learned:
-        # Plot tau history
-        if 'physics_params_history' in result_ca_diag.details:
-            hist = result_ca_diag.details['physics_params_history']
-            fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-            if 'x_tau_rise_s' in hist:
-                axes[0].plot(hist['x_tau_rise_s'], label='Learned')
-                axes[0].axhline(TRUE_TAU_RISE, linestyle='--', color='tomato', label='True')
-                axes[0].set_xlabel('Epoch'); axes[0].set_ylabel('τ_rise (s)')
-                axes[0].set_title('Learned τ_rise over training')
-                axes[0].legend()
-            if 'x_tau_decay_s' in hist:
-                axes[1].plot(hist['x_tau_decay_s'], label='Learned')
-                axes[1].axhline(TRUE_TAU_DECAY, linestyle='--', color='tomato', label='True')
-                axes[1].set_xlabel('Epoch'); axes[1].set_ylabel('τ_decay (s)')
-                axes[1].set_title('Learned τ_decay over training')
-                axes[1].legend()
-            plt.suptitle('Calcium kernel time constants converging to true values')
-            plt.tight_layout()
-            plt.show()
-else:
-    print("  (physics_params_final not found in result.details)")
-
-# %% [markdown]
-# **Interpretation:** CalciumCNN should converge faster than standard CNN
-# because its first layer is initialized to deconvolve the known indicator
-# dynamics, directly recovering approximate spike rates.  A standard CNN
-# must discover this deconvolution from data alone.
-#
-# The τ_rise and τ_decay convergence plots (if ``learn_calcium_kernel=True``)
-# show whether the model is learning the correct indicator dynamics.  Values
-# close to the true time constants (tau_rise=0.05s, tau_decay=0.4s) indicate
-# that the model is correctly discovering the indicator's impulse response.
-
-
-# %% [markdown]
-# ## Section 4: SpikePhysicsEmbedding — Rate Code vs. Timing Code
+# ## Section 3: SpikePhysicsEmbedding — Rate Code vs. Timing Code
 #
 # ### Why this section is qualitative
 #
-# Unlike Sections 1–3, we do not have an analytically known ground-truth MI for
+# Unlike Sections 1–2, we do not have an analytically known ground-truth MI for
 # spike train generators.  The Poisson spike process with complex population
 # statistics does not yield a simple closed-form MI.  We therefore interpret
 # the results qualitatively: *which model gets higher MI in each scenario?*
@@ -730,7 +576,7 @@ print(f"  SpikePhysics (features):    {phys_t:.3f} ± {result_phys_timing.datafr
 print(f"  SpikePhysics (concat):      {concat_t:.3f} ± {result_concat_timing.dataframe['mi_std'].iloc[0]:.3f} bits")
 
 # %%
-# Summary bar chart for Section 4
+# Summary bar chart for Section 3
 fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
 axes[0].bar(['GRU', 'SpikePhysics'], [gru_rate_mi, phys_rate_mi],
@@ -746,7 +592,7 @@ axes[1].set_title('Timing-code scenario')
 axes[1].set_ylabel('Estimated MI (bits)')
 axes[1].set_ylim(0, max(gru_t, phys_t, concat_t) * 1.3)
 
-plt.suptitle('Section 4: SpikePhysics vs GRU\n(qualitative — no analytically known true MI)')
+plt.suptitle('Section 3: SpikePhysics vs GRU\n(qualitative — no analytically known true MI)')
 plt.tight_layout()
 plt.show()
 
@@ -774,7 +620,7 @@ plt.show()
 
 
 # %% [markdown]
-# ## Section 5: Pretrained Backbone for Image Data
+# ## Section 4: Pretrained Backbone for Image Data
 #
 # This section has two scenarios that tell a complete, scientifically honest story.
 #
@@ -804,7 +650,7 @@ plt.show()
 # help when the pretraining domain aligns with the MI-relevant structure.
 
 # %%
-print("\n=== Section 5: Pretrained Backbone — MNIST (Alignment) ===")
+print("\n=== Section 4: Pretrained Backbone — MNIST (Alignment) ===")
 
 try:
     import torchvision
@@ -893,13 +739,13 @@ if _HAS_TORCHVISION:
     fig, ax = plt.subplots(figsize=(9, 5))
     print("\nCrossover N values (Scenario A — MNIST):")
     plot_sample_efficiency(df_mnist, TRUE_MI_MNIST,
-                           'Section 5A: Pretrained Backbone — MNIST (Alignment)', ax=ax)
+                           'Section 4A: Pretrained Backbone — MNIST (Alignment)', ax=ax)
     plt.tight_layout()
     plt.show()
 
 # %%
 # --- Scenario B: Gaussian blobs (misalignment / negative control) ---
-print("\n=== Section 5B: Pretrained Backbone — Gaussian Blobs (Misalignment) ===")
+print("\n=== Section 4B: Pretrained Backbone — Gaussian Blobs (Misalignment) ===")
 
 np.random.seed(600)
 N_BLOBS = 800
@@ -938,9 +784,9 @@ df_blobs = run_sample_efficiency(
 fig, ax = plt.subplots(figsize=(9, 5))
 print("\nCrossover N values (Scenario B — blobs):")
 plot_sample_efficiency(df_blobs, ref_mi_blobs,
-                       'Section 5B: Pretrained Backbone — Gaussian Blobs (Misalignment)',
+                       'Section 4B: Pretrained Backbone — Gaussian Blobs (Misalignment)',
                        ax=ax)
-ax.set_title('Section 5B: Gaussian Blobs (Misalignment)\n'
+ax.set_title('Section 4B: Gaussian Blobs (Misalignment)\n'
              'Dashed line = CNN2D reference estimate (not analytically exact)')
 plt.tight_layout()
 plt.show()
@@ -976,11 +822,10 @@ plt.show()
 # |---------|------|----------|--------------|------------------------------|
 # | 1 | Multi-channel oscillatory (8 ch, different frequencies) | CNN | CNN depthwise | Depthwise lower crossover N |
 # | 2 | Alpha-band LFP (10 Hz) | CNN | SincCNN | SincCNN lower crossover N |
-# | 3 | GCaMP fluorescence | CNN | CalciumCNN | CalciumCNN lower crossover N |
-# | 4 (rate) | Rate-modulated spikes | GRU | SpikePhysics | SpikePhysics ≥ GRU |
-# | 4 (timing) | Signal spikes in noise | GRU | SpikePhysics | GRU > SpikePhysics |
-# | 5A | MNIST digits 0/1 | CNN2D random | ResNet18 pretrained | Pretrained lower crossover N |
-# | 5B | Gaussian blobs | CNN2D random | ResNet18 pretrained | CNN2D random wins (misalignment) |
+# | 3 (rate) | Rate-modulated spikes | GRU | SpikePhysics | SpikePhysics ≥ GRU |
+# | 3 (timing) | Signal spikes in noise | GRU | SpikePhysics | GRU > SpikePhysics |
+# | 4A | MNIST digits 0/1 | CNN2D random | ResNet18 pretrained | Pretrained lower crossover N |
+# | 4B | Gaussian blobs | CNN2D random | ResNet18 pretrained | CNN2D random wins (misalignment) |
 #
 # The core message: **inductive biases lower sample complexity when the bias
 # matches the data structure, and are either neutral or harmful when it does not.**

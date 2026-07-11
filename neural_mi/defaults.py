@@ -99,7 +99,7 @@ BASE_PARAMS_SCHEMA = {
     'hidden_dim_head': {'type': (int, list, type(None)), 'default': None},  # Hybrid critic head; None → min(64, hidden_dim)
     'critic_type': {'type': str, 'default': 'separable'},
     'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'
-                                                          # inductive-bias: 'sinc_cnn'|'calcium_cnn'|'spike_physics'|'pretrained_backbone'
+                                                          # inductive-bias: 'sinc_cnn'|'spike_physics'|'pretrained_backbone'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
@@ -113,15 +113,10 @@ BASE_PARAMS_SCHEMA = {
     'use_depthwise': {'type': bool, 'default': False},
     # SincEmbedding: number of learnable sinc bandpass filters per input channel.
     'n_sinc_filters': {'type': int, 'min': 1, 'default': 8},
-    # SincEmbedding / CalciumEmbedding: feature fusion mode.
+    # SincEmbedding: feature fusion mode.
     # 'features'       — physics-derived features only (default, pure inductive bias).
     # 'concat'         — physics features concatenated with processed raw input.
     'feature_fusion': {'type': str, 'default': 'features'},
-    # CalciumEmbedding: indicator rise/decay time constants in seconds.
-    # Defaults approximate GCaMP6f. Set learn_calcium_kernel=True to learn them.
-    'tau_rise': {'type': float, 'min': 0.0, 'default': 0.05},
-    'tau_decay': {'type': float, 'min': 0.0, 'default': 0.4},
-    'learn_calcium_kernel': {'type': bool, 'default': False},
     # PretrainedBackboneEmbedding: torchvision model name and pretrained flag.
     'pytorch_predefined': {'type': (str, type(None)), 'default': None},
     'pretrained': {'type': bool, 'default': False},

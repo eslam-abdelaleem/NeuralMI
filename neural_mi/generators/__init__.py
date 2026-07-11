@@ -25,7 +25,6 @@ from .synthetic import (
     # Windowed generators with analytically known MI
     generate_windowed_oscillatory,
     generate_windowed_multichannel,
-    generate_windowed_calcium,
 )
 
 __all__ = [
@@ -49,5 +48,4 @@ __all__ = [
     # Windowed generators with analytically known MI
     'generate_windowed_oscillatory',
     'generate_windowed_multichannel',
-    'generate_windowed_calcium',
 ]

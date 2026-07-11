@@ -16,7 +16,7 @@ from neural_mi.estimators import ESTIMATORS
 from neural_mi.models.embeddings import (
     MLP, VariationalWrapper, BaseEmbedding,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
-    SpikePhysicsEmbedding, SincEmbedding, CalciumEmbedding,
+    SpikePhysicsEmbedding, SincEmbedding,
     PretrainedBackboneEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
@@ -187,8 +187,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         EmbeddingModel = SpikePhysicsEmbedding
     elif model_type == 'sinc_cnn':
         EmbeddingModel = SincEmbedding
-    elif model_type == 'calcium_cnn':
-        EmbeddingModel = CalciumEmbedding
     elif model_type == 'pretrained_backbone':
         EmbeddingModel = PretrainedBackboneEmbedding
     else:
@@ -208,11 +206,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # CNN1D, CNN2D, and all sequence models use n_channels as input_dim
     # (they operate on the channel dimension, not a flattened feature vector).
-    # Inductive-bias models (spike_physics, sinc_cnn, calcium_cnn, pretrained_backbone)
+    # Inductive-bias models (spike_physics, sinc_cnn, pretrained_backbone)
     # also use n_channels as input_dim.
     # MLP (and custom cls) use the fully-flattened input_dim.
     _sequential_types = {'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                         'spike_physics', 'sinc_cnn', 'calcium_cnn', 'pretrained_backbone'}
+                         'spike_physics', 'sinc_cnn', 'pretrained_backbone'}
     if model_type in _sequential_types:
         input_dim_x, input_dim_y = embedding_params['n_channels_x'], embedding_params['n_channels_y']
         if model_type in ['cnn', 'tcn', 'cnn2d']:
@@ -232,12 +230,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             model_kwargs['feature_fusion'] = embedding_params.get('feature_fusion', 'features')
         if model_type == 'sinc_cnn':
             model_kwargs['n_sinc_filters'] = embedding_params.get('n_sinc_filters', 8)
-            model_kwargs['sample_rate'] = embedding_params.get('sample_rate_x')
-            model_kwargs['feature_fusion'] = embedding_params.get('feature_fusion', 'features')
-        if model_type == 'calcium_cnn':
-            model_kwargs['tau_rise'] = embedding_params.get('tau_rise', 0.05)
-            model_kwargs['tau_decay'] = embedding_params.get('tau_decay', 0.4)
-            model_kwargs['learn_calcium_kernel'] = embedding_params.get('learn_calcium_kernel', False)
             model_kwargs['sample_rate'] = embedding_params.get('sample_rate_x')
             model_kwargs['feature_fusion'] = embedding_params.get('feature_fusion', 'features')
         if model_type == 'pretrained_backbone':

@@ -732,186 +732,6 @@ class SincEmbedding(BaseEmbedding):
                     nn.init.zeros_(m.bias)
 
 
-class CalciumEmbedding(BaseEmbedding):
-    """Embedding for calcium imaging data that accounts for indicator dynamics.
-
-    Input shape: ``(N, n_channels, n_timepoints)`` — raw fluorescence (ΔF/F)
-    traces produced by ``ContinuousWindowDataset``.
-
-    **Inductive bias:** The observed fluorescence is the convolution of the
-    true underlying spike rate with the calcium indicator's impulse response::
-
-        f(t) ≈ (spike_rate * h)(t),   h(t) = exp(-t/τ_decay) - exp(-t/τ_rise)
-
-    A deconvolution step in the first layer recovers an estimate of the
-    underlying neural activity. The deconvolution kernel is the time-reversed,
-    normalized indicator impulse response (matched-filter approximation).
-    ``τ_rise`` and ``τ_decay`` can be fixed to known indicator values or learned.
-
-    The deconvolution is applied per-channel (depthwise) to preserve the
-    single-neuron / single-ROI structure before any cross-channel mixing.
-
-    Architecture:
-    1. **Deconvolution layer**: per-channel FIR deconvolution, fixed or learnable.
-    2. **Convolutional body**: standard Conv1D body operating on deconvolved signals.
-    3. **Global average pool + projection head** → embed_dim.
-
-    If ``feature_fusion='concat'``, the mean-pooled raw fluorescence is
-    concatenated with the deconvolved features before the projection head.
-
-    Parameters
-    ----------
-    input_dim : int
-        Number of input channels (ROIs / neurons).
-    hidden_dim : int
-        Number of feature maps in the convolutional body.
-    embed_dim : int
-        Dimensionality of the output embedding.
-    n_layers : int
-        Number of convolutional layers in the body.
-    tau_rise : float, optional
-        Rise time constant in seconds. Defaults to 0.05 (50 ms, ~GCaMP6f).
-    tau_decay : float, optional
-        Decay time constant in seconds. Defaults to 0.4 (400 ms, ~GCaMP6f).
-    learn_calcium_kernel : bool, optional
-        If True, ``τ_rise`` and ``τ_decay`` are made trainable. Defaults to False.
-    sample_rate : float, optional
-        Sampling rate in Hz. Used to convert time constants to samples.
-        Defaults to 30.0 Hz if not provided.
-    feature_fusion : {'features', 'concat'}, optional
-        Whether to concatenate mean-pooled raw fluorescence with deconvolved output.
-    kernel_size : int, optional
-        Length of the deconvolution FIR kernel in samples (must be odd).
-        Defaults to 31.
-    """
-
-    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int,
-                 tau_rise: float = 0.05, tau_decay: float = 0.4,
-                 learn_calcium_kernel: bool = False,
-                 sample_rate: Optional[float] = None,
-                 feature_fusion: str = 'features', kernel_size: int = 31, **kwargs):
-        super().__init__()
-        import warnings as _warnings
-        if kernel_size % 2 == 0:
-            kernel_size += 1
-        self.n_channels = input_dim
-        self.feature_fusion = feature_fusion
-        self.deconv_kernel_size = kernel_size
-        self.sample_rate = float(sample_rate) if sample_rate is not None else 30.0
-        if sample_rate is None:
-            _warnings.warn(
-                "CalciumEmbedding: sample_rate not provided; defaulting to 30 Hz. "
-                "Pass sample_rate in processor_params for correct kernel duration.",
-                UserWarning, stacklevel=3,
-            )
-
-        log_tau_rise = math.log(max(tau_rise, 1e-4))
-        log_tau_decay = math.log(max(tau_decay, 1e-4))
-        if learn_calcium_kernel:
-            self.log_tau_rise = nn.Parameter(torch.tensor(log_tau_rise))
-            self.log_tau_decay = nn.Parameter(torch.tensor(log_tau_decay))
-        else:
-            self.register_buffer('log_tau_rise', torch.tensor(log_tau_rise))
-            self.register_buffer('log_tau_decay', torch.tensor(log_tau_decay))
-        self.learn_calcium_kernel = learn_calcium_kernel
-
-        body_layers = []
-        in_ch = input_dim
-        for _ in range(max(1, n_layers)):
-            body_layers.extend([
-                nn.Conv1d(in_ch, hidden_dim, kernel_size=7, padding='same'),
-                nn.ReLU(),
-            ])
-            in_ch = hidden_dim
-        self.body = nn.Sequential(*body_layers)
-
-        pool_in = hidden_dim + (input_dim if feature_fusion == 'concat' else 0)
-        self.head = nn.Sequential(
-            nn.Linear(pool_in, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, embed_dim),
-        )
-        self._initialize_weights()
-
-    def _deconv_kernel(self) -> torch.Tensor:
-        """Build per-channel deconvolution kernel from current τ_rise, τ_decay.
-
-        The indicator impulse response is::
-
-            h(t) = exp(-t/τ_decay) - exp(-t/τ_rise)
-
-        The deconvolution kernel is the time-reversed, normalized version of h.
-
-        Returns
-        -------
-        torch.Tensor
-            Shape ``(n_channels, 1, kernel_size)`` for a depthwise grouped conv.
-        """
-        tau_rise = torch.exp(self.log_tau_rise).clamp(1e-4, 10.0)
-        tau_decay_raw = torch.exp(self.log_tau_decay).clamp(1e-3, 100.0)
-        # Ensure tau_decay > tau_rise using elementwise maximum
-        tau_decay = torch.maximum(tau_rise + 1e-3, tau_decay_raw)
-        dt = 1.0 / self.sample_rate
-        t = torch.arange(0, self.deconv_kernel_size, dtype=torch.float32,
-                         device=tau_rise.device) * dt
-        h = torch.exp(-t / tau_decay) - torch.exp(-t / tau_rise)
-        h = h / (h.abs().max() + 1e-8)
-        # Matched-filter deconvolution: time-reversed normalized impulse response
-        h_inv = torch.flip(h, dims=[0])
-        h_inv = h_inv / (h_inv.pow(2).sum().sqrt() + 1e-8)
-        kernel = h_inv.unsqueeze(0).unsqueeze(0).expand(self.n_channels, 1, -1)
-        return kernel.contiguous()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Deconvolve fluorescence then embed via body + head.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Shape ``(N, n_channels, T)``.
-
-        Returns
-        -------
-        torch.Tensor
-            Shape ``(N, embed_dim)``.
-        """
-        N, C, T = x.shape
-        kernel = self._deconv_kernel()   # (C, 1, K)
-        pad = self.deconv_kernel_size // 2
-        deconvolved = nn.functional.conv1d(x, kernel, padding=pad, groups=C)  # (N, C, T)
-        features = self.body(deconvolved)  # (N, hidden_dim, T)
-        pooled = features.mean(dim=-1)     # (N, hidden_dim)
-        if self.feature_fusion == 'concat':
-            pooled = torch.cat([pooled, x.mean(dim=-1)], dim=-1)
-        return self.head(pooled)
-
-    def get_physics_params(self) -> dict:
-        """Return current learned calcium kernel time constants in seconds.
-
-        Returns an empty dict when ``learn_calcium_kernel=False``.
-
-        Returns
-        -------
-        dict
-            Keys ``'tau_rise_s'`` and ``'tau_decay_s'`` (floats) when the
-            kernel is learnable; empty dict otherwise.
-        """
-        if not self.learn_calcium_kernel:
-            return {}
-        with torch.no_grad():
-            tau_rise = float(torch.exp(self.log_tau_rise).clamp(1e-4, 10.0).item())
-            tau_decay_raw = float(torch.exp(self.log_tau_decay).clamp(1e-3, 100.0).item())
-            tau_decay = max(tau_decay_raw, tau_rise + 1e-3)
-        return {'tau_rise_s': tau_rise, 'tau_decay_s': tau_decay}
-
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, (nn.Conv1d, nn.Linear)):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-
 class SpikePhysicsEmbedding(BaseEmbedding):
     """Embedding for raw spike-timestamp data with physics-informed feature extraction.
 
@@ -1223,9 +1043,23 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
             )
         if self._upsample is not None:
             x = self._upsample(x)
-        with torch.no_grad():
-            feat = self.global_pool(self.backbone(x))  # (N, backbone_out_dim)
+        # No torch.no_grad() here: the backbone params are already frozen via
+        # requires_grad=False, and no_grad would additionally sever the
+        # gradient path back through self._channel_adapt.
+        feat = self.global_pool(self.backbone(x))  # (N, backbone_out_dim)
         return self.head(feat)
+
+    def train(self, mode: bool = True):
+        """Set training mode, but keep the frozen backbone in eval() always.
+
+        A frozen pretrained backbone with BatchNorm must stay in eval mode so
+        its running stats and normalization are fixed; otherwise the
+        trainer's ``.train()`` call would put BN into batch-statistic mode
+        and corrupt the "frozen features" guarantee.
+        """
+        super().train(mode)
+        self.backbone.eval()
+        return self
 
 
 class VariationalWrapper(nn.Module):

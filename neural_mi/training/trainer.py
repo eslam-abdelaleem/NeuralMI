@@ -568,7 +568,7 @@ class Trainer:
                 nan_streak = 0
             history.append(mi_nats)
 
-            # Physics params tracking for biased embeddings (sinc_cnn, calcium_cnn)
+            # Physics params tracking for biased embeddings (sinc_cnn)
             for _prefix, _net_attr in (('x', 'embedding_net_x'), ('y', 'embedding_net_y')):
                 _enc = getattr(self.model, _net_attr, None)
                 if _enc is not None and hasattr(_enc, 'get_physics_params'):

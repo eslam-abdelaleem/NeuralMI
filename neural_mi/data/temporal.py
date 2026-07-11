@@ -145,8 +145,33 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     """
     Dataset for continuous time series data.
 
-    Note this class allows for irregular jumps in time between blocks of data, 
+    Note this class allows for irregular jumps in time between blocks of data,
     but assumes a constant sample rate.
+
+    Notes
+    -----
+    **What ``min_coverage_fraction`` actually gates.** Coverage is measured purely
+    by counting how many *source timestamps* (``self.time_vector`` entries) fall
+    inside a window (see :meth:`validate_window_coverage`) — it does not inspect
+    whether the corresponding data *values* are finite. A window whose timestamps
+    are all present but whose values are ``NaN`` is **not** flagged invalid by this
+    check; ``np.interp`` has no NaN-awareness and will happily interpolate through
+    NaN source values, producing NaN output. If your data has present-but-invalid
+    stretches, filter/impute them before construction.
+
+    **What gets zero-padded vs. interpolated.** Within a window, every target time
+    is filled by linear interpolation (:func:`numpy.interp`) against the *entire*
+    ``time_vector``, regardless of how large any internal gap is — the coverage
+    fraction only decides whether the resulting window is later flagged valid or
+    invalid; it does not bound how much of the window content is
+    interpolation-bridged. Only target times that fall entirely before the first
+    or after the last timestamp in ``time_vector`` are zero-padded (see
+    :meth:`move_data_to_windows`). A window that straddles a large mid-recording
+    gap can therefore still be marked "valid" (if enough raw timestamps happen to
+    fall within its span) while most of its content is interpolated across the
+    gap. If your data has large mid-recording gaps, consider pre-collapsing them
+    (build a reindexed timeline with the gap removed) or raising
+    ``min_coverage_fraction`` so gappy windows are excluded outright.
     """
     
     def __init__(self, data, time_vector=None, window_manager=None, device=None,
@@ -167,7 +192,13 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             Compute device (kept for reference; not used for data storage).
         min_coverage_fraction : float, optional
             Minimum fraction of a window that must be covered by actual data
-            for the window to be considered valid.  Defaults to 0.2.
+            for the window to be considered valid.  Defaults to 0.2.  "Covered"
+            means a count of source *timestamps* falling inside the window
+            (see :meth:`validate_window_coverage`), not a check that the
+            corresponding values are non-NaN, and it does not bound how much
+            of a retained window's content is interpolation-bridged across
+            internal gaps (see the class-level Notes and
+            :meth:`move_data_to_windows`).
         data_device : str, optional
             Device for storing ``self.data``.  Defaults to ``'cpu'``.
         sample_rate : float, optional
@@ -238,11 +269,24 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     
     def move_data_to_windows(self):
         """
-        Convert continuous data into windows. 
-        Continuous data of shape (n_timepoints, n_channels) is reshaped and interpolated 
+        Convert continuous data into windows.
+        Continuous data of shape (n_timepoints, n_channels) is reshaped and interpolated
         to (n_windows, n_channels, n_timepoints_in_window)
-        
+
         Requires an attached window manager
+
+        Notes
+        -----
+        Every target sample time within a window is filled via
+        :func:`numpy.interp` against the full ``time_vector`` — interior gaps
+        (target times that fall between two real timestamps, however far
+        apart) are linearly interpolated across regardless of gap size. Only
+        target times that fall entirely *before the first* or *after the
+        last* timestamp in ``time_vector`` are zero-padded. Whether a given
+        window is later kept or discarded is decided separately by
+        :meth:`validate_window_coverage` and ``min_coverage_fraction``, which
+        counts source timestamps per window and does not distinguish
+        interpolated content from directly-sampled content.
         """
         if self.window_manager is None:
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
@@ -306,7 +350,21 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
-        """Check which windows have sufficient data coverage."""
+        """Check which windows have sufficient data coverage.
+
+        Notes
+        -----
+        "Coverage" here is a count of source **timestamps** from
+        ``self.time_vector`` that fall within each window's
+        ``[window_start, window_end)`` span (via :func:`numpy.searchsorted`),
+        compared against ``min_coverage_fraction * max_samples_per_window``.
+        It does *not* inspect the corresponding data values — a window whose
+        timestamps are all present but whose values are ``NaN`` passes this
+        check. It also does not measure how much of the window's
+        *interpolated* content (see :meth:`move_data_to_windows`) spans an
+        internal gap; a window can have enough raw timestamps to be marked
+        valid while still being mostly gap-bridged by interpolation.
+        """
         if self.window_manager is None:
             return None
 

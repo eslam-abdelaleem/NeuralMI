@@ -18,7 +18,6 @@ from neural_mi.models.embeddings import (
     Transformer,
     SpikePhysicsEmbedding,
     SincEmbedding,
-    CalciumEmbedding,
 )
 
 # --- Fixtures ---
@@ -496,58 +495,6 @@ class TestSincEmbedding:
                               n_sinc_filters=4, sample_rate=250.0)
         out = model(x)
         assert out.shape == (8, 4)
-
-
-class TestCalciumEmbedding:
-    """Tests for CalciumEmbedding (deconvolution of calcium indicator dynamics)."""
-
-    N_CH = 3
-    T = 150
-    BATCH = 12
-    SR = 30.0  # Hz (2-photon typical)
-
-    @pytest.fixture
-    def calcium_input(self):
-        torch.manual_seed(11)
-        return torch.randn(self.BATCH, self.N_CH, self.T).clamp(-3, 3)
-
-    def test_output_shape_features(self, calcium_input):
-        model = CalciumEmbedding(input_dim=self.N_CH, hidden_dim=16, embed_dim=8,
-                                 n_layers=2, sample_rate=self.SR, feature_fusion='features')
-        out = model(calcium_input)
-        assert out.shape == (self.BATCH, 8)
-
-    def test_output_shape_concat(self, calcium_input):
-        model = CalciumEmbedding(input_dim=self.N_CH, hidden_dim=16, embed_dim=8,
-                                 n_layers=2, sample_rate=self.SR, feature_fusion='concat')
-        out = model(calcium_input)
-        assert out.shape == (self.BATCH, 8)
-
-    def test_fixed_kernel_no_grad_on_tau(self, calcium_input):
-        model = CalciumEmbedding(input_dim=self.N_CH, hidden_dim=16, embed_dim=8,
-                                 n_layers=1, sample_rate=self.SR,
-                                 learn_calcium_kernel=False)
-        out = model(calcium_input)
-        out.sum().backward()
-        # When fixed, log_tau_rise / log_tau_decay should NOT be Parameters
-        assert not isinstance(model.log_tau_rise, torch.nn.Parameter)
-
-    def test_learnable_kernel_grads_flow(self, calcium_input):
-        model = CalciumEmbedding(input_dim=self.N_CH, hidden_dim=16, embed_dim=8,
-                                 n_layers=1, sample_rate=self.SR,
-                                 learn_calcium_kernel=True)
-        out = model(calcium_input)
-        out.sum().backward()
-        assert isinstance(model.log_tau_rise, torch.nn.Parameter)
-        assert model.log_tau_rise.grad is not None
-        assert model.log_tau_decay.grad is not None
-
-    def test_no_nan_inf(self, calcium_input):
-        model = CalciumEmbedding(input_dim=self.N_CH, hidden_dim=8, embed_dim=4,
-                                 n_layers=1, sample_rate=self.SR)
-        out = model(calcium_input)
-        assert not torch.isnan(out).any()
-        assert not torch.isinf(out).any()
 
 
 torchvision_available = pytest.mark.skipif(

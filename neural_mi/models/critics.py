@@ -192,15 +192,21 @@ class HybridCritic(BaseCritic):
             self.max_n_batches, self.use_variational
         )
 
-        # 2. Score all N² pairs in a single forward pass.
-        #    Pairs live in embedding space (N² × 2d), which is small relative to
-        #    raw input space, so full vectorization is safe for all typical batch sizes.
-        pairs = torch.cat(
-            [x_embedded.unsqueeze(1).expand(-1, batch_size, -1),   # (N, N, d)
-             y_embedded.unsqueeze(0).expand(batch_size, -1, -1)],  # (N, N, d)
-            dim=2
-        ).reshape(batch_size * batch_size, -1)                      # (N², 2d)
-        scores = self.decision_head(pairs).view(batch_size, batch_size)
+        # 2. Score all N² pairs in row-chunks so the full (N², 2d) pair tensor
+        #    is never materialized at once — same pattern as ConcatCritic.forward.
+        chunk_rows = max(1, self.max_n_batches // batch_size)
+        scores = torch.zeros(batch_size, batch_size, device=x_embedded.device)
+        y_exp = y_embedded.unsqueeze(0)  # (1, N, d) — shared view, no copy
+
+        for start in range(0, batch_size, chunk_rows):
+            end = min(start + chunk_rows, batch_size)
+            n_rows = end - start
+            pairs = torch.cat(
+                [x_embedded[start:end].unsqueeze(1).expand(-1, batch_size, -1),
+                 y_exp.expand(n_rows, -1, -1)],
+                dim=2
+            ).reshape(n_rows * batch_size, -1)
+            scores[start:end] = self.decision_head(pairs).view(n_rows, batch_size)
 
         return scores, total_kl_loss
 

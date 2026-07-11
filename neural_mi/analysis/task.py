@@ -85,10 +85,9 @@ _BUILD_PARAMS_KEYS = [
     'decoder_output_activation_x', 'decoder_output_activation_y',
     # Inductive-bias architecture parameters
     'use_depthwise', 'n_sinc_filters', 'feature_fusion',
-    'tau_rise', 'tau_decay', 'learn_calcium_kernel',
     'pytorch_predefined', 'pretrained',
     # Modality metadata injected from processor_params (needed to reconstruct
-    # SpikePhysicsEmbedding and CalciumEmbedding / SincEmbedding architectures)
+    # SpikePhysicsEmbedding and SincEmbedding architectures)
     'sample_rate_x', 'sample_rate_y', 'no_spike_value', 'embedding_window_size',
 ]
 

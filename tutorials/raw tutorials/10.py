@@ -9,10 +9,10 @@
 # is likely to carry the mutual information.  A generic MLP assumes nothing —
 # it treats every element of the flattened window equally.  A CNN assumes that
 # local temporal patterns matter.  But neural data comes with *much stronger*
-# prior knowledge: EEG activity is organized in frequency bands, calcium
-# fluorescence is a blurred version of underlying spikes, raw spike timestamps
-# encode firing rate in the count of non-padding values, and images are better
-# described by learned hierarchical visual features than by random filters.
+# prior knowledge: EEG activity is organized in frequency bands, raw spike
+# timestamps encode firing rate in the count of non-padding values, and
+# images are better described by learned hierarchical visual features than
+# by random filters.
 #
 # **Inductive bias** is the term for this prior knowledge baked into the model
 # architecture.  When the bias is correct, the model learns faster, generalises
@@ -20,14 +20,13 @@
 # does not help — but in most cases it causes no harm either, because the
 # downstream MLP head can compensate.
 #
-# NeuralMI now ships four physics-informed embedding models alongside one
+# NeuralMI now ships three physics-informed embedding models alongside one
 # architectural improvement to the existing CNN:
 #
 # | ``embedding_model`` | Data type | Bias |
 # |---------------------|-----------|------|
 # | ``'cnn'`` + ``use_depthwise=True`` | Binned spikes, multi-channel continuous | Per-channel temporal filtering before cross-channel mixing |
 # | ``'sinc_cnn'`` | EEG / LFP (continuous) | Learnable sinc bandpass filters initialized to neural frequency bands |
-# | ``'calcium_cnn'`` | Calcium imaging (continuous) | FIR deconvolution of the indicator impulse response |
 # | ``'spike_physics'`` | Raw spike timestamps (spike processor) | Firing rate, mean ISI, ISI variance per neuron |
 # | ``'pretrained_backbone'`` | Images | Frozen torchvision backbone (e.g. ResNet18) + trainable MLP head |
 #
@@ -260,104 +259,7 @@ else:
     print("(critic not stored in details — set return_embeddings=True or inspect manually)")
 
 # %% [markdown]
-# ## 3. CalciumEmbedding for Calcium Imaging Data
-#
-# ### The inductive bias
-#
-# Calcium indicators (GCaMP, jGCaMP, RCaMP, etc.) report neural activity via
-# fluorescence, but the relationship is not instantaneous.  The indicator
-# dynamics act as a **low-pass filter**: each spike produces a slow
-# calcium transient that decays over hundreds of milliseconds.  The observed
-# fluorescence at time *t* is approximately:
-#
-# $$F(t) \approx \int_0^\infty r(t-s)\,h(s)\,\mathrm{d}s,
-#   \quad h(s) = e^{-s/\tau_\text{decay}} - e^{-s/\tau_\text{rise}}$$
-#
-# where *r(t)* is the underlying spike rate and *h* is the indicator impulse
-# response.  The raw fluorescence looks slow and smeared; the *spike rate* is
-# what carries most of the meaningful neural information.
-#
-# ``embedding_model='calcium_cnn'`` inserts a **per-channel FIR deconvolution
-# layer** before the convolutional body.  The deconvolution kernel is the
-# time-reversed, normalised version of *h* (a matched-filter approximation).
-# When ``learn_calcium_kernel=False`` (default), ``tau_rise`` and ``tau_decay``
-# are fixed to the provided values; when ``True``, they are made trainable
-# (scalar parameters).
-#
-# ### Required parameters
-#
-# ``calcium_cnn`` **requires** ``sample_rate`` (frame rate in Hz) to convert
-# time constants to kernel samples.  Provide it via ``processor_params``.
-# Defaults for ``tau_rise`` (0.05 s) and ``tau_decay`` (0.4 s) match GCaMP6f.
-
-# %%
-np.random.seed(2)
-SAMPLE_RATE_CA = 30.0   # typical 2-photon frame rate (Hz)
-N_CH_CA = 4
-
-x_ca, y_ca = nmi.generators.generate_calcium_traces(
-    n_timepoints=15_000,
-    n_channels_x=N_CH_CA,
-    n_channels_y=N_CH_CA,
-    sample_rate=SAMPLE_RATE_CA,
-    tau_rise=0.05,
-    tau_decay=0.4,
-    mi=1.5,
-)
-
-proc_ca = dict(window_size=3.0, step_size=1.0, sample_rate=SAMPLE_RATE_CA)
-
-print("--- Standard CNN vs CalciumEmbedding on GCaMP-like fluorescence ---")
-
-result_cnn_ca = nmi.run(
-    x_data=x_ca, y_data=y_ca,
-    mode='estimate',
-    processor_type_x='continuous', processor_params_x=proc_ca,
-    processor_type_y='continuous', processor_params_y=proc_ca,
-    base_params={**FAST_PARAMS, 'embedding_model': 'cnn'},
-    random_seed=2, show_progress=False,
-)
-
-result_ca = nmi.run(
-    x_data=x_ca, y_data=y_ca,
-    mode='estimate',
-    processor_type_x='continuous', processor_params_x=proc_ca,
-    processor_type_y='continuous', processor_params_y=proc_ca,
-    base_params={**FAST_PARAMS, 'embedding_model': 'calcium_cnn',
-                 'tau_rise': 0.05, 'tau_decay': 0.4},
-    random_seed=2, show_progress=False,
-)
-
-print(f"  Standard CNN:      {result_cnn_ca.mi_estimate:.3f} bits")
-print(f"  CalciumEmbedding:  {result_ca.mi_estimate:.3f} bits")
-
-# %% [markdown]
-# **Key parameters:**
-#
-# - ``tau_rise`` (default 0.05 s): indicator rise time constant.  Check your
-#   indicator's datasheet.  Typical values: GCaMP6f ~0.05 s, GCaMP6s ~0.18 s.
-# - ``tau_decay`` (default 0.4 s): indicator decay time constant.  Typical
-#   values: GCaMP6f ~0.4 s, GCaMP6s ~1.8 s, jGCaMP8m ~0.06 s.
-# - ``learn_calcium_kernel`` (default False): if True, the library will treat
-#   ``tau_rise`` and ``tau_decay`` as starting points and refine them during
-#   training.  Useful when the exact indicator parameters are uncertain.
-# - ``feature_fusion='concat'``: concatenate the raw fluorescence (mean-pooled)
-#   with the deconvolved features before the projection head.  Useful when
-#   the raw signal carries additional information (e.g., neuropil contamination
-#   patterns).
-#
-# **When to use ``calcium_cnn``:**
-# - GCaMP, jGCaMP, RCaMP, or any fluorescent indicator with known τ_rise and τ_decay.
-# - When you want the model to operate on approximate spike rates rather than raw ΔF/F.
-# - Especially important for slowly-imaged datasets (frame rate < 10 Hz) where
-#   the indicator blur is severe.
-#
-# **When to skip:**
-# - Voltage imaging data (no indicator dynamics; essentially instantaneous).
-# - Data that has already been deconvolved externally.
-
-# %% [markdown]
-# ## 4. SpikePhysicsEmbedding for Raw Spike Timestamps
+# ## 3. SpikePhysicsEmbedding for Raw Spike Timestamps
 #
 # ### The inductive bias
 #
@@ -530,7 +432,7 @@ print(f"  SpikePhysicsEmbed (concat):     {result_physics_concat.mi_estimate:.3f
 #   The model can then use whichever representation is more informative.
 
 # %% [markdown]
-# ## 5. PretrainedBackboneEmbedding for Image Data
+# ## 4. PretrainedBackboneEmbedding for Image Data
 #
 # ### The inductive bias
 #
@@ -619,7 +521,7 @@ print(f"  PretrainedBackbone (ResNet18):   {result_backbone.mi_estimate:.3f} bit
 #   a larger dataset.
 
 # %% [markdown]
-# ## 6. The ``feature_fusion`` Parameter
+# ## 5. The ``feature_fusion`` Parameter
 #
 # All inductive-bias embedding models support a ``feature_fusion`` parameter
 # that controls what the downstream mixer sees:
@@ -634,8 +536,6 @@ print(f"  PretrainedBackbone (ResNet18):   {result_backbone.mi_estimate:.3f} bit
 #   (captured in the raw timestamps) may carry additional timing-code MI.
 # - EEG sinc features: bandpass-filtered signals capture band power, but the
 #   raw signal contains phase information that the features lose.
-# - Calcium: the raw fluorescence might carry artefact patterns that help
-#   disentangle neuropil contamination.
 #
 # ``'features'`` is the right default when you want a pure inductive bias
 # and a small, fast model.  Use ``'concat'`` when you are uncertain whether
@@ -660,7 +560,7 @@ print("(for a pure rate code the addition of raw timestamps should add little;")
 print(" note: single-run variance is high — run multiple seeds for a reliable comparison)")
 
 # %% [markdown]
-# ## 7. Quick Reference: Choosing the Right Model
+# ## 6. Quick Reference: Choosing the Right Model
 #
 # | Data type | Recommended model | Notes |
 # |-----------|------------------|-------|
@@ -669,7 +569,6 @@ print(" note: single-run variance is high — run multiple seeds for a reliable 
 # | LFP / EEG (single channel) | ``'mlp'`` or ``'cnn'`` | Baseline. |
 # | LFP / EEG (band-limited MI) | ``'sinc_cnn'`` | Pass ``sample_rate``. Start with 8 filters. |
 # | LFP / EEG (multi-channel, band-limited) | ``'sinc_cnn'`` + ``use_depthwise`` in body | Not yet exposed as a single flag; use ``sinc_cnn`` (internally depthwise in first layer). |
-# | Calcium imaging | ``'calcium_cnn'`` | Pass ``sample_rate``, ``tau_rise``, ``tau_decay``. |
 # | Raw spike timestamps (rate code) | ``'spike_physics'`` | Efficient, interpretable. |
 # | Raw spike timestamps (timing code) | ``'gru'`` or ``'spike_physics'`` + ``feature_fusion='concat'`` | Use GRU when signal spikes are buried in high-rate background. |
 # | Images | ``'pretrained_backbone'`` | Requires torchvision. Use ``pretrained=True`` for natural images. |
@@ -683,7 +582,7 @@ print(" note: single-run variance is high — run multiple seeds for a reliable 
 # %% [markdown]
 # ## Summary
 #
-# NeuralMI now supports five physics-informed embedding choices:
+# NeuralMI now supports four physics-informed embedding choices:
 #
 # 1. **``use_depthwise=True``** on ``embedding_model='cnn'``: enforces per-channel
 #    temporal filtering before cross-channel mixing.  Drop-in upgrade for any
@@ -693,19 +592,15 @@ print(" note: single-run variance is high — run multiple seeds for a reliable 
 #    initialized to EEG/LFP frequency bands.  Requires ``sample_rate`` in
 #    ``processor_params``.  Use when MI is band-limited.
 #
-# 3. **``embedding_model='calcium_cnn'``**: per-channel FIR deconvolution of
-#    indicator dynamics before a standard CNN body.  Requires ``sample_rate``,
-#    optionally ``tau_rise`` and ``tau_decay``.  Use for GCaMP / calcium data.
-#
-# 4. **``embedding_model='spike_physics'``**: extracts firing rate, mean spike
+# 3. **``embedding_model='spike_physics'``**: extracts firing rate, mean spike
 #    time, mean ISI, and ISI variance per neuron — no learned parameters in
 #    the feature stage.  Use for rate codes; combine with ``feature_fusion='concat'``
 #    for timing codes.
 #
-# 5. **``embedding_model='pretrained_backbone'``**: frozen torchvision backbone
+# 4. **``embedding_model='pretrained_backbone'``**: frozen torchvision backbone
 #    + trainable MLP head.  Use for image data, especially with small datasets.
 #    Specify the backbone with ``pytorch_predefined`` (e.g., ``'resnet18'``).
 #
-# All five models are fully compatible with ``mode='sweep'``,
+# All four models are fully compatible with ``mode='sweep'``,
 # ``mode='rigorous'``, variational wrappers, custom critics, and the full
 # NeuralMI pipeline.

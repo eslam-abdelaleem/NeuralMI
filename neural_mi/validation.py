@@ -17,7 +17,7 @@ from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR
 ALLOWED_VALUES = {
     'critic_type': ['separable', 'concat', 'hybrid'],
     'embedding_model': ['mlp', 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                        'sinc_cnn', 'calcium_cnn', 'spike_physics', 'pretrained_backbone'],
+                        'sinc_cnn', 'spike_physics', 'pretrained_backbone'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
     'spectral_mode': ['none', 'summary', 'full'],

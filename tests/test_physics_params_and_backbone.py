@@ -96,79 +96,6 @@ def test_sinc_physics_params_tracked():
     )
 
 
-def test_calcium_physics_params_not_tracked_when_fixed():
-    """When learn_calcium_kernel=False, no physics_params_history should be stored."""
-    np.random.seed(1)
-    torch.manual_seed(1)
-
-    X = np.random.randn(100, 2, 30).astype(np.float32)
-    Y = np.random.randn(100, 2, 30).astype(np.float32)
-
-    result = nmi.run(
-        x_data=X, y_data=Y,
-        mode='estimate',
-        split_mode='random',
-        processor_params_x={'sample_rate': 30.0},
-        processor_params_y={'sample_rate': 30.0},
-        base_params={
-            'n_epochs': 5,
-            'patience': 5,
-            'batch_size': 32,
-            'hidden_dim': 16,
-            'embedding_dim': 8,
-            'n_layers': 1,
-            'embedding_model': 'calcium_cnn',
-            'learn_calcium_kernel': False,  # fixed → no physics tracking
-        },
-        random_seed=1,
-        show_progress=False,
-    )
-
-    # When kernel is fixed, get_physics_params() returns {} → nothing tracked
-    assert 'physics_params_history' not in result.details, (
-        "physics_params_history should be absent when learn_calcium_kernel=False"
-    )
-
-
-def test_calcium_physics_params_tracked_when_learnable():
-    """When learn_calcium_kernel=True, physics_params_history must contain tau values."""
-    np.random.seed(2)
-    torch.manual_seed(2)
-
-    X = np.random.randn(100, 2, 60).astype(np.float32)
-    Y = 0.5 * X + 0.5 * np.random.randn(100, 2, 60).astype(np.float32)
-
-    result = nmi.run(
-        x_data=X, y_data=Y,
-        mode='estimate',
-        split_mode='random',
-        processor_params_x={'sample_rate': 30.0},
-        processor_params_y={'sample_rate': 30.0},
-        base_params={
-            'n_epochs': 10,
-            'patience': 10,
-            'batch_size': 32,
-            'hidden_dim': 16,
-            'embedding_dim': 8,
-            'n_layers': 1,
-            'embedding_model': 'calcium_cnn',
-            'learn_calcium_kernel': True,
-            'tau_rise': 0.05,
-            'tau_decay': 0.4,
-        },
-        random_seed=2,
-        show_progress=False,
-    )
-
-    assert 'physics_params_history' in result.details, (
-        "physics_params_history must be present when learn_calcium_kernel=True"
-    )
-    hist = result.details['physics_params_history']
-    assert 'x_tau_rise_s' in hist, "Expected 'x_tau_rise_s' in physics_params_history"
-    assert 'x_tau_decay_s' in hist, "Expected 'x_tau_decay_s' in physics_params_history"
-    assert 'physics_params_final' in result.details
-
-
 def test_non_biased_model_no_physics_params():
     """Standard CNN should produce no physics_params_history."""
     np.random.seed(3)
@@ -316,6 +243,76 @@ class TestPretrainedBackboneSpatialMismatch:
                 "the backbone is not properly frozen."
             )
             # Data should be unchanged
+            assert torch.allclose(backbone_params_before[name], param_after.data), (
+                f"Backbone parameter '{name}' changed after backward pass."
+            )
+
+    def test_channel_adapter_gradient_backbone_frozen_bn_eval(self):
+        """Regression test for the dead-channel-adapter / BN-train-mode bugs.
+
+        With ``input_dim != backbone_in_ch`` a trainable 1x1 conv channel
+        adapter is inserted before the backbone. Removing the stray
+        ``torch.no_grad()`` around the backbone forward (which previously
+        severed the adapter's gradient path) must let gradient reach the
+        adapter, while the backbone itself stays frozen and its BatchNorm
+        layers stay in eval mode even when the outer module is in train().
+        """
+        try:
+            import torchvision  # noqa: F401
+        except ImportError:
+            pytest.skip("torchvision not installed")
+
+        from neural_mi.models.embeddings import PretrainedBackboneEmbedding
+
+        # input_dim=1 != resnet18's expected 3 channels -> forces the adapter.
+        emb = PretrainedBackboneEmbedding(
+            input_dim=1, hidden_dim=16, embed_dim=8, n_layers=1,
+            pytorch_predefined='resnet18', pretrained=False,
+        )
+        assert emb._channel_adapt is not None, (
+            "Expected a channel adapter to be created for input_dim != backbone_in_ch"
+        )
+
+        # Simulate the trainer calling .train() on the whole model.
+        emb.train()
+        bn_modules = [m for m in emb.backbone.modules() if isinstance(m, torch.nn.BatchNorm2d)]
+        assert len(bn_modules) > 0, "Expected resnet18 backbone to contain BatchNorm2d layers"
+        assert all(not bn.training for bn in bn_modules), (
+            "Backbone BatchNorm layers must stay in eval() mode even after emb.train()"
+        )
+
+        backbone_params_before = {
+            n: p.data.clone() for n, p in emb.backbone.named_parameters()
+        }
+
+        dummy = torch.randn(4, 1, 224, 224)
+        out = emb(dummy)
+
+        # BN must still be in eval mode during/after the forward pass.
+        assert all(not bn.training for bn in bn_modules), (
+            "Backbone BatchNorm layers must remain in eval() mode during forward"
+        )
+
+        loss = out.sum()
+        loss.backward()
+
+        # (a) The channel adapter must receive a non-None, non-zero gradient.
+        adapter_grad = emb._channel_adapt.weight.grad
+        assert adapter_grad is not None, (
+            "Channel adapter received no gradient — the no_grad() regression is back."
+        )
+        assert (adapter_grad != 0).any(), (
+            "Channel adapter gradient is all-zero — gradient is not flowing through the backbone."
+        )
+
+        # (b) Backbone stays frozen: no grad, and weights unchanged.
+        for name, param_after in emb.backbone.named_parameters():
+            assert not param_after.requires_grad, (
+                f"Backbone parameter '{name}' unexpectedly has requires_grad=True."
+            )
+            assert param_after.grad is None or (param_after.grad == 0).all(), (
+                f"Backbone parameter '{name}' received non-zero gradients."
+            )
             assert torch.allclose(backbone_params_before[name], param_after.data), (
                 f"Backbone parameter '{name}' changed after backward pass."
             )
