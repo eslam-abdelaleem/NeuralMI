@@ -215,8 +215,8 @@ dim_results = nmi.run(
 
 # %%
 df_dim  = dim_results.dataframe
-pr_mean = df_dim['participation_ratio_mean'].iloc[0]
-pr_std  = df_dim['participation_ratio_std'].iloc[0]
+pr_mean = df_dim['pr_singular_mean'].iloc[0]
+pr_std  = df_dim['pr_singular_std'].iloc[0]
 mi_mean = df_dim['mi_mean'].iloc[0]
 mi_std  = df_dim['mi_std'].iloc[0]
 

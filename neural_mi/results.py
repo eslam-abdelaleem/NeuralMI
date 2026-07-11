@@ -23,8 +23,8 @@ _RESULT_COLS: frozenset = frozenset({
     'mi_error', 'mi_error_pred', 'slope', 'run_id', 'is_reliable', 'gammas_used',
     'n_windows', 'lag',
     # Dimensionality-specific columns
-    'participation_ratio', 'participation_ratio_mean', 'participation_ratio_std',
-    'participation_ratio_singular', 'split_id',
+    'pr_eig', 'pr_eig_mean', 'pr_eig_std',
+    'pr_singular', 'pr_singular_mean', 'pr_singular_std', 'split_id',
 })
 
 

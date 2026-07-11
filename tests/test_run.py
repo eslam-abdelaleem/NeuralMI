@@ -127,7 +127,8 @@ def test_run_dimensionality_mode_returns_results_with_dataframe(raw_gaussian_dat
     assert isinstance(result, Results)
     assert isinstance(result.dataframe, pd.DataFrame)
     # Check for our new spectral metrics instead of mi_mean
-    assert 'participation_ratio_mean' in result.dataframe.columns
+    assert 'pr_eig_mean' in result.dataframe.columns
+    assert 'pr_singular_mean' in result.dataframe.columns
     assert 'mi_mean' in result.dataframe.columns
     # embedding_dim is not in sweep_grid, so it won't be in columns if it wasn't swept
     # assert 'embedding_dim' in result.dataframe.columns

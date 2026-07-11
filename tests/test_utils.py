@@ -87,7 +87,7 @@ def test_spectral_metrics_single_dimension():
     metrics = compute_spectral_metrics(spectrum)
     
     assert np.isclose(metrics['pr_singular'], 1.0)
-    assert np.isclose(metrics['pr_covariance'], 1.0)
+    assert np.isclose(metrics['pr_eig'],1.0)
     assert np.isclose(metrics['effective_rank'], 1.0)
 
 def test_spectral_metrics_uniform_dimensions():
@@ -97,5 +97,5 @@ def test_spectral_metrics_uniform_dimensions():
     metrics = compute_spectral_metrics(spectrum)
     
     assert np.isclose(metrics['pr_singular'], 4.0)
-    assert np.isclose(metrics['pr_covariance'], 4.0)
+    assert np.isclose(metrics['pr_eig'],4.0)
     assert np.isclose(metrics['effective_rank'], 4.0)

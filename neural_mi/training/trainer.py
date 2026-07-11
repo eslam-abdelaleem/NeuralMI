@@ -225,10 +225,9 @@ class Trainer:
             If True, computes and tracks spectral metrics of the learned representations at each epoch.
             Defaults to False.
         spectral_output : str, optional
-            Determines which spectral metrics are returned. ``'default'`` returns only the
-            participation ratio (``pr_singular``). ``'all'`` returns all spectral metrics
-            (``pr_covariance``, ``pr_singular``, ``effective_rank``, ``spectral_entropy``).
-            Defaults to ``'default'``.
+            Determines which spectral metrics are returned. ``'default'`` returns both
+            participation-ratio variants (``pr_eig``, ``pr_singular``). ``'all'`` additionally
+            returns ``effective_rank`` and ``spectral_entropy``. Defaults to ``'default'``.
         return_spectrum : bool, optional
             If True, includes the full spectrum in the returned results when `track_spectral_metrics` is True. Defaults to False.
         max_index_reduction : float, optional
@@ -904,11 +903,12 @@ class Trainer:
         results = {}
         results['spectral_whitening'] = self.spectral_whitening
         if spectral_output == 'all':
-            # Return all metrics: pr_covariance, pr_singular, effective_rank, spectral_entropy
+            # Return all metrics: pr_eig, pr_singular, effective_rank, spectral_entropy
             results.update(metrics)
         else:
-            # Default: only participation_ratio (pr_singular)
-            results['participation_ratio'] = metrics['pr_singular']
+            # Default: both participation-ratio variants, without effective_rank/spectral_entropy
+            results['pr_eig'] = metrics['pr_eig']
+            results['pr_singular'] = metrics['pr_singular']
 
         if return_spectrum:
             results['spectrum'] = spectrum

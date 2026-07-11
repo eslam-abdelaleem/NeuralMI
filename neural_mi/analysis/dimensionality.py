@@ -156,9 +156,11 @@ def run_dimensionality_analysis(
     spectral_mode : {'summary', 'full'}, optional
         Controls which spectral metrics are returned.
 
-        - ``'summary'`` *(default)* — compute the participation ratio only.
-        - ``'full'`` — compute all spectral metrics and include the raw
-          singular values array in each result row.
+        - ``'summary'`` *(default)* — compute both participation-ratio
+          variants, ``pr_eig`` and ``pr_singular``.
+        - ``'full'`` — additionally compute ``effective_rank`` and
+          ``spectral_entropy``, and include the raw singular values array in
+          each result row.
     n_workers : int, optional
         Number of parallel workers.  When ``n_splits > 1`` the workers are
         distributed *across splits* (each split's inner sweep runs
@@ -170,7 +172,7 @@ def run_dimensionality_analysis(
     -------
     pd.DataFrame
         One row per split (and per sweep combination). Columns include split_id,
-        train_mi, participation_ratio, and any additional spectral metrics.
+        train_mi, pr_eig, pr_singular, and any additional spectral metrics.
     embeddings : dict or None
         If ``base_params`` contains ``return_embeddings=True``, a dict with
         keys ``'embeddings_x'`` and ``'embeddings_y'`` (numpy arrays, shape
@@ -594,9 +596,9 @@ def _warn_if_near_embed_ceiling(df: pd.DataFrame, analysis_params: Dict[str, Any
     estimated PR exceeds 80 % of that ceiling the measurement is likely truncated:
     the true dimensionality may be higher.
     """
-    if 'participation_ratio' not in df.columns:
+    if 'pr_singular' not in df.columns:
         return
-    valid_prs = df['participation_ratio'].dropna()
+    valid_prs = df['pr_singular'].dropna()
     if valid_prs.empty:
         return
     mean_pr = float(valid_prs.mean())

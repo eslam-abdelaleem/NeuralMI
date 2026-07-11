@@ -82,7 +82,8 @@ def test_trainer_spectral_metrics(dummy_data, dummy_model):
     )
     
     # Check that spectral metrics were successfully injected into results
-    assert 'participation_ratio' in results or 'pr_singular' in results
+    assert 'pr_eig' in results
+    assert 'pr_singular' in results
     assert 'effective_rank' in results
 
 def test_trainer_custom_smoothing(dummy_data, dummy_model):

@@ -42,7 +42,7 @@ def _make_result(
     if include_spectral or include_spectrum:
         spectral = []
         for e in range(n_epochs):
-            entry = {'participation_ratio': 1.0 + e * 0.1}
+            entry = {'pr_singular': 1.0 + e * 0.1}
             if include_spectrum:
                 entry['spectrum'] = list(np.linspace(1.0, 0.1, 8))
             spectral.append(entry)
@@ -75,7 +75,7 @@ class TestAutoPanels:
     def test_spectral_metrics_detected(self):
         details = {
             'test_mi_history': [1.0],
-            'spectral_metrics_history': [{'participation_ratio': 2.0}],
+            'spectral_metrics_history': [{'pr_singular': 2.0}],
         }
         panels = _auto_panels(details)
         assert 'spectral_metrics' in panels
@@ -83,7 +83,7 @@ class TestAutoPanels:
     def test_spectrum_detected(self):
         details = {
             'test_mi_history': [1.0],
-            'spectral_metrics_history': [{'participation_ratio': 2.0, 'spectrum': [1, 2, 3]}],
+            'spectral_metrics_history': [{'pr_singular': 2.0, 'spectrum': [1, 2, 3]}],
         }
         panels = _auto_panels(details)
         assert 'spectrum' in panels

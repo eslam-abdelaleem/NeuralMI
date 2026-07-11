@@ -225,18 +225,16 @@ def animate_training(
     pr_vals: List[float] = []
     if 'spectral_metrics' in col_ax and spectral_history:
         ax_sp = col_ax['spectral_metrics']
-        _pr_key = ('participation_ratio' if 'participation_ratio' in spectral_history[0]
-                   else 'pr_singular')
-        pr_vals = [float(m.get(_pr_key, np.nan)) for m in spectral_history]
+        pr_vals = [float(m.get('pr_singular', np.nan)) for m in spectral_history]
         (line_pr,) = ax_sp.plot([], [], color='mediumseagreen', linewidth=1.5,
-                                 label='Participation Ratio')
+                                 label='Participation Ratio (Singular)')
         dot_pr = ax_sp.scatter([], [], color='mediumseagreen', zorder=5, s=40)
         ax_sp.set_xlim(-0.5, len(pr_vals) - 0.5)
         _valid_pr = [v for v in pr_vals if not np.isnan(v)]
         _pr_hi = max(_valid_pr) if _valid_pr else 1.0
         ax_sp.set_ylim(0, _pr_hi * 1.15)
         ax_sp.set_xlabel('Epoch')
-        ax_sp.set_ylabel('Participation Ratio')
+        ax_sp.set_ylabel('Participation Ratio (pr_singular)')
         ax_sp.set_title('Spectral Dimensionality')
         ax_sp.grid(True, alpha=0.3)
 
@@ -398,7 +396,7 @@ def _auto_panels(details: dict) -> List[str]:
         if 'spectrum' in first:
             panels.append('spectrum')
         # Always show PR line if it exists (even alongside spectrum)
-        if 'participation_ratio' in first or 'pr_singular' in first:
+        if 'pr_singular' in first or 'pr_eig' in first:
             panels.append('spectral_metrics')
     if details.get('embedding_history_x') or details.get('embedding_history_y'):
         panels.append('embeddings')

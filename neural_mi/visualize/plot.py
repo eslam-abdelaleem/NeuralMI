@@ -116,6 +116,10 @@ def plot_dimensionality_curve(
 ) -> plt.Axes:
     """Two-panel plot for dimensionality analysis: MI (top) and Participation Ratio (bottom).
 
+    The PR panel plots ``pr_singular`` (the singular-spectrum variant). The
+    eigenvalue/covariance-spectrum variant (``pr_eig``) is also present in
+    ``result.dataframe`` but is not plotted by this function.
+
     When a sweep variable is present and participation ratio data is available,
     this function creates a two-panel figure so both metrics are visible side by
     side.  When no sweep variable is present (scalar result), the values are
@@ -127,7 +131,7 @@ def plot_dimensionality_curve(
         Aggregated dimensionality results.  Expected columns depend on context:
 
         - With sweep: ``sweep_var``, ``mi_mean``, ``mi_std``,
-          ``participation_ratio_mean``, ``participation_ratio_std``.
+          ``pr_singular_mean``, ``pr_singular_std``.
         - Without sweep (single row): same column names, single row.
     sweep_var : str, optional
         Name of the sweep variable column (e.g. ``'embedding_dim'``).  When
@@ -152,7 +156,7 @@ def plot_dimensionality_curve(
         The MI (top) axes.  When a two-panel figure is created internally, the
         PR axes is accessible via ``ax_mi.figure.axes[1]``.
     """
-    has_pr = 'participation_ratio_mean' in summary_df.columns
+    has_pr = 'pr_singular_mean' in summary_df.columns
     has_sweep = (
         sweep_var is not None
         and sweep_var in summary_df.columns
@@ -218,13 +222,13 @@ def plot_dimensionality_curve(
     # --- Participation Ratio panel ---
     if has_pr and ax_pr is not None:
         if has_sweep:
-            ax_pr.plot(summary_df[sweep_var], summary_df['participation_ratio_mean'],
+            ax_pr.plot(summary_df[sweep_var], summary_df['pr_singular_mean'],
                        's-', color='teal', label='Mean PR')
-            if 'participation_ratio_std' in summary_df.columns:
+            if 'pr_singular_std' in summary_df.columns:
                 ax_pr.fill_between(
                     summary_df[sweep_var],
-                    summary_df['participation_ratio_mean'] - summary_df['participation_ratio_std'],
-                    summary_df['participation_ratio_mean'] + summary_df['participation_ratio_std'],
+                    summary_df['pr_singular_mean'] - summary_df['pr_singular_std'],
+                    summary_df['pr_singular_mean'] + summary_df['pr_singular_std'],
                     alpha=0.2, color='teal', label='±1 Std Dev',
                 )
             if pd.api.types.is_numeric_dtype(summary_df[sweep_var]) and all(
@@ -233,10 +237,10 @@ def plot_dimensionality_curve(
                 ax_pr.xaxis.set_major_locator(MaxNLocator(integer=True))
             ax_pr.set_xlabel(sweep_var.replace('_', ' ').title(), fontsize=11)
         else:
-            pr_mean = float(summary_df['participation_ratio_mean'].iloc[0])
+            pr_mean = float(summary_df['pr_singular_mean'].iloc[0])
             pr_std = (
-                float(summary_df['participation_ratio_std'].iloc[0])
-                if 'participation_ratio_std' in summary_df.columns else 0.0
+                float(summary_df['pr_singular_std'].iloc[0])
+                if 'pr_singular_std' in summary_df.columns else 0.0
             )
             ax_pr.errorbar([0], [pr_mean], yerr=[pr_std], fmt='s', capsize=6,
                            color='teal', markersize=8)
@@ -248,8 +252,8 @@ def plot_dimensionality_curve(
             )
             ax_pr.set_xticks([])
 
-        ax_pr.set_ylabel('Participation Ratio', fontsize=11)
-        ax_pr.set_title('Participation Ratio (Effective Dimensions)', fontsize=12)
+        ax_pr.set_ylabel('Participation Ratio (Singular)', fontsize=11)
+        ax_pr.set_title('Participation Ratio — pr_singular (Effective Dimensions)', fontsize=12)
         if has_sweep:
             ax_pr.legend(fontsize=9)
         ax_pr.grid(True, linestyle=':')

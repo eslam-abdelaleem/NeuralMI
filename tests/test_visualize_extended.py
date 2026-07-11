@@ -10,7 +10,7 @@ Covers:
   - P6: rigorous plot is_reliable=False annotation
   - P7: plot_cross_correlation composability (ax, show, xlim, return value)
   - P8: analyze_mi_heatmap composability (show, return value)
-  - P9: _RESULT_COLS contains participation_ratio columns
+  - P9: _RESULT_COLS contains pr_eig / pr_singular columns
 """
 import pytest
 import pandas as pd
@@ -57,8 +57,8 @@ def dim_df_sweep():
         'embedding_dim': [8, 16, 32, 64],
         'mi_mean': [0.40, 0.55, 0.61, 0.62],
         'mi_std': [0.05, 0.04, 0.03, 0.04],
-        'participation_ratio_mean': [3.1, 5.2, 6.8, 7.0],
-        'participation_ratio_std': [0.4, 0.5, 0.6, 0.7],
+        'pr_singular_mean': [3.1, 5.2, 6.8, 7.0],
+        'pr_singular_std': [0.4, 0.5, 0.6, 0.7],
     })
 
 
@@ -68,8 +68,8 @@ def dim_df_scalar():
     return pd.DataFrame({
         'mi_mean': [0.58],
         'mi_std': [0.06],
-        'participation_ratio_mean': [5.3],
-        'participation_ratio_std': [0.5],
+        'pr_singular_mean': [5.3],
+        'pr_singular_std': [0.5],
     })
 
 
@@ -185,7 +185,7 @@ class TestDimensionalityPlot:
 
     @patch('matplotlib.pyplot.show')
     def test_dim_no_pr_column_single_panel(self, mock_show):
-        """When participation_ratio_mean is absent, only one panel is created."""
+        """When pr_singular_mean is absent, only one panel is created."""
         df = pd.DataFrame({
             'embedding_dim': [8, 16, 32],
             'mi_mean': [0.3, 0.5, 0.6],
@@ -549,15 +549,18 @@ class TestAnalyzeMiHeatmap:
 
 
 # ---------------------------------------------------------------------------
-# P9 — _RESULT_COLS contains participation_ratio columns
+# P9 — _RESULT_COLS contains pr_eig / pr_singular columns
 # ---------------------------------------------------------------------------
 
 class TestResultCols:
 
-    def test_participation_ratio_in_result_cols(self):
-        assert 'participation_ratio' in _RESULT_COLS
-        assert 'participation_ratio_mean' in _RESULT_COLS
-        assert 'participation_ratio_std' in _RESULT_COLS
+    def test_pr_columns_in_result_cols(self):
+        assert 'pr_eig' in _RESULT_COLS
+        assert 'pr_eig_mean' in _RESULT_COLS
+        assert 'pr_eig_std' in _RESULT_COLS
+        assert 'pr_singular' in _RESULT_COLS
+        assert 'pr_singular_mean' in _RESULT_COLS
+        assert 'pr_singular_std' in _RESULT_COLS
 
     def test_split_id_in_result_cols(self):
         assert 'split_id' in _RESULT_COLS

@@ -453,9 +453,9 @@ When the two halves have unequal flat sizes, `shared_encoder=True` is disabled w
 **Key kwargs:** `n_workers=1`, `split_method='random'`, `n_splits=5`, `lag=<int>` (for temporal), `channel_indices_x=<list>` (for index split)
 
 **Returns:** `Results` with:
-- `result.dataframe` — columns: `mi_mean`, `mi_std`, `participation_ratio_mean`, `participation_ratio_std` (aggregated over splits/runs); `result.details['raw_results']` contains per-run rows with `split_id`
-- `participation_ratio` — effective dimensionality from eigenvalue (covariance) spectrum: `(Σσᵢ²)² / Σσᵢ⁴` — stricter, weights large singular values more
-- `participation_ratio_singular` — PR from singular-value spectrum: `(Σσᵢ)² / Σσᵢ²` — less strict variant
+- `result.dataframe` — columns: `mi_mean`, `mi_std`, `pr_eig_mean`, `pr_eig_std`, `pr_singular_mean`, `pr_singular_std` (aggregated over splits/runs); `result.details['raw_results']` contains per-run rows with `split_id`
+- `pr_eig` — effective dimensionality from eigenvalue (covariance) spectrum: `(Σσᵢ²)² / Σσᵢ⁴` — stricter, weights large singular values more
+- `pr_singular` — PR from singular-value spectrum: `(Σσᵢ)² / Σσᵢ²` — less strict variant
 - `result.details['embeddings_x']`, `result.details['embeddings_y']` — present only when `return_embeddings=True`; numpy arrays from the **last split's model**, in original sample order, index-aligned with the input data.
 - `result.details['embeddings_x_rotated']`, `result.details['embeddings_y_rotated']` — present when `return_embeddings=True` and `return_rotated_embeddings=True`; same shape as the raw embeddings but re-projected so that dimension 0 captures the most shared variance, dimension 1 the next most, etc. See `return_rotated_embeddings` in the parameter table.
 - `result.details['embeddings_rotation_singular_values']` — singular values of the (whitened) cross-covariance used to compute the rotation; shape `(min(d_x, d_y),)`.
@@ -486,7 +486,7 @@ result = nmi.run(x, y, mode='dimensionality',
                  base_params={'n_epochs': 100},
                  n_splits=5,
                  n_workers=4)
-print(result.dataframe[['mi_mean', 'mi_std', 'participation_ratio_mean']])
+print(result.dataframe[['mi_mean', 'mi_std', 'pr_eig_mean', 'pr_singular_mean']])
 
 # Animate the training history (embeddings tracked by default)
 result.animate(output_path='training.gif', fps=10)
@@ -998,7 +998,7 @@ No user action is required — training proceeds normally. To suppress the warni
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
 | `spectral_whitening` | str or None | `'std'` | Whitening applied before spectral metrics: `'std'` (standardize per dimension) or `'zca'` (ZCA whitening), or `None` |
-| `spectral_mode` | str | `'none'` | High-level spectral tracking switch: `'none'` (off), `'summary'` (participation ratio only), `'full'` (all metrics + raw spectrum). Internally maps to `track_spectral_metrics`, `spectral_output`, and `return_spectrum`. |
+| `spectral_mode` | str | `'none'` | High-level spectral tracking switch: `'none'` (off), `'summary'` (both `pr_eig`/`pr_singular`), `'full'` (adds `effective_rank`/`spectral_entropy` + raw spectrum). Internally maps to `track_spectral_metrics`, `spectral_output`, and `return_spectrum`. |
 | `track_spectral_metrics` | bool | False | Low-level switch: if `True`, computes spectral metrics at every epoch (can be expensive). Prefer `spectral_mode='summary'` for convenience. |
 | `return_spectrum` | bool | False | If `True`, includes the raw cross-covariance singular-value spectrum in `result.details['spectral_metrics_history']`. Only meaningful when `track_spectral_metrics=True`. |
 
@@ -1313,7 +1313,7 @@ nmi.run(x, y, mode=..., **kwargs) → Results
 Modes:
   estimate     → result.mi_estimate
   sweep        → result.dataframe [sweep_var, mi_mean, mi_std]
-  dimensionality → result.dataframe [embedding_dim, train_mi, participation_ratio]
+  dimensionality → result.dataframe [embedding_dim, train_mi, pr_eig, pr_singular]
   rigorous     → result.mi_estimate ± result.details['mi_error']
   lag          → result.dataframe [lag, train_mi]
   precision    → result.mi_estimate (baseline MI); result.details['precision_tau'], ['precision_thresholds']

@@ -949,7 +949,7 @@ def _run_inner(
             sweep_grid=sweep_grid, **analysis_kwargs)
         df = _convert_mi_units(df, output_units == 'bits')
         group_vars = [key for key in (sweep_grid or {}).keys() if key != 'run_id']
-        metrics = ['train_mi', 'participation_ratio']
+        metrics = ['train_mi', 'pr_eig', 'pr_singular']
         valid_metrics = [m for m in metrics if m in df.columns]
         if group_vars:
             agg_df = df.groupby(group_vars)[valid_metrics].agg(['mean', 'std']).reset_index()

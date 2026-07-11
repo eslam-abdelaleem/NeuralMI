@@ -29,7 +29,7 @@ def _minimal_result(n_epochs=3, embed_dim=4, n_tracked=10):
     row = {
         'train_mi': 0.5,
         'test_mi': 0.5,
-        'participation_ratio': 2.0,
+        'pr_eig': 2.0, 'pr_singular': 2.0,
         'split_id': 0,
     }
     row['embedding_history_x'] = [
@@ -161,7 +161,7 @@ class TestIndexSplitSharedEncoderGuard:
         """shared_encoder=True should be overridden to False when |X| != |Y|."""
         import logging
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         x = _make_x(c=6)
         with caplog.at_level(logging.WARNING, logger='neural_mi'):
@@ -186,7 +186,7 @@ class TestIndexSplitSharedEncoderGuard:
     def test_equal_channels_keeps_shared_encoder(self, mock_dispatch):
         """shared_encoder should remain True when both sides have equal channel counts."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         x = _make_x(c=6)
         with warnings.catch_warnings(record=True) as caught:
@@ -219,7 +219,7 @@ class TestIndexSplitChannelSlicing:
     def test_2d_data_correct_channel_split(self, mock_dispatch):
         """For 2-D data (N, C), x_a[:,i] == x_data[:,channel_indices_x[i]]."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         x = torch.arange(60, dtype=torch.float32).reshape(10, 6)
         run_dimensionality_analysis(
@@ -245,7 +245,7 @@ class TestIndexSplitChannelSlicing:
     def test_3d_data_correct_channel_split(self, mock_dispatch):
         """For 3-D data (N, C, W), channel dim is 1."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         x = torch.randn(10, 6, 8)
         run_dimensionality_analysis(
@@ -265,7 +265,7 @@ class TestIndexSplitChannelSlicing:
     def test_n_splits_creates_correct_number_of_tasks(self, mock_dispatch):
         """For index split, n_splits tasks should be dispatched."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': i}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': i}
             for i in range(3)
         ]
         x = _make_x(c=6)
@@ -293,7 +293,7 @@ class TestTrackEmbeddingsDefault:
     def test_track_embeddings_defaults_to_512(self, mock_dispatch):
         """track_embeddings should auto-default to 512 when not in base_params."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         x = _make_x(c=4)
         run_dimensionality_analysis(
@@ -308,7 +308,7 @@ class TestTrackEmbeddingsDefault:
     def test_track_embeddings_false_respected(self, mock_dispatch):
         """Explicit track_embeddings=False in base_params should not be overridden."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         x = _make_x(c=4)
         run_dimensionality_analysis(

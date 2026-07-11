@@ -423,9 +423,9 @@ Two sub-modes controlled by whether `y_data` is provided:
 **Key kwargs:** `n_workers=1`, `split_method='random'`, `n_splits=5`, `lag=<int>` (for temporal)
 
 **Returns:** `Results` with:
-- `result.dataframe` — columns: `mi_mean`, `mi_std`, `participation_ratio_mean`, `participation_ratio_std` (aggregated over splits/runs); `result.details['raw_results']` contains per-run rows with `split_id`
-- `participation_ratio` — effective dimensionality from eigenvalue (covariance) spectrum: `(Σσᵢ²)² / Σσᵢ⁴` — stricter, weights large singular values more
-- `participation_ratio_singular` — PR from singular-value spectrum: `(Σσᵢ)² / Σσᵢ²` — less strict variant
+- `result.dataframe` — columns: `mi_mean`, `mi_std`, `pr_eig_mean`, `pr_eig_std`, `pr_singular_mean`, `pr_singular_std` (aggregated over splits/runs); `result.details['raw_results']` contains per-run rows with `split_id`
+- `pr_eig` — effective dimensionality from eigenvalue (covariance) spectrum: `(Σσᵢ²)² / Σσᵢ⁴` — stricter, weights large singular values more
+- `pr_singular` — PR from singular-value spectrum: `(Σσᵢ)² / Σσᵢ²` — less strict variant
 
 ```python
 # Intrinsic: MI between two random halves of x channels, 10 splits
@@ -440,7 +440,7 @@ result = nmi.run(x, y, mode='dimensionality',
                  base_params={'n_epochs': 100},
                  n_splits=5,
                  n_workers=4)
-print(result.dataframe[['mi_mean', 'mi_std', 'participation_ratio_mean']])
+print(result.dataframe[['mi_mean', 'mi_std', 'pr_eig_mean', 'pr_singular_mean']])
 ```
 
 ---
@@ -1018,7 +1018,7 @@ nmi.run(x, y, mode=..., **kwargs) → Results
 Modes:
   estimate     → result.mi_estimate
   sweep        → result.dataframe [sweep_var, mi_mean, mi_std]
-  dimensionality → result.dataframe [embedding_dim, train_mi, participation_ratio]
+  dimensionality → result.dataframe [embedding_dim, train_mi, pr_eig, pr_singular]
   rigorous     → result.mi_estimate ± result.details['mi_error']
   lag          → result.dataframe [lag, train_mi]
   precision    → result.dataframe [tau, train_mi]; result.details['precision_tau'], ['precision_thresholds']

@@ -464,7 +464,7 @@ def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[s
     
     # 1. Variance/Energy-based PR
     lam = s**2
-    metrics["pr_covariance"] = (lam.sum())**2 / (lam**2).sum() if lam.sum() > 0 else 0.0
+    metrics["pr_eig"] = (lam.sum())**2 / (lam**2).sum() if lam.sum() > 0 else 0.0
 
     # 2. "Soft" PR (Based on Singular Values)
     metrics["pr_singular"] = (s.sum())**2 / (s**2).sum() if s.sum() > 0 else 0.0

@@ -296,7 +296,7 @@ class TestSpatialSplits:
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
     def test_horizontal_correct_shapes(self, mock_dispatch):
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = self._4d(h=8)
@@ -310,7 +310,7 @@ class TestSpatialSplits:
     def test_horizontal_odd_h(self, mock_dispatch):
         """For odd H, bottom half has one extra row."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = self._4d(h=7)  # H=7 → top=3, bottom=4
@@ -323,7 +323,7 @@ class TestSpatialSplits:
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
     def test_vertical_correct_shapes(self, mock_dispatch):
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = self._4d(w=10)
@@ -336,7 +336,7 @@ class TestSpatialSplits:
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
     def test_row_interleaved_correct_shapes(self, mock_dispatch):
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = self._4d(h=6)  # even H → equal halves
@@ -350,7 +350,7 @@ class TestSpatialSplits:
     def test_row_interleaved_interleaves_rows(self, mock_dispatch):
         """Verify actual pixel values are interleaved correctly."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = torch.arange(2 * 4 * 4, dtype=torch.float32).reshape(1, 2, 4, 4)
@@ -387,7 +387,7 @@ class TestSpatialSplits:
     def test_n_splits_creates_correct_number_of_tasks(self, mock_dispatch):
         """Spatial splits run the same slices n_splits times (weight init varies)."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': i}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': i}
             for i in range(4)
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
@@ -405,7 +405,7 @@ class TestSpatialSplits:
         """Odd H horizontal split should disable shared_encoder with a logger warning."""
         import logging
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = self._4d(h=7)  # odd H → uneven halves
@@ -423,7 +423,7 @@ class TestSpatialSplits:
     def test_even_split_keeps_shared_encoder(self, mock_dispatch):
         """Even H should NOT disable shared_encoder."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = self._4d(h=8)  # even H → equal halves
@@ -439,7 +439,7 @@ class TestSpatialSplits:
     def test_index_split_4d(self, mock_dispatch):
         """Index split must correctly slice channel dim for 4-D input."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = torch.randn(10, 6, 4, 4)
@@ -454,7 +454,7 @@ class TestSpatialSplits:
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
     def test_col_interleaved_correct_shapes(self, mock_dispatch):
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = self._4d(h=8, w=8)
@@ -467,7 +467,7 @@ class TestSpatialSplits:
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
     def test_col_interleaved_interleaves_columns(self, mock_dispatch):
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = torch.arange(1 * 1 * 4 * 4, dtype=torch.float).reshape(1, 1, 4, 4)
@@ -490,7 +490,7 @@ class TestSpatialSplits:
     def test_geometric_diagonal_pixel_counts_square(self, mock_dispatch):
         """For a square 4×4 image: upper+diagonal=10 pixels, lower=6 pixels."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = torch.randn(5, 1, 4, 4)
@@ -505,7 +505,7 @@ class TestSpatialSplits:
     def test_geometric_diagonal_correct_mask(self, mock_dispatch):
         """Diagonal mask: x_a contains pixels where row <= col."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = torch.arange(1 * 1 * 3 * 3, dtype=torch.float).reshape(1, 1, 3, 3)
@@ -524,7 +524,7 @@ class TestSpatialSplits:
     def test_geometric_antidiagonal_correct_mask(self, mock_dispatch):
         """Antidiagonal mask: x_a contains pixels where row + col <= W-1."""
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = torch.arange(1 * 1 * 3 * 3, dtype=torch.float).reshape(1, 1, 3, 3)
@@ -544,7 +544,7 @@ class TestSpatialSplits:
         """Non-square input should emit a warning but still run."""
         import logging
         mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'participation_ratio': 2.0, 'split_id': 0}
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         from neural_mi.analysis.dimensionality import run_dimensionality_analysis
         x = torch.randn(5, 1, 4, 6)  # H != W
