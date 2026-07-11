@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Ceiling-escape noise injection for `dimensionality` mode (`sigma_add`)** (`neural_mi/analysis/dimensionality.py`, `neural_mi/training/trainer.py`, `neural_mi/visualize/plot.py`):
+  When the true MI exceeds the InfoNCE ceiling, the spectral (participation-ratio) readout becomes unreliable. `sigma_add` adds fixed, independent, per-channel Gaussian noise (in measured-per-channel-std units) to the observations once — before the embedding, identical for train and eval of a fit — to de-saturate the estimate without moving the true dimensionality.
+  - `sigma_add`: a scalar (single level), a list (full ladder, one row per level), or `'auto'` (searches a geometric ladder for the detached regime, widening the search once if it doesn't bracket, then warning rather than looping).
+  - `sigma_add_units`: `'relative'` (default, multiple of per-channel std) or `'absolute'`.
+  - `stabilize_counts` (bool, default `True`): for binned-spike data, applies the canonical Anscombe transform before measuring std / injecting noise. Fires on every binned-spike dimensionality run regardless of `sigma_add`.
+  - Ceiling classification keys on `log(eval_size)` (the actual InfoNCE evaluation denominator), never `log(batch_size)`; `Trainer.train()` now exposes `eval_size` in its results for this purpose.
+  - Reproducible under `n_workers > 1`: the base noise tensor is deterministically reconstructed per `(global_seed, split_id, view)` from a pure hash-seeded RNG, no live shared state, and reused unscaled across every rung of the ladder within a split.
+  - Supported for intrinsic `split_method in ('random', 'spatial')` and interaction mode; raw spike-timestamp and categorical data raise a clear error only when `sigma_add` is actually engaged.
+  - New output: `result.details['sigma_add_ladder']` (per-rung `pr_eig`/`pr_singular` mean+std, resolved absolute scale, regime label, detached flag) and `result.details['sigma_add_suggestion']` (auto mode only, never a silent override). `result.dataframe` gains a `sigma_add` grouping column via the existing sweep-aggregation path.
+  - New `plot_noise_ladder()`; `result.plot()` dispatches to it automatically when a ladder is present.
+
+### Changed
+
+- **Participation-ratio metrics renamed: `pr_eig` / `pr_singular`** (repo-wide): the vague, inconsistently-named `participation_ratio` / `pr_covariance` / `participation_ratio_singular` are gone. `pr_eig` = `(Σσᵢ²)²/Σσᵢ⁴` (eigenvalue/covariance-spectrum variant), `pr_singular` = `(Σσᵢ)²/Σσᵢ²` (singular-spectrum variant). `dimensionality` mode's lean/default spectral output now reports **both** variants (previously only one, under the vague name) — a real behavior change, not just a rename. This is a breaking change with no deprecated aliases (library is pre-publication). Downstream notebooks/scripts outside this repo that reference the old names need updating.
+- **`HybridCritic.forward` now row-chunks pair scoring** (`neural_mi/models/critics.py`), matching `ConcatCritic`'s existing pattern: the full `(N², 2d)` pair tensor is never materialized at once, bounding peak memory during large-N evaluation (e.g. `dimensionality` mode's noise-injection ladder, which multiplies eval cost by levels × splits).
+- **`PretrainedBackboneEmbedding` gradient/BatchNorm fix** (`neural_mi/models/embeddings.py`): removed a stray `torch.no_grad()` around the frozen backbone's forward pass that was silently severing gradient to the trainable channel adapter whenever `input_dim != backbone_in_ch` (the adapter was frozen at random init and never trained). Backbone freezing is already handled via `requires_grad=False` and doesn't need `no_grad`. Also added a `train()` override so the frozen backbone's BatchNorm layers stay in eval mode regardless of the outer model's train/eval state.
+- **`min_coverage_fraction` semantics documented, not changed** (`neural_mi/data/temporal.py`): coverage is a source-*timestamp* count, not a value-validity check (NaN-valued-but-present-timestamp windows are not dropped), and gap interpolation is not bounded by the coverage fraction. Docstring-only.
+- **`AnalysisWorkflow.__init__` input_dim now uses the full flattened shape** (`neural_mi/analysis/rigorous.py`): `int(np.prod(shape[1:]))` instead of `shape[1]*shape[2]`, which silently dropped the width axis for 4-D (`cnn2d`) inputs. No-op for existing 3-D callers.
+- **`estimators/bounds.py`, `logmeanexp_nodiag`**: `dim=0` was falsy and silently fell through `dim or (0,1)` to reduce over both axes instead of just dim 0. Fixed to `dim if dim is not None else (0,1)`. Never fired in practice (only `None` and `(0,1)` are passed anywhere in the codebase today) — pure future-proofing.
+- **`analysis/transfer.py`, `_build_te_arrays`**: replaced a Python list-comprehension + `torch.stack` with `tensor.unfold()`, which produces the same layout as a view instead of materializing three large window-array copies. Verified bit-exact equivalent before applying.
+- **`data/temporal.py`, `SpikeWindowDataset`**: the `max_spikes_per_window` truncation message (data is silently dropped) is now a `logger.warning`, not `logger.info`.
+
+### Fixed
+
+- **`analysis/conditional.py`**: X and Z with mismatched window sizes now raise a clear `ValueError` before the `torch.cat` into XZ, instead of a bare shape-mismatch error.
+- **`data/temporal.py`, `CategoricalWindowDataset.__init__`**: integer-typed labels with negative values now raise a clear `ValueError` instead of silently reaching `np.bincount` via `n_categories = data.max() + 1`. Non-integer labels (floats/strings) are unaffected — still auto-relabeled to consecutive non-negative integers as before.
+
+### Removed
+
+- **`CalciumEmbedding` / `embedding_model='calcium_cnn'`** (`neural_mi/models/embeddings.py`) and its generator `generate_windowed_calcium`: cut rather than fixed. `_deconv_kernel` built the time-reversed, unit-normalized indicator impulse response — a **matched filter**, which further low-passes the signal, not a deconvolution (which would sharpen/invert the blur). The docstring's "FIR deconvolution" claim did not match what the code did. Independently, the only generator for it carries its shared information in firing rate, for which mean fluorescence is already near-sufficient, so a correct deconvolution would not have bought anything there either. All registry entries, base-params schema keys (`tau_rise`, `tau_decay`, `learn_calcium_kernel`), tests, tutorial sections, and reference-doc rows removed with it.
+
 - **SVD-aligned rotated embeddings (`return_rotated_embeddings`)** (`neural_mi/utils.py`, `neural_mi/training/trainer.py`, `neural_mi/analysis/task.py`):
   A new `compute_cross_covariance_rotation()` utility and four new `base_params` keys enable returning embeddings re-projected so that dimension 0 captures the most shared variance between the two modalities, dimension 1 the next most, and so on — consistent with the Participation Ratio ordering. This makes the first *k* dimensions directly interpretable without separately inspecting the SVD.
 
@@ -22,38 +53,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `embeddings_x_rotated`, `embeddings_y_rotated`, `embeddings_rotation_singular_values` (+ optional `embeddings_rotation_x/y`) — from `return_embeddings` path.
   - `embedding_history_x_rotated`, `embedding_history_y_rotated`, `embedding_rotation_singular_values` (+ optional rotation matrices) — from `track_embeddings` path.
 
-- **Physics parameter tracking (`sinc_cnn`, `calcium_cnn`)** (`neural_mi/models/embeddings.py`, `neural_mi/training/trainer.py`):
-  Added `get_physics_params()` method to `SincEmbedding` and `CalciumEmbedding`. The trainer now
+- **Physics parameter tracking (`sinc_cnn`)** (`neural_mi/models/embeddings.py`, `neural_mi/training/trainer.py`):
+  Added `get_physics_params()` method to `SincEmbedding`. The trainer now
   calls this method after every evaluation epoch and stores results in `result.details`:
   - `result.details['physics_params_history']` — dict of per-epoch parameter lists (keys prefixed by
-    `x_` or `y_`, e.g. `x_f_low_hz`, `x_f_high_hz` for sinc; `x_tau_rise_s`, `x_tau_decay_s` for
-    calcium when `learn_calcium_kernel=True`).
+    `x_` or `y_`, e.g. `x_f_low_hz`, `x_f_high_hz`).
   - `result.details['physics_params_final']` — same keys with values from the best epoch.
-  Both keys are absent for non-learnable embeddings (standard CNN, or `learn_calcium_kernel=False`).
+  Both keys are absent for non-learnable embeddings (e.g. standard CNN).
 
 - **Pretrained backbone spatial dimension mismatch handling** (`neural_mi/models/embeddings.py`):
   `PretrainedBackboneEmbedding` now automatically inserts a bilinear `nn.Upsample` layer when input
   images are not 224×224 (standard ImageNet resolution). The upsample is created lazily on the first
   forward pass and emits a `UserWarning` with the input and expected sizes.
 
-- **Three new windowed generators with analytically known MI** (`neural_mi/generators/synthetic.py`):
+- **Two new windowed generators with analytically known MI** (`neural_mi/generators/synthetic.py`):
   - `generate_windowed_oscillatory(n_windows, n_channels, window_size, f_carrier_hz, sample_rate, latent_mi, snr)` —
     windowed oscillatory LFP with shared latent carrier; MI computed from the linear-Gaussian
     `ρ_obs = ρ_latent × SNR² / (SNR² + 1)` formula.
   - `generate_windowed_multichannel(n_windows, n_channels, window_size, f_min_hz, f_max_hz, sample_rate, latent_mi, snr)` —
     same model with per-channel carrier frequencies uniformly spaced in `[f_min_hz, f_max_hz]`; total
     MI = sum over channels.
-  - `generate_windowed_calcium(n_windows, n_channels, window_size, sample_rate, tau_rise, tau_decay, latent_mi, noise_level)` —
-    GCaMP-convolved fluorescence traces from a shared Poisson spike process; returns a CCA lower
-    bound as the approximate true MI.
-  All three return `(X, Y, true_mi)` and are exported from `neural_mi.generators`.
+  Both return `(X, Y, true_mi)` and are exported from `neural_mi.generators`.
 
 - **Tutorial 11 — Inductive Biases: Quantitative Validation** (`tutorials/raw tutorials/11_Inductive_Biases_Quantitative.py`,
   `tutorials/11_Inductive_Biases_Quantitative.ipynb`):
   Sample-efficiency curves (MI vs. N windows) comparing biased models to standard CNN baselines,
   with analytically known ground-truth MI. Covers: depthwise CNN (multichannel LFP), SincCNN (10 Hz
-  LFP with filter convergence diagnostic), CalciumCNN (fluorescence traces with τ trajectory),
-  SpikePhysics (qualitative rate vs timing code), and pretrained backbone (MNIST vs Gaussian blobs).
+  LFP with filter convergence diagnostic), SpikePhysics (qualitative rate vs timing code), and
+  pretrained backbone (MNIST vs Gaussian blobs).
 
 - **`generate_timing_code_spike_trains` generator** (`neural_mi/generators/synthetic.py`):
   new function for generating a precise-timing spike code embedded in high-rate
@@ -74,9 +101,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`generate_oscillatory_lfp`** (`neural_mi/generators/synthetic.py`): replaced by
   `generate_windowed_oscillatory`, which returns IID pre-windowed arrays and an analytically
   computed true MI value.
-- **`generate_calcium_traces`** (`neural_mi/generators/synthetic.py`): replaced by
-  `generate_windowed_calcium`, which returns pre-windowed arrays and a CCA lower-bound
-  estimate of true MI.
 
 ### Fixed
 
@@ -181,8 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `logger.info()` / `logger.warning()` calls so the function is silent in
   library use.
 
-- **`_RESULT_COLS` extended**: `participation_ratio`, `participation_ratio_mean`,
-  `participation_ratio_std`, `participation_ratio_singular`, and `split_id`
+- **`_RESULT_COLS` extended**: `pr_eig`, `pr_eig_mean`, `pr_eig_std`,
+  `pr_singular`, `pr_singular_mean`, `pr_singular_std`, and `split_id`
   added to the frozenset.  These were previously missing, causing the
   dimensionality sweep-variable inference to consider them as candidate
   x-axis columns and fail silently.
@@ -348,12 +372,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sample_rate` (injected automatically from `processor_params_x/y`).  Supports
   `feature_fusion='features'` (default) or `'concat'`.
 
-- **`CalciumEmbedding` — `embedding_model='calcium_cnn'`**: FIR deconvolution of the
-  GCaMP indicator impulse response `h(t) = exp(−t/τ_decay) − exp(−t/τ_rise)`.  Default
-  `tau_rise=0.05 s`, `tau_decay=0.4 s` (GCaMP6s).  Set `learn_calcium_kernel=True` to
-  make the time constants learnable parameters.  Requires `sample_rate`.  Supports
-  `feature_fusion`.
-
 - **`SpikePhysicsEmbedding` — `embedding_model='spike_physics'`**: handcrafted feature
   extractor for raw spike timestamps produced by the spike processor.  Extracts four
   per-neuron statistics (firing rate, mean spike time, mean ISI, ISI variance) without
@@ -374,9 +392,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manually by the user.
 
 - **New synthetic data generators** (`neural_mi/generators/synthetic.py`):
-  `generate_oscillatory_lfp`, `generate_calcium_traces`,
-  `generate_modulated_spike_trains`, `generate_noisy_image_pairs`.  All four are
-  exported from `neural_mi.generators`.
+  `generate_oscillatory_lfp`, `generate_modulated_spike_trains`,
+  `generate_noisy_image_pairs`.  All three are exported from `neural_mi.generators`.
 
 - **Tutorial 10 — Inductive Biases**: new tutorial (`tutorials/raw tutorials/10.py`)
   covering all five physics-informed models with worked examples and the
