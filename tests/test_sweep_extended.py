@@ -82,17 +82,16 @@ class TestSweepExtended:
     def test_dataset_cache_reuse_across_tasks(self):
         """Sequential tasks with identical data/params should reuse the cached dataset."""
         import neural_mi as nmi
+        from neural_mi import Model, Training
         from neural_mi.analysis.task import _DATASET_CACHE
         _DATASET_CACHE.clear()
 
         x = np.random.randn(60, 4, 1)
         y = np.random.randn(60, 4, 1)
-        base_params = {
-            'n_epochs': 1, 'batch_size': 32, 'patience': 1,
-            'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
-        }
         # Run a small sweep — all tasks share the same data so the cache should be hit
-        nmi.run(x, y, mode='sweep', base_params=base_params,
+        nmi.run(x, y, mode='sweep',
+                model=Model(embedding_dim=4, hidden_dim=16, n_layers=1),
+                training=Training(n_epochs=1, batch_size=32, patience=1),
                 sweep_grid={'embedding_dim': [4, 8]}, n_workers=1)
         # Cache should have at least one entry for this static dataset
         assert len(_DATASET_CACHE) >= 1
