@@ -13,15 +13,10 @@ def _make_random_3d(N, C, W, seed=0):
     return rng.normal(size=(N, C, W)).astype(np.float32)
 
 
-_TINY_PARAMS = {
-    'n_epochs': 3,
-    'batch_size': 64,
-    'patience': 1000,
-    'hidden_dim': 16,
-    'embedding_dim': 8,
-    'n_layers': 1,
-    'learning_rate': 1e-3,
-}
+from neural_mi import Model, Training, Conditional, Transfer
+
+_MODEL = Model(embedding_dim=8, hidden_dim=16, n_layers=1)
+_TRAINING = Training(n_epochs=3, batch_size=64, patience=1000, learning_rate=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -41,12 +36,10 @@ class TestConditionalRigorous:
         result = nmi.run(
             x, y,
             mode='conditional',
-            z_data=z,
-            base_params=_TINY_PARAMS,
+            conditional=Conditional(z_data=z, rigorous=True,
+                                    gamma_range=range(1, 4), min_gamma_points=2),
+            model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
-            rigorous=True,
-            gamma_range=range(1, 4),
-            min_gamma_points=2,
         )
         assert result.mi_estimate is not None, "rigorous conditional should set mi_estimate"
         assert result.dataframe is not None, "rigorous conditional should set dataframe"
@@ -61,12 +54,10 @@ class TestConditionalRigorous:
         result = nmi.run(
             x, y,
             mode='conditional',
-            z_data=z,
-            base_params=_TINY_PARAMS,
+            conditional=Conditional(z_data=z, rigorous=True,
+                                    gamma_range=range(1, 4), min_gamma_points=2),
+            model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
-            rigorous=True,
-            gamma_range=range(1, 4),
-            min_gamma_points=2,
         )
         for key in ('is_reliable', 'slope', 'mi_error',
                     'gammas_used', 'fit_quality_warning', 'leverage_warning'):
@@ -85,12 +76,10 @@ class TestConditionalRigorous:
         result = nmi.run(
             x, y,
             mode='conditional',
-            z_data=z,
-            base_params=_TINY_PARAMS,
+            conditional=Conditional(z_data=z, rigorous=True,
+                                    gamma_range=range(1, 4), min_gamma_points=2),
+            model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
-            rigorous=True,
-            gamma_range=range(1, 4),
-            min_gamma_points=2,
         )
         assert result.params.get('rigorous'), (
             "result.params should have rigorous=True for rigorous conditional"
@@ -106,8 +95,8 @@ class TestConditionalRigorous:
         result = nmi.run(
             x, y,
             mode='conditional',
-            z_data=z,
-            base_params=_TINY_PARAMS,
+            conditional=Conditional(z_data=z),
+            model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
         )
         assert result.mi_estimate is not None
@@ -132,12 +121,10 @@ class TestTransferRigorous:
         result = nmi.run(
             x, y,
             mode='transfer',
-            history_window=5,
-            base_params=_TINY_PARAMS,
+            transfer=Transfer(history_window=5, rigorous=True,
+                              gamma_range=range(1, 4), min_gamma_points=2),
+            model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
-            rigorous=True,
-            gamma_range=range(1, 4),
-            min_gamma_points=2,
         )
         assert result.mi_estimate is not None, "rigorous transfer should set mi_estimate"
         assert result.dataframe is not None, "rigorous transfer should set dataframe"
@@ -152,12 +139,10 @@ class TestTransferRigorous:
         result = nmi.run(
             x, y,
             mode='transfer',
-            history_window=4,
-            base_params=_TINY_PARAMS,
+            transfer=Transfer(history_window=4, rigorous=True,
+                              gamma_range=range(1, 4), min_gamma_points=2),
+            model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
-            rigorous=True,
-            gamma_range=range(1, 4),
-            min_gamma_points=2,
         )
         for key in ('is_reliable', 'slope', 'fit_quality_warning', 'leverage_warning'):
             assert key in result.details, (
@@ -174,8 +159,8 @@ class TestTransferRigorous:
         result = nmi.run(
             x, y,
             mode='transfer',
-            history_window=3,
-            base_params=_TINY_PARAMS,
+            transfer=Transfer(history_window=3),
+            model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
         )
         assert result.mi_estimate is not None
@@ -192,12 +177,10 @@ class TestTransferRigorous:
         result = nmi.run(
             x, y,
             mode='transfer',
-            history_window=4,
-            base_params=_TINY_PARAMS,
+            transfer=Transfer(history_window=4, rigorous=True,
+                              gamma_range=range(1, 4), min_gamma_points=2),
+            model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
-            rigorous=True,
-            gamma_range=range(1, 4),
-            min_gamma_points=2,
         )
         assert result.params.get('rigorous'), (
             "result.params should have rigorous=True for rigorous transfer"
