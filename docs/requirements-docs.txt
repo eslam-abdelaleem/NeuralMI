@@ -1,30 +1,18 @@
 # Documentation build requirements for NeuralMI
-# Install with: pip install -r requirements-docs.txt
+# Install with: pip install -r docs/requirements-docs.txt
+#
+# Pinned to the Sphinx 7.x ecosystem. The previous unpinned spec
+# (sphinx>=5.0.0) resolved to Sphinx 9, which the theme and notebook
+# extensions below do not yet support, which broke the Pages build.
 
-# Core Sphinx
-sphinx>=5.0.0
-sphinx_rtd_theme>=1.0.0
+sphinx>=7.2,<8.0
+sphinx-rtd-theme>=2.0,<3.0
+myst-parser>=2.0,<3.0
+nbsphinx>=0.9.3,<0.10
+linkify-it-py>=2.0
 
-# Markdown support
-myst-parser>=0.18.0
-linkify-it-py>=2.0.0
+# Optional: enable in conf.py `extensions` to add a copy button to code blocks
+sphinx-copybutton>=0.5,<0.6
 
-# Jupyter notebook support
-nbsphinx>=0.8.0
-
-# Code documentation
-sphinx-autodoc-typehints>=1.19.0
-
-# Additional utilities
-sphinx-copybutton>=0.5.0  # Optional: adds copy button to code blocks
-sphinxcontrib-bibtex>=2.4.0  # Optional: for bibliography management
-
-# Python requirments
-torch
-numpy
-pandas
-statsmodels
-scikit-learn
-tqdm
-matplotlib
-seaborn
+# The package itself is installed separately in CI via `pip install -e .`,
+# which provides the runtime dependencies autodoc needs to import neural_mi.

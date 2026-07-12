@@ -7,7 +7,7 @@ name = "neural_mi"
 version = "1.0.0"
 description = "A Python toolbox for rigorous mutual information estimation in neuroscience"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [
     { name = "Eslam Abdelaleem" },
