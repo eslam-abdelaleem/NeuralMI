@@ -31,6 +31,17 @@ from .validation import ParameterValidator, DataValidator
 from .utils import get_device
 from .logger import logger, set_verbosity
 from .defaults import PROCESSOR_PARAMS_SCHEMA
+import inspect as _inspect
+from .config import (
+    Model, Training, Split, Estimator, Output, Processing,
+    Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional, as_config,
+)
+
+# Mode name -> its dedicated config class (modes not listed take no mode config).
+_MODE_CONFIG_CLASSES = {
+    'rigorous': Rigorous, 'precision': Precision, 'lag': Lag,
+    'transfer': Transfer, 'dimensionality': Dimensionality, 'conditional': Conditional,
+}
 
 
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
@@ -72,6 +83,199 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
     return results
 
 def run(
+    x_data: Union[np.ndarray, torch.Tensor, List],
+    y_data: Optional[Union[np.ndarray, torch.Tensor, List]] = None,
+    *,
+    mode: str = 'estimate',
+    processing: Optional[Union[Processing, Dict[str, Any]]] = None,
+    model: Optional[Union[Model, Dict[str, Any]]] = None,
+    training: Optional[Union[Training, Dict[str, Any]]] = None,
+    split: Optional[Union[Split, Dict[str, Any]]] = None,
+    estimator: Optional[Union[Estimator, str, Dict[str, Any]]] = None,
+    output: Optional[Union[Output, Dict[str, Any]]] = None,
+    sweep_grid: Optional[Dict[str, list]] = None,
+    rigorous: Optional[Union[Rigorous, Dict[str, Any]]] = None,
+    precision: Optional[Union[Precision, Dict[str, Any]]] = None,
+    lag: Optional[Union[Lag, Dict[str, Any]]] = None,
+    transfer: Optional[Union[Transfer, Dict[str, Any]]] = None,
+    dimensionality: Optional[Union[Dimensionality, Dict[str, Any]]] = None,
+    conditional: Optional[Union[Conditional, Dict[str, Any]]] = None,
+    n_workers: int = 1,
+    seed: Optional[int] = None,
+    verbose: bool = False,
+    show_progress: bool = True,
+    device: Optional[str] = None,
+    permutation_test: bool = False,
+    n_permutations: int = 1,
+    **_removed: Any,
+) -> Results:
+    """Unified entry point for all NeuralMI analyses (config-based API).
+
+    Parameters are grouped into a small set of typed config objects (see
+    :mod:`neural_mi.config`). Every config is optional -- omitted configs and
+    unset fields fall back to the defaults in
+    :data:`neural_mi.defaults.BASE_PARAMS_SCHEMA`. Anywhere a config is accepted
+    a plain ``dict`` with the same keys works too, so importing the classes is
+    optional.
+
+    Parameters
+    ----------
+    x_data, y_data : array-like
+        Input data for variables X and Y. ``y_data`` is required for all modes
+        except ``'dimensionality'``/``'pairwise'``.
+    mode : {'estimate','sweep','rigorous','dimensionality','lag','precision','conditional','transfer','pairwise'}
+        The analysis to run.
+    processing : Processing or dict, optional
+        Raw-data processors, e.g. ``Processing(x='continuous', x_params={'window_size': 1})``.
+    model : Model or dict, optional
+        Architecture, e.g. ``Model(embedding_dim=16, hidden_dim=64, critic_type='separable')``.
+    training : Training or dict, optional
+        Optimization loop, e.g. ``Training(n_epochs=50, learning_rate=1e-3, batch_size=128)``.
+    split : Split or dict, optional
+        Splitting strategy, e.g. ``Split(mode='random')``.
+    estimator : Estimator, str, or dict, optional
+        MI estimator. Accepts a bare name (``estimator='smile'``) or
+        ``Estimator(name='smile', params={'clip': 5.0})``.
+    output : Output or dict, optional
+        Units, spectral tracking, embedding returns, and display labels.
+    sweep_grid : dict, optional
+        Parameter grid for ``mode='sweep'``/``'dimensionality'``.
+    rigorous, precision, lag, transfer, dimensionality, conditional : mode config or dict, optional
+        Mode-specific parameters; only the one matching ``mode`` is used. E.g.
+        ``rigorous=Rigorous(confidence_level=0.68)``,
+        ``precision=Precision(tau_grid=[...])``,
+        ``transfer=Transfer(history_window=10)``,
+        ``conditional=Conditional(z_data=z)``.
+    n_workers : int, default=1
+        Worker processes for parallelizable modes.
+    seed : int, optional
+        Random seed (``random``/``numpy``/``torch``). Full reproducibility only
+        with ``n_workers=1``.
+    verbose, show_progress : bool
+        Logging verbosity and progress bars.
+    device : str, optional
+        Compute device ('cpu'/'cuda'/'mps'); auto-detected if None.
+    permutation_test : bool, default=False
+        Run a label-permutation null test (supported modes only).
+    n_permutations : int, default=1
+        Number of permutations when ``permutation_test=True``.
+
+    Returns
+    -------
+    neural_mi.results.Results
+
+    Examples
+    --------
+    >>> import neural_mi as nmi
+    >>> from neural_mi import Model, Training, Split, Processing, Rigorous
+    >>> results = nmi.run(
+    ...     x_raw, y_raw, mode='rigorous',
+    ...     processing=Processing(x='continuous', x_params={'window_size': 1}),
+    ...     model=Model(embedding_dim=16, hidden_dim=64),
+    ...     training=Training(n_epochs=50, batch_size=128),
+    ...     split=Split(mode='random'),
+    ...     rigorous=Rigorous(confidence_level=0.68),
+    ...     n_workers=4, seed=42,
+    ... )
+    """
+    if _removed:
+        raise TypeError(
+            f"run() received unexpected keyword argument(s) {sorted(_removed)}. "
+            f"As of v1.0 the flat keyword API was replaced by typed config objects: "
+            f"model=Model(...), training=Training(...), split=Split(...), "
+            f"processing=Processing(...), estimator=..., output=Output(...), and one "
+            f"per-mode config (rigorous=/precision=/lag=/transfer=/dimensionality=/"
+            f"conditional=). See help(neural_mi.run) or the migration guide."
+        )
+
+    # Coerce dict/str inputs to config instances.
+    model = as_config(model, Model)
+    training = as_config(training, Training)
+    split = as_config(split, Split)
+    output = as_config(output, Output)
+    processing = as_config(processing, Processing)
+    if isinstance(estimator, str):
+        estimator = Estimator(name=estimator)
+    else:
+        estimator = as_config(estimator, Estimator)
+
+    # Named engine parameters (computed once at import, see _ENGINE_PARAMS) decide
+    # each lowered key's bucket: a named engine kwarg vs the base_params dict /
+    # analysis_kwargs.
+    _named = _ENGINE_PARAMS
+
+    base_params: Dict[str, Any] = {}
+    flat: Dict[str, Any] = {}
+    analysis_kwargs: Dict[str, Any] = {}
+
+    def _route_base(d):
+        for k, v in d.items():
+            (flat if k in _named else base_params)[k] = v
+
+    def _route_analysis(d):
+        for k, v in d.items():
+            (flat if k in _named else analysis_kwargs)[k] = v
+
+    if model is not None:
+        _route_base(model.to_base_params())
+    if training is not None:
+        _route_base(training.to_base_params())
+    if split is not None:
+        _route_base(split.to_base_params())
+    if output is not None:
+        _route_base(output.to_base_params())
+        flat.update(output.to_labels())
+    if estimator is not None:
+        if estimator.name is not None:
+            flat['estimator'] = estimator.name
+        if estimator.params is not None:
+            flat['estimator_params'] = estimator.params
+    if processing is not None:
+        _route_analysis(processing.to_kwargs())
+
+    # Mode-specific config: only the one matching `mode` is consulted.
+    _provided = {'rigorous': rigorous, 'precision': precision, 'lag': lag,
+                 'transfer': transfer, 'dimensionality': dimensionality,
+                 'conditional': conditional}
+    _stray = [name for name, cfg in _provided.items() if cfg is not None and name != mode]
+    if _stray:
+        warnings.warn(
+            f"Mode config(s) {_stray} were provided but mode='{mode}'; they are ignored. "
+            f"Only the config matching the active mode is used.",
+            UserWarning, stacklevel=2,
+        )
+    if mode in _MODE_CONFIG_CLASSES:
+        mode_cfg = as_config(_provided[mode], _MODE_CONFIG_CLASSES[mode])
+        if mode_cfg is not None:
+            if isinstance(mode_cfg, Transfer):
+                ak = mode_cfg.to_analysis_kwargs()
+                if 'bidirectional' in ak:
+                    flat['bidirectional_te'] = ak.pop('bidirectional')
+                _route_analysis(ak)
+            elif isinstance(mode_cfg, Conditional):
+                flat.update(mode_cfg.to_z_kwargs())
+                _route_analysis(mode_cfg.to_analysis_kwargs())
+            else:
+                _route_analysis(mode_cfg.to_analysis_kwargs())
+
+    # Runtime / dispatch args (always forwarded).
+    flat['mode'] = mode
+    flat['sweep_grid'] = sweep_grid
+    flat['random_seed'] = seed
+    flat['verbose'] = verbose
+    flat['show_progress'] = show_progress
+    flat['device'] = device
+    flat['permutation_test'] = permutation_test
+    flat['n_permutations'] = n_permutations
+    analysis_kwargs['n_workers'] = n_workers
+
+    if base_params:
+        flat['base_params'] = base_params
+
+    return _run_flat(x_data, y_data, **flat, **analysis_kwargs)
+
+
+def _run_flat(
     x_data: Union[np.ndarray, torch.Tensor, List],
     y_data: Optional[Union[np.ndarray, torch.Tensor, List]] = None,
     x_time: Optional[np.ndarray] = None,
@@ -536,6 +740,16 @@ def run(
         logger.setLevel(_prev_level)
         for h, lv in zip(logger.handlers, _prev_handler_levels):
             h.setLevel(lv)
+
+
+# Named parameters of the engine, computed once at import. run() consults this
+# (via `_named`) to route each lowered config key to the correct bucket. Defined
+# here because it depends on _run_flat's signature.
+_ENGINE_PARAMS = frozenset(
+    n for n, p in _inspect.signature(_run_flat).parameters.items()
+    if p.kind in (_inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                  _inspect.Parameter.KEYWORD_ONLY)
+) - {'x_data', 'y_data'}
 
 
 def _warn_small_sample(dataset, base_params: dict) -> None:

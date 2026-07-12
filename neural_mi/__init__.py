@@ -8,6 +8,10 @@ import warnings as _warnings
 _warnings.filterwarnings("ignore", message="IProgress not found", category=UserWarning)
 
 from .run import run
+from .config import (
+    Model, Training, Split, Estimator, Output, Processing,
+    Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional,
+)
 from .logger import logger, set_verbosity, set_verbose
 from .results import Results
 from .exceptions import NeuralMIError, DataShapeError, InsufficientDataError, TrainingError
@@ -23,6 +27,8 @@ from . import visualize
 
 __all__ = [
     'run',
+    'Model', 'Training', 'Split', 'Estimator', 'Output', 'Processing',
+    'Rigorous', 'Precision', 'Lag', 'Transfer', 'Dimensionality', 'Conditional',
     'Results',
     'logger',
     'set_verbosity',
