@@ -72,6 +72,15 @@ html_theme_options = {
     'titles_only': False
 }
 
+# -- nbsphinx settings -------------------------------------------------------
+# Never execute notebooks during the docs build. Tutorials ship with their
+# outputs pre-computed; executing them on CI would require example datasets and
+# long model-training runs. With the default 'auto', nbsphinx executes any
+# notebook that has no stored outputs (e.g. tutorial 08), which fails the build.
+# Re-run and save a notebook locally to embed/update its outputs.
+nbsphinx_execute = 'never'
+nbsphinx_allow_errors = True
+
 # -- Autodoc settings --------------------------------------------------------
 autodoc_member_order = 'bysource'
 
