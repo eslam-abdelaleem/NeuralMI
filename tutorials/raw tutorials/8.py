@@ -19,9 +19,10 @@
 #    InfoNCE will underestimate it. The SMILE estimator removes this ceiling
 #    at the cost of higher variance.
 #
-# 3. **Embedding model architectures.** The library offers six embedding models —
-#    MLP, CNN, GRU, LSTM, TCN, and Transformer. Choosing the right one for your
-#    data can meaningfully improve estimation quality.
+# 3. **Embedding model architectures.** The library offers seven embedding
+#    models — MLP, CNN, GRU, LSTM, TCN, Transformer, and a frozen pretrained
+#    backbone for image data. Choosing the right one for your data can
+#    meaningfully improve estimation quality.
 #
 # 4. **Custom models.** For analyses that go beyond the built-in options, you
 #    can supply a completely custom PyTorch embedding or critic and plug it
@@ -236,13 +237,10 @@ plt.show()
 # The embedding model maps raw windowed data from shape
 # `(batch, n_channels, window_size)` to a fixed-size embedding vector of
 # shape `(batch, embedding_dim)`. The choice of architecture determines what
-# kinds of temporal patterns the network can detect. NeuralMI provides six
-# general-purpose architectures via the `embedding_model` parameter in
-# `base_params`, plus two **physics-informed (inductive bias)** variants
-# that encode domain knowledge about specific recording modalities directly
-# into the model structure. This tutorial covers the general-purpose models.
-# For the physics-informed variants (`'sinc_cnn'`, `'pretrained_backbone'`),
-# see **Tutorial 10**.
+# kinds of temporal patterns the network can detect. NeuralMI provides seven
+# architectures via the `embedding_model` parameter in `base_params`: six
+# general-purpose models for windowed time-series data, plus a pretrained
+# image backbone for 2D spatial input.
 # 
 # **MLP** (`embedding_model='mlp'`, default): flattens the input and processes
 # it through fully connected layers. Has no explicit notion of temporal order —
@@ -286,7 +284,24 @@ plt.show()
 # miss important long-range structure, and (c) you have already confirmed that
 # simpler architectures are insufficient. The `nhead` parameter controls the
 # number of attention heads.
-# 
+#
+# **PretrainedBackboneEmbedding** (`embedding_model='pretrained_backbone'`):
+# the one architecture in this list built for images rather than time series.
+# Input data must be 2D spatial data of shape
+# `(n_samples, n_channels, height, width)` — the same format used by
+# `embedding_model='cnn2d'` — passed with `processor_type=None` (no windowing).
+# Instead of learning convolutional filters from scratch, it loads a
+# **pretrained torchvision model** (ResNet, VGG, EfficientNet, ...) as a frozen
+# feature extractor and trains only a small MLP head on top. This matters
+# because a randomly initialized CNN must learn to detect edges, textures, and
+# objects from your data alone — often infeasible with only a few thousand
+# images — whereas a backbone pretrained on ImageNet has already learned those
+# features. Key parameters: `pytorch_predefined` (any `torchvision.models` name,
+# e.g. `'resnet18'`, default `'resnet18'`) and `pretrained` (bool, whether to
+# load ImageNet weights; default `False`). The backbone is always frozen
+# (`requires_grad=False`) regardless of this setting. Requires `torchvision`
+# (`pip install neural_mi[vision]`).
+#
 # **Practical decision guide:**
 #
 # | Data type | Recommended starting model |
@@ -297,16 +312,64 @@ plt.show()
 # | LFP / EEG (long windows, > 200 samples) | `'tcn'` |
 # | Raw spike times (via spike processor) | `'gru'` |
 # | Large dataset, long windows, complex relationships | `'transformer'` |
-# | LFP / EEG (sample rate known, want frequency priors) | `'sinc_cnn'` — see Tutorial 10 |
-# | Images (large dataset, pretrained features) | `'pretrained_backbone'` — see Tutorial 10 |
+# | Images (2D spatial data) | `'cnn2d'`, or `'pretrained_backbone'` for small datasets |
 #
-# In all cases, start with the MLP and switch only if you have evidence that
-# the architecture is the limiting factor — for example, if a sweep over
-# `hidden_dim` and `embedding_dim` shows that MI plateaus at a low value
-# regardless of capacity, suggesting the network cannot extract the relevant
-# features. The physics-informed models in the bottom four rows encode domain
-# knowledge directly into the architecture, which can help especially when
-# training data is limited.
+# In all cases, start with the MLP (or `'cnn2d'` for images) and switch only
+# if you have evidence that the architecture is the limiting factor — for
+# example, if a sweep over `hidden_dim` and `embedding_dim` shows that MI
+# plateaus at a low value regardless of capacity, suggesting the network
+# cannot extract the relevant features. `pretrained_backbone` is worth trying
+# when your image dataset is small and its content resembles natural images
+# (edges, textures, objects); on highly domain-specific images with no overlap
+# with natural-image statistics, pretrained features can actively hurt —
+# compare against `pretrained=False` or `'cnn2d'` before committing to it.
+
+# %% [markdown]
+# ### Demo: `pretrained_backbone` vs. `cnn2d` from scratch
+#
+# We generate paired images that share a Gaussian blob (same position,
+# independent noise), and compare a randomly-initialized `cnn2d` against
+# `pretrained_backbone` with `pretrained=False` — both start from random
+# weights, so this isolates the effect of the ResNet18 *architecture* from
+# the effect of ImageNet pretraining. Set `pretrained=True` to additionally
+# benefit from transfer learning (skipped here to keep the tutorial
+# network-independent; expect a further improvement on natural images).
+
+# %%
+try:
+    import torchvision  # noqa: F401
+    _HAS_TORCHVISION = True
+except ImportError:
+    _HAS_TORCHVISION = False
+    print("torchvision not installed — skipping pretrained_backbone demo.")
+    print("Install with: pip install neural_mi[vision]")
+
+if _HAS_TORCHVISION:
+    np.random.seed(7)
+    x_img, y_img = nmi.generators.generate_noisy_image_pairs(
+        n_samples=500, image_size=64, n_channels=3,
+        signal_strength=2.5, noise_level=1.0,
+    )
+
+    img_params = dict(n_epochs=60, patience=20, batch_size=64,
+                      hidden_dim=64, embedding_dim=32, n_layers=2)
+
+    result_cnn2d = nmi.run(
+        x_data=x_img, y_data=y_img,
+        mode='estimate', split_mode='random',
+        base_params={**img_params, 'embedding_model': 'cnn2d'},
+        random_seed=7, show_progress=False,
+    )
+    result_backbone = nmi.run(
+        x_data=x_img, y_data=y_img,
+        mode='estimate', split_mode='random',
+        base_params={**img_params, 'embedding_model': 'pretrained_backbone',
+                     'pytorch_predefined': 'resnet18', 'pretrained': False},
+        random_seed=7, show_progress=False,
+    )
+
+    print(f"CNN2D (random init):           {result_cnn2d.mi_estimate:.3f} bits")
+    print(f"PretrainedBackbone (ResNet18): {result_backbone.mi_estimate:.3f} bits")
 
 # %% [markdown]
 # ## 4. Custom Models
@@ -713,6 +776,11 @@ print("(ground truth: 2.000 bits)")
 #   order or local waveform structure matters and the MLP is failing to capture
 #   it. The Transformer is a last resort for large datasets with complex
 #   long-range structure.
+#
+# - **For image data, try `pretrained_backbone` before training a CNN from
+#   scratch**, especially on small datasets. It only helps when the pretraining
+#   domain aligns with your data's structure — compare against `pretrained=False`
+#   or `'cnn2d'` as a sanity check.
 #
 # - **`custom_embedding_cls`** replaces the embedding network while keeping the
 #   library's critic. Pass the class (not an instance). Its `__init__` must

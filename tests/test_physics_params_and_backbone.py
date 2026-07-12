@@ -8,93 +8,11 @@ import pytest
 import torch
 
 import neural_mi as nmi
-from neural_mi.generators import generate_windowed_oscillatory
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Fix 1: physics_params_history / physics_params_final
 # ──────────────────────────────────────────────────────────────────────────────
-
-def test_sinc_physics_params_tracked():
-    """physics_params_history is populated and contains non-trivial filter movement
-    after training SincCNN on synthetic oscillatory data.
-    """
-    np.random.seed(0)
-    torch.manual_seed(0)
-
-    X, Y, _ = generate_windowed_oscillatory(
-        n_windows=200,
-        n_channels=2,
-        window_size=128,
-        f_carrier_hz=10.0,
-        sample_rate=256.0,
-        latent_mi=1.0,
-        snr=3.0,
-    )
-
-    result = nmi.run(
-        x_data=X, y_data=Y,
-        mode='estimate',
-        split_mode='random',
-        processor_params_x={'sample_rate': 256.0},
-        processor_params_y={'sample_rate': 256.0},
-        base_params={
-            'n_epochs': 30,
-            'patience': 30,
-            'batch_size': 64,
-            'hidden_dim': 32,
-            'embedding_dim': 16,
-            'n_layers': 2,
-            'embedding_model': 'sinc_cnn',
-            'n_sinc_filters': 4,
-        },
-        random_seed=0,
-        show_progress=False,
-    )
-
-    # (a) physics_params_history must be present
-    assert 'physics_params_history' in result.details, (
-        "physics_params_history not found in result.details for sinc_cnn"
-    )
-
-    hist = result.details['physics_params_history']
-    assert 'x_f_low_hz' in hist, "Expected key 'x_f_low_hz' in physics_params_history"
-    assert 'x_f_high_hz' in hist, "Expected key 'x_f_high_hz' in physics_params_history"
-
-    # (b) must have one entry per training epoch
-    n_epochs_run = len(result.details['test_mi_history'])
-    assert len(hist['x_f_low_hz']) == n_epochs_run, (
-        f"physics_params_history length ({len(hist['x_f_low_hz'])}) "
-        f"!= n_epochs_run ({n_epochs_run})"
-    )
-
-    # (c) physics_params_final must be present
-    assert 'physics_params_final' in result.details, (
-        "physics_params_final not found in result.details"
-    )
-    final = result.details['physics_params_final']
-    assert 'x_f_low_hz' in final
-    assert 'x_f_high_hz' in final
-
-    # (d) filters must have moved from initialisation
-    # Initial f_low values come from classical EEG bands (see SincEmbedding.__init__)
-    init_f_low = hist['x_f_low_hz'][0]   # list of floats at epoch 0
-    fin_f_low  = hist['x_f_low_hz'][-1]
-
-    if isinstance(init_f_low, list):
-        init_arr = np.array(init_f_low)
-        fin_arr  = np.array(fin_f_low)
-    else:
-        init_arr = np.array([init_f_low])
-        fin_arr  = np.array([fin_f_low])
-
-    max_shift = float(np.max(np.abs(fin_arr - init_arr)))
-    assert max_shift > 0.01, (
-        f"Sinc filter cutoffs did not move during training "
-        f"(max shift = {max_shift:.4f} Hz, expected > 0.01 Hz). "
-        "The physics_params tracking may be broken."
-    )
-
 
 def test_non_biased_model_no_physics_params():
     """Standard CNN should produce no physics_params_history."""

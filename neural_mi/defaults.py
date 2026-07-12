@@ -98,22 +98,13 @@ BASE_PARAMS_SCHEMA = {
     'n_layers_head': {'type': (int, type(None)), 'min': 1, 'default': None},  # Hybrid critic head; None → max(1, n_layers-1)
     'hidden_dim_head': {'type': (int, list, type(None)), 'default': None},  # Hybrid critic head; None → min(64, hidden_dim)
     'critic_type': {'type': str, 'default': 'separable'},
-    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'
-                                                          # inductive-bias: 'sinc_cnn'|'pretrained_backbone'
+    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
     'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
     'norm_layer': {'type': (str, type(None)), 'default': None},
-
-    # --- Inductive bias parameters ---
-    # SincEmbedding: number of learnable sinc bandpass filters per input channel.
-    'n_sinc_filters': {'type': int, 'min': 1, 'default': 8},
-    # SincEmbedding: feature fusion mode.
-    # 'features'       — physics-derived features only (default, pure inductive bias).
-    # 'concat'         — physics features concatenated with processed raw input.
-    'feature_fusion': {'type': str, 'default': 'features'},
     # PretrainedBackboneEmbedding: torchvision model name and pretrained flag.
     'pytorch_predefined': {'type': (str, type(None)), 'default': None},
     'pretrained': {'type': bool, 'default': False},

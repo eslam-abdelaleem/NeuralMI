@@ -567,7 +567,10 @@ class Trainer:
                 nan_streak = 0
             history.append(mi_nats)
 
-            # Physics params tracking for biased embeddings (sinc_cnn)
+            # Generic physics-params tracking: any embedding implementing
+            # get_physics_params() gets its return value logged per epoch.
+            # No currently-shipped embedding implements this (kept as an
+            # extensibility hook for future physics-informed embeddings).
             for _prefix, _net_attr in (('x', 'embedding_net_x'), ('y', 'embedding_net_y')):
                 _enc = getattr(self.model, _net_attr, None)
                 if _enc is not None and hasattr(_enc, 'get_physics_params'):

@@ -16,7 +16,6 @@ from neural_mi.estimators import ESTIMATORS
 from neural_mi.models.embeddings import (
     MLP, VariationalWrapper, BaseEmbedding,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
-    SincEmbedding,
     PretrainedBackboneEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
@@ -183,8 +182,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         EmbeddingModel = Transformer
     elif model_type == 'mlp':
         EmbeddingModel = MLP
-    elif model_type == 'sinc_cnn':
-        EmbeddingModel = SincEmbedding
     elif model_type == 'pretrained_backbone':
         EmbeddingModel = PretrainedBackboneEmbedding
     else:
@@ -204,11 +201,10 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # CNN1D, CNN2D, and all sequence models use n_channels as input_dim
     # (they operate on the channel dimension, not a flattened feature vector).
-    # Inductive-bias models (sinc_cnn, pretrained_backbone) also use n_channels
-    # as input_dim.
+    # pretrained_backbone also uses n_channels as input_dim.
     # MLP (and custom cls) use the fully-flattened input_dim.
     _sequential_types = {'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                         'sinc_cnn', 'pretrained_backbone'}
+                         'pretrained_backbone'}
     if model_type in _sequential_types:
         input_dim_x, input_dim_y = embedding_params['n_channels_x'], embedding_params['n_channels_y']
         if model_type in ['cnn', 'tcn', 'cnn2d']:
@@ -217,10 +213,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
         if model_type == 'transformer':
             model_kwargs['nhead'] = embedding_params.get('nhead', 4)
-        if model_type == 'sinc_cnn':
-            model_kwargs['n_sinc_filters'] = embedding_params.get('n_sinc_filters', 8)
-            model_kwargs['sample_rate'] = embedding_params.get('sample_rate_x')
-            model_kwargs['feature_fusion'] = embedding_params.get('feature_fusion', 'features')
         if model_type == 'pretrained_backbone':
             model_kwargs['pytorch_predefined'] = embedding_params.get('pytorch_predefined')
             model_kwargs['pretrained'] = embedding_params.get('pretrained', False)

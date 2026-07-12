@@ -83,12 +83,8 @@ _BUILD_PARAMS_KEYS = [
     'dropout', 'norm_layer', 'use_spectral_norm',
     'use_decoder', 'decoder_weight', 'decoder_weight_x', 'decoder_weight_y',
     'decoder_output_activation_x', 'decoder_output_activation_y',
-    # Inductive-bias architecture parameters
-    'n_sinc_filters', 'feature_fusion',
+    # PretrainedBackboneEmbedding architecture parameters
     'pytorch_predefined', 'pretrained',
-    # Modality metadata injected from processor_params (needed to reconstruct
-    # SincEmbedding architecture)
-    'sample_rate_x', 'sample_rate_y', 'no_spike_value',
 ]
 
 
@@ -190,20 +186,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2] * _y.shape[3]
         else:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2]
-
-    # ------------------------------------------------------------------
-    # Inject modality metadata for inductive-bias embedding constructors.
-    # Extracted from processor_params here (after dataset is built) so
-    # build_critic() can pass them to model constructors without needing
-    # direct access to the dataset or processor_params dicts.
-    # Keys are prefixed/named to avoid collisions with existing params.
-    # ------------------------------------------------------------------
-    _pp_x = params.get('processor_params_x') or {}
-    _pp_y = params.get('processor_params_y') or {}
-    params['sample_rate_x'] = _pp_x.get('sample_rate')
-    params['sample_rate_y'] = _pp_y.get('sample_rate')
-    # no_spike_value: default -1.0 matches SpikeWindowDataset's default sentinel
-    params['no_spike_value'] = _pp_x.get('no_spike_value', _pp_y.get('no_spike_value', -1.0))
 
     if params.get('custom_critic') is not None:
         critic = params['custom_critic']

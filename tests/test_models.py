@@ -16,7 +16,6 @@ from neural_mi.models.embeddings import (
     LSTM,
     TCN,
     Transformer,
-    SincEmbedding,
 )
 
 # --- Fixtures ---
@@ -328,56 +327,6 @@ def test_critic_get_embeddings(x_data, y_data):
 
 
 # --- Sequential Embedding Model Tests ---
-
-
-class TestSincEmbedding:
-    """Tests for SincEmbedding (learnable sinc bandpass filters for EEG/LFP)."""
-
-    N_CH = 4
-    T = 200
-    BATCH = 16
-    SR = 500.0  # Hz
-
-    @pytest.fixture
-    def lfp_input(self):
-        torch.manual_seed(7)
-        return torch.randn(self.BATCH, self.N_CH, self.T)
-
-    def test_output_shape_features(self, lfp_input):
-        model = SincEmbedding(input_dim=self.N_CH, hidden_dim=16, embed_dim=8,
-                              n_layers=2, n_sinc_filters=4, sample_rate=self.SR,
-                              feature_fusion='features')
-        out = model(lfp_input)
-        assert out.shape == (self.BATCH, 8)
-
-    def test_output_shape_concat(self, lfp_input):
-        model = SincEmbedding(input_dim=self.N_CH, hidden_dim=16, embed_dim=8,
-                              n_layers=2, n_sinc_filters=4, sample_rate=self.SR,
-                              feature_fusion='concat')
-        out = model(lfp_input)
-        assert out.shape == (self.BATCH, 8)
-
-    def test_gradients_flow_through_sinc_params(self, lfp_input):
-        model = SincEmbedding(input_dim=self.N_CH, hidden_dim=16, embed_dim=8,
-                              n_layers=2, n_sinc_filters=4, sample_rate=self.SR)
-        out = model(lfp_input)
-        out.sum().backward()
-        assert model.log_f_low.grad is not None
-        assert model.log_f_high.grad is not None
-
-    def test_no_nan_inf(self, lfp_input):
-        model = SincEmbedding(input_dim=self.N_CH, hidden_dim=16, embed_dim=8,
-                              n_layers=1, n_sinc_filters=8, sample_rate=self.SR)
-        out = model(lfp_input)
-        assert not torch.isnan(out).any()
-        assert not torch.isinf(out).any()
-
-    def test_single_channel(self):
-        x = torch.randn(8, 1, 100)
-        model = SincEmbedding(input_dim=1, hidden_dim=8, embed_dim=4, n_layers=1,
-                              n_sinc_filters=4, sample_rate=250.0)
-        out = model(x)
-        assert out.shape == (8, 4)
 
 
 torchvision_available = pytest.mark.skipif(

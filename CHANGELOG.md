@@ -30,7 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`estimators/bounds.py`, `logmeanexp_nodiag`**: `dim=0` was falsy and silently fell through `dim or (0,1)` to reduce over both axes instead of just dim 0. Fixed to `dim if dim is not None else (0,1)`. Never fired in practice (only `None` and `(0,1)` are passed anywhere in the codebase today) — pure future-proofing.
 - **`analysis/transfer.py`, `_build_te_arrays`**: replaced a Python list-comprehension + `torch.stack` with `tensor.unfold()`, which produces the same layout as a view instead of materializing three large window-array copies. Verified bit-exact equivalent before applying.
 - **`data/temporal.py`, `SpikeWindowDataset`**: the `max_spikes_per_window` truncation message (data is silently dropped) is now a `logger.warning`, not `logger.info`.
-- **`SincEmbedding` readout changed from mean pooling to log-band-power pooling** (`neural_mi/models/embeddings.py`): `features.mean(dim=-1)` discarded most of the signal, since a bandpassed oscillation is ~zero-mean; replaced with `log(features.pow(2).mean(dim=-1) + eps)`. Found and fixed as part of gating `sinc_cnn` against a generic CNN on a new band-power-vs-broadband-interference regime (`results/gate/decision_log.md`); with the fix, `sinc_cnn` beats the best generic CNN at every N tested and learned filter cutoffs migrate toward the true signal band.
 
 ### Fixed
 
@@ -44,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`CalciumEmbedding` / `embedding_model='calcium_cnn'`** (`neural_mi/models/embeddings.py`) and its generator `generate_windowed_calcium`: cut rather than fixed. `_deconv_kernel` built the time-reversed, unit-normalized indicator impulse response — a **matched filter**, which further low-passes the signal, not a deconvolution (which would sharpen/invert the blur). The docstring's "FIR deconvolution" claim did not match what the code did. Independently, the only generator for it carries its shared information in firing rate, for which mean fluorescence is already near-sufficient, so a correct deconvolution would not have bought anything there either. All registry entries, base-params schema keys (`tau_rise`, `tau_decay`, `learn_calcium_kernel`), tests, tutorial sections, and reference-doc rows removed with it.
 - **`SpikePhysicsEmbedding` / `embedding_model='spike_physics'`** (`neural_mi/models/embeddings.py`): removed after an empirical gate against a regularized generic MLP on rate-code spike data (Regime C, `results/gate/decision_log.md`) came back NO_HEADROOM under the gate's strict criterion (10x converged-N ratio, but overlapping ±1 std bands at the discriminating N). All registry entries, the `'features'`/`'concat'` fusion code path, base-params schema keys, tests, tutorial sections (Tutorials 8, 10, 11), and reference-doc rows removed with it.
 - **Depthwise-separable first layer / `use_depthwise` on `embedding_model='cnn'`** (`neural_mi/models/embeddings.py`): removed after an empirical gate on a favorable multichannel regime (per-channel distinct carriers) showed no advantage over a plain `CNN1D` — at N=10000 plain CNN (0.62 bits) actually exceeded depthwise (0.47 bits); see `results/gate/decision_log.md`. The `use_depthwise` flag, base-params schema key, tests, tutorial sections (Tutorials 10, 11), and reference-doc rows removed with it. `generate_windowed_multichannel` (its only consumer) is retained since it still feeds the gate's own evidence chain.
+- **`SincEmbedding` / `embedding_model='sinc_cnn'`** (`neural_mi/models/embeddings.py`): removed after the initial win against a generic CNN turned out to be confounded — the generic baseline ran at the library-default `kernel_size=3` with mean pooling, neither of which can build a frequency-selective filter (a log-band-power pooling fix along the way was real, but did not settle the confound). A fair comparison (kernel-size-matched CNN, {3, 15, 51}, with and without matched log-band-power pooling) on the same band-power-vs-broadband-interference regime showed `sinc_cnn` never converged within N=3000 across 3 seeds (0.872±0.323 bits vs. true MI 0.996) while the matched-kernel generic CNN did (1.074±0.052 bits); see `results/gate/decision_log.md`. All registry entries, base-params schema keys (`n_sinc_filters`, `feature_fusion`), the modality-metadata (`sample_rate_x/y`) injection that fed it, tests, tutorial sections (Tutorials 8, 10, 11 — the latter two retired entirely), and reference-doc rows removed with it.
+
+### Added
 
 - **SVD-aligned rotated embeddings (`return_rotated_embeddings`)** (`neural_mi/utils.py`, `neural_mi/training/trainer.py`, `neural_mi/analysis/task.py`):
   A new `compute_cross_covariance_rotation()` utility and four new `base_params` keys enable returning embeddings re-projected so that dimension 0 captures the most shared variance between the two modalities, dimension 1 the next most, and so on — consistent with the Participation Ratio ordering. This makes the first *k* dimensions directly interpretable without separately inspecting the SVD.
@@ -58,13 +60,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `embeddings_x_rotated`, `embeddings_y_rotated`, `embeddings_rotation_singular_values` (+ optional `embeddings_rotation_x/y`) — from `return_embeddings` path.
   - `embedding_history_x_rotated`, `embedding_history_y_rotated`, `embedding_rotation_singular_values` (+ optional rotation matrices) — from `track_embeddings` path.
 
-- **Physics parameter tracking (`sinc_cnn`)** (`neural_mi/models/embeddings.py`, `neural_mi/training/trainer.py`):
-  Added `get_physics_params()` method to `SincEmbedding`. The trainer now
-  calls this method after every evaluation epoch and stores results in `result.details`:
+- **Physics parameter tracking (`get_physics_params()` extensibility hook)** (`neural_mi/models/embeddings.py`, `neural_mi/training/trainer.py`):
+  the trainer calls `get_physics_params()` after every evaluation epoch, if the
+  embedding implements it, and stores results in `result.details`:
   - `result.details['physics_params_history']` — dict of per-epoch parameter lists (keys prefixed by
-    `x_` or `y_`, e.g. `x_f_low_hz`, `x_f_high_hz`).
+    `x_` or `y_`).
   - `result.details['physics_params_final']` — same keys with values from the best epoch.
-  Both keys are absent for non-learnable embeddings (e.g. standard CNN).
+  Both keys are absent when the embedding does not implement `get_physics_params()` — true
+  of every currently-shipped embedding (this was originally exercised by `SincEmbedding`,
+  since removed; see `results/gate/decision_log.md`). Kept as a hook for future custom
+  embeddings supplied via `custom_embedding_cls`.
 
 - **Pretrained backbone spatial dimension mismatch handling** (`neural_mi/models/embeddings.py`):
   `PretrainedBackboneEmbedding` now automatically inserts a bilinear `nn.Upsample` layer when input
@@ -79,12 +84,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     same model with per-channel carrier frequencies uniformly spaced in `[f_min_hz, f_max_hz]`; total
     MI = sum over channels.
   Both return `(X, Y, true_mi)` and are exported from `neural_mi.generators`.
-
-- **Tutorial 11 — Inductive Biases: Quantitative Validation** (`tutorials/raw tutorials/11_Inductive_Biases_Quantitative.py`,
-  `tutorials/11_Inductive_Biases_Quantitative.ipynb`):
-  Sample-efficiency curves (MI vs. N windows) comparing biased models to standard CNN baselines,
-  with analytically known ground-truth MI. Covers: SincCNN (10 Hz LFP with filter convergence
-  diagnostic) and pretrained backbone (MNIST vs Gaussian blobs).
 
 - **`generate_timing_code_spike_trains` generator** (`neural_mi/generators/synthetic.py`):
   new function for generating a precise-timing spike code embedded in high-rate
@@ -125,12 +124,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list.
 
 ### Changed
-
-- **Tutorial 10 — SincEmbedding section** (`tutorials/raw tutorials/10.py`):
-  increased LFP signal SNR from 2.0 to 3.0 and added `LFP_PARAMS` (250
-  epochs, patience 50) for both CNN and `sinc_cnn` comparisons.  `FAST_PARAMS`
-  (60 epochs) was insufficient for sinc filters to converge; updated commentary
-  explains this.
 
 - **Online data augmentations (Batch 3)**: per-batch augmentations applied
   during training only (never at eval time).  Three new `base_params` keys:
@@ -345,35 +338,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   split now handles 4-D tensors `(N, C, H, W)` in addition to 2-D `(N, C)` and 3-D
   `(N, C, W)` data.
 
-#### Physics-Informed (Inductive Bias) Embedding Models
-
-- **`SincEmbedding` — `embedding_model='sinc_cnn'`**: learnable FIR bandpass filters
-  for EEG / LFP data.  Filter cutoffs are parameterised as `log(f_low)` / `log(f_high)`
-  and initialised to the five canonical neural frequency bands (δ, θ, α, β, γ) plus
-  high-γ bands.  A Hamming window is applied to each filter to reduce spectral leakage.
-  `n_sinc_filters` (default 8) controls the number of filters per channel.  Requires
-  `sample_rate` (injected automatically from `processor_params_x/y`).  Supports
-  `feature_fusion='features'` (default) or `'concat'`.
-
 - **`PretrainedBackboneEmbedding` — `embedding_model='pretrained_backbone'`**: frozen
   torchvision backbone (e.g. ResNet18, EfficientNet-B0) used as a fixed feature
   extractor, followed by a trainable MLP head mapping to `embedding_dim`.  Set
   `pytorch_predefined` to the torchvision model name and `pretrained=True` to load
   ImageNet weights.  Expects 4-D input `(N, C, H, W)`.
 
-- **Modality metadata plumbing** (`task.py`): `run_training_task()` now injects
-  `sample_rate_x`, `sample_rate_y`, and `no_spike_value` into
-  the params dict from `processor_params_x/y` before calling `build_critic()`.  These
-  values are consumed by the inductive-bias constructors and do not need to be set
-  manually by the user.
-
 - **New synthetic data generators** (`neural_mi/generators/synthetic.py`):
   `generate_oscillatory_lfp`, `generate_modulated_spike_trains`,
   `generate_noisy_image_pairs`.  All three are exported from `neural_mi.generators`.
-
-- **Tutorial 10 — Inductive Biases**: new tutorial (`tutorials/raw tutorials/10.py`)
-  covering the physics-informed models with worked examples and the
-  `feature_fusion` parameter.
 
 ### Fixed
 

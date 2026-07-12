@@ -17,7 +17,7 @@ from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR
 ALLOWED_VALUES = {
     'critic_type': ['separable', 'concat', 'hybrid'],
     'embedding_model': ['mlp', 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                        'sinc_cnn', 'pretrained_backbone'],
+                        'pretrained_backbone'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
     'spectral_mode': ['none', 'summary', 'full'],
@@ -26,7 +26,6 @@ ALLOWED_VALUES = {
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
     'norm_layer': [None, 'batch', 'layer'],
-    'feature_fusion': ['features', 'concat'],
 }
 
 class DataValidator:

@@ -116,13 +116,11 @@ Before computing critic scores, each input passes through an **embedding model**
 | Long Short-Term Memory | `'lstm'` | For sequences; `bidirectional` option |
 | Temporal Convolutional Net | `'tcn'` | Dilated 1D conv; good for long windows |
 | Transformer | `'transformer'` | Self-attention; needs `nhead` param |
-| *— Physics-Informed (Inductive Bias) —* | | |
-| Sinc Bandpass CNN | `'sinc_cnn'` | Learnable FIR bandpass filters for EEG/LFP; requires `sample_rate` |
 | Pretrained Backbone | `'pretrained_backbone'` | Frozen torchvision backbone + trainable MLP head; for images |
 
-All embeddings output a vector of size `embedding_dim` (default 64). See **Tutorial 10** for physics-informed model examples.
+All embeddings output a vector of size `embedding_dim` (default 64).
 
-(A depthwise-separable `'cnn'` variant and a `'spike_physics'` embedding were evaluated empirically against generic encoders and did not survive that gate; see `results/gate/decision_log.md`. Both have been removed.)
+(A depthwise-separable `'cnn'` variant, a `'spike_physics'` embedding, and a `'sinc_cnn'` bandpass-filter embedding were evaluated empirically against generic encoders and did not survive that gate; see `results/gate/decision_log.md`. All three have been removed.)
 
 ### 3.4 Critic Architectures
 
@@ -758,13 +756,11 @@ Pass any of these in the `base_params` dict:
 | `embedding_dim` | int | 64 | Size of embedding vectors |
 | `hidden_dim` | int or list of int | 64 | Hidden layer width. An integer gives uniform-width layers; a list (e.g. `[256, 1024, 256]`) sets per-layer widths explicitly — `n_layers` is ignored in this case. Supported for MLP, CNN1D, CNN2D, and TCN. |
 | `n_layers` | int | 2 | Depth of embedding network. Ignored when `hidden_dim` is a list. |
-| `embedding_model` | str | `'mlp'` | `'mlp'`, `'cnn'`, `'cnn2d'`, `'gru'`, `'lstm'`, `'tcn'`, `'transformer'`, `'sinc_cnn'`, `'pretrained_backbone'` |
+| `embedding_model` | str | `'mlp'` | `'mlp'`, `'cnn'`, `'cnn2d'`, `'gru'`, `'lstm'`, `'tcn'`, `'transformer'`, `'pretrained_backbone'` |
 | `critic_type` | str | `'separable'` | `'separable'`, `'concat'`, `'hybrid'` |
 | `hidden_dim_head` | int, list of int, or None | `None` | Hidden width of the hybrid critic's decision head. Accepts the same int-or-list form as `hidden_dim`. `None` → `min(64, hidden_dim)` |
 | `n_layers_head` | int or None | `None` | Depth of the hybrid critic's decision head. `None` → `max(1, n_layers - 1)` |
 | `kernel_size` | int | 3 | For CNN, CNN2D, TCN |
-| `n_sinc_filters` | int | `8` | For `'sinc_cnn'`: learnable bandpass filters per channel |
-| `feature_fusion` | str | `'features'` | For `'sinc_cnn'`: `'features'` or `'concat'` |
 | `pytorch_predefined` | str or None | `None` | For `'pretrained_backbone'`: torchvision model name (e.g. `'resnet18'`) |
 | `pretrained` | bool | `False` | For `'pretrained_backbone'`: load ImageNet pretrained weights |
 | `bidirectional` | bool | False | For GRU, LSTM |
@@ -872,16 +868,11 @@ rho = generators.mi_to_rho(dim=4, mi=1.5)
 Most embedding models take tensors of shape `(batch, n_channels, window_size)` and output `(batch, embedding_dim)`. `CNN2D` and `PretrainedBackboneEmbedding` expect 4-D input `(batch, n_channels, H, W)`.
 
 ```python
-# Standard models
-from neural_mi.models import MLP, CNN1D, CNN2D, GRU, LSTM, TCN, Transformer
-
-# Physics-informed (inductive bias) models
 from neural_mi.models import (
-    SincEmbedding, PretrainedBackboneEmbedding,
+    MLP, CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
+    PretrainedBackboneEmbedding,
 )
 ```
-
-**Standard models:**
 
 | Class | Input shape | Key init params |
 |-------|-------------|----------------|
@@ -892,15 +883,9 @@ from neural_mi.models import (
 | `LSTM` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, n_layers, bidirectional` |
 | `TCN` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, kernel_size` |
 | `Transformer` | `(N, C, W)` | `input_dim, embedding_dim, nhead, n_layers` |
+| `PretrainedBackboneEmbedding` | `(N, C, H, W)` | `input_dim, embedding_dim, pytorch_predefined, pretrained` |
 
-**Physics-informed (inductive bias) models:**
-
-| Class | `embedding_model` | Input shape | Key init params |
-|-------|------------------|-------------|----------------|
-| `SincEmbedding` | `'sinc_cnn'` | `(N, C, W)` | `input_dim, embedding_dim, n_sinc_filters, sample_rate, feature_fusion` |
-| `PretrainedBackboneEmbedding` | `'pretrained_backbone'` | `(N, C, H, W)` | `input_dim, embedding_dim, pytorch_predefined, pretrained` |
-
-(A depthwise-separable `CNN1D` variant and a `SpikePhysicsEmbedding` class were evaluated empirically against generic encoders and did not survive that gate; see `results/gate/decision_log.md`. Both have been removed.)
+(A depthwise-separable `CNN1D` variant, a `SpikePhysicsEmbedding` class, and a `SincEmbedding` class were evaluated empirically against generic encoders and did not survive that gate; see `results/gate/decision_log.md`. All three have been removed.)
 
 ### Critics (`neural_mi.models`)
 
@@ -1026,8 +1011,7 @@ Modes:
   pairwise     → result.dataframe [ch_x, ch_y, mi_estimate]
 
 Estimators: 'infonce' (default, has ceiling), 'smile' (no ceiling)
-Embeddings:  'mlp' (default), 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer'
-             physics-informed: 'sinc_cnn', 'pretrained_backbone'
+Embeddings:  'mlp' (default), 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer', 'pretrained_backbone'
 Critics:     'separable' (default), 'concat', 'hybrid'
 Units:       'bits' (default) or 'nats'
 

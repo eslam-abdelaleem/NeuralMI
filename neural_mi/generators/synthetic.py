@@ -8,7 +8,9 @@ and validating the behavior of different MI estimators and models.
 Windowed generators with analytically known MI
 ----------------------------------------------
 - :func:`generate_windowed_oscillatory` — amplitude-modulated oscillation at a
-  single carrier frequency; MI is carried in amplitude correlation. Tests sinc_cnn.
+  single carrier frequency; MI is carried in amplitude correlation. Used to
+  gate the (since removed) `sinc_cnn` inductive bias; see
+  `results/gate/decision_log.md`.
 - :func:`generate_windowed_multichannel` — per-channel different carrier
   frequencies; total MI = sum of per-channel MIs. Used to gate the (since
   removed) depthwise CNN1D inductive bias; see `results/gate/decision_log.md`.
@@ -917,7 +919,8 @@ def generate_windowed_bandpower_interference(
     for X and Y, so it carries no MI and does not change the analytical
     observable MI -- it exists only to test whether a bandpass front-end can
     structurally reject out-of-band interference that a short-kernel generic
-    conv cannot as cleanly. Favorable regime for ``sinc_cnn``.
+    conv cannot as cleanly. Used to gate the (since removed) ``sinc_cnn``
+    inductive bias; see `results/gate/decision_log.md`.
 
     Parameters
     ----------

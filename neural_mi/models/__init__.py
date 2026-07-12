@@ -8,7 +8,6 @@ It is organized into two main submodules:
 from .embeddings import (
     MLP, VariationalWrapper, BaseEmbedding, CNN1D, CNN2D,
     GRU, LSTM, TCN, Transformer,
-    SincEmbedding,
     PretrainedBackboneEmbedding,
 )
 from .critics import (
