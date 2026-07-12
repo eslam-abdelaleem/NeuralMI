@@ -94,9 +94,12 @@ cd NeuralMI
 # For standard use:
 pip install .
 
-# 4. For developers
-pip install -e .
-pip install -r requirements-dev.txt
+# Optional extras:
+#   pip install ".[viz]"     # UMAP / t-SNE / PCA embedding plots
+#   pip install ".[vision]"  # pretrained-backbone embeddings (torchvision)
+
+# 4. For developers (editable install + tests, docs, and viz extras)
+pip install -e ".[dev]"
 ```
 
 ## Further Reading

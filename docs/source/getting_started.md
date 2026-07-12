@@ -97,9 +97,8 @@ cd NeuralMI
 # For standard use:
 pip install .
 
-# 4. For developers
-pip install -e .
-pip install -r requirements-dev.txt
+# 4. For developers (editable install + tests, docs, and viz extras)
+pip install -e ".[dev]"
 ```
 
 ## Further Reading

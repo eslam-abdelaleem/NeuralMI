@@ -4,32 +4,54 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neural_mi"
-version = "2.1.0"
+version = "1.0.0"
 description = "A Python toolbox for rigorous mutual information estimation in neuroscience"
 readme = "README.md"
 requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Eslam Abdelaleem" },
+]
 dependencies = [
     "matplotlib>=3.5.0",
     "numpy>=1.23.0",
     "pandas>=1.4.0",
+    "scipy>=1.9.0",
     "seaborn>=0.12.0",
     "statsmodels>=0.13.0",
     "torch>=2.0.0",
     "tqdm>=4.60.0",
-    "umap-learn>=0.5.0",
 ]
 
 [project.optional-dependencies]
-# scikit-learn is used only for PCA/t-SNE in plot_embeddings().
-# Install with: pip install neural_mi[sklearn]
-sklearn = ["scikit-learn>=1.0.0"]
+# Extra plotting backends used only by visualisation helpers
+# (PCA / t-SNE / UMAP embedding projections). Both are imported lazily
+# inside neural_mi.visualize, so the core library runs without them.
+# Install with: pip install "neural_mi[viz]"
+viz = [
+    "scikit-learn>=1.0.0",
+    "umap-learn>=0.5.0",
+]
 # torchvision is required only for PretrainedBackboneEmbedding.
-# Install with: pip install neural_mi[vision]
+# Install with: pip install "neural_mi[vision]"
 vision = ["torchvision>=0.15.0"]
+# Everything needed to develop, test, and build the docs.
+# Install with: pip install -e ".[dev]"
 dev = [
-    "ipykernel>=6.0.0",
-    "myst-parser>=0.18.0",
+    "neural_mi[viz]",
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
-    "scikit-learn>=1.0.0",
+    "ipykernel>=6.0.0",
+    "myst-parser>=0.18.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/eslam-abdelaleem/NeuralMI"
+Documentation = "https://eslam-abdelaleem.github.io/NeuralMI/"
+Repository = "https://github.com/eslam-abdelaleem/NeuralMI"
+
+[tool.setuptools.packages.find]
+include = ["neural_mi*"]
+
+[tool.setuptools.package-data]
+neural_mi = ["py.typed"]

@@ -1,5 +1,5 @@
 # Expose the main run function and other key components at the top level
-__version__ = "2.1.0"
+__version__ = "1.0.0"
 
 # Suppress the tqdm "IProgress not found" warning that fires when ipywidgets is
 # absent (e.g. plain terminal use).  tqdm.auto still falls back to the standard

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath('../../'))
 project = 'NeuralMI'
 copyright = '2026, Eslam Abdelaleem'
 author = 'Eslam Abdelaleem'
-release = '2.1.0'
+release = '1.0.0'
 
 # -- General configuration ---------------------------------------------------
 extensions = [

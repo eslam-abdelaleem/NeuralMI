@@ -107,10 +107,10 @@ issued when fewer than five gamma points survive.
 of a neural population or of the shared information between two populations. After
 training a Hybrid Critic with a large bottleneck, the library extracts embeddings
 and computes two Participation Ratio (PR) variants from the singular value spectrum
-of the cross-covariance matrix. The primary metric (`participation_ratio`) weights
-by squared singular values: $\text{PR}_{\text{cov}} = (\sum_i \sigma_i^2)^2 / \sum_i \sigma_i^4$.
-A second variant (`participation_ratio_singular`) weights by singular values directly:
-$\text{PR}_{\text{sv}} = (\sum_i \sigma_i)^2 / \sum_i \sigma_i^2$.
+of the cross-covariance matrix. The eigenvalue/covariance-spectrum variant (`pr_eig`)
+weights by squared singular values: $\text{PR}_{\text{eig}} = (\sum_i \sigma_i^2)^2 / \sum_i \sigma_i^4$.
+The singular-spectrum variant (`pr_singular`) weights by singular values directly:
+$\text{PR}_{\text{singular}} = (\sum_i \sigma_i)^2 / \sum_i \sigma_i^2$.
 This avoids the computational cost and geometric artefacts of sweeping bottleneck
 dimension.
 
@@ -122,6 +122,6 @@ recordings (7), and model and estimator selection (8).
 
 # Acknowledgements
 
-*I want to thank me for believing in me, I want to thank me for doing all this hard work. I wanna thank me for having no days off. I wanna thank me for never quitting. I wanna thank me for always being a giver and trying to give more than I receive. I wanna thank me for trying to do more right than wrong. I wanna thank me for being me at all times* ***-Snoop Dogg***
+*Acknowledgements and funding sources to be added prior to submission.*
 
 # References

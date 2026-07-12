@@ -12,14 +12,9 @@ Thank you for your interest in contributing! We welcome bug reports, feature req
     source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
     ```
 
-3.  **Install in Editable Mode:** Install the library in "editable" mode, which means your changes to the source code will be reflected immediately.
+3.  **Install in Editable Mode with Dev Dependencies:** Install the library in "editable" mode (so your source changes are reflected immediately) together with the `dev` extra, which pulls in the test, docs, and optional-visualisation dependencies.
     ```bash
-    pip install -e .
-    ```
-
-4.  **Install Development Dependencies:** Install the packages required for running tests.
-    ```bash
-    pip install -r requirements-dev.txt
+    pip install -e ".[dev]"
     ```
 
 ## Running Tests & Ensuring Quality
