@@ -781,7 +781,7 @@ def _warn_small_sample(dataset, base_params: dict) -> None:
         warnings.warn(
             f"Very few samples detected ({n_samples} windows after processing). "
             f"Neural MI estimators are prone to overfitting and high-variance estimates "
-            f"at this scale. Consider the following additions in base_params: {hint}. "
+            f"at this scale. Consider adding these to your Model/Training configs: {hint}. "
             f"See the NeuralMI documentation for small-sample guidance.",
             UserWarning,
             stacklevel=4,
@@ -795,7 +795,7 @@ def _warn_small_sample(dataset, base_params: dict) -> None:
         if tips:
             warnings.warn(
                 f"Small dataset detected ({n_samples} windows). Regularisation may help: "
-                f"consider adding {' and '.join(tips)} in base_params.",
+                f"consider adding {' and '.join(tips)} to your Model config.",
                 UserWarning,
                 stacklevel=4,
             )
@@ -1050,7 +1050,7 @@ def _run_inner(
             warnings.warn(
                 f"Very few samples detected ({n_samples} samples). "
                 f"Neural MI estimators are prone to overfitting at this scale. "
-                f"Consider adding regularisation (dropout, norm_layer) in base_params.",
+                f"Consider adding regularisation (Model(dropout=..., norm_layer=...)).",
                 UserWarning, stacklevel=4,
             )
         if mode not in ('dimensionality', 'pairwise') and y_run_data is None:
