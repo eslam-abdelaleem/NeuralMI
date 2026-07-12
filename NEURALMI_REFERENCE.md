@@ -203,135 +203,86 @@ After any processor, all data tensors are 3D: `(n_samples, n_channels, window_si
 
 ## 5. The `run()` Function — Complete Reference
 
+All parameters are grouped into typed config objects (see `neural_mi.config`).
+Every config is optional; omitted configs and unset fields fall back to the
+library defaults. Anywhere a config is accepted, a plain `dict` with the same
+keys works too, so importing the classes is optional.
+
 ```python
 import neural_mi as nmi
+from neural_mi import (Model, Training, Split, Estimator, Output, Processing,
+                       Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional)
 
 result = nmi.run(
-    # ── Data ────────────────────────────────────────────────────────────────
-    x_data,                          # Required. See §4 for shapes.
-    y_data=None,                     # Optional (required by most modes).
-    x_time=None,                     # np.ndarray of timestamps for x
-    y_time=None,                     # np.ndarray of timestamps for y
-
-    # ── Processors ──────────────────────────────────────────────────────────
-    processor_type_x=None,           # 'continuous' | 'spike' | 'categorical' | None
-    processor_params_x=None,         # dict; see §4
-    processor_type_y=None,
-    processor_params_y=None,
-
-    # ── Analysis Mode ───────────────────────────────────────────────────────
+    x_data, y_data=None,             # data; y_data required by most modes (see §4 for shapes)
     mode='estimate',                 # 'estimate'|'sweep'|'dimensionality'|'rigorous'|'lag'|'precision'|'conditional'|'transfer'|'pairwise'
 
-    # ── Model Configuration ────────────────────────────────────────────────
-    base_params=None,                # dict; see §8 for full reference
-    # Common base_params keys (inline examples):
-    #   {'n_epochs': 100, 'learning_rate': 1e-3, 'batch_size': 256,
-    #    'embedding_dim': 64, 'hidden_dim': 128, 'embedding_model': 'mlp',
-    #    'use_variational': False, 'use_decoder': False,
-    #    'augmentation_params':   {'gaussian_noise': {'std': 0.05}},
-    #    'augmentation_params_x': None,   # None → use augmentation_params
-    #    'augmentation_params_y': {},     # {} → disable for Y only
-    #   }
+    processing=None,                 # Processing(...) — raw-data processors
+    model=None,                      # Model(...)      — architecture
+    training=None,                   # Training(...)   — optimization loop
+    split=None,                      # Split(...)      — train/test splitting
+    estimator=None,                  # Estimator(...) or a name string ('infonce'|'smile')
+    output=None,                     # Output(...)     — units, embeddings, labels
     sweep_grid=None,                 # dict[str, list] for 'sweep' mode
-    estimator='infonce',             # 'infonce' | 'smile'
-    estimator_params=None,           # dict; e.g. {'clip': 5.0} for smile
-    custom_critic=None,              # Pre-built nn.Module
-    custom_embedding_cls=None,       # Custom embedding class (not instance)
 
-    # ── Output ──────────────────────────────────────────────────────────────
-    output_units='bits',             # 'bits' | 'nats'
-    return_embeddings=False,         # Include learned embeddings in result
-    save_best_model_path=None,       # str path to save best checkpoint
+    # mode-specific config (only the one matching `mode` is used):
+    rigorous=None, precision=None, lag=None,
+    transfer=None, dimensionality=None, conditional=None,
 
-    # ── Training / Splitting ───────────────────────────────────────────────
-    n_epochs=None,                   # Override base_params['n_epochs'] (default 50)
-    batch_size=None,                 # Override base_params['batch_size'] (default 128)
-    shared_encoder=None,             # Override base_params['shared_encoder']
-    split_mode='blocked',            # 'blocked' (temporal) | 'random' (IID)
-    train_fraction=0.9,
-    n_test_blocks=5,                 # For 'blocked' split: # contiguous test segments
-    split_gap_fraction=0.5,          # Buffer fraction around each test block
-    train_indices=None,              # np.ndarray of explicit train indices
-    test_indices=None,               # np.ndarray of explicit test indices
-
-    # ── Reproducibility ─────────────────────────────────────────────────────
-    random_seed=None,                # int; use with n_workers=1 for full repro
-    device=None,                     # 'cpu' | 'cuda' | 'mps' | None (auto)
-
-    # ── Memory / device layout ───────────────────────────────────────────────
-    # Where dataset tensors live — independent of `device` (the compute device).
-    # The Trainer always moves batches to `device` via .to(device), so this
-    # setting only controls dataset-level allocation.
-    #
-    #   'cpu'  (default) — data in pageable system RAM; OS can reclaim freely
-    #                      between tasks. Use for sweep / dimensionality / lag.
-    #   'auto'           — data on the compute device; avoids host→device copies
-    #                      when evaluating the same dataset many times.
-    #                      Default for precision mode.
-    #   '<device_str>'   — any explicit PyTorch device string ('mps', 'cuda:0').
-    dataset_device='cpu',
-
-    # ── Progress & Logging ─────────────────────────────────────────────────
-    verbose=False,
-    show_progress=True,
-
-    # ── Mode-Specific Parameters ───────────────────────────────────────────
-    # (These can also go in **analysis_kwargs)
-
-    # rigorous mode:
-    delta_threshold=0.1,             # Max curvature to accept as "linear"
-    min_gamma_points=5,              # Min gamma values needed for reliable fit
-    confidence_level=0.68,           # CI level (0.68 ≈ 1σ)
-
-    # lag mode:
-    lag_range=None,                  # range/list/np.ndarray; REQUIRED for lag mode
-
-    # precision mode:
-    tau_grid=None,                   # list of floats; corruption levels. REQUIRED.
-    corrupt_target='x',              # 'x' | 'y' | 'both'
-    corruption_method='rounding',    # 'rounding' | 'noise'
-    n_noise_samples=50,
-    threshold_ratio=0.9,             # MI fraction defining precision_tau
-
-    # conditional mode:
-    z_data=None,                     # Conditioning variable. REQUIRED for conditional.
-    z_time=None,                     # Time vector for z_data (passed to create_dataset as x_time).
-    z_processor_type=None,
-    z_processor_params=None,
-
-    # transfer entropy mode:
-    history_window=None,             # int samples in past. REQUIRED for transfer.
-    prediction_horizon=1,            # int samples ahead to predict
-
-    # evaluation:
-    max_eval_samples=5000,           # Max samples used during test eval (memory)
-    train_subset_size=None,          # Use subset of training data
-
-    # optimizer / scheduler:
-    optimizer='adam',                # 'adam'|'adamw'|'sgd'|'rmsprop'|'adagrad' or subclass
-    optimizer_params={},             # dict; extra kwargs for optimizer (e.g. weight_decay)
-    scheduler=None,                  # 'cosine'|'cosine_warmup'|'step'|'plateau' or class
-    scheduler_params={},             # dict; extra kwargs for scheduler
-
-    # regularisation (MLP only):
-    dropout=0.0,                     # Dropout probability after each hidden layer
-    norm_layer=None,                 # None | 'layer' | 'batch'
-
-    # training diagnostics:
-    eval_train=False,                # Per-epoch train MI tracking: False|True|float|int
-
-    # permutation test (any mode):
-    permutation_test=False,
-    n_permutations=1,
-
-    # **analysis_kwargs also accepted:
-    # n_workers=1, n_splits=5, split_method='random', equalize_n=False, pairs=None
+    # runtime:
+    n_workers=1,                     # parallel workers
+    seed=None,                       # int; use with n_workers=1 for full reproducibility
+    device=None,                     # 'cpu'|'cuda'|'mps'|None (auto)
+    verbose=False, show_progress=True,
+    permutation_test=False, n_permutations=1,
 )
 ```
+
+### Config objects
+
+**`Processing`** — raw-data processors (omit for pre-processed input):
+`x`, `x_params`, `y`, `y_params`, `x_time`, `y_time`.
+Example: `Processing(x='continuous', x_params={'window_size': 0.05})`.
+
+**`Model`** — architecture:
+`embedding_model` (`'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'`),
+`embedding_dim`, `hidden_dim`, `n_layers`, `critic_type` (`'separable'|'concat'|'hybrid'`),
+`kernel_size`, `bidirectional`, `nhead`, `dropout`, `norm_layer` (`'layer'|'batch'`),
+`use_spectral_norm`, `shared_encoder`, `custom_critic`, `custom_embedding_cls`,
+`use_variational`, `beta`, `use_decoder`, `decoder_weight`, `pytorch_predefined`, `pretrained`.
+
+**`Training`** — optimization loop:
+`n_epochs`, `learning_rate`, `batch_size`, `patience`,
+`optimizer` (`'adam'|'adamw'|'sgd'|'rmsprop'|'adagrad'` or a subclass), `optimizer_params`,
+`scheduler` (`'cosine'|'cosine_warmup'|'step'|'plateau'` or a class), `scheduler_params`,
+`gradient_clip_val`, `use_amp`, `eval_train`, `peak_fraction`, `max_eval_samples`,
+`train_subset_size`, `save_best_model_path`,
+`augmentation_params` (+ `augmentation_params_x`/`_y`), `dataset_device` (`'cpu'|'auto'`).
+
+**`Split`** — train/test splitting:
+`mode` (`'blocked'|'random'`), `train_fraction`, `n_test_blocks`, `gap_fraction`,
+`train_indices`, `test_indices`.
+
+**`Estimator`** — MI estimator: `name` (`'infonce'|'smile'`), `params` (e.g. `{'clip': 5.0}`).
+`estimator='smile'` is shorthand for `Estimator(name='smile')`.
+
+**`Output`** — result formatting: `units` (`'bits'|'nats'`), `spectral_mode`,
+`return_embeddings`, `x_name`, `y_name`, `channel_names_x`, `channel_names_y`.
+
+### Mode-specific configs
+
+- **`Rigorous`** — `gamma_range`, `delta_threshold`, `min_gamma_points`, `confidence_level`.
+- **`Precision`** — `tau_grid` (required), `corrupt_target` (`'x'|'y'|'both'`), `corruption_method` (`'rounding'|'noise'`), `n_noise_samples`, `threshold_ratio`.
+- **`Lag`** — `lag_range` (required), `equalize_n`.
+- **`Transfer`** — `history_window` (required), `prediction_horizon`, `bidirectional`; set `rigorous=True` for bias-corrected TE.
+- **`Dimensionality`** — `split_method`, `n_splits`, `channel_indices_x`, `sigma_add`.
+- **`Conditional`** — `z_data` (required), `z_processor_type`, `z_processor_params`; set `rigorous=True` for bias-corrected CMI.
 
 ### Minimal Examples by Mode
 
 ```python
+from neural_mi import Lag, Transfer, Conditional, Dimensionality
+
 # estimate
 result = nmi.run(x, y, mode='estimate')
 
@@ -343,13 +294,13 @@ result = nmi.run(x, y, mode='sweep',
 result = nmi.run(x, y, mode='rigorous')
 
 # lag
-result = nmi.run(x, y, mode='lag', lag_range=range(-20, 21))
+result = nmi.run(x, y, mode='lag', lag=Lag(lag_range=range(-20, 21)))
 
 # conditional
-result = nmi.run(x, y, mode='conditional', z_data=z)
+result = nmi.run(x, y, mode='conditional', conditional=Conditional(z_data=z))
 
-# transfer entropy (x → y)
-result = nmi.run(x, y, mode='transfer', history_window=10)
+# transfer entropy (x -> y)
+result = nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=10))
 
 # pairwise (all channel pairs in x)
 result = nmi.run(x, mode='pairwise')
@@ -358,7 +309,7 @@ result = nmi.run(x, mode='pairwise')
 result = nmi.run(x, y, mode='pairwise')
 
 # dimensionality
-result = nmi.run(x, mode='dimensionality', analysis_kwargs={'n_splits': 10})
+result = nmi.run(x, mode='dimensionality', dimensionality=Dimensionality(n_splits=10))
 ```
 
 ---
@@ -378,7 +329,7 @@ result = nmi.run(x, mode='dimensionality', analysis_kwargs={'n_splits': 10})
 
 ```python
 result = nmi.run(x, y, mode='estimate',
-                 base_params={'n_epochs': 100, 'batch_size': 256},
+                 training=Training(n_epochs=100, batch_size=256),
                  estimator='smile',
                  n_workers=4)          # Runs 4 independent fits, returns mean
 print(result.mi_estimate)             # e.g. 1.34 bits
@@ -410,7 +361,7 @@ df = result.dataframe
 best = df.loc[df['mi_mean'].idxmax()]
 ```
 
-**Note on `sweep_grid`:** Keys must match parameter names from `base_params` schema (see §8). Processor parameters like `window_size` can also be swept.
+**Note on `sweep_grid`:** Keys must be `Model` / `Training` field names (see §8). Processor parameters like `window_size` can also be swept.
 
 ---
 
@@ -485,22 +436,21 @@ When the true MI exceeds the InfoNCE ceiling (`log(eval_size)`, where `eval_size
 ```python
 # Intrinsic: MI between two random halves of x channels, 10 splits
 result = nmi.run(x, mode='dimensionality',
-                 base_params={'n_epochs': 100},
-                 n_splits=10, split_method='random',
+                 training=Training(n_epochs=100),
+                 dimensionality=Dimensionality(n_splits=10, split_method='random'),
                  n_workers=4)
 result.plot()
 
 # Intrinsic: user-specified channel assignment (e.g. two electrode shanks)
 result = nmi.run(x, mode='dimensionality',
-                 base_params={'n_epochs': 100},
-                 n_splits=5,
-                 split_method='index',
-                 channel_indices_x=[0, 1, 2, 8, 9, 10])
+                 training=Training(n_epochs=100),
+                 dimensionality=Dimensionality(n_splits=5, split_method='index',
+                                               channel_indices_x=[0, 1, 2, 8, 9, 10]))
 
 # Interaction: MI between x and y, 5 independent fits for mean/std
 result = nmi.run(x, y, mode='dimensionality',
-                 base_params={'n_epochs': 100},
-                 n_splits=5,
+                 training=Training(n_epochs=100),
+                 dimensionality=Dimensionality(n_splits=5),
                  n_workers=4)
 print(result.dataframe[['mi_mean', 'mi_std', 'pr_eig_mean', 'pr_singular_mean']])
 
@@ -534,8 +484,7 @@ result.animate(output_path='training.gif', fps=10)
 
 ```python
 result = nmi.run(x, y, mode='rigorous',
-                 gamma_range=range(1, 15),
-                 confidence_level=0.95,
+                 rigorous=Rigorous(gamma_range=range(1, 15), confidence_level=0.95),
                  n_workers=4)
 print(f"MI = {result.mi_estimate:.3f} ± {result.details['mi_error']:.3f} bits")
 result.plot()   # MI vs gamma with fit line and extrapolation point
@@ -563,8 +512,8 @@ result.plot()   # MI vs gamma with fit line and extrapolation point
 
 ```python
 result = nmi.run(x, y, mode='lag',
-                 lag_range=range(-30, 31),    # ±30 sample lags
-                 base_params={'n_epochs': 50},
+                 lag=Lag(lag_range=range(-30, 31)),    # ±30 sample lags
+                 training=Training(n_epochs=50),
                  n_workers=8)
 result.plot()   # MI vs lag; peak indicates best offset
 peak_lag = result.dataframe.loc[result.dataframe['train_mi'].idxmax(), 'lag']
@@ -600,16 +549,16 @@ peak_lag = result.dataframe.loc[result.dataframe['train_mi'].idxmax(), 'lag']
 ```python
 # Single threshold (default)
 result = nmi.run(spike_x, y, mode='precision',
-                 processor_type_x='spike',
-                 processor_params_x={'window_size': 0.05, 'n_seconds': 100.0},
-                 tau_grid=[0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05],
-                 threshold_ratio=0.9)
+                 processing=Processing(x='spike',
+                                       x_params={'window_size': 0.05, 'n_seconds': 100.0}),
+                 precision=Precision(tau_grid=[0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05],
+                                     threshold_ratio=0.9))
 print(f"Precision timescale: {result.details['precision_tau']*1000:.1f} ms")
 
 # Multiple thresholds simultaneously
 result = nmi.run(spike_x, y, mode='precision',
-                 tau_grid=[0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05],
-                 threshold_ratio=[0.9, 0.75, 0.5])
+                 precision=Precision(tau_grid=[0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05],
+                                     threshold_ratio=[0.9, 0.75, 0.5]))
 for ratio, v in result.details['precision_thresholds'].items():
     print(f"  {ratio*100:.0f}% threshold: tau* = {v['precision_tau']*1000:.1f} ms")
 result.plot()
@@ -641,8 +590,8 @@ Both terms are estimated independently with their own model fits.
 
 ```python
 result = nmi.run(x, y, mode='conditional',
-                 z_data=z,
-                 base_params={'n_epochs': 100},
+                 conditional=Conditional(z_data=z),
+                 training=Training(n_epochs=100),
                  n_workers=4)
 print(f"I(X;Y|Z) = {result.mi_estimate:.3f} bits")
 print(f"I(XZ;Y) = {result.details['mi_xz_y']:.3f}, I(Z;Y) = {result.details['mi_z_y']:.3f}")
@@ -664,7 +613,7 @@ where `x_past`, `y_past` are the `history_window` most recent samples and `y_fut
 
 **Key parameters:**
 - `prediction_horizon=1` — samples ahead to predict
-- `bidirectional_te=False` — if `True`, also compute TE(Y→X) and return a directionality index. When `False`, a warning is logged recommending bidirectional evaluation to detect spurious causal claims.
+- `Transfer(bidirectional=...)` — default `False`; if `True`, also compute TE(Y→X) and return a directionality index. When `False`, a warning is logged recommending bidirectional evaluation to detect spurious causal claims.
 
 **Returns:** `Results` with:
 - `result.mi_estimate` — float: TE(X→Y) in `output_units`
@@ -677,7 +626,7 @@ where `x_past`, `y_past` are the `history_window` most recent samples and `y_fut
   - `n_samples` — number of valid sliding windows created
   - `bidirectional` — bool
 
-  If `bidirectional_te=True`, additionally:
+  With `Transfer(bidirectional=True)`, additionally:
   - `te_yx` — TE(Y→X) point estimate
   - `i_yxpast_xfuture` — I(y_past, x_past ; x_future), the joint term for TE(Y→X)
   - `i_xpast_xfuture` — I(x_past ; x_future), the marginal term for TE(Y→X)
@@ -687,16 +636,14 @@ where `x_past`, `y_past` are the `history_window` most recent samples and `y_fut
 ```python
 # Unidirectional (default) — logs a warning to consider bidirectional
 result = nmi.run(x, y, mode='transfer',
-                 history_window=20,
-                 prediction_horizon=1,
-                 base_params={'n_epochs': 100},
+                 transfer=Transfer(history_window=20, prediction_horizon=1),
+                 training=Training(n_epochs=100),
                  n_workers=4)
 print(f"TE(X→Y) = {result.mi_estimate:.3f} bits")
 
 # Bidirectional — recommended for causal inference
 result = nmi.run(x, y, mode='transfer',
-                 history_window=20,
-                 bidirectional_te=True,
+                 transfer=Transfer(history_window=20, bidirectional=True),
                  n_workers=4)
 print(f"TE(X→Y) = {result.details['te_xy']:.3f} bits")
 print(f"TE(Y→X) = {result.details['te_yx']:.3f} bits")
@@ -726,13 +673,13 @@ print(f"Directionality index = {result.details['directionality_index']:.3f}")
 ```python
 # Self-pairwise: MI between all neuron pairs
 result = nmi.run(x, mode='pairwise',
-                 base_params={'n_epochs': 50},
+                 training=Training(n_epochs=50),
                  n_workers=8)
 mi_matrix = result.details['mi_matrix']   # shape (n_channels, n_channels)
 
 # Cross-pairwise: all (spike neuron) × (LFP channel) pairs
 result = nmi.run(spike_x, lfp_y, mode='pairwise',
-                 processor_type_x='spike', processor_type_y='continuous',
+                 processing=Processing(x='spike', y='continuous'),
                  n_workers=8)
 df = result.dataframe    # ch_x, ch_y, mi_mean, mi_std
 ```
@@ -829,13 +776,13 @@ objects must share the same `mode`.
 
 ```python
 # Compare two training runs
-r1 = nmi.run(x, y, mode='estimate', base_params={...})
-r2 = nmi.run(x, y, mode='estimate', base_params={..., 'learning_rate': 5e-4})
+r1 = nmi.run(x, y, mode='estimate', training=Training(...))
+r2 = nmi.run(x, y, mode='estimate', training=Training(..., learning_rate=5e-4))
 Results.compare([r1, r2], labels=['LR=1e-4', 'LR=5e-4'])
 
 # Compare two lag sweeps
-r1 = nmi.run(x, y1, mode='lag', lag_range=range(-20, 21))
-r2 = nmi.run(x, y2, mode='lag', lag_range=range(-20, 21))
+r1 = nmi.run(x, y1, mode='lag', lag=Lag(lag_range=range(-20, 21)))
+r2 = nmi.run(x, y2, mode='lag', lag=Lag(lag_range=range(-20, 21)))
 
 Results.compare([r1, r2], labels=['Condition A', 'Condition B'])
 ```
@@ -868,7 +815,7 @@ Visualises the WLS extrapolation used in rigorous mode.  `show=False` suppresses
 
 Cross-correlation vs lag between two signals.  `ax=None` creates a new figure;
 `show=False` suppresses `plt.show()`; `xlim=(left, right)` clips the x-axis
-(previously hard-coded at `(-100, 100)`, now the full lag range by default).
+(defaults to the full lag range).
 
 ```python
 ax = nmi.visualize.plot_cross_correlation(x, y, true_lag=5, show=False, xlim=(-30, 30))
@@ -901,7 +848,7 @@ The reducer is fitted once on all frames concatenated, giving consistent coordin
 across the animation.  `result.animate(**kwargs)` is a thin wrapper around this function.
 
 ```python
-result = nmi.run(x, mode='dimensionality', base_params={'n_epochs': 50})
+result = nmi.run(x, mode='dimensionality', training=Training(n_epochs=50))
 
 # Basic GIF
 result.animate(output_path='training.gif', fps=8)
@@ -922,9 +869,12 @@ HTML(anim.to_jshtml())
 
 ---
 
-## 8. Base Parameters Reference
+## 8. Config Fields Reference
 
-Pass any of these in the `base_params` dict:
+The fields below are available on the config objects. Pass each via its matching
+config — `Model(...)` for architecture, `Training(...)` for the optimization loop,
+`Split(...)` for splitting, `Estimator(...)` / `Output(...)` for the estimator and
+output. (A plain `dict` with the same keys is accepted anywhere a config is.)
 
 ### Training
 | Parameter | Type | Default | Notes |
@@ -1023,7 +973,7 @@ When `use_decoder=True`, `result.details['decoder_recon_loss']` contains the wei
 ### Online Data Augmentations
 
 Augmentations are applied **per-batch during training only** — never at eval time.
-Three `base_params` keys control augmentation:
+Three `Training` fields control augmentation:
 
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
@@ -1062,17 +1012,17 @@ Application order is always: **spatial → non-spatial → custom**.
 
 **Example — shared Gaussian noise:**
 ```python
-base_params = {
-    'augmentation_params': {'gaussian_noise': {'std': 0.05}},
-}
+training = Training(
+    augmentation_params={'gaussian_noise': {'std': 0.05}},
+)
 ```
 
 **Example — different augmentations per variable:**
 ```python
-base_params = {
-    'augmentation_params_x': {'gaussian_noise': {'std': 0.1}},
-    'augmentation_params_y': {},  # no augmentation for Y
-}
+training = Training(
+    augmentation_params_x={'gaussian_noise': {'std': 0.1}},
+    augmentation_params_y={},  # no augmentation for Y
+)
 ```
 
 ### Variational Training
@@ -1212,12 +1162,11 @@ class MyEmbedding(nn.Module):
     def forward(self, x):   # x: (batch, channels, window)
         return self.net(x)  # → (batch, embedding_dim)
 
-result = nmi.run(x, y, custom_embedding_cls=MyEmbedding,
-                 base_params={'embedding_dim': 64})
+result = nmi.run(x, y, model=Model(custom_embedding_cls=MyEmbedding, embedding_dim=64))
 
 # Or pass a fully-built critic:
 critic = SeparableCritic(...)
-result = nmi.run(x, y, custom_critic=critic)
+result = nmi.run(x, y, model=Model(custom_critic=critic))
 ```
 
 ---
@@ -1308,7 +1257,7 @@ Modes:
   lag          → result.dataframe [lag, train_mi]
   precision    → result.mi_estimate (baseline MI); result.details['precision_tau'], ['precision_thresholds']
   conditional  → result.mi_estimate  (I(X;Y|Z)); z_time= for temporal Z
-  transfer     → result.mi_estimate  (TE(X→Y)); bidirectional_te=True adds te_yx, directionality_index
+  transfer     → result.mi_estimate  (TE(X→Y)); Transfer(bidirectional=True) adds te_yx, directionality_index
   pairwise     → result.dataframe [ch_x, ch_y, mi_mean, mi_std]
 
 Estimators: 'infonce' (default, has ceiling), 'smile' (no ceiling)
@@ -1321,7 +1270,7 @@ Processors:  'continuous' | 'spike' | 'categorical' | None (pre-processed)
   max_spikes_per_window= and n_seconds= wired for 'spike'
   4-D tensors (N,C,H,W) pass through unchanged; use with embedding_model='cnn2d'
 
-Augmentations (training-only, via base_params):
+Augmentations (training-only, via the Training config):
   augmentation_params={'gaussian_noise': {'std': 0.05}}  # shared X and Y
   augmentation_params_x={...}   augmentation_params_y={}   # per-variable
   Spatial (4-D only): random_flip_h, random_flip_v, random_rotation_90, random_crop,
@@ -1336,15 +1285,15 @@ Results methods:  .plot()  .summary()  .save()  .to_json()  Results.load(path)  
 
 ## Enhanced Rigorous Mode Diagnostics
 
-### New `base_params` keys (rigorous mode)
+### Rigorous config fields
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `residual_threshold` | float | 2.5 | Flag `fit_quality_warning=True` if any externally studentized residual exceeds this value. |
-| `r2_threshold` | float | 0.90 | Retained for backward compatibility. R² is computed and reported in `result.details['r_squared']` but no longer affects `fit_quality_warning` or `is_reliable` (see note below). |
+| `r2_threshold` | float | 0.90 | R² is computed and reported in `result.details['r_squared']` but does not affect `fit_quality_warning` or `is_reliable` (see note below). |
 | `leverage_threshold` | float | 0.20 | Flag `leverage_warning=True` if LOO intercept shift `δ = |I_full − I_loo|/(|I_full|+ε)` exceeds this value. |
 
-### New keys in `result.details` (rigorous mode)
+### `result.details` keys (rigorous mode)
 
 | Key | Type | Description |
 |-----|------|-------------|
@@ -1374,14 +1323,14 @@ scale-invariant question that answers whether the γ=1 → γ=0 extrapolation is
 
 ## Optional Decoder (Deep Symmetric IB)
 
-When `use_decoder=True` is set in `base_params`, the Trainer attaches a decoder
+When `Model(use_decoder=True)` is set, the Trainer attaches a decoder
 to each encoder and adds a weighted MSE reconstruction loss to the training
 objective:
 
 - **Deterministic:** `L = −MI(Z_X; Z_Y) + w_x·MSE(X, X̂) + w_y·MSE(Y, Ŷ)`
 - **Variational:** `L = KL_X + KL_Y − β·MI + w_x·MSE(X, X̂) + w_y·MSE(Y, Ŷ)`
 
-### New `base_params` keys (all modes)
+### Decoder config fields (`Model`)
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -1413,19 +1362,17 @@ objective:
 
 ## Rigorous Bias Correction for Conditional and Transfer Modes
 
-Both `mode='conditional'` and `mode='transfer'` now support `rigorous=True` in
-`analysis_kwargs` (or as a direct keyword to `nmi.run()`):
+Both `mode='conditional'` and `mode='transfer'` support bias-corrected estimation
+by setting `rigorous=True` on their `Conditional` / `Transfer` config:
 
 ```python
 result = nmi.run(
     x, y,
     mode='conditional',
-    z_data=z,
-    base_params=params,
-    rigorous=True,
-    gamma_range=range(1, 11),   # default
-    min_gamma_points=5,          # default
-    confidence_level=0.68,       # default
+    conditional=Conditional(z_data=z, rigorous=True,
+                            gamma_range=range(1, 11),   # default
+                            min_gamma_points=5,          # default
+                            confidence_level=0.68),      # default
 )
 ```
 
@@ -1433,7 +1380,7 @@ The estimator uses a **master permutation** to subsample data consistently at
 each γ, so both component estimates (e.g. I(XZ;Y) and I(Z;Y) for CMI) see
 the same samples and their noise partially cancels in the difference.
 
-### New `analysis_kwargs` for conditional/transfer rigorous mode
+### Config fields for rigorous conditional/transfer
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

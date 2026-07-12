@@ -34,7 +34,7 @@ Here's how to perform a rigorous, bias-corrected MI estimation between two indep
 
 ```python
 import neural_mi as nmi
-import numpy as np
+from neural_mi import Processing, Split
 
 # 1. Generate raw data (e.g., 100 channels with 10 latent dims over 2500 timepoints)
 x_raw, y_raw = nmi.generators.generate_nonlinear_from_latent(
@@ -44,13 +44,12 @@ x_raw, y_raw = nmi.generators.generate_nonlinear_from_latent(
 # 2. Run the rigorous, bias-corrected estimation
 # This performs multiple runs on data subsets and extrapolates to an infinite-data estimate.
 results = nmi.run(
-    x_data=x_raw, y_data=y_raw,
+    x_raw, y_raw,
     mode='rigorous',
-    processor_type_x='continuous',
-    processor_params_x={'window_size': 1},
-    split_mode='random',  # Use random splitting for IID data
-    n_workers=4, # Use multiple cores for speed
-    random_seed=42
+    processing=Processing(x='continuous', x_params={'window_size': 1}),
+    split=Split(mode='random'),  # random splitting for IID data
+    n_workers=4,                 # use multiple cores for speed
+    seed=42,
 )
 
 # 3. Access and print the final, scientifically robust result

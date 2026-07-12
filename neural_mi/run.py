@@ -180,12 +180,12 @@ def run(
     """
     if _removed:
         raise TypeError(
-            f"run() received unexpected keyword argument(s) {sorted(_removed)}. "
-            f"As of v1.0 the flat keyword API was replaced by typed config objects: "
-            f"model=Model(...), training=Training(...), split=Split(...), "
-            f"processing=Processing(...), estimator=..., output=Output(...), and one "
-            f"per-mode config (rigorous=/precision=/lag=/transfer=/dimensionality=/"
-            f"conditional=). See help(neural_mi.run) or the migration guide."
+            f"run() got unexpected keyword argument(s) {sorted(_removed)}. "
+            f"Parameters are grouped into config objects: model=Model(...), "
+            f"training=Training(...), split=Split(...), processing=Processing(...), "
+            f"estimator=..., output=Output(...), and one per-mode config "
+            f"(rigorous=/precision=/lag=/transfer=/dimensionality=/conditional=). "
+            f"See help(neural_mi.run)."
         )
 
     # Coerce dict/str inputs to config instances.
