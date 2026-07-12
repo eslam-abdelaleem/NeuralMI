@@ -298,6 +298,7 @@ class TestDecoderInTraining:
     def test_run_estimate_with_decoder(self):
         """End-to-end test: run in estimate mode with use_decoder=True."""
         import neural_mi as nmi
+        from neural_mi import Model, Training
         N = 300
         C = 2
         W = 10
@@ -307,18 +308,9 @@ class TestDecoderInTraining:
         result = nmi.run(
             x, y,
             mode='estimate',
-            base_params={
-                'n_epochs': 3,
-                'batch_size': 64,
-                'patience': 100,
-                'embedding_model': 'mlp',
-                'hidden_dim': 16,
-                'embedding_dim': 8,
-                'n_layers': 1,
-                'use_decoder': True,
-                'decoder_weight': 0.5,
-                'learning_rate': 1e-3,
-            },
+            model=Model(embedding_model='mlp', hidden_dim=16, embedding_dim=8,
+                        n_layers=1, use_decoder=True, decoder_weight=0.5),
+            training=Training(n_epochs=3, batch_size=64, patience=100, learning_rate=1e-3),
             verbose=False,
             show_progress=False,
         )

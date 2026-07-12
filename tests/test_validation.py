@@ -2,6 +2,7 @@
 import pytest
 import numpy as np
 import neural_mi as nmi
+from neural_mi import Training, Estimator, Processing
 from neural_mi.validation import ParameterValidator, DataValidator
 from neural_mi.defaults import BASE_PARAMS_SCHEMA
 from neural_mi.exceptions import DataShapeError
@@ -74,36 +75,37 @@ def small_data():
     return x, y
 
 
-def test_run_detects_invalid_base_params(small_data):
+def test_run_rejects_unknown_config_field(small_data):
     x, y = small_data
-    with pytest.raises(ValueError, match="Unknown parameters in 'base_params'"):
-        nmi.run(x, y, base_params={'n_epochs': 1, 'typo_param': 10}, n_workers=1)
+    with pytest.raises(TypeError, match="Unknown key"):
+        nmi.run(x, y, model={'typo_param': 10}, n_workers=1)
 
 
 def test_run_validates_types(small_data):
     x, y = small_data
     with pytest.raises(TypeError, match="Parameter 'n_epochs' must be of type"):
-        nmi.run(x, y, base_params={'n_epochs': '50'}, n_workers=1)
+        nmi.run(x, y, training={'n_epochs': '50'}, n_workers=1)
 
 
 def test_run_validates_min_values(small_data):
     x, y = small_data
     with pytest.raises(ValueError, match="Parameter 'batch_size' must be >= 1"):
-        nmi.run(x, y, base_params={'n_epochs': 1, 'batch_size': 0}, n_workers=1)
+        nmi.run(x, y, training={'n_epochs': 1, 'batch_size': 0}, n_workers=1)
 
 
 def test_run_detects_invalid_choice_values(small_data):
     x, y = small_data
     with pytest.raises(ValueError, match="Parameter 'critic_type' has invalid value 'bla'"):
-        nmi.run(x, y, base_params={'critic_type': 'bla'}, n_workers=1)
+        nmi.run(x, y, model={'critic_type': 'bla'}, n_workers=1)
 
 
 def test_run_detects_invalid_processor_params(small_data):
     x, y = small_data
     with pytest.raises(ValueError, match="Unknown parameters for continuous processor"):
-        nmi.run(x, y, processor_type_x='continuous',
-                processor_params_x={'window_size': 1, 'invalid_param': 5},
-                base_params={'n_epochs': 1}, n_workers=1)
+        nmi.run(x, y,
+                processing=Processing(x='continuous',
+                                      x_params={'window_size': 1, 'invalid_param': 5}),
+                training={'n_epochs': 1}, n_workers=1)
 
 
 def test_validator_apply_defaults_logic():
@@ -120,7 +122,7 @@ def test_validator_apply_defaults_logic():
 def test_run_applies_defaults(small_data, caplog):
     x, y = small_data
     with caplog.at_level('INFO', logger='neural_mi'):
-        result = nmi.run(x, y, base_params={'n_epochs': 2, 'batch_size': 16}, verbose=True, n_workers=1)
+        result = nmi.run(x, y, training={'n_epochs': 2, 'batch_size': 16}, verbose=True, n_workers=1)
     assert "Parameter 'n_layers' not specified. Defaulting to 2" in caplog.text
     assert "Parameter 'embedding_dim' not specified. Defaulting to 64" in caplog.text
     assert result.mi_estimate is not None
@@ -130,24 +132,35 @@ def test_run_defaults_logging_suppressed_if_not_verbose(small_data, caplog):
     x, y = small_data
     caplog.clear()
     with caplog.at_level('INFO'):
-        nmi.run(x, y, base_params={'n_epochs': 1, 'batch_size': 16}, verbose=False, n_workers=1)
+        nmi.run(x, y, training={'n_epochs': 1, 'batch_size': 16}, verbose=False, n_workers=1)
     assert "Parameter 'n_layers' not specified" not in caplog.text
 
 
-@pytest.mark.parametrize('key,value,extra', [
-    ('optimizer_params', {'weight_decay': 1e-2}, {}),
-    ('estimator_params', {'clip': 5.0}, {'estimator': 'smile'}),
-    ('scheduler_params', {'gamma': 0.5}, {'scheduler': 'step'}),
-])
-def test_run_preserves_dict_kwargs_set_only_in_base_params(small_data, key, value, extra):
-    """Regression test: `_inject` used to be called as `_inject(base_params, key,
-    top_level_kwarg or {})` for these three params, which converts an un-passed
-    (None) top-level kwarg into `{}` and silently overwrites a caller-supplied
-    base_params[key] -- since apply_defaults() only fills in *missing* keys,
-    the top-level kwarg must stay a raw None passthrough so base_params[key]
-    survives when the caller never touches the top-level kwarg."""
+def test_run_preserves_optimizer_params(small_data):
+    """Dict params carried on a config survive into the resolved base_params."""
     x, y = small_data
     result = nmi.run(
-        x, y, base_params={'n_epochs': 1, 'batch_size': 16, key: value}, n_workers=1, **extra,
+        x, y, training=Training(n_epochs=1, batch_size=16,
+                                optimizer_params={'weight_decay': 1e-2}),
+        n_workers=1,
     )
-    assert result.params['base_params'][key] == value
+    assert result.params['base_params']['optimizer_params'] == {'weight_decay': 1e-2}
+
+
+def test_run_preserves_estimator_params(small_data):
+    x, y = small_data
+    result = nmi.run(
+        x, y, estimator=Estimator(name='smile', params={'clip': 5.0}),
+        training=Training(n_epochs=1, batch_size=16), n_workers=1,
+    )
+    assert result.params['base_params']['estimator_params'] == {'clip': 5.0}
+
+
+def test_run_preserves_scheduler_params(small_data):
+    x, y = small_data
+    result = nmi.run(
+        x, y, training=Training(n_epochs=1, batch_size=16,
+                                scheduler='step', scheduler_params={'gamma': 0.5}),
+        n_workers=1,
+    )
+    assert result.params['base_params']['scheduler_params'] == {'gamma': 0.5}
