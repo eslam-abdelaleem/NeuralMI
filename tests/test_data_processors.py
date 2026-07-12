@@ -563,11 +563,10 @@ def test_precision_spike(spike_data):
 # --- Data Splitting Tests ---
 
 import neural_mi as nmi
+from neural_mi import Model, Training, Split
 
-_BASE_PARAMS_SPLIT = {
-    'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
-    'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 2, 'patience': 1,
-}
+_MODEL_SPLIT = Model(embedding_dim=4, hidden_dim=16, n_layers=2)
+_TRAINING_SPLIT = Training(n_epochs=2, learning_rate=1e-4, batch_size=32, patience=1)
 
 
 @pytest.fixture
@@ -581,8 +580,9 @@ def test_random_split_mode(iid_3d_data):
     """Random split mode runs without error and returns a float MI estimate."""
     x, y = iid_3d_data
     results = nmi.run(
-        x_data=x, y_data=y, mode='estimate',
-        base_params=_BASE_PARAMS_SPLIT, split_mode='random', verbose=False
+        x, y, mode='estimate',
+        model=_MODEL_SPLIT, training=_TRAINING_SPLIT,
+        split=Split(mode='random'), verbose=False
     )
     assert results.mi_estimate is not None
     assert not np.isnan(results.mi_estimate)
@@ -594,9 +594,9 @@ def test_custom_indices_split(iid_3d_data):
     n = x.shape[0]
     idx = np.random.permutation(n)
     results = nmi.run(
-        x_data=x, y_data=y, mode='estimate',
-        base_params=_BASE_PARAMS_SPLIT,
-        train_indices=idx[:80], test_indices=idx[80:], verbose=False
+        x, y, mode='estimate',
+        model=_MODEL_SPLIT, training=_TRAINING_SPLIT,
+        split=Split(train_indices=idx[:80], test_indices=idx[80:]), verbose=False
     )
     assert results.mi_estimate is not None
     assert not np.isnan(results.mi_estimate)
@@ -606,8 +606,9 @@ def test_default_blocked_split(iid_3d_data):
     """Default blocked split mode runs correctly."""
     x, y = iid_3d_data
     results = nmi.run(
-        x_data=x, y_data=y, mode='estimate',
-        base_params=_BASE_PARAMS_SPLIT, split_mode='blocked', verbose=False
+        x, y, mode='estimate',
+        model=_MODEL_SPLIT, training=_TRAINING_SPLIT,
+        split=Split(mode='blocked'), verbose=False
     )
     assert results.mi_estimate is not None
     assert not np.isnan(results.mi_estimate)
@@ -736,27 +737,27 @@ class TestDatasetDevice:
         assert ds._noise_buffer.device == ds.data.device
 
     def test_dataset_device_propagates_through_run(self):
-        """run() with dataset_device='cpu' in base_params completes without error."""
+        """run() with Training(dataset_device='cpu') completes without error."""
         import neural_mi as nmi
         x = np.random.randn(80, 4, 1)
         y = np.random.randn(80, 4, 1)
-        result = nmi.run(x, y, base_params={
-            'n_epochs': 1, 'batch_size': 32, 'patience': 1,
-            'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
-            'dataset_device': 'cpu',
-        }, n_workers=1)
+        result = nmi.run(
+            x, y,
+            model=Model(embedding_dim=4, hidden_dim=16, n_layers=1),
+            training=Training(n_epochs=1, batch_size=32, patience=1, dataset_device='cpu'),
+            n_workers=1)
         assert hasattr(result, 'mi_estimate')
 
     def test_dataset_device_auto_in_run(self):
-        """run() with dataset_device='auto' in base_params completes without error."""
+        """run() with Training(dataset_device='auto') completes without error."""
         import neural_mi as nmi
         x = np.random.randn(80, 4, 1)
         y = np.random.randn(80, 4, 1)
-        result = nmi.run(x, y, base_params={
-            'n_epochs': 1, 'batch_size': 32, 'patience': 1,
-            'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
-            'dataset_device': 'auto',
-        }, n_workers=1)
+        result = nmi.run(
+            x, y,
+            model=Model(embedding_dim=4, hidden_dim=16, n_layers=1),
+            training=Training(n_epochs=1, batch_size=32, patience=1, dataset_device='auto'),
+            n_workers=1)
         assert hasattr(result, 'mi_estimate')
 
 
