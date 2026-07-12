@@ -8,6 +8,7 @@ import pytest
 import torch
 
 import neural_mi as nmi
+from neural_mi import Model, Training, Split
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -21,19 +22,12 @@ def test_non_biased_model_no_physics_params():
     Y = 0.5 * X + 0.5 * np.random.randn(80, 2, 32).astype(np.float32)
 
     result = nmi.run(
-        x_data=X, y_data=Y,
+        X, Y,
         mode='estimate',
-        split_mode='random',
-        base_params={
-            'n_epochs': 5,
-            'patience': 5,
-            'batch_size': 32,
-            'hidden_dim': 16,
-            'embedding_dim': 8,
-            'n_layers': 1,
-            'embedding_model': 'cnn',
-        },
-        random_seed=3,
+        split=Split(mode='random'),
+        model=Model(embedding_dim=8, hidden_dim=16, n_layers=1, embedding_model='cnn'),
+        training=Training(n_epochs=5, patience=5, batch_size=32),
+        seed=3,
         show_progress=False,
     )
 
@@ -69,21 +63,14 @@ class TestPretrainedBackboneSpatialMismatch:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             result = nmi.run(
-                x_data=X, y_data=Y,
+                X, Y,
                 mode='estimate',
-                split_mode='random',
-                base_params={
-                    'n_epochs': 3,
-                    'patience': 3,
-                    'batch_size': 16,
-                    'hidden_dim': 16,
-                    'embedding_dim': 8,
-                    'n_layers': 1,
-                    'embedding_model': 'pretrained_backbone',
-                    'pytorch_predefined': 'resnet18',
-                    'pretrained': False,  # avoid downloading weights
-                },
-                random_seed=0,
+                split=Split(mode='random'),
+                model=Model(embedding_dim=8, hidden_dim=16, n_layers=1,
+                            embedding_model='pretrained_backbone',
+                            pytorch_predefined='resnet18', pretrained=False),  # avoid downloading weights
+                training=Training(n_epochs=3, patience=3, batch_size=16),
+                seed=0,
                 show_progress=False,
             )
 
@@ -106,21 +93,14 @@ class TestPretrainedBackboneSpatialMismatch:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             nmi.run(
-                x_data=X, y_data=Y,
+                X, Y,
                 mode='estimate',
-                split_mode='random',
-                base_params={
-                    'n_epochs': 2,
-                    'patience': 2,
-                    'batch_size': 8,
-                    'hidden_dim': 16,
-                    'embedding_dim': 8,
-                    'n_layers': 1,
-                    'embedding_model': 'pretrained_backbone',
-                    'pytorch_predefined': 'resnet18',
-                    'pretrained': False,
-                },
-                random_seed=0,
+                split=Split(mode='random'),
+                model=Model(embedding_dim=8, hidden_dim=16, n_layers=1,
+                            embedding_model='pretrained_backbone',
+                            pytorch_predefined='resnet18', pretrained=False),
+                training=Training(n_epochs=2, patience=2, batch_size=8),
+                seed=0,
                 show_progress=False,
             )
 
