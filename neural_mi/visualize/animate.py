@@ -105,7 +105,7 @@ def animate_training(
 
     Examples
     --------
-    >>> result = nmi.run(x, mode='dimensionality', base_params={...})
+    >>> result = nmi.run(x, mode='dimensionality', model=nmi.Model(...), training=nmi.Training(...))
     >>> anim = result.animate(output_path='training.gif', fps=8)
 
     >>> # With embedding labels
