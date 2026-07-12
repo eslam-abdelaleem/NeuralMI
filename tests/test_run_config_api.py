@@ -84,8 +84,8 @@ def test_conditional_z_split(capture_engine):
 
 
 def test_removed_flat_kwarg_raises(capture_engine):
-    with pytest.raises(TypeError, match="typed config objects"):
-        nmi.run([[1]], [[1]], mode='estimate', n_epochs=50)  # old flat API
+    with pytest.raises(TypeError, match="config objects"):
+        nmi.run([[1]], [[1]], mode='estimate', n_epochs=50)  # flat kwargs are not accepted
 
 
 def test_stray_mode_config_warns(capture_engine):
