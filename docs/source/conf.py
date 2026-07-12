@@ -21,6 +21,7 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx.ext.mathjax',
     'nbsphinx',
+    'nbsphinx_link',   # render notebooks from a single source via .nblink stubs
     'sphinx.ext.intersphinx',
     'sphinx_rtd_theme',
     'myst_parser',  

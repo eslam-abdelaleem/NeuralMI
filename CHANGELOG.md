@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### API redesign — flat keywords → typed config objects (`run()`)
+
+`nmi.run()` moved from a ~74-parameter flat signature to a small set of grouped,
+typed config objects (`neural_mi/config.py`). This is a **hard break**: the flat
+keywords are removed and now raise a `TypeError`. Every config field defaults to
+`None` (unset → dropped), so `BASE_PARAMS_SCHEMA` remains the single source of
+defaults and `run(x, y)` still behaves identically to before. Kept as a private
+`_run_flat` engine; the new `run()` lowers configs onto it.
+
+**Migration reference (old flat keyword → new location):**
+
+| Old (flat) | New |
+|---|---|
+| `base_params={'embedding_dim':.., 'hidden_dim':.., 'n_layers':.., 'critic_type':.., 'dropout':.., 'norm_layer':.., 'use_spectral_norm':.., 'shared_encoder':.., 'embedding_model':.., 'custom_critic':.., 'custom_embedding_cls':.., 'use_decoder':.., 'pytorch_predefined':.., ...}` | `model=Model(...)` |
+| `base_params={'n_epochs':.., 'learning_rate':.., 'batch_size':.., 'patience':.., 'optimizer':.., 'optimizer_params':.., 'scheduler':.., 'scheduler_params':.., 'gradient_clip_val':.., 'use_amp':.., 'eval_train':.., 'peak_fraction':.., 'max_eval_samples':.., 'train_subset_size':.., 'save_best_model_path':.., 'augmentation_params':.., 'dataset_device':.., ...}` | `training=Training(...)` |
+| `n_epochs=`, `batch_size=`, `shared_encoder=`, `dropout=`, `norm_layer=`, `optimizer=`, `optimizer_params=`, `scheduler=`, `scheduler_params=`, `use_amp=`, `use_spectral_norm=`, `gradient_clip_val=`, `eval_train=`, `peak_fraction=`, `max_eval_samples=`, `train_subset_size=`, `save_best_model_path=`, `custom_critic=`, `custom_embedding_cls=` (top-level shortcuts) | the matching field on `model=Model(...)` / `training=Training(...)` |
+| `processor_type_x=`, `processor_params_x=`, `processor_type_y=`, `processor_params_y=`, `x_time=`, `y_time=` | `processing=Processing(x=, x_params=, y=, y_params=, x_time=, y_time=)` |
+| `split_mode=`, `train_fraction=`, `n_test_blocks=`, `split_gap_fraction=`, `train_indices=`, `test_indices=` | `split=Split(mode=, train_fraction=, n_test_blocks=, gap_fraction=, train_indices=, test_indices=)` |
+| `estimator=`, `estimator_params=` | `estimator='name'` **or** `estimator=Estimator(name=, params=)` |
+| `output_units=`, `spectral_mode=`, `return_embeddings=`, `track_embeddings=`, `return_rotated_embeddings=`, `rotated_embeddings_whitening=`, `rotated_embeddings_per_epoch=`, `return_rotation_matrices=`, `max_index_reduction=`, `x_name=`, `y_name=`, `channel_names_x=`, `channel_names_y=` | `output=Output(units=, spectral_mode=, return_embeddings=, ..., x_name=, channel_names_x=)` |
+| `random_seed=` | `seed=` |
+| `delta_threshold=`, `min_gamma_points=`, `confidence_level=`, `gamma_range=`, `residual_threshold=`, `r2_threshold=`, `leverage_threshold=` (rigorous) | `rigorous=Rigorous(...)` |
+| `tau_grid=`, `corrupt_target=`, `corruption_method=`, `n_noise_samples=`, `threshold_ratio=` (precision) | `precision=Precision(...)` |
+| `lag_range=`, `equalize_n=` (lag) | `lag=Lag(...)` |
+| `history_window=`, `prediction_horizon=`, `bidirectional_te=` (→ `bidirectional`), `rigorous=`, `gamma_range=` (transfer) | `transfer=Transfer(...)` |
+| `split_method=`, `n_splits=`, `channel_indices_x=`, `sigma_add=`, `sigma_add_units=`, `stabilize_counts=` (dimensionality) | `dimensionality=Dimensionality(...)` |
+| `z_data=`, `z_time=`, `z_processor_type=`, `z_processor_params=`, `rigorous=`, `gamma_range=` (conditional) | `conditional=Conditional(...)` |
+| `mode=`, `sweep_grid=`, `n_workers=`, `device=`, `verbose=`, `show_progress=`, `permutation_test=`, `n_permutations=` | **unchanged** (still top-level) |
+
+Notes: mode-specific configs are named to match `mode` and only the matching one is
+used (a stray one warns). `bidirectional_te` was renamed to `Transfer(bidirectional=)`.
+Anywhere a config is accepted, a plain `dict` with the same field names also works
+(e.g. `training={'n_epochs': 50}`). The 12 config classes are exported from
+`neural_mi`. Full suite green (541 passed / 1 skipped) on the new API.
+
 ### Added
 
 - **Ceiling-escape noise injection for `dimensionality` mode (`sigma_add`)** (`neural_mi/analysis/dimensionality.py`, `neural_mi/training/trainer.py`, `neural_mi/visualize/plot.py`):
