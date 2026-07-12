@@ -47,8 +47,8 @@ non-parametric estimators such as $k$-nearest-neighbour methods
 [@kraskov2004estimating] scale poorly beyond a few dimensions and provide no
 mechanism for exploiting temporal structure. Neural network–based estimators
 [@oord2018representation; @song2020understanding] overcome the dimensionality
-barrier but introduce a new problem: with finite data they systematically
-overestimate the true MI, and this upward bias can be substantial for the sample
+barrier but introduce a new problem: with finite data they carry a systematic
+finite-sample bias — of order $O(1/N)$ — that can be substantial at the sample
 sizes available in typical neuroscience experiments. Existing implementations of
 these estimators — scattered across individual paper repositories — provide
 point estimates only, with no bias correction, no confidence intervals, no

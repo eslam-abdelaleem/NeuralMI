@@ -100,7 +100,7 @@ architecture variant for each.
 
 ## 4. The Problem of Finite-Sampling Bias
 
-Even with a perfect estimator, any analysis performed on a finite dataset of $N$ samples will be biased. The model will inevitably find spurious correlations in the random noise of the data, leading to a **systematic overestimation** of the true MI.
+Even with a perfect estimator, any analysis performed on a finite dataset of $N$ samples will be biased. Two effects compete: the classical limited-sampling bias, in which finite samples manufacture spurious dependence and *inflate* the estimate, and the opposing tendency of a variational *lower-bound* estimator (see §2.1) to *under*-shoot when its critic is trained on little data. Which one dominates is regime-dependent, but in either case the deviation is **systematic in the sample size** — and that is what makes it correctable.
 
 Theoretically, for a large number of samples $N$, this bias has a clear relationship with the sample size:
 
