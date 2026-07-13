@@ -216,11 +216,15 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         if model_type == 'pretrained_backbone':
             model_kwargs['pytorch_predefined'] = embedding_params.get('pytorch_predefined')
             model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
-    else:  # MLP (and custom cls with MLP-like signature)
+    else:  # MLP or a custom class — both take the fully-flattened input_dim
         input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
-        model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
-        model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-        model_kwargs['norm_layer'] = embedding_params.get('norm_layer', None)
+        if not custom_embedding_cls:
+            # These are specific to the built-in MLP. A custom class only receives
+            # the universal (hidden_dim, embed_dim, n_layers) contract, so it need
+            # not accept regularisation kwargs it may know nothing about.
+            model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
+            model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
+            model_kwargs['norm_layer'] = embedding_params.get('norm_layer', None)
 
     shared_encoder = embedding_params.get('shared_encoder', False)
     if shared_encoder and critic_type == 'concat':

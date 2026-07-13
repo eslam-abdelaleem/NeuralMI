@@ -5,12 +5,11 @@ import numpy as np
 import pandas as pd
 import torch
 import neural_mi as nmi
+from neural_mi import Model, Training
 
-# Minimal training params
-_PARAMS = {
-    'n_epochs': 3, 'learning_rate': 1e-3, 'batch_size': 64,
-    'patience': 2, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
-}
+# Minimal model/training configs
+_MODEL = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
+_TRAINING = Training(n_epochs=3, learning_rate=1e-3, batch_size=64, patience=2)
 
 N = 300   # samples
 N_CH = 4  # channels
@@ -25,7 +24,7 @@ class TestPairwiseMI:
         results = nmi.run(
             x_data=x,
             mode='pairwise',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         expected_pairs = N_CH * (N_CH - 1) // 2  # C(4, 2) = 6
@@ -39,7 +38,7 @@ class TestPairwiseMI:
         results = nmi.run(
             x_data=x,
             mode='pairwise',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         for col in ('ch_x', 'ch_y', 'mi_mean', 'mi_std'):
@@ -56,7 +55,7 @@ class TestPairwiseMI:
         results = nmi.run(
             x_data=x, y_data=y,
             mode='pairwise',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         assert len(results.dataframe) == N_CHX * N_CHY
@@ -67,7 +66,7 @@ class TestPairwiseMI:
         results = nmi.run(
             x_data=x,
             mode='pairwise',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         assert np.all(np.isfinite(results.dataframe['mi_mean'].values))
@@ -79,7 +78,7 @@ class TestPairwiseMI:
         results = nmi.run(
             x_data=x,
             mode='pairwise',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         assert results.mode == 'pairwise'

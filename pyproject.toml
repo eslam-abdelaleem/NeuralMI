@@ -41,6 +41,7 @@ dev = [
     "neural_mi[viz]",
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
+    "pytest-xdist>=3.0.0",
     "ipykernel>=6.0.0",
     "myst-parser>=0.18.0",
 ]

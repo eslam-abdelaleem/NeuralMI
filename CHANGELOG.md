@@ -33,8 +33,9 @@ entry point.
   limit via weighted least squares, with linearity and leverage diagnostics.
 - **MI estimators:** InfoNCE (low variance, `log N` ceiling) and SMILE
   (unbounded), selectable and configurable per run.
-- **Model architectures:** six embedding networks (MLP, CNN, GRU, LSTM, TCN,
-  Transformer) and three critic types (`separable`, `concat`, `hybrid`), plus
+- **Model architectures:** embedding networks for time series and images —
+  MLP, CNN, CNN2D, GRU, LSTM, TCN, Transformer, and a frozen pretrained image
+  backbone — and three critic types (`separable`, `concat`, `hybrid`), plus
   support for user-provided custom critics and embedding classes.
 - **Smart data splitting:** `blocked` splitting with a configurable gap for
   temporal data (prevents autocorrelation leakage) and `random` splitting for
@@ -44,5 +45,5 @@ entry point.
 - **Visualization:** dimensionality curves, bias-correction fits, pairwise
   heatmaps, noise-injection ladders, and embedding projections (PCA / t-SNE /
   UMAP via the optional `viz` extra).
-- **Documentation:** eight tutorial notebooks, a full API reference, theory and
+- **Documentation:** nine tutorial notebooks, a full API reference, theory and
   concepts guides, and a hosted documentation site.

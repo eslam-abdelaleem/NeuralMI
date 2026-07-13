@@ -12,12 +12,16 @@ import pytest
 import torch
 
 import neural_mi as nmi
+from neural_mi import Model, Training, Output
 from neural_mi.visualize import plot_embeddings
 
+# _BASE kept for assertions that reference embedding_dim etc.
 _BASE = {
     'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
     'patience': 1, 'embedding_dim': 8, 'hidden_dim': 16, 'n_layers': 1,
 }
+_MODEL = Model(embedding_dim=8, hidden_dim=16, n_layers=1)
+_TRAINING = Training(n_epochs=2, learning_rate=1e-4, batch_size=32, patience=1)
 
 
 @pytest.fixture(scope='module')
@@ -34,10 +38,9 @@ def test_g1_return_embeddings_keys_present(simple_data):
     """return_embeddings=True must add embeddings_x/y to results.details."""
     x, y = simple_data
     results = nmi.run(
-        x_data=x, y_data=y,
-        mode='estimate',
-        base_params=_BASE,
-        return_embeddings=True,
+        x, y, mode='estimate',
+        model=_MODEL, training=_TRAINING,
+        output=Output(return_embeddings=True),
         n_workers=1,
     )
     assert 'embeddings_x' in results.details, "embeddings_x missing from details."
@@ -48,10 +51,9 @@ def test_g1_return_embeddings_shapes(simple_data):
     """Extracted embeddings should be 2-D numpy arrays."""
     x, y = simple_data
     results = nmi.run(
-        x_data=x, y_data=y,
-        mode='estimate',
-        base_params=_BASE,
-        return_embeddings=True,
+        x, y, mode='estimate',
+        model=_MODEL, training=_TRAINING,
+        output=Output(return_embeddings=True),
         n_workers=1,
     )
     zx = results.details['embeddings_x']
@@ -66,11 +68,9 @@ def test_g1_return_embeddings_false_no_keys(simple_data):
     """return_embeddings=False (default) must NOT add embeddings to details."""
     x, y = simple_data
     results = nmi.run(
-        x_data=x, y_data=y,
-        mode='estimate',
-        base_params=_BASE,
-        return_embeddings=False,
-        n_workers=1,
+        x, y, mode='estimate',
+        model=_MODEL, training=_TRAINING,
+        n_workers=1,   # return_embeddings defaults to False
     )
     assert 'embeddings_x' not in results.details
     assert 'embeddings_y' not in results.details
@@ -85,10 +85,11 @@ def test_g1_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
     """
     x, y = simple_data  # 500 samples
     results = nmi.run(
-        x_data=x, y_data=y,
-        mode='estimate',
-        base_params={**_BASE, 'max_eval_samples': 10},
-        return_embeddings=True,
+        x, y, mode='estimate',
+        model=_MODEL,
+        training=Training(n_epochs=2, learning_rate=1e-4, batch_size=32,
+                          patience=1, max_eval_samples=10),
+        output=Output(return_embeddings=True),
         n_workers=1,
     )
     n_emb = results.details['embeddings_x'].shape[0]
@@ -109,10 +110,10 @@ def test_g2_model_saved_in_new_format(simple_data, tmp_path):
     x, y = simple_data
     model_path = str(tmp_path / 'model.pt')
     nmi.run(
-        x_data=x, y_data=y,
-        mode='estimate',
-        base_params=_BASE,
-        save_best_model_path=model_path,
+        x, y, mode='estimate',
+        model=_MODEL,
+        training=Training(n_epochs=2, learning_rate=1e-4, batch_size=32,
+                          patience=1, save_best_model_path=model_path),
         n_workers=1,
     )
     assert os.path.exists(model_path), "Model file was not created."
@@ -127,10 +128,10 @@ def test_g2_extract_embeddings_returns_arrays(simple_data, tmp_path):
     x, y = simple_data
     model_path = str(tmp_path / 'model.pt')
     nmi.run(
-        x_data=x, y_data=y,
-        mode='estimate',
-        base_params=_BASE,
-        save_best_model_path=model_path,
+        x, y, mode='estimate',
+        model=_MODEL,
+        training=Training(n_epochs=2, learning_rate=1e-4, batch_size=32,
+                          patience=1, save_best_model_path=model_path),
         n_workers=1,
     )
     zx, zy = nmi.extract_embeddings(model_path, x, y)
@@ -153,10 +154,10 @@ def test_g2_extract_embeddings_no_max_samples_param(simple_data, tmp_path):
     x, y = simple_data
     model_path = str(tmp_path / 'model_ms.pt')
     nmi.run(
-        x_data=x, y_data=y,
-        mode='estimate',
-        base_params=_BASE,
-        save_best_model_path=model_path,
+        x, y, mode='estimate',
+        model=_MODEL,
+        training=Training(n_epochs=2, learning_rate=1e-4, batch_size=32,
+                          patience=1, save_best_model_path=model_path),
         n_workers=1,
     )
     with pytest.raises(TypeError, match="max_samples"):

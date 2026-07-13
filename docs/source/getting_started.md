@@ -28,29 +28,26 @@ Scientists should not settle for a naive estimate. Go from raw data to a bias-co
 
 ```python
 import neural_mi as nmi
-import numpy as np
+from neural_mi import Model, Training, Processing
 
 # 1. Generate raw data (e.g., 100 channels with 10 latent dims over 2500 timepoints)
 x_raw, y_raw = nmi.generators.generate_nonlinear_from_latent(
     n_samples=2500, latent_dim=10, observed_dim=100, mi=3.0
 )
 
-# 2. Define model and training parameters
-base_params = {
-    'n_epochs': 50, 'learning_rate': 1e-3, 'batch_size': 128,
-    'patience': 10, 'embedding_dim': 16, 'hidden_dim': 64, 'n_layers': 2
-}
+# 2. Define model architecture and training configs
+model = Model(embedding_dim=16, hidden_dim=64, n_layers=2)
+training = Training(n_epochs=50, learning_rate=1e-3, batch_size=128, patience=10)
 
 # 3. Run the rigorous, bias-corrected estimation
 # This performs multiple runs on data subsets and extrapolates to an infinite-data estimate.
 results = nmi.run(
-    x_data=x_raw.T, y_data=y_raw.T,
+    x_raw.T, y_raw.T,
     mode='rigorous',
-    processor_type_x='continuous',
-    processor_params_x={'window_size': 1},
-    base_params=base_params,
+    processing=Processing(x='continuous', x_params={'window_size': 1}),
+    model=model, training=training,
     n_workers=4,  # Use multiple cores for speed
-    random_seed=42
+    seed=42,
 )
 
 # 4. Access and print the final, scientifically robust result

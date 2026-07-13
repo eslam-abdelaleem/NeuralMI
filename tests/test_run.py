@@ -3,19 +3,15 @@ import torch
 import numpy as np
 import pandas as pd
 import neural_mi as nmi
+from neural_mi import (Model, Training, Output, Processing,
+                       Precision, Rigorous, Dimensionality)
 from neural_mi.results import Results
 from unittest.mock import patch
 
-# Base parameters that are used across multiple tests
-BASE_PARAMS = {
-    'n_epochs': 1,
-    'learning_rate': 1e-4,
-    'batch_size': 64,
-    'patience': 1,
-    'embedding_dim': 8,
-    'hidden_dim': 32,
-    'n_layers': 1
-}
+# Base model/training config used across multiple tests (was the BASE_PARAMS dict).
+MODEL = Model(embedding_dim=8, hidden_dim=32, n_layers=1)
+TRAINING = Training(n_epochs=1, learning_rate=1e-4, batch_size=64, patience=1)
+NATS = Output(units='nats')
 
 @pytest.fixture
 def gaussian_data():
@@ -43,11 +39,10 @@ def test_run_estimate_mode_returns_results_with_float(gaussian_data):
     """
     x_data, y_data = gaussian_data
     result = nmi.run(
-        x_data=x_data,
-        y_data=y_data,
+        x_data, y_data,
         mode='estimate',
-        base_params=BASE_PARAMS,
-        output_units='nats',
+        model=MODEL, training=TRAINING,
+        output=NATS,
         n_workers=1
     )
     assert isinstance(result, Results)
@@ -61,12 +56,11 @@ def test_run_sweep_mode_returns_results_with_dataframe(gaussian_data):
     x_data, y_data = gaussian_data
     sweep_grid = {'embedding_dim': [4, 8]}
     result = nmi.run(
-        x_data=x_data,
-        y_data=y_data,
+        x_data, y_data,
         mode='sweep',
-        base_params=BASE_PARAMS,
+        model=MODEL, training=TRAINING,
         sweep_grid=sweep_grid,
-        output_units='nats',
+        output=NATS,
         n_workers=1
     )
     assert isinstance(result, Results)
@@ -90,48 +84,44 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
         }
 
         result = nmi.run(
-            x_data=x_data,
-            y_data=y_data,
+            x_data, y_data,
             mode='rigorous',
-            base_params=BASE_PARAMS,
-            output_units='nats',
+            model=MODEL, training=TRAINING,
+            output=NATS,
             n_workers=1
         )
-        
+
     assert isinstance(result, Results)
     assert isinstance(result.mi_estimate, float)
     assert isinstance(result.dataframe, pd.DataFrame)
     assert isinstance(result.details, dict)
     assert 'mi_error' in result.details
-    
+
 def test_run_dimensionality_mode_returns_results_with_dataframe(raw_gaussian_data):
     """
     Verifies that mode='dimensionality' returns a Results object with the new spectral metrics.
     Uses raw 2D data (N, C) so that shape[1] gives the channel count correctly.
     """
     x_data, _ = raw_gaussian_data
-    
+
     # We no longer need to sweep embedding_dim for dimensionality.
     # The new engine handles the large bottleneck automatically.
     result = nmi.run(
-        x_data=x_data,
+        x_data,
         mode='dimensionality',
-        base_params=BASE_PARAMS,
-        output_units='nats',
-        split_method='random',
-        n_splits=2,
+        model=MODEL, training=TRAINING,
+        output=NATS,
+        dimensionality=Dimensionality(split_method='random', n_splits=2),
         n_workers=1,
         device='cpu'
     )
-    
+
     assert isinstance(result, Results)
     assert isinstance(result.dataframe, pd.DataFrame)
     # Check for our new spectral metrics instead of mi_mean
     assert 'pr_eig_mean' in result.dataframe.columns
     assert 'pr_singular_mean' in result.dataframe.columns
     assert 'mi_mean' in result.dataframe.columns
-    # embedding_dim is not in sweep_grid, so it won't be in columns if it wasn't swept
-    # assert 'embedding_dim' in result.dataframe.columns
     assert result.mi_estimate is None
 
 def test_run_with_continuous_processor_returns_results(raw_gaussian_data):
@@ -140,15 +130,12 @@ def test_run_with_continuous_processor_returns_results(raw_gaussian_data):
     """
     x_raw, y_raw = raw_gaussian_data
     result = nmi.run(
-        x_data=x_raw,
-        y_data=y_raw,
+        x_raw, y_raw,
         mode='estimate',
-        processor_type_x='continuous',
-        processor_params_x={'window_size': 10},
-        processor_type_y='continuous',
-        processor_params_y={'window_size': 10},
-        base_params=BASE_PARAMS,
-        output_units='nats',
+        processing=Processing(x='continuous', x_params={'window_size': 10},
+                              y='continuous', y_params={'window_size': 10}),
+        model=MODEL, training=TRAINING,
+        output=NATS,
         n_workers=1
     )
     assert isinstance(result, Results)
@@ -178,17 +165,17 @@ def test_run_with_custom_critic(gaussian_data):
     custom_critic_instance = MyCustomCritic()
 
     result = nmi.run(
-        x_data=x_data,
-        y_data=y_data,
+        x_data, y_data,
         mode='estimate',
-        base_params=BASE_PARAMS,
-        custom_critic=custom_critic_instance, # Pass the instance here
+        model=Model(embedding_dim=8, hidden_dim=32, n_layers=1,
+                    custom_critic=custom_critic_instance),
+        training=TRAINING,
         n_workers=1,
-        output_units='nats' # Use nats for direct comparison with np.log
+        output=NATS  # Use nats for direct comparison with np.log
     )
     assert isinstance(result, nmi.results.Results)
     assert isinstance(result.mi_estimate, float)
-    
+
     # For a score matrix of all 1s, the InfoNCE bound is log(N) + E[diag - logsumexp]
     # which calculates to log(N) + 1 - (log(exp(1)*N)) = log(N) + 1 - (1 + log(N)) = 0.
     assert np.isclose(result.mi_estimate, 0.0, atol=1e-6)
@@ -199,7 +186,7 @@ def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_pre
     Verifies that mode='precision' routes correctly and formats the Results object.
     """
     x_data, y_data = gaussian_data
-    
+
     # Mock the return value of the precision engine
     mock_precision.return_value = {
         'dataframe': pd.DataFrame([{'tau': 0.0, 'train_mi': 2.0}, {'tau': 1.0, 'train_mi': 0.5}]),
@@ -212,27 +199,25 @@ def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_pre
             'corrupt_target': 'x'
         }
     }
-    
+
     result = nmi.run(
-        x_data=x_data,
-        y_data=y_data,
+        x_data, y_data,
         mode='precision',
-        base_params=BASE_PARAMS,
-        output_units='nats',
-        tau_grid=[0.5, 1.0, 2.0],
-        corrupt_target='x',
+        model=MODEL, training=TRAINING,
+        output=NATS,
+        precision=Precision(tau_grid=[0.5, 1.0, 2.0], corrupt_target='x'),
         n_workers=1,
         device='cpu'
     )
-    
+
     # Verify the routing successfully called the engine
     mock_precision.assert_called_once()
-    
+
     # Verify the final Results object formatting
     assert isinstance(result, Results)
     assert result.mode == 'precision'
     assert isinstance(result.dataframe, pd.DataFrame)
-    
+
     # mi_estimate holds baseline_mi (MI at zero corruption), not precision_tau.
     # precision_tau remains accessible via result.details['precision_tau'].
     assert result.mi_estimate == result.details['baseline_mi']
@@ -245,20 +230,19 @@ def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_pre
 
 # --- Processor-level sweep and spike integration ---
 
-BASE_PARAMS_INTEGRATION = {
-    'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
-    'patience': 1, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1
-}
+MODEL_INTEGRATION = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
+TRAINING_INTEGRATION = Training(n_epochs=2, learning_rate=1e-4, batch_size=32, patience=1)
 
 
 def test_run_sweep_mode_processor_param(raw_gaussian_data):
     """Tests a sweep over a processor parameter (window_size), distinct from model param sweeps."""
     x, y = raw_gaussian_data
     results = nmi.run(
-        x_data=x, y_data=y, mode='sweep',
-        processor_type_x='continuous', processor_params_x={},
-        base_params=BASE_PARAMS_INTEGRATION, sweep_grid={'window_size': [5, 10]},
-        random_seed=42, n_workers=1
+        x, y, mode='sweep',
+        processing=Processing(x='continuous', x_params={}),
+        model=MODEL_INTEGRATION, training=TRAINING_INTEGRATION,
+        sweep_grid={'window_size': [5, 10]},
+        seed=42, n_workers=1
     )
     assert isinstance(results.dataframe, pd.DataFrame)
     assert len(results.dataframe) == 2
@@ -269,15 +253,13 @@ def test_rigorous_mode_with_spike_data():
     x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
         n_neurons=5, duration=10.0, firing_rate=10.0, delay=0.01, jitter=0.002
     )
-    base_params = {
-        'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
-        'patience': 1, 'embedding_dim': 8, 'hidden_dim': 16, 'n_layers': 1
-    }
     results = nmi.run(
-        x_data=x_spikes, y_data=y_spikes, mode='rigorous',
-        processor_type_x='spike', processor_params_x={'window_size': 0.05},
-        base_params=base_params, gamma_range=range(1, 3),
-        n_workers=1, random_seed=42
+        x_spikes, y_spikes, mode='rigorous',
+        processing=Processing(x='spike', x_params={'window_size': 0.05}),
+        model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+        training=Training(n_epochs=2, learning_rate=1e-4, batch_size=32, patience=1),
+        rigorous=Rigorous(gamma_range=range(1, 3)),
+        n_workers=1, seed=42
     )
     assert isinstance(results, nmi.results.Results)
     assert isinstance(results.mi_estimate, float)

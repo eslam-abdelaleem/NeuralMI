@@ -2,6 +2,7 @@
 import pytest
 import torch
 import neural_mi as nmi
+from neural_mi import Model, Training, Estimator, Processing
 from neural_mi.estimators import infonce_lower_bound, smile_lower_bound
 from neural_mi.training.trainer import Trainer
 from neural_mi.utils import build_critic
@@ -90,34 +91,24 @@ class TestEstimators:
         """
         x_data, y_data = nmi.generators.generate_correlated_gaussians(n_samples=1000, dim=5, mi=3.0)
 
-        # Define the full set of base_params required by build_critic
-        test_base_params = {
-            'n_epochs': 5,
-            'batch_size': 64,
-            'embedding_dim': 8,
-            'hidden_dim': 32, 
-            'n_layers': 1,
-            'learning_rate': 1e-3,
-            'patience': 3
-        }
+        model = Model(embedding_dim=8, hidden_dim=32, n_layers=1)
+        training = Training(n_epochs=5, batch_size=64, learning_rate=1e-3, patience=3)
+        proc = Processing(x='continuous', x_params={'window_size': 1},
+                          y='continuous', y_params={'window_size': 1})
 
         # Run without clipping
         results_unclipped = nmi.run(
-            x_data=x_data, y_data=y_data, mode='estimate', estimator='smile',
-            processor_type_x='continuous', processor_params_x={'window_size': 1},
-            processor_type_y='continuous', processor_params_y={'window_size': 1},
-            base_params=test_base_params,
-            verbose=False, random_seed=42, n_workers=1
+            x_data, y_data, mode='estimate', estimator='smile',
+            processing=proc, model=model, training=training,
+            verbose=False, seed=42, n_workers=1
         )
 
         # Run with a strong clipping value
         results_clipped = nmi.run(
-            x_data=x_data, y_data=y_data, mode='estimate', estimator='smile',
-            estimator_params={'clip': 0.1}, # Apply strong clipping
-            processor_type_x='continuous', processor_params_x={'window_size': 1},
-            processor_type_y='continuous', processor_params_y={'window_size': 1},
-            base_params=test_base_params,
-            verbose=False, random_seed=42, n_workers=1
+            x_data, y_data, mode='estimate',
+            estimator=Estimator(name='smile', params={'clip': 0.1}),  # strong clipping
+            processing=proc, model=model, training=training,
+            verbose=False, seed=42, n_workers=1
         )
 
         assert isinstance(results_unclipped.mi_estimate, float)

@@ -5,11 +5,14 @@ Implements the eight acceptance tests from
 linear-Gaussian two-view model with known latent dimension ``d`` (via
 ``generate_correlated_gaussians``, interaction mode), unless noted.
 """
+from dataclasses import fields as _dc_fields
+
 import numpy as np
 import pytest
 import torch
 
 import neural_mi as nmi
+from neural_mi import Model, Training, Dimensionality
 from neural_mi.generators import generate_correlated_gaussians
 from neural_mi.analysis.dimensionality import (
     _make_noise_ladder_tasks,
@@ -33,15 +36,31 @@ def _full_params(**overrides):
     return params
 
 
-def _dim_run(x, y, sigma_add, **overrides):
-    params = {**FAST, **overrides.pop('base_params', {})}
+_MODEL_FIELDS = {f.name for f in _dc_fields(Model)}
+_TRAINING_FIELDS = {f.name for f in _dc_fields(Training)}
+_DIM_FIELDS = {f.name for f in _dc_fields(Dimensionality)}
+
+
+def _dim_run(x, y, sigma_add, *, n_workers=1, estimator=None,
+             max_eval_samples=None, base_params=None, **dim_over):
+    """Run dimensionality mode, routing flat overrides into the right configs."""
+    flat = {**FAST, **(base_params or {})}
+    if max_eval_samples is not None:
+        flat['max_eval_samples'] = max_eval_samples
+    model = {k: v for k, v in flat.items() if k in _MODEL_FIELDS}
+    training = {k: v for k, v in flat.items() if k in _TRAINING_FIELDS}
+    assert not (set(flat) - _MODEL_FIELDS - _TRAINING_FIELDS), \
+        f"unrouted base_params keys: {set(flat) - _MODEL_FIELDS - _TRAINING_FIELDS}"
+    dim = {k: v for k, v in dim_over.items() if k in _DIM_FIELDS}
+    assert not (set(dim_over) - _DIM_FIELDS), \
+        f"unexpected _dim_run kwargs: {set(dim_over) - _DIM_FIELDS}"
+    dim['sigma_add'] = sigma_add
+    extra = {'estimator': estimator} if estimator is not None else {}
     return nmi.run(
-        x_data=x, y_data=y, mode='dimensionality',
-        base_params=params,
-        sigma_add=sigma_add,
-        random_seed=0,
-        show_progress=False,
-        **overrides,
+        x, y, mode='dimensionality',
+        model=Model(**model), training=Training(**training),
+        dimensionality=Dimensionality(**dim),
+        seed=0, show_progress=False, n_workers=n_workers, **extra,
     )
 
 

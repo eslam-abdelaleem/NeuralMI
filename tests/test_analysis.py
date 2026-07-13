@@ -3,15 +3,15 @@ import pytest
 import numpy as np
 import pandas as pd
 import neural_mi as nmi
+from neural_mi import Model, Training, Processing, Lag
 import torch
 from unittest.mock import patch
 from neural_mi.analysis.dimensionality import run_dimensionality_analysis
 
-BASE_PARAMS_TEST = {
-    'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 32,
-    'patience': 1, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
-    'random_time_shifting': False # Disable time shifting to avoid dynamic window sizing issues in tests
-}
+# random_time_shifting disabled to avoid dynamic window sizing issues in tests.
+MODEL_TEST = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
+TRAINING_TEST = Training(n_epochs=2, learning_rate=1e-4, batch_size=32,
+                         patience=1, random_time_shifting=False)
 
 @pytest.mark.parametrize("processor_type", ["continuous", "categorical", "spike"])
 def test_run_lag_mode(processor_type):
@@ -33,18 +33,15 @@ def test_run_lag_mode(processor_type):
         processor_params = {'window_size': 0.1, 'max_spikes_per_window': 10} # Added max_spikes for robustness
 
     results = nmi.run(
-        x_data=x_data,
-        y_data=y_data,
+        x_data, y_data,
         mode='lag',
-        processor_type_x=processor_type,
-        processor_params_x=processor_params,
-        processor_type_y=processor_type,  # Added this line
-        processor_params_y=processor_params,  # Added this line
+        processing=Processing(x=processor_type, x_params=processor_params,
+                              y=processor_type, y_params=processor_params),
         sweep_grid={'run_id': range(2)},
-        base_params=BASE_PARAMS_TEST,
-        lag_range=lag_range,
+        model=MODEL_TEST, training=TRAINING_TEST,
+        lag=Lag(lag_range=lag_range),
         n_workers=1,
-        random_seed=42
+        seed=42
     )
 
     assert isinstance(results, nmi.results.Results)

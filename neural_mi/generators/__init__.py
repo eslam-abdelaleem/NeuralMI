@@ -21,7 +21,6 @@ from .synthetic import (
     # Inductive-bias generators
     generate_modulated_spike_trains,
     generate_timing_code_spike_trains,
-    generate_noisy_image_pairs,
     # Windowed generators with analytically known MI
     generate_windowed_oscillatory,
     generate_windowed_multichannel,
@@ -44,7 +43,6 @@ __all__ = [
     # Inductive-bias generators
     'generate_modulated_spike_trains',
     'generate_timing_code_spike_trains',
-    'generate_noisy_image_pairs',
     # Windowed generators with analytically known MI
     'generate_windowed_oscillatory',
     'generate_windowed_multichannel',

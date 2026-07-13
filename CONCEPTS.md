@@ -153,13 +153,13 @@ A critical step in the training process is splitting the data into training and 
 
 The splitting logic inside the `Trainer` follows this priority order:
 
-1. **User-Provided Indices**: If `train_indices` and `test_indices` are passed to `nmi.run()`, they are used directly. This provides maximum user control and overrides all other settings.
+1. **User-Provided Indices**: If `Split(train_indices=..., test_indices=...)` is passed to `nmi.run()`, they are used directly. This provides maximum user control and overrides all other settings.
 
-2. **`split_mode` Parameter**: If custom indices are not provided, the trainer looks at the `split_mode` argument:
-   * `split_mode='random'`: This mode is for **Independent and Identically Distributed (IID) data**. It performs a standard random shuffle of all data points before creating the train/validation split. This is the correct choice when there is no temporal relationship between samples.
-   * `split_mode='blocked'` (Default): This mode is for **temporal or sequential data**. Instead of shuffling, it samples several non-overlapping, contiguous blocks of data to form the validation set. This ensures that the validation data is truly "out of sample" in a temporal sense, preventing the model from being tested on points immediately adjacent to ones it was trained on.
+2. **`Split(mode=...)`**: If custom indices are not provided, the trainer looks at the split mode:
+   * `Split(mode='random')`: This mode is for **Independent and Identically Distributed (IID) data**. It performs a standard random shuffle of all data points before creating the train/validation split. This is the correct choice when there is no temporal relationship between samples.
+   * `Split(mode='blocked')` (Default): This mode is for **temporal or sequential data**. Instead of shuffling, it samples several non-overlapping, contiguous blocks of data to form the validation set. This ensures that the validation data is truly "out of sample" in a temporal sense, preventing the model from being tested on points immediately adjacent to ones it was trained on.
 
-3. **Default Behavior**: If no splitting options are specified, the system defaults to `split_mode='blocked'`, as it is the safer and more robust option for the types of physics and neuroscience data the library often handles.
+3. **Default Behavior**: If no splitting options are specified, the system defaults to `Split(mode='blocked')`, as it is the safer and more robust option for the types of physics and neuroscience data the library often handles.
 
 ---
 

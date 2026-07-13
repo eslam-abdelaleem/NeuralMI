@@ -21,6 +21,7 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx.ext.mathjax',
     'nbsphinx',
+    'nbsphinx_link',   # render notebooks from a single source via .nblink stubs
     'sphinx.ext.intersphinx',
     'sphinx_rtd_theme',
     'myst_parser',  
@@ -71,6 +72,13 @@ html_theme_options = {
     'includehidden': True,
     'titles_only': False
 }
+
+# Do not show the "View page source" link. By default Sphinx copies each page's
+# raw source into _sources/ and links to it, so on a notebook page the link opens
+# the raw .ipynb JSON (and on an .rst page, the reStructuredText) rather than
+# anything readable. Hide the link and skip copying the sources entirely.
+html_show_sourcelink = False
+html_copy_source = False
 
 # -- nbsphinx settings -------------------------------------------------------
 # Never execute notebooks during the docs build. Tutorials ship with their

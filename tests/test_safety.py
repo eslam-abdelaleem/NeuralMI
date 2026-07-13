@@ -8,14 +8,19 @@ import pytest
 import torch
 
 import neural_mi as nmi
+from neural_mi import Model, Training, Transfer
 from neural_mi.analysis.sweep import ParameterSweep
 from neural_mi.exceptions import TrainingError
 from neural_mi.training.trainer import Trainer
 
+# _BASE dict is still used by the ParameterSweep/build_critic engine-level tests below.
 _BASE = {
     'n_epochs': 2, 'learning_rate': 1e-4, 'batch_size': 8,
     'patience': 1, 'embedding_dim': 4, 'hidden_dim': 8, 'n_layers': 1,
 }
+# Config equivalents for the run()-based tests.
+_MODEL = Model(embedding_dim=4, hidden_dim=8, n_layers=1)
+_TRAINING = Training(n_epochs=2, learning_rate=1e-4, batch_size=8, patience=1)
 
 
 # ---------------------------------------------------------------------------
@@ -28,10 +33,10 @@ def test_a1_transfer_3d_x_raises():
     y = np.random.randn(20, 3, 5)
     with pytest.raises(ValueError, match="mode='transfer' requires 2-D"):
         nmi.run(
-            x_data=x, y_data=y,
+            x, y,
             mode='transfer',
-            base_params=_BASE,
-            history_window=2,
+            model=_MODEL, training=_TRAINING,
+            transfer=Transfer(history_window=2),
             n_workers=1,
         )
 
@@ -41,10 +46,10 @@ def test_a1_transfer_2d_does_not_raise():
     x, y = nmi.generators.generate_correlated_gaussians(n_samples=100, dim=3, mi=0.5)
     try:
         nmi.run(
-            x_data=x, y_data=y,
+            x, y,
             mode='transfer',
-            base_params=_BASE,
-            history_window=2,
+            model=_MODEL, training=_TRAINING,
+            transfer=Transfer(history_window=2),
             n_workers=1,
         )
     except ValueError as e:
@@ -81,9 +86,11 @@ def test_a3_train_subset_size_clamp_emits_warning():
         warnings.simplefilter("always")
         try:
             nmi.run(
-                x_data=x, y_data=y,
+                x, y,
                 mode='estimate',
-                base_params={**_BASE, 'train_subset_size': 50_000},
+                model=_MODEL,
+                training=Training(n_epochs=2, learning_rate=1e-4, batch_size=8,
+                                  patience=1, train_subset_size=50_000),
                 n_workers=1,
             )
         except Exception:
@@ -138,9 +145,9 @@ def test_a4_single_nan_does_not_raise():
     x, y = nmi.generators.generate_correlated_gaussians(n_samples=200, dim=2, mi=0.5)
     try:
         nmi.run(
-            x_data=x, y_data=y,
+            x, y,
             mode='estimate',
-            base_params=_BASE,
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
     except TrainingError as e:

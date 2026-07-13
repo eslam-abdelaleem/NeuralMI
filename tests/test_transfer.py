@@ -4,13 +4,12 @@ import pytest
 import numpy as np
 import torch
 import neural_mi as nmi
+from neural_mi import Model, Training, Transfer
 from neural_mi.analysis.transfer import _build_te_arrays
 
-# Minimal training params for fast tests
-_PARAMS = {
-    'n_epochs': 3, 'learning_rate': 1e-3, 'batch_size': 64,
-    'patience': 2, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
-}
+# Minimal model/training configs for fast tests
+_MODEL = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
+_TRAINING = Training(n_epochs=3, learning_rate=1e-3, batch_size=64, patience=2)
 
 N = 300  # time samples
 H = 10   # history_window
@@ -54,11 +53,10 @@ class TestTransferEntropy:
         x = np.random.randn(N, 1)
         y = np.random.randn(N, 1)
         results = nmi.run(
-            x_data=x, y_data=y,
+            x, y,
             mode='transfer',
-            history_window=H,
-            prediction_horizon=1,
-            base_params=_PARAMS,
+            transfer=Transfer(history_window=H, prediction_horizon=1),
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         assert results is not None
@@ -71,10 +69,10 @@ class TestTransferEntropy:
         x = np.random.randn(N, 1)
         y = np.random.randn(N, 1)
         results = nmi.run(
-            x_data=x, y_data=y,
+            x, y,
             mode='transfer',
-            history_window=H,
-            base_params=_PARAMS,
+            transfer=Transfer(history_window=H),
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         assert 'i_xypast_yfuture' in results.details
@@ -85,10 +83,10 @@ class TestTransferEntropy:
         x = np.random.randn(N, 1)
         y = np.random.randn(N, 1)
         results = nmi.run(
-            x_data=x, y_data=y,
+            x, y,
             mode='transfer',
-            history_window=H,
-            base_params=_PARAMS,
+            transfer=Transfer(history_window=H),
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         expected = results.details['i_xypast_yfuture'] - results.details['i_ypast_yfuture']
@@ -100,8 +98,8 @@ class TestTransferEntropy:
         y = np.random.randn(N, 1)
         with pytest.raises((ValueError, TypeError)):
             nmi.run(
-                x_data=x, y_data=y,
-                mode='transfer',
-                base_params=_PARAMS,
+                x, y,
+                mode='transfer',   # no Transfer config -> history_window missing
+                model=_MODEL, training=_TRAINING,
                 n_workers=1,
             )

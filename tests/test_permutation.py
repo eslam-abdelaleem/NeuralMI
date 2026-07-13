@@ -7,12 +7,11 @@ import numpy as np
 import pytest
 
 import neural_mi as nmi
+from neural_mi import Model, Training, Rigorous, Lag
 
-# Minimal training params
-_PARAMS = {
-    'n_epochs': 3, 'learning_rate': 1e-3, 'batch_size': 64,
-    'patience': 2, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
-}
+# Minimal model/training configs
+_MODEL = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
+_TRAINING = Training(n_epochs=3, learning_rate=1e-3, batch_size=64, patience=2)
 
 N = 500
 
@@ -26,7 +25,7 @@ class TestPermutationTest:
         results = nmi.run(
             x_data=x, y_data=y,
             mode='estimate',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             permutation_test=True,
             n_workers=1,
         )
@@ -41,7 +40,7 @@ class TestPermutationTest:
         results = nmi.run(
             x_data=x, y_data=y,
             mode='estimate',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             permutation_test=True,
             n_permutations=3,
             n_workers=1,
@@ -54,7 +53,7 @@ class TestPermutationTest:
         results = nmi.run(
             x_data=x, y_data=y,
             mode='estimate',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             permutation_test=True,
             n_permutations=2,
             n_workers=1,
@@ -68,7 +67,7 @@ class TestPermutationTest:
         results = nmi.run(
             x_data=x, y_data=y,
             mode='estimate',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             permutation_test=False,
             n_workers=1,
         )
@@ -80,7 +79,7 @@ class TestPermutationTest:
         results = nmi.run(
             x_data=x, y_data=y,
             mode='sweep',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             sweep_grid={'embedding_dim': [4, 8]},
             permutation_test=True,
             n_permutations=1,
@@ -94,7 +93,7 @@ class TestPermutationTest:
         results = nmi.run(
             x_data=x, y_data=y,
             mode='estimate',
-            base_params=_PARAMS,
+            model=_MODEL, training=_TRAINING,
             permutation_test=True,
             n_workers=1,
         )
@@ -121,7 +120,7 @@ class TestNPermutationsDefault:
             nmi.run(
                 x_data=x, y_data=y,
                 mode='estimate',
-                base_params=_PARAMS,
+                model=_MODEL, training=_TRAINING,
                 permutation_test=True,
                 n_permutations=1,
                 n_workers=1,
@@ -139,7 +138,7 @@ class TestNPermutationsDefault:
             nmi.run(
                 x_data=x, y_data=y,
                 mode='estimate',
-                base_params=_PARAMS,
+                model=_MODEL, training=_TRAINING,
                 permutation_test=True,
                 n_permutations=50,
                 n_workers=1,
@@ -157,9 +156,9 @@ class TestNPermutationsDefault:
             nmi.run(
                 x_data=x, y_data=y,
                 mode='rigorous',
-                base_params=_PARAMS,
+                model=_MODEL, training=_TRAINING,
                 permutation_test=True,
-                gamma_range=range(2, 4),
+                rigorous=Rigorous(gamma_range=range(2, 4)),
                 n_workers=1,
             )
 
@@ -173,10 +172,8 @@ class TestNullDistributionRawClipped:
     finite floats); the functional contract (raw uses raw_train_mi) is guaranteed by code.
     """
 
-    _P = {
-        'n_epochs': 2, 'learning_rate': 1e-3, 'batch_size': 64,
-        'patience': 2, 'embedding_dim': 4, 'hidden_dim': 8, 'n_layers': 1,
-    }
+    _MODEL_P = Model(embedding_dim=4, hidden_dim=8, n_layers=1)
+    _TRAINING_P = Training(n_epochs=2, learning_rate=1e-3, batch_size=64, patience=2)
 
     def _check_null_lists(self, details, n_perm):
         """Assert both null lists are present, have length n_perm, and contain floats."""
@@ -190,7 +187,7 @@ class TestNullDistributionRawClipped:
 
     def test_estimate_mode_raw_and_clipped_present(self):
         x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
-        res = nmi.run(x_data=x, y_data=y, mode='estimate', base_params=self._P,
+        res = nmi.run(x_data=x, y_data=y, mode='estimate', model=self._MODEL_P, training=self._TRAINING_P,
                       permutation_test=True, n_permutations=2, n_workers=1)
         self._check_null_lists(res.details, 2)
 
@@ -198,7 +195,7 @@ class TestNullDistributionRawClipped:
         x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
         res = nmi.run(x_data=x, y_data=y, mode='sweep',
                       sweep_grid={'embedding_dim': [4, 8]},
-                      base_params=self._P,
+                      model=self._MODEL_P, training=self._TRAINING_P,
                       permutation_test=True, n_permutations=2, n_workers=1)
         self._check_null_lists(res.details, 2)
 
@@ -206,7 +203,7 @@ class TestNullDistributionRawClipped:
         """lag mode null: raw_train_mi extracted from task results (not duplicated from clipped)."""
         x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
         res = nmi.run(x_data=x, y_data=y, mode='lag',
-                      lag_range=range(-1, 2),
-                      base_params=self._P,
+                      lag=Lag(lag_range=range(-1, 2)),
+                      model=self._MODEL_P, training=self._TRAINING_P,
                       permutation_test=True, n_permutations=2, n_workers=1)
         self._check_null_lists(res.details, 2)

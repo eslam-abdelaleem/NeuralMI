@@ -4,12 +4,15 @@ import pytest
 import numpy as np
 import torch
 import neural_mi as nmi
+from neural_mi import Model, Training, Conditional
 
-# Minimal training params for fast tests
+# Minimal training params (dict kept for the engine-level run_conditional_mi test).
 _PARAMS = {
     'n_epochs': 3, 'learning_rate': 1e-3, 'batch_size': 64,
     'patience': 2, 'embedding_dim': 4, 'hidden_dim': 16, 'n_layers': 1,
 }
+_MODEL = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
+_TRAINING = Training(n_epochs=3, learning_rate=1e-3, batch_size=64, patience=2)
 
 N = 500  # samples
 
@@ -29,9 +32,10 @@ class TestConditionalMI:
         z = torch.from_numpy(rng.standard_normal((N, 2)).astype(np.float32))
 
         results = nmi.run(
-            x_data=x, y_data=y, z_data=z,
+            x, y,
             mode='conditional',
-            base_params=_PARAMS,
+            conditional=Conditional(z_data=z),
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         assert results is not None
@@ -50,9 +54,10 @@ class TestConditionalMI:
         z = torch.from_numpy(rng.standard_normal((N, 2)).astype(np.float32))
 
         results = nmi.run(
-            x_data=x, y_data=y, z_data=z,
+            x, y,
             mode='conditional',
-            base_params=_PARAMS,
+            conditional=Conditional(z_data=z),
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         assert results.mi_estimate is not None
@@ -66,9 +71,10 @@ class TestConditionalMI:
         z = _make_gaussian(N, 2)
 
         results = nmi.run(
-            x_data=x, y_data=y, z_data=z,
+            x, y,
             mode='conditional',
-            base_params=_PARAMS,
+            conditional=Conditional(z_data=z),
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         assert 'mi_xz_y' in results.details
@@ -82,9 +88,10 @@ class TestConditionalMI:
         z = _make_gaussian(N, 2)
 
         results = nmi.run(
-            x_data=x, y_data=y, z_data=z,
+            x, y,
             mode='conditional',
-            base_params=_PARAMS,
+            conditional=Conditional(z_data=z),
+            model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
         expected = results.details['mi_xz_y'] - results.details['mi_z_y']
