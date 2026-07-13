@@ -66,6 +66,8 @@ results.plot()
 ## Learning Path
 To get the most out of `NeuralMI`, we recommend following our new tutorial series in order. Each tutorial builds on the last, taking you from the basics to advanced applications.
 
+- **Part 0: Understanding MI Estimation**
+    - **00_Why_and_How_MI_Estimation_Works**: A conceptual on-ramp — why mutual information (not correlation), how a neural estimator turns dependence into a number, and which value the library reports.
 - **Part 1: The Fundamentals**
     - **01_A_First_Estimate**: Learn the basics of `nmi.run()` and the `Results` object on a simple dataset.
     - **02_Neural_Data_Formats**: Understand how to use the `Continuous`, `Spike`, and `Categorical` data processors.
@@ -74,8 +76,8 @@ To get the most out of `NeuralMI`, we recommend following our new tutorial serie
     - **04_Sweeps**: Use `mode='sweep'` to explore and optimize hyperparameters.
     - **05_Rigorous_Estimation**: A deep dive into `mode='rigorous'` for debiased, accurate MI estimates.
 - **Part 3: Advanced Analysis and Applications**
-    - **06_Temporal_Questions**: Explore temporal dynamics with `mode='lag'` and conditional MI.
-    - **07_Population_Questions**: Use `mode='dimensionality'` to estimate latent complexity and dimensionality.
+    - **06_Temporal_Questions**: Directed, time-resolved analyses — `mode='lag'`, `mode='precision'`, and transfer entropy.
+    - **07_Population_Questions**: Population geometry and connectivity — `mode='dimensionality'`, conditional MI, and the `mode='pairwise'` MI matrix.
     - **08_Models_Estimators_and_Validation**: Understand the trade-offs between different critic architectures, estimators, and custom models.
 
 ## Installation

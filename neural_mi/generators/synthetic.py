@@ -116,6 +116,7 @@ def generate_nonlinear_from_latent(
     -------
     Tuple[np.ndarray, np.ndarray]
         A tuple containing:
+
         - **x** (*np.ndarray* or *torch.Tensor*): The first dataset, of shape `(n_samples, observed_dim)`.
         - **y** (*np.ndarray* or *torch.Tensor*): The second dataset, of shape `(n_samples, observed_dim)`.
         - **z_x**, **z_y** (*np.ndarray* or *torch.Tensor*, optional): The shared latents,

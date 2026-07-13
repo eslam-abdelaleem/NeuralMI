@@ -125,7 +125,7 @@ Before computing critic scores, each input passes through an **embedding model**
 
 All embeddings output a vector of size `embedding_dim` (default 64).
 
-(A depthwise-separable `'cnn'` variant, a `'spike_physics'` embedding for raw spike timestamps, and a `'sinc_cnn'` bandpass-filter embedding for EEG/LFP were evaluated empirically against generic encoders and did not survive that gate; see `results/gate/decision_log.md`. All three have been removed.)
+(A depthwise-separable `'cnn'` variant, a `'spike_physics'` embedding for raw spike timestamps, and a `'sinc_cnn'` bandpass-filter embedding for EEG/LFP were evaluated empirically against generic encoders, did not outperform them, and have been removed.)
 
 ### 3.4 Critic Architectures
 
@@ -1133,7 +1133,7 @@ from neural_mi.models import (
 
 `CNN2D` uses `AdaptiveAvgPool2d(1)` after the convolutional stack so it accepts any spatial size. All embeddings output `(batch, embedding_dim)`.
 
-(A depthwise-separable `CNN1D` variant, a `SpikePhysicsEmbedding` class, and a `SincEmbedding` class were evaluated empirically against generic encoders and did not survive that gate; see `results/gate/decision_log.md`. All three have been removed.)
+(A depthwise-separable `CNN1D` variant, a `SpikePhysicsEmbedding` class, and a `SincEmbedding` class were evaluated empirically against generic encoders, did not outperform them, and have been removed.)
 
 ### Critics (`neural_mi.models`)
 
