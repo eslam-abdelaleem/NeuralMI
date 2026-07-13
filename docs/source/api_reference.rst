@@ -11,13 +11,12 @@ The ``run()`` function is the main entry point for all analyses in the library. 
 Configuration Objects
 ---------------------
 
-Every call to ``run()`` is configured with grouped, typed dataclasses rather than
-flat keyword arguments. The **shared** configs apply to every mode; the
-**per-mode** configs carry options specific to one analysis mode. All are
-importable directly from ``neural_mi`` (e.g. ``from neural_mi import Model,
-Training``). The signature of each class lists its fields; see the
-*Config Fields Reference* in ``NEURALMI_REFERENCE.md`` for a description of every
-field.
+Every call to ``run()`` is configured with grouped, typed dataclasses. The
+**shared** configs apply to every mode; the **per-mode** configs carry options
+specific to one analysis mode. All are importable directly from ``neural_mi``
+(e.g. ``from neural_mi import Model, Training``). The signature of each class
+lists its fields; see the *Config Fields Reference* in ``NEURALMI_REFERENCE.md``
+for a description of every field.
 
 Shared configs:
 

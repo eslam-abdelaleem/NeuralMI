@@ -28,7 +28,7 @@ This directory contains the logic for the different analysis `modes`.
 - **`workflow.py`**: Re-exports from `rigorous.py` for convenience. All analysis logic lives in `rigorous.py`.
 - **`sweep.py`**: A general-purpose engine for running parallelized hyperparameter sweeps (`mode='sweep'`). It includes **"Smart Model Saving"** logic to dynamically generate safe filenames and prevent race conditions between parallel workers.
 - **`lag.py`**: Contains the logic for `mode='lag'`, which is a specialized `sweep` over the `lag` parameter.
-- **`dimensionality.py`**: Implements the `mode='dimensionality'` analysis. *Note: This module no longer uses sweeps. It orchestrates a single Hybrid Critic training run and triggers the SVD spectral metrics engine to compute the Participation Ratio.*
+- **`dimensionality.py`**: Implements the `mode='dimensionality'` analysis. *Note: This module orchestrates a single Hybrid Critic training run and triggers the SVD spectral metrics engine to compute the Participation Ratio.*
 - **`precision.py`**: Implements the `mode='precision'` analysis. This module executes a "Train Once, Evaluate Many" pipeline, freezing a baseline network and sweeping over precision levels ($\tau$) using deterministic rounding or additive noise.
 - **`task.py`**: A helper module that defines a single, runnable "task" (one training run of the MI estimator). It unpacks all top-level arguments and funnels them into the `Trainer`. Key implementation notes:
   - **`dataset_device` resolution**: the `dataset_device` param (default `'cpu'`) controls where dataset tensors live. `'auto'` resolves to the compute device; any explicit device string is forwarded directly.

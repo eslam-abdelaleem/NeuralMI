@@ -64,7 +64,7 @@ results.plot()
 
 
 ## Learning Path
-To get the most out of `NeuralMI`, we recommend following our new tutorial series in order. Each tutorial builds on the last, taking you from the basics to advanced applications.
+To get the most out of `NeuralMI`, we recommend following the tutorial series in order. Each tutorial builds on the last, taking you from the basics to advanced applications.
 
 - **Part 0: Understanding MI Estimation**
     - **00_Why_and_How_MI_Estimation_Works**: A conceptual on-ramp — why mutual information (not correlation), how a neural estimator turns dependence into a number, and which value the library reports.
