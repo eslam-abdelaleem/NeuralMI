@@ -5,6 +5,17 @@ This series of tutorials provides a guided tour through the features of `NeuralM
 from basic usage to advanced, scientifically rigorous analyses. We recommend
 following them in order to build a comprehensive understanding of the library.
 
+Part 0: Understanding MI Estimation
+-----------------------------------
+
+A conceptual on-ramp: what mutual information captures, how a neural estimator computes it,
+and which number the library reports. Optional, but it makes the later choices intuitive.
+
+.. toctree::
+   :maxdepth: 1
+
+   tutorials/00_Why_and_How_MI_Estimation_Works
+
 Part 1: The Fundamentals
 ------------------------
 
