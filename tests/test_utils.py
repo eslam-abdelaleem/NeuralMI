@@ -61,6 +61,28 @@ def test_build_critic_hybrid():
     critic = build_critic('hybrid', DUMMY_EMBEDDING_PARAMS)
     assert isinstance(critic, HybridCritic)
 
+
+def test_build_critic_custom_embedding_minimal_signature():
+    """A custom embedding class following the minimal BaseEmbedding contract
+    (input_dim, hidden_dim, embed_dim, n_layers) must build without receiving
+    MLP-specific kwargs (use_spectral_norm/dropout/norm_layer)."""
+    import torch.nn as nn
+    from neural_mi.models.embeddings import BaseEmbedding
+
+    class MinimalCustom(BaseEmbedding):
+        def __init__(self, input_dim, hidden_dim, embed_dim, n_layers):
+            super().__init__()
+            self.net = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(),
+                                     nn.Linear(hidden_dim, embed_dim))
+
+        def forward(self, x):
+            return self.net(x.view(x.shape[0], -1))
+
+    critic = build_critic('separable', DUMMY_EMBEDDING_PARAMS,
+                          custom_embedding_cls=MinimalCustom)
+    assert isinstance(critic, SeparableCritic)
+    assert isinstance(critic.embedding_net_x, MinimalCustom)
+
 # --- Spectral Metric Tests ---
 def test_cross_covariance_spectrum_shape_and_values():
     """Test that SVD extracts correct singular values from embeddings."""
