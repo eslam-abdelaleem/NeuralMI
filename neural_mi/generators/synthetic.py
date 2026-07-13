@@ -678,69 +678,6 @@ def generate_modulated_spike_trains(
     return _gen_pop(n_neurons), _gen_pop(n_neurons_y)
 
 
-def generate_noisy_image_pairs(
-    n_samples: int,
-    image_size: int = 64,
-    n_channels: int = 3,
-    signal_strength: float = 2.0,
-    noise_level: float = 1.0,
-    use_torch: bool = True,
-) -> Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
-    """Generate pairs of noisy images sharing a common visual structure.
-
-    Each sample pair ``(x_i, y_i)`` shares the *same* Gaussian blob at the
-    *same* random location, embedded in independent Gaussian noise.  The MI is
-    carried in the blob's position and shape — exactly the kind of visual
-    structure that a pretrained backbone detects in far fewer training samples
-    than a network trained from scratch.
-
-    The output shape is ``(n_samples, n_channels, image_size, image_size)``,
-    ready for ``embedding_model='pretrained_backbone'`` with no processor
-    (``processor_type=None``).
-
-    Parameters
-    ----------
-    n_samples : int
-        Number of image pairs.
-    image_size : int, optional
-        Spatial resolution (height = width). Defaults to 64.
-    n_channels : int, optional
-        Number of colour channels. Defaults to 3.
-    signal_strength : float, optional
-        Peak amplitude of the Gaussian blob. Defaults to 2.0.
-    noise_level : float, optional
-        Standard deviation of additive Gaussian noise. Defaults to 1.0.
-    use_torch : bool, optional
-        If True, returns ``torch.Tensor`` objects. Defaults to True.
-
-    Returns
-    -------
-    Tuple
-        ``(x, y)`` each of shape
-        ``(n_samples, n_channels, image_size, image_size)``.
-    """
-    H = W = image_size
-    yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
-    x_imgs = np.zeros((n_samples, n_channels, H, W), dtype=np.float32)
-    y_imgs = np.zeros((n_samples, n_channels, H, W), dtype=np.float32)
-
-    for i in range(n_samples):
-        cy = np.random.uniform(H * 0.2, H * 0.8)
-        cx = np.random.uniform(W * 0.2, W * 0.8)
-        sigma = np.random.uniform(H * 0.05, H * 0.15)
-        blob = signal_strength * np.exp(
-            -((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sigma ** 2)
-        ).astype(np.float32)
-        for ch in range(n_channels):
-            x_imgs[i, ch] = blob + noise_level * np.random.randn(H, W).astype(np.float32)
-            y_imgs[i, ch] = blob + noise_level * np.random.randn(H, W).astype(np.float32)
-
-    if use_torch:
-        return torch.from_numpy(x_imgs), torch.from_numpy(y_imgs)
-    else:
-        return x_imgs, y_imgs
-
-
 def generate_timing_code_spike_trains(
     n_neurons: int = 8,
     duration: float = 200.0,
