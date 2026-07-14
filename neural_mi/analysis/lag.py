@@ -59,9 +59,10 @@ def run_lag_analysis(
     """
     all_tasks = []
 
+    proc_type_x = base_params.get('processor_type_x')
     proc_type_y = base_params.get('processor_type_y')
     if proc_type_y is None:
-        proc_type_y = base_params.get('processor_type_x')
+        proc_type_y = proc_type_x
         logger.info("`processor_type_y` not specified in `base_params`, using the same as for x.")
 
     # Infer sample_rate from processor_params to resolve unit ambiguity
@@ -89,7 +90,7 @@ def run_lag_analysis(
     # then optionally equalize to the minimum across lags.
     shifted_pairs = {}
     for lag in lag_range:
-        x_sh, y_sh = _shift_data(x_data, y_data, lag, proc_type_y, sample_rate=sample_rate)
+        x_sh, y_sh = _shift_data(x_data, y_data, lag, proc_type_x, proc_type_y, sample_rate=sample_rate)
         shifted_pairs[lag] = (x_sh, y_sh)
 
     def _n_items(data):

@@ -72,9 +72,14 @@ def _configure_multiprocessing() -> None:
         logger.debug(f"macOS: set TMPDIR={custom_temp} for spawn workers.")
     _mp_configured = True
 
-def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
+def _shift_data(x_data: Any, y_data: Any, lag: int,
+                x_processor_type: Optional[str], y_processor_type: str,
                 sample_rate: Optional[float] = None) -> tuple:
-    """Shifts y_data relative to x_data based on the specified lag.
+    """Shifts data to apply a time lag between X and Y.
+
+    Sign convention (shared by every branch below): for ``lag > 0``, Y is
+    compared against its own future relative to X (X's early samples are
+    paired with Y's later samples).
 
     Parameters
     ----------
@@ -86,15 +91,49 @@ def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
         The lag value. For 'spike' data, always seconds. For 'continuous'/
         'categorical' data, seconds if `sample_rate` is given, otherwise a raw
         sample-index offset.
-    processor_type : str
-        One of 'continuous', 'categorical', or 'spike'.
+    x_processor_type : str, optional
+        X's processor type: one of 'continuous', 'categorical', 'spike', or
+        None. Only consulted to detect the mixed-modality case (spike paired
+        with non-spike); when both sides are non-spike, only
+        `y_processor_type` determines how the shift is applied (both arrays
+        get the same array-index treatment regardless of which specific
+        non-spike type each one is).
+    y_processor_type : str
+        Y's processor type: one of 'continuous', 'categorical', or 'spike'.
     sample_rate : float, optional
         Samples per second for continuous/categorical data. If provided, lag is
         interpreted as seconds and converted to samples. If None, lag is treated
         as a raw sample-index offset and a warning is emitted, since the unit is
         then ambiguous relative to spike data (always seconds).
     """
-    if processor_type in ['continuous', 'categorical']:
+    x_is_spike = x_processor_type == 'spike'
+    y_is_spike = y_processor_type == 'spike'
+
+    if x_is_spike and not y_is_spike:
+        # Mixed modality: spike-X, non-spike-Y. Shift X's spike times forward
+        # by `lag` (rather than shifting Y, which isn't spike data and has no
+        # per-event timestamps to offset) -- this keeps the lag>0="Y is in
+        # the future" convention: advancing X's clock by `lag` is equivalent
+        # to comparing X's past against Y's present.
+        logger.info(
+            f"Mixed-modality lag: X is 'spike', Y is '{y_processor_type}'. "
+            f"Shifting X's spike times by +{lag}s; Y is left at its original times."
+        )
+        x_shifted = [spikes + lag for spikes in x_data]
+        return x_shifted, y_data
+
+    if y_is_spike:
+        # Y is spike (X may be spike too, or non-spike -- either way only Y's
+        # spike times need shifting; X is unaffected in both sub-cases).
+        if not x_is_spike:
+            logger.info(
+                f"Mixed-modality lag: Y is 'spike', X is '{x_processor_type}'. "
+                f"Shifting Y's spike times by -{lag}s; X is left at its original times."
+            )
+        y_shifted = [spikes - lag for spikes in y_data]
+        return x_data, y_shifted
+
+    if y_processor_type in ('continuous', 'categorical'):
         # Convert to numpy if needed
         if torch.is_tensor(x_data):
             x_data = x_data.detach().cpu().numpy()
@@ -112,7 +151,7 @@ def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
         else:
             # No sample_rate given: treat lag as a raw sample-index offset, but warn
             logger.warning(
-                f"Lag units for '{processor_type}' data are ambiguous without a sample_rate. "
+                f"Lag units for '{y_processor_type}' data are ambiguous without a sample_rate. "
                 f"Treating lag={lag} as samples (index offset). "
                 f"To specify lag in seconds, pass 'sample_rate' in processor_params_x. "
                 f"Note: spike data always uses seconds, so mixing processor types without "
@@ -128,11 +167,6 @@ def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
         else:
             # y is in the past of x
             return x_data[-lag_samples:, :], y_data[:lag_samples, :]
-
-    elif processor_type == 'spike':
-        # Spike times are always in seconds — lag is in seconds, no conversion needed
-        y_shifted = [spikes - lag for spikes in y_data]
-        return x_data, y_shifted
 
     return x_data, y_data
 

@@ -3,7 +3,7 @@ import pytest
 import torch
 import numpy as np
 from neural_mi.utils import (
-    get_device, build_critic, build_optimizer_and_scheduler,
+    get_device, build_critic, build_optimizer_and_scheduler, _shift_data,
     compute_cross_covariance_spectrum, compute_spectral_metrics,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, HybridCritic
@@ -196,7 +196,101 @@ def test_spectral_metrics_uniform_dimensions():
     # A spectrum where energy is perfectly distributed across 4 dimensions
     spectrum = np.array([2.0, 2.0, 2.0, 2.0])
     metrics = compute_spectral_metrics(spectrum)
-    
+
     assert np.isclose(metrics['pr_singular'], 4.0)
     assert np.isclose(metrics['pr_eig'],4.0)
     assert np.isclose(metrics['effective_rank'], 4.0)
+
+
+# --- _shift_data: mixed-modality lag (spike paired with non-spike) ---
+
+class TestShiftDataMixedModality:
+    """Regression tests for _shift_data's sign convention: for lag > 0, Y is
+    compared against its own future relative to X, in every
+    modality-pairing branch."""
+
+    def test_both_continuous_unaffected(self):
+        """Existing continuous-continuous behavior must be unchanged."""
+        x = np.arange(10.0).reshape(10, 1)
+        y = np.arange(100.0, 110.0).reshape(10, 1)
+        x_sh, y_sh = _shift_data(x, y, 3, 'continuous', 'continuous')
+        assert x_sh.shape[0] == 7 and y_sh.shape[0] == 7
+        # x's early indices paired with y's later indices (y "in the future")
+        np.testing.assert_array_equal(x_sh[:, 0], np.arange(0.0, 7.0))
+        np.testing.assert_array_equal(y_sh[:, 0], np.arange(103.0, 110.0))
+
+    def test_both_spike_unaffected(self):
+        """Existing spike-spike behavior (shift Y only) must be unchanged."""
+        x_spikes = [np.array([1.0, 5.0])]
+        y_spikes = [np.array([2.0, 6.0])]
+        x_sh, y_sh = _shift_data(x_spikes, y_spikes, 1.5, 'spike', 'spike')
+        assert x_sh is x_spikes  # untouched
+        np.testing.assert_allclose(y_sh[0], [0.5, 4.5])
+
+    def test_continuous_x_spike_y_shifts_y_only(self):
+        """X=continuous, Y=spike: dispatch is already correct today (keyed
+        off Y); must keep working identically after accepting x_processor_type."""
+        x = np.arange(10.0).reshape(10, 1)
+        y_spikes = [np.array([2.0, 6.0])]
+        x_sh, y_sh = _shift_data(x, y_spikes, 1.5, 'continuous', 'spike')
+        np.testing.assert_array_equal(x_sh, x)
+        np.testing.assert_allclose(y_sh[0], [0.5, 4.5])
+
+    def test_spike_x_continuous_y_does_not_crash(self):
+        """X=spike, Y=continuous: previously crashed (dispatch was keyed off
+        Y's type alone, so X's spike-time list hit the continuous branch's
+        np.array/2-D-slice path)."""
+        x_spikes = [np.array([1.0, 5.0])]
+        y = np.arange(10.0).reshape(10, 1)
+        x_sh, y_sh = _shift_data(x_spikes, y, 2.0, 'spike', 'continuous')
+        np.testing.assert_array_equal(y_sh, y)  # y untouched
+        np.testing.assert_allclose(x_sh[0], [3.0, 7.0])  # x shifted by +lag
+
+    def test_spike_x_continuous_y_sign_convention_matches_true_delay(self):
+        """End-to-end (through create_dataset) sign-convention check: when Y's
+        real activity trails X's spikes by `true_delay` seconds, only
+        lag=+true_delay must align them into the same window (matching the
+        lag>0='Y in the future' convention already used for continuous-
+        continuous and spike-spike)."""
+        from neural_mi.data.handler import create_dataset
+
+        true_delay = 4.0
+        x_spike_times = np.array([10.0, 30.0, 50.0, 70.0, 90.0])
+        x_spikes = [x_spike_times]
+        t = np.arange(0, 100, 1.0)
+        y_continuous = np.zeros((len(t), 1))
+        for st in x_spike_times:
+            idx = int(round(st + true_delay))
+            if idx < len(t):
+                y_continuous[idx, 0] = 1.0
+
+        def n_co_occurring(lag):
+            x_sh, y_sh = _shift_data(x_spikes, y_continuous, lag, 'spike', 'continuous')
+            ds = create_dataset(
+                x_sh, y_sh, x_time=None, y_time=t.copy(),
+                processor_type_x='spike',
+                processor_params_x={'window_size': 2.0, 'max_spikes_per_window': 5},
+                processor_type_y='continuous',
+                processor_params_y={'window_size': 2.0},
+            )
+            x_has_spike = (ds.x_data.numpy() != -1.0).any(axis=(1, 2))
+            y_has_pulse = (ds.y_data.numpy() > 0.5).any(axis=(1, 2))
+            return int((x_has_spike & y_has_pulse).sum())
+
+        # 4 of the 5 X-spike windows have a valid paired Y window (the spike
+        # at t=90 shifts its window past the end of the 100-sample series);
+        # the key check is that only the correctly-signed lag co-occurs at all.
+        assert n_co_occurring(true_delay) == 4
+        assert n_co_occurring(0.0) == 0
+        assert n_co_occurring(-true_delay) == 0
+
+    def test_mixed_modality_logs_informational_not_warning(self, caplog, recwarn):
+        """Per maintainer decision: mixed-modality shifting is surfaced as
+        plain info, not a UserWarning."""
+        import logging
+        x_spikes = [np.array([1.0, 5.0])]
+        y = np.arange(10.0).reshape(10, 1)
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            _shift_data(x_spikes, y, 2.0, 'spike', 'continuous')
+        assert any('Mixed-modality lag' in r.message for r in caplog.records)
+        assert len(recwarn) == 0
