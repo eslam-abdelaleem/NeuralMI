@@ -347,13 +347,13 @@ def _run_noise_ladder(
 
 
 def _warn_if_ladder_not_plateaued(ladder_summary: pd.DataFrame) -> None:
-    """Third of P4's three reliability conditions (kept separate from the two
-    checked in ``_report_dimensionality_reliability``, which don't apply here
-    since they need a single-run MI/PR pair, not a multi-rung sweep):
-    "no plateau across the noise sweep." Even once MI has detached from the
-    ceiling at multiple rungs, the PR readout needs to be *stable* across them
-    to be trustworthy -- if it's still drifting with added noise, picking any
-    single rung's dimensionality would be arbitrary.
+    """Checks the third dimensionality-reliability condition: no plateau
+    across the noise sweep. Kept separate from the two checked in
+    ``_report_dimensionality_reliability``, which don't apply here since they
+    need a single-run MI/PR pair, not a multi-rung sweep. Even once MI has
+    detached from the ceiling at multiple rungs, the PR readout needs to be
+    *stable* across them to be trustworthy -- if it's still drifting with
+    added noise, picking any single rung's dimensionality would be arbitrary.
     """
     detached_final = ladder_summary[ladder_summary['regime'] == 'detached']
     if len(detached_final) < 2 or 'pr_singular_mean' not in detached_final.columns:

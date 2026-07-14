@@ -43,7 +43,7 @@ def test_continuous_window_dataset(continuous_data):
     assert dataset.data.shape[2] > 0
 
 def test_continuous_window_warns_on_heavily_gap_interpolated_retained_window(caplog):
-    """U2: min_coverage_fraction only counts raw timestamps per window, not
+    """min_coverage_fraction only counts raw timestamps per window, not
     how much of a *retained* window's content is fabricated by np.interp
     bridging a large internal gap. A window can pass coverage on the
     strength of a few real timestamps near its start while most of its span
@@ -61,7 +61,7 @@ def test_continuous_window_warns_on_heavily_gap_interpolated_retained_window(cap
 
 
 def test_continuous_window_no_gap_warning_for_clean_data(caplog):
-    """A dataset with no large internal gaps must not trigger the U2 warning."""
+    """A dataset with no large internal gaps must not trigger the gap-interpolation warning."""
     import logging
     t = np.arange(0, 100, 1.0)
     data = np.random.randn(len(t), 1)

@@ -339,8 +339,8 @@ class ContinuousWindowDataset(TemporalWindowDataset):
                 f"{'Consider checking your time vector for large gaps.' if oob_frac > 0.1 else ''}"
             )
 
-        # U2: min_coverage_fraction only counts source *timestamps* per window
-        # (see validate_window_coverage) -- it says nothing about whether an
+        # min_coverage_fraction only counts source *timestamps* per window (see
+        # validate_window_coverage) -- it says nothing about whether an
         # in-bounds target time is close to a real sample or is being bridged
         # across a large internal gap by np.interp. Track that separately per
         # window here; remove_invalid_windows() below warns about *retained*

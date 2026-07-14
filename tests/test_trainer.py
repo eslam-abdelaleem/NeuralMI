@@ -223,7 +223,7 @@ class TestPeakFraction:
 
 
 class TestUnderTrainingWarning:
-    """U5: warn when training exhausts all epochs while test MI is still
+    """Warn when training exhausts all epochs while test MI is still
     climbing (patience defaults high enough that early stopping rarely fires,
     so nothing else signals this -- and since these are lower-bound
     estimators, under-training silently biases the estimate downward)."""

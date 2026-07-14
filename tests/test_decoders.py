@@ -1,11 +1,10 @@
 # tests/test_decoders.py
-"""Tests for the decoder-dispatch cluster (C-DECODER).
+"""Tests for build_decoder's dispatch and the CNN1D/CNN2D decoder classes.
 
-build_decoder used to dispatch on 'cnn1d' while the real embedding_model name
-is 'cnn', so CNN1DDecoder was unreachable and every 'cnn' run with
-use_decoder=True silently fell back to MLPDecoder. There was also no
-CNN2DDecoder at all, so use_decoder=True with embedding_model='cnn2d' crashed
-on a 3D/4D shape mismatch in the reconstruction loss.
+Covers that build_decoder correctly reaches CNN1DDecoder for
+embedding_model='cnn' and CNN2DDecoder for embedding_model='cnn2d' (matching
+the real embedding_model names, not 'cnn1d'), and that use_decoder=True works
+end-to-end for both without a shape mismatch in the reconstruction loss.
 """
 import logging
 

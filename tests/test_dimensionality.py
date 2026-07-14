@@ -328,11 +328,11 @@ class TestTrackEmbeddingsDefault:
 
 
 # ---------------------------------------------------------------------------
-# P4: three separate dimensionality-reliability conditions
+# Dimensionality-reliability conditions
 # ---------------------------------------------------------------------------
 
 class TestDimensionalityReliabilityConditions:
-    """Regression tests for the three distinct reliability conditions (P4):
+    """Regression tests for the three distinct reliability conditions:
     (1) ceiling corruption, (2) no spectral gap, (3) no plateau across the
     noise sweep. Deliberately kept as separate signals, not one is_reliable
     flag."""

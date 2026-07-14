@@ -87,7 +87,7 @@ def test_build_critic_custom_embedding_minimal_signature():
     assert isinstance(critic.embedding_net_x, MinimalCustom)
 
 
-# --- build_optimizer_and_scheduler (C-OPTIM: shared by task.py and precision.py) ---
+# --- build_optimizer_and_scheduler (shared by task.py and precision.py) ---
 
 class TestBuildOptimizerAndScheduler:
     def _critic(self):

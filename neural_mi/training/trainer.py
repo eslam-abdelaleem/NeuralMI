@@ -651,7 +651,7 @@ class Trainer:
 
         best_ep = np.argmax(self.custom_smoothing_fn(history) if self.custom_smoothing_fn else self._smooth(history, smoothing_sigma, median_window))
 
-        # U5: early stopping is effectively off by default (patience defaults to
+        # Early stopping is effectively off by default (patience defaults to
         # 1000), so nothing else signals "training simply ran out of epochs while
         # test MI was still climbing." Since these are lower-bound estimators,
         # under-training always biases the reported value downward -- the
