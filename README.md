@@ -8,6 +8,8 @@
 
 In modern neuroscience, MI estimation is usually not possible and using black-box methods is rarely enough. Estimates can be plagued by finite-sampling bias and estimator variance, leading to results that aren't scientifically rigorous. `NeuralMI` solves this by moving beyond simple point estimates to incorporate essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and novel analyses of intrinsic dimensionality. It is built for researchers who need to analyze complex relationships in continuous time-series (like LFP or EEG), discrete spike trains, and categorical state data.
 
+**A note on what every estimate means:** `NeuralMI`'s estimators are variational **lower bounds** on the true mutual information, not the exact value. This is what makes them tractable on high-dimensional neural data, but it has two direct consequences worth knowing before you interpret a number: a reported estimate can under-report the true MI but never over-report it, and each estimator has a ceiling set by its evaluation batch size (`log(batch_size)` for the default InfoNCE estimator). See [Tutorial 0](tutorials/00_Why_and_How_MI_Estimation_Works.ipynb) for the full mechanics behind this.
+
 ## Key Features
 
 * **Unified & Simple API:** Access all analysis modes through a single `run()` function.
@@ -77,8 +79,10 @@ To get the most out of `NeuralMI`, we recommend following the tutorial series in
     - **05_Rigorous_Estimation**: A deep dive into `mode='rigorous'` for debiased, accurate MI estimates.
 - **Part 3: Advanced Analysis and Applications**
     - **06_Temporal_Questions**: Directed, time-resolved analyses — `mode='lag'`, `mode='precision'`, and transfer entropy.
-    - **07_Population_Questions**: Population geometry and connectivity — `mode='dimensionality'`, conditional MI, and the `mode='pairwise'` MI matrix.
+    - **07_Population_Questions**: Population geometry and connectivity — `mode='dimensionality'`, conditional MI, and the `mode='pairwise'` MI matrix. Uses real hippocampal and Allen Brain Observatory recordings.
     - **08_Models_Estimators_and_Validation**: Understand the trade-offs between different critic architectures, estimators, and custom models.
+
+Separately, [`benchmarks/vs_classical_estimators.ipynb`](benchmarks/vs_classical_estimators.ipynb) compares `NeuralMI` against classical alternatives (the KSG estimator and geometric intrinsic-dimension estimators) on problems chosen to be hard for them — useful if you're deciding whether a neural estimator is the right tool for your data, rather than learning the library itself.
 
 ## Installation
 
