@@ -42,6 +42,35 @@ def test_continuous_window_dataset(continuous_data):
     assert dataset.data.shape[1] == 2
     assert dataset.data.shape[2] > 0
 
+def test_continuous_window_warns_on_heavily_gap_interpolated_retained_window(caplog):
+    """U2: min_coverage_fraction only counts raw timestamps per window, not
+    how much of a *retained* window's content is fabricated by np.interp
+    bridging a large internal gap. A window can pass coverage on the
+    strength of a few real timestamps near its start while most of its span
+    sits deep inside an empty gap -- that must be surfaced, not silent.
+    (remove_invalid_windows(), where this is checked, only runs via the full
+    PairedTemporalDataset orchestration -- not from a bare
+    ContinuousWindowDataset -- so exercise it through that path.)"""
+    import logging
+    t = np.concatenate([np.arange(0, 10, 1.0), np.arange(90, 100, 1.0)])
+    data = np.random.randn(len(t), 1)
+    x_dataset = ContinuousWindowDataset(data, time_vector=t, min_coverage_fraction=0.2)
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        PairedTemporalDataset(x_dataset, window_size=20.0, t_start=0.0, t_end=80.0)
+    assert any('bridged by interpolation' in r.message for r in caplog.records)
+
+
+def test_continuous_window_no_gap_warning_for_clean_data(caplog):
+    """A dataset with no large internal gaps must not trigger the U2 warning."""
+    import logging
+    t = np.arange(0, 100, 1.0)
+    data = np.random.randn(len(t), 1)
+    x_dataset = ContinuousWindowDataset(data, time_vector=t)
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        PairedTemporalDataset(x_dataset, window_size=10.0, t_start=0.0, t_end=90.0)
+    assert not any('bridged by interpolation' in r.message for r in caplog.records)
+
+
 def test_continuous_window_with_jumps():
     """Test ContinuousWindowDataset dealing with jumps in time with no data"""
     x = np.hstack((np.linspace(0, 100, 1000), np.linspace(200, 300, 1000)))
@@ -879,3 +908,69 @@ class TestBugFixes:
         ds.data = torch.zeros_like(ds.data)
         ds.reset()
         assert torch.equal(ds.data, saved)
+
+    # --- CategoricalWindowDataset: 1-D input (mirrors ContinuousWindowDataset) ---
+
+    def test_categorical_window_dataset_1d_integer_input(self):
+        """A 1-D array of integer category labels (single channel) must not
+        crash -- previously IndexError'd in move_data_to_windows via
+        data_orig.shape[1] since 1-D input was never expanded to (N, 1)."""
+        data = np.random.randint(0, 3, size=50)
+        time = np.arange(50, dtype=float)
+        wm = WindowManager(window_size=5.0, t_start=0.0, t_end=50.0)
+        ds = CategoricalWindowDataset(data, time, window_manager=wm)
+        ds.move_data_to_windows()
+        assert ds.data_orig.shape == (50, 1)
+        assert ds.data.shape[1] == 1  # single channel
+
+    def test_categorical_window_dataset_1d_float_input_relabeled(self):
+        """1-D non-integer labels are expanded to (N, 1) and relabeled in place,
+        not flattened by np.unique's return_inverse."""
+        data = np.array([1.5, 2.5, 2.5, 1.5])
+        time = np.arange(4, dtype=float)
+        ds = CategoricalWindowDataset(data, time)
+        assert ds.data_orig.shape == (4, 1)
+
+    def test_categorical_window_dataset_2d_non_integer_relabel_preserves_shape(self):
+        """Relabeling non-integer 2-D (multi-channel) labels must preserve the
+        (n_timepoints, n_channels) shape -- np.unique(..., return_inverse=True)
+        always returns a flattened array, so a missing reshape silently
+        collapsed multi-channel string/float labels to 1-D."""
+        data = np.array([['a', 'b'], ['b', 'a'], ['a', 'a'], ['b', 'b']])
+        time = np.arange(4, dtype=float)
+        ds = CategoricalWindowDataset(data, time)
+        assert ds.data_orig.shape == (4, 2)
+
+    # --- BinnedSpikeDataset: bin-width normalization and device-safe coverage ---
+
+    def test_binned_spike_normalizes_by_actual_bin_width(self):
+        """When window_size isn't an exact multiple of bin_size, normalization
+        must use the actual bin width (window_size / n_bins), not the
+        requested bin_size -- otherwise spikes/second is misreported."""
+        from neural_mi.data.temporal import BinnedSpikeDataset
+        # window_size=10, bin_size=3 -> n_bins=ceil(10/3)=4 -> actual bin width=2.5
+        window_size, bin_size = 10.0, 3.0
+        n_bins = int(np.ceil(window_size / bin_size))
+        actual_bin_width = window_size / n_bins
+        # One spike per bin's start, well inside a single window at t=0.
+        spikes = np.array([0.1])
+        wm = WindowManager(window_size=window_size, t_start=0.0, t_end=window_size)
+        ds = BinnedSpikeDataset([spikes], bin_size=bin_size, window_manager=wm, normalize=True)
+        # A count of 1 spike normalized should equal 1/actual_bin_width, not 1/bin_size.
+        expected = 1.0 / actual_bin_width
+        actual = ds.data[0, 0, :].max().item()
+        assert actual == pytest.approx(expected, rel=1e-5)
+        assert actual != pytest.approx(1.0 / bin_size, rel=1e-5)
+
+    def test_binned_spike_validate_window_coverage_works_on_mps(self):
+        """validate_window_coverage() must work when data lives on an
+        accelerator -- .numpy() requires a CPU tensor first."""
+        if not torch.backends.mps.is_available():
+            pytest.skip("MPS not available on this machine")
+        from neural_mi.data.temporal import BinnedSpikeDataset
+        spikes = [np.sort(np.random.rand(20) * 50)]
+        wm = WindowManager(window_size=5.0, t_start=0.0, t_end=50.0)
+        ds = BinnedSpikeDataset(spikes, bin_size=1.0, window_manager=wm, data_device='mps')
+        valid = ds.validate_window_coverage()
+        assert isinstance(valid, np.ndarray)
+        assert valid.dtype == bool

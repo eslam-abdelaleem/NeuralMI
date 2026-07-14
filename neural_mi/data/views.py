@@ -10,14 +10,15 @@ from neural_mi.logger import logger
 class SubsetView:
     """
     Lightweight view into a PairedDataset or PairedTemporalDataset without copying data.
-    Primarily used to keep track of indexing by time for temporal data. 
-    Will automatically translate between window indices and actual times and sustain.
 
-    Subset by indices, but then time shift data? This will automatically update 
-    when temporal windows change
+    Tracks a subset by window index (static data) or by time region (temporal
+    data); the two representations are kept in sync with each other and with
+    the underlying dataset's windows. When temporal windows are rebuilt (e.g.
+    a time shift), a view holding `times` recomputes its `indices` from the
+    dataset's current window set automatically, via `_on_dataset_updated`.
 
-    Note that if a time shift is applied to temporal data, indexing times will be shifted 
-    by however much x_dataset was shifted by. 
+    If a time shift is applied to the underlying temporal data, this view's
+    stored `times` are shifted by the same offset so indexing stays aligned.
     """
     
     def __init__(self, dataset, indices=None, times=None, channels_x=None, channels_y=None,
@@ -110,11 +111,17 @@ class SubsetView:
         if window_times is None or len(window_times) == 0:
              self.indices = torch.tensor([], device='cpu', dtype=torch.long)
         else:
-            # Use 'right' for start to include windows starting at or before the start time
-            # (conceptually we want windows overlapping the interval, so windows starting before 'start'
-            # but ending after 'start' are covered if we just pick based on window start?
-            # Actually, standard behavior: Select windows whose start times are in [start, end).
-            # If we want strict overlap, it's more complex. Here we approximate by window starts.)
+            # Selection uses window START time only, not each window's full
+            # [start, start+window_size) span. The included range runs from the
+            # window whose start is the LARGEST value <= query_start, through the
+            # window whose start is the LARGEST value < query_end. For
+            # non-overlapping windows (step_size >= window_size) this exactly
+            # matches true span-overlap with [query_start, query_end). For
+            # overlapping windows (step_size < window_size), only that single
+            # nearest preceding window is used as the start of the range -- an
+            # earlier window whose span also overlaps the query is excluded even
+            # though its start precedes query_start, because window_size isn't
+            # available here to test spans directly.
 
             # Using 'right' for start: finds index i where window_times[i] > start.
             # We subtract 1 to get index where window_times[i] <= start.

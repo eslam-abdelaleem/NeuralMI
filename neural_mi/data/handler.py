@@ -3,8 +3,10 @@ import torch
 import numpy as np
 import inspect
 
-from .temporal import *
-from .static import *
+from .temporal import (
+    ContinuousWindowDataset, SpikeWindowDataset, BinnedSpikeDataset, CategoricalWindowDataset,
+)
+from .static import StaticDataset
 from torch.utils.data import Dataset
 from neural_mi.logger import logger
 
@@ -280,7 +282,7 @@ class PairedDataset(Dataset):
         # Ensure sizes match
         if y_dataset is not None:
             self._align_datasets()
-        logger.info(f"Created PairedDataset")
+        logger.info("Created PairedDataset")
 
     # Small properties for convenient access to main data
     @property
@@ -317,15 +319,15 @@ class PairedDataset(Dataset):
             # the truncated data the next time apply_noise/apply_precision runs.
             self.x_dataset.data_master = None
             self.y_dataset.data_master = None
-    
+
     def __len__(self):
         return len(self.x_dataset)
-    
+
     def __getitem__(self, idx):
         x_data = self.x_dataset[idx]
         y_data = self.y_dataset[idx] if self.y_dataset else None
         return x_data, y_data
-    
+
     def apply_noise(self, amplitude_x=0, amplitude_y=0):
         """Apply noise to both datasets."""
         if amplitude_x > 0:
@@ -338,7 +340,6 @@ class PairedDataset(Dataset):
             self.x_dataset.apply_precision(precision_x)
         if precision_y > 0 and self.y_dataset:
             self.y_dataset.apply_precision(precision_y)
-
 
 
 def create_single_dataset(data, time, proc_type, proc_params, device=None, data_device='cpu'):

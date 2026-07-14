@@ -83,9 +83,16 @@ class TemporalWindowDataset(Dataset, ABC):
         self._compute_max_samples_per_window()
 
     def _on_window_manager_updated(self):
-        """Called when window manager parameters (window size, t_start, t_end) change."""
+        """Called when window manager parameters (window size, t_start, t_end) change.
+
+        Only recomputes sizing here. Actually moving data to windows is left
+        to the caller: PairedTemporalDataset._build_windows() always calls
+        move_data_to_windows() itself right after update_parameters() (in
+        __init__, time_shift(), and set_window_size()), and does so in the
+        correct order relative to window-coverage validation. Calling it here
+        too would just redo that work a second time.
+        """
         self._compute_max_samples_per_window()
-        # self._move_data_to_windows()
     
     def _compute_max_samples_per_window(self):
         """Compute maximum samples that fit in a window."""
@@ -332,6 +339,26 @@ class ContinuousWindowDataset(TemporalWindowDataset):
                 f"{'Consider checking your time vector for large gaps.' if oob_frac > 0.1 else ''}"
             )
 
+        # U2: min_coverage_fraction only counts source *timestamps* per window
+        # (see validate_window_coverage) -- it says nothing about whether an
+        # in-bounds target time is close to a real sample or is being bridged
+        # across a large internal gap by np.interp. Track that separately per
+        # window here; remove_invalid_windows() below warns about *retained*
+        # windows once the final valid set is known.
+        if len(self.time_vector) >= 2:
+            _LARGE_GAP_MULTIPLE = 3.0
+            left_idx = np.clip(
+                np.searchsorted(self.time_vector, target_times_flat, side='right') - 1,
+                0, len(self.time_vector) - 2,
+            )
+            local_gap = self.time_vector[left_idx + 1] - self.time_vector[left_idx]
+            bridges_large_gap = (~out_of_bounds) & (local_gap > _LARGE_GAP_MULTIPLE * self.period)
+            self._interp_gap_fraction = bridges_large_gap.reshape(
+                self.window_manager.n_windows, self.max_samples_per_window
+            ).mean(axis=1)
+        else:
+            self._interp_gap_fraction = np.zeros(self.window_manager.n_windows)
+
         # Interpolate for each channel
         for i in range(n_channels):
             # np.interp expects 1D arrays
@@ -391,6 +418,30 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         # Also enforce strict boundary containment if desired, but "data points check" handles gaps correctly.
 
         return valid
+
+    def remove_invalid_windows(self):
+        """Trim to valid windows, then warn if any *retained* window is mostly
+        interpolated across an internal time_vector gap (see the gap-fraction
+        computed in move_data_to_windows). min_coverage_fraction alone can't
+        catch this -- it only counts raw timestamps per window, not how far
+        those timestamps are from the target sample times."""
+        _gap_frac = getattr(self, '_interp_gap_fraction', None)
+        _valid_mask = self.window_manager.valid_windows if self.window_manager is not None else None
+        super().remove_invalid_windows()
+        if _gap_frac is not None and _valid_mask is not None and len(_gap_frac) == len(_valid_mask):
+            _retained_frac = _gap_frac[_valid_mask]
+            _flagged = _retained_frac > 0.3
+            _n_flagged = int(_flagged.sum())
+            if _n_flagged > 0:
+                logger.warning(
+                    f"ContinuousWindowDataset: {_n_flagged}/{len(_retained_frac)} retained "
+                    f"window(s) have over 30% of their samples bridged by interpolation "
+                    f"across a gap more than 3x the typical inter-sample period. These "
+                    f"windows passed min_coverage_fraction (enough raw timestamps are "
+                    f"nearby) but much of their content may be fabricated by np.interp. "
+                    f"Consider raising min_coverage_fraction or pre-collapsing large gaps "
+                    f"in your data."
+                )
 
     def get_temporal_extent(self):
         return self.time_vector[0], self.time_vector[-1]
@@ -730,6 +781,12 @@ class BinnedSpikeDataset(TemporalWindowDataset):
         ws = self.window_manager.window_size
 
         data = np.zeros((n_windows, n_neurons, n_bins), dtype=np.float32)
+        # Bin indices are assigned via rel_time / ws * n_bins, i.e. bins of
+        # width ws/n_bins -- not necessarily self.bin_size, since n_bins =
+        # ceil(ws/bin_size) rounds up whenever ws isn't an exact multiple of
+        # bin_size. Normalizing by the requested bin_size in that case would
+        # misreport spikes/second; normalize by the actual bin width used.
+        actual_bin_width = ws / n_bins
 
         # Two-pointer loop: correctly handles overlapping windows.
         # Each spike contributes to every window whose range contains it.
@@ -756,7 +813,7 @@ class BinnedSpikeDataset(TemporalWindowDataset):
                     np.add.at(data[w, i, :], bin_idx, 1.0)
 
             if self.normalize:
-                data[:, i, :] /= self.bin_size
+                data[:, i, :] /= actual_bin_width
 
         self.data = torch.tensor(data, device=self.data_device)
         self.data_master = self.data.detach().clone()
@@ -764,7 +821,9 @@ class BinnedSpikeDataset(TemporalWindowDataset):
     def validate_window_coverage(self):
         """Mark a window valid if at least one neuron fired in it."""
         # Use the filled data tensor: any window with a non-zero bin has data.
-        return (self.data.sum(dim=(1, 2)).numpy() > 0)
+        # .cpu() first: self.data may live on an accelerator (dataset_device),
+        # and .numpy() requires a CPU tensor.
+        return (self.data.sum(dim=(1, 2)).cpu().numpy() > 0)
     
     def __getitem__(self, idx):
         return self.data[idx]
@@ -828,9 +887,14 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         super().__init__(window_manager, device, data_device)
 
         arr = np.array(data)
+        if arr.ndim == 1:
+            arr = np.expand_dims(arr, 1)  # (n_timepoints, 1), mirrors ContinuousWindowDataset
         if not np.issubdtype(arr.dtype, np.integer):
+            # return_inverse always returns a flattened array regardless of
+            # input shape (both NumPy <2.0 and current behavior) -- reshape
+            # back or multi-channel labels get silently collapsed to 1-D.
             _, indices = np.unique(arr, return_inverse=True)
-            arr = indices
+            arr = indices.reshape(arr.shape)
         elif arr.size > 0 and arr.min() < 0:
             # Integer-typed input skips the relabeling above, so a negative
             # label would otherwise reach np.bincount downstream (via
