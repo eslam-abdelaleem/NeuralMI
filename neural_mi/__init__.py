@@ -11,6 +11,7 @@ from .run import run
 from .config import (
     Model, Training, Split, Estimator, Output, Processing,
     Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional,
+    Pairwise, Sweep,
 )
 from .logger import logger, set_verbosity, set_verbose
 from .results import Results
@@ -29,6 +30,7 @@ __all__ = [
     'run',
     'Model', 'Training', 'Split', 'Estimator', 'Output', 'Processing',
     'Rigorous', 'Precision', 'Lag', 'Transfer', 'Dimensionality', 'Conditional',
+    'Pairwise', 'Sweep',
     'Results',
     'logger',
     'set_verbosity',

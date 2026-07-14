@@ -14,6 +14,20 @@ from neural_mi.exceptions import DataShapeError
 from neural_mi.estimators import ESTIMATORS, ESTIMATOR_DEFAULTS
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
+def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
+    """Raise TypeError unless `value` matches `expected_type`.
+
+    `bool` is a subclass of `int` in Python, so a plain `isinstance` check lets
+    `n_epochs=True` silently validate as an int. Reject `bool` values unless the
+    schema explicitly lists `bool` among the expected types.
+    """
+    allowed = expected_type if isinstance(expected_type, tuple) else (expected_type,)
+    if isinstance(value, bool) and bool not in allowed:
+        raise TypeError(f"{context} '{key}' must be of type {expected_type}, got bool ({value!r}).")
+    if not isinstance(value, expected_type):
+        raise TypeError(f"{context} '{key}' must be of type {expected_type}, got {type(value)}.")
+
+
 ALLOWED_VALUES = {
     'critic_type': ['separable', 'concat', 'hybrid'],
     'embedding_model': ['mlp', 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
@@ -86,7 +100,7 @@ class DataValidator:
             if not isinstance(data, (np.ndarray, torch.Tensor)): return
             if data.ndim not in [2, 3]:
                 raise DataShapeError(
-                    f"{name} must be a 2D array of shape (n_channels, n_timepoints) "
+                    f"{name} must be a 2D array of shape (n_timepoints, n_channels) "
                     f"or a pre-processed 3D tensor, but got a {data.ndim}D array."
                 )
             if data.size == 0: raise ValueError(f"{name} is empty.")
@@ -166,8 +180,7 @@ class ParameterValidator:
             schema = BASE_PARAMS_SCHEMA[key]
             # Type check
             expected_type = schema['type']
-            if not isinstance(value, expected_type):
-                raise TypeError(f"Parameter '{key}' must be of type {expected_type}, got {type(value)}.")
+            _check_type(value, expected_type, key, "Parameter")
 
             # Min value check (skip for non-scalar types like list/dict)
             if 'min' in schema and value is not None and not isinstance(value, (list, dict)) and value < schema['min']:
@@ -224,6 +237,24 @@ class ParameterValidator:
         if self.mode == "sweep" and self.params.get("sweep_grid") is None:
             raise ValueError(f"'sweep_grid' required for mode='{self.mode}'.")
 
+    def _mode_kwarg(self, key: str):
+        """Look up a mode kwarg from either the named top-level params (e.g.
+        `lag_range`, `delta_threshold`) or from inside `analysis_kwargs`, where
+        mode kwargs without a dedicated named parameter live (e.g. `n_splits`,
+        `gamma_range`, `equalize_n`, `max_samples_per_task`, `pairs`).
+
+        Returns
+        -------
+        tuple[bool, Any]
+            ``(present, value)``.
+        """
+        if key in self.params:
+            return True, self.params[key]
+        analysis_kwargs = self.params.get('analysis_kwargs') or {}
+        if key in analysis_kwargs:
+            return True, analysis_kwargs[key]
+        return False, None
+
     def _validate_mode_kwargs(self):
         """Validates **analysis_kwargs passed to run() for the specific mode."""
         mode_schema = MODE_KWARGS_SCHEMA.get(self.mode, {})
@@ -232,25 +263,23 @@ class ParameterValidator:
 
         # Check required kwargs
         for key, schema in mode_schema.items():
-            if schema.get('required', False) and key not in self.params:
+            present, _ = self._mode_kwarg(key)
+            if schema.get('required', False) and not present:
                 raise ValueError(
                     f"Mode '{self.mode}' requires keyword argument '{key}'."
                 )
 
         # Check types of provided kwargs that match the schema
         for key, schema in mode_schema.items():
-            if key in self.params and self.params[key] is not None:
-                val = self.params[key]
+            present, val = self._mode_kwarg(key)
+            if present and val is not None:
                 expected_type = schema.get('type')
-                if expected_type and not isinstance(val, expected_type):
-                    raise TypeError(
-                        f"Keyword argument '{key}' for mode '{self.mode}' must be "
-                        f"of type {expected_type}, got {type(val)}."
-                    )
+                if expected_type:
+                    _check_type(val, expected_type, key, f"Keyword argument (mode='{self.mode}')")
 
         # lag_range entries must be numeric (int for sample lags, float for time lags)
         if self.mode == 'lag':
-            lr = self.params.get('lag_range')
+            _, lr = self._mode_kwarg('lag_range')
             if lr is not None:
                 items = list(lr)
                 non_numeric = [x for x in items

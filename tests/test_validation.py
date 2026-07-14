@@ -2,7 +2,7 @@
 import pytest
 import numpy as np
 import neural_mi as nmi
-from neural_mi import Training, Estimator, Processing
+from neural_mi import Training, Estimator, Processing, Rigorous, Sweep
 from neural_mi.validation import ParameterValidator, DataValidator
 from neural_mi.defaults import BASE_PARAMS_SCHEMA
 from neural_mi.exceptions import DataShapeError
@@ -164,3 +164,28 @@ def test_run_preserves_scheduler_params(small_data):
         n_workers=1,
     )
     assert result.params['base_params']['scheduler_params'] == {'gamma': 0.5}
+
+
+def test_run_rejects_bool_for_int_param(small_data):
+    """bool is an int subclass in Python; n_epochs=True must not silently validate."""
+    x, y = small_data
+    with pytest.raises(TypeError, match="Parameter 'n_epochs' must be of type"):
+        nmi.run(x, y, training=Training(n_epochs=True), n_workers=1)
+
+
+def test_run_validates_mode_kwargs_living_in_analysis_kwargs(small_data):
+    """Mode kwargs with no dedicated named parameter (e.g. Rigorous.r2_threshold)
+    live inside **analysis_kwargs at the engine boundary; they must still be
+    type-checked, not silently pass through unvalidated."""
+    x, y = small_data
+    with pytest.raises(TypeError, match="r2_threshold"):
+        nmi.run(x, y, mode='rigorous', rigorous=Rigorous(r2_threshold='bad'),
+                training=Training(n_epochs=1), n_workers=1)
+
+
+def test_run_validates_sweep_max_samples_per_task_type(small_data):
+    x, y = small_data
+    with pytest.raises(TypeError, match="max_samples_per_task"):
+        nmi.run(x, y, mode='sweep', sweep_grid={'embedding_dim': [4, 8]},
+                sweep=Sweep(max_samples_per_task='bad'),
+                training=Training(n_epochs=1), n_workers=1)

@@ -22,7 +22,8 @@ BASE_PARAMS_SCHEMA = {
     'device': {'type': (str, type(None), torch.device), 'default': None},
     'split_mode': {'type': str, 'default': 'blocked'},
     'random_time_shifting': {'type': bool, 'default': False},
-    'epochs_to_max_shift': {'type': int, 'min': 0, 'default': 5},
+    # min=1: epoch / epochs_to_max_shift divides by this value (see Trainer).
+    'epochs_to_max_shift': {'type': int, 'min': 1, 'default': 5},
     'smoothing_sigma': {'type': float, 'min': 0.0, 'default': 1.0},
     'median_window': {'type': int, 'min': 1, 'default': 5},
     'min_improvement': {'type': float, 'min': 0.0, 'default': 0.001},
@@ -129,7 +130,7 @@ BASE_PARAMS_SCHEMA = {
     'random_seed': {'type': (int, type(None)), 'default': None},
 
     # Conservative epoch selection:
-    # 1.0 (default) → use the epoch where smoothed test MI is maximised (current behaviour).
+    # 1.0 (default) → use the epoch where smoothed test MI is maximised.
     # < 1.0          → use the first epoch where smoothed test MI ≥ peak_fraction * max_test_mi.
     #                  This gives a more conservative train-MI estimate by avoiding the final
     #                  noisy peak.  When < 1.0, the train MI at the actual peak epoch is also
@@ -216,6 +217,7 @@ MODE_KWARGS_SCHEMA = {
     },
     'pairwise': {
         'n_workers': {'type': int, 'default': 1},
+        'pairs': {'type': (list, type(None)), 'default': None},
     },
 }
 

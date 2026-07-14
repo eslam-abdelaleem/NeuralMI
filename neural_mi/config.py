@@ -25,11 +25,12 @@ Design notes
   forced to import these classes.
 """
 from dataclasses import dataclass, fields
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 __all__ = [
     "Model", "Training", "Split", "Estimator", "Output", "Processing",
     "Rigorous", "Precision", "Lag", "Transfer", "Dimensionality", "Conditional",
+    "Pairwise", "Sweep",
     "as_config",
 ]
 
@@ -328,3 +329,22 @@ class Conditional:
         for k in self._Z_FIELDS:
             d.pop(k, None)
         return d
+
+
+@dataclass
+class Pairwise:
+    """Parameters for ``mode='pairwise'`` channel-pair MI matrix."""
+    pairs: Optional[List[Tuple[int, int]]] = None
+
+    def to_analysis_kwargs(self) -> Dict[str, Any]:
+        return _non_none(self)
+
+
+@dataclass
+class Sweep:
+    """Parameters for ``mode='sweep'`` execution (sweep-execution concerns, not
+    model/training configuration)."""
+    max_samples_per_task: Optional[int] = None
+
+    def to_analysis_kwargs(self) -> Dict[str, Any]:
+        return _non_none(self)

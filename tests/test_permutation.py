@@ -207,3 +207,36 @@ class TestNullDistributionRawClipped:
                       model=self._MODEL_P, training=self._TRAINING_P,
                       permutation_test=True, n_permutations=2, n_workers=1)
         self._check_null_lists(res.details, 2)
+
+
+class TestPairwisePermutation:
+    """Regression tests: mode='pairwise' permutation_test used to always return an
+    all-NaN null (dispatch had no 'pairwise' branch) and emitted the same warning
+    twice with two different pair-count formulas."""
+
+    _MODEL_P = Model(embedding_dim=4, hidden_dim=8, n_layers=1)
+    _TRAINING_P = Training(n_epochs=2, learning_rate=1e-3, batch_size=64, patience=2)
+
+    def test_cross_pairwise_null_distribution_not_all_nan(self):
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((N, 3)).astype('float32')
+        y = rng.standard_normal((N, 2)).astype('float32')
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            res = nmi.run(x_data=x, y_data=y, mode='pairwise',
+                          model=self._MODEL_P, training=self._TRAINING_P,
+                          permutation_test=True, n_permutations=2, n_workers=1)
+        null = res.details['null_distribution']
+        assert len(null) == 2
+        assert not all(np.isnan(v) for v in null), "null distribution is all-NaN"
+        expensive_warnings = [x for x in w if "computationally expensive" in str(x.message)]
+        assert len(expensive_warnings) == 1, "duplicate warning was not collapsed"
+
+    def test_self_pairwise_permutation_test_does_not_crash(self):
+        """Self-pairwise has no y_data to shuffle; must skip cleanly, not crash."""
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((N, 3)).astype('float32')
+        res = nmi.run(x_data=x, mode='pairwise',
+                      model=self._MODEL_P, training=self._TRAINING_P,
+                      permutation_test=True, n_permutations=2, n_workers=1)
+        assert 'null_distribution' not in res.details

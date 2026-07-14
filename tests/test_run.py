@@ -67,6 +67,24 @@ def test_run_sweep_mode_returns_results_with_dataframe(gaussian_data):
     assert isinstance(result.dataframe, pd.DataFrame)
     assert 'embedding_dim' in result.dataframe.columns
     assert len(result.dataframe) == 2
+
+
+def test_run_sweep_mode_tolerates_unhashable_swept_values(gaussian_data):
+    """sweep_grid values that are themselves lists (e.g. per-layer hidden_dim)
+    used to crash pandas groupby with 'unhashable type: list'."""
+    x_data, y_data = gaussian_data
+    sweep_grid = {'hidden_dim': [[8, 8], [16]]}
+    result = nmi.run(
+        x_data, y_data,
+        mode='sweep',
+        model=MODEL, training=TRAINING,
+        sweep_grid=sweep_grid,
+        output=NATS,
+        n_workers=1
+    )
+    assert isinstance(result.dataframe, pd.DataFrame)
+    assert len(result.dataframe) == 2
+    assert set(result.dataframe['hidden_dim']) == {(8, 8), (16,)}
     assert result.mi_estimate is None
 
 def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
