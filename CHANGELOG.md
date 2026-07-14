@@ -31,10 +31,21 @@ tutorials rather than trusting stale cached notebook outputs:
   `run.py`/`analysis/conditional.py`: `'majority_vote'`/`'probability'` (window-constant
   per-category summaries) are folded into channels and broadcast across X's window;
   `'full_trajectory'` (genuine per-timepoint resolution) is folded into channels with its
-  real window axis restored. Surfaced a second, separate discrepancy along the way —
-  `ContinuousWindowDataset` reserves a deliberate "+1" interpolation-edge buffer sample
-  that `CategoricalWindowDataset` doesn't need — reconciled with a narrowly-scoped, warned
-  trim (exactly 1 sample) that still raises for a genuinely different `window_size`.
+  real window axis restored. Surfaced two further, separate processor-level discrepancies
+  along the way, both reconciled with a tight, warned, exactly-1-sample trim in
+  `analysis/conditional.py` rather than raising: `ContinuousWindowDataset` reserves a
+  deliberate "+1" interpolation-edge buffer sample that `CategoricalWindowDataset` doesn't
+  need, so a full-resolution categorical Z's window *size* can be 1 short of X's; and the two
+  processors' different window-*coverage*-validation implementations (searchsorted-based vs.
+  a two-pointer scan) can disagree on a boundary window's validity, so their window *counts*
+  can differ by 1 too (the same truncate-to-shorter precedent `create_dataset` already uses
+  when aligning X/Y streams of different duration — see Tutorial 2). A genuinely different
+  `window_size` or duration still raises in both cases.
+- Several `nmi.run()` calls across Tutorials 1, 3, and 8 were missing `show_progress=False`
+  (Tutorials 4-7 were already fixed in an earlier pass), so their tqdm progress bars got
+  captured as inert, non-updating text/widget clutter in the saved notebook — worst case one
+  frozen bar per loop iteration (Tutorial 3's 7-value `window_size` sweep alone had 7). Added
+  across all 9 remaining call sites.
 
 ### Added
 
