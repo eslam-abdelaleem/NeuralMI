@@ -25,11 +25,16 @@ tutorials rather than trusting stale cached notebook outputs:
   `precision.py` docstring that made the same wrong claim.
 - `mode='conditional'` concatenates X and Z's windowed tensors along the channel axis,
   which requires matching window-size dimensions — but every `z_processor_type='categorical'`
-  encoding collapses that axis to the category count, not `window_size`, so it can never
+  encoding collapses that axis to the category count, not `window_size`, so it could never
   satisfy the shape check for a Z with more than one category (using the same `window_size`
-  across X/Y/Z, as Tutorial 7 previously advised, does not fix this). Worked around in
-  Tutorial 7 by switching Z to continuous processing for now; a proper fix in
-  `analysis/conditional.py` is tracked separately.
+  across X/Y/Z, as Tutorial 7 previously advised, did not fix this). Fixed in
+  `run.py`/`analysis/conditional.py`: `'majority_vote'`/`'probability'` (window-constant
+  per-category summaries) are folded into channels and broadcast across X's window;
+  `'full_trajectory'` (genuine per-timepoint resolution) is folded into channels with its
+  real window axis restored. Surfaced a second, separate discrepancy along the way —
+  `ContinuousWindowDataset` reserves a deliberate "+1" interpolation-edge buffer sample
+  that `CategoricalWindowDataset` doesn't need — reconciled with a narrowly-scoped, warned
+  trim (exactly 1 sample) that still raises for a genuinely different `window_size`.
 
 ### Added
 

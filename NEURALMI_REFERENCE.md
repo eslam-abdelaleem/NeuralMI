@@ -601,13 +601,13 @@ Both terms are estimated independently with their own model fits.
 
 **Required:** `z_data` (the conditioning variable)
 
-**Optional:** `z_processor_type`, `z_processor_params` — same options as for x/y,
-with one caveat: XZ is built by concatenating X and Z's windowed tensors along
-the channel axis, which requires them to share the same trailing (window-size)
-dimension. `z_processor_type='categorical'` collapses that dimension to the
-number of categories rather than `window_size`, so it will not produce a
-matching shape for any Z with more than one category. For a numerically-coded
-Z, use `z_processor_type='continuous'` instead.
+**Optional:** `z_processor_type`, `z_processor_params` — same options as for x/y.
+Internally, XZ is built by concatenating X and Z's windowed tensors along the
+channel axis, so Z's per-window representation is automatically re-laid out to
+match X's window: `z_processor_type='categorical'`'s `'majority_vote'` and
+`'probability'` encodings (window-constant summaries) are broadcast across
+X's window, and `'full_trajectory'` (genuine per-timepoint resolution) keeps
+its own timepoint axis.
 
 **Returns:** `Results` with:
 - `result.mi_estimate` — float: I(X; Y | Z)
