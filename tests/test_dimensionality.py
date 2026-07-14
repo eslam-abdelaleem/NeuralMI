@@ -397,6 +397,65 @@ class TestDimensionalityReliabilityConditions:
             _report_dimensionality_reliability(df, {'embedding_dim': 64})
         assert len(caught) == 0
 
+    def test_ceiling_mi_fraction_is_configurable(self):
+        """ceiling_mi_fraction must actually move the condition-1 decision."""
+        eval_size = 100.0
+        ceiling = np.log(eval_size)
+        df = pd.DataFrame({
+            'test_mi': [0.95 * ceiling] * 3,
+            'eval_size': [eval_size] * 3,
+            'pr_singular': [3.0, 3.2, 2.9],
+        })
+        # Default (0.85): 0.95 > 0.85 -- warns.
+        with pytest.warns(UserWarning, match="near its evaluation ceiling"):
+            _report_dimensionality_reliability(df, {'embedding_dim': 64})
+        # Looser threshold above 0.95 -- must not warn on the same data.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _report_dimensionality_reliability(df, {'embedding_dim': 64, 'ceiling_mi_fraction': 0.99})
+        assert not any('evaluation ceiling' in str(w.message) for w in caught)
+
+    def test_truncation_pr_fraction_is_configurable(self):
+        """truncation_pr_fraction must actually move the condition-1b decision."""
+        eval_size = 1000.0
+        ceiling = np.log(eval_size)
+        df = pd.DataFrame({
+            'test_mi': [0.3 * ceiling] * 3,
+            'eval_size': [eval_size] * 3,
+            'pr_singular': [55.0, 56.0, 54.0],  # 55/64 = 86%
+        })
+        # Default (0.8): 86% > 80% -- warns.
+        with pytest.warns(UserWarning, match="embedding dimension ceiling"):
+            _report_dimensionality_reliability(df, {'embedding_dim': 64})
+        # Looser threshold above 86% -- must not warn on the same data.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _report_dimensionality_reliability(df, {'embedding_dim': 64, 'truncation_pr_fraction': 0.9})
+        assert not any('embedding dimension ceiling' in str(w.message) for w in caught)
+
+    def test_high_dim_pr_fraction_is_configurable(self, caplog):
+        """high_dim_pr_fraction must actually move the condition-2 decision."""
+        import logging
+        eval_size = 1000.0
+        ceiling = np.log(eval_size)
+        df = pd.DataFrame({
+            'test_mi': [0.3 * ceiling] * 3,
+            'eval_size': [eval_size] * 3,
+            'pr_singular': [40.0, 41.0, 39.0],  # 40/64 = 62.5%
+        })
+        # Default (0.5): 62.5% >= 50% -- logs the informational note.
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            _report_dimensionality_reliability(df, {'embedding_dim': 64})
+        assert any('distributed across many dimensions' in r.message for r in caplog.records)
+
+        # Stricter threshold above 62.5% -- must not log the note on the same data.
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            _report_dimensionality_reliability(
+                df, {'embedding_dim': 64, 'high_dim_pr_fraction': 0.7}
+            )
+        assert not any('distributed across many dimensions' in r.message for r in caplog.records)
+
     def test_condition3_no_plateau_warns(self):
         """PR that keeps drifting across detached sigma_add rungs must warn
         that the ladder hasn't stabilized."""
@@ -406,7 +465,7 @@ class TestDimensionalityReliabilityConditions:
             'pr_singular_mean': [3.0, 8.0, 15.0],  # clearly still climbing, not stable
         })
         with pytest.warns(UserWarning, match="has not.*plateaued"):
-            _warn_if_ladder_not_plateaued(ladder)
+            _warn_if_ladder_not_plateaued(ladder, {})
 
     def test_condition3_plateaued_ladder_does_not_warn(self):
         """A stable PR across detached rungs must not trigger the plateau warning."""
@@ -417,7 +476,7 @@ class TestDimensionalityReliabilityConditions:
         })
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            _warn_if_ladder_not_plateaued(ladder)
+            _warn_if_ladder_not_plateaued(ladder, {})
         assert not any('plateaued' in str(w.message) for w in caught)
 
     def test_condition3_single_detached_rung_skipped(self):
@@ -430,8 +489,25 @@ class TestDimensionalityReliabilityConditions:
         })
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            _warn_if_ladder_not_plateaued(ladder)
+            _warn_if_ladder_not_plateaued(ladder, {})
         assert not any('plateaued' in str(w.message) for w in caught)
+
+    def test_condition3_cv_threshold_is_configurable(self):
+        """ladder_plateau_cv_threshold must actually change the decision, not
+        just be accepted and ignored."""
+        ladder = pd.DataFrame({
+            'sigma_add': [1.0, 2.0, 3.0],
+            'regime': ['detached', 'detached', 'detached'],
+            'pr_singular_mean': [4.5, 5.0, 5.5],  # cv ~ 0.1: passes the 0.2 default
+        })
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_if_ladder_not_plateaued(ladder, {})
+        assert not any('plateaued' in str(w.message) for w in caught)
+
+        # A stricter threshold below that ~0.1 cv must now flag the same ladder.
+        with pytest.warns(UserWarning, match="has not.*plateaued"):
+            _warn_if_ladder_not_plateaued(ladder, {'ladder_plateau_cv_threshold': 0.05})
 
 
 class TestAnalysisWorkflowDoesNotMutateCallerDict:

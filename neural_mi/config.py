@@ -289,7 +289,16 @@ class Transfer:
 
 @dataclass
 class Dimensionality:
-    """Parameters for ``mode='dimensionality'`` latent-dimensionality analysis."""
+    """Parameters for ``mode='dimensionality'`` latent-dimensionality analysis.
+
+    ``ceiling_mi_fraction``, ``truncation_pr_fraction``, ``high_dim_pr_fraction``,
+    and ``ladder_plateau_cv_threshold`` tune the four dimensionality-reliability
+    diagnostics (see ``_report_dimensionality_reliability`` and
+    ``_warn_if_ladder_not_plateaued`` in ``analysis/dimensionality.py``). Their
+    defaults (0.85, 0.8, 0.5, 0.2) are reasonable starting points, not derived
+    constants -- how strict to be depends on how much you trust a given setup,
+    so treat them as tunable rather than fixed.
+    """
     split_method: Optional[str] = None
     n_splits: Optional[int] = None
     lag: Optional[int] = None
@@ -297,6 +306,10 @@ class Dimensionality:
     sigma_add: Optional[Any] = None
     sigma_add_units: Optional[str] = None
     stabilize_counts: Optional[bool] = None
+    ceiling_mi_fraction: Optional[float] = None
+    truncation_pr_fraction: Optional[float] = None
+    high_dim_pr_fraction: Optional[float] = None
+    ladder_plateau_cv_threshold: Optional[float] = None
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         return _non_none(self)

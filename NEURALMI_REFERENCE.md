@@ -431,6 +431,22 @@ When the true MI exceeds the InfoNCE ceiling (`log(eval_size)`, where `eval_size
 - `result.plot()` automatically dispatches to `plot_noise_ladder` (both PR variants vs. `log(sigma_add)`, detached band shaded) when a noise ladder is present.
 - Permutation-test p-values are not yet computed per rung for the ladder (omitted, not fabricated).
 
+**Reliability diagnostics.** Every dimensionality run checks up to three independent conditions and reports on each separately rather than collapsing them into one `is_reliable` flag, since each calls for a different response:
+
+1. **Ceiling corruption** (`UserWarning`) — the underlying scalar MI is near its InfoNCE evaluation ceiling (`log(eval_size)`); the PR readout built on a saturated estimate is unreliable. Fixable via `max_eval_samples` or `sigma_add`.
+2. **Embedding-capacity truncation** (`UserWarning`) — PR is close to `embedding_dim`, the hard ceiling on what the embedding can represent; the true dimensionality may be higher. Fixable via a larger `embedding_dim`.
+3. **No spectral gap** (`logger.info`, not a warning) — MI is trustworthy and PR is a large fraction of `embedding_dim` without being truncated. This is a genuine finding (shared structure spread across many dimensions), not a failure.
+4. **Noise-ladder plateau** (`UserWarning`, `sigma_add` ladders only) — the PR readout is still drifting across `detached`-regime rungs rather than settling on a stable value; picking any single rung's dimensionality would be arbitrary.
+
+Each condition's threshold is a tunable default, not a derived constant — how strict to be depends on how much a given analysis needs to trust its output:
+
+| `Dimensionality` field | Condition | Default |
+|------------------------|-----------|---------|
+| `ceiling_mi_fraction` | 1. Ceiling corruption | `0.85` |
+| `truncation_pr_fraction` | 2. Embedding-capacity truncation | `0.8` |
+| `high_dim_pr_fraction` | 3. No spectral gap | `0.5` |
+| `ladder_plateau_cv_threshold` | 4. Noise-ladder plateau | `0.2` |
+
 ```python
 # Intrinsic: MI between two random halves of x channels, 10 splits
 result = nmi.run(x, mode='dimensionality',

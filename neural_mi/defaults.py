@@ -168,6 +168,15 @@ MODE_KWARGS_SCHEMA = {
         # Required when split_method='index': list of channel indices assigned to X.
         # Y is automatically the complement (all remaining channels).
         'channel_indices_x': {'type': (list, type(None)), 'default': None},
+        # Thresholds for the dimensionality-reliability diagnostics (see
+        # _report_dimensionality_reliability / _warn_if_ladder_not_plateaued in
+        # analysis/dimensionality.py). Defaults are reasonable starting points,
+        # not derived constants -- tune them to how strict a given analysis needs
+        # to be.
+        'ceiling_mi_fraction': {'type': float, 'default': 0.85},
+        'truncation_pr_fraction': {'type': float, 'default': 0.8},
+        'high_dim_pr_fraction': {'type': float, 'default': 0.5},
+        'ladder_plateau_cv_threshold': {'type': float, 'default': 0.2},
     },
     'rigorous': {
         'n_workers': {'type': int, 'default': 1},

@@ -341,12 +341,12 @@ def _run_noise_ladder(
             suggested_level = float(np.sqrt(lv.min() * lv.max()))  # geometric midpoint
             suggestion = {'sigma_add': suggested_level, 'regime': 'detached'}
 
-    _warn_if_ladder_not_plateaued(ladder_summary)
+    _warn_if_ladder_not_plateaued(ladder_summary, analysis_params)
 
     return all_results, ladder_summary, suggestion
 
 
-def _warn_if_ladder_not_plateaued(ladder_summary: pd.DataFrame) -> None:
+def _warn_if_ladder_not_plateaued(ladder_summary: pd.DataFrame, analysis_params: Dict[str, Any]) -> None:
     """Checks the third dimensionality-reliability condition: no plateau
     across the noise sweep. Kept separate from the two checked in
     ``_report_dimensionality_reliability``, which don't apply here since they
@@ -361,8 +361,9 @@ def _warn_if_ladder_not_plateaued(ladder_summary: pd.DataFrame) -> None:
     pr_vals = detached_final['pr_singular_mean'].dropna()
     if len(pr_vals) < 2 or pr_vals.mean() <= 0:
         return
+    cv_threshold = analysis_params.get('ladder_plateau_cv_threshold', 0.2)
     cv = float(pr_vals.std() / pr_vals.mean())
-    if cv > 0.2:
+    if cv > cv_threshold:
         warnings.warn(
             f"Dimensionality reliability: the participation ratio across "
             f"the {len(pr_vals)} detached sigma_add rung(s) has not "
@@ -1088,6 +1089,9 @@ def _report_dimensionality_reliability(df: pd.DataFrame, analysis_params: Dict[s
         return
     mean_pr = float(valid_prs.mean())
     embed_dim = analysis_params.get('embedding_dim', 64)
+    ceiling_mi_fraction = analysis_params.get('ceiling_mi_fraction', 0.85)
+    truncation_pr_fraction = analysis_params.get('truncation_pr_fraction', 0.8)
+    high_dim_pr_fraction = analysis_params.get('high_dim_pr_fraction', 0.5)
 
     # Condition 1: is the underlying MI estimate itself near its evaluation
     # ceiling? Checked first since it takes priority over condition 2's
@@ -1101,7 +1105,7 @@ def _report_dimensionality_reliability(df: pd.DataFrame, analysis_params: Dict[s
             mean_eval_size = float(valid['eval_size'].mean())
             if mean_eval_size > 1:
                 mi_ceiling = float(np.log(mean_eval_size))
-                if mean_test_mi > 0.85 * mi_ceiling:
+                if mean_test_mi > ceiling_mi_fraction * mi_ceiling:
                     near_mi_ceiling = True
                     warnings.warn(
                         f"Dimensionality reliability: the underlying MI estimate "
@@ -1117,9 +1121,10 @@ def _report_dimensionality_reliability(df: pd.DataFrame, analysis_params: Dict[s
                     )
 
     # Ceiling-truncation check: PR is bounded above by embedding_dim. If the
-    # estimated PR exceeds 80% of that ceiling the measurement is likely
-    # truncated by the embedding's own capacity, independent of condition 1.
-    threshold = 0.8 * embed_dim
+    # estimated PR exceeds truncation_pr_fraction of that ceiling the
+    # measurement is likely truncated by the embedding's own capacity,
+    # independent of condition 1.
+    threshold = truncation_pr_fraction * embed_dim
     if mean_pr >= threshold:
         warnings.warn(
             f"The estimated participation ratio ({mean_pr:.1f}) is close to the "
@@ -1133,7 +1138,7 @@ def _report_dimensionality_reliability(df: pd.DataFrame, analysis_params: Dict[s
     # Condition 2: MI is trustworthy (no condition-1 warning above) and PR is
     # a substantial fraction of embedding_dim without being ceiling-truncated
     # -- report as a genuine high-dimensional finding, not a failure.
-    elif not near_mi_ceiling and mean_pr >= 0.5 * embed_dim:
+    elif not near_mi_ceiling and mean_pr >= high_dim_pr_fraction * embed_dim:
         logger.info(
             f"Dimensionality result: participation ratio ({mean_pr:.1f}) is a "
             f"substantial fraction of embedding_dim={embed_dim} without being "
