@@ -32,7 +32,7 @@ from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 # ---------------------------------------------------------------------------
 
 def _find_linear_region(group: pd.DataFrame, delta_threshold: float,
-                         min_gamma_points: int, verbose: bool) -> List[int]:
+                         min_gamma_points: int) -> List[int]:
     """Finds the linear region of the MI vs. gamma plot.
 
     Theory: MI_estimated(N/gamma) ≈ I_true + (a/N) * gamma, so MI is linear
@@ -145,9 +145,11 @@ def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
     residual_threshold : float
         Maximum allowed absolute externally studentized residual.
     r2_threshold : float
-        Retained for backward compatibility.  R² is still computed and
-        returned in the output dict but no longer affects
-        ``fit_quality_warning`` or ``is_reliable``.
+        Unused by this function's own logic; accepted for a uniform call
+        signature across diagnostics helpers. R² is reported as a diagnostic,
+        not used as a gate: with large N the bias across gamma is inherently
+        small (near-flat line) so R² collapses toward zero even for a sound
+        fit, and if R² is already bad there's nothing meaningful to gate on.
     leverage_threshold : float
         Maximum allowed relative shift in intercept when γ=1 is left out.
 
@@ -220,7 +222,7 @@ def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
 
 def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                                delta_threshold: float, min_gamma_points: int,
-                               confidence_level: float, verbose: bool,
+                               confidence_level: float,
                                residual_threshold: float = 2.5,
                                r2_threshold: float = 0.90,
                                leverage_threshold: float = 0.20) -> List[Dict[str, Any]]:
@@ -247,7 +249,7 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             param_dict = {group_keys[0]: params}
 
         try:
-            gammas_used = _find_linear_region(group, delta_threshold, min_gamma_points, verbose)
+            gammas_used = _find_linear_region(group, delta_threshold, min_gamma_points)
             is_reliable = len(gammas_used) >= min_gamma_points
             if not is_reliable:
                 logger.warning(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
@@ -312,7 +314,9 @@ class AnalysisWorkflow:
             Additional keyword arguments to be added to ``base_params``.
         """
         self.x_data, self.y_data = x_data, y_data
-        self.base_params = base_params
+        # Copy so callers of run_rigorous_analysis() (or AnalysisWorkflow
+        # directly) never see their base_params dict mutated in place.
+        self.base_params = dict(base_params)
         self.base_params.update({
             'input_dim_x': int(np.prod(x_data.shape[1:])),
             'input_dim_y': int(np.prod(y_data.shape[1:])),
@@ -383,7 +387,6 @@ class AnalysisWorkflow:
             'delta_threshold': kwargs.pop('delta_threshold', 0.1),
             'min_gamma_points': kwargs.pop('min_gamma_points', 5),
             'confidence_level': kwargs.pop('confidence_level', 0.68),
-            'verbose': kwargs.get('verbose', False),
             'residual_threshold': kwargs.pop('residual_threshold', 2.5),
             'r2_threshold': kwargs.pop('r2_threshold', 0.90),
             'leverage_threshold': kwargs.pop('leverage_threshold', 0.20),
@@ -564,9 +567,9 @@ def run_rigorous_scalar_analysis(
     residual_threshold : float, optional
         Passed to ``_compute_fit_diagnostics``.  Defaults to ``2.5``.
     r2_threshold : float, optional
-        Retained for backward compatibility; passed to
-        ``_compute_fit_diagnostics`` but no longer affects ``is_reliable``
-        (see that function's docstring).  Defaults to ``0.90``.
+        Passed to ``_compute_fit_diagnostics`` but unused by its logic; R² is
+        reported as a diagnostic, not used as a gate (see that function's
+        docstring).  Defaults to ``0.90``.
     leverage_threshold : float, optional
         Passed to ``_compute_fit_diagnostics``.  Defaults to ``0.20``.
     verbose : bool, optional
@@ -636,7 +639,7 @@ def run_rigorous_scalar_analysis(
 
     df = pd.DataFrame(rows, columns=['gamma', 'train_mi'])
 
-    gammas_used = _find_linear_region(df, delta_threshold, min_gamma_points, verbose)
+    gammas_used = _find_linear_region(df, delta_threshold, min_gamma_points)
     try:
         mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
             df, gammas_used, confidence_level

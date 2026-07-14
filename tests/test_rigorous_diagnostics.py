@@ -128,7 +128,7 @@ class TestDiagnosticsInCorrectedResults:
         results = _post_process_and_correct(
             df, sweep_grid=None,
             delta_threshold=0.1, min_gamma_points=5,
-            confidence_level=0.68, verbose=False,
+            confidence_level=0.68,
         )
         assert len(results) > 0
         r = results[0]
@@ -149,7 +149,7 @@ class TestDiagnosticsInCorrectedResults:
         results = _post_process_and_correct(
             df, sweep_grid=None,
             delta_threshold=0.1, min_gamma_points=4,
-            confidence_level=0.68, verbose=False,
+            confidence_level=0.68,
             leverage_threshold=0.05,  # tight threshold
         )
         # is_reliable should be False due to leverage warning

@@ -20,7 +20,7 @@ from neural_mi.utils import _configure_multiprocessing, _ensure_cpu, anscombe_tr
 
 
 # ---------------------------------------------------------------------------
-# Noise-injection feature (noise_injection_dimensionality_spec.md).
+# Noise-injection feature.
 #
 # Ceiling-escape via observation-space noise: `dimensionality` mode gains an
 # optional `sigma_add` control that adds fixed, independent, per-channel
@@ -222,6 +222,17 @@ def _summarize_noise_ladder(all_results: list, ceiling_margin: float = 0.75,
     The ceiling is ``log(eval_size)`` (the InfoNCE evaluation denominator),
     read from each row's ``eval_size`` (set by ``Trainer.train`` — see
     ``training/trainer.py``), never ``log(batch_size)``.
+
+    This aggregates ``test_mi``, not ``train_mi`` — deliberately, unlike every
+    other analysis mode in the library. In dimensionality mode the MI *value*
+    at each rung is not the target; the *PR read-off point* (where the
+    estimate has detached from the ceiling) is. The ``log(eval_size)`` ceiling
+    this regime classification is calibrated against applies to test-set
+    evaluation, so comparing against ``test_mi`` is the consistent choice for
+    this purpose. Consequently, ``sigma_add_ladder.mi_mean`` here and
+    ``result.dataframe.mi_mean`` (which is ``train_mi``-based, per the
+    library-wide convention) measure different quantities at the same rung —
+    this is by design, not a bug.
     """
     df = pd.DataFrame(all_results)
     rows = []
@@ -271,9 +282,10 @@ def _run_noise_ladder(
     Returns ``(all_results, ladder_summary, suggestion)`` — ``all_results`` is
     the flat list of per-(split, level) result dicts (fed through the same
     embedding-extraction / stripping pipeline as the no-noise path);
-    ``ladder_summary`` is the per-rung table (Section 6 of the spec);
-    ``suggestion`` is the top-level suggested operating level (only when
-    ``sigma_add == 'auto'``), or ``None``.
+    ``ladder_summary`` is the per-rung summary table (one row per ``sigma_add``
+    level, with ``mi_mean``/``mi_std``, PR mean/std, ``ceiling_nats``, and a
+    ``regime`` label); ``suggestion`` is the top-level suggested operating
+    level (only when ``sigma_add == 'auto'``), or ``None``.
     """
     estimator_name = str(analysis_params.get('estimator_name', 'infonce')).lower()
     if estimator_name != 'infonce':
@@ -329,7 +341,39 @@ def _run_noise_ladder(
             suggested_level = float(np.sqrt(lv.min() * lv.max()))  # geometric midpoint
             suggestion = {'sigma_add': suggested_level, 'regime': 'detached'}
 
+    _warn_if_ladder_not_plateaued(ladder_summary)
+
     return all_results, ladder_summary, suggestion
+
+
+def _warn_if_ladder_not_plateaued(ladder_summary: pd.DataFrame) -> None:
+    """Third of P4's three reliability conditions (kept separate from the two
+    checked in ``_report_dimensionality_reliability``, which don't apply here
+    since they need a single-run MI/PR pair, not a multi-rung sweep):
+    "no plateau across the noise sweep." Even once MI has detached from the
+    ceiling at multiple rungs, the PR readout needs to be *stable* across them
+    to be trustworthy -- if it's still drifting with added noise, picking any
+    single rung's dimensionality would be arbitrary.
+    """
+    detached_final = ladder_summary[ladder_summary['regime'] == 'detached']
+    if len(detached_final) < 2 or 'pr_singular_mean' not in detached_final.columns:
+        return
+    pr_vals = detached_final['pr_singular_mean'].dropna()
+    if len(pr_vals) < 2 or pr_vals.mean() <= 0:
+        return
+    cv = float(pr_vals.std() / pr_vals.mean())
+    if cv > 0.2:
+        warnings.warn(
+            f"Dimensionality reliability: the participation ratio across "
+            f"the {len(pr_vals)} detached sigma_add rung(s) has not "
+            f"plateaued (coefficient of variation={cv:.1%} across "
+            f"pr_singular_mean values {[round(v, 2) for v in pr_vals.tolist()]}). "
+            f"The estimate is still changing with added noise rather than "
+            f"settling on a stable value -- treat any single rung's "
+            f"dimensionality as unreliable; consider widening or refining "
+            f"the sigma_add grid.",
+            UserWarning, stacklevel=3,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +453,7 @@ def run_dimensionality_analysis(
     sigma_add_units: str = 'relative',
     stabilize_counts: bool = True,
     **kwargs
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Optional[Dict[str, Any]]]:
     """Estimates dimensionality via embedding cross-covariance.
 
     Parameters
@@ -492,9 +536,8 @@ def run_dimensionality_analysis(
         classify data modality for the ``sigma_add`` / ``stabilize_counts``
         guards below. Not needed for plain (no-noise) dimensionality runs.
     sigma_add : float, list of float, 'auto', or None, optional
-        Ceiling-escape noise injection (see ``noise_injection_dimensionality_spec.md``).
-        With it unset (default), non-binned-spike modalities behave exactly as
-        before this feature existed. When set, fixed, independent, per-channel
+        Ceiling-escape noise injection. When unset (default), no noise is
+        added. When set, fixed, independent, per-channel
         Gaussian noise (in units of measured per-channel std) is added once to
         the observations, before the embedding, identically for train and eval:
 
@@ -507,8 +550,9 @@ def run_dimensionality_analysis(
         Only supported for intrinsic ``split_method in ('random', 'spatial')``
         or interaction mode (``y_data`` provided); raw-spike (timestamp) and
         categorical data raise a clear error since observation-space noise is
-        undefined for them. Permutation-test p-values are not yet computed
-        per rung for the ladder (omitted, not fabricated, per spec Section 8).
+        undefined for them. Permutation-test p-values are not computed per
+        rung for the ladder -- they are omitted from the output rather than
+        fabricated.
     sigma_add_units : {'relative', 'absolute'}, optional
         ``'relative'`` (default): ``sigma_add`` is a multiple of measured
         per-channel std. ``'absolute'``: ``sigma_add`` is the noise std in
@@ -582,10 +626,11 @@ def run_dimensionality_analysis(
     show_progress = analysis_params.get('show_progress', True)
 
     # 1b. Noise-injection modality guards + binned-spike stabilization.
-    # Stabilization fires for binned-spike data regardless of sigma_add (Section 2
-    # override: default-on toggle, not automatic-unconditional). Modality rejection
-    # (raw-spike / categorical) only fires when sigma_add is actually engaged — plain
-    # dimensionality analysis on those modalities is untouched by this feature.
+    # Stabilization fires for binned-spike data regardless of sigma_add: it's a
+    # default-on toggle (stabilize_counts), not conditional on noise injection
+    # being engaged. Modality rejection (raw-spike / categorical) only fires
+    # when sigma_add is actually engaged — plain dimensionality analysis on
+    # those modalities is untouched by this feature.
     modality_x = _infer_modality(processor_type_x, analysis_params.get('processor_params_x'))
     modality_y = (_infer_modality(processor_type_y, analysis_params.get('processor_params_y'))
                   if y_data is not None else modality_x)
@@ -645,7 +690,7 @@ def run_dimensionality_analysis(
         embed_history = _extract_embedding_history(all_results)
         _strip_embeddings(all_results)
         df = pd.DataFrame(all_results)
-        _warn_if_near_embed_ceiling(df, analysis_params)
+        _report_dimensionality_reliability(df, analysis_params)
         logger.info("--- Dimensionality Analysis Complete (noise ladder) ---")
 
         embeddings = embeddings or {}
@@ -674,7 +719,7 @@ def run_dimensionality_analysis(
         embed_history = _extract_embedding_history(all_results)
         _strip_embeddings(all_results)
         df_out = pd.DataFrame(all_results)
-        _warn_if_near_embed_ceiling(df_out, analysis_params)
+        _report_dimensionality_reliability(df_out, analysis_params)
         if embed_history:
             embeddings = (embeddings or {})
             embeddings['embedding_history_x'] = embed_history['embedding_history_x']
@@ -928,7 +973,7 @@ def run_dimensionality_analysis(
     embed_history = _extract_embedding_history(all_results)
     _strip_embeddings(all_results)
     df = pd.DataFrame(all_results)
-    _warn_if_near_embed_ceiling(df, analysis_params)
+    _report_dimensionality_reliability(df, analysis_params)
     logger.info("--- Dimensionality Analysis Complete ---")
 
     # Merge embedding history into the embeddings dict so run.py receives a single
@@ -1018,12 +1063,23 @@ def _extract_last_split_embeddings(
     return None
 
 
-def _warn_if_near_embed_ceiling(df: pd.DataFrame, analysis_params: Dict[str, Any]) -> None:
-    """Issue a UserWarning when the participation ratio is close to the embedding ceiling.
+def _report_dimensionality_reliability(df: pd.DataFrame, analysis_params: Dict[str, Any]) -> None:
+    """Report which dimensionality-reliability condition applies to this result.
 
-    The participation ratio (PR) is bounded above by ``embedding_dim``.  If the
-    estimated PR exceeds 80 % of that ceiling the measurement is likely truncated:
-    the true dimensionality may be higher.
+    Three conditions are kept deliberately separate rather than collapsed into
+    a single ``is_reliable`` flag, because each calls for a different response
+    (a third, noise-sweep-specific condition is checked separately in
+    ``_run_noise_ladder``, since it needs multiple ``sigma_add`` rungs):
+
+    1. **Ceiling corruption.** The underlying scalar MI is near
+       ``log(eval_size)`` (the InfoNCE evaluation ceiling). The participation
+       ratio (PR) built on a saturated estimate is genuinely unreliable —
+       fixable via more eval samples or ``sigma_add`` noise injection.
+    2. **No spectral gap.** MI is safely below the ceiling (the measurement
+       itself is trustworthy) but PR is a large fraction of the embedding's
+       capacity without being ceiling-truncated. This is a real finding —
+       shared structure distributed across many dimensions rather than
+       concentrated in a few — and must not be reported as a failure.
     """
     if 'pr_singular' not in df.columns:
         return
@@ -1032,6 +1088,37 @@ def _warn_if_near_embed_ceiling(df: pd.DataFrame, analysis_params: Dict[str, Any
         return
     mean_pr = float(valid_prs.mean())
     embed_dim = analysis_params.get('embedding_dim', 64)
+
+    # Condition 1: is the underlying MI estimate itself near its evaluation
+    # ceiling? Checked first since it takes priority over condition 2's
+    # framing below -- a saturated estimate makes the PR value untrustworthy
+    # regardless of what that value is.
+    near_mi_ceiling = False
+    if 'test_mi' in df.columns and 'eval_size' in df.columns:
+        valid = df[['test_mi', 'eval_size']].dropna()
+        if not valid.empty:
+            mean_test_mi = float(valid['test_mi'].mean())
+            mean_eval_size = float(valid['eval_size'].mean())
+            if mean_eval_size > 1:
+                mi_ceiling = float(np.log(mean_eval_size))
+                if mean_test_mi > 0.85 * mi_ceiling:
+                    near_mi_ceiling = True
+                    warnings.warn(
+                        f"Dimensionality reliability: the underlying MI estimate "
+                        f"({mean_test_mi:.3f} nats) is near its evaluation ceiling "
+                        f"(log(eval_size)={mi_ceiling:.3f} nats). The participation "
+                        f"ratio readout (pr_singular={mean_pr:.1f}) built on a "
+                        f"saturated estimate is unreliable -- this reflects the "
+                        f"measurement ceiling, not necessarily the true "
+                        f"dimensionality. Consider raising max_eval_samples, or "
+                        f"using sigma_add noise injection to de-saturate the "
+                        f"estimate.",
+                        UserWarning, stacklevel=3,
+                    )
+
+    # Ceiling-truncation check: PR is bounded above by embedding_dim. If the
+    # estimated PR exceeds 80% of that ceiling the measurement is likely
+    # truncated by the embedding's own capacity, independent of condition 1.
     threshold = 0.8 * embed_dim
     if mean_pr >= threshold:
         warnings.warn(
@@ -1042,6 +1129,18 @@ def _warn_if_near_embed_ceiling(df: pd.DataFrame, analysis_params: Dict[str, Any
             f"untruncated estimate.",
             UserWarning,
             stacklevel=3,
+        )
+    # Condition 2: MI is trustworthy (no condition-1 warning above) and PR is
+    # a substantial fraction of embedding_dim without being ceiling-truncated
+    # -- report as a genuine high-dimensional finding, not a failure.
+    elif not near_mi_ceiling and mean_pr >= 0.5 * embed_dim:
+        logger.info(
+            f"Dimensionality result: participation ratio ({mean_pr:.1f}) is a "
+            f"substantial fraction of embedding_dim={embed_dim} without being "
+            f"ceiling-truncated (MI is not near its evaluation ceiling). This "
+            f"indicates shared structure distributed across many dimensions "
+            f"rather than concentrated in a few -- a real answer, not a sign "
+            f"that the measurement failed."
         )
 
 

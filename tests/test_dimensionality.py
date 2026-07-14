@@ -6,10 +6,14 @@ import numpy as np
 import torch
 from unittest.mock import patch, MagicMock
 
+import pandas as pd
+
 from neural_mi.analysis.dimensionality import (
     run_dimensionality_analysis,
     _extract_embedding_history,
     _strip_embeddings,
+    _report_dimensionality_reliability,
+    _warn_if_ladder_not_plateaued,
 )
 
 
@@ -321,3 +325,127 @@ class TestTrackEmbeddingsDefault:
         split_tasks = call_args[0]
         _, _, forwarded_params, _, _ = split_tasks[0]
         assert forwarded_params.get('track_embeddings') is False
+
+
+# ---------------------------------------------------------------------------
+# P4: three separate dimensionality-reliability conditions
+# ---------------------------------------------------------------------------
+
+class TestDimensionalityReliabilityConditions:
+    """Regression tests for the three distinct reliability conditions (P4):
+    (1) ceiling corruption, (2) no spectral gap, (3) no plateau across the
+    noise sweep. Deliberately kept as separate signals, not one is_reliable
+    flag."""
+
+    def test_condition1_ceiling_corruption_warns(self):
+        """Scalar MI near log(eval_size) must warn that the PR readout is
+        unreliable, regardless of the PR value itself."""
+        eval_size = 100.0
+        ceiling = np.log(eval_size)
+        df = pd.DataFrame({
+            'test_mi': [0.95 * ceiling] * 3,
+            'eval_size': [eval_size] * 3,
+            'pr_singular': [3.0, 3.2, 2.9],  # low PR -- would look "fine" without the MI check
+        })
+        with pytest.warns(UserWarning, match="near its evaluation ceiling"):
+            _report_dimensionality_reliability(df, {'embedding_dim': 64})
+
+    def test_condition2_no_spectral_gap_is_informational_not_a_failure(self, caplog):
+        """High PR with MI safely below ceiling is a genuine finding -- must
+        be an informational note, not a warning/failure."""
+        import logging
+        eval_size = 1000.0
+        ceiling = np.log(eval_size)
+        df = pd.DataFrame({
+            'test_mi': [0.3 * ceiling] * 3,   # far from the ceiling
+            'eval_size': [eval_size] * 3,
+            'pr_singular': [40.0, 41.0, 39.0],  # 40/64 = 62.5%: high but not truncated (<80%)
+        })
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                _report_dimensionality_reliability(df, {'embedding_dim': 64})
+        assert not any(issubclass(w.category, UserWarning) for w in caught), \
+            "high-but-untruncated PR must not raise a UserWarning"
+        assert any('distributed across many dimensions' in r.message for r in caplog.records)
+
+    def test_embedding_ceiling_truncation_still_warns(self):
+        """The pre-existing embedding-capacity truncation check must still fire
+        (independent of the new MI-ceiling condition)."""
+        eval_size = 1000.0
+        ceiling = np.log(eval_size)
+        df = pd.DataFrame({
+            'test_mi': [0.3 * ceiling] * 3,
+            'eval_size': [eval_size] * 3,
+            'pr_singular': [55.0, 56.0, 54.0],  # 55/64 = 86%: past the 80% truncation threshold
+        })
+        with pytest.warns(UserWarning, match="embedding dimension ceiling"):
+            _report_dimensionality_reliability(df, {'embedding_dim': 64})
+
+    def test_no_warning_when_mi_low_and_pr_low(self):
+        """The ordinary, unremarkable case: MI well below ceiling, PR well
+        below embedding_dim -- no warnings, no reliability messaging at all."""
+        eval_size = 1000.0
+        ceiling = np.log(eval_size)
+        df = pd.DataFrame({
+            'test_mi': [0.3 * ceiling] * 3,
+            'eval_size': [eval_size] * 3,
+            'pr_singular': [3.0, 3.1, 2.9],
+        })
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _report_dimensionality_reliability(df, {'embedding_dim': 64})
+        assert len(caught) == 0
+
+    def test_condition3_no_plateau_warns(self):
+        """PR that keeps drifting across detached sigma_add rungs must warn
+        that the ladder hasn't stabilized."""
+        ladder = pd.DataFrame({
+            'sigma_add': [1.0, 2.0, 3.0],
+            'regime': ['detached', 'detached', 'detached'],
+            'pr_singular_mean': [3.0, 8.0, 15.0],  # clearly still climbing, not stable
+        })
+        with pytest.warns(UserWarning, match="has not.*plateaued"):
+            _warn_if_ladder_not_plateaued(ladder)
+
+    def test_condition3_plateaued_ladder_does_not_warn(self):
+        """A stable PR across detached rungs must not trigger the plateau warning."""
+        ladder = pd.DataFrame({
+            'sigma_add': [1.0, 2.0, 3.0],
+            'regime': ['detached', 'detached', 'detached'],
+            'pr_singular_mean': [5.0, 5.1, 4.9],  # stable
+        })
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_if_ladder_not_plateaued(ladder)
+        assert not any('plateaued' in str(w.message) for w in caught)
+
+    def test_condition3_single_detached_rung_skipped(self):
+        """Fewer than two detached rungs can't demonstrate a plateau either
+        way -- must not warn."""
+        ladder = pd.DataFrame({
+            'sigma_add': [1.0, 2.0, 3.0],
+            'regime': ['pinned', 'detached', 'collapsed'],
+            'pr_singular_mean': [60.0, 5.0, 0.1],
+        })
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_if_ladder_not_plateaued(ladder)
+        assert not any('plateaued' in str(w.message) for w in caught)
+
+
+class TestAnalysisWorkflowDoesNotMutateCallerDict:
+    """Regression test: AnalysisWorkflow.__init__ used to assign
+    self.base_params = base_params (same reference) then .update() it,
+    mutating the caller's dict in place."""
+
+    def test_base_params_not_mutated(self):
+        from neural_mi.analysis.rigorous import AnalysisWorkflow
+        original = {'n_epochs': 5}
+        original_copy = dict(original)
+        x = torch.randn(20, 3, 4)
+        y = torch.randn(20, 3, 4)
+        AnalysisWorkflow(x, y, original)
+        assert original == original_copy, (
+            f"caller's base_params was mutated: {original} != {original_copy}"
+        )

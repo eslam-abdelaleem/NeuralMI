@@ -19,7 +19,7 @@ class TestWorkflowInternals:
             # train_mi = 1.0 + 0.5 * gamma  — perfectly linear in gamma
             'train_mi': [1.0 + 0.5 * g for g in gammas],
         })
-        gammas_kept = find_linear_region(df, delta_threshold=0.1, min_gamma_points=3, verbose=False)
+        gammas_kept = find_linear_region(df, delta_threshold=0.1, min_gamma_points=3)
         assert len(gammas_kept) == 5
 
     def test_extrapolate_mi(self):
@@ -51,7 +51,7 @@ class TestWorkflowInternals:
 
         results = _post_process_and_correct(
             df, sweep_grid={'param': ['a', 'b']}, delta_threshold=0.1,
-            min_gamma_points=3, confidence_level=0.95, verbose=False
+            min_gamma_points=3, confidence_level=0.95
         )
         assert len(results) == 2
         assert results[0]['mi_corrected'] is not None
