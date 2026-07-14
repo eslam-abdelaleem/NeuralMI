@@ -8,12 +8,11 @@ and validating the behavior of different MI estimators and models.
 Windowed generators with analytically known MI
 ----------------------------------------------
 - :func:`generate_windowed_oscillatory` — amplitude-modulated oscillation at a
-  single carrier frequency; MI is carried in amplitude correlation. Used to
-  gate the (since removed) `sinc_cnn` inductive bias; see
-  `results/gate/decision_log.md`.
+  single carrier frequency; MI is carried in amplitude correlation. Useful
+  for validating estimators against a closed-form ground-truth MI.
 - :func:`generate_windowed_multichannel` — per-channel different carrier
-  frequencies; total MI = sum of per-channel MIs. Used to gate the (since
-  removed) depthwise CNN1D inductive bias; see `results/gate/decision_log.md`.
+  frequencies; total MI = sum of per-channel MIs. Useful for validating
+  estimator behaviour on multi-channel windowed data with a known MI budget.
 """
 
 import numpy as np
@@ -287,7 +286,7 @@ def generate_correlated_categorical_series(
     transition_probability : float, optional
         The probability of Y's state matching X's state at each timepoint. Defaults to 0.9.
     use_torch : bool, optional
-        If True, returns torch.Tensors. Defaults to False.
+        If True, returns torch.Tensors. Defaults to True.
 
     Returns
     -------
@@ -498,8 +497,8 @@ def generate_windowed_dependency_data(
 ) -> Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
     """Generates autocorrelated X and Y coupled through a causal history window.
 
-    This generator is designed specifically for window-size sweeps. Unlike
-    ``generate_autocorrelated_data`` (which couples X and Y via an explicit lag),
+    This generator is designed specifically for window-size sweeps. Unlike the
+    lag-based generators (which couple X and Y via an explicit time delay),
     here Y depends on a moving average of X over the recent ``history_window``.
     This isolates the window-size effect from lag-detection effects.
 
@@ -532,7 +531,8 @@ def generate_windowed_dependency_data(
     if not (0.0 <= noise_level <= 1.0):
         raise ValueError(f"noise_level must be in [0, 1], got {noise_level!r}.")
 
-    # Match the X construction used in generate_autocorrelated_data.
+    # Dual-timescale AR process: fast + slow components give X realistic
+    # short- and long-range autocorrelation structure.
     rho_fast = np.exp(-1.0 / timescale)
     rho_slow = np.exp(-1.0 / (4 * timescale))
     h_len_fast = min(6 * timescale, n_timepoints // 2)
@@ -612,155 +612,6 @@ def generate_full_data(
 
 
 # ---------------------------------------------------------------------------
-# Inductive-bias generators
-# ---------------------------------------------------------------------------
-
-def generate_modulated_spike_trains(
-    n_neurons: int = 8,
-    duration: float = 100.0,
-    baseline_rate: float = 5.0,
-    modulation_depth: float = 0.7,
-    modulation_freq: float = 1.0,
-    n_neurons_y: int = None,
-) -> Tuple[List[np.ndarray], List[np.ndarray]]:
-    """Generate spike trains with shared rate modulation (rate-code scenario).
-
-    Both population X and population Y have firing rates that are co-modulated
-    by the same low-frequency oscillatory latent signal.  The MI is carried in
-    the *firing rate* — not in precise spike timing. Used to gate the (since
-    removed) `spike_physics` inductive bias; see `results/gate/decision_log.md`.
-
-    This is complementary to :func:`generate_correlated_spike_trains`, which
-    creates a precise delay-based timing correlation.
-
-    Parameters
-    ----------
-    n_neurons : int, optional
-        Number of neurons in population X. Defaults to 8.
-    duration : float, optional
-        Recording duration in seconds. Defaults to 100.0.
-    baseline_rate : float, optional
-        Mean firing rate in Hz. Defaults to 5.0.
-    modulation_depth : float, optional
-        Depth of rate modulation in (0, 1).  0.7 means rates vary between
-        30 % and 170 % of the baseline. Defaults to 0.7.
-    modulation_freq : float, optional
-        Frequency of the shared rate modulation in Hz. Defaults to 1.0.
-    n_neurons_y : int, optional
-        Number of neurons in population Y. Defaults to ``n_neurons``.
-
-    Returns
-    -------
-    Tuple[List[np.ndarray], List[np.ndarray]]
-        ``(pop_x, pop_y)`` — two lists of spike-time arrays (one per neuron),
-        compatible with ``processor_type='spike'``.
-    """
-    if n_neurons_y is None:
-        n_neurons_y = n_neurons
-    modulation_depth = float(np.clip(modulation_depth, 0.0, 0.99))
-    # 1 ms resolution evaluation grid for the rate modulation
-    t_eval = np.linspace(0.0, duration, int(duration * 1000))
-    phase = np.random.uniform(0, 2 * np.pi)
-    shared_mod = 1.0 + modulation_depth * np.sin(2.0 * np.pi * modulation_freq * t_eval + phase)
-
-    def _gen_pop(n_cells: int) -> List[np.ndarray]:
-        pop = []
-        max_rate = baseline_rate * (1.0 + modulation_depth)
-        dt = t_eval[1] - t_eval[0]
-        for _ in range(n_cells):
-            # Thinning method for inhomogeneous Poisson process
-            n_cand = np.random.poisson(max_rate * duration * 2)
-            cand = np.sort(np.random.uniform(0.0, duration, n_cand))
-            idx = np.searchsorted(t_eval, cand).clip(0, len(t_eval) - 1)
-            p_accept = (baseline_rate * shared_mod[idx]) / max_rate
-            pop.append(cand[np.random.rand(len(cand)) < p_accept])
-        return pop
-
-    return _gen_pop(n_neurons), _gen_pop(n_neurons_y)
-
-
-def generate_timing_code_spike_trains(
-    n_neurons: int = 8,
-    duration: float = 200.0,
-    signal_rate: float = 5.0,
-    background_rate: float = 15.0,
-    delay: float = 0.015,
-    jitter: float = 0.003,
-) -> Tuple[List[np.ndarray], List[np.ndarray]]:
-    """Generates spike trains with a precise-timing code embedded in noise.
-
-    Each neuron pair (X[i], Y[i]) shares a set of *signal* spikes: for every
-    signal spike in X[i], Y[i] fires at the same time plus a fixed ``delay``
-    and small Gaussian ``jitter``.  Both populations are additionally driven
-    by independent high-rate background Poisson noise that dominates all
-    single-window summary statistics.
-
-    Because ``background_rate >> signal_rate``, the signal spikes represent
-    only a small fraction of each window's spike count.  As a result:
-
-    - **Firing rate**: X and Y rates are correlated (same signal spikes boost
-      both), but the shared variance is small relative to total variance.
-    - **Mean spike time**: the delay ``delay`` is diluted by the background to
-      roughly ``signal_rate / (signal_rate + background_rate) * delay``,
-      which is near zero for typical parameters.
-    - **ISI statistics**: dominated by the background Poisson process.
-
-    None of the four ``SpikePhysicsEmbedding`` features (firing rate, mean
-    spike time, ISI mean, ISI variance) reliably captures the signal.
-    A sequence model such as GRU, which processes actual spike timestamps,
-    can learn to detect the precise timing correlation between X[i] and Y[i].
-
-    This complements :func:`generate_modulated_spike_trains` (rate code) and
-    :func:`generate_correlated_spike_trains` (delay code captured by
-    mean spike time).
-
-    Parameters
-    ----------
-    n_neurons : int, optional
-        Number of neurons per population. Defaults to 8.
-    duration : float, optional
-        Recording duration in seconds. Defaults to 200.0.
-    signal_rate : float, optional
-        Rate of shared signal spike events per neuron (Hz). These events are
-        correlated between X[i] and Y[i]. Defaults to 5.0.
-    background_rate : float, optional
-        Rate of independent background Poisson spikes per neuron (Hz).
-        Should be several times larger than ``signal_rate`` so summary
-        statistics are dominated by noise. Defaults to 15.0.
-    delay : float, optional
-        Mean delay (seconds) from each X signal spike to the corresponding
-        Y signal spike. Defaults to 0.015.
-    jitter : float, optional
-        Standard deviation (seconds) of the Gaussian jitter added to the
-        delay. Defaults to 0.003.
-
-    Returns
-    -------
-    Tuple[List[np.ndarray], List[np.ndarray]]
-        ``(pop_x, pop_y)`` — two lists of spike-time arrays (one per neuron),
-        compatible with ``processor_type='spike'``.
-    """
-    pop_x, pop_y = [], []
-    for _ in range(n_neurons):
-        # Signal spikes: X[i] → Y[i] with delay + jitter
-        n_sig = np.random.poisson(signal_rate * duration)
-        sig_x = np.sort(np.random.uniform(0, duration, n_sig))
-        sig_y = sig_x + delay + np.random.normal(0, jitter, n_sig)
-        sig_y = sig_y[(sig_y > 0) & (sig_y < duration)]
-
-        # Independent background Poisson for each population
-        n_bg_x = np.random.poisson(background_rate * duration)
-        n_bg_y = np.random.poisson(background_rate * duration)
-        bg_x = np.random.uniform(0, duration, n_bg_x)
-        bg_y = np.random.uniform(0, duration, n_bg_y)
-
-        pop_x.append(np.sort(np.concatenate([sig_x, bg_x])))
-        pop_y.append(np.sort(np.concatenate([sig_y, bg_y])))
-
-    return pop_x, pop_y
-
-
-# ---------------------------------------------------------------------------
 # Windowed generators with analytically known MI
 # ---------------------------------------------------------------------------
 
@@ -836,99 +687,6 @@ def generate_windowed_oscillatory(
     return X.astype(np.float32), Y.astype(np.float32), true_mi
 
 
-def generate_windowed_bandpower_interference(
-    n_windows: int,
-    n_channels: int = 1,
-    window_size: int = 256,
-    f_carrier_hz: float = 8.0,
-    f_distractor_hz: float = 40.0,
-    sample_rate: float = 256.0,
-    latent_mi: float = 1.0,
-    snr: float = 3.0,
-    interference_amplitude: float = 5.0,
-) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Generate windowed oscillations like :func:`generate_windowed_oscillatory`,
-    plus a strong, independent out-of-band sinusoidal distractor.
-
-    The MI-carrying signal is constructed identically to
-    :func:`generate_windowed_oscillatory` (amplitude-modulated carrier at
-    ``f_carrier_hz``). A second sinusoid at ``f_distractor_hz`` is added with
-    random amplitude and phase drawn independently per window and independently
-    for X and Y, so it carries no MI and does not change the analytical
-    observable MI -- it exists only to test whether a bandpass front-end can
-    structurally reject out-of-band interference that a short-kernel generic
-    conv cannot as cleanly. Used to gate the (since removed) ``sinc_cnn``
-    inductive bias; see `results/gate/decision_log.md`.
-
-    Parameters
-    ----------
-    n_windows : int
-        Number of independent windows.
-    n_channels : int, optional
-        Number of channels. Defaults to 1.
-    window_size : int, optional
-        Number of timepoints per window. Defaults to 256.
-    f_carrier_hz : float, optional
-        Carrier frequency of the MI-carrying signal in Hz. Defaults to 8.0.
-    f_distractor_hz : float, optional
-        Frequency of the independent, non-MI-carrying distractor in Hz.
-        Defaults to 40.0.
-    sample_rate : float, optional
-        Sampling rate in Hz. Defaults to 256.0.
-    latent_mi : float, optional
-        Desired MI in bits between the scalar latents. Defaults to 1.0.
-    snr : float, optional
-        Signal amplitude relative to noise std. Defaults to 3.0.
-    interference_amplitude : float, optional
-        Distractor amplitude scale relative to the signal latents (std 1).
-        Defaults to 5.0 (strong interference).
-
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray, float]
-        ``(X, Y, true_mi)`` where X and Y have shape
-        ``(n_windows, n_channels, window_size)`` and ``true_mi`` is in bits
-        (unaffected by the distractor, since it is orthogonal in frequency and
-        independent of the signal).
-    """
-    rho = mi_to_rho(1, latent_mi)
-    cov = np.array([[1.0, rho], [rho, 1.0]])
-    latents = np.random.multivariate_normal([0.0, 0.0], cov, size=(n_windows, n_channels))
-    z_x = latents[:, :, 0]
-    z_y = latents[:, :, 1]
-
-    t = np.arange(window_size) / sample_rate
-    carrier = np.sin(2.0 * np.pi * f_carrier_hz * t)
-    v_sq = float(np.dot(carrier, carrier))
-
-    noise_std = 1.0 / snr
-    X = z_x[:, :, None] * carrier[None, None, :]
-    Y = z_y[:, :, None] * carrier[None, None, :]
-    X = X + noise_std * np.random.randn(*X.shape)
-    Y = Y + noise_std * np.random.randn(*Y.shape)
-
-    # Independent, random-phase distractor at a different frequency: carries no
-    # MI (independent draws for X and Y) and is orthogonal-in-frequency to the
-    # carrier, so it does not change the analytical MI -- only what a
-    # non-spectrally-selective encoder observes.
-    phase_x = np.random.uniform(0, 2 * np.pi, size=(n_windows, n_channels))
-    phase_y = np.random.uniform(0, 2 * np.pi, size=(n_windows, n_channels))
-    amp_x = np.random.randn(n_windows, n_channels)
-    amp_y = np.random.randn(n_windows, n_channels)
-    distractor_phase_x = f_distractor_hz * t[None, None, :] * 2.0 * np.pi + phase_x[:, :, None]
-    distractor_phase_y = f_distractor_hz * t[None, None, :] * 2.0 * np.pi + phase_y[:, :, None]
-    X = X + interference_amplitude * amp_x[:, :, None] * np.sin(distractor_phase_x)
-    Y = Y + interference_amplitude * amp_y[:, :, None] * np.sin(distractor_phase_y)
-
-    sigma_sq = noise_std ** 2
-    rho_obs = rho * v_sq / (v_sq + sigma_sq)
-    rho_obs = float(np.clip(rho_obs, -1 + 1e-8, 1 - 1e-8))
-    mi_per_channel = -0.5 * np.log2(1.0 - rho_obs ** 2)
-    true_mi = float(n_channels * mi_per_channel)
-
-    return X.astype(np.float32), Y.astype(np.float32), true_mi
-
-
 def generate_windowed_multichannel(
     n_windows: int,
     n_channels: int = 8,
@@ -947,9 +705,9 @@ def generate_windowed_multichannel(
     independently for each channel from correlated Gaussians with MI ``latent_mi``.
     Total observable MI = sum of per-channel observable MIs.
 
-    Used to gate the (since removed) depthwise CNN1D inductive bias: each
-    channel's MI lives at a different frequency, so mixing channels creates
-    interference. See `results/gate/decision_log.md`.
+    Each channel's MI lives at a different frequency, so this is useful for
+    validating estimator behaviour on multi-channel data where naively mixing
+    channels would create cross-channel interference.
 
     Parameters
     ----------
