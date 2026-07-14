@@ -63,6 +63,59 @@ def test_cnn1d_embedding(x_data_cnn, cnn1d_embedding):
     assert output.shape == (10, 8)
 
 
+class TestUnifiedActivationHandling:
+    """MLP used to KeyError on an unrecognized activation name while
+    CNN1D/CNN2D silently fell back to ReLU, and the two supported different
+    name sets. All three now share one resolver: a consistent set, and a
+    clean ValueError (not a bare KeyError or a silent substitution) only on a
+    genuinely unknown name."""
+
+    SHARED_ACTIVATIONS = ['relu', 'gelu', 'tanh', 'elu', 'leaky_relu', 'sigmoid', 'silu']
+
+    @pytest.mark.parametrize("activation", SHARED_ACTIVATIONS)
+    def test_mlp_accepts_all_shared_activations(self, activation, x_data):
+        model = MLP(input_dim=32, hidden_dim=8, embed_dim=4, n_layers=1, activation=activation)
+        out = model(x_data)
+        assert out.shape == (10, 4)
+
+    @pytest.mark.parametrize("activation", SHARED_ACTIVATIONS)
+    def test_cnn1d_accepts_all_shared_activations(self, activation, x_data_cnn):
+        model = CNN1D(input_dim=1, hidden_dim=8, embed_dim=4, n_layers=1, activation=activation)
+        out = model(x_data_cnn)
+        assert out.shape == (10, 4)
+
+    @pytest.mark.parametrize("activation", SHARED_ACTIVATIONS)
+    def test_cnn2d_accepts_all_shared_activations(self, activation):
+        from neural_mi.models.embeddings import CNN2D
+        model = CNN2D(input_dim=1, hidden_dim=8, embed_dim=4, n_layers=1, activation=activation)
+        out = model(torch.randn(4, 1, 8, 8))
+        assert out.shape == (4, 4)
+
+    def test_mlp_unknown_activation_raises_clean_value_error(self):
+        with pytest.raises(ValueError, match="Unknown activation.*Supported"):
+            MLP(input_dim=32, hidden_dim=8, embed_dim=4, n_layers=1, activation='not_a_real_activation')
+
+    def test_cnn1d_unknown_activation_raises_clean_value_error(self):
+        """Previously silently fell back to ReLU instead of erroring."""
+        with pytest.raises(ValueError, match="Unknown activation.*Supported"):
+            CNN1D(input_dim=1, hidden_dim=8, embed_dim=4, n_layers=1, activation='not_a_real_activation')
+
+    def test_cnn2d_unknown_activation_raises_clean_value_error(self):
+        from neural_mi.models.embeddings import CNN2D
+        with pytest.raises(ValueError, match="Unknown activation.*Supported"):
+            CNN2D(input_dim=1, hidden_dim=8, embed_dim=4, n_layers=1, activation='not_a_real_activation')
+
+    def test_cnn1d_gelu_now_reachable(self, x_data_cnn):
+        """'gelu' previously silently became ReLU in CNN1D's conv blocks; now
+        it must actually build a GELU layer there. (CNN1D's final projection
+        head has its own separate, hardcoded ReLU regardless of `activation`
+        -- that's an unrelated, pre-existing design choice, not part of the
+        activation dispatch this fixes.)"""
+        model = CNN1D(input_dim=1, hidden_dim=8, embed_dim=4, n_layers=1, activation='gelu')
+        has_gelu_in_conv = any(isinstance(m, nn.GELU) for m in model.conv_layers.modules())
+        assert has_gelu_in_conv
+
+
 # --- VariationalWrapper Tests ---
 
 def test_variational_wrapper_embedding(x_data):

@@ -9,6 +9,20 @@ mutual information, as described in the following papers:
 
 Each function takes a `(batch_size, batch_size)` score matrix from a critic
 model as input and returns a scalar tensor representing the MI estimate.
+
+Only ``infonce_lower_bound`` and ``smile_lower_bound`` are wired into
+``neural_mi.estimators.ESTIMATORS`` (the string-selectable estimators exposed
+via ``estimator=``). ``tuba_lower_bound`` and ``nwj_lower_bound`` are
+implemented here and kept as reference implementations for extending this
+module with additional bounds, but are intentionally not registered: they
+underperformed InfoNCE/SMILE in the library authors' own experiments.
+``js_fgan_lower_bound`` is not registered as a standalone estimator either,
+but stays because ``smile_lower_bound`` uses it internally.
+
+To add a new estimator, define a function here following the same
+``(scores: torch.Tensor) -> torch.Tensor`` signature, then register it in
+``neural_mi.estimators.ESTIMATORS`` (and ``ESTIMATOR_DEFAULTS`` if it needs
+non-empty default keyword arguments).
 """
 import torch
 import torch.nn.functional as F

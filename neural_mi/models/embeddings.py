@@ -6,6 +6,36 @@ import math
 from typing import Optional, Tuple
 from torch.nn.utils import spectral_norm as _spectral_norm
 
+# Shared activation set for every embedding model below (MLP, CNN1D, CNN2D).
+# Previously MLP KeyError'd on an unknown name while CNN1D/CNN2D silently
+# fell back to ReLU -- neither behavior is desirable, and the two supported
+# different name sets. Unified here: accept a real, consistent set; raise a
+# clean error naming valid options only on a genuinely unknown string.
+_ACTIVATIONS = {
+    'relu': nn.ReLU,
+    'gelu': nn.GELU,
+    'tanh': nn.Tanh,
+    'elu': nn.ELU,
+    'leaky_relu': nn.LeakyReLU,
+    'sigmoid': nn.Sigmoid,
+    'silu': nn.SiLU,
+}
+
+
+def _resolve_activation(name: str) -> type:
+    """Look up an activation module class by name.
+
+    Raises a clean ``ValueError`` naming the supported options on a
+    genuinely unknown name.
+    """
+    act_cls = _ACTIVATIONS.get(name)
+    if act_cls is None:
+        raise ValueError(
+            f"Unknown activation '{name}'. Supported: {sorted(_ACTIVATIONS)}."
+        )
+    return act_cls
+
+
 class BaseEmbedding(nn.Module):
     """Abstract base class for embedding models.
 
@@ -83,8 +113,8 @@ class MLP(_BaseMLP):
             The number of hidden layers in the network.  Ignored when
             ``hidden_dim`` is a list.
         activation : str, optional
-            The name of the activation function to use (e.g., 'relu', 'tanh').
-            Defaults to 'relu'.
+            The activation function to use. One of 'relu', 'gelu', 'tanh',
+            'elu', 'leaky_relu', 'sigmoid', 'silu'. Defaults to 'relu'.
         use_spectral_norm : bool, optional
             If True, applies spectral normalisation to the hidden ``nn.Linear``
             layers.  The output layer is left unnormalised to preserve the full
@@ -105,9 +135,7 @@ class MLP(_BaseMLP):
               be unstable when batch_size is small (< ~32).
         """
         super().__init__()
-        activations = {'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh,
-                       'leaky_relu': nn.LeakyReLU, 'silu': nn.SiLU}
-        act_fn = activations[activation]
+        act_fn = _resolve_activation(activation)
         _wrap = _spectral_norm if use_spectral_norm else (lambda x: x)
 
         def _make_hidden_block(in_dim: int, out_dim: int) -> list:
@@ -171,7 +199,9 @@ class CNN1D(BaseEmbedding):
             The number of convolutional layers.  Ignored when ``hidden_dim`` is
             a list.
         activation : str, optional
-            The activation function to use after convolutional layers. Defaults to 'relu'.
+            The activation function to use after convolutional layers. One of
+            'relu', 'gelu', 'tanh', 'elu', 'leaky_relu', 'sigmoid', 'silu'.
+            Defaults to 'relu'.
         kernel_size : int, optional
             The size of the convolutional kernel. Must be an odd number. Defaults to 7.
         """
@@ -179,7 +209,7 @@ class CNN1D(BaseEmbedding):
         if kernel_size % 2 == 0:
             raise ValueError("kernel_size must be an odd number for 'same' padding.")
 
-        activation_fn = {'relu': nn.ReLU, 'leaky_relu': nn.LeakyReLU}.get(activation, nn.ReLU)
+        activation_fn = _resolve_activation(activation)
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
         first_block = [
@@ -468,7 +498,8 @@ class CNN2D(BaseEmbedding):
         n_layers : int
             Number of Conv2d layers.  Ignored when ``hidden_dim`` is a list.
         activation : str, optional
-            Activation function: ``'relu'`` (default) or ``'leaky_relu'``.
+            Activation function: one of 'relu' (default), 'gelu', 'tanh',
+            'elu', 'leaky_relu', 'sigmoid', 'silu'.
         kernel_size : int, optional
             Convolutional kernel size; must be odd for symmetric same-padding.
             Defaults to 3.
@@ -477,7 +508,7 @@ class CNN2D(BaseEmbedding):
         if kernel_size % 2 == 0:
             raise ValueError("kernel_size must be an odd number for 'same' padding.")
         padding = kernel_size // 2
-        activation_fn = {'relu': nn.ReLU, 'leaky_relu': nn.LeakyReLU}.get(activation, nn.ReLU)
+        activation_fn = _resolve_activation(activation)
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
         layers = [
@@ -679,7 +710,13 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
         if self._channel_adapt is not None:
             x = self._channel_adapt(x)
 
-        # Lazy upsample: detect spatial size on first forward and add bilinear resize if needed
+        # Lazy upsample: detect spatial size on first forward and add bilinear resize if needed.
+        # Created here rather than in __init__ because the required size isn't known
+        # until the first real input arrives. This module is never moved by an
+        # earlier `.to(device)` call on the parent -- it only works because
+        # nn.Upsample is parameter-free (no weights to be on the wrong device);
+        # a lazily-created submodule with actual parameters would need an
+        # explicit `.to(x.device)` here.
         H, W = x.shape[-2], x.shape[-1]
         if self._upsample is None and (H != self._expected_spatial or W != self._expected_spatial):
             import warnings as _warnings

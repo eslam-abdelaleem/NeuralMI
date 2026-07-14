@@ -8,7 +8,7 @@ combined with different embedding models.
 """
 import torch
 import torch.nn as nn
-from typing import get_type_hints, get_origin, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 class BaseCritic(nn.Module):
     """Abstract base class for critic models.
@@ -19,8 +19,8 @@ class BaseCritic(nn.Module):
     """
     def __init__(self):
         super().__init__()
-        
-    def _get_embeddings_and_kl(self, x_out: any, y_out: any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    def _get_embeddings_and_kl(self, x_out: Any, y_out: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Helper to unpack embeddings and KL loss from variational models."""
         kl_loss_x = torch.tensor(0.0, device=x_out[0].device if isinstance(x_out, tuple) else x_out.device)
         kl_loss_y = torch.tensor(0.0, device=y_out[0].device if isinstance(y_out, tuple) else y_out.device)
