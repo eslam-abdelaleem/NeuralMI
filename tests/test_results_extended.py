@@ -107,6 +107,46 @@ class TestResults:
         captured = capsys.readouterr().out
         assert "is_reliable = False" in captured
 
+    def test_summary_rigorous_reliable_shows_r_squared(self, capsys):
+        """summary() shows R² when is_reliable=True and r_squared is a real float."""
+        r = Results(
+            mode='rigorous',
+            mi_estimate=0.8,
+            details={'mi_error': 0.05, 'is_reliable': True, 'r_squared': 0.987},
+        )
+        r.summary()
+        captured = capsys.readouterr().out
+        assert "R² = 0.987" in captured
+
+    def test_summary_rigorous_reliable_hides_nan_r_squared(self, capsys):
+        """summary() must not print a NaN r_squared value."""
+        r = Results(
+            mode='rigorous',
+            mi_estimate=0.8,
+            details={'mi_error': 0.05, 'is_reliable': True, 'r_squared': float('nan')},
+        )
+        r.summary()
+        captured = capsys.readouterr().out
+        assert "R²" not in captured
+
+    def test_summary_rigorous_unreliable_shows_fit_quality_diagnostics(self, capsys):
+        """The unreliable reason string surfaces r_squared but hides a NaN max_abs_residual."""
+        r = Results(
+            mode='rigorous',
+            mi_estimate=0.3,
+            details={
+                'mi_error': 0.2,
+                'is_reliable': False,
+                'fit_quality_warning': True,
+                'r_squared': 0.42,
+                'max_abs_residual': float('nan'),
+            },
+        )
+        r.summary()
+        captured = capsys.readouterr().out
+        assert "R²=0.420" in captured
+        assert "max|residual|" not in captured
+
     def test_summary_with_dataframe(self, capsys):
         """summary() prints DataFrame shape and column names."""
         df = pd.DataFrame({'tau': [1, 2, 3], 'mi_mean': [0.1, 0.2, 0.3]})

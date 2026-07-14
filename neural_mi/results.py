@@ -7,6 +7,7 @@ a container for MI estimates, dataframes, and detailed metadata, and also
 provides a convenient `.plot()` method for visualizing the results.
 """
 import os
+import math
 import datetime
 import pickle
 import json
@@ -164,17 +165,17 @@ class Results:
                     print("  ⚠  is_reliable = False — extrapolation is unreliable.")
                     _reasons = []
                     if fit_quality_warning:
-                        _r2_str = f", R²={r_squared:.3f}" if r_squared is not None and r_squared == r_squared else ""
-                        _res_str = f", max|residual|={max_abs_residual:.2f}" if max_abs_residual is not None and max_abs_residual == max_abs_residual else ""
+                        _r2_str = f", R²={r_squared:.3f}" if r_squared is not None and not math.isnan(r_squared) else ""
+                        _res_str = f", max|residual|={max_abs_residual:.2f}" if max_abs_residual is not None and not math.isnan(max_abs_residual) else ""
                         _reasons.append(f"fit quality (fit_quality_warning=True{_r2_str}{_res_str})")
                     if leverage_warning:
-                        _loo_str = f"={loo_shift:.3f}" if loo_shift is not None and loo_shift == loo_shift else ""
+                        _loo_str = f"={loo_shift:.3f}" if loo_shift is not None and not math.isnan(loo_shift) else ""
                         _reasons.append(f"gamma=1 leverage (leverage_warning=True, LOO shift{_loo_str})")
                     if _reasons:
                         print(f"     Reason(s): {'; '.join(_reasons)}")
                 elif is_reliable is True:
                     print("  ✓  is_reliable = True")
-                    if r_squared is not None and r_squared == r_squared:
+                    if r_squared is not None and not math.isnan(r_squared):
                         print(f"     R² = {r_squared:.3f}")
             elif self.mode in ('conditional', 'transfer') and self.params.get('rigorous'):
                 mi_err = self.details.get('mi_error')
@@ -318,8 +319,7 @@ class Results:
                 raise ValueError("Cannot plot: results do not contain a DataFrame.")
             if 'sigma_add_ladder' in self.details:
                 # Noise-injection ladder: d_hat (both PR variants) vs log(sigma_add),
-                # with the detached band shaded (spec Section 6), not the generic
-                # sweep-variable plot.
+                # with the detached band shaded, not the generic sweep-variable plot.
                 ax = plot_noise_ladder(self.details['sigma_add_ladder'], ax=ax, show=show, **kwargs)
             else:
                 sweep_var = self.params.get('sweep_var')

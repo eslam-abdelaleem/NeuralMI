@@ -497,6 +497,27 @@ class TestPlotCrossCorrelation:
         )
         plt.close('all')
 
+    @patch('matplotlib.pyplot.show')
+    def test_true_lag_line_position_matches_its_label(self, mock_show):
+        """The red 'True Lag' reference line must be drawn at true_lag itself.
+
+        Previously it was drawn at true_lag + 1 while its own legend label
+        still read f'True Lag ({true_lag})' -- the line and its label
+        disagreed regardless of which convention is "correct".
+        """
+        x, y = self._make_signals()
+        true_lag = 5
+        ax = plot_cross_correlation(x, y, true_lag=true_lag, show=False)
+
+        true_lag_lines = [ln for ln in ax.get_lines() if ln.get_color() == 'r']
+        assert len(true_lag_lines) == 1
+        xdata = true_lag_lines[0].get_xdata()
+        assert xdata[0] == xdata[1] == true_lag
+
+        _, labels = ax.get_legend_handles_labels()
+        assert f'True Lag ({true_lag})' in labels
+        plt.close('all')
+
 
 # ---------------------------------------------------------------------------
 # P8 — analyze_mi_heatmap composability
@@ -506,11 +527,12 @@ class TestAnalyzeMiHeatmap:
 
     @pytest.fixture
     def heatmap_df(self):
+        """Shaped like a real result.dataframe from mode='lag' swept over window_size."""
         lags = np.arange(-5, 6)
         windows = np.arange(5, 26, 5)
         rows = [(lag, ws, max(0.0, 0.8 - abs(lag) * 0.1 - (ws - 10) * 0.01))
                 for lag in lags for ws in windows]
-        return pd.DataFrame(rows, columns=['lag', 'window_size', 'mi'])
+        return pd.DataFrame(rows, columns=['lag', 'window_size', 'mi_mean'])
 
     @patch('matplotlib.pyplot.show')
     def test_returns_axes(self, mock_show, heatmap_df):
@@ -545,6 +567,43 @@ class TestAnalyzeMiHeatmap:
         assert captured.out == '', (
             f"analyze_mi_heatmap wrote to stdout: {captured.out!r}"
         )
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.show')
+    def test_mi_col_defaults_to_mi_mean(self, mock_show, heatmap_df):
+        """A real result.dataframe (mi_mean, not mi) must work with no extra args."""
+        assert 'mi_mean' in heatmap_df.columns
+        ax = analyze_mi_heatmap(heatmap_df, show=False)
+        assert isinstance(ax, plt.Axes)
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.show')
+    def test_mi_col_accepts_custom_column_name(self, mock_show):
+        """mi_col lets callers point at a differently-named MI column."""
+        lags = np.arange(-5, 6)
+        windows = np.arange(5, 26, 5)
+        rows = [(lag, ws, max(0.0, 0.8 - abs(lag) * 0.1 - (ws - 10) * 0.01))
+                for lag in lags for ws in windows]
+        df = pd.DataFrame(rows, columns=['lag', 'window_size', 'score'])
+        ax = analyze_mi_heatmap(df, mi_col='score', show=False)
+        assert isinstance(ax, plt.Axes)
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.tight_layout')
+    @patch('matplotlib.pyplot.show')
+    def test_no_significant_contour_path_respects_external_axes(self, mock_show, mock_tight_layout):
+        """The early-return ('no significant contour') path must not call
+        tight_layout() when the caller supplied their own ax -- it should
+        only tidy up figures this function created itself."""
+        lags = np.arange(-5, 6)
+        windows = np.arange(5, 26, 5)
+        rows = [(lag, ws, 0.0) for lag in lags for ws in windows]
+        flat_df = pd.DataFrame(rows, columns=['lag', 'window_size', 'mi_mean'])
+
+        fig, ax_ext = plt.subplots()
+        ax = analyze_mi_heatmap(flat_df, absolute_mi_threshold=0.5, ax=ax_ext, show=True)
+        assert ax is ax_ext
+        mock_tight_layout.assert_not_called()
         plt.close('all')
 
 

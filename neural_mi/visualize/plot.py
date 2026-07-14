@@ -13,7 +13,7 @@ import numpy as np
 from scipy.signal import correlate
 from scipy.stats import zscore
 from matplotlib.ticker import MaxNLocator
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
 from scipy.spatial.distance import cdist
 from matplotlib.lines import Line2D
 from neural_mi.logger import logger as _logger
@@ -78,7 +78,9 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     plt.Axes
         The axes containing the plot.
     """
-    if ax is None: fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    created_fig = ax is None
+    if created_fig:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     ax.plot(summary_df[param_col], summary_df[mean_col], 'o-', label='Mean MI', **kwargs)
     ax.fill_between(summary_df[param_col], summary_df[mean_col] - summary_df[std_col],
@@ -101,7 +103,7 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     if pd.api.types.is_numeric_dtype(summary_df[param_col]) and all(summary_df[param_col] == np.floor(summary_df[param_col])):
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
-    if 'fig' in locals(): plt.tight_layout()
+    if created_fig: plt.tight_layout()
     if show: plt.show()
     return ax
 
@@ -165,6 +167,7 @@ def plot_dimensionality_curve(
     figsize = kwargs.pop('figsize', (8, 8 if has_pr else 5))
 
     # --- Resolve axes ---
+    created_fig = axes is None
     if axes is None:
         if has_pr:
             fig, (ax_mi, ax_pr) = plt.subplots(
@@ -259,7 +262,7 @@ def plot_dimensionality_curve(
         ax_pr.grid(True, linestyle=':')
         sns.despine(ax=ax_pr)
 
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
     if show:
         plt.show()
@@ -270,9 +273,9 @@ def plot_noise_ladder(ladder_df: pd.DataFrame, ax: Optional[plt.Axes] = None,
                       overlay_mi: bool = False, show: bool = True) -> plt.Axes:
     """Plots the ceiling-escape noise-injection ladder (both PR variants vs. log(sigma_add)).
 
-    This is the plot for ``noise_injection_dimensionality_spec.md`` Section 6:
-    ``d_hat`` from both ``pr_eig`` and ``pr_singular`` against ``log(sigma_add)``,
-    with the detached band shaded. Not the per-``k_z`` MI curve.
+    Plots the estimated dimension ``d_hat`` from both ``pr_eig`` and
+    ``pr_singular`` against ``log(sigma_add)``, with the detached band shaded.
+    Not the per-``k_z`` MI curve.
 
     Parameters
     ----------
@@ -365,7 +368,9 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
         Whether to call ``plt.show()`` at the end.  Set to ``False`` when
         embedding this plot in a larger figure.  Defaults to ``True``.
     """
-    if ax is None: fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    created_fig = ax is None
+    if created_fig:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color='gray', alpha=0.5)
     agg = raw_results_df.groupby('gamma')['train_mi'].mean().reset_index()
@@ -386,7 +391,7 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     ax.set_title("Bias Correction via Extrapolation"); ax.legend()
     ax.grid(True, linestyle=':'); sns.despine(ax=ax)
 
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
     if show:
         plt.show()
@@ -457,11 +462,10 @@ def plot_embeddings(
         if embed_dim <= dim:
             method = 'none'
         else:
-            try:
-                import umap  # noqa: F401
-                method = 'umap'
-            except ImportError:
-                method = 'pca'
+            import importlib.util
+            # Check availability without importing yet -- the 'umap' branch
+            # below does the real import when it's actually used.
+            method = 'umap' if importlib.util.find_spec('umap') is not None else 'pca'
 
     # --- Apply dimensionality reduction ---
     if method == 'none':
@@ -475,7 +479,7 @@ def plot_embeddings(
             from sklearn.decomposition import PCA
         except ImportError:
             raise ImportError(
-                "PCA requires scikit-learn. Install it with: pip install neural_mi[sklearn]"
+                'PCA requires scikit-learn. Install it with: pip install "neural_mi[viz]"'
             )
         z_plot = PCA(n_components=dim).fit_transform(z)
     elif method == 'tsne':
@@ -483,7 +487,7 @@ def plot_embeddings(
             from sklearn.manifold import TSNE
         except ImportError:
             raise ImportError(
-                "t-SNE requires scikit-learn. Install it with: pip install neural_mi[sklearn]"
+                't-SNE requires scikit-learn. Install it with: pip install "neural_mi[viz]"'
             )
         z_plot = TSNE(n_components=dim, **{k: v for k, v in kwargs.items()
                                             if k in ('perplexity', 'learning_rate', 'n_iter',
@@ -540,6 +544,7 @@ def plot_embeddings(
             legend_handles = None
 
     # --- Create axes ---
+    created_fig = ax is None
     if ax is None:
         if dim == 3:
             fig = plt.figure(figsize=(8, 6))
@@ -567,7 +572,7 @@ def plot_embeddings(
         ax.set_title(title)
 
     sns.despine(ax=ax)
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
 
     return ax
@@ -608,10 +613,11 @@ def plot_cross_correlation(
     lags = np.arange(-len(x[0]) // 2 + 1, len(x[0]) // 2 + 1)
     corr = correlate(zscore(y[0]), zscore(x[0]), mode='same') / len(x[0])
 
-    if ax is None:
+    created_fig = ax is None
+    if created_fig:
         fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(lags, corr)
-    ax.axvline(true_lag + 1, color='r', linestyle='-.', label=f'True Lag ({true_lag})')
+    ax.axvline(true_lag, color='r', linestyle='-.', label=f'True Lag ({true_lag})')
     ax.axvline(lags[np.argmax(corr)], color='g', linestyle=':',
                label=f'Found Lag ({lags[np.argmax(corr)]})')
     ax.set_xlabel('Lag')
@@ -620,7 +626,7 @@ def plot_cross_correlation(
     if xlim is not None:
         ax.set_xlim(xlim)
     ax.legend()
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
     if show:
         plt.show()
@@ -628,6 +634,7 @@ def plot_cross_correlation(
 
 def analyze_mi_heatmap(
     results_df,
+    mi_col: str = 'mi_mean',
     absolute_mi_threshold=0.2,
     contour_rise_fraction=0.1,
     radius_multiplier=1.2,
@@ -645,7 +652,13 @@ def analyze_mi_heatmap(
     Parameters
     ----------
     results_df : pd.DataFrame
-        DataFrame with columns ``'lag'``, ``'window_size'``, and ``'mi'``.
+        DataFrame with columns ``'lag'``, ``'window_size'``, and ``mi_col``.
+        A ``result.dataframe`` from ``mode='lag'`` swept over ``window_size``
+        has these columns by default.
+    mi_col : str, optional
+        Name of the MI column in ``results_df``. Defaults to ``'mi_mean'``,
+        the column produced by sweep-style aggregation. Pass ``'mi'`` (or
+        another column name) if plotting a differently-shaped DataFrame.
     absolute_mi_threshold : float, optional
         Absolute MI value for the "significant" contour.  Defaults to 0.2.
     contour_rise_fraction : float, optional
@@ -672,7 +685,7 @@ def analyze_mi_heatmap(
         contour is found and the function exits early.
     """
     # --- 1. Data Preparation ---
-    heatmap_data = results_df.pivot(index='window_size', columns='lag', values='mi')
+    heatmap_data = results_df.pivot(index='window_size', columns='lag', values=mi_col)
     lags = heatmap_data.columns.values
     windows = heatmap_data.index.values
 
@@ -695,7 +708,8 @@ def analyze_mi_heatmap(
         _logger.info("Causal Contour Analysis: lag=0 not found — skipping Causal Contour estimation.")
 
     # --- 3. Create the main figure for all analysis ---
-    if ax is None:
+    created_fig = ax is None
+    if created_fig:
         fig, ax = plt.subplots(figsize=(11, 8))
 
     lag_edges = np.concatenate([lags - (lags[1] - lags[0])/2, [lags[-1] + (lags[1] - lags[0])/2]])
@@ -716,7 +730,8 @@ def analyze_mi_heatmap(
         ax.set_xlabel('Lag (Timepoints)')
         ax.set_ylabel('Window Size (Timepoints)')
         if show:
-            plt.tight_layout()
+            if created_fig:
+                plt.tight_layout()
             plt.show()
         return ax
 
@@ -801,7 +816,7 @@ def analyze_mi_heatmap(
     if len(windows) < 25:
         ax.set_yticks(windows)
 
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
     if show:
         plt.show()
