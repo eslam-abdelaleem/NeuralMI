@@ -96,6 +96,46 @@ def _hashable_group_vars(df: pd.DataFrame, group_vars: List[str]) -> pd.DataFram
     return df
 
 
+def _reshape_categorical_z_for_conditional(z_run_data, cat_dataset):
+    """Re-lay-out a categorical-processor Z tensor for ``mode='conditional'``.
+
+    ``mode='conditional'`` builds XZ by concatenating X and Z along the
+    channel axis, which requires both to share X's window-size axis. The
+    categorical processor's encodings don't produce that layout natively:
+
+    - ``'majority_vote'`` / ``'probability'`` collapse each window to a
+      single per-category summary, shape ``(N, C, n_categories)`` — Z has no
+      temporal extent within a window by construction. Folded here into
+      ``C * n_categories`` channels with a size-1 window axis; the caller
+      broadcasts that axis against X's window size.
+    - ``'full_trajectory'`` keeps full per-timepoint resolution but flattens
+      ``n_categories * window_size`` onto the last axis, shape
+      ``(N, C, n_categories * window_size)``. Un-flattened and folded here
+      into ``C * n_categories`` channels with the real window axis restored,
+      preserving the per-timepoint information.
+
+    Only reshapes the tensor handed to this specific call; the categorical
+    processor's own stored data and its behavior in every other mode are
+    untouched.
+    """
+    encoding = cat_dataset.encoding
+    n_cat = cat_dataset.n_categories
+    n, c, last = z_run_data.shape
+    if encoding in ('majority_vote', 'probability'):
+        return z_run_data.reshape(n, c * n_cat, 1)
+    elif encoding == 'full_trajectory':
+        w = cat_dataset.max_samples_per_window
+        # (N, C, n_cat*W) -> (N, C, W, n_cat) -> (N, C, n_cat, W) -> (N, C*n_cat, W)
+        # The (W, n_cat) un-flatten order matches how _move_full_trajectory
+        # wrote columns: col = timepoint_index * n_categories + category.
+        return z_run_data.reshape(n, c, w, n_cat).permute(0, 1, 3, 2).reshape(n, c * n_cat, w)
+    else:
+        raise ValueError(
+            f"Unknown categorical encoding '{encoding}' — cannot prepare it for "
+            f"mode='conditional'."
+        )
+
+
 def run(
     x_data: Union[np.ndarray, torch.Tensor, List],
     y_data: Optional[Union[np.ndarray, torch.Tensor, List]] = None,
@@ -871,6 +911,10 @@ def _run_flat(
                     processor_params_x=z_processor_params or {}
                 )
                 z_run_data = z_dataset.x_data
+                if z_processor_type == 'categorical':
+                    z_run_data = _reshape_categorical_z_for_conditional(
+                        z_run_data, z_dataset.x_dataset
+                    )
             else:
                 z_run_data = z_data if torch.is_tensor(z_data) else torch.from_numpy(np.array(z_data)).float()
             n_workers = analysis_kwargs.get('n_workers', 1)

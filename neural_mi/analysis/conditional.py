@@ -13,6 +13,17 @@ import torch
 from typing import Dict, Any, Optional
 
 from neural_mi.analysis.sweep import _joint_marginal_difference
+from neural_mi.logger import logger
+
+# Continuous windowing adds a deliberate "+1" sample as an interpolation
+# safety buffer at window edges (ContinuousWindowDataset._compute_max_samples_
+# per_window); categorical windowing does not, since it never interpolates.
+# X and a full-resolution categorical Z windowed with the same nominal
+# window_size therefore differ by exactly this buffer, not by a real content
+# mismatch -- trim to the shorter length rather than raising. Kept at exactly
+# 1 (not a larger tolerance) so a genuinely different window_size between X
+# and Z -- a real configuration error -- still raises.
+_WINDOW_SIZE_TRIM_TOLERANCE = 1
 
 
 def run_conditional_mi(
@@ -40,7 +51,11 @@ def run_conditional_mi(
         Data for variable Y, shape ``(n_samples, n_channels_y, window_size)``.
     z_data : torch.Tensor
         Conditioning variable Z, shape ``(n_samples, n_channels_z, window_size)``.
-        Must share the same sample dimension as x_data and y_data.
+        Must share the same sample dimension as x_data and y_data. A window
+        axis of size 1 is broadcast across x_data's window_size before
+        concatenation, for conditioning variables with no temporal extent
+        within a window (e.g. a categorical Z encoded with 'majority_vote' or
+        'probability' — see ``run._reshape_categorical_z_for_conditional``).
     base_params : Dict[str, Any]
         Fixed parameters for the MI estimator. Passed to both sweep runs.
     sweep_grid : Dict[str, List], optional
@@ -82,11 +97,30 @@ def run_conditional_mi(
             f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(z_data.shape)}."
         )
     if x_data.shape[2] != z_data.shape[2]:
-        raise ValueError(
-            "x_data and z_data must have the same window size to be concatenated "
-            f"into XZ. Got window sizes {x_data.shape[2]} and {z_data.shape[2]} "
-            f"(full shapes {tuple(x_data.shape)}, {tuple(z_data.shape)})."
-        )
+        if z_data.shape[2] == 1:
+            # Z has no temporal extent within the window (e.g. a per-window
+            # categorical summary already folded into channels by
+            # _reshape_categorical_z_for_conditional, or any other
+            # window-constant conditioning variable) -- broadcast it across
+            # X's window so the two can be concatenated along the channel axis.
+            z_data = z_data.expand(-1, -1, x_data.shape[2])
+        elif abs(x_data.shape[2] - z_data.shape[2]) <= _WINDOW_SIZE_TRIM_TOLERANCE:
+            min_w = min(x_data.shape[2], z_data.shape[2])
+            logger.warning(
+                f"x_data window size ({x_data.shape[2]}) and z_data window size "
+                f"({z_data.shape[2]}) differ by {abs(x_data.shape[2] - z_data.shape[2])} "
+                f"sample(s) -- likely the continuous processor's interpolation-edge "
+                f"buffer (see _compute_max_samples_per_window). Trimming both to the "
+                f"shared start, length {min_w}, rather than raising."
+            )
+            x_data = x_data[:, :, :min_w]
+            z_data = z_data[:, :, :min_w]
+        else:
+            raise ValueError(
+                "x_data and z_data must have the same window size to be concatenated "
+                f"into XZ. Got window sizes {x_data.shape[2]} and {z_data.shape[2]} "
+                f"(full shapes {tuple(x_data.shape)}, {tuple(z_data.shape)})."
+            )
 
     # Build XZ by concatenating along the channel dimension (dim=1)
     xz_data = torch.cat([x_data, z_data], dim=1)
