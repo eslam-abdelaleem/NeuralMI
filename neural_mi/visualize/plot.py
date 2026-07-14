@@ -723,7 +723,15 @@ def analyze_mi_heatmap(
     cs = ax.contour(lags, windows, heatmap_data.values, levels=[absolute_mi_threshold],
                     colors='red', linewidths=2.5, linestyles='-')
 
-    if not cs.allsegs[0]:
+    # A non-empty allsegs[0] list can still contain only degenerate (empty or
+    # single-point) segments -- e.g. a threshold that only grazes the grid at
+    # isolated points -- so check the picked segment's own size too, not just
+    # whether the list itself is non-empty.
+    significant_contour_points = (
+        np.array(max(cs.allsegs[0], key=len)) if cs.allsegs[0] else np.empty((0, 2))
+    )
+
+    if significant_contour_points.size == 0:
         _logger.warning("No significant MI contour found at threshold %.3f — try a lower value.",
                         absolute_mi_threshold)
         ax.set_title('Parsimony-Informed Topological Analysis (No Significant Contour Found)')
@@ -734,8 +742,6 @@ def analyze_mi_heatmap(
                 plt.tight_layout()
             plt.show()
         return ax
-
-    significant_contour_points = np.array(max(cs.allsegs[0], key=len))
 
     midpoint, radius = None, None
     if causal_contour_c is not None:

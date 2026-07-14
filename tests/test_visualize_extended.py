@@ -606,6 +606,17 @@ class TestAnalyzeMiHeatmap:
         mock_tight_layout.assert_not_called()
         plt.close('all')
 
+    @patch('matplotlib.pyplot.show')
+    def test_degenerate_contour_does_not_crash(self, mock_show, heatmap_df):
+        """An absurdly high threshold can make matplotlib's contour() return a
+        non-empty allsegs[0] list containing only degenerate (empty or
+        single-point) segments -- the list-level `not cs.allsegs[0]` check
+        alone doesn't catch this, and the downstream cdist/argmin used to
+        crash with 'attempt to get argmin of an empty sequence'."""
+        ax = analyze_mi_heatmap(heatmap_df, absolute_mi_threshold=1e6, show=False)
+        assert isinstance(ax, plt.Axes)
+        plt.close('all')
+
 
 # ---------------------------------------------------------------------------
 # P9 — _RESULT_COLS contains pr_eig / pr_singular columns
