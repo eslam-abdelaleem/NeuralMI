@@ -24,10 +24,18 @@ from neural_mi.utils import compute_cross_covariance_spectrum, compute_spectral_
 from neural_mi.augmentations import apply_augmentations
 
 def _ranks(sample: np.ndarray) -> List[int]:
+    """Return each element's rank (position in sorted order) within `sample`."""
     indices = sorted(range(len(sample)), key=lambda i: sample[i])
     return sorted(indices, key=lambda i: indices[i])
 
 def _sample_with_minimum_distance(n: int, k: int, d: int) -> np.ndarray:
+    """Sample k block start positions in [0, n) with pairwise distance >= d.
+
+    Draws k values from a compressed range of size n - (k-1)*(d-1), then
+    spreads them out by each value's rank so consecutive picks are always
+    at least d apart -- this is what keeps the blocked test-split's blocks
+    from overlapping or sitting adjacent to each other.
+    """
     sample = np.random.choice(n - (k - 1) * (d - 1), k, replace=False)
     return np.array([s + (d - 1) * r for s, r in zip(sample, _ranks(sample))])
 
@@ -247,8 +255,7 @@ class Trainer:
         peak_fraction : float, optional
             Controls how the best epoch is selected for reporting train MI.
 
-            - ``1.0`` (default) — use the epoch where smoothed test MI is maximised
-              (current behaviour, fully backward-compatible).
+            - ``1.0`` (default) — use the epoch where smoothed test MI is maximised.
             - ``< 1.0`` — use the *first improvement checkpoint* where smoothed test
               MI reaches ``peak_fraction × max_test_mi``.  This gives a
               conservative estimate that avoids the noisiest tail of training.
@@ -414,7 +421,7 @@ class Trainer:
             self.device.type == 'cuda'
             and (self.use_amp is True or self.use_amp == 'auto')
         )
-        _scaler = torch.cuda.amp.GradScaler() if _amp_active else None
+        _scaler = torch.amp.GradScaler('cuda') if _amp_active else None
 
         history, train_history, metrics_tracked, best_mi, no_improve = [], [], [], -float('inf'), 0
         embedding_history_x: list = []
@@ -424,7 +431,6 @@ class Trainer:
         _rotation_singular_values_history: list = []
         _rotation_history_x: list = []
         _rotation_history_y: list = []
-        physics_params_history: dict = {}
         best_model_state = None
         # Improvement checkpoints: saved only when peak_fraction < 1.0 to avoid
         # unnecessary memory use.  Each entry is (epoch, smoothed_mi, state_dict).
@@ -567,16 +573,6 @@ class Trainer:
                 nan_streak = 0
             history.append(mi_nats)
 
-            # Generic physics-params tracking: any embedding implementing
-            # get_physics_params() gets its return value logged per epoch.
-            # No currently-shipped embedding implements this (kept as an
-            # extensibility hook for future physics-informed embeddings).
-            for _prefix, _net_attr in (('x', 'embedding_net_x'), ('y', 'embedding_net_y')):
-                _enc = getattr(self.model, _net_attr, None)
-                if _enc is not None and hasattr(_enc, 'get_physics_params'):
-                    for _k, _v in _enc.get_physics_params().items():
-                        physics_params_history.setdefault(f'{_prefix}_{_k}', []).append(_v)
-
             # Smoothing (Custom or Default)
             if self.custom_smoothing_fn:
                 smoothed_nats = self.custom_smoothing_fn(history)[-1]
@@ -655,6 +651,23 @@ class Trainer:
 
         best_ep = np.argmax(self.custom_smoothing_fn(history) if self.custom_smoothing_fn else self._smooth(history, smoothing_sigma, median_window))
 
+        # U5: early stopping is effectively off by default (patience defaults to
+        # 1000), so nothing else signals "training simply ran out of epochs while
+        # test MI was still climbing." Since these are lower-bound estimators,
+        # under-training always biases the reported value downward -- the
+        # dangerous direction -- silently.
+        if no_improve < patience and len(history) > 1 and best_ep >= len(history) - 1:
+            warnings.warn(
+                f"Training completed all {len(history)} epoch(s) without early "
+                f"stopping, and the best (smoothed) test MI occurred at the final "
+                f"epoch. MI may still have been increasing when training stopped, "
+                f"so the reported estimate could be an under-trained lower bound. "
+                f"Consider increasing n_epochs (or lowering patience to enable "
+                f"early stopping).",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # All-negative flag (from test MI history; warning deferred until _raw_train_mi is set)
         valid_history = [v for v in history if not np.isnan(v)]
         _all_mi_negative = bool(valid_history and max(valid_history) <= 0)
@@ -668,10 +681,10 @@ class Trainer:
         _conservative_ep = None
         _conservative_train_mi = None
         if peak_fraction < 1.0 and _improvement_checkpoints:
+            _cons_state = None
             _max_smoothed = _improvement_checkpoints[-1][1]  # monotonically last = highest
             if _max_smoothed > 0:
                 _threshold = peak_fraction * _max_smoothed
-                _cons_state = None
                 for _ckpt_ep, _ckpt_sm, _ckpt_state in _improvement_checkpoints:
                     if _ckpt_sm >= _threshold:
                         _conservative_ep = _ckpt_ep
@@ -777,14 +790,6 @@ class Trainer:
                     results['embedding_rotation_x'] = U
                     results['embedding_rotation_y'] = V
 
-        if physics_params_history:
-            results['physics_params_history'] = physics_params_history
-            # Final values at best epoch (clipped to valid index)
-            _ep_idx = min(best_ep, len(next(iter(physics_params_history.values()))) - 1)
-            results['physics_params_final'] = {
-                k: v[_ep_idx] for k, v in physics_params_history.items()
-            }
-
         # Optionally evaluate reconstruction loss for decoder-augmented training
         if self.decoder_x is not None or self.decoder_y is not None:
             with torch.no_grad():
@@ -876,9 +881,9 @@ class Trainer:
         result = self._eval_mi(x, y)
         if np.isnan(result):
             logger.warning(
-                f"MI evaluation returned NaN. This may indicate numerical instability, "
-                f"a degenerate batch, or exploding gradients. Check your learning_rate, "
-                f"batch_size, and input data for anomalies."
+                "MI evaluation returned NaN. This may indicate numerical instability, "
+                "a degenerate batch, or exploding gradients. Check your learning_rate, "
+                "batch_size, and input data for anomalies."
             )
         return result
 
@@ -979,11 +984,10 @@ class Trainer:
                         gap_idx.add(s + blk_len + g - 1)
             excluded = np.array(sorted(gap_idx), dtype=int)
             train_idx = np.setdiff1d(np.arange(n), np.union1d(test_idx, excluded))
-            if gap_size > 0:
-                logger.debug(
-                    f"Blocked split gap: excluded {len(excluded)} samples "
-                    f"({gap_size} samples per block boundary) from training set."
-                )
+            logger.debug(
+                f"Blocked split gap: excluded {len(excluded)} samples "
+                f"({gap_size} samples per block boundary) from training set."
+            )
         else:
             train_idx = np.setdiff1d(np.arange(n), test_idx)
 

@@ -1,5 +1,7 @@
 """Tests for the Trainer class in neural_mi."""
 
+import warnings
+
 import pytest
 import torch
 import numpy as np
@@ -218,3 +220,42 @@ class TestPeakFraction:
         loss_good = Trainer._decoder_loss(recon_good, target, 'softmax')
         loss_bad = Trainer._decoder_loss(recon_bad, target, 'softmax')
         assert loss_good.item() < loss_bad.item()
+
+
+class TestUnderTrainingWarning:
+    """U5: warn when training exhausts all epochs while test MI is still
+    climbing (patience defaults high enough that early stopping rarely fires,
+    so nothing else signals this -- and since these are lower-bound
+    estimators, under-training silently biases the estimate downward)."""
+
+    def _trainer(self, dummy_model, custom_smoothing_fn):
+        optimizer = torch.optim.Adam(dummy_model.parameters(), lr=0.01)
+        return Trainer(dummy_model, dummy_estimator, optimizer, torch.device('cpu'),
+                       custom_smoothing_fn=custom_smoothing_fn)
+
+    def test_fires_when_best_epoch_is_the_last_one(self, dummy_data, dummy_model):
+        """Monotonically 'improving' smoothed MI with no early stopping -> warn."""
+        increasing = lambda history: np.arange(1, len(history) + 1, dtype=float)
+        trainer = self._trainer(dummy_model, increasing)
+        with pytest.warns(UserWarning, match="under-trained lower bound"):
+            trainer.train(dummy_data, n_epochs=3, batch_size=20, patience=10, verbose=False)
+
+    def test_absent_when_peak_is_not_the_last_epoch(self, dummy_data, dummy_model):
+        """Smoothed MI peaks mid-training then declines -> no warning."""
+        sequence = [0.1, 0.9, 0.5, 0.3]
+        peaked = lambda history: np.array(sequence[:len(history)])
+        trainer = self._trainer(dummy_model, peaked)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            trainer.train(dummy_data, n_epochs=4, batch_size=20, patience=10, verbose=False)
+        assert not any("under-trained lower bound" in str(w.message) for w in caught)
+
+    def test_absent_when_early_stopping_engages(self, dummy_data, dummy_model):
+        """A plateaued metric with tight patience triggers real early stopping;
+        the run never reaches n_epochs, so under-training does not apply."""
+        flat = lambda history: np.full(len(history), 0.5)
+        trainer = self._trainer(dummy_model, flat)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            trainer.train(dummy_data, n_epochs=10, batch_size=20, patience=1, verbose=False)
+        assert not any("under-trained lower bound" in str(w.message) for w in caught)

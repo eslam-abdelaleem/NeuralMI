@@ -1,6 +1,4 @@
-"""Tests for Library Fix 1 (physics params tracking) and Library Fix 2
-(pretrained backbone spatial dimension mismatch).
-"""
+"""Tests for pretrained-backbone spatial dimension mismatch handling."""
 
 import warnings
 import numpy as np
@@ -10,35 +8,6 @@ import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Split
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Fix 1: physics_params_history / physics_params_final
-# ──────────────────────────────────────────────────────────────────────────────
-
-def test_non_biased_model_no_physics_params():
-    """Standard CNN should produce no physics_params_history."""
-    np.random.seed(3)
-    X = np.random.randn(80, 2, 32).astype(np.float32)
-    Y = 0.5 * X + 0.5 * np.random.randn(80, 2, 32).astype(np.float32)
-
-    result = nmi.run(
-        X, Y,
-        mode='estimate',
-        split=Split(mode='random'),
-        model=Model(embedding_dim=8, hidden_dim=16, n_layers=1, embedding_model='cnn'),
-        training=Training(n_epochs=5, patience=5, batch_size=32),
-        seed=3,
-        show_progress=False,
-    )
-
-    assert 'physics_params_history' not in result.details, (
-        "Standard CNN should not produce physics_params_history"
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Fix 2: Pretrained backbone spatial dimension mismatch
-# ──────────────────────────────────────────────────────────────────────────────
 
 class TestPretrainedBackboneSpatialMismatch:
     """Tests for the spatial dimension mismatch handling in PretrainedBackboneEmbedding."""
