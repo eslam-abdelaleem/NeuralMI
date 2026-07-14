@@ -25,6 +25,19 @@ from neural_mi.logger import logger
 # and Z -- a real configuration error -- still raises.
 _WINDOW_SIZE_TRIM_TOLERANCE = 1
 
+# ContinuousWindowDataset and CategoricalWindowDataset validate window
+# coverage with different implementations (searchsorted-based vs a
+# two-pointer scan), which can disagree on a boundary window's validity by
+# one sample and so produce window *counts* that differ by 1 even with
+# identical window_size/step_size. This is the same class of processor-level
+# edge-case discrepancy as the window-size buffer above -- not a real content
+# mismatch -- and is reconciled the same way: create_dataset already
+# truncates X/Y to the shorter of two window counts when aligning streams of
+# different duration, so truncating X/Y/Z to their shared minimum here (from
+# the start, since all three begin at the same t_start) follows the same,
+# already-established precedent. A larger difference still raises.
+_SAMPLE_COUNT_TRIM_TOLERANCE = 1
+
 
 def run_conditional_mi(
     x_data: torch.Tensor,
@@ -91,11 +104,33 @@ def run_conditional_mi(
     y_data = y_data.to(device)
     z_data = z_data.to(device)
 
-    if x_data.shape[0] != y_data.shape[0] or x_data.shape[0] != z_data.shape[0]:
+    if x_data.shape[0] != y_data.shape[0]:
+        # X and Y are windowed together via a single shared WindowManager
+        # (create_dataset), so they should always match exactly. A mismatch
+        # here means something else is wrong -- always a hard error.
         raise ValueError(
             "x_data, y_data, and z_data must have the same number of samples. "
             f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(z_data.shape)}."
         )
+    if x_data.shape[0] != z_data.shape[0]:
+        if abs(x_data.shape[0] - z_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
+            min_n = min(x_data.shape[0], z_data.shape[0])
+            logger.warning(
+                f"x_data/y_data have {x_data.shape[0]} windows but z_data has "
+                f"{z_data.shape[0]} -- likely a boundary-window coverage-validation "
+                f"difference between processor types, not a real duration mismatch "
+                f"(see _SAMPLE_COUNT_TRIM_TOLERANCE). Truncating all three to the "
+                f"shared first {min_n} windows, the same way create_dataset "
+                f"truncates X/Y to the shorter of two window counts."
+            )
+            x_data = x_data[:min_n]
+            y_data = y_data[:min_n]
+            z_data = z_data[:min_n]
+        else:
+            raise ValueError(
+                "x_data, y_data, and z_data must have the same number of samples. "
+                f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(z_data.shape)}."
+            )
     if x_data.shape[2] != z_data.shape[2]:
         if z_data.shape[2] == 1:
             # Z has no temporal extent within the window (e.g. a per-window
