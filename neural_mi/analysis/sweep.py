@@ -158,19 +158,18 @@ class ParameterSweep:
             self.base_params.get('processor_params_x', {}) and
             self.base_params.get('processor_params_x', {}).get('preprocessed', False)
         )
-        for combo in param_combinations:
-            _emb = combo.get('embedding_model', self.base_params.get('embedding_model', 'mlp'))
-            _proc = combo.get('processor_type_x', self.base_params.get('processor_type_x', None))
+        for i_combo, params in enumerate(param_combinations):
+            _emb = params.get('embedding_model', self.base_params.get('embedding_model', 'mlp'))
+            _proc = params.get('processor_type_x', self.base_params.get('processor_type_x', None))
             if not _already_preprocessed and _proc is None and str(_emb).lower() in ('gru', 'lstm'):
                 raise ValueError(
                     f"sweep_grid contains embedding_model='{_emb}' but processor_type_x=None "
                     f"produces a StaticDataset with no time dimension. Remove 'gru'/'lstm' "
                     f"from the sweep or set a windowed processor_type_x."
                 )
-            
-        for i_combo, params in enumerate(param_combinations):
+
             current_params = {**self.base_params, **params}
-            
+
             # --- SMART MODEL SAVING LOGIC ---
             base_save_path = current_params.get('save_best_model_path')
             if base_save_path and params:
@@ -241,3 +240,78 @@ class ParameterSweep:
         results = self._run_parallel(tasks, n_workers)
         logger.info("Parameter sweep finished.")
         return results
+
+
+def _joint_marginal_difference(
+    joint_x, joint_y, marginal_x, marginal_y,
+    base_params: Dict[str, Any], sweep_grid: Optional[Dict[str, Any]], n_workers: int,
+    *,
+    quantity_name: str,
+    joint_label: str, marginal_label: str,
+    joint_key: str, marginal_key: str,
+) -> tuple:
+    """Estimate a chain-rule difference I(joint) - I(marginal) via two
+    independent ParameterSweep runs.
+
+    Shared by conditional MI (I(X;Y|Z) = I(XZ;Y) - I(Z;Y)) and transfer
+    entropy in both directions (TE(X→Y) = I(xy_past;y_future) -
+    I(y_past;y_future), and the same with X/Y swapped for TE(Y→X)) -- all
+    three are the identical joint/marginal/difference/negative-value-warning
+    pattern, differing only in which arrays go in and what the quantity is
+    called in log/error messages.
+
+    Parameters
+    ----------
+    joint_x, joint_y : torch.Tensor
+        Data for the joint-sweep ParameterSweep(x_data=joint_x, y_data=joint_y).
+    marginal_x, marginal_y : torch.Tensor
+        Data for the marginal-sweep ParameterSweep(x_data=marginal_x, y_data=marginal_y).
+    quantity_name : str
+        Human-readable name of the estimated quantity for log/error/warning
+        text, e.g. ``"Conditional MI"`` or ``"TE(X→Y)"``.
+    joint_label, marginal_label : str
+        The two MI terms' names for log text, e.g. ``"XZ;Y"`` / ``"Z;Y"``.
+    joint_key, marginal_key : str
+        The caller's result-dict key names for the two component MI values,
+        named in the negative-value warning so a user knows where to find them.
+
+    Returns
+    -------
+    tuple[float, float, float, list, list]
+        ``(difference, mi_joint, mi_marginal, results_joint, results_marginal)``.
+    """
+    logger.info(f"{quantity_name}: estimating I({joint_label})...")
+    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=base_params.copy())
+    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False)
+
+    logger.info(f"{quantity_name}: estimating I({marginal_label})...")
+    sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y, base_params=base_params.copy())
+    results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False)
+
+    joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
+    marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]
+    if not joint_vals:
+        raise RuntimeError(f"{quantity_name}: all I({joint_label}) runs failed — no valid train_mi values.")
+    if not marginal_vals:
+        raise RuntimeError(f"{quantity_name}: all I({marginal_label}) runs failed — no valid train_mi values.")
+    mi_joint = float(np.mean(joint_vals))
+    mi_marginal = float(np.mean(marginal_vals))
+    difference = mi_joint - mi_marginal
+
+    logger.info(
+        f"{quantity_name}: I({joint_label})={mi_joint:.4f}, I({marginal_label})={mi_marginal:.4f}, "
+        f"difference={difference:.4f} nats (converted to requested output_units by the caller)."
+    )
+
+    if difference < 0:
+        warnings.warn(
+            f"{quantity_name} estimate is negative ({difference:.4f} nats). This is "
+            f"theoretically impossible and arises from noise in the two independent "
+            f"MI estimates whose difference defines it. Common causes: too few "
+            f"training runs (increase sweep_grid run_id range), high estimator "
+            f"variance (try more epochs or a larger batch_size), or very small true "
+            f"value close to zero. The raw component estimates are available in the "
+            f"returned dict ('{joint_key}', '{marginal_key}') for manual inspection.",
+            UserWarning, stacklevel=3,
+        )
+    return difference, mi_joint, mi_marginal, results_joint, results_marginal

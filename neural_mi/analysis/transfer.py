@@ -11,12 +11,11 @@ Both component MI values are estimated with ``ParameterSweep``.
 The past/future arrays are built internally from the raw time series using
 sliding windows controlled by ``history_window`` and ``prediction_horizon``.
 """
-import warnings
 import torch
 import numpy as np
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import ParameterSweep
+from neural_mi.analysis.sweep import _joint_marginal_difference
 from neural_mi.logger import logger
 
 
@@ -170,50 +169,13 @@ def run_transfer_entropy(
     # Joint past: concatenate x_past and y_past along channel dim
     xy_past = torch.cat([x_past, y_past], dim=1)
 
-    logger.info("Transfer Entropy: estimating I(x_past, y_past ; y_future)...")
-    sweep_joint = ParameterSweep(
-        x_data=xy_past, y_data=y_future, base_params=base_params.copy()
+    te, mi_joint, mi_marginal, results_joint, results_marginal = _joint_marginal_difference(
+        xy_past, y_future, y_past, y_future,
+        base_params, sweep_grid, n_workers,
+        quantity_name="TE(X→Y)",
+        joint_label="xy_past;y_future", marginal_label="y_past;y_future",
+        joint_key="i_xypast_yfuture", marginal_key="i_ypast_yfuture",
     )
-    results_joint = sweep_joint.run(
-        sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
-    )
-
-    logger.info("Transfer Entropy: estimating I(y_past ; y_future)...")
-    sweep_marginal = ParameterSweep(
-        x_data=y_past, y_data=y_future, base_params=base_params.copy()
-    )
-    results_marginal = sweep_marginal.run(
-        sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
-    )
-
-    joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
-    marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]
-    if not joint_vals:
-        raise RuntimeError("Transfer entropy: all joint MI runs failed — no valid train_mi values.")
-    if not marginal_vals:
-        raise RuntimeError("Transfer entropy: all marginal MI runs failed — no valid train_mi values.")
-    mi_joint = float(np.mean(joint_vals))
-    mi_marginal = float(np.mean(marginal_vals))
-    te = mi_joint - mi_marginal
-
-    logger.info(
-        f"Transfer Entropy: I(xy_past;y_future)={mi_joint:.4f}, "
-        f"I(y_past;y_future)={mi_marginal:.4f}, TE={te:.4f}"
-    )
-
-    if te < 0:
-        warnings.warn(
-            f"Transfer entropy estimate TE(X→Y) is negative (TE = {te:.4f}).  "
-            "This is theoretically impossible and arises from noise in the two "
-            "independent MI estimates whose difference defines TE.  Common causes: "
-            "too few training runs (increase sweep_grid run_id range), high "
-            "estimator variance (try more epochs or a larger batch_size), or very "
-            "small true TE close to zero.  The raw component estimates are available "
-            "in the returned dict ('i_xypast_yfuture', 'i_ypast_yfuture') for "
-            "manual inspection.",
-            UserWarning,
-            stacklevel=2,
-        )
 
     result = {
         'te_xy': te,
@@ -234,39 +196,13 @@ def run_transfer_entropy(
         )
         yx_past = torch.cat([y_past_b, x_past_b], dim=1)
 
-        sweep_joint_yx = ParameterSweep(
-            x_data=yx_past, y_data=x_future, base_params=base_params.copy()
+        te_yx, mi_joint_yx, mi_marginal_yx, results_joint_yx, results_marginal_yx = _joint_marginal_difference(
+            yx_past, x_future, x_past_b, x_future,
+            base_params, sweep_grid, n_workers,
+            quantity_name="TE(Y→X)",
+            joint_label="yx_past;x_future", marginal_label="x_past;x_future",
+            joint_key="i_yxpast_xfuture", marginal_key="i_xpast_xfuture",
         )
-        results_joint_yx = sweep_joint_yx.run(
-            sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
-        )
-        sweep_marginal_yx = ParameterSweep(
-            x_data=x_past_b, y_data=x_future, base_params=base_params.copy()
-        )
-        results_marginal_yx = sweep_marginal_yx.run(
-            sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
-        )
-
-        joint_vals_yx = [r['train_mi'] for r in results_joint_yx if 'train_mi' in r]
-        marginal_vals_yx = [r['train_mi'] for r in results_marginal_yx if 'train_mi' in r]
-        if not joint_vals_yx:
-            raise RuntimeError("TE(Y→X): all joint MI runs failed — no valid train_mi values.")
-        if not marginal_vals_yx:
-            raise RuntimeError("TE(Y→X): all marginal MI runs failed — no valid train_mi values.")
-
-        mi_joint_yx = float(np.mean(joint_vals_yx))
-        mi_marginal_yx = float(np.mean(marginal_vals_yx))
-        te_yx = mi_joint_yx - mi_marginal_yx
-
-        if te_yx < 0:
-            warnings.warn(
-                f"Transfer entropy estimate TE(Y→X) is negative (TE = {te_yx:.4f}).  "
-                "This is theoretically impossible and arises from noise in the two "
-                "independent MI estimates whose difference defines TE.  See the "
-                "warning for TE(X→Y) for common causes.",
-                UserWarning,
-                stacklevel=2,
-            )
 
         # Directionality index: +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric
         te_sum = abs(te) + abs(te_yx)

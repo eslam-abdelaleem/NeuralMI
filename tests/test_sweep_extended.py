@@ -1,4 +1,5 @@
 # tests/test_sweep_extended.py
+import warnings
 import pytest
 import torch
 import numpy as np
@@ -165,3 +166,76 @@ class TestSweepExtended:
                 pass  # training may fail on non-existent MPS; we only care about the warning
         warning_msgs = [str(wi.message) for wi in w if issubclass(wi.category, UserWarning)]
         assert any('dataset_device' in m for m in warning_msgs)
+
+
+class TestJointMarginalDifference:
+    """Regression tests for the shared joint/marginal/difference helper
+    (C-something: extracted from conditional.py and transfer.py x2, which had
+    the identical pattern duplicated three times)."""
+
+    def _patch_sweep(self, monkeypatch, joint_vals, marginal_vals):
+        """Make ParameterSweep.run() return canned train_mi values in
+        sequence: joint_vals on the first call, marginal_vals on the second."""
+        from neural_mi.analysis import sweep as sweep_module
+        calls = {'n': 0}
+
+        def fake_run(self, sweep_grid=None, n_workers=1, is_proc_sweep=False, **kwargs):
+            calls['n'] += 1
+            vals = joint_vals if calls['n'] == 1 else marginal_vals
+            return [{'train_mi': v} for v in vals]
+
+        monkeypatch.setattr(sweep_module.ParameterSweep, 'run', fake_run)
+        return calls
+
+    def test_computes_correct_difference(self, monkeypatch):
+        from neural_mi.analysis.sweep import _joint_marginal_difference
+        self._patch_sweep(monkeypatch, joint_vals=[2.0, 2.2], marginal_vals=[0.5, 0.7])
+        diff, mi_joint, mi_marginal, res_j, res_m = _joint_marginal_difference(
+            None, None, None, None, {}, None, 1,
+            quantity_name="Test Quantity", joint_label="J", marginal_label="M",
+            joint_key="j_key", marginal_key="m_key",
+        )
+        assert mi_joint == pytest.approx(2.1)
+        assert mi_marginal == pytest.approx(0.6)
+        assert diff == pytest.approx(1.5)
+        assert len(res_j) == 2 and len(res_m) == 2
+
+    def test_raises_when_joint_runs_all_fail(self, monkeypatch):
+        from neural_mi.analysis.sweep import _joint_marginal_difference
+        from neural_mi.analysis import sweep as sweep_module
+
+        def fake_run(self, sweep_grid=None, n_workers=1, is_proc_sweep=False, **kwargs):
+            return [{'no_mi_here': True}]  # no 'train_mi' key -> filtered out
+
+        monkeypatch.setattr(sweep_module.ParameterSweep, 'run', fake_run)
+        with pytest.raises(RuntimeError, match="Test Quantity.*I\\(J\\)"):
+            _joint_marginal_difference(
+                None, None, None, None, {}, None, 1,
+                quantity_name="Test Quantity", joint_label="J", marginal_label="M",
+                joint_key="j_key", marginal_key="m_key",
+            )
+
+    def test_negative_difference_warns_with_correct_dict_keys(self, monkeypatch):
+        """The warning must name *this call's* joint_key/marginal_key, not a
+        hardcoded pair from one of the three original call sites."""
+        from neural_mi.analysis.sweep import _joint_marginal_difference
+        self._patch_sweep(monkeypatch, joint_vals=[0.1], marginal_vals=[0.9])
+        with pytest.warns(UserWarning, match="my_joint_key.*my_marginal_key"):
+            diff, *_ = _joint_marginal_difference(
+                None, None, None, None, {}, None, 1,
+                quantity_name="Test Quantity", joint_label="J", marginal_label="M",
+                joint_key="my_joint_key", marginal_key="my_marginal_key",
+            )
+        assert diff < 0
+
+    def test_positive_difference_does_not_warn(self, monkeypatch):
+        from neural_mi.analysis.sweep import _joint_marginal_difference
+        self._patch_sweep(monkeypatch, joint_vals=[0.9], marginal_vals=[0.1])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _joint_marginal_difference(
+                None, None, None, None, {}, None, 1,
+                quantity_name="Test Quantity", joint_label="J", marginal_label="M",
+                joint_key="j_key", marginal_key="m_key",
+            )
+        assert not any(issubclass(w.category, UserWarning) for w in caught)

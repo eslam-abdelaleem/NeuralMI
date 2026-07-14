@@ -83,13 +83,16 @@ def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
     y_data : array-like
         Data for variable Y.
     lag : int or float
-        The lag value. Units depend on processor_type and sample_rate — see above.
+        The lag value. For 'spike' data, always seconds. For 'continuous'/
+        'categorical' data, seconds if `sample_rate` is given, otherwise a raw
+        sample-index offset.
     processor_type : str
         One of 'continuous', 'categorical', or 'spike'.
     sample_rate : float, optional
         Samples per second for continuous/categorical data. If provided, lag is
         interpreted as seconds and converted to samples. If None, lag is treated
-        as samples with a deprecation warning.
+        as a raw sample-index offset and a warning is emitted, since the unit is
+        then ambiguous relative to spike data (always seconds).
     """
     if processor_type in ['continuous', 'categorical']:
         # Convert to numpy if needed
@@ -107,7 +110,7 @@ def _shift_data(x_data: Any, y_data: Any, lag: int, processor_type: str,
             # Lag provided in seconds — convert to samples
             lag_samples = int(round(lag * sample_rate))
         else:
-            # Legacy: treat lag as samples, but warn the user
+            # No sample_rate given: treat lag as a raw sample-index offset, but warn
             logger.warning(
                 f"Lag units for '{processor_type}' data are ambiguous without a sample_rate. "
                 f"Treating lag={lag} as samples (index offset). "

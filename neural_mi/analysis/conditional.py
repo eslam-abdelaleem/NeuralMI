@@ -9,13 +9,11 @@ existing MI machinery (estimators, critics, augmentation) is reused verbatim.
 The conditioning variable Z is concatenated with X at the data level before
 any windowing or embedding.
 """
-import warnings
 import torch
-import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional, List
 
-from neural_mi.analysis.sweep import ParameterSweep
+from neural_mi.analysis.sweep import _joint_marginal_difference
 from neural_mi.logger import logger
 
 
@@ -95,45 +93,13 @@ def run_conditional_mi(
     # Build XZ by concatenating along the channel dimension (dim=1)
     xz_data = torch.cat([x_data, z_data], dim=1)
 
-    logger.info("Conditional MI: estimating I(XZ; Y)...")
-    sweep_xz_y = ParameterSweep(x_data=xz_data, y_data=y_data, base_params=base_params.copy())
-    results_xz_y = sweep_xz_y.run(
-        sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
+    cmi, mi_xz_y, mi_z_y, results_xz_y, results_z_y = _joint_marginal_difference(
+        xz_data, y_data, z_data, y_data,
+        base_params, sweep_grid, n_workers,
+        quantity_name="Conditional MI",
+        joint_label="XZ;Y", marginal_label="Z;Y",
+        joint_key="mi_xz_y", marginal_key="mi_z_y",
     )
-
-    logger.info("Conditional MI: estimating I(Z; Y)...")
-    sweep_z_y = ParameterSweep(x_data=z_data, y_data=y_data, base_params=base_params.copy())
-    results_z_y = sweep_z_y.run(
-        sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
-    )
-
-    vals_xz_y = [r['train_mi'] for r in results_xz_y if 'train_mi' in r]
-    vals_z_y = [r['train_mi'] for r in results_z_y if 'train_mi' in r]
-    if not vals_xz_y:
-        raise RuntimeError("Conditional MI: all I(XZ;Y) runs failed — no valid train_mi values.")
-    if not vals_z_y:
-        raise RuntimeError("Conditional MI: all I(Z;Y) runs failed — no valid train_mi values.")
-    mi_xz_y = float(np.mean(vals_xz_y))
-    mi_z_y = float(np.mean(vals_z_y))
-    cmi = mi_xz_y - mi_z_y
-
-    logger.info(
-        f"Conditional MI: I(XZ;Y)={mi_xz_y:.4f}, I(Z;Y)={mi_z_y:.4f}, "
-        f"I(X;Y|Z)={cmi:.4f} nats (converted to requested output_units by the caller)"
-    )
-
-    if cmi < 0:
-        warnings.warn(
-            f"Conditional MI estimate is negative (I(X;Y|Z) = {cmi:.4f}).  "
-            "This is theoretically impossible and is caused by noise in the two "
-            "independent MI estimates whose difference defines CMI.  Common causes: "
-            "too few training runs (increase sweep_grid run_id range), high "
-            "estimator variance (try more epochs or a larger batch_size), or very "
-            "small true CMI close to zero.  The raw component estimates are available "
-            "in the returned dict ('mi_xz_y', 'mi_z_y') for manual inspection.",
-            UserWarning,
-            stacklevel=2,
-        )
 
     return {
         'cmi_estimate': cmi,

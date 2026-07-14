@@ -125,5 +125,9 @@ def run_lag_analysis(
     for result, task in zip(results_list, all_tasks):
         if isinstance(result, dict):
             result['n_windows'] = task[2].get('_n_windows_lag', None)
+            # The task dict's own copy of base_params flows through into the
+            # result (see run_training_task's return_params); pop the
+            # internal bookkeeping key so it doesn't leak into result.dataframe.
+            result.pop('_n_windows_lag', None)
 
     return results_list
