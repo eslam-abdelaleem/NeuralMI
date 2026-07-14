@@ -554,10 +554,13 @@ peak_lag = result.dataframe.loc[result.dataframe['train_mi'].idxmax(), 'lag']
 - `result.dataframe` — columns: `tau`, `train_mi`, `train_mi_std`
 - `result.details`:
   - `baseline_mi` — MI at τ=0 (uncorrupted)
-  - `precision_tau` — τ* for the primary (first) threshold ratio
+  - `precision_tau` — τ* for the primary (first) threshold ratio, or `None` if
+    MI never dropped below the threshold across `tau_grid` (check with
+    `is None`, not `np.isnan`)
   - `threshold_value` — actual MI value at the primary threshold
   - `threshold_ratio` — the original input (scalar or list)
   - `precision_thresholds` — dict mapping each ratio to `{'precision_tau', 'threshold_value'}`
+    (`precision_tau` is `None` per-ratio under the same not-found condition)
   - `corruption_method`, `corrupt_target`
 
 ```python
@@ -567,14 +570,20 @@ result = nmi.run(spike_x, y, mode='precision',
                                        x_params={'window_size': 0.05, 'n_seconds': 100.0}),
                  precision=Precision(tau_grid=[0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05],
                                      threshold_ratio=0.9))
-print(f"Precision timescale: {result.details['precision_tau']*1000:.1f} ms")
+tau = result.details['precision_tau']
+if tau is not None:
+    print(f"Precision timescale: {tau*1000:.1f} ms")
+else:
+    print("MI never dropped below threshold — extend tau_grid to find tau*.")
 
 # Multiple thresholds simultaneously
 result = nmi.run(spike_x, y, mode='precision',
                  precision=Precision(tau_grid=[0, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05],
                                      threshold_ratio=[0.9, 0.75, 0.5]))
 for ratio, v in result.details['precision_thresholds'].items():
-    print(f"  {ratio*100:.0f}% threshold: tau* = {v['precision_tau']*1000:.1f} ms")
+    tau_i = v['precision_tau']
+    label = f"{tau_i*1000:.1f} ms" if tau_i is not None else "not found"
+    print(f"  {ratio*100:.0f}% threshold: tau* = {label}")
 result.plot()
 ```
 
