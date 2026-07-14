@@ -653,8 +653,12 @@ def analyze_mi_heatmap(
     ----------
     results_df : pd.DataFrame
         DataFrame with columns ``'lag'``, ``'window_size'``, and ``mi_col``.
-        A ``result.dataframe`` from ``mode='lag'`` swept over ``window_size``
-        has these columns by default.
+        ``mode='lag'`` sweeps ``lag_range`` internally but does not itself
+        sweep ``window_size`` (it is a processor parameter, not one
+        ``mode='lag'``'s own ``sweep_grid`` forwards). Build this shape by
+        calling ``mode='lag'`` once per ``window_size``, tagging each
+        resulting ``result.dataframe`` with that value, and concatenating —
+        see Tutorial 6 for a worked example.
     mi_col : str, optional
         Name of the MI column in ``results_df``. Defaults to ``'mi_mean'``,
         the column produced by sweep-style aggregation. Pass ``'mi'`` (or
