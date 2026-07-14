@@ -5,9 +5,6 @@ This module contains the `run_lag_analysis` function, which orchestrates the
 process of estimating mutual information between two variables, X and Y, across
 a range of specified time lags using the nonlinear cross-correlation method.
 """
-import torch
-import numpy as np
-import pandas as pd
 from typing import List, Dict, Any, Optional
 
 from neural_mi.analysis.sweep import ParameterSweep, _product_dict
@@ -84,7 +81,7 @@ def run_lag_analysis(
                     f"[{int(round(min(lag_range)*sample_rate))}, "
                     f"{int(round(max(lag_range)*sample_rate))}] samples.")
     else:
-        logger.info(f"Lag units: samples (no sample_rate provided).")
+        logger.info("Lag units: samples (no sample_rate provided).")
 
     # Pre-compute shifted arrays for all lags to measure n_windows per lag,
     # then optionally equalize to the minimum across lags.

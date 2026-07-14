@@ -16,7 +16,7 @@ If you want to modify a specific part of the library, here's where to look.
 
 ### `neural_mi/run.py`
 
-This is the main entry point. All user interactions start here. It handles parameter validation, backwards compatibility (e.g., deprecating old `processor_type` arguments in favor of separate `x` and `y` types), and dispatches tasks to the appropriate analysis modules.
+This is the main entry point. All user interactions start here. Parameters are grouped into typed config objects (`Model`, `Training`, `Split`, `Processing`, and one per-mode config such as `Rigorous` or `Lag`); `run()` validates them, rejects unrecognized keyword arguments with an explicit error, and dispatches to the appropriate analysis modules.
 
 ---
 

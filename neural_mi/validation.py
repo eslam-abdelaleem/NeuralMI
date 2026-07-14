@@ -5,7 +5,7 @@ This module contains validators that are used by the main `run` function to
 ensure that the provided data and hyperparameters are valid and compatible
 before starting a potentially long-running analysis.
 """
-from typing import Dict, Any, Union, List, Optional
+from typing import Dict, Any, Optional
 import numpy as np
 import torch
 import inspect

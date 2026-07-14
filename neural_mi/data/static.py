@@ -4,7 +4,6 @@ import numpy as np
 from abc import ABC, abstractmethod
 from torch.utils.data import Dataset
 from neural_mi.utils import get_device
-from neural_mi.logger import logger
 
 
 class BaseStaticDataset(Dataset, ABC):

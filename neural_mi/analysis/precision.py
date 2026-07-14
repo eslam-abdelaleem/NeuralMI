@@ -9,7 +9,7 @@ to find the precision threshold where mutual information degrades.
 import torch
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Union
 
 from neural_mi.training.trainer import Trainer
 from neural_mi.estimators import ESTIMATORS
@@ -215,10 +215,8 @@ def run_precision_analysis(
     # Normalise threshold_ratio to a list for uniform handling
     if isinstance(threshold_ratio, (int, float)):
         ratio_list = [float(threshold_ratio)]
-        scalar_input = True
     else:
         ratio_list = sorted([float(r) for r in threshold_ratio], reverse=True)
-        scalar_input = False
 
     precision_thresholds = {}
     for ratio in ratio_list:

@@ -1,5 +1,4 @@
 # neural_mi/data/handler.py
-import torch
 import numpy as np
 import inspect
 

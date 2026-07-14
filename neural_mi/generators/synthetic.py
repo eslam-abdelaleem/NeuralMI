@@ -17,7 +17,7 @@ Windowed generators with analytically known MI
 
 import numpy as np
 import torch
-from typing import Tuple, List, Union, Optional
+from typing import Tuple, List, Union
 
 def mi_to_rho(dim: int, mi: float) -> float:
     """Calculates the correlation coefficient `rho` for a given MI and dimension.

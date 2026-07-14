@@ -4,8 +4,7 @@ import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as _lr_sched
 import torch.nn as nn
-from typing import Dict, Any, Optional, Union, List, Tuple
-import pandas as pd
+from typing import Dict, Any, Optional, Union, Tuple
 import numpy as np
 
 import multiprocessing as mp
@@ -13,9 +12,8 @@ import os
 import platform
 import tempfile
 
-from neural_mi.estimators import ESTIMATORS
 from neural_mi.models.embeddings import (
-    MLP, VariationalWrapper, BaseEmbedding,
+    MLP, VariationalWrapper,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
     PretrainedBackboneEmbedding,
 )

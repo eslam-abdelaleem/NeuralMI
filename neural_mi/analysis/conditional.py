@@ -10,11 +10,9 @@ The conditioning variable Z is concatenated with X at the data level before
 any windowing or embedding.
 """
 import torch
-import pandas as pd
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 from neural_mi.analysis.sweep import _joint_marginal_difference
-from neural_mi.logger import logger
 
 
 def run_conditional_mi(

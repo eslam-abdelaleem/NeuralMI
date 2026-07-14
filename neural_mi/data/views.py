@@ -1,7 +1,6 @@
 # neural_mi/data/views.py
 import torch
 import numpy as np
-from typing import List, Optional, Tuple
 
 from .handler import PairedTemporalDataset
 from neural_mi.logger import logger

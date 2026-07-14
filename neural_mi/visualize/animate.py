@@ -16,7 +16,7 @@ Typical usage::
     )
 """
 import warnings
-from typing import Optional, Union, Dict, Any, List
+from typing import Optional, Union, Dict, List
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -240,7 +240,6 @@ def animate_training(
 
     # ---- spectrum panel ----
     bar_container = None
-    _spec_ax_title = 'Spectrum'
     if 'spectrum' in col_ax and spectral_history and 'spectrum' in spectral_history[0]:
         ax_spec = col_ax['spectrum']
         _first_spec = np.asarray(spectral_history[0]['spectrum'])

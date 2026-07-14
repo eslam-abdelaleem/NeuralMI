@@ -11,7 +11,6 @@ to gamma = 0 to obtain a bias-corrected MI value.  All per-run MI estimates are
 ``train_mi`` (evaluated on the large training partition at the best-generalising
 checkpoint), consistent with every other analysis mode.
 """
-import torch
 import numpy as np
 import pandas as pd
 import itertools

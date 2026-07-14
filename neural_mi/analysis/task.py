@@ -8,7 +8,7 @@ import warnings
 import weakref
 import torch
 import numpy as np
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 
 from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device, compute_cross_covariance_rotation
 from neural_mi.estimators import ESTIMATORS
