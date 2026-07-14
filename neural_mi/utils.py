@@ -2,6 +2,7 @@
 
 import torch
 import torch.optim as optim
+import torch.optim.lr_scheduler as _lr_sched
 import torch.nn as nn
 from typing import Dict, Any, Optional, Union, List, Tuple
 import pandas as pd
@@ -276,6 +277,115 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         return ConcatCritic(embedding_net=concat_net, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
+
+
+_OPTIMIZERS = {
+    'adam': optim.Adam,
+    'adamw': optim.AdamW,
+    'sgd': optim.SGD,
+    'rmsprop': optim.RMSprop,
+    'adagrad': optim.Adagrad,
+}
+_SCHEDULER_NAMES = {'cosine', 'step', 'plateau', 'cosine_warmup'}
+
+
+def build_optimizer_and_scheduler(
+    params: Dict[str, Any],
+    critic: nn.Module,
+    decoder_x: Optional[nn.Module] = None,
+    decoder_y: Optional[nn.Module] = None,
+) -> Tuple[torch.optim.Optimizer, Optional[Any]]:
+    """Build the optimizer and optional LR scheduler from base_params.
+
+    Shared by task.py (per-sweep training, which may include reconstruction
+    decoders and a per-head LR multiplier) and precision.py (a single
+    train-once-evaluate-many baseline model, no decoders). This function
+    expects ``params`` to be fully populated (e.g. via
+    ``ParameterValidator.apply_defaults``): it accesses ``learning_rate`` and
+    ``n_epochs`` strictly and will raise a ``KeyError`` if either is missing,
+    rather than silently substituting a different default than
+    ``BASE_PARAMS_SCHEMA``'s.
+
+    Parameters
+    ----------
+    params : dict
+        Must contain ``learning_rate``. May contain ``optimizer``,
+        ``optimizer_params``, ``lr_head_multiplier``, ``scheduler``,
+        ``scheduler_params`` (and ``n_epochs`` if a scheduler is requested).
+    critic : nn.Module
+        The critic whose parameters (plus any decoder parameters) are
+        optimized.
+    decoder_x, decoder_y : nn.Module, optional
+        Reconstruction decoders whose parameters, if given, are added to the
+        optimizer alongside the critic's. ``None`` (default) omits them.
+
+    Returns
+    -------
+    tuple[torch.optim.Optimizer, scheduler or None]
+    """
+    _opt_val = params.get('optimizer', 'adam')
+    if isinstance(_opt_val, type):
+        OptCls = _opt_val
+    else:
+        OptCls = _OPTIMIZERS.get(str(_opt_val).lower())
+        if OptCls is None:
+            raise ValueError(
+                f"Unknown optimizer '{_opt_val}'. "
+                f"Supported names: {list(_OPTIMIZERS.keys())}. "
+                f"You can also pass a torch.optim.Optimizer subclass directly."
+            )
+
+    # Collect all trainable parameters (critic + optional decoders).
+    # When lr_head_multiplier is set and the critic has a decision_head (i.e. hybrid),
+    # split into two param groups so the head can train at a different rate.
+    _base_lr = params['learning_rate']
+    _head_mult = params.get('lr_head_multiplier')
+    _decoder_params = []
+    if decoder_x is not None:
+        _decoder_params.extend(decoder_x.parameters())
+    if decoder_y is not None:
+        _decoder_params.extend(decoder_y.parameters())
+
+    if _head_mult is not None and _head_mult != 1.0 and hasattr(critic, 'decision_head'):
+        _head_ids = {id(p) for p in critic.decision_head.parameters()}
+        _encoder_params = [p for p in critic.parameters() if id(p) not in _head_ids]
+        _encoder_params.extend(_decoder_params)
+        _param_groups = [
+            {'params': _encoder_params,                        'lr': _base_lr},
+            {'params': list(critic.decision_head.parameters()), 'lr': _base_lr * _head_mult},
+        ]
+        optimizer = OptCls(_param_groups, **params.get('optimizer_params', {}))
+    else:
+        _all_params = list(critic.parameters()) + _decoder_params
+        optimizer = OptCls(_all_params, lr=_base_lr, **params.get('optimizer_params', {}))
+
+    _sched_val = params.get('scheduler', None)
+    scheduler = None
+    if _sched_val is not None:
+        _sched_params = params.get('scheduler_params', {})
+        n_epochs = params['n_epochs']
+        if isinstance(_sched_val, type):
+            scheduler = _sched_val(optimizer, **_sched_params)
+        elif _sched_val == 'cosine':
+            scheduler = _lr_sched.CosineAnnealingLR(optimizer, T_max=n_epochs, **_sched_params)
+        elif _sched_val == 'step':
+            scheduler = _lr_sched.StepLR(optimizer, step_size=max(1, n_epochs // 3), **_sched_params)
+        elif _sched_val == 'plateau':
+            scheduler = _lr_sched.ReduceLROnPlateau(optimizer, mode='max', **_sched_params)
+        elif _sched_val == 'cosine_warmup':
+            warmup = max(1, int(n_epochs * 0.1))
+            warmup_sched = _lr_sched.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup)
+            cosine_sched = _lr_sched.CosineAnnealingLR(optimizer, T_max=max(1, n_epochs - warmup))
+            scheduler = _lr_sched.SequentialLR(
+                optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup]
+            )
+        else:
+            raise ValueError(
+                f"Unknown scheduler '{_sched_val}'. "
+                f"Supported names: {sorted(_SCHEDULER_NAMES)}. "
+                f"You can also pass a torch.optim.lr_scheduler class directly."
+            )
+    return optimizer, scheduler
 
 
 def compute_cross_covariance_spectrum(

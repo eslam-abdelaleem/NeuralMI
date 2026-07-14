@@ -7,12 +7,10 @@ import threading
 import warnings
 import weakref
 import torch
-import torch.optim as optim
-import torch.optim.lr_scheduler as _lr_sched
 import numpy as np
 from typing import Dict, Any, Tuple
 
-from neural_mi.utils import build_critic, get_device, compute_cross_covariance_rotation
+from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device, compute_cross_covariance_rotation
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger
@@ -277,73 +275,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             f"for use_decoder=True."
         )
 
-    _OPTIMIZERS = {
-        'adam': optim.Adam,
-        'adamw': optim.AdamW,
-        'sgd': optim.SGD,
-        'rmsprop': optim.RMSprop,
-        'adagrad': optim.Adagrad,
-    }
-    _opt_val = params.get('optimizer', 'adam')
-    if isinstance(_opt_val, type):
-        OptCls = _opt_val
-    else:
-        OptCls = _OPTIMIZERS.get(str(_opt_val).lower())
-        if OptCls is None:
-            raise ValueError(
-                f"Unknown optimizer '{_opt_val}'. "
-                f"Supported names: {list(_OPTIMIZERS.keys())}. "
-                f"You can also pass a torch.optim.Optimizer subclass directly."
-            )
-    # Collect all trainable parameters (critic + optional decoders).
-    # When lr_head_multiplier is set and the critic has a decision_head (i.e. hybrid),
-    # split into two param groups so the head can train at a different rate.
-    _base_lr = params['learning_rate']
-    _head_mult = params.get('lr_head_multiplier')
-    _decoder_params = []
-    if decoder_x is not None:
-        _decoder_params.extend(decoder_x.parameters())
-    if decoder_y is not None:
-        _decoder_params.extend(decoder_y.parameters())
-
-    if _head_mult is not None and _head_mult != 1.0 and hasattr(critic, 'decision_head'):
-        _head_ids = {id(p) for p in critic.decision_head.parameters()}
-        _encoder_params = [p for p in critic.parameters() if id(p) not in _head_ids]
-        _encoder_params.extend(_decoder_params)
-        _param_groups = [
-            {'params': _encoder_params,                        'lr': _base_lr},
-            {'params': list(critic.decision_head.parameters()), 'lr': _base_lr * _head_mult},
-        ]
-        optimizer = OptCls(_param_groups, **params.get('optimizer_params', {}))
-    else:
-        _all_params = list(critic.parameters()) + _decoder_params
-        optimizer = OptCls(_all_params, lr=_base_lr, **params.get('optimizer_params', {}))
-
-    _SCHEDULER_NAMES = {'cosine', 'step', 'plateau', 'cosine_warmup'}
-    _sched_val = params.get('scheduler', None)
-    scheduler = None
-    if _sched_val is not None:
-        _sched_params = params.get('scheduler_params', {})
-        n_epochs = params['n_epochs']
-        if isinstance(_sched_val, type):
-            scheduler = _sched_val(optimizer, **_sched_params)
-        elif _sched_val == 'cosine':
-            scheduler = _lr_sched.CosineAnnealingLR(optimizer, T_max=n_epochs, **_sched_params)
-        elif _sched_val == 'step':
-            scheduler = _lr_sched.StepLR(optimizer, step_size=max(1, n_epochs // 3), **_sched_params)
-        elif _sched_val == 'plateau':
-            scheduler = _lr_sched.ReduceLROnPlateau(optimizer, mode='max', **_sched_params)
-        elif _sched_val == 'cosine_warmup':
-            warmup = max(1, int(n_epochs * 0.1))
-            warmup_sched = _lr_sched.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup)
-            cosine_sched = _lr_sched.CosineAnnealingLR(optimizer, T_max=max(1, n_epochs - warmup))
-            scheduler = _lr_sched.SequentialLR(optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup])
-        else:
-            raise ValueError(
-                f"Unknown scheduler '{_sched_val}'. "
-                f"Supported names: {sorted(_SCHEDULER_NAMES)}. "
-                f"You can also pass a torch.optim.lr_scheduler class directly."
-            )
+    optimizer, scheduler = build_optimizer_and_scheduler(
+        params, critic, decoder_x=decoder_x, decoder_y=decoder_y,
+    )
 
     device = _compute_device  # already resolved above
 

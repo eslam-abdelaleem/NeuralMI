@@ -40,6 +40,7 @@ def test_run_precision_analysis_end_to_end():
         'critic_type': 'separable',
         'n_epochs': 1,       # Keep training lightning fast for the test
         'batch_size': 10,
+        'learning_rate': 5e-4,
         'device': 'cpu',
         'input_dim_x': 2,
         'input_dim_y': 2,
@@ -91,6 +92,7 @@ def test_run_precision_analysis_corrupt_target_both():
         'critic_type': 'separable',
         'n_epochs': 1,
         'batch_size': 10,
+        'learning_rate': 5e-4,
         'device': 'cpu',
         'input_dim_x': 2,
         'input_dim_y': 2,

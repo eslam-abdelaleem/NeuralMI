@@ -7,68 +7,17 @@ levels (tau). It corrupts the data using deterministic rounding or additive nois
 to find the precision threshold where mutual information degrades.
 """
 import torch
-import torch.optim as optim
-import torch.optim.lr_scheduler as _lr_sched
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional, Union
 
 from neural_mi.training.trainer import Trainer
 from neural_mi.estimators import ESTIMATORS
-from neural_mi.utils import build_critic, get_device
+from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device
 from neural_mi.data.handler import create_dataset
 from neural_mi.logger import logger
 from neural_mi.defaults import BASE_PARAMS_SCHEMA
 
-
-def _build_optimizer_and_scheduler(params: Dict[str, Any], critic):
-    """Build optimizer and optional LR scheduler from base_params, mirroring task.py."""
-    _OPTIMIZERS = {
-        'adam': optim.Adam,
-        'adamw': optim.AdamW,
-        'sgd': optim.SGD,
-        'rmsprop': optim.RMSprop,
-        'adagrad': optim.Adagrad,
-    }
-    _opt_val = params.get('optimizer', 'adam')
-    if isinstance(_opt_val, type):
-        OptCls = _opt_val
-    else:
-        OptCls = _OPTIMIZERS.get(str(_opt_val).lower())
-        if OptCls is None:
-            raise ValueError(
-                f"Unknown optimizer '{_opt_val}'. "
-                f"Supported names: {list(_OPTIMIZERS.keys())}."
-            )
-    optimizer = OptCls(
-        critic.parameters(),
-        lr=params.get('learning_rate', 0.001),
-        **params.get('optimizer_params', {}),
-    )
-
-    _sched_val = params.get('scheduler', None)
-    scheduler = None
-    if _sched_val is not None:
-        _sched_params = params.get('scheduler_params', {})
-        n_epochs = params.get('n_epochs', 50)
-        if isinstance(_sched_val, type):
-            scheduler = _sched_val(optimizer, **_sched_params)
-        elif _sched_val == 'cosine':
-            scheduler = _lr_sched.CosineAnnealingLR(optimizer, T_max=n_epochs, **_sched_params)
-        elif _sched_val == 'step':
-            scheduler = _lr_sched.StepLR(optimizer, step_size=max(1, n_epochs // 3), **_sched_params)
-        elif _sched_val == 'plateau':
-            scheduler = _lr_sched.ReduceLROnPlateau(optimizer, mode='max', **_sched_params)
-        elif _sched_val == 'cosine_warmup':
-            warmup = max(1, int(n_epochs * 0.1))
-            warmup_sched = _lr_sched.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup)
-            cosine_sched = _lr_sched.CosineAnnealingLR(optimizer, T_max=max(1, n_epochs - warmup))
-            scheduler = _lr_sched.SequentialLR(
-                optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup]
-            )
-        else:
-            raise ValueError(f"Unknown scheduler '{_sched_val}'.")
-    return optimizer, scheduler
 
 def apply_corruption(data: torch.Tensor, tau: float, method: str) -> torch.Tensor:
     """Applies precision corruption to a tensor."""
@@ -89,7 +38,8 @@ def run_precision_analysis(
     x_data: Any, y_data: Any, base_params: Dict[str, Any],
     tau_grid: List[float], corrupt_target: str = 'x',
     corruption_method: str = 'rounding', n_noise_samples: int = 50,
-    threshold_ratio: Union[float, List[float]] = 0.9, **kwargs
+    threshold_ratio: Union[float, List[float]] = 0.9,
+    n_workers: int = 1,
 ) -> Dict[str, Any]:
     """Estimate spike-timing precision via a "Train Once, Evaluate Many" sweep.
 
@@ -127,9 +77,12 @@ def run_precision_analysis(
         If a list is provided, thresholds are computed for all ratios and
         returned in the ``precision_thresholds`` dict; the first ratio is
         used as the primary result reported in ``details['precision_tau']``.
-    **kwargs
-        Additional keyword arguments forwarded to the trainer
-        (e.g., ``n_test_blocks``).
+    n_workers : int, default=1
+        Unused: precision analysis is inherently single-process. It trains
+        one baseline model, then evaluates it repeatedly (inference only)
+        across the tau grid -- there is no independent work to parallelize.
+        Accepted so the top-level ``run(..., n_workers=...)`` argument, which
+        is forwarded uniformly to every mode, doesn't raise a ``TypeError``.
 
     Returns
     -------
@@ -183,7 +136,7 @@ def run_precision_analysis(
     else:
         critic = build_critic(base_params.get('critic_type', 'separable'), base_params, base_params.get('custom_embedding_cls'))
 
-    optimizer, scheduler = _build_optimizer_and_scheduler(base_params, critic)
+    optimizer, scheduler = build_optimizer_and_scheduler(base_params, critic)
 
     trainer = Trainer(
         model=critic.to(device),
