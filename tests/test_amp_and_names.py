@@ -1,5 +1,5 @@
 # tests/test_amp_and_names.py
-"""Tests for use_amp (Feature 3) and named variable support (Feature 5)."""
+"""Tests for use_amp and named variable support."""
 from dataclasses import fields
 
 import numpy as np
@@ -17,7 +17,7 @@ def _training(**over):
 
 
 class TestAMP:
-    """Tests for the use_amp parameter (Feature 3)."""
+    """Tests for the use_amp parameter."""
 
     def test_use_amp_auto_cpu_completes(self):
         """use_amp='auto' on CPU runs without error and returns a finite MI."""
@@ -72,7 +72,7 @@ class TestAMP:
 
 
 class TestNamedVariables:
-    """Tests for x_name, y_name, channel_names_x, channel_names_y (Feature 5)."""
+    """Tests for x_name, y_name, channel_names_x, channel_names_y."""
 
     def test_x_name_stored_in_params(self):
         """x_name is stored in result.params when provided."""

@@ -1,5 +1,5 @@
 # tests/test_embedding_extraction.py
-"""Tests for Phase G: embedding extraction (G1/G2) and plot_embeddings (G3)."""
+"""Tests for embedding extraction (during training and from a saved model) and plot_embeddings."""
 import os
 
 import matplotlib
@@ -30,10 +30,10 @@ def simple_data():
 
 
 # ---------------------------------------------------------------------------
-# G1 — return_embeddings during training (mode='estimate')
+# return_embeddings during training (mode='estimate')
 # ---------------------------------------------------------------------------
 
-def test_g1_return_embeddings_keys_present(simple_data):
+def test_return_embeddings_keys_present(simple_data):
     """return_embeddings=True must add embeddings_x/y to results.details."""
     x, y = simple_data
     results = nmi.run(
@@ -46,7 +46,7 @@ def test_g1_return_embeddings_keys_present(simple_data):
     assert 'embeddings_y' in results.details, "embeddings_y missing from details."
 
 
-def test_g1_return_embeddings_shapes(simple_data):
+def test_return_embeddings_shapes(simple_data):
     """Extracted embeddings should be 2-D numpy arrays."""
     x, y = simple_data
     results = nmi.run(
@@ -63,7 +63,7 @@ def test_g1_return_embeddings_shapes(simple_data):
     assert zy.shape[1] == _BASE['embedding_dim']
 
 
-def test_g1_return_embeddings_false_no_keys(simple_data):
+def test_return_embeddings_false_no_keys(simple_data):
     """return_embeddings=False (default) must NOT add embeddings to details."""
     x, y = simple_data
     results = nmi.run(
@@ -75,13 +75,8 @@ def test_g1_return_embeddings_false_no_keys(simple_data):
     assert 'embeddings_y' not in results.details
 
 
-def test_g1_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
-    """max_eval_samples must not cap embedding extraction (it only controls eval MI).
-
-    Previously, the embedding extraction block reused max_eval_samples (default
-    5000) and randomly subsampled the dataset when n > threshold.  Setting a
-    tiny max_eval_samples should no longer affect the embedding count.
-    """
+def test_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
+    """max_eval_samples must not cap embedding extraction (it only controls eval MI)."""
     x, y = simple_data  # 500 samples
     results = nmi.run(
         x, y, mode='estimate',
@@ -92,8 +87,8 @@ def test_g1_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
         n_workers=1,
     )
     n_emb = results.details['embeddings_x'].shape[0]
-    # With max_eval_samples=10 the old code would have returned ≤10 rows.
-    # Now all ~500 windows must be embedded.
+    # All ~500 windows must be embedded, not just the max_eval_samples=10 subset
+    # used for the reported MI estimate.
     assert n_emb > 10, (
         f"Expected all dataset windows embedded, got {n_emb}. "
         "max_eval_samples must not gate embedding extraction."
@@ -101,10 +96,10 @@ def test_g1_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
 
 
 # ---------------------------------------------------------------------------
-# G2 — extract_embeddings() from a saved model file
+# extract_embeddings() from a saved model file
 # ---------------------------------------------------------------------------
 
-def test_g2_model_saved_in_new_format(simple_data, tmp_path):
+def test_model_saved_in_new_format(simple_data, tmp_path):
     """Saved model must use the extended format {state_dict, build_params}."""
     x, y = simple_data
     model_path = str(tmp_path / 'model.pt')
@@ -122,7 +117,7 @@ def test_g2_model_saved_in_new_format(simple_data, tmp_path):
     assert 'build_params' in loaded, "Missing 'build_params' key (new format)."
 
 
-def test_g2_extract_embeddings_returns_arrays(simple_data, tmp_path):
+def test_extract_embeddings_returns_arrays(simple_data, tmp_path):
     """extract_embeddings() must return two 2-D numpy arrays."""
     x, y = simple_data
     model_path = str(tmp_path / 'model.pt')
@@ -138,7 +133,7 @@ def test_g2_extract_embeddings_returns_arrays(simple_data, tmp_path):
     assert isinstance(zy, np.ndarray) and zy.ndim == 2
 
 
-def test_g2_extract_embeddings_old_format_without_params_raises(tmp_path):
+def test_extract_embeddings_old_format_without_params_raises(tmp_path):
     """Calling extract_embeddings on old-format file without base_params must raise."""
     # Simulate an old-format save (raw state dict)
     dummy_state = {'weight': torch.ones(4, 4)}
@@ -148,8 +143,8 @@ def test_g2_extract_embeddings_old_format_without_params_raises(tmp_path):
         nmi.extract_embeddings(model_path, np.zeros((10, 4)), np.zeros((10, 4)))
 
 
-def test_g2_extract_embeddings_no_max_samples_param(simple_data, tmp_path):
-    """extract_embeddings no longer accepts max_samples — it must raise TypeError."""
+def test_extract_embeddings_no_max_samples_param(simple_data, tmp_path):
+    """extract_embeddings does not accept a max_samples argument — passing one must raise TypeError."""
     x, y = simple_data
     model_path = str(tmp_path / 'model_ms.pt')
     nmi.run(
@@ -164,11 +159,11 @@ def test_g2_extract_embeddings_no_max_samples_param(simple_data, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# G3 — plot_embeddings() visualization helper
+# plot_embeddings() visualization helper
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("method", ['pca', 'none'])
-def test_g3_plot_embeddings_basic_methods(method):
+def test_plot_embeddings_basic_methods(method):
     """plot_embeddings() must return Axes for 'pca' and 'none' methods."""
     z = np.random.randn(100, 4 if method == 'pca' else 2)
     ax = plot_embeddings(z, method=method, dim=2)
@@ -176,7 +171,7 @@ def test_g3_plot_embeddings_basic_methods(method):
     plt.close('all')
 
 
-def test_g3_plot_embeddings_with_continuous_color():
+def test_plot_embeddings_with_continuous_color():
     """plot_embeddings() with continuous color should not raise."""
     z = np.random.randn(80, 4)
     color = np.random.randn(80)
@@ -185,7 +180,7 @@ def test_g3_plot_embeddings_with_continuous_color():
     plt.close('all')
 
 
-def test_g3_plot_embeddings_with_categorical_color():
+def test_plot_embeddings_with_categorical_color():
     """plot_embeddings() with integer labels should produce a legend."""
     z = np.random.randn(80, 4)
     labels = np.array([0, 1, 2] * 26 + [0, 1])
@@ -195,7 +190,7 @@ def test_g3_plot_embeddings_with_categorical_color():
     plt.close('all')
 
 
-def test_g3_plot_embeddings_auto_method_pca_fallback():
+def test_plot_embeddings_auto_method_pca_fallback():
     """method='auto' should fall back to pca when embed_dim > dim (and umap missing)."""
     z = np.random.randn(100, 16)
     # With embed_dim=16 > dim=2, auto should apply reduction
@@ -204,21 +199,21 @@ def test_g3_plot_embeddings_auto_method_pca_fallback():
     plt.close('all')
 
 
-def test_g3_plot_embeddings_none_method_requires_enough_dims():
+def test_plot_embeddings_none_method_requires_enough_dims():
     """method='none' with embed_dim < dim must raise ValueError."""
     z = np.random.randn(50, 1)
     with pytest.raises(ValueError, match="embed_dim"):
         plot_embeddings(z, method='none', dim=2)
 
 
-def test_g3_plot_embeddings_invalid_method_raises():
+def test_plot_embeddings_invalid_method_raises():
     """Unknown method must raise ValueError."""
     z = np.random.randn(50, 4)
     with pytest.raises(ValueError, match="not recognised"):
         plot_embeddings(z, method='xyz')
 
 
-def test_g3_plot_embeddings_3d():
+def test_plot_embeddings_3d():
     """plot_embeddings() with dim=3 should create a 3-D axes."""
     z = np.random.randn(60, 8)
     ax = plot_embeddings(z, method='pca', dim=3)

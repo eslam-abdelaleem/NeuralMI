@@ -54,7 +54,7 @@ The test suite is organized into **22 files** grouped by functional area:
 | File | What it covers |
 |------|---------------|
 | `test_models.py` | Embedding networks (MLP, CNN1D, GRU, LSTM, TCN, Transformer, PretrainedBackboneEmbedding), `VariationalWrapper` for all encoder types, critic architectures (Separable, Concat, Hybrid), chunking equivalency, gradient computation, `get_embeddings()` |
-| `test_shared_encoder.py` | Phase F: shared/siamese encoder — weight identity, parameter count, concat+shared incompatibility, dimensionality-mode default, `run()` shortcut |
+| `test_shared_encoder.py` | Shared/siamese encoder — weight identity, parameter count, concat+shared incompatibility, dimensionality-mode default, `run()` shortcut |
 
 ### 5. Training
 | File | What it covers |
@@ -82,7 +82,7 @@ The test suite is organized into **22 files** grouped by functional area:
 | File | What it covers |
 |------|---------------|
 | `test_validation.py` | `ParameterValidator` and `DataValidator` (shape, NaN, type), integration-level checks via `nmi.run` (unknown params, type/value errors, invalid processor params, defaults logging) |
-| `test_safety.py` | Phase A safety fixes — 3-D input error for transfer mode, beta default, train_subset_size clamping warning, NaN-streak `TrainingError`, concat+embedding_dim sweep error |
+| `test_safety.py` | Safety-critical regressions — 3-D input error for transfer mode, beta default, train_subset_size clamping warning, NaN-streak `TrainingError`, concat+embedding_dim sweep error |
 
 ### 9. Utilities
 | File | What it covers |
@@ -94,7 +94,7 @@ The test suite is organized into **22 files** grouped by functional area:
 |------|---------------|
 | `test_results_extended.py` | `Results.__repr__`, `.plot()`, `.summary()` across estimate/sweep/rigorous modes |
 | `test_visualize.py` | Publication style, sweep curve plotting, bias-correction fit plot, Results plot dispatcher |
-| `test_embedding_extraction.py` | Phase G — `return_embeddings` in estimate mode, embedding shape, model saving (extended format), `extract_embeddings()`, `plot_embeddings()` with PCA/color options |
+| `test_embedding_extraction.py` | `return_embeddings` in estimate mode, embedding shape, model saving (extended format), `extract_embeddings()`, `plot_embeddings()` with PCA/color options |
 
 ---
 

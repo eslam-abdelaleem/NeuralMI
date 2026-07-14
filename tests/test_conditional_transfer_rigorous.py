@@ -1,4 +1,4 @@
-"""Tests for rigorous=True mode in conditional and transfer modes (Item 3)."""
+"""Tests for rigorous=True in conditional and transfer modes."""
 import numpy as np
 
 

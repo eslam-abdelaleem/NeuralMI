@@ -197,7 +197,7 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
 
 ### Changed
 
-- **Online data augmentations (Batch 3)**: per-batch augmentations applied
+- **Online data augmentations**: per-batch augmentations applied
   during training only (never at eval time).  Three new `base_params` keys:
   - `augmentation_params` — shared augmentation spec for both X and Y.
   - `augmentation_params_x` — per-variable override for X (`None` = use shared,
@@ -577,13 +577,13 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
   - `test_critic_chunking_equivalency` now builds `VariationalWrapper(MLP(…), embed_dim)`.
   - `critic_and_data` fixture: `"SeparableVarMLP"` renamed to `"SeparableVariational"`.
 
-#### Item 1 — Enhanced Rigorous Mode Diagnostics
-- **Standardized-residual check (Check A):** After the WLS bias-correction fit,
+#### Enhanced Rigorous Mode Diagnostics
+- **Standardized-residual check:** After the WLS bias-correction fit,
   `rigorous` mode now computes externally studentized residuals.  If
   `max(|rᵢ|) > residual_threshold` (default 2.5) **or** R² < `r2_threshold`
   (default 0.90), `fit_quality_warning=True` is stored in `result.details` and
   `is_reliable` is set to `False`.
-- **LOO γ=1 intercept-stability check (Check B):** Refits WLS excluding all γ=1
+- **LOO γ=1 intercept-stability check:** Refits WLS excluding all γ=1
   rows and measures the relative intercept shift
   `δ = |I_full − I_loo| / (|I_full| + ε)`.  If `δ > leverage_threshold`
   (default 0.20), `leverage_warning=True` is stored in `result.details` and
@@ -596,7 +596,7 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
   `leverage_threshold` (default 0.20).
 - `Results.summary()` now prints diagnostic reasons when `is_reliable=False`.
 
-#### Item 2 — Optional Decoder (Deep Symmetric Information Bottleneck)
+#### Optional Decoder (Deep Symmetric Information Bottleneck)
 - New `use_decoder=True` flag in `base_params` enables decoder-augmented training
   for all analysis modes.
 - New `base_params` keys:
@@ -618,7 +618,7 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
 - `result.details['decoder_recon_loss']` reports the weighted reconstruction loss.
 - `Results.summary()` prints decoder reconstruction loss when present.
 
-#### Item 3 — Rigorous Bias Correction for Conditional and Transfer Modes
+#### Rigorous Bias Correction for Conditional and Transfer Modes
 - `mode='conditional'` and `mode='transfer'` now accept `rigorous=True` in
   `analysis_kwargs` (or as a top-level `run()` keyword) to produce a
   bias-corrected, extrapolated estimate.

@@ -1,9 +1,7 @@
-"""Acceptance tests for the noise-injection dimensionality feature.
+"""Acceptance tests for the noise-injection dimensionality feature (sigma_add).
 
-Implements the eight acceptance tests from
-``noise_injection_dimensionality_spec.md`` Section 9, on a synthetic
-linear-Gaussian two-view model with known latent dimension ``d`` (via
-``generate_correlated_gaussians``, interaction mode), unless noted.
+Uses a synthetic linear-Gaussian two-view model with known latent dimension
+``d`` (via ``generate_correlated_gaussians``, interaction mode), unless noted.
 """
 from dataclasses import fields as _dc_fields
 
@@ -125,9 +123,9 @@ def test_over_noising_inflates_dimension_estimate():
 
     # At extreme noise, MI must have collapsed into the noise floor. The
     # dimension estimate should trend upward toward k_z=embed_dim (a
-    # qualitative trend per the spec, not an exact target); empirically
-    # pr_singular shows this inflation far more clearly than pr_eig at
-    # accessible (fast-test) training budgets, so that is what's checked here.
+    # qualitative trend, not an exact target); empirically pr_singular shows
+    # this inflation far more clearly than pr_eig at accessible (fast-test)
+    # training budgets, so that is what's checked here.
     assert high_row['mi_mean'] < 0.1 * high_row['ceiling_nats']
     assert high_row['pr_singular_mean'] > 1.15 * low_row['pr_singular_mean']
 

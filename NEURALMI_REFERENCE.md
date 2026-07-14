@@ -1336,7 +1336,7 @@ tiny and all MI estimates cluster tightly. (2) Externally studentized residuals 
 up because low-gamma rows (N samples, low noise) dominate the MSE, while high-gamma
 training runs (N/γ samples, high noise) have naturally larger raw deviations — the
 ratio e_i/s is then large even for a perfectly valid fit. The only correct
-reliability gate is the LOO γ=1 intercept-stability check (Check B): it asks
+reliability gate is the LOO γ=1 intercept-stability check: it asks
 "does removing the infinite-data anchor destabilize the extrapolation?" — a
 scale-invariant question that answers whether the γ=1 → γ=0 extrapolation is safe.
 

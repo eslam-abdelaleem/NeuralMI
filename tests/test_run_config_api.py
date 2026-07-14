@@ -1,4 +1,4 @@
-"""Phase-2 tests: the config-based run() lowers correctly onto the engine."""
+"""Tests that the config-based run() lowers correctly onto the engine."""
 import importlib
 
 import numpy as np

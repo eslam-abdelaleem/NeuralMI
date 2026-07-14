@@ -2,15 +2,15 @@
 """Extended tests for the plotting improvements across all modes.
 
 Covers:
-  - P1: estimate plot — conservative_epoch marker
-  - P2: dimensionality plot — two-panel (MI + PR) via plot_dimensionality_curve
-  - P3: plot_bias_correction_fit return value
-  - P4: conditional / transfer mode plots
-  - P5: Results.compare() for estimate mode
-  - P6: rigorous plot is_reliable=False annotation
-  - P7: plot_cross_correlation composability (ax, show, xlim, return value)
-  - P8: analyze_mi_heatmap composability (show, return value)
-  - P9: _RESULT_COLS contains pr_eig / pr_singular columns
+  - estimate plot — conservative_epoch marker
+  - dimensionality plot — two-panel (MI + PR) via plot_dimensionality_curve
+  - plot_bias_correction_fit return value
+  - conditional / transfer mode plots
+  - Results.compare() for estimate mode
+  - rigorous plot is_reliable=False annotation
+  - plot_cross_correlation composability (ax, show, xlim, return value)
+  - analyze_mi_heatmap composability (show, return value)
+  - _RESULT_COLS contains pr_eig / pr_singular columns
 """
 import pytest
 import pandas as pd
@@ -74,7 +74,7 @@ def dim_df_scalar():
 
 
 # ---------------------------------------------------------------------------
-# P1 — estimate plot: conservative_epoch marker
+# estimate plot: conservative_epoch marker
 # ---------------------------------------------------------------------------
 
 class TestEstimatePlotConservativeEpoch:
@@ -140,7 +140,7 @@ class TestEstimatePlotConservativeEpoch:
 
 
 # ---------------------------------------------------------------------------
-# P2 — dimensionality plot: two-panel via plot_dimensionality_curve
+# dimensionality plot: two-panel via plot_dimensionality_curve
 # ---------------------------------------------------------------------------
 
 class TestDimensionalityPlot:
@@ -227,7 +227,7 @@ class TestDimensionalityPlot:
 
 
 # ---------------------------------------------------------------------------
-# P3 — plot_bias_correction_fit return value
+# plot_bias_correction_fit return value
 # ---------------------------------------------------------------------------
 
 class TestBiasCorrectionFitReturn:
@@ -249,7 +249,7 @@ class TestBiasCorrectionFitReturn:
 
 
 # ---------------------------------------------------------------------------
-# P4 — conditional and transfer mode plots
+# conditional and transfer mode plots
 # ---------------------------------------------------------------------------
 
 class TestConditionalPlot:
@@ -350,7 +350,7 @@ class TestTransferPlot:
 
 
 # ---------------------------------------------------------------------------
-# P5 — Results.compare() for estimate mode
+# Results.compare() for estimate mode
 # ---------------------------------------------------------------------------
 
 class TestCompareEstimateMode:
@@ -398,7 +398,7 @@ class TestCompareEstimateMode:
 
 
 # ---------------------------------------------------------------------------
-# P6 — rigorous plot is_reliable=False annotation
+# rigorous plot is_reliable=False annotation
 # ---------------------------------------------------------------------------
 
 class TestRigorousReliabilityAnnotation:
@@ -436,7 +436,7 @@ class TestRigorousReliabilityAnnotation:
 
 
 # ---------------------------------------------------------------------------
-# P7 — plot_cross_correlation composability
+# plot_cross_correlation composability
 # ---------------------------------------------------------------------------
 
 class TestPlotCrossCorrelation:
@@ -519,7 +519,7 @@ class TestPlotCrossCorrelation:
 
 
 # ---------------------------------------------------------------------------
-# P8 — analyze_mi_heatmap composability
+# analyze_mi_heatmap composability
 # ---------------------------------------------------------------------------
 
 class TestAnalyzeMiHeatmap:
@@ -618,7 +618,7 @@ class TestAnalyzeMiHeatmap:
 
 
 # ---------------------------------------------------------------------------
-# P9 — _RESULT_COLS contains pr_eig / pr_singular columns
+# _RESULT_COLS contains pr_eig / pr_singular columns
 # ---------------------------------------------------------------------------
 
 class TestResultCols:

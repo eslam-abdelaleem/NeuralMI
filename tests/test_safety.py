@@ -1,5 +1,5 @@
 # tests/test_safety.py
-"""Regression tests for Phase A safety fixes (A1-A5)."""
+"""Regression tests guarding specific safety-critical behaviors."""
 import inspect
 import warnings
 
@@ -24,11 +24,11 @@ _TRAINING = Training(n_epochs=2, learning_rate=1e-4, batch_size=8, patience=1)
 
 
 # ---------------------------------------------------------------------------
-# A1 — ValueError on 3-D input to mode='transfer'
+# ValueError on 3-D input to mode='transfer'
 # ---------------------------------------------------------------------------
 
-def test_a1_transfer_3d_x_raises():
-    """A1: 3-D x_data passed to mode='transfer' must raise ValueError."""
+def test_transfer_mode_rejects_3d_x_data():
+    """3-D x_data passed to mode='transfer' must raise ValueError."""
     x = np.random.randn(20, 3, 5)  # 3-D (pre-windowed)
     y = np.random.randn(20, 3, 5)
     with pytest.raises(ValueError, match="mode='transfer' requires 2-D"):
@@ -41,8 +41,8 @@ def test_a1_transfer_3d_x_raises():
         )
 
 
-def test_a1_transfer_2d_does_not_raise():
-    """A1: 2-D input to mode='transfer' should proceed (not raise shape error)."""
+def test_transfer_mode_accepts_2d_data():
+    """2-D input to mode='transfer' should proceed (not raise a shape error)."""
     x, y = nmi.generators.generate_correlated_gaussians(n_samples=100, dim=3, mi=0.5)
     try:
         nmi.run(
@@ -58,29 +58,29 @@ def test_a1_transfer_2d_does_not_raise():
 
 
 # ---------------------------------------------------------------------------
-# A2 — beta default unified to 1024
+# beta default unified to 1024
 # ---------------------------------------------------------------------------
 
-def test_a2_trainer_beta_default_is_1024():
-    """A2: Trainer.__init__ default for beta must be 1024 (not 512)."""
+def test_trainer_beta_default_is_1024():
+    """Trainer.__init__ default for beta must be 1024 (not 512)."""
     sig = inspect.signature(Trainer.__init__)
     assert sig.parameters['beta'].default == 1024, (
         f"Expected beta default=1024, got {sig.parameters['beta'].default}"
     )
 
 
-def test_a2_defaults_schema_beta_is_1024():
-    """A2: BASE_PARAMS_SCHEMA['beta']['default'] must be 1024."""
+def test_defaults_schema_beta_is_1024():
+    """BASE_PARAMS_SCHEMA['beta']['default'] must be 1024."""
     from neural_mi.defaults import BASE_PARAMS_SCHEMA
     assert BASE_PARAMS_SCHEMA['beta']['default'] == 1024.0
 
 
 # ---------------------------------------------------------------------------
-# A3 — Warning when train_subset_size is clamped
+# Warning when train_subset_size is clamped
 # ---------------------------------------------------------------------------
 
-def test_a3_train_subset_size_clamp_emits_warning():
-    """A3: train_subset_size larger than available samples must emit a warning."""
+def test_train_subset_size_clamp_emits_warning():
+    """train_subset_size larger than available samples must emit a warning."""
     x, y = nmi.generators.generate_correlated_gaussians(n_samples=100, dim=2, mi=0.5)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -102,11 +102,11 @@ def test_a3_train_subset_size_clamp_emits_warning():
 
 
 # ---------------------------------------------------------------------------
-# A4 — TrainingError after 3 consecutive NaN epochs
+# TrainingError after 3 consecutive NaN epochs
 # ---------------------------------------------------------------------------
 
-def test_a4_nan_streak_raises_training_error():
-    """A4: Three consecutive NaN epochs must raise TrainingError.
+def test_nan_streak_raises_training_error():
+    """Three consecutive NaN epochs must raise TrainingError.
 
     We mock Trainer._safe_eval_mi() to return NaN so that the real PyTorch
     training step can still run (and compute valid gradients) while the
@@ -139,8 +139,8 @@ def test_a4_nan_streak_raises_training_error():
             trainer.train(ds, n_epochs=10, batch_size=32, patience=100, show_progress=False)
 
 
-def test_a4_single_nan_does_not_raise():
-    """A4: A single NaN epoch (e.g. via very short training) must NOT raise immediately."""
+def test_single_nan_epoch_does_not_raise():
+    """A single NaN epoch (e.g. via very short training) must NOT raise immediately."""
     # Smoke-test: a real model trained for a very short time shouldn't trip the guard
     x, y = nmi.generators.generate_correlated_gaussians(n_samples=200, dim=2, mi=0.5)
     try:
@@ -156,11 +156,11 @@ def test_a4_single_nan_does_not_raise():
 
 
 # ---------------------------------------------------------------------------
-# A5 — ValueError for ConcatCritic + embedding_dim in sweep
+# ValueError for ConcatCritic + embedding_dim in sweep
 # ---------------------------------------------------------------------------
 
-def test_a5_concat_embedding_dim_sweep_raises():
-    """A5: Sweeping embedding_dim with concat critic must raise ValueError (not warn)."""
+def test_concat_critic_embedding_dim_sweep_raises():
+    """Sweeping embedding_dim with concat critic must raise ValueError (not warn)."""
     x = torch.randn(80, 4, 1)
     y = torch.randn(80, 4, 1)
     bp = {
@@ -178,8 +178,8 @@ def test_a5_concat_embedding_dim_sweep_raises():
         )
 
 
-def test_a5_separable_embedding_dim_sweep_does_not_raise():
-    """A5: Sweeping embedding_dim with separable critic must not raise."""
+def test_separable_critic_embedding_dim_sweep_does_not_raise():
+    """Sweeping embedding_dim with separable critic must not raise."""
     x = torch.randn(80, 4, 1)
     y = torch.randn(80, 4, 1)
     bp = {

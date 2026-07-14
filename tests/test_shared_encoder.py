@@ -1,5 +1,5 @@
 # tests/test_shared_encoder.py
-"""Tests for Phase F: shared encoder / siamese networks."""
+"""Tests for shared-encoder (siamese) networks."""
 import pytest
 import neural_mi as nmi
 from neural_mi import Model, Training

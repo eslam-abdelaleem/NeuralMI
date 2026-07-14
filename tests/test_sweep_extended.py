@@ -19,8 +19,9 @@ class TestSweepExtended:
         assert sweep.base_params['n_channels_y'] == 5
 
     def test_prepare_tasks_concat_critic_warning(self):
-        # A5: sweeping embedding_dim with concat critic must now raise ValueError
-        # (previously emitted a log warning; changed to hard error to fail loudly).
+        # Sweeping embedding_dim with a concat critic must raise ValueError:
+        # concat critics don't have a well-defined per-dimension score, so this
+        # sweep configuration is a hard error rather than a silent warning.
         x = np.random.randn(10, 5)
         y = np.random.randn(10, 5)
         base_params = {'critic_type': 'concat'}

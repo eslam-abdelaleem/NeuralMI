@@ -1,4 +1,4 @@
-"""Tests for the enhanced rigorous mode diagnostics (Items 1 and 3)."""
+"""Tests for rigorous-mode diagnostics: fit-quality warnings and the scalar-analysis engine."""
 import pytest
 import numpy as np
 import pandas as pd
@@ -156,7 +156,7 @@ class TestDiagnosticsInCorrectedResults:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tests for run_rigorous_scalar_analysis (Item 3 infrastructure)
+# Tests for run_rigorous_scalar_analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestRigorousScalarAnalysis:
@@ -225,7 +225,7 @@ class TestRigorousScalarAnalysis:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tests for decoder infrastructure (Item 2)
+# Tests for decoder infrastructure
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestDecoderModels:

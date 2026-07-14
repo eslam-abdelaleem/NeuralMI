@@ -1,5 +1,5 @@
 # tests/test_permutation.py
-"""Tests for the permutation_test parameter (Phase B8 / Phase A coverage)."""
+"""Tests for the permutation_test parameter."""
 import inspect
 import warnings
 
@@ -102,10 +102,10 @@ class TestPermutationTest:
 
 
 class TestNPermutationsDefault:
-    """Tests for Phase B8: n_permutations default=1 and insufficiency warning."""
+    """Tests for n_permutations default=1 and the insufficiency warning."""
 
     def test_n_permutations_default_is_1(self):
-        """run() must have n_permutations=1 as the default (Phase B8)."""
+        """run() must have n_permutations=1 as the default."""
         sig = inspect.signature(nmi.run)
         assert sig.parameters['n_permutations'].default == 1, (
             f"Expected n_permutations default=1, got "
