@@ -1294,6 +1294,7 @@ def _run_permutation_test(x_data, y_data, base_params, mode, sweep_grid,
         values (including negatives), mirroring ``details['raw_train_mi']``.
     """
     n_workers = analysis_kwargs.get('n_workers', 1)
+    show_progress = base_params.get('show_progress', True)
     logger.info(
         f"Permutation test: running {n_permutations} permutations for "
         f"mode='{mode}' (n_workers={n_workers})..."
@@ -1313,11 +1314,13 @@ def _run_permutation_test(x_data, y_data, base_params, mode, sweep_grid,
                 total=n_permutations,
                 desc="Permutation test",
                 leave=False,
+                disable=not show_progress,
             ))
     else:
         raw_results = [
             _run_single_permutation(args)
-            for args in tqdm(perm_args, desc="Permutation test", leave=False)
+            for args in tqdm(perm_args, desc="Permutation test", leave=False,
+                             disable=not show_progress)
         ]
 
     null_distribution = [r[0] for r in raw_results]

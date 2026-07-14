@@ -163,6 +163,64 @@ class TestNPermutationsDefault:
             )
 
 
+class TestPermutationTestProgressBar:
+    """show_progress=False must also suppress the permutation test's own tqdm bar.
+
+    The permutation test runs as a second, internal pass after the main
+    estimate, with its own progress bar (desc="Permutation test") -- that bar
+    used to be unconditional, so show_progress=False on the outer nmi.run()
+    call silently didn't cover it.
+    """
+
+    def test_show_progress_false_disables_permutation_tqdm(self):
+        import sys
+        from unittest.mock import patch
+        run_module = sys.modules['neural_mi.run']
+
+        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=1.0)
+        with patch.object(run_module, 'tqdm', wraps=run_module.tqdm) as mock_tqdm:
+            nmi.run(
+                x_data=x, y_data=y,
+                mode='estimate',
+                model=_MODEL, training=_TRAINING,
+                permutation_test=True,
+                n_permutations=2,
+                n_workers=1,
+                show_progress=False,
+            )
+        perm_calls = [c for c in mock_tqdm.call_args_list
+                     if c.kwargs.get('desc') == 'Permutation test']
+        assert perm_calls, "Expected at least one tqdm(desc='Permutation test') call"
+        assert all(c.kwargs.get('disable') is True for c in perm_calls), (
+            f"Permutation test tqdm must be disabled when show_progress=False; "
+            f"got disable={[c.kwargs.get('disable') for c in perm_calls]}"
+        )
+
+    def test_show_progress_true_enables_permutation_tqdm(self):
+        import sys
+        from unittest.mock import patch
+        run_module = sys.modules['neural_mi.run']
+
+        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=1.0)
+        with patch.object(run_module, 'tqdm', wraps=run_module.tqdm) as mock_tqdm:
+            nmi.run(
+                x_data=x, y_data=y,
+                mode='estimate',
+                model=_MODEL, training=_TRAINING,
+                permutation_test=True,
+                n_permutations=2,
+                n_workers=1,
+                show_progress=True,
+            )
+        perm_calls = [c for c in mock_tqdm.call_args_list
+                     if c.kwargs.get('desc') == 'Permutation test']
+        assert perm_calls, "Expected at least one tqdm(desc='Permutation test') call"
+        assert all(c.kwargs.get('disable') is False for c in perm_calls), (
+            f"Permutation test tqdm must stay enabled when show_progress=True; "
+            f"got disable={[c.kwargs.get('disable') for c in perm_calls]}"
+        )
+
+
 class TestNullDistributionRawClipped:
     """Verify null_distribution_raw is consistently and independently computed for all modes.
 

@@ -46,6 +46,12 @@ tutorials rather than trusting stale cached notebook outputs:
   captured as inert, non-updating text/widget clutter in the saved notebook — worst case one
   frozen bar per loop iteration (Tutorial 3's 7-value `window_size` sweep alone had 7). Added
   across all 9 remaining call sites.
+- `permutation_test=True`'s own internal progress bar (`run.py`'s `_run_permutation_test`,
+  `desc="Permutation test"`) never read `show_progress` at all, so it rendered regardless of
+  the outer `nmi.run(..., show_progress=False)` setting — the gap that made Tutorial 8's two
+  permutation-test demo cells keep showing widget clutter even after the fix above. Both
+  `tqdm(...)` call sites now pass `disable=not show_progress`; regression coverage added in
+  `tests/test_permutation.py::TestPermutationTestProgressBar`.
 
 ### Added
 
