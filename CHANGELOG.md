@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Pre-submission cleanup pass
+
+A full correctness, documentation, and tutorial-accuracy audit ahead of submission: every
+source module reviewed against its own tests, every tutorial re-executed end-to-end, and all
+front-facing docs (README, `NEURALMI_REFERENCE.md`, the Sphinx tutorials index) reconciled
+against the live API. Full suite green throughout (638 passed / 1 skipped).
+
+**Real bugs found and fixed**, all pre-existing and surfaced by actually re-running the
+tutorials rather than trusting stale cached notebook outputs:
+- `analyze_mi_heatmap` (`neural_mi/visualize/plot.py`) crashed when the significant-MI
+  contour list was non-empty but contained only degenerate (empty or single-point) segments.
+- `analysis/precision.py`'s `details['precision_tau']` uses `None`, never `np.nan`, as its
+  "not found" sentinel (confirmed against its only other consumer, `results.py`, which has
+  always checked `is not None`). Tutorial 6 and `NEURALMI_REFERENCE.md` both assumed
+  `np.nan` and called `np.isnan()` on it, which raises on `None` — fixed in both, plus the
+  `precision.py` docstring that made the same wrong claim.
+- `mode='conditional'` concatenates X and Z's windowed tensors along the channel axis,
+  which requires matching window-size dimensions — but every `z_processor_type='categorical'`
+  encoding collapses that axis to the category count, not `window_size`, so it can never
+  satisfy the shape check for a Z with more than one category (using the same `window_size`
+  across X/Y/Z, as Tutorial 7 previously advised, does not fix this). Worked around in
+  Tutorial 7 by switching Z to continuous processing for now; a proper fix in
+  `analysis/conditional.py` is tracked separately.
+
+### Added
+
+- **Configurable dimensionality-reliability thresholds** (`neural_mi/config.py`,
+  `neural_mi/defaults.py`, `neural_mi/analysis/dimensionality.py`): the four judgment-call
+  thresholds behind `mode='dimensionality'`'s reliability diagnostics —
+  `ceiling_mi_fraction` (default `0.85`), `truncation_pr_fraction` (`0.8`),
+  `high_dim_pr_fraction` (`0.5`), and `ladder_plateau_cv_threshold` (`0.2`) — are now
+  `Dimensionality` config fields instead of hardcoded literals.
+- **`benchmarks/vs_classical_estimators.ipynb`**: compares `NeuralMI` against the KSG
+  estimator and geometric intrinsic-dimension estimators (MLE, TwoNN) on problems chosen to
+  be hard for them — not a tutorial, but useful for deciding whether a neural estimator is
+  the right tool for a given dataset.
+
 ### API redesign — flat keywords → typed config objects (`run()`)
 
 `nmi.run()` moved from a ~74-parameter flat signature to a small set of grouped,
