@@ -2,7 +2,6 @@
 """Tests for CNN2D encoder and 4-D input handling throughout the library."""
 import warnings
 import pytest
-import numpy as np
 import torch
 from unittest.mock import patch
 

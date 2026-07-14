@@ -4,7 +4,6 @@ import numpy as np
 import neural_mi as nmi
 from neural_mi import Training, Estimator, Processing, Rigorous, Sweep
 from neural_mi.validation import ParameterValidator, DataValidator
-from neural_mi.defaults import BASE_PARAMS_SCHEMA
 from neural_mi.exceptions import DataShapeError
 
 def get_valid_params():

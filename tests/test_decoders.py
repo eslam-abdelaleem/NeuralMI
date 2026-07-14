@@ -9,13 +9,12 @@ end-to-end for both without a shape mismatch in the reconstruction loss.
 import logging
 
 import numpy as np
-import pytest
 import torch
 
 import neural_mi as nmi
 from neural_mi import Model, Training
 from neural_mi.models.decoders import (
-    build_decoder, MLPDecoder, CNN1DDecoder, CNN2DDecoder, GRUDecoder,
+    build_decoder, MLPDecoder, CNN1DDecoder, CNN2DDecoder,
 )
 
 

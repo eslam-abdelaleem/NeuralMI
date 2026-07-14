@@ -1,7 +1,5 @@
 """Tests for rigorous=True mode in conditional and transfer modes (Item 3)."""
-import pytest
 import numpy as np
-import torch
 
 
 # ---------------------------------------------------------------------------

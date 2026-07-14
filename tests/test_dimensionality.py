@@ -4,7 +4,7 @@ import warnings
 import pytest
 import numpy as np
 import torch
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pandas as pd
 

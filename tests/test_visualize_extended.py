@@ -93,7 +93,6 @@ class TestEstimatePlotConservativeEpoch:
             },
         )
         ax = r.plot(show=False)
-        vlines = [line for line in ax.lines if not np.isfinite(line.get_xdata()).all()]
         # Collect all axvline x positions from vertical lines
         vline_xs = []
         for line in ax.lines:

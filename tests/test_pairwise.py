@@ -1,6 +1,5 @@
 # tests/test_pairwise.py
 """Tests for the pairwise MI matrix analysis mode."""
-import pytest
 import numpy as np
 import pandas as pd
 import torch

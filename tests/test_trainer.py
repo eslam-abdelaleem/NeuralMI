@@ -5,7 +5,6 @@ import warnings
 import pytest
 import torch
 import numpy as np
-import torch.nn as nn
 
 from neural_mi.training.trainer import Trainer
 from neural_mi.data import PairedDataset

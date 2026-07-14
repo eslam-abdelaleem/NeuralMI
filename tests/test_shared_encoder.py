@@ -1,8 +1,6 @@
 # tests/test_shared_encoder.py
 """Tests for Phase F: shared encoder / siamese networks."""
 import pytest
-import torch
-import numpy as np
 import neural_mi as nmi
 from neural_mi import Model, Training
 from neural_mi.utils import build_critic

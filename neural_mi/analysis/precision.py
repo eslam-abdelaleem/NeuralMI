@@ -94,11 +94,14 @@ def run_precision_analysis(
         - ``'details'`` : dict containing:
 
           - ``'baseline_mi'`` — MI at zero corruption (float, nats).
-          - ``'precision_tau'`` — the primary estimated precision threshold (float).
+          - ``'precision_tau'`` — the primary estimated precision threshold
+            (float), or ``None`` if MI never dropped below the threshold
+            (check with ``is None``, not ``np.isnan``).
           - ``'threshold_ratio'`` — the original input (scalar or list).
           - ``'threshold_value'`` — MI value at the primary threshold (float, nats).
           - ``'precision_thresholds'`` — dict mapping each ratio to its
-            ``{'precision_tau', 'threshold_value'}`` result.
+            ``{'precision_tau', 'threshold_value'}`` result (``precision_tau``
+            is ``None`` per-ratio under the same not-found condition).
           - ``'raw_results'`` — same DataFrame as ``'dataframe'``.
     """
     logger.info("Initializing Precision Analysis...")

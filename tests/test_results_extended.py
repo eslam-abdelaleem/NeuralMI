@@ -4,7 +4,7 @@ import os
 import pytest
 import pandas as pd
 import matplotlib.pyplot as plt
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from neural_mi.results import Results
 
 class TestResults:

@@ -1,7 +1,6 @@
 # tests/test_embedding_extraction.py
 """Tests for Phase G: embedding extraction (G1/G2) and plot_embeddings (G3)."""
 import os
-import warnings
 
 import matplotlib
 matplotlib.use('Agg')  # non-interactive backend for CI

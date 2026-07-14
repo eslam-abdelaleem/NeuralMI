@@ -3,7 +3,7 @@ import pytest
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from neural_mi.visualize.plot import plot_sweep_curve, plot_bias_correction_fit
 from neural_mi.results import Results

@@ -3,8 +3,6 @@ import pytest
 import numpy as np
 import pandas as pd
 import torch
-from unittest.mock import patch
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -178,7 +176,6 @@ class TestRigorousScalarAnalysis:
 
         def _fake_scalar(x_s, y_s, bp, **kw):
             call_count[0] += 1
-            gamma = bp.get('gamma_hint', 1)
             return float(2.0 - 0.5 / max(x_s.shape[0] / 100, 1) + np.random.normal(0, 0.05))
 
         x, y = self._make_tensors()

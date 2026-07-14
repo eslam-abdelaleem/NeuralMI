@@ -3,7 +3,6 @@
 from dataclasses import fields
 
 import numpy as np
-import pytest
 
 import neural_mi as nmi
 from neural_mi import Model, Training, Output
