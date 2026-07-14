@@ -5,6 +5,7 @@ Contains the core, parallelizable training task function.
 import gc as _gc
 import threading
 import warnings
+import weakref
 import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as _lr_sched
@@ -36,9 +37,26 @@ _EMBEDDING_BATCH = 512
 # In multiprocessing (spawn) mode each worker starts with an empty cache; the
 # first task in a worker populates it and later tasks in the same worker
 # benefit automatically.
+#
+# The key is built from data_ptr()/id(), which identifies an *allocation*, not
+# a specific object: if a source array is freed and a new one happens to be
+# allocated at the same address, the key can collide. Each entry also stores a
+# weakref to the original x_data/y_data so a hit can verify true object
+# identity before being trusted; a mismatch (or a dead weakref) is treated as
+# a miss and the dataset is rebuilt.
 _DATASET_CACHE_LOCK = threading.Lock()
-_DATASET_CACHE: dict = {}       # {cache_key -> PairedDataset}
+_DATASET_CACHE: dict = {}       # {cache_key -> (PairedDataset, x_weakref, y_weakref)}
 _DATASET_CACHE_MAXSIZE = 4      # LRU eviction when this is exceeded
+
+
+def _safe_weakref(obj):
+    """Return a weakref to obj, or None if obj is None or not weakly referenceable."""
+    if obj is None:
+        return None
+    try:
+        return weakref.ref(obj)
+    except TypeError:
+        return None
 
 # Keys that fully determine dataset construction (anything else is a model/
 # training hyperparameter and does NOT affect the dataset).
@@ -119,7 +137,15 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                                     {**params, 'dataset_device': _data_device})
     dataset = None
     with _DATASET_CACHE_LOCK:
-        dataset = _DATASET_CACHE.get(_cache_key)
+        _cache_entry = _DATASET_CACHE.get(_cache_key)
+    if _cache_entry is not None:
+        _cached_dataset, _x_ref, _y_ref = _cache_entry
+        _x_is_live = _x_ref is None or _x_ref() is x_data
+        _y_is_live = _y_ref is None or _y_ref() is y_data
+        if _x_is_live and _y_is_live:
+            dataset = _cached_dataset
+        else:
+            logger.debug("Dataset cache key collision (stale data_ptr/id) — rebuilding.")
 
     if dataset is None:
         dataset = create_dataset(
@@ -137,7 +163,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
                     # Evict the oldest entry (dict preserves insertion order).
                     _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
-                _DATASET_CACHE[_cache_key] = dataset
+                _DATASET_CACHE[_cache_key] = (dataset, _safe_weakref(x_data), _safe_weakref(y_data))
             logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
         else:
             logger.debug("Temporal dataset — skipping cache (mutable via time_shift).")
@@ -159,6 +185,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         params['n_channels_x'] = _x.shape[1]
         if _x.ndim == 4:
             params['input_dim_x'] = _x.shape[1] * _x.shape[2] * _x.shape[3]
+            params['input_height_x'] = _x.shape[2]
+            params['input_width_x'] = _x.shape[3]
             _emb = params.get('embedding_model', 'mlp')
             if _emb == 'cnn':
                 raise ValueError(
@@ -184,6 +212,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         params['n_channels_y'] = _y.shape[1]
         if _y.ndim == 4:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2] * _y.shape[3]
+            params['input_height_y'] = _y.shape[2]
+            params['input_width_y'] = _y.shape[3]
         else:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2]
 
@@ -224,33 +254,24 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             output_activation=_dec_act_x,
             kernel_size=params.get('kernel_size', 7),
             nhead=params.get('nhead', 4),
+            height=params.get('input_height_x'),
+            width=params.get('input_width_x'),
         )
-        # Separate decoder for Y if asymmetric architecture or different data type
-        # For shared_encoder=True, we still build separate decoders (X and Y may differ in n_channels)
-        if _n_channels_y != _n_channels_x or _window_size_y != _window_size_x or _dec_act_x != _dec_act_y:
-            decoder_y = build_decoder(
-                embedding_model=_embedding_model,
-                embed_dim=_embed_dim,
-                hidden_dim=_hidden_dim,
-                n_channels=_n_channels_y,
-                window_size=_window_size_y,
-                n_layers=_n_layers,
-                output_activation=_dec_act_y,
-                kernel_size=params.get('kernel_size', 7),
-                nhead=params.get('nhead', 4),
-            )
-        else:
-            decoder_y = build_decoder(
-                embedding_model=_embedding_model,
-                embed_dim=_embed_dim,
-                hidden_dim=_hidden_dim,
-                n_channels=_n_channels_y,
-                window_size=_window_size_y,
-                n_layers=_n_layers,
-                output_activation=_dec_act_y,
-                kernel_size=params.get('kernel_size', 7),
-                nhead=params.get('nhead', 4),
-            )
+        # Always build a dedicated decoder_y -- X and Y may differ in n_channels/
+        # window_size/activation even when shared_encoder=True.
+        decoder_y = build_decoder(
+            embedding_model=_embedding_model,
+            embed_dim=_embed_dim,
+            hidden_dim=_hidden_dim,
+            n_channels=_n_channels_y,
+            window_size=_window_size_y,
+            n_layers=_n_layers,
+            output_activation=_dec_act_y,
+            kernel_size=params.get('kernel_size', 7),
+            nhead=params.get('nhead', 4),
+            height=params.get('input_height_y'),
+            width=params.get('input_width_y'),
+        )
         logger.debug(
             f"Built decoder_x ({type(decoder_x).__name__}) and decoder_y ({type(decoder_y).__name__}) "
             f"for use_decoder=True."
@@ -472,8 +493,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         del decoder_y
     # Only delete the dataset reference if it is NOT in the shared cache —
     # cached datasets are intentionally kept alive for reuse by future tasks.
-    _cached = _DATASET_CACHE.get(_cache_key)
-    if _cached is not dataset:
+    _cache_entry = _DATASET_CACHE.get(_cache_key)
+    _cached_dataset = _cache_entry[0] if _cache_entry is not None else None
+    if _cached_dataset is not dataset:
         del dataset
     if scheduler is not None:
         del scheduler

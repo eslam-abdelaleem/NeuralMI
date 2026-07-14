@@ -28,7 +28,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from typing import Optional
+
+from neural_mi.logger import logger
 
 
 def _get_output_activation(name: str, dim: int = 1):
@@ -71,7 +72,7 @@ class BaseDecoder(nn.Module):
 
     def _init_weights(self):
         for m in self.modules():
-            if isinstance(m, (nn.Linear, nn.Conv1d, nn.ConvTranspose1d)):
+            if isinstance(m, (nn.Linear, nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d)):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
@@ -197,7 +198,6 @@ class GRUDecoder(BaseDecoder):
         self._init_weights()
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        B = z.shape[0]
         h = self.input_proj(z)                              # (B, hidden)
         h = h.unsqueeze(1).expand(-1, self.window_size, -1) # (B, W, hidden)
         out, _ = self.gru(h)                               # (B, W, hidden)
@@ -233,7 +233,6 @@ class LSTMDecoder(BaseDecoder):
         self._init_weights()
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        B = z.shape[0]
         h = self.input_proj(z)                              # (B, hidden)
         h = h.unsqueeze(1).expand(-1, self.window_size, -1) # (B, W, hidden)
         out, _ = self.lstm(h)                              # (B, W, hidden)
@@ -369,6 +368,63 @@ class TransformerDecoder(BaseDecoder):
         return self._act(out)
 
 
+class CNN2DDecoder(BaseDecoder):
+    """Approximate inverse of the :class:`~neural_mi.models.embeddings.CNN2D` encoder.
+
+    Expands the embedding via linear layers to a small spatial feature map,
+    then uses bilinear upsampling + ``nn.Conv2d`` blocks to reach the target
+    ``(height, width)``.  A final ``Conv2d`` maps to ``n_channels`` outputs.
+    """
+    def __init__(
+        self,
+        embed_dim: int,
+        hidden_dim: int,
+        n_channels: int,
+        height: int,
+        width: int,
+        n_layers: int = 2,
+        kernel_size: int = 3,
+        output_activation: str = 'linear',
+    ):
+        super().__init__()
+        self.n_channels = n_channels
+        self.height = height
+        self.width = width
+        self._act = _get_output_activation(output_activation)
+        if kernel_size % 2 == 0:
+            kernel_size = kernel_size + 1  # ensure odd for same padding
+
+        # Start from a small spatial grid; upsample to (height, width) before the conv stack.
+        self._base_h = max(2, height // (2 ** max(1, n_layers - 1)))
+        self._base_w = max(2, width // (2 ** max(1, n_layers - 1)))
+        self.expand_linear = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim * self._base_h * self._base_w),
+            nn.ReLU(),
+        )
+
+        pad = kernel_size // 2
+        conv_blocks = []
+        for i in range(n_layers):
+            in_ch = hidden_dim
+            out_ch = hidden_dim if i < n_layers - 1 else n_channels
+            conv_blocks.append(nn.Conv2d(in_ch, out_ch, kernel_size, padding=pad))
+            if i < n_layers - 1:
+                conv_blocks.append(nn.ReLU())
+        self.conv_layers = nn.ModuleList(conv_blocks)
+        self._init_weights()
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        B = z.shape[0]
+        h = self.expand_linear(z)                                   # (B, hidden*base_h*base_w)
+        h = h.view(B, -1, self._base_h, self._base_w)               # (B, hidden, base_h, base_w)
+        h = F.interpolate(h, size=(self.height, self.width), mode='bilinear', align_corners=False)
+        for layer in self.conv_layers:
+            h = layer(h)
+        return self._act(h)
+
+
 # ---------------------------------------------------------------------------
 # Factory function
 # ---------------------------------------------------------------------------
@@ -388,7 +444,7 @@ def build_decoder(
     Parameters
     ----------
     embedding_model : str
-        Name of the encoder (e.g. ``'mlp'``, ``'cnn1d'``, ``'gru'``, …).
+        Name of the encoder (e.g. ``'mlp'``, ``'cnn'``, ``'gru'``, …).
     embed_dim : int
         Embedding dimensionality (output size of the encoder).
     hidden_dim : int
@@ -396,13 +452,16 @@ def build_decoder(
     n_channels : int
         Number of output channels (must match the encoder's input channels).
     window_size : int
-        Sequence length of the reconstructed output.
+        Sequence length of the reconstructed output. For ``'cnn2d'``, used
+        only as a fallback (assumed square) when ``height``/``width`` are not
+        given in ``**kwargs``.
     n_layers : int, optional
         Number of decoder layers. Defaults to 2.
     output_activation : str, optional
         Final activation: ``'linear'``, ``'sigmoid'``, or ``'softmax'``.
     **kwargs
-        Forwarded to the decoder constructor (e.g. ``kernel_size``, ``nhead``).
+        Forwarded to the decoder constructor (e.g. ``kernel_size``, ``nhead``,
+        or ``height``/``width`` for ``'cnn2d'``).
 
     Returns
     -------
@@ -413,23 +472,38 @@ def build_decoder(
         embed_dim=embed_dim,
         hidden_dim=hidden_dim,
         n_channels=n_channels,
-        window_size=window_size,
         n_layers=n_layers,
         output_activation=output_activation,
     )
     name = embedding_model.lower()
     if name == 'mlp':
-        return MLPDecoder(**common)
-    elif name == 'cnn1d':
-        return CNN1DDecoder(**common, kernel_size=kwargs.get('kernel_size', 7))
+        return MLPDecoder(**common, window_size=window_size)
+    elif name == 'cnn':
+        return CNN1DDecoder(**common, window_size=window_size, kernel_size=kwargs.get('kernel_size', 7))
+    elif name == 'cnn2d':
+        height, width = kwargs.get('height'), kwargs.get('width')
+        if height is None or width is None:
+            # Caller doesn't know the true (height, width) split -- fall back
+            # to a square spatial layout inferred from window_size (= H*W).
+            side = max(1, int(round(math.sqrt(window_size))))
+            height, width = height or side, width or side
+        return CNN2DDecoder(**common, height=height, width=width,
+                            kernel_size=kwargs.get('kernel_size', 3))
     elif name == 'gru':
-        return GRUDecoder(**common)
+        return GRUDecoder(**common, window_size=window_size)
     elif name == 'lstm':
-        return LSTMDecoder(**common)
+        return LSTMDecoder(**common, window_size=window_size)
     elif name == 'tcn':
-        return TCNDecoder(**common, kernel_size=kwargs.get('kernel_size', 3))
+        return TCNDecoder(**common, window_size=window_size, kernel_size=kwargs.get('kernel_size', 3))
     elif name == 'transformer':
-        return TransformerDecoder(**common, nhead=kwargs.get('nhead', 4))
+        return TransformerDecoder(**common, window_size=window_size, nhead=kwargs.get('nhead', 4))
     else:
-        # Custom or unknown encoder — use a simple MLP decoder as fallback.
-        return MLPDecoder(**common)
+        # Custom or unknown encoder (e.g. 'pretrained_backbone') has no
+        # dedicated decoder -- fall back to MLP and make that visible, so a
+        # user asking for a decoder doesn't silently get one for a different
+        # architecture than they configured.
+        logger.warning(
+            f"No dedicated decoder for embedding_model='{embedding_model}'; "
+            f"falling back to MLPDecoder for the reconstruction loss."
+        )
+        return MLPDecoder(**common, window_size=window_size)

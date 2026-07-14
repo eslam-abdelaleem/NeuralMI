@@ -96,6 +96,52 @@ class TestSweepExtended:
         # Cache should have at least one entry for this static dataset
         assert len(_DATASET_CACHE) >= 1
 
+    def test_dataset_cache_rejects_stale_data_ptr_collision(self):
+        """A cache entry keyed by data_ptr()/id() alone would be served to any
+        tensor whose allocation happens to land at the same address as a freed
+        one. Simulate that collision by pre-seeding the cache with an entry
+        whose weakref points to a *different* object than the incoming x_data;
+        the cache must treat this as a miss and rebuild, not reuse the stale
+        dataset."""
+        from unittest.mock import MagicMock, patch
+        from neural_mi.analysis.task import (
+            _DATASET_CACHE, _DATASET_CACHE_LOCK, _dataset_cache_key, _safe_weakref,
+        )
+        _DATASET_CACHE.clear()
+
+        x = np.random.randn(20, 4, 1).astype(np.float32)
+        y = np.random.randn(20, 4, 1).astype(np.float32)
+        import torch as _torch
+        x_t, y_t = _torch.from_numpy(x), _torch.from_numpy(y)
+        params = {'processor_type_x': None, 'processor_type_y': None,
+                  'processor_params_x': {}, 'processor_params_y': {},
+                  'dataset_device': 'cpu'}
+
+        key = _dataset_cache_key(x_t, y_t, params)
+        stale_dataset = MagicMock(name='stale_dataset_should_not_be_reused')
+        decoy_tensor = _torch.randn(3, 3)  # weakly-referenceable, but NOT x_t
+        with _DATASET_CACHE_LOCK:
+            _DATASET_CACHE[key] = (stale_dataset, _safe_weakref(decoy_tensor), None)
+
+        real_dataset = MagicMock()
+        real_dataset.x_data = x_t
+        real_dataset.y_data = y_t
+        with patch('neural_mi.analysis.task.create_dataset', return_value=real_dataset) as mock_cd, \
+             patch('neural_mi.analysis.task.build_critic') as mock_bc:
+            mock_bc.return_value = MagicMock()
+            mock_bc.return_value.parameters.return_value = iter([])
+            full_params = {**params,
+                           'embedding_model': 'mlp', 'n_epochs': 1, 'batch_size': 4,
+                           'patience': 1000, 'learning_rate': 1e-3, 'train_fraction': 0.8,
+                           'n_test_blocks': 2, 'estimator_name': 'infonce',
+                           'output_units': 'nats', 'verbose': False, 'show_progress': False}
+            from neural_mi.analysis.task import run_training_task
+            try:
+                run_training_task((x_t, y_t, full_params, 'collision_test'))
+            except Exception:
+                pass  # only verifying create_dataset was actually called, not full training
+        mock_cd.assert_called_once()
+
     def test_memory_warning_for_on_device_sweep(self):
         """Large sweeps with dataset_device != 'cpu' should emit a UserWarning."""
         import warnings
