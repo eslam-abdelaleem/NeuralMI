@@ -125,8 +125,6 @@ Before computing critic scores, each input passes through an **embedding model**
 
 All embeddings output a vector of size `embedding_dim` (default 64).
 
-(A depthwise-separable `'cnn'` variant, a `'spike_physics'` embedding for raw spike timestamps, and a `'sinc_cnn'` bandpass-filter embedding for EEG/LFP were evaluated empirically against generic encoders, did not outperform them, and have been removed.)
-
 ### 3.4 Critic Architectures
 
 The critic `f(x, y)` combines the two embeddings into a score. Three architectures:
@@ -923,12 +921,6 @@ These parameters apply only to `embedding_model='pretrained_backbone'`.
 | `pytorch_predefined` | str or None | `None` | torchvision model name, e.g. `'resnet18'`, `'efficientnet_b0'` |
 | `pretrained` | bool | `False` | Load ImageNet pretrained weights |
 
-**Physics parameter tracking (extensibility hook):**
-If an embedding class implements a `get_physics_params()` method, the library records its return value after every evaluation epoch and stores it in `result.details`. No currently-shipped embedding implements this — it exists so a custom embedding (via `custom_embedding_cls`) can expose learnable physical parameters (e.g. filter cutoffs) for post-hoc inspection.
-
-- `result.details['physics_params_history']` — dict of lists, one entry per parameter name, one value per training epoch. Keys are prefixed by variable (`x_` or `y_`). Absent when the embedding does not implement `get_physics_params()`.
-- `result.details['physics_params_final']` — same keys as `physics_params_history` but a scalar value from the **best epoch** (the epoch used to compute `result.mi_estimate`). Present whenever `physics_params_history` is present.
-
 **Spatial dimension mismatch (`pretrained_backbone`):**
 `PretrainedBackboneEmbedding` probes the backbone at 224×224 during construction (matching standard ImageNet training resolution). If input images are smaller (e.g. 28×28 MNIST), the model automatically inserts a bilinear `nn.Upsample` layer on the first forward pass and emits a `UserWarning`:
 
@@ -1132,8 +1124,6 @@ from neural_mi.models import (
 | `PretrainedBackboneEmbedding` | `(N, C, H, W)` ← **4-D** | `input_dim, embedding_dim, pytorch_predefined, pretrained` |
 
 `CNN2D` uses `AdaptiveAvgPool2d(1)` after the convolutional stack so it accepts any spatial size. All embeddings output `(batch, embedding_dim)`.
-
-(A depthwise-separable `CNN1D` variant, a `SpikePhysicsEmbedding` class, and a `SincEmbedding` class were evaluated empirically against generic encoders, did not outperform them, and have been removed.)
 
 ### Critics (`neural_mi.models`)
 
