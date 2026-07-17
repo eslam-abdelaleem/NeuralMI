@@ -165,7 +165,18 @@ class TestConditionalMICategoricalZ:
     @pytest.mark.parametrize("encoding", ["majority_vote", "probability"])
     def test_categorical_z_explains_shared_variance(self, encoding):
         """CMI(X;Y|Z) should drop well below the raw, unconditioned MI(X;Y)
-        when Z is the true (and only) confounder shared by X and Y."""
+        when Z is the true (and only) confounder shared by X and Y.
+
+        Averaged over 3 training seeds on the same data, not a single run:
+        neural-net training isn't bit-reproducible from seed= alone (confirmed
+        empirically -- re-running the same seed=0 call repeatedly, even forced
+        onto CPU, still gives noticeably different MI estimates each time, a
+        known consequence of non-associative floating-point reduction order in
+        multi-threaded training that no amount of seeding fixes). A single
+        noisy run occasionally crossed the threshold by chance and made this
+        test flaky under parallel execution. The underlying claim holds
+        robustly across seeds; averaging is what actually tests it reliably.
+        """
         window_size = 10
         x_raw, y_raw, z_raw = self._confounded_data(window_size=window_size)
         model = Model(hidden_dim=32, embedding_dim=8, n_layers=1)
@@ -175,27 +186,34 @@ class TestConditionalMICategoricalZ:
             y='continuous', y_params={'window_size': window_size, 'step_size': window_size},
         )
 
-        raw = nmi.run(
-            x_raw, y_raw, mode='estimate',
-            processing=processing, split=nmi.Split(mode='random'),
-            model=model, training=training, n_workers=1, seed=0, show_progress=False,
-        )
-        conditioned = nmi.run(
-            x_raw, y_raw, mode='conditional',
-            conditional=Conditional(
-                z_data=z_raw, z_processor_type='categorical',
-                z_processor_params={'window_size': window_size, 'step_size': window_size,
-                                    'encoding': encoding},
-            ),
-            processing=processing, split=nmi.Split(mode='random'),
-            model=model, training=training, n_workers=1, seed=0, show_progress=False,
-        )
-        assert raw.mi_estimate > 1.0, (
+        raw_estimates, conditioned_estimates = [], []
+        for run_seed in range(3):
+            raw = nmi.run(
+                x_raw, y_raw, mode='estimate',
+                processing=processing, split=nmi.Split(mode='random'),
+                model=model, training=training, n_workers=1, seed=run_seed, show_progress=False,
+            )
+            conditioned = nmi.run(
+                x_raw, y_raw, mode='conditional',
+                conditional=Conditional(
+                    z_data=z_raw, z_processor_type='categorical',
+                    z_processor_params={'window_size': window_size, 'step_size': window_size,
+                                        'encoding': encoding},
+                ),
+                processing=processing, split=nmi.Split(mode='random'),
+                model=model, training=training, n_workers=1, seed=run_seed, show_progress=False,
+            )
+            raw_estimates.append(raw.mi_estimate)
+            conditioned_estimates.append(conditioned.mi_estimate)
+
+        mean_raw = float(np.mean(raw_estimates))
+        mean_conditioned = float(np.mean(conditioned_estimates))
+        assert mean_raw > 1.0, (
             f"Expected substantial raw MI(X;Y) from the shared Z confound, "
-            f"got {raw.mi_estimate:.3f} bits -- test construction may be too weak."
+            f"got mean={mean_raw:.3f} bits over {raw_estimates} -- test construction may be too weak."
         )
-        assert conditioned.mi_estimate < 0.65 * raw.mi_estimate, (
-            f"CMI(X;Y|Z)={conditioned.mi_estimate:.3f} bits did not drop well below "
-            f"raw MI(X;Y)={raw.mi_estimate:.3f} bits after conditioning on the true "
-            f"confounder Z."
+        assert mean_conditioned < 0.65 * mean_raw, (
+            f"CMI(X;Y|Z) mean={mean_conditioned:.3f} bits did not drop well below "
+            f"raw MI(X;Y) mean={mean_raw:.3f} bits after conditioning on the true confounder Z "
+            f"(per-seed raw={raw_estimates}, conditioned={conditioned_estimates})."
         )

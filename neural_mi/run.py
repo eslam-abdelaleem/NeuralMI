@@ -373,7 +373,7 @@ def _run_flat(
     confidence_level: float = 0.68,
     max_eval_samples: int = 5000,
     train_subset_size: Optional[int] = None,
-    spectral_mode: str = 'none',
+    track_spectral_history: bool = False,
     max_index_reduction: float = 0.05,
     tau_grid: Optional[List[float]] = None,
     corrupt_target: str = 'x',
@@ -498,21 +498,7 @@ def _run_flat(
         _inject(base_params, 'norm_layer', norm_layer)
         _inject(base_params, 'use_amp', use_amp)
 
-        # Validate and apply spectral_mode
-        _SPECTRAL_MODES = {'none', 'summary', 'full'}
-        if spectral_mode not in _SPECTRAL_MODES:
-            raise ValueError(
-                f"spectral_mode='{spectral_mode}' is not valid. "
-                f"Choose from {sorted(_SPECTRAL_MODES)}."
-            )
-        if spectral_mode == 'summary':
-            _inject(base_params, 'track_spectral_metrics', True)
-            _inject(base_params, 'spectral_output', 'default')
-            _inject(base_params, 'return_spectrum', False)
-        elif spectral_mode == 'full':
-            _inject(base_params, 'track_spectral_metrics', True)
-            _inject(base_params, 'spectral_output', 'all')
-            _inject(base_params, 'return_spectrum', True)
+        _inject(base_params, 'track_spectral_history', track_spectral_history)
         _inject(base_params, 'max_index_reduction', max_index_reduction)
 
         _inject(base_params, 'processor_type_x', processor_type_x)

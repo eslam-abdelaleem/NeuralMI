@@ -174,7 +174,7 @@ def run_precision_analysis(
         verbose=base_params.get('verbose', False),
         show_progress=base_params.get('show_progress', True),
         max_eval_samples=base_params.get('max_eval_samples', 5000),
-        track_spectral_metrics=False,  # Skip dimensionality math to save time
+        track_spectral_history=False,  # Skip per-epoch dimensionality math to save time
         scheduler=scheduler,
     )
     

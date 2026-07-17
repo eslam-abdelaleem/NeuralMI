@@ -52,6 +52,48 @@ tutorials rather than trusting stale cached notebook outputs:
   permutation-test demo cells keep showing widget clutter even after the fix above. Both
   `tqdm(...)` call sites now pass `disable=not show_progress`; regression coverage added in
   `tests/test_permutation.py::TestPermutationTestProgressBar`.
+- `mode='rigorous'` plotting had three related bugs in `results.py`/`visualize/plot.py`.
+  `Results.plot(show=False)` didn't actually suppress the render — `show` was never forwarded
+  to `plot_bias_correction_fit`, which defaulted to `show=True` and called `plt.show()`
+  regardless, closing the figure in Jupyter's inline backend before any post-hoc edits to the
+  returned `ax` could take effect. Fixed by forwarding `show=show`. Reliability was only ever
+  annotated on the plot when `is_reliable=False`, with the reason hardcoded to always say
+  `leverage_warning` even when `fit_quality_warning` (or too few surviving gamma points, which
+  sets neither flag) was the actual cause — now annotated symmetrically (a green "reliable" box
+  when `True`) with the reason derived from the real flags. `plot_bias_correction_fit` accepted
+  `label`/`color` kwargs but silently ignored them (swallowed into unused `**kwargs`), so
+  `Results.compare()` for rigorous mode couldn't visually distinguish overlaid results — every
+  result rendered in the same hardcoded gray/black/red with duplicate generic legend entries.
+  Both kwargs are now respected; `compare()` also gained a per-result reliability text box and
+  now forces `show=False` on each per-result call regardless of the outer flag (letting it
+  default to `True` mid-loop closed the shared axes after the first result, truncating the
+  overlay). Regression coverage added in `tests/test_visualize_extended.py`.
+- Spectral/participation-ratio tracking was scattered across five knobs at three
+  different reachability levels (`Output.spectral_mode`, plus internal-only
+  `track_spectral_metrics`/`spectral_output`/`return_spectrum`/`spectral_whitening`
+  keys with no dataclass field to set them directly) — `return_spectrum` in
+  particular was real and documented, just stranded in a flat `base_params` table
+  disconnected from the `Output`/`Training` reference a user would actually check.
+  `mode='dimensionality'` also had its own separate, completely unreachable
+  `spectral_mode` parameter (`analysis/dimensionality.py`) that the public
+  `Dimensionality` config rejected outright — dead code. Collapsed to one knob,
+  `Output.track_spectral_history` (default `False`): `pr_eig`, `pr_singular`, and
+  the raw cross-covariance spectrum (singular values) are now always available in
+  `result.details` from the best epoch, at no extra cost — they were already being
+  computed as a byproduct of the participation-ratio calculation and simply weren't
+  being kept. `track_spectral_history=True` additionally records the same three
+  values at every epoch in `spectral_metrics_history`. `effective_rank`/
+  `spectral_entropy` were dropped from both paths (cheaply derivable from the raw
+  spectrum if ever needed). `spectral_whitening` (how the covariance is whitened
+  before SVD) is unrelated and untouched.
+- `mode='dimensionality'`'s `sigma_add='auto'` noise ladder never included a true
+  no-noise baseline — `np.geomspace(0.25, 5.0, 7)` can't represent 0 (undefined on
+  a log scale, which is also how `plot_noise_ladder`'s x-axis is scaled). Now
+  prepends a fixed `1e-3` (0.1% of per-channel std) baseline rung: negligible
+  enough to be functionally "no noise," while staying representable on both the
+  data side and the existing log-scaled plot with no plotting changes needed.
+  Explicit `sigma_add=` lists (including a literal `0.0`, if wanted) are
+  unaffected. Regression coverage added in `tests/test_noise_injection.py`.
 
 ### Added
 

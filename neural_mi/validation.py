@@ -34,8 +34,6 @@ ALLOWED_VALUES = {
                         'pretrained_backbone'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
-    'spectral_mode': ['none', 'summary', 'full'],
-    'spectral_output': ['default', 'all'],
     'estimator_name': list(ESTIMATORS.keys()),  # 'infonce', 'smile'
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],

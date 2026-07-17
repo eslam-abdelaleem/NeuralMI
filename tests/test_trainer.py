@@ -68,24 +68,45 @@ def test_trainer_safe_eval_chunking(dummy_data, dummy_model):
     
     assert not np.isnan(results['test_mi'])
 
-def test_trainer_spectral_metrics(dummy_data, dummy_model):
-    """Tests that dimensionality metrics are extracted when requested."""
+def test_trainer_final_spectral_metrics_always_present(dummy_data, dummy_model):
+    """pr_eig/pr_singular/spectrum at the best epoch are unconditional -- present
+    even with track_spectral_history left at its default (False)."""
     optimizer = torch.optim.Adam(dummy_model.parameters(), lr=0.01)
     trainer = Trainer(dummy_model, dummy_estimator, optimizer, torch.device('cpu'))
-    
+
     results = trainer.train(
-        dummy_data, 
-        n_epochs=1, 
-        batch_size=20, 
-        track_spectral_metrics=True,
-        spectral_output='all',
+        dummy_data,
+        n_epochs=1,
+        batch_size=20,
         verbose=False
     )
-    
-    # Check that spectral metrics were successfully injected into results
+
     assert 'pr_eig' in results
     assert 'pr_singular' in results
-    assert 'effective_rank' in results
+    assert 'spectrum' in results
+    assert 'spectral_metrics_history' not in results
+    # effective_rank/spectral_entropy were dropped from the returned metrics --
+    # the raw spectrum is kept instead, from which they're cheaply derivable.
+    assert 'effective_rank' not in results
+
+def test_trainer_spectral_history_per_epoch(dummy_data, dummy_model):
+    """track_spectral_history=True records pr_eig/pr_singular/spectrum at every
+    epoch, and nothing else (no effective_rank/spectral_entropy)."""
+    optimizer = torch.optim.Adam(dummy_model.parameters(), lr=0.01)
+    trainer = Trainer(dummy_model, dummy_estimator, optimizer, torch.device('cpu'))
+
+    results = trainer.train(
+        dummy_data,
+        n_epochs=2,
+        batch_size=20,
+        track_spectral_history=True,
+        verbose=False
+    )
+
+    history = results['spectral_metrics_history']
+    assert len(history) == 2
+    for epoch_metrics in history:
+        assert set(epoch_metrics.keys()) == {'spectral_whitening', 'pr_eig', 'pr_singular', 'spectrum'}
 
 def test_trainer_custom_smoothing(dummy_data, dummy_model):
     """Tests the custom smoothing hook for early stopping."""

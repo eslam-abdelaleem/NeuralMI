@@ -60,12 +60,17 @@ def mock_sweep():
         instance.run.return_value = [{'test_mi': 1.0}]
         yield MockSweep
 
-def test_dimensionality_forces_hybrid_and_metrics(mock_sweep):
-    """Proves the orchestrator overrides user params to guarantee accurate dim estimation."""
+def test_dimensionality_forces_hybrid_critic_and_embedding_dim(mock_sweep):
+    """Proves the orchestrator overrides user params to guarantee accurate dim estimation.
+
+    pr_eig/pr_singular/spectrum are always computed at the best epoch regardless
+    of any dimensionality-specific forcing (see Trainer._extract_spectral_metrics),
+    so there's nothing left to force for spectral tracking specifically.
+    """
     x_data = torch.randn(100, 4)
     # The user asks for a simple separable critic, but the orchestrator MUST override this
-    base_params = {'critic_type': 'separable'} 
-    
+    base_params = {'critic_type': 'separable'}
+
     df, _embeddings = run_dimensionality_analysis(x_data, base_params, split_method='spatial')
 
     # Extract the parameters that were actually passed to the Sweep Engine
@@ -74,7 +79,6 @@ def test_dimensionality_forces_hybrid_and_metrics(mock_sweep):
 
     # Assertions for overriding behavior
     assert analysis_params['critic_type'] == 'hybrid', "Failed to force Hybrid critic."
-    assert analysis_params['track_spectral_metrics'] is True, "Failed to enable spectral metrics."
     assert analysis_params['embedding_dim'] == 64, "Failed to inject large default bottleneck."
 
     assert isinstance(df, pd.DataFrame)
@@ -152,8 +156,7 @@ def test_task_parameter_routing():
         'nhead': 4,
         # Our newly wired parameters:
         'max_eval_samples': 42,
-        'track_spectral_metrics': True,
-        'spectral_output': 'all'
+        'track_spectral_history': True,
     }
     
     # We patch Trainer.train to intercept the call and check the kwargs
@@ -172,5 +175,4 @@ def test_task_parameter_routing():
         
         # Assert the new parameters made it through the pipeline
         assert call_kwargs['max_eval_samples'] == 42
-        assert call_kwargs['track_spectral_metrics'] is True
-        assert call_kwargs['spectral_output'] == 'all'
+        assert call_kwargs['track_spectral_history'] is True

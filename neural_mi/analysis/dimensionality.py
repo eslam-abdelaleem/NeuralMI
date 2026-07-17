@@ -144,13 +144,20 @@ def _classify_regime(mi_value: float, ceiling: float, margin: float, floor: floa
     return 'detached', True
 
 
+# A no-noise baseline rung for the 'auto' ladder. Not literal 0.0: geometric
+# spacing can't represent zero, and plot_noise_ladder's x-axis is log-scaled.
+# 1e-3 (0.1% of per-channel std) is negligible relative to the 0.25-5.0 real
+# rungs -- functionally "no noise" -- while staying representable on both.
+_AUTO_LADDER_BASELINE = 1e-3
+
+
 def _resolve_sigma_add_levels(sigma_add: Any) -> Tuple[List[float], bool]:
     """Resolve the ``sigma_add`` argument to a concrete list of levels.
 
     Returns ``(levels, is_auto)``.
     """
     if isinstance(sigma_add, str) and sigma_add == 'auto':
-        return list(np.geomspace(0.25, 5.0, 7)), True
+        return [_AUTO_LADDER_BASELINE] + list(np.geomspace(0.25, 5.0, 7)), True
     if isinstance(sigma_add, (int, float)):
         return [float(sigma_add)], False
     return [float(v) for v in sigma_add], False
@@ -446,7 +453,6 @@ def run_dimensionality_analysis(
     sweep_grid: Optional[Dict[str, Any]] = None,
     split_method: str = 'random',
     n_splits: int = 5,
-    spectral_mode: str = 'summary',
     n_workers: int = 1,
     processor_type_x: Optional[str] = None,
     processor_type_y: Optional[str] = None,
@@ -517,14 +523,6 @@ def run_dimensionality_analysis(
         performed — each starting from a different random weight
         initialisation — giving a proper mean and standard deviation in the
         output.  Defaults to 5.
-    spectral_mode : {'summary', 'full'}, optional
-        Controls which spectral metrics are returned.
-
-        - ``'summary'`` *(default)* — compute both participation-ratio
-          variants, ``pr_eig`` and ``pr_singular``.
-        - ``'full'`` — additionally compute ``effective_rank`` and
-          ``spectral_entropy``, and include the raw singular values array in
-          each result row.
     n_workers : int, optional
         Number of parallel workers.  When ``n_splits > 1`` the workers are
         distributed *across splits* (each split's inner sweep runs
@@ -544,9 +542,10 @@ def run_dimensionality_analysis(
 
         - A scalar runs that single noise level.
         - A list/range runs the full ladder, one result row per level.
-        - ``'auto'`` searches a geometric ladder (~0.25x-5x per-channel std) to
-          locate the regime where the InfoNCE estimate has detached from the
-          ``log(eval_size)`` ceiling (never ``log(batch_size)``).
+        - ``'auto'`` searches a geometric ladder (~0.25x-5x per-channel std,
+          plus a negligible no-noise baseline rung) to locate the regime
+          where the InfoNCE estimate has detached from the ``log(eval_size)``
+          ceiling (never ``log(batch_size)``).
 
         Only supported for intrinsic ``split_method in ('random', 'spatial')``
         or interaction mode (``y_data`` provided); raw-spike (timestamp) and
@@ -590,13 +589,10 @@ def run_dimensionality_analysis(
         "Dimensionality mode: using critic_type='hybrid' (required for spectral analysis "
         "via cross-covariance SVD)."
     )
-    analysis_params['track_spectral_metrics'] = True
-    if spectral_mode == 'full':
-        analysis_params['spectral_output'] = 'all'
-        analysis_params['return_spectrum'] = True
-    else:  # 'summary' or any unrecognised value defaults to summary
-        analysis_params['spectral_output'] = 'default'
-        analysis_params['return_spectrum'] = False
+    # pr_eig, pr_singular, and the raw spectrum are always computed at the best
+    # epoch regardless of track_spectral_history (see Trainer._extract_spectral_metrics) --
+    # that's what feeds this mode's own pr_eig/pr_singular output columns, so
+    # nothing needs to be forced on here.
 
     # Default shared_encoder=True: X and Y are always split halves of the same
     # distribution in dimensionality mode, so tying their embedding weights is

@@ -151,9 +151,7 @@ class Trainer:
               max_eval_samples: int = 5000,
               train_subset_size: Optional[int] = None,
               split_gap_fraction: float = 0.5,
-              track_spectral_metrics: bool = False,
-              spectral_output: str = 'default',
-              return_spectrum: bool = False,
+              track_spectral_history: bool = False,
               max_index_reduction: float = 0.05,
               eval_train: Union[bool, float, int] = False,
               peak_fraction: float = 1.0,
@@ -227,15 +225,13 @@ class Trainer:
             Defaults to None (use all training samples).
         split_gap_fraction : float, optional
             When using 'blocked' split_mode, this fraction of the data will be left as a gap between training and test blocks to reduce leakage.
-        track_spectral_metrics : bool, optional
-            If True, computes and tracks spectral metrics of the learned representations at each epoch.
-            Defaults to False.
-        spectral_output : str, optional
-            Determines which spectral metrics are returned. ``'default'`` returns both
-            participation-ratio variants (``pr_eig``, ``pr_singular``). ``'all'`` additionally
-            returns ``effective_rank`` and ``spectral_entropy``. Defaults to ``'default'``.
-        return_spectrum : bool, optional
-            If True, includes the full spectrum in the returned results when `track_spectral_metrics` is True. Defaults to False.
+        track_spectral_history : bool, optional
+            If True, records ``pr_eig``, ``pr_singular``, and the raw cross-covariance
+            spectrum (singular values) at every epoch in the returned
+            ``spectral_metrics_history`` -- can be expensive, since it evaluates on
+            ``train_eval_view`` each epoch. Defaults to False. Independent of this
+            flag, the same three values are always computed once at the best epoch
+            (see ``pr_eig``, ``pr_singular``, ``spectrum`` in the returned dict).
         max_index_reduction : float, optional
             When using temporal datasets with windowing, random time shifting can reduce the number of valid windows
             due to edge effects. This parameter sets a threshold for acceptable reduction in valid windows after shifting.
@@ -521,12 +517,12 @@ class Trainer:
                     train_mi_nats = self._safe_eval_mi(x_etrain, y_etrain, max_eval_samples)
                     train_history.append(train_mi_nats)
 
-                # Track spectral metrics if requested (can be expensive, so optional)
-                if track_spectral_metrics:
+                # Per-epoch spectral history if requested (can be expensive, so optional)
+                if track_spectral_history:
                     metrics_during = self._extract_spectral_metrics(
-                    dataset.x_dataset[train_eval_view.indices, ...],
-                    dataset.y_dataset[train_eval_view.indices, ...],
-                    spectral_output, return_spectrum)
+                        dataset.x_dataset[train_eval_view.indices, ...],
+                        dataset.y_dataset[train_eval_view.indices, ...],
+                    )
                     metrics_tracked.append(metrics_during)
 
                 # Per-epoch embedding tracking
@@ -748,7 +744,7 @@ class Trainer:
         if _do_epoch_train_eval:
             results['train_mi_history'] = train_history
 
-        if track_spectral_metrics:
+        if track_spectral_history:
             results['spectral_metrics_history'] = metrics_tracked
 
         if _do_embed_tracking:
@@ -806,11 +802,11 @@ class Trainer:
                         self._decoder_loss(_recon_y, _ty, self.decoder_output_activation_y).item())
             results['decoder_recon_loss'] = _recon_loss
 
-        # 5. Final Spectral Metrics (Dimensionality)
+        # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) at the best epoch --
+        # always computed, independent of track_spectral_history above.
         metrics_final = self._extract_spectral_metrics(
-            dataset.x_dataset[train_eval_view.indices, ...], 
-            dataset.y_dataset[train_eval_view.indices, ...], 
-            spectral_output, return_spectrum
+            dataset.x_dataset[train_eval_view.indices, ...],
+            dataset.y_dataset[train_eval_view.indices, ...],
         )
         results.update(metrics_final)
 
@@ -904,28 +900,27 @@ class Trainer:
             )
         return self.estimator_fn(scores, **self.estimator_params).item()
 
-    def _extract_spectral_metrics(self, x: torch.Tensor, y: torch.Tensor, 
-                                  spectral_output: str, return_spectrum: bool) -> Dict[str, Any]:
-        """Extracts embeddings and computes cross-covariance spectral metrics."""
+    def _extract_spectral_metrics(self, x: torch.Tensor, y: torch.Tensor) -> Dict[str, Any]:
+        """Extracts embeddings and computes cross-covariance spectral metrics.
+
+        Always returns both participation-ratio variants (``pr_eig``,
+        ``pr_singular``) plus the raw spectrum (singular values) they were
+        computed from -- ``effective_rank``/``spectral_entropy`` are omitted
+        since they're cheaply derivable from the spectrum if ever needed.
+        """
         self.model.eval()
         with torch.no_grad():
             zx, zy = self.model.get_embeddings(x.to(self.device), y.to(self.device))
 
         spectrum = compute_cross_covariance_spectrum(zx, zy, whitening=self.spectral_whitening)
         metrics = compute_spectral_metrics(spectrum)
-        
-        results = {}
-        results['spectral_whitening'] = self.spectral_whitening
-        if spectral_output == 'all':
-            # Return all metrics: pr_eig, pr_singular, effective_rank, spectral_entropy
-            results.update(metrics)
-        else:
-            # Default: both participation-ratio variants, without effective_rank/spectral_entropy
-            results['pr_eig'] = metrics['pr_eig']
-            results['pr_singular'] = metrics['pr_singular']
 
-        if return_spectrum:
-            results['spectrum'] = spectrum
+        results = {
+            'spectral_whitening': self.spectral_whitening,
+            'pr_eig': metrics['pr_eig'],
+            'pr_singular': metrics['pr_singular'],
+            'spectrum': spectrum,
+        }
             
         return results
 

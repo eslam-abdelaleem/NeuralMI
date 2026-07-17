@@ -16,6 +16,8 @@ from neural_mi.analysis.dimensionality import (
     _make_noise_ladder_tasks,
     _draw_base_noise,
     _infer_modality,
+    _resolve_sigma_add_levels,
+    _AUTO_LADDER_BASELINE,
     run_dimensionality_analysis,
 )
 from neural_mi.validation import ParameterValidator
@@ -60,6 +62,29 @@ def _dim_run(x, y, sigma_add, *, n_workers=1, estimator=None,
         dimensionality=Dimensionality(**dim),
         seed=0, show_progress=False, n_workers=n_workers, **extra,
     )
+
+
+# ---------------------------------------------------------------------------
+# 0. 'auto' ladder includes a no-noise baseline rung
+# ---------------------------------------------------------------------------
+
+def test_auto_ladder_includes_baseline_rung():
+    """geomspace can't represent 0 (undefined on a log scale, which is also
+    how plot_noise_ladder's x-axis is scaled) -- the 'auto' ladder prepends a
+    small-but-representable baseline instead, well below the real rungs."""
+    levels, is_auto = _resolve_sigma_add_levels('auto')
+    assert is_auto is True
+    assert levels[0] == _AUTO_LADDER_BASELINE
+    assert levels[0] < min(levels[1:]) / 100
+    assert all(l > 0 for l in levels)
+
+
+def test_explicit_sigma_add_list_unaffected_by_baseline():
+    """The baseline rung is 'auto'-only -- an explicit list (including a
+    literal 0.0, if a user wants one) must pass through unchanged."""
+    levels, is_auto = _resolve_sigma_add_levels([0.0, 0.5, 1.0])
+    assert levels == [0.0, 0.5, 1.0]
+    assert is_auto is False
 
 
 # ---------------------------------------------------------------------------

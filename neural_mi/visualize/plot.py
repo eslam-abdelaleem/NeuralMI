@@ -342,7 +342,8 @@ def plot_noise_ladder(ladder_df: pd.DataFrame, ax: Optional[plt.Axes] = None,
 
 def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dict[str, Any],
                              ax: Optional[plt.Axes] = None, units: str = 'bits',
-                             show: bool = True, **kwargs):
+                             show: bool = True, label: Optional[str] = None,
+                             color: Optional[str] = None, **kwargs):
     """Plots the results of a rigorous, bias-corrected analysis.
 
     This function visualizes the extrapolation fit used for bias correction.
@@ -367,24 +368,56 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     show : bool, optional
         Whether to call ``plt.show()`` at the end.  Set to ``False`` when
         embedding this plot in a larger figure.  Defaults to ``True``.
+    label : str, optional
+        Name for this result, used when overlaying several fits (e.g. from
+        ``Results.compare()``). If given, the raw points/mean line/fit
+        line/corrected-MI marker collapse to a single legend entry under this
+        label instead of each carrying its own generic description. Defaults
+        to None (single-result appearance: three descriptive legend entries).
+    color : str, optional
+        Color for all of this result's plotted elements (raw points, mean
+        line, fit line, corrected-MI marker). If None, uses the original
+        single-result scheme (gray points, black mean line, red fit/marker).
+        Defaults to None.
+
+    Returns
+    -------
+    plt.Axes
     """
     created_fig = ax is None
     if created_fig:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
-    sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color='gray', alpha=0.5)
+    raw_color = 'gray' if color is None else color
+    mean_color = 'black' if color is None else color
+    fit_color = 'red' if color is None else color
+
+    sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color=raw_color, alpha=0.5)
     agg = raw_results_df.groupby('gamma')['train_mi'].mean().reset_index()
-    ax.plot(agg['gamma'] - 1, agg['train_mi'], 'o-', color='black', label='Mean MI per Gamma')
+
+    # A single label collapses the three elements below to one legend entry
+    # (via the proxy artist added after them) rather than three near-duplicate
+    # ones -- readable when compare() overlays several results on one ax.
+    element_label = '_nolegend_' if label is not None else 'Mean MI per Gamma'
+    ax.plot(agg['gamma'] - 1, agg['train_mi'], 'o-', color=mean_color, label=element_label)
 
     slope, intercept = corrected_result['slope'], corrected_result['mi_corrected']
     mi_error, gammas_used = corrected_result.get('mi_error', 0), corrected_result['gammas_used']
-    
+
     fit_x = np.array([0] + gammas_used)
-    ax.plot(fit_x - 1, slope * fit_x + intercept, 'r--', linewidth=2, label='WLS Extrapolation')
-    
-    ax.errorbar(x=-1, y=intercept, yerr=mi_error, fmt='r*', markersize=15, capsize=5,
-                label=f'Corrected MI = {intercept:.2f} ± {mi_error:.2f} {units}')
-    
+    fit_label = '_nolegend_' if label is not None else 'WLS Extrapolation'
+    ax.plot(fit_x - 1, slope * fit_x + intercept, linestyle='--', color=fit_color,
+             linewidth=2, label=fit_label)
+
+    errorbar_label = ('_nolegend_' if label is not None
+                       else f'Corrected MI = {intercept:.2f} ± {mi_error:.2f} {units}')
+    ax.errorbar(x=-1, y=intercept, yerr=mi_error, marker='*', linestyle='None',
+                color=fit_color, markersize=15, capsize=5, label=errorbar_label)
+
+    if label is not None:
+        # Zero-length proxy artist purely to give this result one legend entry.
+        ax.plot([], [], marker='*', linestyle='--', color=fit_color, markersize=10, label=label)
+
     ax.set_xticks(np.unique(raw_results_df['gamma']) - 1)
     ax.set_xticklabels(np.unique(raw_results_df['gamma']))
     ax.set_xlabel(r"Number of Subsets ($\gamma$)"); ax.set_ylabel(f"MI Estimate ({units})")

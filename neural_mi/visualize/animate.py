@@ -65,7 +65,7 @@ def animate_training(
         - ``'mi'`` — MI vs epoch line plot (test MI + optional train MI).
         - ``'spectral_metrics'`` — participation ratio vs epoch.
         - ``'spectrum'`` — bar chart of singular values at each epoch
-          (requires ``spectral_mode='full'``).
+          (requires ``track_spectral_history=True``).
         - ``'embeddings'`` — 2-D or 3-D scatter of learned embeddings.
 
     fps : int, optional

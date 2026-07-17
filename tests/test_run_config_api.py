@@ -65,6 +65,13 @@ def test_processing_and_precision_route(capture_engine):
     assert kw['corrupt_target'] == 'y'
 
 
+def test_output_track_spectral_history_routes(capture_engine):
+    nmi.run([[1]], [[1]], mode='estimate',
+            output=Output(track_spectral_history=True))
+    kw = capture_engine['kw']
+    assert kw['track_spectral_history'] is True
+
+
 def test_transfer_bidirectional_is_renamed(capture_engine):
     nmi.run([[1]], [[1]], mode='transfer',
             transfer=Transfer(history_window=10, bidirectional=True))

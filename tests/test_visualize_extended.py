@@ -247,6 +247,54 @@ class TestBiasCorrectionFitReturn:
         assert isinstance(returned, plt.Axes)
         plt.close('all')
 
+    @patch('matplotlib.pyplot.show')
+    def test_default_appearance_unchanged_without_label_or_color(
+        self, mock_show, rigorous_df, rigorous_details
+    ):
+        """label=None, color=None must reproduce the original single-result
+        look exactly: black mean line, red fit/marker, three descriptive
+        legend entries. Regression guard for the label/color fix below."""
+        ax = plot_bias_correction_fit(rigorous_df, rigorous_details)
+        colors = {l.get_color() for l in ax.lines}
+        assert colors == {'black', 'red'}
+        legend_labels = {l.get_label() for l in ax.lines if not l.get_label().startswith('_')}
+        assert legend_labels == {'Mean MI per Gamma', 'WLS Extrapolation'}
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.show')
+    def test_color_kwarg_applied_to_all_elements(self, mock_show, rigorous_df, rigorous_details):
+        """Previously color= was silently swallowed by **kwargs and never
+        used -- every element stayed hardcoded gray/black/red regardless."""
+        ax = plot_bias_correction_fit(rigorous_df, rigorous_details, color='blue')
+        colors = {l.get_color() for l in ax.lines}
+        assert colors == {'blue'}, f"Expected all elements in 'blue', got {colors}"
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.show')
+    def test_label_kwarg_collapses_to_one_legend_entry(self, mock_show, rigorous_df, rigorous_details):
+        """Previously label= was silently swallowed by **kwargs -- overlaid
+        results in Results.compare() all showed the same generic legend
+        entries ('Mean MI per Gamma' x N) instead of the caller's labels."""
+        ax = plot_bias_correction_fit(rigorous_df, rigorous_details, label='Condition A')
+        legend_labels = [l.get_label() for l in ax.lines if not l.get_label().startswith('_')]
+        assert legend_labels == ['Condition A'], f"Expected one clean entry, got {legend_labels}"
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.show')
+    def test_two_overlaid_calls_stay_visually_distinct(self, mock_show, rigorous_df, rigorous_details):
+        """The actual compare() scenario: two calls on one shared ax must not
+        collide into identical-looking, identically-labeled series."""
+        fig, ax = plt.subplots()
+        plot_bias_correction_fit(rigorous_df, rigorous_details, ax=ax,
+                                  label='A', color='blue', show=False)
+        plot_bias_correction_fit(rigorous_df, rigorous_details, ax=ax,
+                                  label='B', color='green', show=False)
+        legend_labels = [l.get_label() for l in ax.lines if not l.get_label().startswith('_')]
+        assert legend_labels == ['A', 'B']
+        colors = [l.get_color() for l in ax.lines if not l.get_label().startswith('_')]
+        assert colors == ['blue', 'green']
+        plt.close('all')
+
 
 # ---------------------------------------------------------------------------
 # conditional and transfer mode plots
@@ -416,13 +464,15 @@ class TestRigorousReliabilityAnnotation:
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_reliable_no_annotation(self, mock_show, rigorous_df, rigorous_details):
-        """is_reliable=True must NOT add any warning text."""
+    def test_reliable_annotation_appears(self, mock_show, rigorous_df, rigorous_details):
+        """is_reliable=True must add a positive annotation, symmetric with summary()."""
         details = {**rigorous_details, 'is_reliable': True}
         r = Results(mode='rigorous', dataframe=rigorous_df, details=details)
         ax = r.plot(show=False)
         texts = [t.get_text() for t in ax.texts]
-        assert not any('unreliable' in t.lower() for t in texts)
+        assert any('reliable' in t.lower() and 'unreliable' not in t.lower() for t in texts), (
+            f"Expected a positive reliability annotation, found: {texts}"
+        )
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
@@ -431,7 +481,105 @@ class TestRigorousReliabilityAnnotation:
         r = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
         ax = r.plot(show=False)
         texts = [t.get_text() for t in ax.texts]
-        assert not any('unreliable' in t.lower() for t in texts)
+        assert not any('reliable' in t.lower() for t in texts)
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.show')
+    def test_unreliable_reason_reflects_actual_flags(self, mock_show, rigorous_df, rigorous_details):
+        """The reason shown must come from whichever flag(s) are actually set,
+        not be hardcoded to 'leverage_warning' regardless of the real cause."""
+        details = {
+            **rigorous_details, 'is_reliable': False,
+            'fit_quality_warning': True, 'leverage_warning': False,
+        }
+        r = Results(mode='rigorous', dataframe=rigorous_df, details=details)
+        ax = r.plot(show=False)
+        texts = [t.get_text() for t in ax.texts]
+        assert any('fit_quality_warning' in t for t in texts), texts
+        assert not any('leverage_warning' in t for t in texts), (
+            f"leverage_warning=False but it was still named as a reason: {texts}"
+        )
+        plt.close('all')
+
+    @patch('matplotlib.pyplot.show')
+    def test_unreliable_no_false_reason_when_neither_flag_set(self, mock_show, rigorous_df, rigorous_details):
+        """is_reliable can be False purely from too few surviving gamma points,
+        with both diagnostic flags False -- must not invent a reason in that case."""
+        details = {
+            **rigorous_details, 'is_reliable': False,
+            'fit_quality_warning': False, 'leverage_warning': False,
+        }
+        r = Results(mode='rigorous', dataframe=rigorous_df, details=details)
+        ax = r.plot(show=False)
+        texts = [t.get_text() for t in ax.texts]
+        assert any('unreliable' in t.lower() for t in texts)
+        assert not any('warning=True' in t for t in texts), texts
+        plt.close('all')
+
+    def test_show_false_forwarded_to_bias_correction_plotter(self, rigorous_df, rigorous_details):
+        """r.plot(show=False) must suppress plot_bias_correction_fit's own
+        plt.show() too -- previously it wasn't forwarded, so the figure was
+        shown (and, in Jupyter's inline backend, closed) despite show=False,
+        making any further edits to the returned ax invisible."""
+        r = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+        with patch('neural_mi.visualize.plot.plot_bias_correction_fit') as mock_fn:
+            mock_fn.return_value = plt.subplots()[1]
+            r.plot(show=False)
+            assert mock_fn.call_args.kwargs.get('show') is False
+        plt.close('all')
+
+    def test_show_true_forwarded_to_bias_correction_plotter(self, rigorous_df, rigorous_details):
+        r = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+        with patch('neural_mi.visualize.plot.plot_bias_correction_fit') as mock_fn:
+            mock_fn.return_value = plt.subplots()[1]
+            with patch('matplotlib.pyplot.show'):
+                r.plot(show=True)
+            assert mock_fn.call_args.kwargs.get('show') is True
+        plt.close('all')
+
+
+class TestRigorousCompareReliability:
+
+    def test_per_result_reliability_lines(self, rigorous_df, rigorous_details):
+        """compare() must label each overlaid result's reliability, not just
+        the single-result plot()."""
+        r1 = Results(mode='rigorous', dataframe=rigorous_df,
+                     details={**rigorous_details, 'is_reliable': True})
+        r2 = Results(mode='rigorous', dataframe=rigorous_df,
+                     details={**rigorous_details, 'is_reliable': False, 'leverage_warning': True})
+        ax = Results.compare([r1, r2], labels=['Cond A', 'Cond B'], mode='rigorous', show=False)
+        texts = [t.get_text() for t in ax.texts]
+        joined = '\n'.join(texts)
+        assert 'Cond A' in joined and 'reliable' in joined.lower()
+        assert 'Cond B' in joined and 'unreliable' in joined.lower()
+        plt.close('all')
+
+    def test_loop_calls_never_show_even_when_outer_show_true(self, rigorous_df, rigorous_details):
+        """Each per-result plot_bias_correction_fit call inside the loop must
+        always be show=False -- showing mid-loop (which can close the shared
+        ax's figure) would truncate the overlay to only the first result."""
+        r1 = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+        r2 = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+        with patch('neural_mi.visualize.plot.plot_bias_correction_fit') as mock_fn:
+            mock_fn.return_value = plt.subplots()[1]
+            with patch('matplotlib.pyplot.show'):
+                Results.compare([r1, r2], mode='rigorous', show=True)
+            assert all(c.kwargs.get('show') is False for c in mock_fn.call_args_list), (
+                f"Expected every loop call to force show=False, got: "
+                f"{[c.kwargs.get('show') for c in mock_fn.call_args_list]}"
+            )
+        plt.close('all')
+
+    def test_overlay_includes_all_results_not_just_first(self, rigorous_df, rigorous_details):
+        """Regression guard for the truncated-overlay failure mode: with the
+        real (unmocked) plotter, both results' series must land on the ax."""
+        r1 = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+        r2 = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+        ax = Results.compare([r1, r2], labels=['A', 'B'], mode='rigorous', show=False)
+        # Each plot_bias_correction_fit call draws 6 Line2D artists when a
+        # label is passed (mean-MI line, fit line, 3 errorbar-cap/stem lines,
+        # plus the single-legend-entry proxy artist); two results -> 12.
+        assert len(ax.lines) == 12, f"Expected lines from both results, got {len(ax.lines)}"
         plt.close('all')
 
 

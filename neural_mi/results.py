@@ -29,6 +29,22 @@ _RESULT_COLS: frozenset = frozenset({
 })
 
 
+def _rigorous_unreliable_reason(details: Dict[str, Any]) -> str:
+    """Compact ' (reason=...)' suffix for a rigorous is_reliable=False annotation.
+
+    Built from the same flags summary() reports (fit_quality_warning,
+    leverage_warning) rather than hardcoded, since either can be the actual
+    cause -- and neither may be set if is_reliable is False purely because
+    too few gamma points survived filtering.
+    """
+    reasons = []
+    if details.get('fit_quality_warning'):
+        reasons.append('fit_quality_warning=True')
+    if details.get('leverage_warning'):
+        reasons.append('leverage_warning=True')
+    return f" ({'; '.join(reasons)})" if reasons else ""
+
+
 @dataclass
 class Results:
     """A data class to store and interact with analysis results.
@@ -347,14 +363,25 @@ class Results:
                     f"in details: {sorted(_missing)}. Present: {sorted(self.details.keys())}. "
                     f"This may indicate the rigorous run failed or produced only partial results."
                 )
-            plot_bias_correction_fit(self.dataframe, self.details, units=units, ax=ax, **kwargs)
-            # Annotate when extrapolation is flagged as unreliable
-            if self.details.get('is_reliable') is False:
+            plot_bias_correction_fit(self.dataframe, self.details, units=units, ax=ax, show=show, **kwargs)
+            # Annotate reliability directly on the plot -- symmetric with summary(),
+            # which reports both the True and False cases.
+            is_reliable = self.details.get('is_reliable')
+            if is_reliable is False:
                 ax.text(
-                    0.02, 0.98, '⚠ Extrapolation unreliable (leverage_warning)',
+                    0.02, 0.98,
+                    f'⚠ Extrapolation unreliable{_rigorous_unreliable_reason(self.details)}',
                     transform=ax.transAxes, va='top', ha='left', fontsize=9,
                     color='firebrick',
                     bbox=dict(facecolor='lightyellow', edgecolor='firebrick',
+                              alpha=0.85, boxstyle='round,pad=0.3'),
+                )
+            elif is_reliable is True:
+                ax.text(
+                    0.02, 0.98, '✓ Extrapolation reliable',
+                    transform=ax.transAxes, va='top', ha='left', fontsize=9,
+                    color='darkgreen',
+                    bbox=dict(facecolor='honeydew', edgecolor='darkgreen',
                               alpha=0.85, boxstyle='round,pad=0.3'),
                 )
 
@@ -666,6 +693,11 @@ class Results:
             ax.legend(fontsize=9)
 
         elif mode == 'rigorous':
+            # Each per-result call below is forced show=False regardless of the
+            # outer `show`: they share one ax, and showing (which can close the
+            # figure) after only the first result would truncate the overlay.
+            # The single show at the end of this method is what actually renders it.
+            reliability_lines = []
             for i, (res, label) in enumerate(zip(results_list, labels)):
                 if res.dataframe is None or not res.details:
                     raise ValueError(
@@ -679,9 +711,24 @@ class Results:
                     ax=ax,
                     label=label,
                     color=colours[i % len(colours)],
+                    show=False,
                     **kwargs,
                 )
+                is_reliable = res.details.get('is_reliable')
+                if is_reliable is False:
+                    reliability_lines.append(
+                        f"⚠ {label}: unreliable{_rigorous_unreliable_reason(res.details)}"
+                    )
+                elif is_reliable is True:
+                    reliability_lines.append(f"✓ {label}: reliable")
             ax.legend(fontsize=9)
+            if reliability_lines:
+                ax.text(
+                    0.02, 0.98, '\n'.join(reliability_lines),
+                    transform=ax.transAxes, va='top', ha='left', fontsize=8,
+                    bbox=dict(facecolor='white', edgecolor='gray', alpha=0.85,
+                              boxstyle='round,pad=0.3'),
+                )
 
         else:
             raise NotImplementedError(

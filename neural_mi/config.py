@@ -180,7 +180,7 @@ class Estimator:
 class Output:
     """Result units, spectral tracking, embedding returns, and display labels."""
     units: Optional[str] = None                    # 'bits'|'nats'
-    spectral_mode: Optional[str] = None            # 'none'|'summary'|'full'
+    track_spectral_history: Optional[bool] = None  # per-epoch pr_eig/pr_singular/spectrum
     max_index_reduction: Optional[float] = None
     return_embeddings: Optional[bool] = None
     track_embeddings: Optional[Union[bool, float, int, str]] = None

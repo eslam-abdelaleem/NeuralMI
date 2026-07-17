@@ -264,7 +264,7 @@ Example: `Processing(x='continuous', x_params={'window_size': 0.05})`.
 **`Estimator`** — MI estimator: `name` (`'infonce'|'smile'`), `params` (e.g. `{'clip': 5.0}`).
 `estimator='smile'` is shorthand for `Estimator(name='smile')`.
 
-**`Output`** — result formatting: `units` (`'bits'|'nats'`), `spectral_mode`,
+**`Output`** — result formatting: `units` (`'bits'|'nats'`), `track_spectral_history`,
 `return_embeddings`, `x_name`, `y_name`, `channel_names_x`, `channel_names_y`.
 
 ### Mode-specific configs
@@ -420,7 +420,7 @@ When the true MI exceeds the InfoNCE ceiling (`log(eval_size)`, where `eval_size
 - `sigma_add=None` *(default)*: no noise; non-binned-spike modalities behave exactly as without this feature.
 - `sigma_add=<float>`: inject that single noise level.
 - `sigma_add=[<float>, ...]`: run the full ladder, one result row per level.
-- `sigma_add='auto'`: search a geometric ladder (~0.25x–5x per-channel std) for the regime where MI has detached from the ceiling; widens the search once if the initial grid doesn't bracket it, then warns if it still doesn't.
+- `sigma_add='auto'`: search a geometric ladder (~0.25x–5x per-channel std, plus a negligible no-noise baseline rung) for the regime where MI has detached from the ceiling; widens the search once if the initial grid doesn't bracket it, then warns if it still doesn't.
 - `sigma_add_units`: `'relative'` *(default)* — a multiple of measured per-channel std; `'absolute'` — the noise std in native units.
 - `stabilize_counts` (bool, default `True`): for binned-spike data only, applies the Anscombe transform before measuring std / injecting noise. Fires on every binned-spike dimensionality run regardless of `sigma_add` (default-on toggle; set `False` for plain, un-stabilized counts — a warning is emitted if noise is also injected in that case).
 - Supported for intrinsic `split_method in ('random', 'spatial')` or interaction mode only. Raw spike-timestamp and categorical data raise a clear `ValueError` when `sigma_add` is set (bin the spikes first for the former).
@@ -746,7 +746,7 @@ notebooks).
 | `estimate` | Test MI vs epoch | `best_epoch` marked in red; `conservative_epoch` (when `peak_fraction < 1`) marked in green with a diamond |
 | `sweep` / `lag` | MI vs swept variable | Line + shaded ±1 std |
 | `dimensionality` | Two-panel: MI (top) + Participation Ratio (bottom) | Creates its own multi-panel figure; pass `axes=(ax_mi, ax_pr)` to supply existing axes |
-| `rigorous` | MI vs γ with WLS fit and extrapolation | Red warning box added when `is_reliable=False` |
+| `rigorous` | MI vs γ with WLS fit and extrapolation | Reliability box always shown: green "reliable" when `is_reliable=True`, red with a dynamic reason (`fit_quality_warning`/`leverage_warning`) when `False` |
 | `conditional` | Bar chart: I(XZ;Y), I(Z;Y), CMI I(X;Y\|Z) | |
 | `transfer` | Bar chart: TE(X→Y), TE(Y→X) | Title shows directionality index when present |
 | `precision` | MI vs τ with baseline and threshold lines | |
@@ -801,7 +801,7 @@ objects must share the same `mode`.
 |------|-------------|
 | `estimate` | Test-MI training curves per run; best-epoch dashed vertical lines |
 | `sweep` / `lag` / `dimensionality` | Sweep curves with distinct colours |
-| `rigorous` | Bias-correction fits with distinct colours |
+| `rigorous` | Bias-correction fits with distinct colours per `labels=`, plus a per-result reliability text box |
 
 ```python
 # Compare two training runs
@@ -835,10 +835,16 @@ ax_mi = plot_dimensionality_curve(result.dataframe, sweep_var='embedding_dim', s
 ax_pr = ax_mi.figure.axes[1]   # access the PR panel
 ```
 
-#### `plot_bias_correction_fit(raw_df, corrected_result, ax, units, show) → plt.Axes`
+#### `plot_bias_correction_fit(raw_df, corrected_result, ax, units, show, label, color) → plt.Axes`
 
 Visualises the WLS extrapolation used in rigorous mode.  `show=False` suppresses
-`plt.show()`.  Returns the axes so the caller can add annotations.
+`plt.show()`.  `label`/`color`, if given, apply to every element of this result
+(raw points, mean line, fit line, corrected-MI marker) and collapse them to one
+legend entry under `label` -- this is what `Results.compare()` uses to keep
+multiple overlaid results visually distinct.  Without them, uses the original
+single-result scheme (gray points, black mean line, red fit/marker, three
+descriptive legend entries).  Returns the axes so the caller can add
+annotations.
 
 #### `plot_cross_correlation(x, y, true_lag, ax, show, xlim) → plt.Axes`
 
@@ -974,9 +980,19 @@ No user action is required — training proceeds normally. To suppress the warni
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
 | `spectral_whitening` | str or None | `'std'` | Whitening applied before spectral metrics: `'std'` (standardize per dimension) or `'zca'` (ZCA whitening), or `None` |
-| `spectral_mode` | str | `'none'` | High-level spectral tracking switch: `'none'` (off), `'summary'` (both `pr_eig`/`pr_singular`), `'full'` (adds `effective_rank`/`spectral_entropy` + raw spectrum). Internally maps to `track_spectral_metrics`, `spectral_output`, and `return_spectrum`. |
-| `track_spectral_metrics` | bool | False | Low-level switch: if `True`, computes spectral metrics at every epoch (can be expensive). Prefer `spectral_mode='summary'` for convenience. |
-| `return_spectrum` | bool | False | If `True`, includes the raw cross-covariance singular-value spectrum in `result.details['spectral_metrics_history']`. Only meaningful when `track_spectral_metrics=True`. |
+| `track_spectral_history` | bool | False | If `True`, additionally records `pr_eig`, `pr_singular`, and the raw singular-value spectrum at *every* epoch (can be expensive -- evaluates on the same eval subset each epoch; size is governed by `train_subset_size`/`max_eval_samples`, same as everything else). |
+
+`result.details` always contains, from the best epoch, at no extra cost regardless
+of `track_spectral_history` (they're a byproduct of the participation-ratio
+calculation that runs unconditionally):
+- `pr_eig`, `pr_singular` — the two participation-ratio variants.
+- `spectrum` — the raw cross-covariance singular values they were computed from.
+
+With `track_spectral_history=True`, `result.details['spectral_metrics_history']`
+additionally holds a list of per-epoch dicts, each with the same `pr_eig` /
+`pr_singular` / `spectrum` keys plus `spectral_whitening` (echoing the setting
+used). `effective_rank`/`spectral_entropy` are not computed -- both are cheaply
+derivable from `spectrum` if needed.
 
 ### Decoder (Reconstruction Regularisation)
 
