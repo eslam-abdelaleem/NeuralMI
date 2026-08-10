@@ -7,6 +7,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Smaller fixes from the same broad-audit pass
+
+- `validation.py`'s `DataValidator._validate_type` crashed with an unrelated `AttributeError:
+  'list' object has no attribute 'dtype'` for `x_data`/`y_data` passed as a plain Python list
+  with `processor_type='continuous'`/`'categorical'` — lists have no `.dtype`, and `run()`'s own
+  docstring documents `list` as an accepted input type. Fixed by converting the list to an array
+  once for the numeric-dtype check (mirroring what `create_dataset` does downstream anyway), with
+  a safe fallback if the list is genuinely malformed/ragged.
+- `data/handler.py`'s `create_dataset`: when `processor_type_x=None` (X pre-processed) is paired
+  with a windowed `processor_type_y`, `window_size` was always read from (nonexistent)
+  `processor_params_x`, silently resolving to `None` and raising a misleading
+  `"window_size must be provided"` even when the user correctly supplied it in
+  `processor_params_y`. Fixed to fall back to Y's `window_size` when X has none. Fixing that
+  surfaced a separate, more fundamental issue it had been masking: pairing a genuinely
+  pre-processed/static X with any windowed Y can never work (`StaticDataset` has no temporal
+  extent for `PairedTemporalDataset` to align windows against), which previously surfaced as an
+  opaque `AttributeError: 'StaticDataset' object has no attribute 'get_temporal_extent'` deep in
+  `PairedTemporalDataset._initialize_windows`. Added an explicit, actionable `ValueError` for this
+  combination instead. (The common case — `processor_type_y` left unset so it inherits
+  `processor_type_x` — is unaffected either way.)
+- `Results.plot()` for `mode='pairwise'`: the channel-count-aware default figure sizing
+  (`visualize.plot`'s formula, ~0.65in/channel) was dead code — the generic top-level axes
+  creation shared by most other modes ran first, consuming `figsize` and setting `ax` before the
+  pairwise-specific branch ever checked either, so every pairwise heatmap used the generic
+  `(10, 6)` figure regardless of matrix size. Fixed by adding `'pairwise'` to the set of modes
+  that build their own figure (previously only `'dimensionality'`).
+- `analysis/precision.py`: corrected a comment claiming `dataset_device` defaults to `'auto'`
+  (co-located with the compute device) for `mode='precision'` — `ParameterValidator.apply_defaults()`
+  always pre-fills it with the schema's global default (`'cpu'`) before this code runs, so that
+  fallback was unreachable through the public `run()` API. Performance-only, no correctness impact;
+  comment now describes the actual behavior and how to opt into the co-located mode explicitly.
+
+### `random_seed` did not actually reproduce results, even with `n_workers=1`
+
+Found during a follow-up broad-audit pass — a significant bug for a library whose docs promise
+"full reproducibility only with n_workers=1". `ParameterSweep._prepare_tasks` (`analysis/sweep.py`)
+and `AnalysisWorkflow._prepare_tasks` (`analysis/rigorous.py`, plain `mode='rigorous'`) built each
+task's `run_id` with a fresh `str(uuid.uuid4())` prefix on *every* call. `analysis/task.py`'s
+per-task seeding then hashed that `run_id` string to derive the actual training seed — so the
+effective seed differed on every single `run()` invocation regardless of an explicit
+`random_seed`, even single-process (`n_workers=1`). Verified: two back-to-back
+`nmi.run(..., seed=42, n_workers=1)` calls on identical data produced different `mi_estimate`
+values. Affects every mode that builds tasks via `ParameterSweep`/`AnalysisWorkflow` (`estimate`,
+`sweep`, `dimensionality`, `rigorous`, `conditional`, `transfer`, `pairwise`); `mode='lag'` was
+unaffected, since it already builds fully deterministic ids itself.
+
+Fixed by seeding from a separate, purely deterministic `_seed_key` (built from each task's
+combination/gamma/subset index, stripped before the task's result dict is returned) instead of
+the display-only `run_id`. Different tasks within one sweep/rigorous run still get distinct
+seeds — only the *same* task across separate `run()` calls now reproduces identically.
+Regression tests in `tests/test_reproducibility.py` (confirmed to fail against the pre-fix code).
+
+### Rigorous conditional/transfer: nats-to-bits unit conversion bug
+
+Found during a follow-up broad-audit pass. `mode='conditional'`/`mode='transfer'` with
+`rigorous=True` had two unit-conversion bugs stacked in the same few lines of `run.py`:
+
+1. `_convert_mi_units`'s dict branch only converted a fixed list of scalar keys
+   (`_MI_SCALAR_KEYS`) that did **not** include `mi_corrected`/`mi_error`/`mi_error_pred`/`slope`
+   — so `result.mi_estimate` and `result.details['mi_error']` (etc.) stayed in **nats** even with
+   the default `output_units='bits'`. (These same keys were already converted correctly in the
+   DataFrame and list-of-dicts branches, and in plain `mode='rigorous'` via a different code path
+   — this only affected the flat scalar-rigorous dict returned by
+   `run_rigorous_scalar_analysis`.)
+2. Separately, `raw_results_df` was converted once *inside* that same `_convert_mi_units` call
+   (the dict branch recurses into it), then popped and converted a **second** time — silently
+   inflating `result.dataframe['train_mi']` by an extra factor of `NATS_TO_BITS` (≈44% too high)
+   instead of the correct single conversion.
+
+Fixed by adding the four missing keys to `_MI_SCALAR_KEYS` and removing the redundant second
+`_convert_mi_units` call at both call sites (`mode='conditional'` and `mode='transfer'`).
+Verified via a mocked-training end-to-end test through `nmi.run()` confirming an exact
+single-factor nats→bits ratio; regression tests added in
+`tests/test_conditional_transfer_rigorous.py::TestRigorousConditionalTransferUnitConversion`
+(confirmed to fail against the pre-fix code before landing the fix).
+
+### Categorical processor no longer requires pre-cast integer data
+
+`processor_type='categorical'` raised `TypeError: ... must be integer type` for any non-integer
+numeric input (e.g. `float64` category labels), even though the underlying
+`CategoricalWindowDataset` already auto-relabels non-integer data to consecutive integer category
+codes via `np.unique` — the block was a separate, earlier `DataValidator` check
+(`validation.py`) that pre-empted the working code path before it ever ran. (`z_data` for
+`mode='conditional'` was unaffected either way — it bypasses `DataValidator` entirely.) Removed
+the redundant check; `CategoricalWindowDataset` now also logs a warning when it performs the
+relabeling, so silently-remapped category codes aren't a surprise. Non-numeric input (e.g.
+strings) is still rejected, as before.
+
+### `results.plot()` support for multi-parameter sweeps
+
+`mode='sweep'`/`mode='lag'` with 2+ swept parameters (excluding `run_id`) previously plotted MI
+against only the *first* swept parameter, silently discarding the rest — the aggregated
+dataframe had a column per parameter, but `result.plot()` always resolved a single
+`sweep_var` and fed it to a 1-D line plot, producing a connected line with multiple y-values
+stacked at the same x position and no indication a second parameter existed.
+
+`Results.plot()` now auto-selects a plot kind from how many parameters were actually swept
+(`result.params['sweep_group_vars']`, newly threaded through from `run.py`'s sweep/lag
+aggregation): 1 parameter keeps the existing line plot unchanged; 2 parameters default to a new
+heatmap (`visualize.plot.plot_sweep_heatmap`, one param per axis, MI as colour); 3+ default to a
+new grouped bar chart (`visualize.plot.plot_sweep_bar`, one bar per parameter combination). All
+three are selectable explicitly via `result.plot(kind='line'|'heatmap'|'bar')`; `kind='heatmap'`
+raises a clear error if the result didn't sweep exactly 2 parameters. `Results.compare()` now
+raises a clear error for multi-parameter sweep results (overlaying is only well-defined for a
+shared 1-D x-axis) instead of silently repeating the same first-parameter-only behavior.
+
+### Parallelization fixes: rigorous conditional/transfer and pairwise modes
+
+Two real bugs where `n_workers > 1` silently had no effect, both found while auditing
+"does every mode with multiple independent runs actually parallelize them":
+
+- `mode='conditional'`/`mode='transfer'` with `rigorous=True` (bias-corrected CMI/TE with a
+  confidence interval) ran its ~55-task gamma-subset loop as a plain sequential Python `for`
+  loop in `run_rigorous_scalar_analysis` (`analysis/rigorous.py`) — it didn't even accept an
+  `n_workers` argument, unlike plain `mode='rigorous'`, which already dispatched the same
+  55 tasks to a multiprocessing pool. Root cause: the per-task callables were local closures
+  defined inside `run.py`, which can't be pickled for a `multiprocessing` 'spawn' pool. Fixed
+  by promoting them to top-level, picklable functions (`_cmi_rigorous_scalar` in
+  `analysis/conditional.py`, `_te_rigorous_scalar` in `analysis/transfer.py`) and giving
+  `run_rigorous_scalar_analysis` a real `n_workers` parameter that dispatches the gamma-chunk
+  tasks to a `Pool`, exactly like `AnalysisWorkflow.run()` already does for plain rigorous mode.
+- `mode='pairwise'` looped over channel pairs sequentially in Python; `n_workers` only ever
+  affected a *single pair's* internal sweep (normally 1 task with no `sweep_grid`), so the
+  whole MI matrix computed serially regardless of `n_workers` — even though
+  `NEURALMI_REFERENCE.md`'s own example already used `n_workers=8`. Fixed in
+  `analysis/pairwise.py`: channel pairs are now dispatched to a `Pool(n_workers)` (one pair per
+  worker) when there's more than one pair, with each pair's own inner sweep forced to
+  `n_workers=1` to avoid nested pools — the same outer-loop-gets-workers convention already
+  used for `dimensionality` mode's channel-split parallelization.
+
+Also corrected a stale doc claim in `NEURALMI_REFERENCE.md` that sweeps parallelize via
+`concurrent.futures.ProcessPoolExecutor` — the actual (and unchanged) mechanism is a
+`torch.multiprocessing` 'spawn'-context `Pool`.
+
 ### Pre-submission cleanup pass
 
 A full correctness, documentation, and tutorial-accuracy audit ahead of submission: every

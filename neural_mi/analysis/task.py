@@ -109,12 +109,20 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     import random as _random
     x_data, y_data, params, run_id = args
 
-    # Deterministic per-worker seeding: derive a seed from the base seed and
-    # the run_id string so every task is reproducible but unique.
+    # Deterministic per-worker seeding: derive a seed from the base seed and a
+    # per-task key so every task is reproducible but unique. Uses '_seed_key'
+    # (set by the task-preparation code, e.g. sweep.py/rigorous.py's
+    # _prepare_tasks, from purely deterministic indices like the sweep
+    # combination/gamma/subset index) rather than 'run_id' itself, which
+    # callers may prefix with a random UUID (for display/log distinctness
+    # across repeated calls) -- hashing that directly would make the
+    # "task_seed" -- and therefore the whole run -- different on every call
+    # even with an explicit, fixed random_seed and n_workers=1.
     base_seed = params.get('random_seed', None)
     if base_seed is not None:
         import hashlib
-        task_seed = (base_seed + int(hashlib.md5(str(run_id).encode()).hexdigest(), 16)) % (2**31)
+        seed_key = params.get('_seed_key', run_id)
+        task_seed = (base_seed + int(hashlib.md5(str(seed_key).encode()).hexdigest(), 16)) % (2**31)
         _random.seed(task_seed)
         np.random.seed(task_seed)
         torch.manual_seed(task_seed)
@@ -411,6 +419,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     return_params = params.copy()
     return_params.pop('custom_critic', None)
     return_params.pop('custom_embedding_cls', None)
+    return_params.pop('_seed_key', None)
     final_result = {**return_params, **results}
 
     # ------------------------------------------------------------------

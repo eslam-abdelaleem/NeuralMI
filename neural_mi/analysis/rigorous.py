@@ -442,6 +442,11 @@ class AnalysisWorkflow:
                     x_subset = _ensure_cpu(self.x_data[subset_indices])
                     y_subset = _ensure_cpu(self.y_data[subset_indices])
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
+                    # Purely deterministic per-task key for run_training_task's seeding
+                    # (see task.py) -- unlike task_run_id above, excludes the random
+                    # run_id_base prefix so a fixed random_seed reproduces the same
+                    # task_seed (and result) on every call.
+                    current_params['_seed_key'] = f"c{i_combo}_g{gamma}_s{i_subset}"
                     tasks.append((x_subset, y_subset, current_params.copy(), task_run_id))
 
         logger.debug(f"Created {len(tasks)} tasks to run...")
@@ -505,6 +510,25 @@ def run_rigorous_analysis(
     )
 
 
+def _run_scalar_fn_task(args: tuple) -> Dict[str, Any]:
+    """Top-level, picklable wrapper for one gamma-chunk ``scalar_fn`` call.
+
+    Must be module-level (not a closure) so it — and the ``scalar_fn`` it
+    carries — can be pickled for a ``multiprocessing`` 'spawn' pool.  Catches
+    its own exceptions rather than letting them propagate through
+    ``pool.imap``, which would otherwise abort every remaining task instead
+    of just skipping the failed gamma-chunk (matching the sequential path's
+    per-task try/except behaviour).
+    """
+    scalar_fn, x_sub, y_sub, params, extra_sub, extra_kwargs, gamma, chunk_size = args
+    try:
+        value = scalar_fn(x_sub, y_sub, params, **extra_sub, **(extra_kwargs or {}))
+        return {'gamma': gamma, 'train_mi': value, '_error': None}
+    except Exception as exc:
+        return {'gamma': gamma, 'train_mi': None,
+                '_error': f"gamma={gamma} (chunk size={chunk_size}): {exc}"}
+
+
 def run_rigorous_scalar_analysis(
     scalar_fn,
     x_data,
@@ -513,6 +537,7 @@ def run_rigorous_scalar_analysis(
     extra_data: Optional[Dict[str, Any]] = None,
     extra_kwargs: Optional[Dict[str, Any]] = None,
     gamma_range=range(1, 11),
+    n_workers: Optional[int] = None,
     delta_threshold: float = 0.1,
     min_gamma_points: int = 5,
     confidence_level: float = 0.68,
@@ -531,14 +556,19 @@ def run_rigorous_scalar_analysis(
     The function calls ``scalar_fn`` on progressively smaller subsets of the
     data (controlled by *gamma*), collects the scalar outputs, and extrapolates
     to the infinite-data limit using the same WLS linear fit as the standard
-    rigorous analysis.
+    rigorous analysis.  The gamma-chunk calls are independent of one another
+    and are dispatched to a ``multiprocessing`` pool of ``n_workers`` workers
+    when more than one is requested, exactly like ``AnalysisWorkflow.run()``
+    does for plain ``mode='rigorous'``.
 
     Parameters
     ----------
     scalar_fn : callable
-        A function with signature
+        A **module-level, picklable** function with signature
         ``scalar_fn(x_sub, y_sub, params, **extra_sub, **extra_kwargs) -> float``.
-        It must return a single scalar MI (or MI-like) value.
+        It must return a single scalar MI (or MI-like) value.  It cannot be a
+        closure or lambda when ``n_workers > 1``, since it is sent to worker
+        processes by reference.
     x_data : array-like, shape (N, ...)
         Data for variable X.  The first axis is the sample axis.
     y_data : array-like, shape (N, ...)
@@ -555,6 +585,9 @@ def run_rigorous_scalar_analysis(
         (not subsampled).
     gamma_range : range or sequence of int, optional
         Values of *gamma* to sweep over.  Defaults to ``range(1, 11)``.
+    n_workers : int or None, optional
+        Number of parallel worker processes for the gamma-chunk tasks.
+        ``None`` or ``<= 1`` runs sequentially.  Defaults to ``None``.
     delta_threshold : float, optional
         Curvature threshold for ``_find_linear_region``.  Defaults to ``0.1``.
     min_gamma_points : int, optional
@@ -604,30 +637,48 @@ def run_rigorous_scalar_analysis(
     N = x_data.shape[0]
     master_perm = np.random.permutation(N)
 
-    rows = []
+    tasks = []
     for gamma in gamma_range:
         chunks = np.array_split(master_perm, gamma)
         for chunk_idx in chunks:
-            x_sub = x_data[chunk_idx]
-            y_sub = y_data[chunk_idx]
+            x_sub = _ensure_cpu(x_data[chunk_idx])
+            y_sub = _ensure_cpu(y_data[chunk_idx])
 
             extra_sub = {}
             if extra_data:
                 for key, arr in extra_data.items():
-                    extra_sub[key] = arr[chunk_idx]
+                    extra_sub[key] = _ensure_cpu(arr[chunk_idx])
 
-            try:
-                scalar_value = scalar_fn(
-                    x_sub, y_sub, base_params.copy(),
-                    **extra_sub,
-                    **(extra_kwargs or {})
-                )
-                rows.append({'gamma': gamma, 'train_mi': scalar_value})
-            except Exception as exc:
-                logger.warning(
-                    f"run_rigorous_scalar_analysis: scalar_fn call failed for "
-                    f"gamma={gamma} (chunk size={len(chunk_idx)}): {exc}"
-                )
+            tasks.append((scalar_fn, x_sub, y_sub, base_params.copy(),
+                         extra_sub, extra_kwargs, gamma, len(chunk_idx)))
+
+    show_progress = base_params.get('show_progress', True)
+    effective_workers = n_workers if n_workers is not None else 1
+
+    if effective_workers <= 1 or len(tasks) <= 1:
+        raw_rows = [
+            _run_scalar_fn_task(task)
+            for task in tqdm(tasks, desc="Rigorous scalar analysis", unit="task",
+                             disable=not show_progress)
+        ]
+    else:
+        logger.info(
+            f"Parallelising {len(tasks)} rigorous scalar-analysis tasks across "
+            f"{effective_workers} workers..."
+        )
+        _configure_multiprocessing()
+        with mp.get_context('spawn').Pool(processes=effective_workers) as pool:
+            raw_rows = list(tqdm(
+                pool.imap(_run_scalar_fn_task, tasks), total=len(tasks),
+                desc="Rigorous scalar analysis", unit="task", disable=not show_progress
+            ))
+
+    rows = []
+    for r in raw_rows:
+        if r['_error'] is not None:
+            logger.warning(f"run_rigorous_scalar_analysis: scalar_fn call failed for {r['_error']}")
+        else:
+            rows.append({'gamma': r['gamma'], 'train_mi': r['train_mi']})
 
     if len(rows) < min_gamma_points:
         raise InsufficientDataError(

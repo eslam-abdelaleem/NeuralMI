@@ -893,8 +893,18 @@ class CategoricalWindowDataset(TemporalWindowDataset):
             # return_inverse always returns a flattened array regardless of
             # input shape (both NumPy <2.0 and current behavior) -- reshape
             # back or multi-channel labels get silently collapsed to 1-D.
-            _, indices = np.unique(arr, return_inverse=True)
+            original_dtype = arr.dtype
+            unique_labels, indices = np.unique(arr, return_inverse=True)
             arr = indices.reshape(arr.shape)
+            logger.warning(
+                f"CategoricalWindowDataset: input data has dtype {original_dtype}, not an "
+                f"integer type. Automatically relabeled to consecutive integer category "
+                f"codes 0..{len(unique_labels) - 1}, assigned in ascending sorted order of "
+                f"the {len(unique_labels)} distinct values found ({unique_labels[:10].tolist()}"
+                f"{', ...' if len(unique_labels) > 10 else ''}). Pass already-integer-coded "
+                f"data (e.g. `data.astype(int)`) if you need to control the code assignment "
+                f"yourself."
+            )
         elif arr.size > 0 and arr.min() < 0:
             # Integer-typed input skips the relabeling above, so a negative
             # label would otherwise reach np.bincount downstream (via

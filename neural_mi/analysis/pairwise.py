@@ -23,10 +23,72 @@ Results are returned as a :class:`pandas.DataFrame` with columns
 import torch
 import numpy as np
 import pandas as pd
+import torch.multiprocessing as mp
+from tqdm.auto import tqdm
 from typing import Dict, Any, Optional, List, Tuple
 
 from neural_mi.analysis.sweep import ParameterSweep
 from neural_mi.logger import logger
+from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
+
+
+def _run_pair_task(args: tuple) -> Dict[str, Any]:
+    """Run one channel pair's MI sweep and return its summary row.
+
+    ``n_workers`` here controls the *inner* sweep (e.g. averaging over a
+    ``run_id`` sweep_grid for one pair) -- kept separate from how many pairs
+    are dispatched concurrently, set by the caller (see ``_dispatch_pairs``).
+    """
+    i, j, xi, yj, base_params, sweep_grid, n_workers = args
+    sweep = ParameterSweep(x_data=xi, y_data=yj, base_params=base_params.copy())
+    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False)
+    vals = [r['train_mi'] for r in results if 'train_mi' in r]
+    if not vals:
+        logger.warning(f"  Pair (ch_x={i}, ch_y={j}): all runs failed, recording NaN.")
+        mi_mean, mi_std = float('nan'), float('nan')
+    else:
+        mi_mean = float(np.mean(vals))
+        mi_std = float(np.std(vals)) if len(vals) > 1 else 0.0
+    return {'ch_x': i, 'ch_y': j, 'mi_mean': mi_mean, 'mi_std': mi_std}
+
+
+def _run_pair_task_for_pool(args: tuple) -> Dict[str, Any]:
+    """Top-level, picklable wrapper for ``Pool.imap`` -- forces the inner
+    sweep to ``n_workers=1`` to avoid nested multiprocessing pools, since
+    parallelism is spent across pairs instead (see ``_dispatch_pairs``).
+    """
+    i, j, xi, yj, base_params, sweep_grid = args
+    return _run_pair_task((i, j, xi, yj, base_params, sweep_grid, 1))
+
+
+def _dispatch_pairs(pair_tasks: List[tuple], n_workers: int, show_progress: bool) -> List[Dict[str, Any]]:
+    """Execute per-pair MI sweeps, parallelising *across pairs* when ``n_workers > 1``.
+
+    Mirrors ``analysis/dimensionality.py``'s ``_dispatch_splits``: a single
+    pair forwards ``n_workers`` into its own inner sweep; multiple pairs with
+    ``n_workers > 1`` are dispatched to a ``Pool(n_workers)`` with the inner
+    sweep forced to ``n_workers=1`` to avoid nested pools.
+    """
+    n_pairs = len(pair_tasks)
+
+    if n_workers <= 1 or n_pairs <= 1:
+        inner_workers = n_workers if n_pairs == 1 else 1
+        records = []
+        for idx, (i, j, xi, yj, base_params, sweep_grid) in enumerate(
+            tqdm(pair_tasks, desc="Pairwise MI", disable=not show_progress or n_pairs == 1)
+        ):
+            logger.info(f"  Pair {idx + 1}/{n_pairs}: ch_x={i}, ch_y={j}")
+            records.append(_run_pair_task((i, j, xi, yj, base_params, sweep_grid, inner_workers)))
+        return records
+
+    logger.info(f"Parallelising {n_pairs} channel pairs across {n_workers} workers...")
+    _configure_multiprocessing()
+    with mp.get_context('spawn').Pool(processes=n_workers) as pool:
+        records = list(tqdm(
+            pool.imap(_run_pair_task_for_pool, pair_tasks), total=n_pairs,
+            desc="Pairwise MI", disable=not show_progress
+        ))
+    return records
 
 
 def run_pairwise_mi(
@@ -58,7 +120,10 @@ def run_pairwise_mi(
     sweep_grid : Dict[str, List], optional
         Optional hyperparameter grid (e.g. ``{'run_id': range(5)}``).
     n_workers : int, optional
-        Number of parallel workers for each pair's sweep. Defaults to 1.
+        Number of parallel workers. Channel pairs are independent, so with
+        more than one pair this parallelises *across pairs* (one pair per
+        worker); a single pair instead forwards ``n_workers`` into its own
+        inner sweep (e.g. a ``run_id`` sweep_grid). Defaults to 1.
     pairs : list of (int, int), optional
         Explicit list of ``(ch_x, ch_y)`` index pairs to estimate.  In
         self-pairwise mode the indices refer to channels of *x_data*.  In
@@ -102,25 +167,15 @@ def run_pairwise_mi(
         )
 
         mi_matrix = np.zeros((n_ch_x, n_ch_y))
-        records = []
-
-        for idx, (i, j) in enumerate(pairs):
-            logger.info(f"  Pair {idx + 1}/{len(pairs)}: x_ch={i}, y_ch={j}")
-            xi = x_data[:, i: i + 1, :]
-            yj = y_data[:, j: j + 1, :]
-            sweep = ParameterSweep(x_data=xi, y_data=yj, base_params=base_params.copy())
-            results = sweep.run(
-                sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
-            )
-            vals = [r['train_mi'] for r in results if 'train_mi' in r]
-            if not vals:
-                logger.warning(f"  Pair x_ch={i}, y_ch={j}: all runs failed, recording NaN.")
-                mi_mean, mi_std = float('nan'), float('nan')
-            else:
-                mi_mean = float(np.mean(vals))
-                mi_std  = float(np.std(vals)) if len(vals) > 1 else 0.0
-            mi_matrix[i, j] = mi_mean
-            records.append({'ch_x': i, 'ch_y': j, 'mi_mean': mi_mean, 'mi_std': mi_std})
+        show_progress = base_params.get('show_progress', True)
+        pair_tasks = [
+            (i, j, _ensure_cpu(x_data[:, i: i + 1, :]), _ensure_cpu(y_data[:, j: j + 1, :]),
+             base_params, sweep_grid)
+            for (i, j) in pairs
+        ]
+        records = _dispatch_pairs(pair_tasks, n_workers, show_progress)
+        for rec in records:
+            mi_matrix[rec['ch_x'], rec['ch_y']] = rec['mi_mean']
 
         df = pd.DataFrame(records)
         logger.info("Pairwise MI (cross) estimation complete.")
@@ -146,26 +201,16 @@ def run_pairwise_mi(
         )
 
         mi_matrix = np.zeros((n_channels, n_channels))
-        records = []
-
-        for idx, (i, j) in enumerate(pairs):
-            logger.info(f"  Pair {idx + 1}/{len(pairs)}: channels ({i}, {j})")
-            xi = x_data[:, i: i + 1, :]
-            xj = x_data[:, j: j + 1, :]
-            sweep = ParameterSweep(x_data=xi, y_data=xj, base_params=base_params.copy())
-            results = sweep.run(
-                sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False
-            )
-            vals = [r['train_mi'] for r in results if 'train_mi' in r]
-            if not vals:
-                logger.warning(f"  Pair ({i}, {j}): all runs failed, recording NaN.")
-                mi_mean, mi_std = float('nan'), float('nan')
-            else:
-                mi_mean = float(np.mean(vals))
-                mi_std  = float(np.std(vals)) if len(vals) > 1 else 0.0
-            mi_matrix[i, j] = mi_mean
-            mi_matrix[j, i] = mi_mean  # symmetric
-            records.append({'ch_x': i, 'ch_y': j, 'mi_mean': mi_mean, 'mi_std': mi_std})
+        show_progress = base_params.get('show_progress', True)
+        pair_tasks = [
+            (i, j, _ensure_cpu(x_data[:, i: i + 1, :]), _ensure_cpu(x_data[:, j: j + 1, :]),
+             base_params, sweep_grid)
+            for (i, j) in pairs
+        ]
+        records = _dispatch_pairs(pair_tasks, n_workers, show_progress)
+        for rec in records:
+            mi_matrix[rec['ch_x'], rec['ch_y']] = rec['mi_mean']
+            mi_matrix[rec['ch_y'], rec['ch_x']] = rec['mi_mean']  # symmetric
 
         df = pd.DataFrame(records)
         logger.info("Pairwise MI (self) estimation complete.")

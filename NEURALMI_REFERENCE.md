@@ -162,8 +162,14 @@ NeuralMI accepts three raw data types via `processor_type_x/y`:
 |-----------|-----------------|---------------|-------|
 | Continuous (LFP, EEG, Ca²⁺) | `'continuous'` | `(n_channels, n_timepoints)` | Sliding windows extracted |
 | Spike trains | `'spike'` | `List[np.ndarray]` of 1D spike time arrays | One array per neuron |
-| Categorical states | `'categorical'` | `(n_channels, n_timepoints)` integer | One-hot or ordinal encoded |
+| Categorical states | `'categorical'` | `(n_channels, n_timepoints)`, any numeric dtype | One-hot or ordinal encoded |
 | Pre-processed | `None` (default) | `(n_samples, n_channels)` or `(n_samples, n_channels, window)` | Passed directly |
+
+**Categorical labels don't need to be pre-cast to integers.** Integer-typed data is used directly
+as category codes (and must be non-negative). Any other numeric dtype (e.g. `float64` category
+labels) is automatically relabeled to consecutive integer codes `0..n_categories-1`, in ascending
+sorted order of the distinct values found — with a warning logged so you know it happened. Only
+non-numeric data (e.g. strings) is rejected outright.
 
 **Processor parameters** (`processor_params_x/y` dict):
 
@@ -354,12 +360,22 @@ result = nmi.run(x, y, mode='sweep',
                  },
                  n_workers=4)
 
-result.plot()       # Line plot of MI vs sweep variable (auto-detected)
+result.plot()       # 2 swept params -> heatmap (embedding_dim x n_epochs) by default
 df = result.dataframe
 best = df.loc[df['mi_mean'].idxmax()]
 ```
 
 **Note on `sweep_grid`:** Keys must be `Model` / `Training` field names (see §8). Processor parameters like `window_size` can also be swept.
+
+**Plotting a multi-parameter sweep:** `result.plot()` auto-selects the plot kind from how many
+parameters were swept (excluding `run_id`): 1 -> line (MI vs. the parameter, as before), 2 ->
+heatmap (one param per axis, MI as colour), 3+ -> bar chart (one bar per parameter combination,
+labelled `"p1=v1, p2=v2, ..."`). Override explicitly with `result.plot(kind='line'|'heatmap'|'bar')`
+— e.g. `kind='bar'` also works for a 2-param sweep if you prefer bars to a heatmap.
+`kind='heatmap'` requires exactly 2 swept parameters and raises a clear error otherwise.
+`mode='lag'` sweeps (which always include `lag` as one swept "parameter") follow the same rule.
+`Results.compare()` only supports single-parameter sweep results (a shared 1-D x-axis) — call
+`.plot()` on each multi-parameter result individually instead.
 
 ---
 
@@ -744,7 +760,7 @@ notebooks).
 | Mode | Plot type | Notes |
 |------|-----------|-------|
 | `estimate` | Test MI vs epoch | `best_epoch` marked in red; `conservative_epoch` (when `peak_fraction < 1`) marked in green with a diamond |
-| `sweep` / `lag` | MI vs swept variable | Line + shaded ±1 std |
+| `sweep` / `lag` | Auto-selected by parameter count: line (1 param), heatmap (2), bar (3+) | Line: MI vs swept variable, shaded ±1 std. Heatmap/bar cover the parameters a line plot can't show. Override with `kind='line'\|'heatmap'\|'bar'` |
 | `dimensionality` | Two-panel: MI (top) + Participation Ratio (bottom) | Creates its own multi-panel figure; pass `axes=(ax_mi, ax_pr)` to supply existing axes |
 | `rigorous` | MI vs γ with WLS fit and extrapolation | Reliability box always shown: green "reliable" when `is_reliable=True`, red with a dynamic reason (`fit_quality_warning`/`leverage_warning`) when `False` |
 | `conditional` | Bar chart: I(XZ;Y), I(Z;Y), CMI I(X;Y\|Z) | |
@@ -1245,7 +1261,10 @@ All internal computations are in **nats** (natural log). Conversion to bits (`×
 `sweep`, `conditional`, `transfer`, `rigorous`, and `lag` modes all internally use the `ParameterSweep` class from `neural_mi.analysis.sweep`. It:
 1. Generates the Cartesian product of `sweep_grid`.
 2. Validates parameter combinations (e.g., warns that `embedding_dim` has no effect with `concat` critic).
-3. Runs tasks in parallel via `concurrent.futures.ProcessPoolExecutor` if `n_workers > 1`.
+3. Runs tasks in parallel via a `torch.multiprocessing` (`'spawn'` context) `Pool` if `n_workers > 1`.
+
+### Parallelization Across Modes
+Every mode with more than one independent unit of work dispatches it to a `torch.multiprocessing` `Pool(n_workers)` when `n_workers > 1`: `sweep`/`estimate` and non-rigorous `conditional`/`transfer` (via `ParameterSweep`), `rigorous` and rigorous `conditional`/`transfer` (one worker per gamma-subset task), `dimensionality` (one worker per channel-split), and `pairwise` (one worker per channel pair). When one of these dispatches to an outer pool, any *inner* sweep for that same unit of work (e.g. a `run_id` sweep_grid within one gamma-chunk or one channel pair) runs with `n_workers=1` internally to avoid nested pools — so parallelism is always spent on the outer, more numerous loop. `precision` mode has no independent inner loop to parallelize (it trains one baseline model, then evaluates it — inference only — across the `tau_grid`), so `n_workers` has no effect there by design.
 
 ### Blocked vs. Random Splits
 - **`'blocked'`** (default): Test set consists of `n_test_blocks` contiguous blocks distributed across the recording. A `split_gap_fraction` buffer is excluded from training on either side of each block. Appropriate for time series with temporal correlations.

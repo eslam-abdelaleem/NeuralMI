@@ -108,10 +108,15 @@ def run_precision_analysis(
 
     # 1. Prepare Data & Model
     # Precision analysis trains once then runs many forward passes on the same
-    # dataset at different corruption levels.  Keeping data on the compute
-    # device ('auto') avoids repeated host→device transfers and is therefore
-    # the default here.  Users can override by setting dataset_device='cpu'
-    # in base_params if memory is a concern.
+    # dataset at different corruption levels, so keeping data on the compute
+    # device ('auto') would avoid repeated host<->device transfers -- but
+    # base_params['dataset_device'] is always already populated with the
+    # schema's global default ('cpu') by ParameterValidator.apply_defaults()
+    # before this function runs, so the 'auto' fallback below only takes
+    # effect if a caller invokes run_precision_analysis() directly with a
+    # base_params dict that omits the key (bypassing run()'s validation).
+    # Through the public run() API, set dataset_device='auto' explicitly in
+    # base_params to get the co-located-with-compute-device behavior.
     device = get_device(base_params.get('device'))
     _data_device_raw = base_params.get('dataset_device', 'auto')
     _data_device = str(device) if _data_device_raw == 'auto' else (_data_device_raw or 'cpu')

@@ -78,19 +78,35 @@ class DataValidator:
 
         if proc_type in ['continuous', 'categorical']:
             is_numeric = False
+            dtype_repr = type(data).__name__
             if isinstance(data, np.ndarray):
                 is_numeric = np.issubdtype(data.dtype, np.number)
+                dtype_repr = data.dtype
             elif isinstance(data, torch.Tensor):
                 is_numeric = data.is_floating_point() or data.is_complex() or \
                              data.dtype in [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8]
-            
+                dtype_repr = data.dtype
+            elif isinstance(data, list):
+                # run()'s own docstring documents `list` as an accepted x_data/y_data
+                # type; convert once here (create_dataset does the same downstream)
+                # so a numeric list passes validation, and a genuinely non-numeric
+                # or malformed one gets this clear error instead of an unrelated
+                # AttributeError from `data.dtype` (plain lists have no such attribute).
+                try:
+                    arr = np.asarray(data)
+                    is_numeric = np.issubdtype(arr.dtype, np.number)
+                    dtype_repr = arr.dtype
+                except Exception:
+                    is_numeric = False
+
             if not is_numeric:
-                raise TypeError(f"{name} must contain numeric data, but found type {data.dtype}.")
-            
-            if proc_type == 'categorical' and isinstance(data, (np.ndarray, torch.Tensor)):
-                d_np = data.numpy() if isinstance(data, torch.Tensor) else data
-                if not np.issubdtype(d_np.dtype, np.integer):
-                    raise TypeError(f"{name} for categorical processor must be integer type, but found {d_np.dtype}.")
+                raise TypeError(f"{name} must contain numeric data, but found type {dtype_repr}.")
+
+            # Non-integer numeric data for the categorical processor (e.g. float
+            # labels) is not an error here: CategoricalWindowDataset relabels it
+            # to consecutive integer category codes automatically and warns when
+            # it does, so no separate integer-dtype check is enforced at this
+            # earlier validation stage.
 
     def _validate_shape(self, data: Any, name: str, proc_type: Optional[str]):
         """Validates the dimensions and size of a data stream."""

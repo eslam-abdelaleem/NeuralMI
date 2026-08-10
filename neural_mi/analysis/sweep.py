@@ -228,6 +228,11 @@ class ParameterSweep:
                 task_data_y = _ensure_cpu(y_to_send)
 
             task_run_id = f"{run_id_base}_c{i_combo}"
+            # A purely deterministic per-task key for run_training_task's seeding
+            # (see task.py) -- unlike task_run_id above, it does not include the
+            # random run_id_base prefix, so a fixed random_seed reproduces the
+            # same task_seed (and therefore the same result) on every call.
+            current_params['_seed_key'] = f"c{i_combo}"
             tasks.append((task_data_x, task_data_y, current_params.copy(), task_run_id))
         
         logger.debug(f"Created {len(tasks)} tasks for the sweep.")

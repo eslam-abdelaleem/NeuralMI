@@ -59,10 +59,31 @@ def test_data_validator_categorical_success():
     x = np.random.randint(0, 3, size=(2, 100))
     DataValidator(x, x, processor_type_x='categorical', processor_type_y='categorical').validate()
 
-def test_data_validator_categorical_wrong_type():
-    x = np.random.rand(2, 100) # Should be integers
-    with pytest.raises(TypeError, match="must be integer type"):
+def test_data_validator_categorical_non_integer_passes_validation():
+    """Non-integer numeric data for the categorical processor is not a
+    DataValidator error -- CategoricalWindowDataset relabels it to integer
+    category codes automatically (and warns when it does; see
+    tests/test_data_processors.py for that behavior)."""
+    x = np.random.rand(2, 100)
+    DataValidator(x, x, processor_type_x='categorical', processor_type_y='categorical').validate()
+
+def test_data_validator_categorical_rejects_non_numeric():
+    x = np.array([['a'] * 100, ['b'] * 100])
+    with pytest.raises(TypeError, match="must contain numeric data"):
         DataValidator(x, x, processor_type_x='categorical', processor_type_y='categorical').validate()
+
+def test_data_validator_numeric_list_passes_continuous_validation():
+    """A plain Python list of numeric values (documented as an accepted
+    x_data/y_data type by run()) must not crash: lists have no .dtype
+    attribute, so the numeric check must convert first rather than access
+    data.dtype directly (that raised an unrelated AttributeError)."""
+    x = [[float(i)] for i in range(10)]
+    DataValidator(x, x, processor_type_x='continuous', processor_type_y='continuous').validate()
+
+def test_data_validator_non_numeric_list_raises_clean_type_error():
+    x = [['a'], ['b'], ['c']]
+    with pytest.raises(TypeError, match="must contain numeric data"):
+        DataValidator(x, x, processor_type_x='continuous', processor_type_y='continuous').validate()
 
 
 # --- Integration-level validation tests (via nmi.run) ---

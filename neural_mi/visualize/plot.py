@@ -108,6 +108,143 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     return ax
 
 
+def plot_sweep_heatmap(summary_df: pd.DataFrame, param_x: str, param_y: str,
+                       mean_col: str = 'mi_mean', ax: Optional[plt.Axes] = None,
+                       units: str = 'bits', show: bool = True, **kwargs) -> plt.Axes:
+    """Plots a 2-parameter sweep as a heatmap (``param_x`` × ``param_y`` → MI).
+
+    Use this instead of :func:`plot_sweep_curve` when exactly two parameters
+    were swept together — a 1-D line/scatter would otherwise have to collapse
+    one of the two parameters, hiding its effect on MI.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        Must contain ``param_x``, ``param_y``, and ``mean_col`` columns, with
+        one row per ``(param_x, param_y)`` combination (as produced by
+        ``mode='sweep'`` / ``mode='lag'`` with two swept parameters).
+    param_x, param_y : str
+        Column names for the two swept parameters. ``param_x`` becomes the
+        heatmap's columns (horizontal axis), ``param_y`` its rows (vertical
+        axis).
+    mean_col : str, optional
+        Column holding the value to colour by. Defaults to ``'mi_mean'``.
+    ax : plt.Axes, optional
+        Axes to draw on. If ``None``, a new figure is created.
+    units : str, optional
+        MI units for the colourbar label. Defaults to ``'bits'``.
+    show : bool, optional
+        Whether to call ``plt.show()`` at the end. Defaults to ``True``.
+    **kwargs
+        Additional keyword arguments forwarded to ``sns.heatmap`` (e.g.
+        ``cmap``, ``fmt``, ``annot``).
+
+    Returns
+    -------
+    plt.Axes
+    """
+    pivot = summary_df.pivot(index=param_y, columns=param_x, values=mean_col)
+    # Row/column order follows the swept values' natural sort order rather
+    # than groupby's first-seen order, so the grid reads left-to-right /
+    # bottom-to-top as ascending parameter values.
+    pivot = pivot.sort_index(axis=0).sort_index(axis=1)
+
+    created_fig = ax is None
+    if created_fig:
+        figsize = kwargs.pop('figsize', (max(4, pivot.shape[1] * 0.9 + 1.5),
+                                         max(3, pivot.shape[0] * 0.7 + 1.0)))
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+    else:
+        kwargs.pop('figsize', None)
+
+    annot = kwargs.pop('annot', True)
+    fmt = kwargs.pop('fmt', '.3f')
+    cmap = kwargs.pop('cmap', 'viridis')
+
+    sns.heatmap(pivot, annot=annot, fmt=fmt, cmap=cmap,
+               cbar_kws={'label': f'MI ({units})'}, ax=ax, **kwargs)
+    ax.set_xlabel(param_x.replace('_', ' ').title(), fontsize=12)
+    ax.set_ylabel(param_y.replace('_', ' ').title(), fontsize=12)
+    ax.set_title(f"MI vs. {param_x.replace('_', ' ').title()} × "
+                f"{param_y.replace('_', ' ').title()}", fontsize=13)
+
+    if created_fig: plt.tight_layout()
+    if show: plt.show()
+    return ax
+
+
+def plot_sweep_bar(summary_df: pd.DataFrame, param_cols: list, mean_col: str = 'mi_mean',
+                   std_col: str = 'mi_std', ax: Optional[plt.Axes] = None,
+                   units: str = 'bits', show: bool = True, **kwargs) -> plt.Axes:
+    """Plots a 3-or-more-parameter sweep as a bar chart over parameter combinations.
+
+    Each bar is one combination of ``param_cols``, labelled on the x-axis as
+    ``"p1=v1, p2=v2, ..."`` and coloured by ``mean_col`` with error bars from
+    ``std_col``. Intended for sweeps with too many swept parameters for a
+    heatmap (which only has two axes); see :func:`plot_sweep_heatmap` for the
+    2-parameter case.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        Must contain every column in ``param_cols`` plus ``mean_col`` (and
+        ``std_col`` if present), one row per parameter combination.
+    param_cols : list of str
+        Column names of the swept parameters to combine into each bar's label.
+    mean_col : str, optional
+        Column holding the bar height. Defaults to ``'mi_mean'``.
+    std_col : str, optional
+        Column holding the error-bar half-height. Defaults to ``'mi_std'``;
+        silently skipped if absent.
+    ax : plt.Axes, optional
+        Axes to draw on. If ``None``, a new figure is created.
+    units : str, optional
+        MI units for the y-axis label. Defaults to ``'bits'``.
+    show : bool, optional
+        Whether to call ``plt.show()`` at the end. Defaults to ``True``.
+    **kwargs
+        Additional keyword arguments forwarded to ``ax.bar``.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    df = summary_df.sort_values(param_cols).reset_index(drop=True)
+    # Build labels from each column's own native values (via .tolist()) rather
+    # than a row-wise .apply(axis=1), which would construct a per-row Series
+    # spanning all param_cols and upcast integer columns to float wherever
+    # another swept column in the same row is a float (e.g. embedding_dim=4
+    # rendering as "4.0" because a sibling column is a float dropout value).
+    column_values = [df[col].tolist() for col in param_cols]
+    labels = [
+        ', '.join(f'{col}={val}' for col, val in zip(param_cols, combo))
+        for combo in zip(*column_values)
+    ]
+
+    created_fig = ax is None
+    if created_fig:
+        figsize = kwargs.pop('figsize', (max(6, len(df) * 0.6 + 1.5), 5))
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+    else:
+        kwargs.pop('figsize', None)
+
+    yerr = df[std_col] if std_col in df.columns else None
+    color = kwargs.pop('color', 'steelblue')
+    ax.bar(labels, df[mean_col], yerr=yerr, capsize=4, color=color,
+          edgecolor='white', **kwargs)
+    ax.set_ylabel(f'MI ({units})', fontsize=12)
+    ax.set_title(f"MI vs. {', '.join(c.replace('_', ' ').title() for c in param_cols)}",
+                fontsize=13)
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
+    ax.grid(True, axis='y', linestyle=':')
+    sns.despine(ax=ax)
+
+    if created_fig: plt.tight_layout()
+    if show: plt.show()
+    return ax
+
+
 def plot_dimensionality_curve(
     summary_df: pd.DataFrame,
     sweep_var: Optional[str] = None,

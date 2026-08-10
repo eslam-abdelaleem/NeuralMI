@@ -175,3 +175,17 @@ def run_conditional_mi(
         'raw_xz_y': results_xz_y,
         'raw_z_y': results_z_y,
     }
+
+
+def _cmi_rigorous_scalar(x_s, y_s, bp, z_data=None, sweep_grid=None) -> float:
+    """Top-level, picklable ``scalar_fn`` for rigorous bias correction of CMI.
+
+    ``run_rigorous_scalar_analysis`` dispatches many of these (one per
+    gamma-chunk) to a multiprocessing pool when ``n_workers > 1`` -- must be
+    a module-level function (not a closure) to be picklable, and always runs
+    with ``n_workers=1`` internally to avoid nested pools, matching the
+    outer-loop-gets-workers / inner-loop-sequential convention used for
+    dimensionality-mode splits.
+    """
+    raw = run_conditional_mi(x_s, y_s, z_data, bp, sweep_grid=sweep_grid, n_workers=1)
+    return raw['cmi_estimate']

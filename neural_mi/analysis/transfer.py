@@ -222,3 +222,25 @@ def run_transfer_entropy(
         })
 
     return result
+
+
+def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
+                        prediction_horizon=1, bidirectional=False) -> float:
+    """Top-level, picklable ``scalar_fn`` for rigorous bias correction of TE.
+
+    ``run_rigorous_scalar_analysis`` dispatches many of these (one per
+    gamma-chunk) to a multiprocessing pool when ``n_workers > 1`` -- must be
+    a module-level function (not a closure) to be picklable, and always runs
+    with ``n_workers=1`` internally to avoid nested pools, matching the
+    outer-loop-gets-workers / inner-loop-sequential convention used for
+    dimensionality-mode splits.
+    """
+    raw = run_transfer_entropy(
+        x_s, y_s, bp,
+        history_window=history_window,
+        prediction_horizon=prediction_horizon,
+        sweep_grid=sweep_grid,
+        n_workers=1,
+        bidirectional=bidirectional,
+    )
+    return raw['te_estimate']

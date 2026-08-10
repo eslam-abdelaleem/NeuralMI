@@ -252,22 +252,24 @@ class Results:
             If plotting is not supported for the analysis mode.
         """
         from neural_mi.visualize.plot import (
-            plot_sweep_curve, plot_bias_correction_fit, plot_dimensionality_curve,
-            plot_noise_ladder,
+            plot_sweep_curve, plot_sweep_heatmap, plot_sweep_bar,
+            plot_bias_correction_fit, plot_dimensionality_curve, plot_noise_ladder,
         )
 
         show = kwargs.pop('show', True)
 
         units = kwargs.pop('units', self.params.get('output_units', 'bits'))
 
-        # For modes that create their own multi-panel figure, skip creating a
-        # top-level axes here (dimensionality creates two panels internally).
-        _multi_panel_modes = ('dimensionality',)
-        if ax is None and self.mode not in _multi_panel_modes:
+        # For modes that create their own figure (with custom sizing/panel
+        # layout), skip creating a top-level axes here: dimensionality builds
+        # two panels internally, and pairwise sizes its single heatmap panel
+        # from the channel count -- both need 'figsize' left in kwargs for
+        # their own branch below to pop and use.
+        _custom_figure_modes = ('dimensionality', 'pairwise')
+        if ax is None and self.mode not in _custom_figure_modes:
             fig, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
-        elif self.mode in _multi_panel_modes:
-            # Consume figsize so it can be forwarded to the multi-panel function
-            pass  # figsize stays in kwargs and is popped inside plot_dimensionality_curve
+        elif self.mode in _custom_figure_modes:
+            pass  # figsize stays in kwargs for the mode-specific branch below
 
         if self.mode == 'estimate':
             # Training curve: test MI vs epoch, with optional train MI overlay.
@@ -311,24 +313,63 @@ class Results:
             if self.dataframe is None:
                 raise ValueError("Cannot plot: results do not contain a DataFrame.")
 
-            # Infer sweep_var more robustly by excluding all known result columns
-            sweep_var = self.params.get('sweep_var')
-            if not sweep_var:
-                possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
-                if len(possible) == 1:
-                    sweep_var = possible[0]
-                    logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
-                elif len(possible) > 1:
+            # Full list of swept parameters (not just the first) drives the
+            # plot-kind auto-selection below. Prefer the explicit list run()
+            # records; fall back to the single sweep_var / column-exclusion
+            # inference for Results objects built without it (e.g. manually
+            # constructed, or loaded from an older saved file).
+            group_vars = self.params.get('sweep_group_vars')
+            if group_vars is not None:
+                group_vars = [v for v in group_vars if v in self.dataframe.columns]
+            else:
+                sweep_var = self.params.get('sweep_var')
+                if not sweep_var:
+                    possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
+                    if len(possible) == 1:
+                        sweep_var = possible[0]
+                        logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
+                    elif len(possible) > 1:
+                        raise ValueError(
+                            f"Cannot determine sweep variable. Multiple candidates found: {possible}. "
+                            f"Pass sweep_var=... explicitly."
+                        )
+                    else:
+                        raise ValueError(
+                            f"Cannot determine sweep variable. DataFrame columns: "
+                            f"{list(self.dataframe.columns)}. Pass sweep_var=... explicitly."
+                        )
+                group_vars = [sweep_var]
+
+            if not group_vars:
+                raise ValueError(
+                    f"Cannot determine sweep variable(s). DataFrame columns: "
+                    f"{list(self.dataframe.columns)}. Pass sweep_var=... explicitly."
+                )
+
+            kind = kwargs.pop('kind', None)
+            if kind is None:
+                kind = 'line' if len(group_vars) <= 1 else ('heatmap' if len(group_vars) == 2 else 'bar')
+
+            if kind == 'line':
+                plot_sweep_curve(self.dataframe, param_col=group_vars[0], units=units,
+                                 ax=ax, show=show, **kwargs)
+            elif kind == 'heatmap':
+                if len(group_vars) != 2:
                     raise ValueError(
-                        f"Cannot determine sweep variable. Multiple candidates found: {possible}. "
-                        f"Pass sweep_var=... explicitly."
+                        f"kind='heatmap' requires exactly 2 swept parameters, found "
+                        f"{len(group_vars)}: {group_vars}. Use kind='bar' for 3+, or "
+                        f"kind='line' to plot against just the first."
                     )
-                else:
-                    raise ValueError(
-                        f"Cannot determine sweep variable. DataFrame columns: "
-                        f"{list(self.dataframe.columns)}. Pass sweep_var=... explicitly."
-                    )
-            plot_sweep_curve(self.dataframe, param_col=sweep_var, units=units, ax=ax, **kwargs)
+                plot_sweep_heatmap(self.dataframe, param_x=group_vars[0], param_y=group_vars[1],
+                                   units=units, ax=ax, show=show, **kwargs)
+            elif kind == 'bar':
+                plot_sweep_bar(self.dataframe, param_cols=group_vars, units=units,
+                               ax=ax, show=show, **kwargs)
+            else:
+                raise ValueError(
+                    f"Unknown kind='{kind}' for mode='{self.mode}'. Expected one of "
+                    f"'line', 'heatmap', 'bar'."
+                )
 
         elif self.mode == 'dimensionality':
             if self.dataframe is None:
@@ -666,6 +707,14 @@ class Results:
                 if res.dataframe is None:
                     raise ValueError(
                         f"Result '{label}' (index {i}) does not contain a DataFrame."
+                    )
+                _group_vars = res.params.get('sweep_group_vars')
+                if _group_vars and len(_group_vars) > 1:
+                    raise ValueError(
+                        f"Result '{label}' (index {i}) swept {len(_group_vars)} parameters "
+                        f"{_group_vars}, but compare() only overlays single-parameter sweep "
+                        f"curves (a single x-axis). Call result.plot(kind='heatmap') or "
+                        f"result.plot(kind='bar') on each result individually instead."
                     )
                 sweep_var = res.params.get(
                     'sweep_var',

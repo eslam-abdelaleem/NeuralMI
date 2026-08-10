@@ -26,6 +26,8 @@ from neural_mi.visualize.plot import (
     plot_dimensionality_curve,
     plot_cross_correlation,
     analyze_mi_heatmap,
+    plot_sweep_heatmap,
+    plot_sweep_bar,
 )
 
 
@@ -766,6 +768,45 @@ class TestAnalyzeMiHeatmap:
 
 
 # ---------------------------------------------------------------------------
+# pairwise plot: channel-count-aware figure sizing
+# ---------------------------------------------------------------------------
+
+class TestPairwisePlotFigsize:
+    """Results.plot() for mode='pairwise' must use its own channel-count-aware
+    default figure size, not the generic (10, 6) every other mode gets --
+    the generic top-level axes creation in plot() was pre-empting pairwise's
+    own sizing logic before it ever ran (figsize was already consumed and ax
+    was already non-None by the time the pairwise branch checked them)."""
+
+    def _make_pairwise_result(self, n_channels):
+        mi_matrix = np.random.rand(n_channels, n_channels)
+        np.fill_diagonal(mi_matrix, 0)
+        df = pd.DataFrame({'ch_x': [0], 'ch_y': [1], 'mi_mean': [0.5], 'mi_std': [0.1]})
+        return Results(mode='pairwise', details={'mi_matrix': mi_matrix, 'n_channels': n_channels},
+                      dataframe=df)
+
+    def test_large_matrix_uses_channel_count_sizing_not_generic_default(self):
+        result = self._make_pairwise_result(20)
+        ax = result.plot(show=False)
+        expected = (max(4, 20 * 0.65 + 1.2), max(3, 20 * 0.65 + 1.0))
+        assert tuple(ax.figure.get_size_inches()) == pytest.approx(expected)
+        plt.close('all')
+
+    def test_explicit_figsize_still_overrides(self):
+        result = self._make_pairwise_result(20)
+        ax = result.plot(show=False, figsize=(5, 5))
+        assert tuple(ax.figure.get_size_inches()) == pytest.approx((5.0, 5.0))
+        plt.close('all')
+
+    def test_existing_ax_is_not_replaced(self):
+        result = self._make_pairwise_result(20)
+        fig, ax = plt.subplots(figsize=(3, 3))
+        result.plot(ax=ax, show=False)
+        assert tuple(fig.get_size_inches()) == pytest.approx((3.0, 3.0))
+        plt.close('all')
+
+
+# ---------------------------------------------------------------------------
 # _RESULT_COLS contains pr_eig / pr_singular columns
 # ---------------------------------------------------------------------------
 
@@ -781,3 +822,126 @@ class TestResultCols:
 
     def test_split_id_in_result_cols(self):
         assert 'split_id' in _RESULT_COLS
+
+
+# ---------------------------------------------------------------------------
+# Multi-parameter sweep plotting: heatmap (2 params) / bar (3+ params)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sweep_df_2param():
+    """Sweep results DataFrame over two swept parameters (int-valued)."""
+    return pd.DataFrame({
+        'embedding_dim': [4, 4, 8, 8],
+        'hidden_dim': [16, 32, 16, 32],
+        'mi_mean': [0.10, 0.20, 0.30, 0.40],
+        'mi_std': [0.01, 0.02, 0.03, 0.04],
+    })
+
+
+@pytest.fixture
+def sweep_df_3param():
+    """Sweep results DataFrame over three swept parameters (mixed int/float)."""
+    return pd.DataFrame({
+        'embedding_dim': [4, 4, 8, 8],
+        'hidden_dim': [16, 16, 32, 32],
+        'dropout': [0.0, 0.1, 0.0, 0.1],
+        'mi_mean': [0.10, 0.20, 0.30, 0.40],
+        'mi_std': [0.01, 0.02, 0.03, 0.04],
+    })
+
+
+class TestPlotSweepHeatmap:
+
+    def test_returns_axes_with_heatmap_mesh(self, sweep_df_2param):
+        ax = plot_sweep_heatmap(sweep_df_2param, param_x='embedding_dim',
+                                param_y='hidden_dim', show=False)
+        assert isinstance(ax, plt.Axes)
+        assert len(ax.collections) > 0  # seaborn heatmap draws a QuadMesh
+        plt.close('all')
+
+    def test_axis_labels_from_param_names(self, sweep_df_2param):
+        ax = plot_sweep_heatmap(sweep_df_2param, param_x='embedding_dim',
+                                param_y='hidden_dim', show=False)
+        assert ax.get_xlabel() == 'Embedding Dim'
+        assert ax.get_ylabel() == 'Hidden Dim'
+        plt.close('all')
+
+
+class TestPlotSweepBar:
+
+    def test_returns_axes_with_one_bar_per_row(self, sweep_df_3param):
+        ax = plot_sweep_bar(sweep_df_3param,
+                            param_cols=['embedding_dim', 'hidden_dim', 'dropout'],
+                            show=False)
+        assert isinstance(ax, plt.Axes)
+        assert len(ax.patches) == len(sweep_df_3param)
+        plt.close('all')
+
+    def test_labels_preserve_int_dtype_alongside_float_column(self, sweep_df_3param):
+        """A mixed int/float row (embedding_dim int, dropout float) must not
+        upcast the int column to '4.0' in the label -- see plot_sweep_bar's
+        column-wise (not row-wise .apply) label construction."""
+        ax = plot_sweep_bar(sweep_df_3param,
+                            param_cols=['embedding_dim', 'hidden_dim', 'dropout'],
+                            show=False)
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert any('embedding_dim=4,' in label for label in labels)
+        assert not any('embedding_dim=4.0' in label for label in labels)
+        plt.close('all')
+
+
+class TestResultsPlotSweepKindDispatch:
+    """Results.plot() for mode='sweep' auto-selects line/heatmap/bar based on
+    how many parameters were swept (result.params['sweep_group_vars'])."""
+
+    def test_single_param_defaults_to_line(self, sweep_df_2param):
+        df = sweep_df_2param[sweep_df_2param['hidden_dim'] == 16][['embedding_dim', 'mi_mean', 'mi_std']]
+        result = Results(mode='sweep', dataframe=df,
+                         params={'sweep_var': 'embedding_dim', 'sweep_group_vars': ['embedding_dim']})
+        ax = result.plot(show=False)
+        assert len(ax.lines) > 0
+        plt.close('all')
+
+    def test_two_params_defaults_to_heatmap(self, sweep_df_2param):
+        result = Results(mode='sweep', dataframe=sweep_df_2param,
+                         params={'sweep_var': 'embedding_dim',
+                                 'sweep_group_vars': ['embedding_dim', 'hidden_dim']})
+        ax = result.plot(show=False)
+        assert len(ax.collections) > 0
+        plt.close('all')
+
+    def test_three_params_defaults_to_bar(self, sweep_df_3param):
+        result = Results(mode='sweep', dataframe=sweep_df_3param,
+                         params={'sweep_var': 'embedding_dim',
+                                 'sweep_group_vars': ['embedding_dim', 'hidden_dim', 'dropout']})
+        ax = result.plot(show=False)
+        assert len(ax.patches) == len(sweep_df_3param)
+        plt.close('all')
+
+    def test_kind_override_forces_bar_for_two_params(self, sweep_df_2param):
+        result = Results(mode='sweep', dataframe=sweep_df_2param,
+                         params={'sweep_var': 'embedding_dim',
+                                 'sweep_group_vars': ['embedding_dim', 'hidden_dim']})
+        ax = result.plot(show=False, kind='bar')
+        assert len(ax.patches) == len(sweep_df_2param)
+        plt.close('all')
+
+    def test_heatmap_kind_rejects_three_params(self, sweep_df_3param):
+        result = Results(mode='sweep', dataframe=sweep_df_3param,
+                         params={'sweep_var': 'embedding_dim',
+                                 'sweep_group_vars': ['embedding_dim', 'hidden_dim', 'dropout']})
+        with pytest.raises(ValueError, match="requires exactly 2"):
+            result.plot(show=False, kind='heatmap')
+        plt.close('all')
+
+    def test_compare_rejects_multi_param_sweep_results(self, sweep_df_2param):
+        result_a = Results(mode='sweep', dataframe=sweep_df_2param,
+                           params={'sweep_var': 'embedding_dim',
+                                   'sweep_group_vars': ['embedding_dim', 'hidden_dim']})
+        result_b = Results(mode='sweep', dataframe=sweep_df_2param,
+                           params={'sweep_var': 'embedding_dim',
+                                   'sweep_group_vars': ['embedding_dim', 'hidden_dim']})
+        with pytest.raises(ValueError, match="only overlays single-parameter"):
+            Results.compare([result_a, result_b], show=False)
+        plt.close('all')

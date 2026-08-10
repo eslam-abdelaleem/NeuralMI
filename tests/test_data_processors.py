@@ -128,6 +128,32 @@ def test_categorical_window_dataset_float_labels_still_relabeled():
     dataset = CategoricalWindowDataset(data, time)
     assert dataset.data_orig.min() >= 0
 
+def test_categorical_window_dataset_non_integer_relabel_warns_and_is_consistent(caplog):
+    """Non-integer input (e.g. a float array the caller forgot to .astype(int))
+    must not require the caller to pre-cast: DataValidator no longer blocks it
+    (see tests/test_validation.py), and CategoricalWindowDataset relabels it to
+    consecutive integer codes automatically, warning that it did so. Also
+    verify the relabeling is a real bijection (ascending sort order), not just
+    "doesn't crash": 1.5 -> 0, 2.5 -> 1, 3.5 -> 2, in ascending value order."""
+    import logging
+    data = np.array([1.5, 2.5, 3.5, 2.5, 1.5], dtype=np.float64)
+    time = np.arange(5)
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        dataset = CategoricalWindowDataset(data, time)
+    assert any('relabeled to consecutive integer category codes' in r.message
+              for r in caplog.records)
+    np.testing.assert_array_equal(dataset.data_orig.flatten(), [0, 1, 2, 1, 0])
+
+def test_categorical_window_dataset_integer_labels_no_relabel_warning(caplog):
+    """Already-integer-typed data must not trigger the relabeling warning."""
+    import logging
+    data = np.array([0, 1, 2, 1, 0], dtype=np.int64)
+    time = np.arange(5)
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        CategoricalWindowDataset(data, time)
+    assert not any('relabeled to consecutive integer category codes' in r.message
+                  for r in caplog.records)
+
 # PairedTemporalDataset Tests
 def test_paired_temporal_dataset(continuous_data, spike_data):
     """Test PairedTemporalDataset alignment and windowing."""
@@ -677,6 +703,39 @@ def test_different_continuous_params_alignment():
     )
     assert dataset.x_data.shape[0] == dataset.y_data.shape[0]
     assert dataset.x_data.shape[0] >= 9
+
+
+def test_window_size_falls_back_to_y_when_only_y_specifies_it():
+    """When both X and Y use a real windowed processor but only
+    processor_params_y specifies window_size, create_dataset must fall back to
+    Y's value instead of always taking (missing) processor_params_x['window_size']
+    and silently ending up with window_size=None."""
+    x_data = np.random.randn(1000, 1).astype(np.float32)
+    y_data = np.random.randn(1000, 1).astype(np.float32)
+    dataset = create_dataset(
+        x_data=x_data, y_data=y_data,
+        processor_type_x='continuous', processor_params_x={'sample_rate': 100},
+        processor_type_y='continuous', processor_params_y={'window_size': 0.5, 'sample_rate': 100},
+    )
+    assert dataset.x_data.shape[0] == dataset.y_data.shape[0]
+
+
+def test_static_x_with_windowed_y_raises_clear_error():
+    """Pairing a genuinely pre-processed (Static) X with a windowed Y can never
+    work -- StaticDataset has no temporal extent to align windows against.
+    Must raise an actionable ValueError, not an internal AttributeError from
+    PairedTemporalDataset expecting get_temporal_extent() on both sides.
+    (The reverse direction -- Y forced static while X is windowed -- isn't
+    reachable via the public API: an unset processor_type_y always inherits
+    processor_type_x rather than defaulting to None/static.)"""
+    x_data = np.random.randn(1000, 1, 1).astype(np.float32)  # already pre-processed
+    y_data = np.random.randn(1000, 1).astype(np.float32)     # raw, needs windowing
+    with pytest.raises(ValueError, match="cannot be paired with a windowed processor_type"):
+        create_dataset(
+            x_data=x_data, y_data=y_data,
+            processor_type_x=None,
+            processor_type_y='continuous', processor_params_y={'window_size': 0.5, 'sample_rate': 100},
+        )
 
 
 # ---------------------------------------------------------------------------

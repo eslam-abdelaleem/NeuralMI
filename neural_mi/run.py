@@ -64,11 +64,18 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
     elif isinstance(results, dict):
         new_results = results.copy()
         # Scalar MI values stored by analysis modules (transfer entropy, CMI, etc.)
+        # mi_corrected/mi_error/mi_error_pred/slope cover rigorous conditional/transfer's
+        # flat scalar-rigorous result dict (run_rigorous_scalar_analysis's return value),
+        # which stores them as top-level dict keys rather than nested inside a
+        # 'corrected_results' list like plain mode='rigorous' does -- that nested case is
+        # already handled below via the 'corrected_results' recursion into the list-of-dicts
+        # branch, so adding these keys here doesn't double-convert it.
         _MI_SCALAR_KEYS = (
             'te_estimate', 'te_xy', 'te_yx',
             'i_xypast_yfuture', 'i_ypast_yfuture',
             'i_yxpast_xfuture', 'i_xpast_xfuture',
             'cmi_estimate', 'mi_xz_y', 'mi_z_y',
+            'mi_corrected', 'mi_error', 'mi_error_pred', 'slope',
         )
         for k in _MI_SCALAR_KEYS:
             if k in new_results and isinstance(new_results[k], (int, float)):
@@ -701,7 +708,8 @@ def _run_flat(
             primary_sweep_var = group_vars[0] if group_vars else None
             result = Results(mode=mode,
                              dataframe=agg_df,
-                             params={**run_params, 'sweep_var': primary_sweep_var},
+                             params={**run_params, 'sweep_var': primary_sweep_var,
+                                     'sweep_group_vars': group_vars},
                              details={'raw_results': df})
             if _sweep_embeddings is not None:
                 result.details.update(_sweep_embeddings)
@@ -873,7 +881,8 @@ def _run_flat(
                 agg_df = df
             result = Results(mode=mode,
                              dataframe=_convert_mi_units(agg_df, output_units == 'bits'),
-                             params={**run_params, 'sweep_var': 'lag'},
+                             params={**run_params, 'sweep_var': 'lag',
+                                     'sweep_group_vars': valid_group_vars or group_vars},
                              details={'raw_results': df})
             if permutation_test:
                 _null_clipped, _null_raw = _run_permutation_test(
@@ -907,6 +916,7 @@ def _run_flat(
             use_rigorous = analysis_kwargs.pop('rigorous', False)
             if use_rigorous:
                 from .analysis.rigorous import run_rigorous_scalar_analysis
+                from .analysis.conditional import _cmi_rigorous_scalar
                 _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
                 _rig_kwargs = {
                     'gamma_range': _gamma_range,
@@ -917,21 +927,22 @@ def _run_flat(
                     'r2_threshold': analysis_kwargs.pop('r2_threshold', 0.90),
                     'leverage_threshold': analysis_kwargs.pop('leverage_threshold', 0.20),
                 }
-                def _cmi_scalar(x_s, y_s, bp, z_data=None, **kw):
-                    raw = run_conditional_mi(x_s, y_s, z_data, bp,
-                                             sweep_grid=sweep_grid,
-                                             n_workers=kw.get('n_workers', 1))
-                    return raw['cmi_estimate']
+                # Parallelised across gamma-chunk tasks (like plain mode='rigorous');
+                # each individual chunk's CMI call runs with n_workers=1 internally
+                # (see _cmi_rigorous_scalar) to avoid nested multiprocessing pools.
                 rig_details = run_rigorous_scalar_analysis(
-                    scalar_fn=_cmi_scalar,
+                    scalar_fn=_cmi_rigorous_scalar,
                     x_data=x_run_data, y_data=y_run_data, base_params=base_params,
                     extra_data={'z_data': z_run_data},
-                    extra_kwargs={'n_workers': n_workers},
+                    extra_kwargs={'sweep_grid': sweep_grid},
+                    n_workers=n_workers,
                     **_rig_kwargs,
                 )
+                # _convert_mi_units already recurses into rig_details['raw_results_df']
+                # (dict branch, 'raw_results_df' key) -- popping it AFTER this call and
+                # converting it again would double-scale its 'train_mi' column.
                 rig_details = _convert_mi_units(rig_details, output_units == 'bits')
                 raw_df = rig_details.pop('raw_results_df', pd.DataFrame())
-                raw_df = _convert_mi_units(raw_df, output_units == 'bits')
                 return Results(
                     mode=mode,
                     mi_estimate=rig_details.get('mi_corrected'),
@@ -978,6 +989,7 @@ def _run_flat(
             use_rigorous = analysis_kwargs.pop('rigorous', False)
             if use_rigorous:
                 from .analysis.rigorous import run_rigorous_scalar_analysis
+                from .analysis.transfer import _te_rigorous_scalar
                 _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
                 _rig_kwargs = {
                     'gamma_range': _gamma_range,
@@ -988,26 +1000,24 @@ def _run_flat(
                     'r2_threshold': analysis_kwargs.pop('r2_threshold', 0.90),
                     'leverage_threshold': analysis_kwargs.pop('leverage_threshold', 0.20),
                 }
-                def _te_scalar(x_s, y_s, bp, **kw):
-                    raw = run_transfer_entropy(
-                        x_s, y_s, bp,
-                        history_window=history_window,
-                        prediction_horizon=prediction_horizon,
-                        sweep_grid=sweep_grid,
-                        n_workers=kw.get('n_workers', 1),
-                        bidirectional=bidirectional_te,
-                    )
-                    return raw['te_estimate']
+                # Parallelised across gamma-chunk tasks (like plain mode='rigorous');
+                # each individual chunk's TE call runs with n_workers=1 internally
+                # (see _te_rigorous_scalar) to avoid nested multiprocessing pools.
                 rig_details = run_rigorous_scalar_analysis(
-                    scalar_fn=_te_scalar,
+                    scalar_fn=_te_rigorous_scalar,
                     x_data=_x_te, y_data=_y_te, base_params=base_params,
                     extra_data=None,
-                    extra_kwargs={'n_workers': n_workers},
+                    extra_kwargs={'sweep_grid': sweep_grid, 'history_window': history_window,
+                                  'prediction_horizon': prediction_horizon,
+                                  'bidirectional': bidirectional_te},
+                    n_workers=n_workers,
                     **_rig_kwargs,
                 )
+                # _convert_mi_units already recurses into rig_details['raw_results_df']
+                # (dict branch, 'raw_results_df' key) -- popping it AFTER this call and
+                # converting it again would double-scale its 'train_mi' column.
                 rig_details = _convert_mi_units(rig_details, output_units == 'bits')
                 raw_df = rig_details.pop('raw_results_df', pd.DataFrame())
-                raw_df = _convert_mi_units(raw_df, output_units == 'bits')
                 return Results(
                     mode=mode,
                     mi_estimate=rig_details.get('mi_corrected'),

@@ -439,11 +439,37 @@ def create_dataset(
                                       device=device, data_device=data_device) if y_data is not None else None
 
     if proc_type_x is not None or proc_type_y is not None:
+        # PairedTemporalDataset requires both sides to expose get_temporal_extent()
+        # (i.e. both must actually be windowed via a real temporal processor); a
+        # StaticDataset (proc_type=None, already pre-processed) has no notion of
+        # time to align windows against, so pairing one with a windowed processor
+        # on the other side can never work. Catch it here with an actionable
+        # message instead of the get_temporal_extent AttributeError it would
+        # otherwise raise deep inside PairedTemporalDataset._initialize_windows.
+        if isinstance(x_dataset, StaticDataset) != isinstance(y_dataset, StaticDataset):
+            _static_name, _windowed_name = (
+                ('x_data', 'y_data') if isinstance(x_dataset, StaticDataset) else ('y_data', 'x_data')
+            )
+            raise ValueError(
+                f"processor_type_x/y=None (pre-processed {_static_name}) cannot be paired "
+                f"with a windowed processor_type on {_windowed_name} -- a pre-processed "
+                f"variable has no time axis to align windows against. Either give "
+                f"{_static_name} a real processor_type too (e.g. 'continuous'), or "
+                f"pre-process both variables yourself and pass processor_type_x=None and "
+                f"processor_type_y=None for both."
+            )
+
         # X and Y share a single WindowManager, so they must use the same window_size.
         # Extract it from both param dicts; warn if the user supplied conflicting values.
         window_size   = proc_params_x.pop('window_size', None)
         y_window_size = proc_params_y.pop('window_size', None)
-        if y_window_size is not None and y_window_size != window_size:
+        if window_size is None:
+            # X has no processor of its own (proc_type_x is None) -- nothing to
+            # conflict with, so fall back to Y's window_size rather than always
+            # preferring X's (which would stay None here and make windowing
+            # impossible even though Y specified a valid window_size).
+            window_size = y_window_size
+        elif y_window_size is not None and y_window_size != window_size:
             logger.warning(
                 f"processor_params_y specifies window_size={y_window_size}, but X and Y "
                 f"share a single WindowManager and must use the same window size. "
