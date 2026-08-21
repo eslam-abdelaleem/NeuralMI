@@ -45,7 +45,7 @@ $$
 **Properties:**
 
 - **Low Variance:** InfoNCE is known to be a very stable estimator, producing consistent results across different random seeds.
-- **Biased:** It is a lower bound on the true MI. Crucially, this bound is **theoretically limited by $\log(N)$**, where $N$ is the batch size. This means InfoNCE can never report an MI value higher than $\log(N)$. For most applications where the true MI is modest, this is not a problem and its stability is a major advantage. This is why it's the default in `NeuralMI`.
+- **Biased:** It is a lower bound on the true MI. Crucially, this bound is **theoretically limited by $\log(N)$**, where $N$ is the size of the score matrix the bound is evaluated on. This means InfoNCE can never report an MI value higher than $\log(N)$. Its stability is a major advantage, which is why it's the default in `NeuralMI` — but the ceiling is not automatically safe to ignore, and it does not scale with `max_eval_samples`. At **training** time, $N$ is `batch_size`. At **evaluation** time — where `train_mi` and `test_mi` are actually computed — $N$ is `train_eval_size` and `eval_size` respectively (see §9), each capped by `max_eval_samples` but *also* by how many samples the train/test split actually produced. A short recording, a large `window_size` (fewer windows fit), or a small `train_fraction`/`n_test_blocks` choice can all shrink $N$ well below `max_eval_samples` — and because temporal MI is *extensive* (block MI over a `window_size`-sample window grows with `window_size`, not per-sample), the true value you're trying to estimate can grow faster than the ceiling does as you sweep `window_size`. Check `result.details['eval_size']` / `['train_eval_size']` and their derived `['test_ceiling_mi']` / `['train_ceiling_mi']` / `['test_saturation']` / `['train_saturation']` rather than assuming the ceiling rarely binds.
 
 ### 2.2 SMILE (Low Bias, Moderate Variance)
 
@@ -66,7 +66,7 @@ $$
 :::{admonition} Recommendation
 :class: tip
 
-Use **InfoNCE** for general-purpose, stable MI estimation. Use **SMILE** for tasks like dimensionality estimation where the true MI may be very high and you need a less biased estimator.
+Use **InfoNCE** for general-purpose, stable MI estimation. Use **SMILE** when the true MI may be high relative to your evaluation set size and you need a less biased estimator.
 :::
 
 ---
@@ -137,44 +137,56 @@ In practice, the MI-vs-$\gamma$ relationship is only approximately linear; at ve
 
 ---
 
-## 6. Latent Dimensionality via Spectral Metrics
+## 6. Cross-Run-Stable Directions of Shared Structure (`mode='dimensionality'`)
 
-Until recently, finding the dimensionality of the shared information between two datasets involved treating the bottleneck dimension ($k_z$) as a search parameter. We would artificially starve the network's capacity and sweep $k_z$ to find the exact point where Mutual Information saturated. However, this approach is computationally expensive and highly sensitive to the geometric constraints of the chosen critic (e.g., a simple dot-product in a Separable Critic might fail to capture complex dependencies in low dimensions, causing "false saturation").
+A nonlinear encoder given more embedding capacity than the number of genuinely shared latent factors between two views does not only find those factors — it can also construct new combinations of them (products, higher-order mixtures) that are, once trained, spectrally indistinguishable from independent factors. Every measure computable from a single trained embedding's spectrum — participation ratio, eigengap, singular-value profile — is blind to this distinction: a genuine shared factor and an encoder-constructed combination look identical to all of them. There is consequently no general way to read an exact count of "the" dimensionality off a single trained spectrum, and `mode='dimensionality'` does not attempt to: `result.mi_estimate` stays `None` for this mode, and no field claims to be a dimensionality count.
 
-Following our work in ([arxiv:2602.08105](https://arxiv.org/abs/2602.08105)), NeuralMI now treats dimensionality not as a search problem, but as an **observable property of an over-parameterized latent space**.
+What the mode reports instead is three narrower, complementary pieces of evidence.
 
-### The Hybrid Critic and the Saturation Hypothesis
-To accurately measure dimensionality, NeuralMI uses a **Hybrid Critic**. This architecture embeds $X$ and $Y$ independently but processes their concatenation through a final Multi-Layer Perceptron (MLP) decision head. By setting a safely large bottleneck (e.g., $k_z = 64$), we ensure the network is "capacity tight." The network does not distribute a low-dimensional signal diffusely across all 64 dimensions; instead, it concentrates the shared information into a compact subspace.
+### A cheap regime read, before any training
 
-### Embedding Whitening
+`compute_regime_diagnostic` centers each view's raw channel data, computes the eigenvalues of its within-view channel correlation matrix, and looks at the ratio between consecutive eigenvalues. An isolated large ratio marks a **separable-like** regime — each channel driven mostly by a single underlying factor. A flat, gradual ratio curve marks an **entangled-like** regime — every channel reflecting several factors jointly (mixed selectivity). This runs once, with no training, and is attached to the output as `regime_x`/`regime_y` context; it does not gate or discount anything else the mode reports. The default threshold (peak ratio ≥ 3.0) is a rough heuristic calibrated on two validated example cases (~14–16× for a clean separable case, ~1.7× for a genuinely entangled one) — treat it as a guide, not a precise cutoff; `peak_val` is always returned alongside the label so borderline cases can be judged directly.
 
-Before computing the cross-covariance, `NeuralMI` optionally **whitens** the embeddings. The default mode (`spectral_whitening='std'`) standardises each embedding dimension by dividing it by its empirical standard deviation:
+### Cross-run-stable directions
+
+NeuralMI uses a **Hybrid Critic**: it embeds $X$ and $Y$ independently, then processes their concatenation through a final MLP decision head, avoiding the rigid geometry a dot-product critic would impose. The default embedding size is modest ($k_z = 8$, user-overridable via `Model(embedding_dim=...)`) — over-provisioning capacity is exactly what lets encoder-constructed combinations masquerade as genuine factors, so the default deliberately does not chase a large bottleneck.
+
+Before computing the cross-covariance, embeddings are whitened (`spectral_whitening='std'` by default), standardising each dimension by its empirical standard deviation so that accidentally large variance in one dimension doesn't dominate the spectrum:
 
 $$\tilde{Z}_{X,i} = \frac{Z_{X,i}}{\text{std}(Z_{X,i})}, \qquad \tilde{Z}_{Y,i} = \frac{Z_{Y,i}}{\text{std}(Z_{Y,i})}$$
 
-This ensures that dimensions with accidentally large variance do not dominate the SVD spectrum, yielding a PR estimate that reflects the true geometric structure of the shared information rather than the scale of individual latent dimensions.
+The cross-covariance of the whitened, held-out test embeddings,
 
-### Cross-Covariance and the Participation Ratio
-Once the Hybrid Critic is trained at maximum capacity, we extract the learned embeddings $Z_X$ and $Z_Y$ for the test set. We compute their cross-covariance matrix $C_{XY}$:
+$$C_{XY} = \frac{1}{N-1} (\tilde{Z}_X - \bar{\tilde{Z}}_X)^T (\tilde{Z}_Y - \bar{\tilde{Z}}_Y)$$
 
-$$C_{XY} = \frac{1}{N-1} (Z_X - \bar{Z}_X)^T (Z_Y - \bar{Z}_Y)$$
+is decomposed by SVD into a rotation (dimension 0 captures the most shared variance, dimension 1 the next most, and so on) and a spectrum of singular values $\sigma_i$. A single such spectrum still can't distinguish genuine factors from encoder-constructed combinations, so instead of reading it once, the whole fit is independently repeated `n_splits` times (default 3), and each rank's rotated direction is compared *across* repeats, on held-out data only:
 
-We then perform Singular Value Decomposition (SVD) on $C_{XY}$ to extract the spectrum of singular values $\sigma_i$. These singular values represent the strength of the shared variance across the orthogonal dimensions of the latent space.
+* **Stability** — a rank is reported as stable only if its direction reproduces closely across repeats (minimum pairwise correlation over every pair of repeats ≥ `stability_threshold`, default 0.7). An encoder-constructed combination is a training-specific artifact of one fit and is not expected to reproduce this way.
+* **Noise floor** — independently of the correlation check, a rank's mean singular-value strength must clear `min_strength_fraction` (default 0.05) of the top rank's strength. This catches a failure mode the correlation check alone misses: a pure-noise channel can show a spuriously high cross-run correlation by chance despite carrying essentially no shared signal, and the strength floor excludes it anyway.
+* **Near-degeneracy** — adjacent ranks whose strength ratio is under `degeneracy_ratio_threshold` (default 1.3) are too close to individually order. They're reported as a group — existence confirmed, individual identity not claimed — rather than an arbitrary ranking.
 
-From this spectrum, NeuralMI calculates two variants of the **Participation Ratio (PR)**:
+The result is `stable_directions` (individually-trustworthy ranks), `stable_but_degenerate_groups` (trustworthy as a set only), and `n_stable_total`: always a lower bound on the number of genuine shared directions, never an exact count, and never inflated by capacity artifacts that a single fit can't rule out.
 
-$$PR_{\text{singular}} = \frac{\left(\sum_{i=1}^{k_z} \sigma_i\right)^2}{\sum_{i=1}^{k_z} \sigma_i^2}$$
+### Convergence gating
 
-$$PR_{\text{covariance}} = \frac{\left(\sum_{i=1}^{k_z} \sigma_i^2\right)^2}{\sum_{i=1}^{k_z} \sigma_i^4}$$
+None of the above means anything if a fit hasn't actually converged — an under-trained embedding's spectrum reflects an incomplete optimization, not shared structure. Each independent repeat is checked (`best_epoch` short of the final training epoch); `result.details['converged']` is `True` only if every repeat converged, and a repeat that didn't is flagged rather than silently folded into the stability report.
 
-Both are continuous measures of the effective number of dimensions utilised by the network; a value of 5.2 indicates that the shared information effectively occupies 5.2 dimensions. The two variants differ in how they weight the spectrum:
+### Participation ratio — kept as a secondary, non-headline diagnostic
 
-* **$PR_{\text{singular}}$** weights each dimension proportionally to its singular value $\sigma_i$.
-* **$PR_{\text{covariance}}$** weights each dimension proportionally to its eigenvalue $\lambda_i = \sigma_i^2$. Because eigenvalues amplify contrast between large and small singular values, $PR_{\text{covariance}} \le PR_{\text{singular}}$ in general and is more sensitive to the true rank of the representation — small-but-nonzero singular values contribute relatively less.
+Each per-split row of `result.dataframe` still reports two participation-ratio variants computed from that split's own spectrum:
 
-### Interaction vs. Intrinsic Dimensionality
-* **Interaction Dimensionality:** When evaluating two distinct datasets ($X$ and $Y$), the PR of their cross-covariance directly yields the dimensionality of their shared information space.
-* **Intrinsic Dimensionality:** When analyzing a single dataset ($X$), NeuralMI splits the data into two non-overlapping halves (e.g., randomly splitting the channels/neurons, or splitting spatially/temporally). It then computes the Interaction Dimensionality between these halves, repeating this process over multiple splits and averaging the PR to find the intrinsic dimensionality of the dataset itself.
+$$PR_{\text{singular}} = \frac{\left(\sum_i \sigma_i\right)^2}{\sum_i \sigma_i^2}, \qquad PR_{\text{covariance}} = \frac{\left(\sum_i \sigma_i^2\right)^2}{\sum_i \sigma_i^4}$$
+
+Both describe the effective spread of that one spectrum — $PR_{\text{covariance}}$ weights by eigenvalue $\lambda_i = \sigma_i^2$ and so is more sensitive to the true rank of the representation than $PR_{\text{singular}}$, which weights linearly by $\sigma_i$. They remain useful, free-to-compute descriptions of how concentrated or spread out a given trained spectrum is — but, per the opening of this section, a single spectrum's PR cannot itself distinguish genuine shared factors from encoder-constructed combinations, so it is reported per-split as context alongside the cross-run stability report, not as the mode's answer.
+
+### Ceiling proximity
+
+The InfoNCE-family critic this mode trains shares the same $\log(N)$-style ceiling described in §2.1, evaluated here on the held-out set actually used to compute `test_mi`: $\log(\text{eval\_size})$, where `eval_size = min(test_size, max_eval_samples)`. When the underlying MI estimate sits close to that ceiling (`ceiling_mi_fraction`, default 0.85), `mode='dimensionality'` emits a warning, since any spectral reading built on a saturated estimate deserves extra scrutiny. This is informational only, not a remediation: convergence gating already excludes the large majority of near-ceiling cases in practice (an estimate rarely reaches the ceiling without also still being mid-training), and a genuinely converged run that is near-ceiling degrades the stable-direction count conservatively — fewer directions reported, near-degeneracy flags absorbing the ambiguity — rather than misleadingly.
+
+### Interaction vs. intrinsic
+
+* **Interaction** (`y_data` provided): the cross-run-stable-directions analysis above is applied directly between $X$ and $Y$; each repeat is an independent weight initialisation on the same data.
+* **Intrinsic** (`y_data=None`): NeuralMI splits a single dataset into two non-overlapping halves (randomly across channels/neurons by default, or spatially/temporally) and applies the same analysis between the halves; each repeat uses a different split, not just a different initialisation — a related but distinct notion of "stability" from the interaction case, since it also has to be robust to which channels landed on which side.
 
 ---
 
@@ -251,8 +263,20 @@ After training, NeuralMI reports two MI values:
 
 **Why `train_mi` is preferred as the final estimate:**
 
-1. *Larger evaluation set.* The training subset used for `train_mi` is typically larger than the test set (default `train_fraction=0.9`), so the estimate has lower variance.
+1. *Larger evaluation set.* The training subset used for `train_mi` (`train_eval_size` in `result.details`) is bounded by `max_eval_samples` and the training pool, independent of the test set's size — it is not coupled to (or capped by) how large the test split happens to be, so it can be, and typically is, substantially larger than `eval_size` (the test-side count). This gives `train_mi` a higher ceiling ($\log(\text{train\_eval\_size})$ vs. $\log(\text{eval\_size})$) and lower variance from the larger sample.
 2. *No selection bias.* Because `train_mi` is computed on data the model was trained on, it reflects the capacity of the learned representation rather than the noisier generalisation signal. For bias-correction purposes (`mode='rigorous'`), the same principle applies — the bias correction is performed on the set of `train_mi` values across gamma values.
 3. *Consistency with the `mode='rigorous'` pipeline.* The rigorous pipeline trains models at multiple data fractions and extrapolates `train_mi` values to infinite data, so `train_mi` is the natural quantity for that extrapolation.
 
 The `test_mi` value is still accessible via `result.details['test_mi']` and is the more conservative, lower-variance bound if generalisation to held-out data is the primary concern.
+
+## 10. What the Reported Number Is *Per*
+
+Every MI value NeuralMI reports is per something, and that something differs between the static and temporal paths:
+
+- **Static data** (no windowing processor): the estimate is per joint observation — one `(x_i, y_i)` row.
+- **Temporal data** (windowed via a processor's `window_size`): the estimate is **per window**, i.e. $I(X_{1:w}; Y_{1:w})$ for a window of `window_size` samples — not a rate. This quantity is **extensive**: it can only grow (or, in the limit, plateau) as `window_size` grows, because a longer window's samples are a superset of a shorter window's at the same start point, and mutual information is monotonically non-decreasing under adding more observed variables. It never legitimately *declines* as `window_size` increases.
+
+Two consequences worth being explicit about:
+
+- **Values at different `window_size` settings are not directly comparable** as "how much do X and Y share" — a larger window will generically report a larger raw MI regardless of whether the underlying coupling actually changed, simply because it's built from more raw data. Comparing across `window_size` meaningfully requires either a rate (MI per unit time, e.g. dividing by `window_size` and the sample rate) or looking at the marginal MI gained per additional window sample, not the raw per-window value.
+- **A raw (non-rate) MI-vs-`window_size` sweep whose values rise and then *fall* is reporting an estimation artifact, not a real property of the data** — per the extensivity argument above, the true quantity cannot decline. A decline is generically explained by the evaluation set shrinking as `window_size` grows (fewer windows fit in a fixed-length recording, so `eval_size`/`train_eval_size` fall and the ceiling drops with them — §2.1) and/or a fixed embedding capacity failing to keep up with a growing `window_size`'s input dimensionality. Check `result.details['eval_size']` / `['test_ceiling_mi']` / `['train_ceiling_mi']` alongside any such sweep before reading a shape into it.

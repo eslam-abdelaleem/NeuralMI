@@ -225,8 +225,10 @@ class Results:
         This method dispatches to the appropriate plotting function based on the
         analysis `mode`.
 
-        - For 'sweep' and 'dimensionality' modes, it plots the MI estimate
-          against the swept hyperparameter.
+        - For 'sweep' mode, it plots the MI estimate against the swept
+          hyperparameter.
+        - For 'dimensionality' mode, it plots which ranks of shared structure
+          are stable across splits/reruns (see THEORY.md).
         - For 'rigorous' mode, it plots the bias correction fit.
 
         Parameters
@@ -253,18 +255,17 @@ class Results:
         """
         from neural_mi.visualize.plot import (
             plot_sweep_curve, plot_sweep_heatmap, plot_sweep_bar,
-            plot_bias_correction_fit, plot_dimensionality_curve, plot_noise_ladder,
+            plot_bias_correction_fit, plot_dimensionality_curve,
         )
 
         show = kwargs.pop('show', True)
 
         units = kwargs.pop('units', self.params.get('output_units', 'bits'))
 
-        # For modes that create their own figure (with custom sizing/panel
-        # layout), skip creating a top-level axes here: dimensionality builds
-        # two panels internally, and pairwise sizes its single heatmap panel
-        # from the channel count -- both need 'figsize' left in kwargs for
-        # their own branch below to pop and use.
+        # For modes that create their own figure (with custom sizing), skip
+        # creating a top-level axes here: dimensionality's per-rank bar chart
+        # and pairwise's heatmap (sized from the channel count) both need
+        # 'figsize' left in kwargs for their own branch below to pop and use.
         _custom_figure_modes = ('dimensionality', 'pairwise')
         if ax is None and self.mode not in _custom_figure_modes:
             fig, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
@@ -372,22 +373,10 @@ class Results:
                 )
 
         elif self.mode == 'dimensionality':
-            if self.dataframe is None:
-                raise ValueError("Cannot plot: results do not contain a DataFrame.")
-            if 'sigma_add_ladder' in self.details:
-                # Noise-injection ladder: d_hat (both PR variants) vs log(sigma_add),
-                # with the detached band shaded, not the generic sweep-variable plot.
-                ax = plot_noise_ladder(self.details['sigma_add_ladder'], ax=ax, show=show, **kwargs)
-            else:
-                sweep_var = self.params.get('sweep_var')
-                if not sweep_var:
-                    possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
-                    sweep_var = possible[0] if len(possible) == 1 else None
-                    if sweep_var:
-                        logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
-                ax = plot_dimensionality_curve(
-                    self.dataframe, sweep_var=sweep_var, units=units, axes=ax, show=show, **kwargs,
-                )
+            # Per-rank stable/degenerate/below-floor chart -- not an MI-vs-swept-
+            # variable curve, since this mode doesn't sweep embedding_dim or claim
+            # a saturation point (see THEORY.md).
+            ax = plot_dimensionality_curve(self.details, ax=ax, show=show, **kwargs)
 
         elif self.mode == 'rigorous':
             if self.dataframe is None or not self.details:
@@ -615,9 +604,12 @@ class Results:
         All Results objects in the list must share the same analysis mode.
         For ``'estimate'`` mode, the test-MI training curves are overlaid with
         distinct colours; best-epoch markers are shown as dashed vertical lines.
-        For ``'sweep'``, ``'lag'``, and ``'dimensionality'`` modes, the sweep
-        curves are overlaid with distinct colours and a legend.  For
-        ``'rigorous'`` mode, the bias-correction fits are overlaid.
+        For ``'sweep'`` and ``'lag'`` modes, the sweep curves are overlaid
+        with distinct colours and a legend.  For ``'rigorous'`` mode, the
+        bias-correction fits are overlaid.  ``'dimensionality'`` is not
+        supported: its per-rank stable/degenerate/below-floor chart isn't a
+        curve, so overlaying several isn't well-defined -- call
+        ``result.plot()`` on each result individually instead.
 
         Parameters
         ----------

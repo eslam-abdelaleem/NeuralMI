@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### `mode='dimensionality'`: cross-run-stable directions of shared structure
+
+`mode='dimensionality'` (`neural_mi/analysis/dimensionality.py`, `neural_mi/config.py`,
+`neural_mi/defaults.py`, `neural_mi/utils.py`, `neural_mi/visualize/plot.py`,
+`neural_mi/results.py`) does not report a scalar dimensionality count: a nonlinear
+encoder given more embedding capacity than the number of genuinely shared latent
+factors can construct combinations of them that are spectrally indistinguishable from
+genuine factors, so no measure of a single trained spectrum can be trusted as an exact
+count. See `THEORY.md` §6 for the full reasoning. The mode instead reports:
+
+- **A no-training regime diagnostic** (`compute_regime_diagnostic` in `utils.py`):
+  whether each view's raw channel correlation structure looks separable-like or
+  entangled-like, attached as `result.details['regime_x']`/`['regime_y']`.
+- **Cross-run-stable directions**: a modest-capacity (`embedding_dim=8` default) Hybrid
+  Critic embedding is trained `n_splits` independent times (default 3, min 2); each
+  rank of the resulting cross-covariance rotation is checked for reproducibility across
+  every pair of runs on held-out data (`stability_threshold`, default `0.7`) and for
+  strength above a noise floor relative to the top rank (`min_strength_fraction`,
+  default `0.05`, independent of and catching what the correlation check alone misses).
+  Adjacent ranks too close in strength to individually order (`degeneracy_ratio_threshold`,
+  default `1.3`) are reported as a group. Output: `result.details['stable_directions']`,
+  `['stable_but_degenerate_groups']`, `['n_stable_total']`, `['stability_per_rank']`.
+- **Convergence gating**: `result.details['converged']` is `True` only if every
+  independent run actually converged; a `UserWarning` names any that didn't.
+- **`pr_eig`/`pr_singular`** remain in `result.dataframe`/`result.details['raw_results']`
+  as a labeled secondary diagnostic, not the mode's answer.
+- **A lightweight ceiling-proximity warning** (`ceiling_mi_fraction`, default `0.85`,
+  informational only) when the underlying MI estimate nears its InfoNCE evaluation
+  ceiling (`log(eval_size)`); no automatic remediation is applied.
+- **`shared_encoder`** defaults to `True` only for intrinsic mode (`y_data=None`,
+  splitting one dataset in half) and `False` for interaction mode (two views) —
+  previously defaulted `True` unconditionally regardless of sub-mode.
+- **`Dimensionality` config**: `split_method`, `n_splits`, `lag`, `channel_indices_x`,
+  `stability_threshold`, `degeneracy_ratio_threshold`, `min_strength_fraction`,
+  `ceiling_mi_fraction`.
+- **Plotting**: `plot_dimensionality_curve(details, ax, show, **kwargs)` — a per-rank
+  bar chart (stable / stable-but-degenerate / not-stable), replacing the previous
+  sweep-curve-shaped plot. Takes `result.details`, not `result.dataframe`. Not supported
+  by `Results.compare()` (overlaying several isn't well-defined for this chart shape).
+
 ### Smaller fixes from the same broad-audit pass
 
 - `validation.py`'s `DataValidator._validate_type` crashed with an unrelated `AttributeError:
@@ -220,23 +260,8 @@ tutorials rather than trusting stale cached notebook outputs:
   `spectral_entropy` were dropped from both paths (cheaply derivable from the raw
   spectrum if ever needed). `spectral_whitening` (how the covariance is whitened
   before SVD) is unrelated and untouched.
-- `mode='dimensionality'`'s `sigma_add='auto'` noise ladder never included a true
-  no-noise baseline — `np.geomspace(0.25, 5.0, 7)` can't represent 0 (undefined on
-  a log scale, which is also how `plot_noise_ladder`'s x-axis is scaled). Now
-  prepends a fixed `1e-3` (0.1% of per-channel std) baseline rung: negligible
-  enough to be functionally "no noise," while staying representable on both the
-  data side and the existing log-scaled plot with no plotting changes needed.
-  Explicit `sigma_add=` lists (including a literal `0.0`, if wanted) are
-  unaffected. Regression coverage added in `tests/test_noise_injection.py`.
-
 ### Added
 
-- **Configurable dimensionality-reliability thresholds** (`neural_mi/config.py`,
-  `neural_mi/defaults.py`, `neural_mi/analysis/dimensionality.py`): the four judgment-call
-  thresholds behind `mode='dimensionality'`'s reliability diagnostics —
-  `ceiling_mi_fraction` (default `0.85`), `truncation_pr_fraction` (`0.8`),
-  `high_dim_pr_fraction` (`0.5`), and `ladder_plateau_cv_threshold` (`0.2`) — are now
-  `Dimensionality` config fields instead of hardcoded literals.
 - **`benchmarks/vs_classical_estimators.ipynb`**: compares `NeuralMI` against the KSG
   estimator and geometric intrinsic-dimension estimators (MLE, TwoNN) on problems chosen to
   be hard for them — not a tutorial, but useful for deciding whether a neural estimator is
@@ -267,7 +292,7 @@ defaults and `run(x, y)` still behaves identically to before. Kept as a private
 | `tau_grid=`, `corrupt_target=`, `corruption_method=`, `n_noise_samples=`, `threshold_ratio=` (precision) | `precision=Precision(...)` |
 | `lag_range=`, `equalize_n=` (lag) | `lag=Lag(...)` |
 | `history_window=`, `prediction_horizon=`, `bidirectional_te=` (→ `bidirectional`), `rigorous=`, `gamma_range=` (transfer) | `transfer=Transfer(...)` |
-| `split_method=`, `n_splits=`, `channel_indices_x=`, `sigma_add=`, `sigma_add_units=`, `stabilize_counts=` (dimensionality) | `dimensionality=Dimensionality(...)` |
+| `split_method=`, `n_splits=`, `channel_indices_x=` (dimensionality) | `dimensionality=Dimensionality(...)` |
 | `z_data=`, `z_time=`, `z_processor_type=`, `z_processor_params=`, `rigorous=`, `gamma_range=` (conditional) | `conditional=Conditional(...)` |
 | `mode=`, `sweep_grid=`, `n_workers=`, `device=`, `verbose=`, `show_progress=`, `permutation_test=`, `n_permutations=` | **unchanged** (still top-level) |
 
@@ -277,23 +302,10 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
 (e.g. `training={'n_epochs': 50}`). The 12 config classes are exported from
 `neural_mi`. Full suite green (541 passed / 1 skipped) on the new API.
 
-### Added
-
-- **Ceiling-escape noise injection for `dimensionality` mode (`sigma_add`)** (`neural_mi/analysis/dimensionality.py`, `neural_mi/training/trainer.py`, `neural_mi/visualize/plot.py`):
-  When the true MI exceeds the InfoNCE ceiling, the spectral (participation-ratio) readout becomes unreliable. `sigma_add` adds fixed, independent, per-channel Gaussian noise (in measured-per-channel-std units) to the observations once — before the embedding, identical for train and eval of a fit — to de-saturate the estimate without moving the true dimensionality.
-  - `sigma_add`: a scalar (single level), a list (full ladder, one row per level), or `'auto'` (searches a geometric ladder for the detached regime, widening the search once if it doesn't bracket, then warning rather than looping).
-  - `sigma_add_units`: `'relative'` (default, multiple of per-channel std) or `'absolute'`.
-  - `stabilize_counts` (bool, default `True`): for binned-spike data, applies the canonical Anscombe transform before measuring std / injecting noise. Fires on every binned-spike dimensionality run regardless of `sigma_add`.
-  - Ceiling classification keys on `log(eval_size)` (the actual InfoNCE evaluation denominator), never `log(batch_size)`; `Trainer.train()` now exposes `eval_size` in its results for this purpose.
-  - Reproducible under `n_workers > 1`: the base noise tensor is deterministically reconstructed per `(global_seed, split_id, view)` from a pure hash-seeded RNG, no live shared state, and reused unscaled across every rung of the ladder within a split.
-  - Supported for intrinsic `split_method in ('random', 'spatial')` and interaction mode; raw spike-timestamp and categorical data raise a clear error only when `sigma_add` is actually engaged.
-  - New output: `result.details['sigma_add_ladder']` (per-rung `pr_eig`/`pr_singular` mean+std, resolved absolute scale, regime label, detached flag) and `result.details['sigma_add_suggestion']` (auto mode only, never a silent override). `result.dataframe` gains a `sigma_add` grouping column via the existing sweep-aggregation path.
-  - New `plot_noise_ladder()`; `result.plot()` dispatches to it automatically when a ladder is present.
-
 ### Changed
 
 - **Participation-ratio metrics renamed: `pr_eig` / `pr_singular`** (repo-wide): the vague, inconsistently-named `participation_ratio` / `pr_covariance` / `participation_ratio_singular` are gone. `pr_eig` = `(Σσᵢ²)²/Σσᵢ⁴` (eigenvalue/covariance-spectrum variant), `pr_singular` = `(Σσᵢ)²/Σσᵢ²` (singular-spectrum variant). `dimensionality` mode's lean/default spectral output now reports **both** variants (previously only one, under the vague name) — a real behavior change, not just a rename. This is a breaking change with no deprecated aliases (library is pre-publication). Downstream notebooks/scripts outside this repo that reference the old names need updating.
-- **`HybridCritic.forward` now row-chunks pair scoring** (`neural_mi/models/critics.py`), matching `ConcatCritic`'s existing pattern: the full `(N², 2d)` pair tensor is never materialized at once, bounding peak memory during large-N evaluation (e.g. `dimensionality` mode's noise-injection ladder, which multiplies eval cost by levels × splits).
+- **`HybridCritic.forward` now row-chunks pair scoring** (`neural_mi/models/critics.py`), matching `ConcatCritic`'s existing pattern: the full `(N², 2d)` pair tensor is never materialized at once, bounding peak memory during large-N evaluation (e.g. `dimensionality` mode's multi-split evaluation).
 - **`PretrainedBackboneEmbedding` gradient/BatchNorm fix** (`neural_mi/models/embeddings.py`): removed a stray `torch.no_grad()` around the frozen backbone's forward pass that was silently severing gradient to the trainable channel adapter whenever `input_dim != backbone_in_ch` (the adapter was frozen at random init and never trained). Backbone freezing is already handled via `requires_grad=False` and doesn't need `no_grad`. Also added a `train()` override so the frozen backbone's BatchNorm layers stay in eval mode regardless of the outer model's train/eval state.
 - **`min_coverage_fraction` semantics documented, not changed** (`neural_mi/data/temporal.py`): coverage is a source-*timestamp* count, not a value-validity check (NaN-valued-but-present-timestamp windows are not dropped), and gap interpolation is not bounded by the coverage fraction. Docstring-only.
 - **`AnalysisWorkflow.__init__` input_dim now uses the full flattened shape** (`neural_mi/analysis/rigorous.py`): `int(np.prod(shape[1:]))` instead of `shape[1]*shape[2]`, which silently dropped the width axis for 4-D (`cnn2d`) inputs. No-op for existing 3-D callers.
@@ -419,15 +431,6 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
   estimate).  `Results.plot()` now draws a green dotted vertical line and a
   diamond scatter marker at that epoch alongside the existing red best-epoch
   marker.  Without `peak_fraction`, the plot is unchanged.
-
-- **Plotting — `dimensionality` mode: dedicated two-panel figure**: a new
-  `plot_dimensionality_curve()` function (also exported from
-  `neural_mi.visualize`) replaces the previous `plot_sweep_curve` call for
-  dimensionality results.  When participation-ratio data is available (always
-  the case from `run()`), the figure has two stacked panels: MI on top and
-  Participation Ratio (effective dimensionality) on the bottom — both sharing
-  the same sweep x-axis when a sweep grid was used.  Without a sweep, scalar
-  results are shown as annotated error-bar points.
 
 - **Plotting — `conditional` mode**: `Results.plot()` now renders a vertical
   bar chart showing the three CMI components: `I(XZ;Y)`, `I(Z;Y)`, and
@@ -707,11 +710,11 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
   with low R² does not set `fit_quality_warning=True`. Also added
   `test_gamma1_outlier_sets_is_reliable_false` — confirms that `leverage_warning`
   (not `fit_quality_warning`) is the gate for `is_reliable`.
-- `tests/test_dimensionality.py`: 17 new tests covering `_extract_embedding_history`,
+- `tests/test_dimensionality.py`: coverage for `_extract_embedding_history`,
   `_strip_embeddings`, `split_method='index'` input validation (missing/empty/out-of-range
   `channel_indices_x`, all-channels-to-X, unknown split_method), the `shared_encoder`
-  auto-disable guard (unequal vs equal channel counts), correct 2-D and 3-D channel
-  slicing, `n_splits` task-count, and the `track_embeddings=512` auto-default.
+  auto-disable guard (unequal vs equal channel counts), and correct 2-D and 3-D channel
+  slicing.
 - `tests/test_animate.py`: 27 new tests covering `_auto_panels`, `_fit_reducer` (no-op when
   `embed_dim ≤ n_components`; `reduction='none'`; PCA; empty input; unknown reduction),
   `_resolve_scatter_color` (None, float, categorical int, categorical str), and

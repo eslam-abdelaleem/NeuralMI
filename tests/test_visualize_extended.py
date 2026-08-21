@@ -3,7 +3,7 @@
 
 Covers:
   - estimate plot — conservative_epoch marker
-  - dimensionality plot — two-panel (MI + PR) via plot_dimensionality_curve
+  - dimensionality plot — per-rank stable/degenerate/below-floor chart via plot_dimensionality_curve
   - plot_bias_correction_fit return value
   - conditional / transfer mode plots
   - Results.compare() for estimate mode
@@ -53,26 +53,21 @@ def rigorous_details():
 
 
 @pytest.fixture
-def dim_df_sweep():
-    """Dimensionality results DataFrame with a sweep variable."""
-    return pd.DataFrame({
-        'embedding_dim': [8, 16, 32, 64],
-        'mi_mean': [0.40, 0.55, 0.61, 0.62],
-        'mi_std': [0.05, 0.04, 0.03, 0.04],
-        'pr_singular_mean': [3.1, 5.2, 6.8, 7.0],
-        'pr_singular_std': [0.4, 0.5, 0.6, 0.7],
-    })
-
-
-@pytest.fixture
-def dim_df_scalar():
-    """Dimensionality results DataFrame with no sweep (single scalar result)."""
-    return pd.DataFrame({
-        'mi_mean': [0.58],
-        'mi_std': [0.06],
-        'pr_singular_mean': [5.3],
-        'pr_singular_std': [0.5],
-    })
+def dim_details():
+    """result.details from a mode='dimensionality' run: 2 individually-stable
+    ranks, one degenerate pair, one below the noise floor."""
+    return {
+        'stability_per_rank': {
+            1: {'mean_strength': 3.0, 'min_abs_corr': 0.95, 'stable': True, 'below_noise_floor': False},
+            2: {'mean_strength': 1.2, 'min_abs_corr': 0.90, 'stable': True, 'below_noise_floor': False},
+            3: {'mean_strength': 1.1, 'min_abs_corr': 0.88, 'stable': True, 'below_noise_floor': False},
+            4: {'mean_strength': 0.001, 'min_abs_corr': 0.20, 'stable': False, 'below_noise_floor': True},
+        },
+        'stable_directions': [1],
+        'stable_but_degenerate_groups': [[2, 3]],
+        'n_stable_total': 3,
+        'converged': True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -142,89 +137,47 @@ class TestEstimatePlotConservativeEpoch:
 
 
 # ---------------------------------------------------------------------------
-# dimensionality plot: two-panel via plot_dimensionality_curve
+# dimensionality plot: per-rank stable/degenerate/below-floor chart via
+# plot_dimensionality_curve
 # ---------------------------------------------------------------------------
 
 class TestDimensionalityPlot:
 
     @patch('matplotlib.pyplot.show')
-    def test_dim_sweep_two_panels(self, mock_show, dim_df_sweep):
-        """With a sweep and PR columns, the figure should have two axes."""
-        r = Results(
-            mode='dimensionality',
-            dataframe=dim_df_sweep,
-            params={'sweep_var': 'embedding_dim'},
-        )
-        ax = r.plot(show=False)
-        assert ax is not None
-        # Two subplots should be in the figure
-        assert len(ax.figure.axes) == 2, (
-            f"Expected 2 axes (MI + PR), got {len(ax.figure.axes)}"
-        )
-        plt.close('all')
-
-    @patch('matplotlib.pyplot.show')
-    def test_dim_sweep_returns_mi_axes(self, mock_show, dim_df_sweep):
-        """plot() must return the MI (top) axes, not the PR axes."""
-        r = Results(
-            mode='dimensionality',
-            dataframe=dim_df_sweep,
-            params={'sweep_var': 'embedding_dim'},
-        )
-        ax = r.plot(show=False)
-        # The returned axes is the first (MI) panel
-        assert ax is ax.figure.axes[0]
-        plt.close('all')
-
-    @patch('matplotlib.pyplot.show')
-    def test_dim_no_sweep_single_scalar_display(self, mock_show, dim_df_scalar):
-        """Without a sweep variable, a single-point display should not raise."""
-        r = Results(mode='dimensionality', dataframe=dim_df_scalar, params={})
+    def test_dispatch_via_results_plot(self, mock_show, dim_details):
+        """Results.plot() for mode='dimensionality' dispatches to the new
+        per-rank chart using result.details, not result.dataframe."""
+        r = Results(mode='dimensionality', dataframe=pd.DataFrame({'pr_eig': [1.0]}),
+                   params={}, details=dim_details)
         ax = r.plot(show=False)
         assert ax is not None
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_dim_no_pr_column_single_panel(self, mock_show):
-        """When pr_singular_mean is absent, only one panel is created."""
-        df = pd.DataFrame({
-            'embedding_dim': [8, 16, 32],
-            'mi_mean': [0.3, 0.5, 0.6],
-            'mi_std': [0.05, 0.04, 0.03],
-        })
-        r = Results(mode='dimensionality', dataframe=df, params={'sweep_var': 'embedding_dim'})
-        ax = r.plot(show=False)
-        assert len(ax.figure.axes) == 1
+    def test_missing_stability_per_rank_raises_clear_error(self, mock_show):
+        """Calling the plot before at least 2 splits produced usable stability
+        data should raise a clear error, not a KeyError deep inside plotting."""
+        with pytest.raises(ValueError, match="stability_per_rank"):
+            plot_dimensionality_curve({})
+
+    @patch('matplotlib.pyplot.show')
+    def test_bars_colored_by_status(self, mock_show, dim_details):
+        """One bar per rank; individually-stable, degenerate-group, and
+        below-floor ranks get visually distinct colors."""
+        ax = plot_dimensionality_curve(dim_details)
+        bars = [p for p in ax.patches]
+        assert len(bars) == 4  # one per rank in stability_per_rank
+        colors = {tuple(b.get_facecolor()) for b in bars}
+        # Stable, degenerate-group, and below-floor should not all share one color.
+        assert len(colors) >= 2
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_plot_dimensionality_curve_direct_two_panel(self, mock_show, dim_df_sweep):
-        """plot_dimensionality_curve called directly creates two-panel figure."""
-        ax_mi = plot_dimensionality_curve(dim_df_sweep, sweep_var='embedding_dim')
-        assert ax_mi is not None
-        assert len(ax_mi.figure.axes) == 2
-        plt.close('all')
-
-    @patch('matplotlib.pyplot.show')
-    def test_plot_dimensionality_curve_accepts_axes_tuple(self, mock_show, dim_df_sweep):
-        """When a tuple of axes is passed, no new figure is created."""
-        fig, (ax1, ax2) = plt.subplots(2, 1)
-        ax_mi = plot_dimensionality_curve(
-            dim_df_sweep, sweep_var='embedding_dim', axes=(ax1, ax2)
-        )
-        assert ax_mi is ax1
-        plt.close('all')
-
-    @patch('matplotlib.pyplot.show')
-    def test_plot_dimensionality_curve_accepts_single_axes(self, mock_show, dim_df_sweep):
-        """When a single axes is passed, only the MI panel is drawn (no PR)."""
-        fig, ax = plt.subplots()
-        ax_mi = plot_dimensionality_curve(
-            dim_df_sweep, sweep_var='embedding_dim', axes=ax
-        )
-        assert ax_mi is ax
-        # PR panel was skipped — still only one axes in the figure
-        assert len(fig.axes) == 1
+    def test_accepts_external_axes(self, mock_show, dim_details):
+        """When an axes is passed, no new figure is created."""
+        fig, ax_in = plt.subplots()
+        ax_out = plot_dimensionality_curve(dim_details, ax=ax_in)
+        assert ax_out is ax_in
         plt.close('all')
 
 

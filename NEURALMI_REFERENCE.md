@@ -21,7 +21,7 @@
 6. [Analysis Modes](#6-analysis-modes)
    - 6.1 `estimate` — Single MI Estimate
    - 6.2 `sweep` — Hyperparameter Sweep
-   - 6.3 `dimensionality` — Latent Dimensionality
+   - 6.3 `dimensionality` — Cross-Run-Stable Directions of Shared Structure
    - 6.4 `rigorous` — Bias-Corrected Estimate
    - 6.5 `lag` — Temporal Lag Analysis
    - 6.6 `precision` — Spike-Timing Precision
@@ -51,7 +51,7 @@
 - **Multiple data modalities**: continuous time series (LFP, EEG), spike trains, categorical signals.
 - **Hyperparameter exploration**: sweep any parameter combination in parallel.
 - **Temporal analyses**: lag, transfer entropy, spike-timing precision.
-- **Spatial analyses**: pairwise channel MI matrix, latent dimensionality.
+- **Spatial analyses**: pairwise channel MI matrix, cross-run-stable directions of shared structure.
 
 **Core dependency stack:** PyTorch ≥ 2.0, NumPy ≥ 1.23, Pandas ≥ 1.4, scikit-learn ≥ 1.0, statsmodels ≥ 0.13, Matplotlib ≥ 3.5, Seaborn ≥ 0.12.
 
@@ -279,7 +279,7 @@ Example: `Processing(x='continuous', x_params={'window_size': 0.05})`.
 - **`Precision`** — `tau_grid` (required), `corrupt_target` (`'x'|'y'|'both'`), `corruption_method` (`'rounding'|'noise'`), `n_noise_samples`, `threshold_ratio`.
 - **`Lag`** — `lag_range` (required), `equalize_n`.
 - **`Transfer`** — `history_window` (required), `prediction_horizon`, `bidirectional`; set `rigorous=True` for bias-corrected TE.
-- **`Dimensionality`** — `split_method`, `n_splits`, `channel_indices_x`, `sigma_add`.
+- **`Dimensionality`** — `split_method`, `n_splits`, `channel_indices_x`, `stability_threshold`, `degeneracy_ratio_threshold`, `min_strength_fraction`, `ceiling_mi_fraction`.
 - **`Conditional`** — `z_data` (required), `z_processor_type`, `z_processor_params`; set `rigorous=True` for bias-corrected CMI.
 
 ### Minimal Examples by Mode
@@ -379,16 +379,16 @@ labelled `"p1=v1, p2=v2, ..."`). Override explicitly with `result.plot(kind='lin
 
 ---
 
-### 6.3 `dimensionality` — Latent Dimensionality
+### 6.3 `dimensionality` — Cross-Run-Stable Directions of Shared Structure
 
-**What it does:** Estimates the **intrinsic dimensionality** of neural representations by probing how MI scales with embedding size, or by splitting channels into halves and measuring their shared information.
+**What it does:** Trains a modest-capacity Hybrid-Critic embedding multiple independent times and reports which directions of shared structure between two views reproduce reliably across every retraining, plus a free, no-training read of whether the views look cleanly separable or entangled. Does not report a scalar dimensionality count: a nonlinear encoder given spare capacity can construct combinations of true factors that are spectrally indistinguishable from genuine ones, so no measure of a single trained spectrum can be trusted as an exact count. See THEORY.md §6 for the full reasoning.
 
 Two sub-modes controlled by whether `y_data` is provided:
 
-| Sub-mode | `y_data` | What's measured |
+| Sub-mode | `y_data` | What's compared |
 |----------|----------|----------------|
-| **Intrinsic** | None | MI between two halves of x channels |
-| **Interaction** | Provided | Direct MI between x and y |
+| **Intrinsic** | None | Two halves of x channels, repeated over different channel-split assignments |
+| **Interaction** | Provided | x and y directly, repeated over independent weight initialisations |
 
 **Split methods** (`split_method` kwarg — intrinsic mode only):
 - `'random'` — Random channel splits, repeated `n_splits` times (default)
@@ -409,67 +409,46 @@ Two sub-modes controlled by whether `y_data` is provided:
 All 6 spatial split methods require `(N, C, H, W)` input and raise `ValueError` for lower-dimensional data.
 When the two halves have unequal flat sizes, `shared_encoder=True` is disabled with a warning. Geometric diagonal/antidiagonal splits always produce unequal halves (the diagonal pixels go to X), so `shared_encoder` is always disabled for `embedding_model='mlp'`.
 
-**`n_splits` kwarg (default 5):**
+**`n_splits` kwarg (default 3, min 2):**
 - *Intrinsic mode* (`split_method='random'`): number of distinct random channel-split assignments evaluated
-- *Interaction mode* (y_data provided): number of independent model fits from different random weight initialisations — gives a proper mean and std in the aggregated output
+- *Interaction mode* (y_data provided): number of independent model fits from different random weight initialisations
+- At least 2 splits are required to compute cross-run stability at all (there's nothing to compare a single run against); the default of 3 is a slightly more robust minimum.
 
-**Key kwargs:** `n_workers=1`, `split_method='random'`, `n_splits=5`, `lag=<int>` (for temporal), `channel_indices_x=<list>` (for index split)
+**Key kwargs:** `n_workers=1`, `split_method='random'`, `n_splits=3`, `lag=<int>` (for temporal), `channel_indices_x=<list>` (for index split), `stability_threshold=0.7`, `degeneracy_ratio_threshold=1.3`, `min_strength_fraction=0.05`, `ceiling_mi_fraction=0.85`
 
 **Returns:** `Results` with:
-- `result.dataframe` — columns: `mi_mean`, `mi_std`, `pr_eig_mean`, `pr_eig_std`, `pr_singular_mean`, `pr_singular_std` (aggregated over splits/runs); `result.details['raw_results']` contains per-run rows with `split_id`
-- `pr_eig` — effective dimensionality from eigenvalue (covariance) spectrum: `(Σσᵢ²)² / Σσᵢ⁴` — stricter, weights large singular values more
-- `pr_singular` — PR from singular-value spectrum: `(Σσᵢ)² / Σσᵢ²` — less strict variant
+- `result.mi_estimate` — `None`; this mode does not produce a single scalar answer.
+- `result.dataframe` — one row (or one row per swept-parameter combination if `sweep_grid` is used) with `mi_mean`/`mi_std`, `pr_eig_mean`/`pr_eig_std`, `pr_singular_mean`/`pr_singular_std`, aggregated across splits/reruns. `pr_eig`/`pr_singular` are kept as a labeled secondary diagnostic (see below), not the mode's headline output.
+- `result.details['raw_results']` — per-split DataFrame, one row per split: `split_id`, `train_mi`, `test_mi`, `best_epoch`, `n_epochs`, `pr_eig`, `pr_singular`.
+  - `pr_eig` — effective spread of that split's own spectrum, eigenvalue-weighted: `(Σσᵢ²)² / Σσᵢ⁴` — stricter, weights large singular values more
+  - `pr_singular` — same, singular-value-weighted: `(Σσᵢ)² / Σσᵢ²` — less strict variant
+- `result.details['regime_x']` — `{'eigvals', 'ratios', 'peak_rank', 'peak_val', 'regime'}` from the no-training regime diagnostic (THEORY.md §6); `regime` is `'separable-like'` or `'entangled-like'`. `result.details['regime_y']` likewise, interaction mode only. Absent (not an error) for data shapes the diagnostic doesn't support, e.g. 4-D spatial input with fewer than 2 channels.
+- `result.details['converged']` — `bool`; `True` only if every split/rerun converged (`best_epoch` short of the final training epoch). A `UserWarning` names how many splits didn't converge when this is `False`.
+- `result.details['stability_per_rank']` — `dict` keyed by rank (1-indexed int); each entry: `{'pairwise_abs_corr': [...], 'min_abs_corr': float, 'mean_strength': float, 'below_noise_floor': bool, 'stable': bool, 'near_degenerate_with_next': bool, 'near_degenerate_with_prev': bool}`. Present only when at least 2 splits produced usable rotated embeddings; absent (with a `UserWarning`) otherwise.
+- `result.details['stable_directions']` — list of individually-trustworthy rank indices.
+- `result.details['stable_but_degenerate_groups']` — list of rank-index groups, each trustworthy as a set but not individually ordered within the group.
+- `result.details['n_stable_total']` — `int`; count of all reported directions (individual + grouped). Always a lower bound on genuine shared structure, never a claimed exact count.
 - `result.details['embeddings_x']`, `result.details['embeddings_y']` — present only when `return_embeddings=True`; numpy arrays from the **last split's model**, in original sample order, index-aligned with the input data.
-- `result.details['embeddings_x_rotated']`, `result.details['embeddings_y_rotated']` — present when `return_embeddings=True` and `return_rotated_embeddings=True`; same shape as the raw embeddings but re-projected so that dimension 0 captures the most shared variance, dimension 1 the next most, etc. See `return_rotated_embeddings` in the parameter table.
-- `result.details['embeddings_rotation_singular_values']` — singular values of the (whitened) cross-covariance used to compute the rotation; shape `(min(d_x, d_y),)`.
-- `result.details['embeddings_rotation_x']`, `result.details['embeddings_rotation_y']` — rotation matrices U and V (present when `return_rotation_matrices=True`); apply as `new_data_zx @ U` to project new data into the same basis.
-- `result.details['embedding_history_x']`, `result.details['embedding_history_y']` — present when `track_embeddings != False`; a list of `(n_tracked, embed_dim)` numpy arrays, one per training epoch, from the last split's model. Defaults to tracking the first 512 samples each epoch in dimensionality mode (set `track_embeddings=False` to disable).
-- `result.details['embedding_history_x_rotated']`, `result.details['embedding_history_y_rotated']` — present when `track_embeddings != False` and `return_rotated_embeddings=True`; same list structure as `embedding_history_x/y` but in the SVD-aligned basis. In global mode (default) all epochs share the same rotation (derived from the best epoch); in per-epoch mode each epoch has its own rotation.
-- `result.details['embedding_rotation_singular_values']` — singular values used for the rotation; a single array in global mode, a list of arrays in per-epoch mode.
-- `result.details['embedding_rotation_x']`, `result.details['embedding_rotation_y']` — rotation matrices (global mode, when `return_rotation_matrices=True`).
-- `result.details['embedding_rotation_history_x']`, `result.details['embedding_rotation_history_y']` — per-epoch rotation matrices (per-epoch mode, when `return_rotation_matrices=True`).
+- `result.details['embeddings_x_rotated']`, `result.details['embeddings_y_rotated']`, `result.details['embeddings_rotation_singular_values']` — present whenever `result.details['embeddings_x']` is (this mode always applies `return_rotated_embeddings=True` internally); same last-split embeddings, re-projected so dimension 0 captures the most shared variance, dimension 1 the next most, etc.
+- `result.details['embeddings_rotation_x']`, `result.details['embeddings_rotation_y']` — rotation matrices U and V, present additionally when `return_rotation_matrices=True`; apply as `new_data_zx @ U` to project new data into the same basis.
+- `result.details['embedding_history_x']`, `result.details['embedding_history_y']` — present only when the caller explicitly sets `track_embeddings` (this mode does not force it on — the stability check's rotated-embedding extraction doesn't need per-epoch history).
 
-**Ceiling-escape noise injection (`sigma_add` kwarg):**
+**Cross-run stability + near-degeneracy — the mode's actual output.** Every split/rerun's rotated cross-covariance directions are compared against every other split's, on held-out test data only:
 
-When the true MI exceeds the InfoNCE ceiling (`log(eval_size)`, where `eval_size = min(len(test_idx), max_eval_samples)`), the spectral readout becomes unreliable. `sigma_add` adds fixed, independent, per-channel Gaussian noise (in measured-per-channel-std units) to the observations once — before the embedding, identical for train and eval of a fit — to lower the MI below the ceiling while leaving the true dimensionality unchanged.
+- **Stable**: a rank's direction is reproducible across splits (minimum pairwise correlation over every pair of splits ≥ `stability_threshold`) *and* above the noise floor (mean singular-value strength ≥ `min_strength_fraction` of the top rank's strength). The noise-floor check is independent of, and catches what, the correlation check alone misses — a pure-noise channel can show spuriously high cross-run correlation by chance despite carrying no real signal.
+- **Stable but degenerate**: reproducible and above the noise floor, but within `degeneracy_ratio_threshold` of an adjacent rank's strength — reported as a group, not individually ordered.
+- **Not reported**: everything else — didn't reproduce, or below the noise floor.
 
-- `sigma_add=None` *(default)*: no noise; non-binned-spike modalities behave exactly as without this feature.
-- `sigma_add=<float>`: inject that single noise level.
-- `sigma_add=[<float>, ...]`: run the full ladder, one result row per level.
-- `sigma_add='auto'`: search a geometric ladder (~0.25x–5x per-channel std, plus a negligible no-noise baseline rung) for the regime where MI has detached from the ceiling; widens the search once if the initial grid doesn't bracket it, then warns if it still doesn't.
-- `sigma_add_units`: `'relative'` *(default)* — a multiple of measured per-channel std; `'absolute'` — the noise std in native units.
-- `stabilize_counts` (bool, default `True`): for binned-spike data only, applies the Anscombe transform before measuring std / injecting noise. Fires on every binned-spike dimensionality run regardless of `sigma_add` (default-on toggle; set `False` for plain, un-stabilized counts — a warning is emitted if noise is also injected in that case).
-- Supported for intrinsic `split_method in ('random', 'spatial')` or interaction mode only. Raw spike-timestamp and categorical data raise a clear `ValueError` when `sigma_add` is set (bin the spikes first for the former).
-
-**Output** (in addition to the standard `result.dataframe` / `result.details['raw_results']`, both of which gain a `sigma_add` grouping column):
-- `result.details['sigma_add_ladder']` — one row per rung: `sigma_add`, `log_sigma_add`, `sigma_add_absolute_x_mean`, `sigma_add_absolute_y_mean`, `mi_mean`/`mi_std`, `pr_eig_mean`/`_std`, `pr_singular_mean`/`_std`, `ceiling_nats` (= `log(eval_size)`), `regime` (`'pinned'`/`'detached'`/`'collapsed'`), `detached` (bool).
-- `result.details['sigma_add_suggestion']` — `{'sigma_add': <float>, 'regime': 'detached'}`, only when `sigma_add='auto'` found a detached band; a suggestion, never a silent override of the reported estimates.
-- `result.plot()` automatically dispatches to `plot_noise_ladder` (both PR variants vs. `log(sigma_add)`, detached band shaded) when a noise ladder is present.
-- Permutation-test p-values are not yet computed per rung for the ladder (omitted, not fabricated).
-
-**Reliability diagnostics.** Every dimensionality run checks up to three independent conditions and reports on each separately rather than collapsing them into one `is_reliable` flag, since each calls for a different response:
-
-1. **Ceiling corruption** (`UserWarning`) — the underlying scalar MI is near its InfoNCE evaluation ceiling (`log(eval_size)`); the PR readout built on a saturated estimate is unreliable. Fixable via `max_eval_samples` or `sigma_add`.
-2. **Embedding-capacity truncation** (`UserWarning`) — PR is close to `embedding_dim`, the hard ceiling on what the embedding can represent; the true dimensionality may be higher. Fixable via a larger `embedding_dim`.
-3. **No spectral gap** (`logger.info`, not a warning) — MI is trustworthy and PR is a large fraction of `embedding_dim` without being truncated. This is a genuine finding (shared structure spread across many dimensions), not a failure.
-4. **Noise-ladder plateau** (`UserWarning`, `sigma_add` ladders only) — the PR readout is still drifting across `detached`-regime rungs rather than settling on a stable value; picking any single rung's dimensionality would be arbitrary.
-
-Each condition's threshold is a tunable default, not a derived constant — how strict to be depends on how much a given analysis needs to trust its output:
-
-| `Dimensionality` field | Condition | Default |
-|------------------------|-----------|---------|
-| `ceiling_mi_fraction` | 1. Ceiling corruption | `0.85` |
-| `truncation_pr_fraction` | 2. Embedding-capacity truncation | `0.8` |
-| `high_dim_pr_fraction` | 3. No spectral gap | `0.5` |
-| `ladder_plateau_cv_threshold` | 4. Noise-ladder plateau | `0.2` |
+**Ceiling proximity.** The critic this mode trains still has the usual InfoNCE-family evaluation ceiling, `log(eval_size)` (`eval_size = min(test_size, max_eval_samples)`). A `UserWarning` fires when the mean underlying MI estimate is within `ceiling_mi_fraction` (default `0.85`) of that ceiling. This is informational only, not a remediation: convergence gating already excludes the large majority of near-ceiling cases in practice, and a genuinely converged, near-ceiling run degrades the stable-direction count conservatively rather than misleadingly (THEORY.md §6).
 
 ```python
-# Intrinsic: MI between two random halves of x channels, 10 splits
+# Intrinsic: cross-run-stable directions between two random halves of x channels, 5 splits
 result = nmi.run(x, mode='dimensionality',
                  training=Training(n_epochs=100),
-                 dimensionality=Dimensionality(n_splits=10, split_method='random'),
+                 dimensionality=Dimensionality(n_splits=5, split_method='random'),
                  n_workers=4)
 result.plot()
+print(result.details['stable_directions'], result.details['regime_x']['regime'])
 
 # Intrinsic: user-specified channel assignment (e.g. two electrode shanks)
 result = nmi.run(x, mode='dimensionality',
@@ -477,15 +456,12 @@ result = nmi.run(x, mode='dimensionality',
                  dimensionality=Dimensionality(n_splits=5, split_method='index',
                                                channel_indices_x=[0, 1, 2, 8, 9, 10]))
 
-# Interaction: MI between x and y, 5 independent fits for mean/std
+# Interaction: cross-run-stable directions between x and y, 5 independent fits
 result = nmi.run(x, y, mode='dimensionality',
                  training=Training(n_epochs=100),
                  dimensionality=Dimensionality(n_splits=5),
                  n_workers=4)
-print(result.dataframe[['mi_mean', 'mi_std', 'pr_eig_mean', 'pr_singular_mean']])
-
-# Animate the training history (embeddings tracked by default)
-result.animate(output_path='training.gif', fps=10)
+print(result.details['n_stable_total'], result.details['converged'])
 ```
 
 ---
@@ -761,7 +737,7 @@ notebooks).
 |------|-----------|-------|
 | `estimate` | Test MI vs epoch | `best_epoch` marked in red; `conservative_epoch` (when `peak_fraction < 1`) marked in green with a diamond |
 | `sweep` / `lag` | Auto-selected by parameter count: line (1 param), heatmap (2), bar (3+) | Line: MI vs swept variable, shaded ±1 std. Heatmap/bar cover the parameters a line plot can't show. Override with `kind='line'\|'heatmap'\|'bar'` |
-| `dimensionality` | Two-panel: MI (top) + Participation Ratio (bottom) | Creates its own multi-panel figure; pass `axes=(ax_mi, ax_pr)` to supply existing axes |
+| `dimensionality` | Per-rank bar chart: stable / stable-but-degenerate / not-stable | Requires ≥2 splits (`stability_per_rank` in `result.details`); creates its own figure unless `ax=` is supplied |
 | `rigorous` | MI vs γ with WLS fit and extrapolation | Reliability box always shown: green "reliable" when `is_reliable=True`, red with a dynamic reason (`fit_quality_warning`/`leverage_warning`) when `False` |
 | `conditional` | Bar chart: I(XZ;Y), I(Z;Y), CMI I(X;Y\|Z) | |
 | `transfer` | Bar chart: TE(X→Y), TE(Y→X) | Title shows directionality index when present |
@@ -772,9 +748,9 @@ notebooks).
 fig, ax = plt.subplots()
 result.plot(ax=ax, title="My analysis", show=False)
 
-# Dimensionality: supply both axes for a two-panel layout in your own figure
-fig, (ax_mi, ax_pr) = plt.subplots(2, 1, figsize=(8, 8))
-result.plot(ax=(ax_mi, ax_pr), show=False)
+# Dimensionality: embed the per-rank stability chart in your own figure
+fig, ax = plt.subplots(figsize=(8, 5))
+result.plot(ax=ax, show=False)
 ```
 
 #### `result.summary() → None`
@@ -816,8 +792,12 @@ objects must share the same `mode`.
 | Mode | Overlay type |
 |------|-------------|
 | `estimate` | Test-MI training curves per run; best-epoch dashed vertical lines |
-| `sweep` / `lag` / `dimensionality` | Sweep curves with distinct colours |
+| `sweep` / `lag` | Sweep curves with distinct colours |
 | `rigorous` | Bias-correction fits with distinct colours per `labels=`, plus a per-result reliability text box |
+
+Not supported for `dimensionality`: its per-rank stable/degenerate/below-floor chart isn't a
+curve, so overlaying several isn't well-defined — call `result.plot()` on each result
+individually instead.
 
 ```python
 # Compare two training runs
@@ -837,18 +817,20 @@ Results.compare([r1, r2], labels=['Condition A', 'Condition B'])
 These functions are composable (accept an `ax` parameter, return the axes,
 support `show=False`) and are also available as `nmi.visualize.<name>`.
 
-#### `plot_dimensionality_curve(summary_df, sweep_var, units, axes, show, **kwargs) → plt.Axes`
+#### `plot_dimensionality_curve(details, ax, show, **kwargs) → plt.Axes`
 
-Dedicated two-panel plot for dimensionality results.  Top panel: MI vs sweep
-variable.  Bottom panel: Participation Ratio vs sweep variable.  When
-`axes=None` (default) a new figure is created.  To embed in an existing
-figure pass a 2-tuple `axes=(ax_mi, ax_pr)` or a single `ax` (PR panel
-skipped).  `show=False` suppresses `plt.show()`.  Returns the MI axes.
+Per-rank bar chart of which directions of shared structure are trustworthy, built from
+`details['stability_per_rank']` (plus `'stable_directions'` and
+`'stable_but_degenerate_groups'`) — pass `result.details`, not `result.dataframe`. One bar
+per embedding rank, height = mean singular-value strength across splits (log scale), coloured
+green (stable), amber/hatched with a bracket annotation (stable but degenerate group), or gray
+(not stable / below noise floor). Raises `ValueError` if `stability_per_rank` is missing (fewer
+than 2 splits). When `ax=None` (default) a new figure is created. `show=False` suppresses
+`plt.show()`.
 
 ```python
 from neural_mi.visualize import plot_dimensionality_curve
-ax_mi = plot_dimensionality_curve(result.dataframe, sweep_var='embedding_dim', show=False)
-ax_pr = ax_mi.figure.axes[1]   # access the PR panel
+ax = plot_dimensionality_curve(result.details, show=False)
 ```
 
 #### `plot_bias_correction_fit(raw_df, corrected_result, ax, units, show, label, color) → plt.Axes`
@@ -899,7 +881,10 @@ The reducer is fitted once on all frames concatenated, giving consistent coordin
 across the animation.  `result.animate(**kwargs)` is a thin wrapper around this function.
 
 ```python
-result = nmi.run(x, mode='dimensionality', training=Training(n_epochs=50))
+# track_embeddings=True: dimensionality mode does not track per-epoch
+# embeddings by default (not needed for its cross-run stability check).
+result = nmi.run(x, mode='dimensionality', output=Output(track_embeddings=True),
+                 training=Training(n_epochs=50))
 
 # Basic GIF
 result.animate(output_path='training.gif', fps=8)
@@ -1103,7 +1088,7 @@ training = Training(
 | `verbose` | bool | False | |
 | `show_progress` | bool | True | Show tqdm progress bar during training |
 | `return_embeddings` | bool | False | If `True`, adds `embeddings_x` and `embeddings_y` (numpy arrays, shape `(N_windows, embedding_dim)`) to `result.details`. All windows are embedded in original sample order — no cap, no shuffling — so the arrays are index-aligned with the caller's windowed data and can be directly paired with behavioral labels or other time-indexed signals. |
-| `track_embeddings` | bool / int / float / `'full'` | `False` (global); `512` in dimensionality mode | Per-epoch embedding tracking for `animate_training()`. `False` disables. `True` or `512` tracks the first 512 samples each epoch. A positive `int` specifies an exact count; a `float` in (0,1) is a fraction of the dataset; `'full'` tracks all samples (emits a `UserWarning`). Embeddings are always taken from the first N samples in original order. Stored in `result.details['embedding_history_x']` and `result.details['embedding_history_y']` (lists of `(n_tracked, embed_dim)` arrays, one per epoch). |
+| `track_embeddings` | bool / int / float / `'full'` | `False` | Per-epoch embedding tracking for `animate_training()`. `False` disables (including in `dimensionality` mode, which does not need per-epoch history for its cross-run stability check and does not force this on). `True` or `512` tracks the first 512 samples each epoch. A positive `int` specifies an exact count; a `float` in (0,1) is a fraction of the dataset; `'full'` tracks all samples (emits a `UserWarning`). Embeddings are always taken from the first N samples in original order. Stored in `result.details['embedding_history_x']` and `result.details['embedding_history_y']` (lists of `(n_tracked, embed_dim)` arrays, one per epoch). |
 | `return_rotated_embeddings` | bool | `False` | If `True`, computes an SVD-based rotation of the embeddings so that dimension 0 captures the most shared variance between X and Y, dimension 1 the next most, and so on — consistent with the Participation Ratio ordering. Works alongside `return_embeddings` (produces `embeddings_x_rotated`, `embeddings_y_rotated`) and/or `track_embeddings` (produces `embedding_history_x_rotated`, `embedding_history_y_rotated`). Has no effect for `concat` critics. |
 | `rotated_embeddings_whitening` | str or None | `'std'` | Whitening applied to the cross-covariance **before** computing the rotation axes. Does **not** affect the scale of the returned embeddings (which remain in the original embedding space, simply re-projected). `'std'` (default) matches the PR computation. `'zca'` applies full sphering (requires N >> d). `None` uses raw covariance. |
 | `rotated_embeddings_per_epoch` | bool | `False` | Applies only when `track_embeddings` and `return_rotated_embeddings` are both enabled. `False` (default): compute one rotation from the best epoch's embeddings and apply it uniformly to all tracked epochs — gives a consistent coordinate system for cross-epoch comparison. `True`: compute a fresh SVD per epoch — shows how the latent structure emerges during training. |
@@ -1200,7 +1185,7 @@ All critics output a score matrix `(batch_size, batch_size)`.
 |-------|---------|
 | `SeparableCritic` | Separate embedding networks + bilinear product |
 | `ConcatCritic` | Concatenated inputs → shared MLP |
-| `HybridCritic` | Large bottleneck; auto-used by `dimensionality` mode |
+| `HybridCritic` | MLP decision head on the concatenated embeddings; auto-used by `dimensionality` mode |
 
 ### Custom Models
 
@@ -1308,7 +1293,7 @@ nmi.run(x, y, mode=..., **kwargs) → Results
 Modes:
   estimate     → result.mi_estimate
   sweep        → result.dataframe [sweep_var, mi_mean, mi_std]
-  dimensionality → result.dataframe [embedding_dim, train_mi, pr_eig, pr_singular]
+  dimensionality → result.details['stable_directions', 'stable_but_degenerate_groups', 'regime_x']
   rigorous     → result.mi_estimate ± result.details['mi_error']
   lag          → result.dataframe [lag, train_mi]
   precision    → result.mi_estimate (baseline MI); result.details['precision_tau'], ['precision_thresholds']

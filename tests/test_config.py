@@ -102,12 +102,16 @@ def test_processing_keys_are_run_processor_keys():
 @pytest.mark.parametrize("cls,mode", [
     (cfg.Precision, "precision"),
     (cfg.Lag, "lag"),
+    (cfg.Dimensionality, "dimensionality"),
 ])
 def test_mode_config_keys_are_valid_mode_kwargs(cls, mode):
-    # Precision and Lag map exactly onto MODE_KWARGS_SCHEMA. (Rigorous/Transfer/
-    # Dimensionality/Conditional also carry keys consumed directly by their
-    # analysis functions -- e.g. gamma_range, sigma_add -- so they are not
-    # asserted against the schema here; their lowering mechanics are covered above.)
+    # Precision, Lag, and Dimensionality map exactly onto MODE_KWARGS_SCHEMA.
+    # (Rigorous/Transfer/Conditional also carry keys consumed directly by their
+    # analysis functions -- e.g. gamma_range -- so they are not asserted against
+    # the schema here; their lowering mechanics are covered above. Dimensionality
+    # used to be in that excluded group too, when sigma_add/stabilize_counts
+    # bypassed the schema entirely -- that inconsistency is gone now that those
+    # fields have been replaced with schema-validated ones.)
     emitted = set(_fill_all(cls).to_analysis_kwargs())
     allowed = set(MODE_KWARGS_SCHEMA[mode])
     unknown = emitted - allowed

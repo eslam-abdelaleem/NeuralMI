@@ -60,12 +60,17 @@ def mock_sweep():
         instance.run.return_value = [{'test_mi': 1.0}]
         yield MockSweep
 
-def test_dimensionality_forces_hybrid_critic_and_embedding_dim(mock_sweep):
+def test_dimensionality_forces_hybrid_critic_and_modest_embedding_dim(mock_sweep):
     """Proves the orchestrator overrides user params to guarantee accurate dim estimation.
 
     pr_eig/pr_singular/spectrum are always computed at the best epoch regardless
     of any dimensionality-specific forcing (see Trainer._extract_spectral_metrics),
     so there's nothing left to force for spectral tracking specifically.
+
+    embedding_dim defaults to a MODEST value (8), not a large one -- an
+    over-provisioned embedding is exactly what lets artifact directions
+    (products/combinations of true factors) masquerade as real ones. This is
+    the opposite of the old PR-based mode's "large bottleneck" default.
     """
     x_data = torch.randn(100, 4)
     # The user asks for a simple separable critic, but the orchestrator MUST override this
@@ -79,7 +84,7 @@ def test_dimensionality_forces_hybrid_critic_and_embedding_dim(mock_sweep):
 
     # Assertions for overriding behavior
     assert analysis_params['critic_type'] == 'hybrid', "Failed to force Hybrid critic."
-    assert analysis_params['embedding_dim'] == 64, "Failed to inject large default bottleneck."
+    assert analysis_params['embedding_dim'] == 8, "Failed to inject the modest default bottleneck."
 
     assert isinstance(df, pd.DataFrame)
 

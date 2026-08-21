@@ -50,7 +50,7 @@ class WindowManager:
             self.create_windows()
             self._notify_observers()
 
-    def _resolve_step(self):
+    def resolve_step(self):
         """Return the actual step size in time units.
 
         - None or step >= 1 : absolute step (None defaults to window_size).
@@ -68,7 +68,7 @@ class WindowManager:
         """Create window times for a given temporal range."""
         if self.t_start is None or self.t_end is None:
             raise RuntimeError("t_start and t_end parameters need to be set to create windows")
-        step = self._resolve_step()
+        step = self.resolve_step()
         self.window_times = np.arange(self.t_start, self.t_end, step)
         self.n_windows = len(self.window_times)
         # Initialize all windows as valid - will be updated by datasets

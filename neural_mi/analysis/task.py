@@ -358,6 +358,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         rotated_embeddings_whitening=params.get('rotated_embeddings_whitening', 'std'),
         rotated_embeddings_per_epoch=params.get('rotated_embeddings_per_epoch', False),
         return_rotation_matrices=params.get('return_rotation_matrices', False),
+        leak_check_window_size=params.get('leak_check_window_size'),
+        leak_check_step=params.get('leak_check_step'),
     )
 
     # Save model in extended format {'state_dict': ..., 'build_params': {...}}

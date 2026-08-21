@@ -4,7 +4,7 @@
 
 **NeuralMI** is a Python library designed to provide neuroscientists with a complete, end-to-end workflow for robustly and reproducibly estimating mutual information from complex neural data.
 
-In modern neuroscience, a naive MI estimate is not enough. Estimates can be plagued by finite-sampling bias and estimator variance, leading to results that aren't scientifically rigorous. `NeuralMI` solves this by moving beyond simple point estimates to incorporate essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and novel analyses of intrinsic dimensionality. It is built for researchers who need to analyze complex relationships in continuous time-series (like LFP or EEG), discrete spike trains, and categorical state data.
+In modern neuroscience, a naive MI estimate is not enough. Estimates can be plagued by finite-sampling bias and estimator variance, leading to results that aren't scientifically rigorous. `NeuralMI` solves this by moving beyond simple point estimates to incorporate essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and cross-run-validated analysis of shared latent structure. It is built for researchers who need to analyze complex relationships in continuous time-series (like LFP or EEG), discrete spike trains, and categorical state data.
 
 ## Key Features
 
@@ -14,12 +14,12 @@ In modern neuroscience, a naive MI estimate is not enough. Estimates can be plag
     * `estimate`: Get a quick, single MI estimate for initial exploration.
     * `sweep`: Perform parallelized sweeps over any model or data processing hyperparameter.
     * `lag`: Find the precise temporal offset between two time-series.
-    * `dimensionality`: Characterize the internal complexity of a neural population by finding its latent dimensionality.
+    * `dimensionality`: Find directions of shared structure within a neural population, or between two, that reproduce reliably across independent retrainings.
 * **Neuroscience-Ready Data Processors:**
     * `ContinuousProcessor`: Seamlessly handle windowing of LFP, EEG, or calcium imaging data.
     * `SpikeProcessor`: Convert raw spike times into an analyzable format.
     * `CategoricalProcessor`: Process discrete behavioral or stimulus state data.
-* **Built-in Visualizations:** Generate high-quality plots for dimensionality curves and bias-correction fits with a single command.
+* **Built-in Visualizations:** Generate high-quality plots for stable-direction charts and bias-correction fits with a single command.
 * **Flexible & Extensible:** Choose from multiple MI estimators (`InfoNCE`, `SMILE`, etc.) and provide your own pre-initialized PyTorch models for advanced use cases.
 
 ## Quickstart: An Accurate Estimate
@@ -64,21 +64,28 @@ results.plot()
 
 To get the most out of `NeuralMI`, we recommend following our tutorial series in order. Each tutorial builds on the last, taking you from the basics to advanced applications.
 
+### Part 0: Understanding MI Estimation
+
+* **Tutorial 00:** Why and How MI Estimation Works - A conceptual on-ramp: why mutual information (not correlation), how a neural estimator turns dependence into a number, and which value the library reports.
+
 ### Part 1: The Fundamentals
 
 * **Tutorial 01:** A First Estimate - Learn the basics of `nmi.run()` and the `Results` object on a simple dataset.
-* **Tutorial 02:** A Visual Guide to Neuroscience Data Processing - Understand how to use the `Continuous`, `Spike`, and `Categorical` processors.
+* **Tutorial 02:** Neural Data Formats - Understand how to use the `Continuous`, `Spike`, and `Categorical` processors.
+* **Tutorial 03:** Temporal Correlations and Splits - Learn how to handle temporal data and avoid leakage with blocked splitting.
 
 ### Part 2: Core Concepts for Scientific Rigor
 
-* **Tutorial 03:** Finding Temporal Relationships - Use `mode='sweep'` to find the optimal `window_size` and `mode='lag'` to analyze temporal data.
-* **Tutorial 04:** Choosing the Right Model and Estimator - Understand the trade-offs between different critic architectures and MI estimators.
+* **Tutorial 04:** Sweeps - Use `mode='sweep'` to explore and optimize hyperparameters.
+* **Tutorial 05:** Rigorous Estimation - A deep dive into `mode='rigorous'` for debiased, accurate MI estimates.
 
-### Part 3: Advanced Analysis and Customization
+### Part 3: Advanced Analysis and Applications
 
-* **Tutorial 05:** A Better Standard - Bias Correction - A deep dive into `mode='rigorous'` for accurate results.
-* **Tutorial 06:** Uncovering Latent Dimensionality - Use `mode='dimensionality'` and variational models to explore data complexity.
-* **Tutorial 07:** Advanced Customization - Learn how to use your own custom PyTorch models with the library.
+* **Tutorial 06:** Temporal Questions - Directed, time-resolved analyses: `mode='lag'`, `mode='precision'`, and transfer entropy.
+* **Tutorial 07:** Population Questions - Population geometry and connectivity: `mode='dimensionality'`, conditional MI, and the `mode='pairwise'` MI matrix, on real hippocampal and Allen Brain Observatory recordings.
+* **Tutorial 08:** Models, Estimators, and Validation - Understand the trade-offs between different critic architectures, estimators, and custom models.
+
+Separately, `benchmarks/vs_classical_estimators.ipynb` compares `NeuralMI` against classical alternatives (the KSG estimator and geometric intrinsic-dimension estimators) on problems chosen to be hard for them — useful if you're deciding whether a neural estimator is the right tool for your data, rather than learning the library itself.
 
 ## Installation
 

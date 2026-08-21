@@ -1,5 +1,7 @@
 # tests/test_dimensionality.py
-"""Tests for run_dimensionality_analysis — index split and embedding history helpers."""
+"""Tests for run_dimensionality_analysis — index split, embedding history
+helpers, and the cross-run stability/near-degeneracy/ceiling-proximity checks
+that replaced the old PR-ceiling/noise-injection-ladder machinery."""
 import warnings
 import pytest
 import numpy as np
@@ -12,8 +14,10 @@ from neural_mi.analysis.dimensionality import (
     run_dimensionality_analysis,
     _extract_embedding_history,
     _strip_embeddings,
-    _report_dimensionality_reliability,
-    _warn_if_ladder_not_plateaued,
+    _compute_stability_report,
+    _group_adjacent,
+    _classify_regime,
+    _warn_if_near_ceiling,
 )
 
 
@@ -84,14 +88,20 @@ class TestStripEmbeddings:
             'train_mi': 0.5,
             'embeddings_x': np.zeros((5, 4)),
             'embeddings_y': np.zeros((5, 4)),
+            'embeddings_x_rotated': np.zeros((5, 4)),
+            'embeddings_y_rotated': np.zeros((5, 4)),
+            'embeddings_rotation_singular_values': np.zeros(4),
+            'embeddings_rotation_x': np.zeros((4, 4)),
+            'embeddings_rotation_y': np.zeros((4, 4)),
             'embedding_history_x': [],
             'embedding_history_y': [],
         }
         _strip_embeddings([row])
-        assert 'embeddings_x' not in row
-        assert 'embeddings_y' not in row
-        assert 'embedding_history_x' not in row
-        assert 'embedding_history_y' not in row
+        for key in ('embeddings_x', 'embeddings_y', 'embeddings_x_rotated',
+                    'embeddings_y_rotated', 'embeddings_rotation_singular_values',
+                    'embeddings_rotation_x', 'embeddings_rotation_y',
+                    'embedding_history_x', 'embedding_history_y'):
+            assert key not in row
         assert 'train_mi' in row  # non-embedding key unaffected
 
     def test_no_error_when_keys_absent(self):
@@ -158,7 +168,14 @@ class TestIndexSplitValidation:
 # ---------------------------------------------------------------------------
 
 class TestIndexSplitSharedEncoderGuard:
-    """Verify that unequal channel counts disable shared_encoder with a warning."""
+    """Verify that unequal channel counts disable shared_encoder with a warning.
+
+    These tests call run_dimensionality_analysis directly (not through run()),
+    so base_params is treated as fully user-set (see the user_set_keys
+    fallback in run_dimensionality_analysis) -- an explicit
+    shared_encoder=True in base_params is respected as user intent, exactly
+    like calling run() with model=Model(shared_encoder=True) would be.
+    """
 
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
     def test_unequal_channels_disables_shared_encoder(self, mock_dispatch, caplog):
@@ -289,225 +306,236 @@ class TestIndexSplitChannelSlicing:
 
 
 # ---------------------------------------------------------------------------
-# run_dimensionality_analysis — track_embeddings default in dimensionality mode
+# run_dimensionality_analysis — embedding_dim / shared_encoder / track_embeddings
+# defaults, and the user_set_keys mechanism that makes them work correctly
+# whether called through run() or directly.
 # ---------------------------------------------------------------------------
 
-class TestTrackEmbeddingsDefault:
+class TestDefaults:
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_track_embeddings_defaults_to_512(self, mock_dispatch):
-        """track_embeddings should auto-default to 512 when not in base_params."""
+    def test_embedding_dim_defaults_to_8_when_unset(self, mock_dispatch):
+        mock_dispatch.return_value = [
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
+        ]
+        x = _make_x(c=4)
+        run_dimensionality_analysis(x, base_params={'n_epochs': 1}, split_method='random', n_splits=1)
+        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
+        assert forwarded_params.get('embedding_dim') == 8
+
+    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
+    def test_embedding_dim_explicit_value_respected(self, mock_dispatch):
         mock_dispatch.return_value = [
             {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         x = _make_x(c=4)
         run_dimensionality_analysis(
-            x, base_params={'n_epochs': 1}, split_method='random', n_splits=1
+            x, base_params={'n_epochs': 1, 'embedding_dim': 64},
+            split_method='random', n_splits=1,
         )
-        call_args = mock_dispatch.call_args[0]
-        split_tasks = call_args[0]
-        _, _, forwarded_params, _, _ = split_tasks[0]
-        assert forwarded_params.get('track_embeddings') == 512
+        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
+        assert forwarded_params.get('embedding_dim') == 64
 
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_track_embeddings_false_respected(self, mock_dispatch):
-        """Explicit track_embeddings=False in base_params should not be overridden."""
+    def test_shared_encoder_true_for_intrinsic_by_default(self, mock_dispatch):
+        mock_dispatch.return_value = [
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
+        ]
+        x = _make_x(c=4)
+        run_dimensionality_analysis(x, base_params={'n_epochs': 1}, split_method='random', n_splits=1)
+        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
+        assert forwarded_params.get('shared_encoder') is True
+
+    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
+    def test_shared_encoder_false_for_interaction_by_default(self, mock_dispatch):
+        mock_dispatch.return_value = [
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
+        ]
+        x, y = _make_x(c=4), _make_x(c=4)
+        run_dimensionality_analysis(x, base_params={'n_epochs': 1}, y_data=y, n_splits=1)
+        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
+        assert forwarded_params.get('shared_encoder') is False
+
+    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
+    def test_user_set_keys_from_run_distinguishes_explicit_from_schema_default(self, mock_dispatch):
+        """The exact bug this mechanism fixes: base_params already contains
+        embedding_dim=64 (the schema default, applied by run()'s
+        ParameterValidator.apply_defaults() before dispatch) even though the
+        user never set it -- only user_set_keys (the pre-defaults key set)
+        can tell these apart."""
         mock_dispatch.return_value = [
             {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
         x = _make_x(c=4)
         run_dimensionality_analysis(
-            x,
-            base_params={'n_epochs': 1, 'track_embeddings': False},
-            split_method='random',
-            n_splits=1,
+            x, base_params={'n_epochs': 1, 'embedding_dim': 64},  # schema-defaulted value
+            split_method='random', n_splits=1,
+            user_set_keys=set(),  # ...but the user never actually set it
         )
-        call_args = mock_dispatch.call_args[0]
-        split_tasks = call_args[0]
-        _, _, forwarded_params, _, _ = split_tasks[0]
-        assert forwarded_params.get('track_embeddings') is False
+        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
+        assert forwarded_params.get('embedding_dim') == 8, (
+            "embedding_dim=64 in base_params without being in user_set_keys must be "
+            "treated as the schema default, not a user override"
+        )
+
+    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
+    def test_track_embeddings_not_forced(self, mock_dispatch):
+        """track_embeddings no longer gets a dimensionality-specific override
+        (the rotated-embedding extraction this mode relies on doesn't need
+        it) -- whatever the caller passed (or didn't) flows through unchanged."""
+        mock_dispatch.return_value = [
+            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
+        ]
+        x = _make_x(c=4)
+        run_dimensionality_analysis(x, base_params={'n_epochs': 1}, split_method='random', n_splits=1)
+        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
+        assert 'track_embeddings' not in forwarded_params
 
 
 # ---------------------------------------------------------------------------
-# Dimensionality-reliability conditions
+# _compute_stability_report — the core mechanism this mode is built on
 # ---------------------------------------------------------------------------
 
-class TestDimensionalityReliabilityConditions:
-    """Regression tests for the three distinct reliability conditions:
-    (1) ceiling corruption, (2) no spectral gap, (3) no plateau across the
-    noise sweep. Deliberately kept as separate signals, not one is_reliable
-    flag."""
+class TestComputeStabilityReport:
+    def _make_split(self, seed, n=500, embedding_dim=3, shared=None, strengths=None):
+        rng = np.random.default_rng(seed)
+        if shared is None:
+            shared = np.zeros((n, 0))
+        strengths = strengths or [1.0] * embedding_dim
+        z = np.zeros((n, embedding_dim))
+        for i in range(embedding_dim):
+            if i < shared.shape[1]:
+                z[:, i] = strengths[i] * shared[:, i] + 0.05 * rng.standard_normal(n)
+            else:
+                z[:, i] = rng.standard_normal(n)
+        return z
 
-    def test_condition1_ceiling_corruption_warns(self):
-        """Scalar MI near log(eval_size) must warn that the PR readout is
-        unreliable, regardless of the PR value itself."""
+    def test_reproducible_direction_is_stable_and_above_floor(self):
+        """A direction driven by a shared signal across all 'splits' should be
+        flagged stable and individually trustworthy."""
+        rng = np.random.default_rng(0)
+        shared_signal = rng.standard_normal((500, 1))
+        per_split = []
+        for seed in (1, 2, 3):
+            z = self._make_split(seed, embedding_dim=1, shared=shared_signal, strengths=[2.0])
+            per_split.append({'zx_rotated_test': z, 'singular_values': np.array([2.0])})
+        report = _compute_stability_report(per_split, stability_threshold=0.7,
+                                           degeneracy_ratio_threshold=1.3, min_strength_fraction=0.05)
+        assert report['stable_directions'] == [1]
+        assert report['n_stable_total'] == 1
+
+    def test_pure_noise_channel_excluded_even_with_spurious_correlation(self):
+        """Regression test for the mechanism the whole mode hinges on: a pure
+        noise direction with near-zero singular-value strength must NOT be
+        reported as stable, even if it happens to show a high cross-run
+        correlation by chance (confirmed directly in the validation battery --
+        see SOURCE_OF_TRUTH.md's hard_entangled_troublezone result)."""
+        rng = np.random.default_rng(42)
+        n = 500
+        # A shared real signal on rank 1, plus a rank-2 "noise" direction whose
+        # values happen to correlate across the two draws purely by chance
+        # (fixed seed search would be needed to guarantee this in general, so
+        # instead we construct the spurious correlation directly: same tiny,
+        # near-zero-strength vector reused with a small independent perturbation).
+        shared = rng.standard_normal((n, 1))
+        base_noise_direction = rng.standard_normal(n) * 1e-4  # near-zero strength
+        per_split = []
+        for seed in (1, 2):
+            local_rng = np.random.default_rng(seed)
+            z = np.zeros((n, 2))
+            z[:, 0] = 2.0 * shared[:, 0] + 0.05 * local_rng.standard_normal(n)
+            # Same base direction (spurious cross-run correlation) but negligible strength.
+            z[:, 1] = base_noise_direction + 1e-6 * local_rng.standard_normal(n)
+            per_split.append({'zx_rotated_test': z, 'singular_values': np.array([2.0, 1e-4])})
+        report = _compute_stability_report(per_split, stability_threshold=0.7,
+                                           degeneracy_ratio_threshold=1.3, min_strength_fraction=0.05)
+        assert report['per_rank'][2]['below_noise_floor'] is True
+        assert 2 not in report['stable_directions']
+        assert report['n_stable_total'] == 1
+
+    def test_unstable_direction_excluded_despite_real_strength(self):
+        """A direction with real singular-value strength but that doesn't
+        reproduce across splits must be excluded -- the noise-floor gate and
+        the correlation gate are independent checks, not one catching for
+        the other."""
+        rng = np.random.default_rng(0)
+        per_split = []
+        for seed in (1, 2, 3):
+            local_rng = np.random.default_rng(seed)
+            z = local_rng.standard_normal((500, 1)) * 1.5  # real strength, but independent per split
+            per_split.append({'zx_rotated_test': z, 'singular_values': np.array([1.5])})
+        report = _compute_stability_report(per_split, stability_threshold=0.7,
+                                           degeneracy_ratio_threshold=1.3, min_strength_fraction=0.05)
+        assert report['per_rank'][1]['below_noise_floor'] is False
+        assert report['per_rank'][1]['stable'] is False
+        assert report['n_stable_total'] == 0
+
+    def test_adjacent_close_strength_ranks_grouped_not_individually_ordered(self):
+        """Two reproducible ranks of near-identical strength must be reported
+        as a group, not individually ranked."""
+        rng = np.random.default_rng(0)
+        shared = rng.standard_normal((500, 2))
+        per_split = []
+        for seed in (1, 2, 3):
+            z = self._make_split(seed, embedding_dim=2, shared=shared, strengths=[2.0, 1.9])
+            per_split.append({'zx_rotated_test': z, 'singular_values': np.array([2.0, 1.9])})
+        report = _compute_stability_report(per_split, stability_threshold=0.7,
+                                           degeneracy_ratio_threshold=1.3, min_strength_fraction=0.05)
+        assert report['stable_directions'] == []
+        assert report['stable_but_degenerate_groups'] == [[1, 2]]
+        assert report['n_stable_total'] == 2
+
+
+class TestGroupAdjacent:
+    def test_empty(self):
+        assert _group_adjacent([]) == []
+
+    def test_single(self):
+        assert _group_adjacent([3]) == [[3]]
+
+    def test_contiguous_and_separate_runs(self):
+        assert _group_adjacent([1, 2, 5, 6, 7, 10]) == [[1, 2], [5, 6, 7], [10]]
+
+
+# ---------------------------------------------------------------------------
+# Ceiling-proximity diagnostic (lightweight, standalone -- not a remediation)
+# ---------------------------------------------------------------------------
+
+class TestCeilingProximity:
+    def test_classify_regime_pinned_detached_collapsed(self):
+        assert _classify_regime(9.5, 10.0, 1.0, 0.5) == ('pinned', False)
+        assert _classify_regime(5.0, 10.0, 1.0, 0.5) == ('detached', True)
+        assert _classify_regime(0.1, 10.0, 1.0, 0.5) == ('collapsed', False)
+        assert _classify_regime(float('nan'), 10.0, 1.0, 0.5) == ('collapsed', False)
+
+    def test_warn_if_near_ceiling_warns_when_pinned(self):
         eval_size = 100.0
         ceiling = np.log(eval_size)
-        df = pd.DataFrame({
-            'test_mi': [0.95 * ceiling] * 3,
-            'eval_size': [eval_size] * 3,
-            'pr_singular': [3.0, 3.2, 2.9],  # low PR -- would look "fine" without the MI check
-        })
+        df = pd.DataFrame({'test_mi': [0.95 * ceiling] * 3, 'eval_size': [eval_size] * 3})
         with pytest.warns(UserWarning, match="near its evaluation ceiling"):
-            _report_dimensionality_reliability(df, {'embedding_dim': 64})
+            _warn_if_near_ceiling(df, ceiling_mi_fraction=0.85)
 
-    def test_condition2_no_spectral_gap_is_informational_not_a_failure(self, caplog):
-        """High PR with MI safely below ceiling is a genuine finding -- must
-        be an informational note, not a warning/failure."""
-        import logging
+    def test_warn_if_near_ceiling_silent_when_detached(self):
         eval_size = 1000.0
         ceiling = np.log(eval_size)
-        df = pd.DataFrame({
-            'test_mi': [0.3 * ceiling] * 3,   # far from the ceiling
-            'eval_size': [eval_size] * 3,
-            'pr_singular': [40.0, 41.0, 39.0],  # 40/64 = 62.5%: high but not truncated (<80%)
-        })
-        with caplog.at_level(logging.INFO, logger='neural_mi'):
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                _report_dimensionality_reliability(df, {'embedding_dim': 64})
-        assert not any(issubclass(w.category, UserWarning) for w in caught), \
-            "high-but-untruncated PR must not raise a UserWarning"
-        assert any('distributed across many dimensions' in r.message for r in caplog.records)
-
-    def test_embedding_ceiling_truncation_still_warns(self):
-        """The pre-existing embedding-capacity truncation check must still fire
-        (independent of the new MI-ceiling condition)."""
-        eval_size = 1000.0
-        ceiling = np.log(eval_size)
-        df = pd.DataFrame({
-            'test_mi': [0.3 * ceiling] * 3,
-            'eval_size': [eval_size] * 3,
-            'pr_singular': [55.0, 56.0, 54.0],  # 55/64 = 86%: past the 80% truncation threshold
-        })
-        with pytest.warns(UserWarning, match="embedding dimension ceiling"):
-            _report_dimensionality_reliability(df, {'embedding_dim': 64})
-
-    def test_no_warning_when_mi_low_and_pr_low(self):
-        """The ordinary, unremarkable case: MI well below ceiling, PR well
-        below embedding_dim -- no warnings, no reliability messaging at all."""
-        eval_size = 1000.0
-        ceiling = np.log(eval_size)
-        df = pd.DataFrame({
-            'test_mi': [0.3 * ceiling] * 3,
-            'eval_size': [eval_size] * 3,
-            'pr_singular': [3.0, 3.1, 2.9],
-        })
+        df = pd.DataFrame({'test_mi': [0.3 * ceiling] * 3, 'eval_size': [eval_size] * 3})
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            _report_dimensionality_reliability(df, {'embedding_dim': 64})
-        assert len(caught) == 0
-
-    def test_ceiling_mi_fraction_is_configurable(self):
-        """ceiling_mi_fraction must actually move the condition-1 decision."""
-        eval_size = 100.0
-        ceiling = np.log(eval_size)
-        df = pd.DataFrame({
-            'test_mi': [0.95 * ceiling] * 3,
-            'eval_size': [eval_size] * 3,
-            'pr_singular': [3.0, 3.2, 2.9],
-        })
-        # Default (0.85): 0.95 > 0.85 -- warns.
-        with pytest.warns(UserWarning, match="near its evaluation ceiling"):
-            _report_dimensionality_reliability(df, {'embedding_dim': 64})
-        # Looser threshold above 0.95 -- must not warn on the same data.
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _report_dimensionality_reliability(df, {'embedding_dim': 64, 'ceiling_mi_fraction': 0.99})
+            _warn_if_near_ceiling(df, ceiling_mi_fraction=0.85)
         assert not any('evaluation ceiling' in str(w.message) for w in caught)
 
-    def test_truncation_pr_fraction_is_configurable(self):
-        """truncation_pr_fraction must actually move the condition-1b decision."""
-        eval_size = 1000.0
+    def test_ceiling_mi_fraction_is_configurable(self):
+        eval_size = 100.0
         ceiling = np.log(eval_size)
-        df = pd.DataFrame({
-            'test_mi': [0.3 * ceiling] * 3,
-            'eval_size': [eval_size] * 3,
-            'pr_singular': [55.0, 56.0, 54.0],  # 55/64 = 86%
-        })
-        # Default (0.8): 86% > 80% -- warns.
-        with pytest.warns(UserWarning, match="embedding dimension ceiling"):
-            _report_dimensionality_reliability(df, {'embedding_dim': 64})
-        # Looser threshold above 86% -- must not warn on the same data.
+        df = pd.DataFrame({'test_mi': [0.95 * ceiling] * 3, 'eval_size': [eval_size] * 3})
+        with pytest.warns(UserWarning, match="near its evaluation ceiling"):
+            _warn_if_near_ceiling(df, ceiling_mi_fraction=0.85)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            _report_dimensionality_reliability(df, {'embedding_dim': 64, 'truncation_pr_fraction': 0.9})
-        assert not any('embedding dimension ceiling' in str(w.message) for w in caught)
+            _warn_if_near_ceiling(df, ceiling_mi_fraction=0.99)
+        assert not any('evaluation ceiling' in str(w.message) for w in caught)
 
-    def test_high_dim_pr_fraction_is_configurable(self, caplog):
-        """high_dim_pr_fraction must actually move the condition-2 decision."""
-        import logging
-        eval_size = 1000.0
-        ceiling = np.log(eval_size)
-        df = pd.DataFrame({
-            'test_mi': [0.3 * ceiling] * 3,
-            'eval_size': [eval_size] * 3,
-            'pr_singular': [40.0, 41.0, 39.0],  # 40/64 = 62.5%
-        })
-        # Default (0.5): 62.5% >= 50% -- logs the informational note.
-        with caplog.at_level(logging.INFO, logger='neural_mi'):
-            _report_dimensionality_reliability(df, {'embedding_dim': 64})
-        assert any('distributed across many dimensions' in r.message for r in caplog.records)
-
-        # Stricter threshold above 62.5% -- must not log the note on the same data.
-        caplog.clear()
-        with caplog.at_level(logging.INFO, logger='neural_mi'):
-            _report_dimensionality_reliability(
-                df, {'embedding_dim': 64, 'high_dim_pr_fraction': 0.7}
-            )
-        assert not any('distributed across many dimensions' in r.message for r in caplog.records)
-
-    def test_condition3_no_plateau_warns(self):
-        """PR that keeps drifting across detached sigma_add rungs must warn
-        that the ladder hasn't stabilized."""
-        ladder = pd.DataFrame({
-            'sigma_add': [1.0, 2.0, 3.0],
-            'regime': ['detached', 'detached', 'detached'],
-            'pr_singular_mean': [3.0, 8.0, 15.0],  # clearly still climbing, not stable
-        })
-        with pytest.warns(UserWarning, match="has not.*plateaued"):
-            _warn_if_ladder_not_plateaued(ladder, {})
-
-    def test_condition3_plateaued_ladder_does_not_warn(self):
-        """A stable PR across detached rungs must not trigger the plateau warning."""
-        ladder = pd.DataFrame({
-            'sigma_add': [1.0, 2.0, 3.0],
-            'regime': ['detached', 'detached', 'detached'],
-            'pr_singular_mean': [5.0, 5.1, 4.9],  # stable
-        })
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _warn_if_ladder_not_plateaued(ladder, {})
-        assert not any('plateaued' in str(w.message) for w in caught)
-
-    def test_condition3_single_detached_rung_skipped(self):
-        """Fewer than two detached rungs can't demonstrate a plateau either
-        way -- must not warn."""
-        ladder = pd.DataFrame({
-            'sigma_add': [1.0, 2.0, 3.0],
-            'regime': ['pinned', 'detached', 'collapsed'],
-            'pr_singular_mean': [60.0, 5.0, 0.1],
-        })
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _warn_if_ladder_not_plateaued(ladder, {})
-        assert not any('plateaued' in str(w.message) for w in caught)
-
-    def test_condition3_cv_threshold_is_configurable(self):
-        """ladder_plateau_cv_threshold must actually change the decision, not
-        just be accepted and ignored."""
-        ladder = pd.DataFrame({
-            'sigma_add': [1.0, 2.0, 3.0],
-            'regime': ['detached', 'detached', 'detached'],
-            'pr_singular_mean': [4.5, 5.0, 5.5],  # cv ~ 0.1: passes the 0.2 default
-        })
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _warn_if_ladder_not_plateaued(ladder, {})
-        assert not any('plateaued' in str(w.message) for w in caught)
-
-        # A stricter threshold below that ~0.1 cv must now flag the same ladder.
-        with pytest.warns(UserWarning, match="has not.*plateaued"):
-            _warn_if_ladder_not_plateaued(ladder, {'ladder_plateau_cv_threshold': 0.05})
+    def test_missing_columns_no_error(self):
+        _warn_if_near_ceiling(pd.DataFrame({'foo': [1, 2, 3]}))  # should not raise
 
 
 class TestAnalysisWorkflowDoesNotMutateCallerDict:

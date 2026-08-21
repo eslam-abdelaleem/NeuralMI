@@ -18,8 +18,17 @@ import contextlib
 from neural_mi.data import PairedDataset, PairedTemporalDataset, SubsetView
 from neural_mi.logger import logger
 from neural_mi.exceptions import TrainingError
-from neural_mi.utils import compute_cross_covariance_spectrum, compute_spectral_metrics, compute_cross_covariance_rotation
+from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
+                             compute_cross_covariance_rotation, warn_if_blocked_split_leaks)
 from neural_mi.augmentations import apply_augmentations
+
+# Fraction of the (smoothed) test-MI history that must sit above
+# TEST_TRACE_SATURATION_THRESHOLD * ceiling before peak-epoch selection is
+# flagged as unreliable (Fix 5): a judgement call, kept as a module constant
+# so it can be tuned once more real-data experience is available.
+TEST_TRACE_SATURATED_EPOCH_FRACTION_THRESHOLD = 0.5
+TEST_TRACE_SATURATION_THRESHOLD = 0.9
+CEILING_PROXIMITY_WARNING_THRESHOLD = 0.85
 
 def _ranks(sample: np.ndarray) -> List[int]:
     """Return each element's rank (position in sorted order) within `sample`."""
@@ -160,8 +169,10 @@ class Trainer:
               return_rotated_embeddings: bool = False,
               rotated_embeddings_whitening: Optional[str] = 'std',
               rotated_embeddings_per_epoch: bool = False,
-              return_rotation_matrices: bool = False) -> Dict[str, Any]:
-        
+              return_rotation_matrices: bool = False,
+              leak_check_window_size: Optional[float] = None,
+              leak_check_step: Optional[float] = None) -> Dict[str, Any]:
+
         """Trains the critic model and returns performance metrics.
 
         This method implements the main training loop, including data splitting,
@@ -225,6 +236,20 @@ class Trainer:
             Defaults to None (use all training samples).
         split_gap_fraction : float, optional
             When using 'blocked' split_mode, this fraction of the data will be left as a gap between training and test blocks to reduce leakage.
+        leak_check_window_size, leak_check_step : float, optional
+            Window geometry for the blocked-split leakage check, in time units.
+            ``gap_fraction`` above buys a gap of *windows*, not time -- the
+            actual time-domain buffer is ``gap_size * step``, and if that's
+            shorter than the window, train and test windows can share raw
+            samples even though their indices don't overlap. Most callers
+            don't need to pass these explicitly: if omitted, the check falls
+            back to ``dataset.window_manager`` when one is live (e.g.
+            deferred-processing paths like ``mode='lag'``). Callers whose
+            windowing already happened upstream of this Trainer call (the
+            common case for most modes -- see ``run.py``, which builds the
+            windowed dataset once and passes only the resulting tensor down)
+            must pass these explicitly, since ``dataset`` here is a plain,
+            already-windowed dataset with no window manager of its own.
         track_spectral_history : bool, optional
             If True, records ``pr_eig``, ``pr_singular``, and the raw cross-covariance
             spectrum (singular values) at every epoch in the returned
@@ -313,8 +338,25 @@ class Trainer:
         elif split_mode == 'random':
             train_idx, test_idx = self._create_random_split(len(dataset), train_fraction)
         else:
+            # Window geometry for the leakage check below can come from two
+            # places, depending on how this dataset was built:
+            #  - dataset.window_manager is live when windowing was deferred to
+            #    this worker (e.g. mode='lag', a processor-swept mode='sweep')
+            #    and `dataset` really is the PairedTemporalDataset that did it.
+            #  - leak_check_window_size/step (explicit args, set by callers like
+            #    run.py's single-preprocess path for mode='estimate' and most
+            #    other modes) cover the common case where windowing already
+            #    happened once upstream and `dataset` here is a plain,
+            #    already-windowed PairedDataset with no window_manager at all.
+            _wm = getattr(dataset, 'window_manager', None)
+            if leak_check_window_size is not None and leak_check_step is not None:
+                _leak_kwargs = {'window_size': leak_check_window_size, 'step': leak_check_step}
+            elif _wm is not None:
+                _leak_kwargs = {'window_size': _wm.window_size, 'step': _wm.resolve_step()}
+            else:
+                _leak_kwargs = {}
             train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
-                                                             gap_fraction=split_gap_fraction)
+                                                             gap_fraction=split_gap_fraction, **_leak_kwargs)
         
         n_train = len(train_idx)
         if batch_size > n_train > 0:
@@ -326,7 +368,12 @@ class Trainer:
         test_view = SubsetView(dataset, indices=test_idx, max_index_reduction=max_index_reduction)
 
         # 2. Lock in a Train Evaluation Subset (to prevent OOM/slowdown during train_mi tracking)
-        actual_train_subset_size = train_subset_size or min(len(train_idx), len(test_idx), max_eval_samples)
+        # Deliberately NOT coupled to len(test_idx): the reported train-side MI's
+        # ceiling is log(actual_train_subset_size), and there is no statistical
+        # reason to let a small test split (e.g. 10-20% of windows by default)
+        # needlessly shrink that ceiling. Only max_eval_samples and the available
+        # training pool bound it.
+        actual_train_subset_size = train_subset_size or min(len(train_idx), max_eval_samples)
         if train_subset_size is not None and train_subset_size > len(train_idx):
             warnings.warn(
                 f"train_subset_size={train_subset_size} exceeds the number of available "
@@ -626,24 +673,69 @@ class Trainer:
                 dataset.y_dataset[train_eval_view.indices, ...], max_eval_samples)
         
         from neural_mi.estimators import infonce_lower_bound
-        _eval_size = None
+        _scale = nats_to_bits  # 1/ln(2) for bits, 1.0 for nats -- same scale as every other reported MI
+        _units = output_units
+
+        # Ceiling diagnostics: computed and recorded for every mode/estimator
+        # (Fix 6), not just InfoNCE, since even a non-hard-ceiling estimator's
+        # proximity to log(n_eval) is informative. `eval_size` keeps its
+        # existing, already-relied-upon meaning (test-side n, e.g. the
+        # dimensionality noise-injection ladder keys ceiling comparisons on
+        # it) -- unchanged, still populated unconditionally now rather than
+        # only for InfoNCE. `train_eval_size` is new: the sample count behind
+        # the *reported* evaluation (`train_mi`), which Fix 1 decoupled from
+        # `eval_size` -- the two are no longer interchangeable, so this needs
+        # its own name rather than overloading `eval_size` to mean either one
+        # depending on caller (that would silently break existing callers).
+        _eval_size = min(len(test_idx), max_eval_samples) if len(test_idx) > 0 else None
+        _train_eval_size = actual_train_subset_size if actual_train_subset_size > 0 else None
+        _test_ceiling_mi = (np.log(_eval_size) * _scale) if _eval_size and _eval_size >= 2 else None
+        _train_ceiling_mi = (np.log(_train_eval_size) * _scale) if _train_eval_size and _train_eval_size >= 2 else None
+        _test_saturation = (final_test_mi * _scale / _test_ceiling_mi) if _test_ceiling_mi else None
+        _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
+
         if self.estimator_fn is infonce_lower_bound:
-            n_eval = min(len(test_idx), max_eval_samples)
-            _eval_size = n_eval
-            eval_ceiling_nats = np.log(n_eval)
-            if final_test_mi > 0.85 * eval_ceiling_nats:
-                _scale = nats_to_bits  # 1/ln(2) for bits, 1.0 for nats
-                _units = output_units
-                _est_disp = final_test_mi * _scale
-                _ceil_disp = eval_ceiling_nats * _scale
+            _tripped = []
+            if _test_ceiling_mi is not None and final_test_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _test_ceiling_mi:
+                _tripped.append(f"test MI ({final_test_mi * _scale:.3f} {_units}) vs. test ceiling "
+                                f"log(test_eval_size={_eval_size})={_test_ceiling_mi:.3f} {_units}")
+            if _train_ceiling_mi is not None and final_train_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _train_ceiling_mi:
+                _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) vs. train-eval ceiling "
+                                f"log(train_eval_size={_train_eval_size})={_train_ceiling_mi:.3f} {_units}")
+            if _tripped:
                 logger.warning(
-                    f"InfoNCE estimate ({_est_disp:.3f} {_units}) is near the ceiling "
-                    f"for evaluation batch size log(n_eval={n_eval})={_ceil_disp:.3f} {_units}. "
-                    f"The true MI may be higher. Consider increasing max_eval_samples or "
-                    f"switching to the 'smile' estimator for high-MI scenarios."
+                    f"InfoNCE estimate is near its ceiling: {'; '.join(_tripped)}. "
+                    f"The true MI may be higher. Consider increasing max_eval_samples "
+                    f"(and train_subset_size, if set) or switching to the 'smile' "
+                    f"estimator for high-MI scenarios."
                 )
 
-        best_ep = np.argmax(self.custom_smoothing_fn(history) if self.custom_smoothing_fn else self._smooth(history, smoothing_sigma, median_window))
+        # Fix 5: is peak-epoch selection actually distinguishing epochs, or is
+        # the smoothed test trace riding at/near its own ceiling for most of
+        # training -- in which case the argmax below is close to a coin flip
+        # over flat noise, and the reported best_epoch is arbitrary.
+        _smoothed_history = np.asarray(
+            self.custom_smoothing_fn(history) if self.custom_smoothing_fn
+            else self._smooth(history, smoothing_sigma, median_window)
+        )
+        _test_trace_saturated_fraction = None
+        if _test_ceiling_mi is not None and _smoothed_history.size > 0:
+            _valid = _smoothed_history[~np.isnan(_smoothed_history)]
+            if _valid.size > 0:
+                _test_trace_saturated_fraction = float(
+                    np.mean((_valid * _scale) > TEST_TRACE_SATURATION_THRESHOLD * _test_ceiling_mi)
+                )
+                if _test_trace_saturated_fraction > TEST_TRACE_SATURATED_EPOCH_FRACTION_THRESHOLD:
+                    logger.warning(
+                        f"Peak-epoch selection may be unreliable: "
+                        f"{_test_trace_saturated_fraction:.0%} of the smoothed test-MI "
+                        f"history sits above {TEST_TRACE_SATURATION_THRESHOLD:.0%} of the "
+                        f"test ceiling ({_test_ceiling_mi:.3f} {_units}). With the trace "
+                        f"riding near its ceiling, the epoch with the (noisy) maximum is "
+                        f"close to arbitrary. Consider increasing max_eval_samples."
+                    )
+
+        best_ep = np.argmax(_smoothed_history)
 
         # Early stopping is effectively off by default (patience defaults to
         # 1000), so nothing else signals "training simply ran out of epochs while
@@ -733,11 +825,28 @@ class Trainer:
             'all_mi_negative': _all_mi_negative,
         }
         if _eval_size is not None:
-            # eval_size = min(len(test_idx), max_eval_samples): the InfoNCE evaluation
-            # denominator. The ceiling is log(eval_size), NOT log(batch_size) — exposed
-            # here so callers (e.g. the dimensionality noise-injection ladder) can key
-            # ceiling comparisons on it without recomputing the train/test split.
+            # eval_size = min(len(test_idx), max_eval_samples): the *test-side*
+            # evaluation denominator (unchanged meaning -- e.g. the
+            # dimensionality noise-injection ladder already keys ceiling
+            # comparisons on it). Its ceiling is log(eval_size), NOT
+            # log(batch_size). Populated for every mode/estimator now, not
+            # just InfoNCE (Fix 6) -- the reference value is informative even
+            # for estimators without a hard ceiling.
             results['eval_size'] = _eval_size
+            results['test_ceiling_mi'] = _test_ceiling_mi
+            results['test_saturation'] = _test_saturation
+        if _train_eval_size is not None:
+            # train_eval_size: sample count behind the *reported* evaluation
+            # (train_mi). Deliberately a separate field from eval_size, not a
+            # reuse of it -- Fix 1 decoupled the two (train_eval_size can now
+            # be larger than eval_size), so they can differ and callers that
+            # want "the ceiling for what I'm actually being shown" need this,
+            # not eval_size.
+            results['train_eval_size'] = _train_eval_size
+            results['train_ceiling_mi'] = _train_ceiling_mi
+            results['train_saturation'] = _train_saturation
+        if _test_trace_saturated_fraction is not None:
+            results['test_trace_saturated_fraction'] = _test_trace_saturated_fraction
         if _conservative_ep is not None:
             results['conservative_epoch'] = _conservative_ep
             results['train_mi_at_peak'] = _best_ep_train_mi
@@ -943,7 +1052,9 @@ class Trainer:
         n_train = int(n * frac)
         return indices[:n_train], indices[n_train:]
 
-    def _create_blocked_split(self, n: int, frac: float, k: int, gap_fraction: float = 0.0) -> Tuple[np.ndarray, np.ndarray]:
+    def _create_blocked_split(self, n: int, frac: float, k: int, gap_fraction: float = 0.0,
+                              window_size: Optional[float] = None, step: Optional[float] = None,
+                              leak_check_label: str = "") -> Tuple[np.ndarray, np.ndarray]:
         n_test = int(n * (1 - frac))
         if n_test == 0:
             return np.arange(n), np.array([])
@@ -965,6 +1076,9 @@ class Trainer:
         ])
 
         gap_size = int(round(gap_fraction * block)) if block > 0 else 0
+        if window_size is not None and step is not None:
+            warn_if_blocked_split_leaks(gap_size, block, step, window_size, gap_fraction,
+                                        path_label=leak_check_label)
         if gap_size > 0:
             gap_idx = set()
             for i, s in enumerate(starts):

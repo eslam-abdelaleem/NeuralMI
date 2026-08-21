@@ -160,20 +160,29 @@ MODE_KWARGS_SCHEMA = {
     'dimensionality': {
         'n_workers': {'type': int, 'default': 1},
         'split_method': {'type': str, 'default': 'random'}, # 'random'|'spatial'|'temporal'|'index'|'horizontal'|'vertical'|'row_interleaved'|'col_interleaved'|'diagonal'|'antidiagonal'
-        'n_splits': {'type': int, 'default': 5},
+        # Independent repeats: channel-splits for intrinsic mode, seed-reruns for
+        # interaction mode. 2 gives one cross-run comparison pair; 3 is a more
+        # robust minimum for the stability check below.
+        'n_splits': {'type': int, 'min': 2, 'default': 3},
         'lag': {'type': int, 'default': 1}, # if split_method='temporal'
         # Required when split_method='index': list of channel indices assigned to X.
         # Y is automatically the complement (all remaining channels).
         'channel_indices_x': {'type': (list, type(None)), 'default': None},
-        # Thresholds for the dimensionality-reliability diagnostics (see
-        # _report_dimensionality_reliability / _warn_if_ladder_not_plateaued in
-        # analysis/dimensionality.py). Defaults are reasonable starting points,
-        # not derived constants -- tune them to how strict a given analysis needs
-        # to be.
+        # Thresholds for deciding which directions of shared structure are
+        # trustworthy (see _compute_stability_report in analysis/dimensionality.py).
+        # Defaults are reasonable starting points validated on a battery of
+        # synthetic conditions, not derived constants -- tune to how strict a
+        # given analysis needs to be.
+        'stability_threshold': {'type': float, 'min': 0.0, 'default': 0.7},
+        'degeneracy_ratio_threshold': {'type': float, 'min': 1.0, 'default': 1.3},
+        'min_strength_fraction': {'type': float, 'min': 0.0, 'default': 0.05},
+        # Lightweight, standalone warning: is the underlying MI estimate close
+        # enough to its evaluation ceiling (log(eval_size)) that any reading
+        # built on it deserves extra caution? Not a remediation mechanism (see
+        # SOURCE_OF_TRUTH.md Stage 0 -- ceiling proximity was found to degrade
+        # existing guardrails gracefully rather than mislead them, so no
+        # noise-injection remedy is applied automatically).
         'ceiling_mi_fraction': {'type': float, 'default': 0.85},
-        'truncation_pr_fraction': {'type': float, 'default': 0.8},
-        'high_dim_pr_fraction': {'type': float, 'default': 0.5},
-        'ladder_plateau_cv_threshold': {'type': float, 'default': 0.2},
     },
     'rigorous': {
         'n_workers': {'type': int, 'default': 1},
@@ -183,6 +192,9 @@ MODE_KWARGS_SCHEMA = {
         'residual_threshold': {'type': float, 'default': 2.5},
         'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
+        # None = auto-detect from leak_check_window_size (set exactly when a
+        # windowed processor was used); True/False overrides the detector.
+        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'lag': {
         'n_workers': {'type': int, 'default': 1},
@@ -209,6 +221,7 @@ MODE_KWARGS_SCHEMA = {
         'residual_threshold': {'type': float, 'default': 2.5},
         'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
+        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'transfer': {
         'n_workers': {'type': int, 'default': 1},
@@ -220,6 +233,12 @@ MODE_KWARGS_SCHEMA = {
         'residual_threshold': {'type': float, 'default': 2.5},
         'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
+        # Transfer entropy is unconditionally temporal (built from
+        # unfold-based history windows); run.py always forces this True for
+        # the transfer path regardless of what's passed here -- exposed in
+        # the schema for consistency/validation, not because it's meant to
+        # be overridden per-call.
+        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'pairwise': {
         'n_workers': {'type': int, 'default': 1},

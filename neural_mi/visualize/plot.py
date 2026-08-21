@@ -246,232 +246,108 @@ def plot_sweep_bar(summary_df: pd.DataFrame, param_cols: list, mean_col: str = '
 
 
 def plot_dimensionality_curve(
-    summary_df: pd.DataFrame,
-    sweep_var: Optional[str] = None,
-    units: str = 'bits',
-    axes=None,
+    details: Dict[str, Any],
+    ax: Optional[plt.Axes] = None,
     show: bool = True,
     **kwargs,
 ) -> plt.Axes:
-    """Two-panel plot for dimensionality analysis: MI (top) and Participation Ratio (bottom).
+    """Per-rank chart of which directions of shared structure are trustworthy.
 
-    The PR panel plots ``pr_singular`` (the singular-spectrum variant). The
-    eigenvalue/covariance-spectrum variant (``pr_eig``) is also present in
-    ``result.dataframe`` but is not plotted by this function.
+    Visualizes ``result.details['stability_per_rank']`` (plus
+    ``'stable_directions'`` and ``'stable_but_degenerate_groups'``): one bar
+    per embedding rank, height = mean singular-value strength across splits
+    (log scale), colored by status --
 
-    When a sweep variable is present and participation ratio data is available,
-    this function creates a two-panel figure so both metrics are visible side by
-    side.  When no sweep variable is present (scalar result), the values are
-    displayed as annotated single-point plots.
+    - **stable** (green): reproducible across every split/rerun, above the
+      noise floor, individually trustworthy.
+    - **stable, degenerate group** (amber, hatched): reproducible and above
+      the noise floor, but too close in strength to an adjacent rank to
+      individually order -- existence confirmed, identity not claimed. Ranks
+      in the same group share a bracket above their bars.
+    - **not stable / below noise floor** (gray): not reported as trustworthy,
+      either because it didn't reproduce across splits or its strength is
+      indistinguishable from noise.
+
+    This does not plot ``pr_eig``/``pr_singular`` (see
+    ``result.dataframe`` for those, kept as a secondary, non-headline
+    diagnostic) or an MI-vs-embedding-dim curve -- this mode does not sweep
+    embedding_dim or claim a saturation point.
 
     Parameters
     ----------
-    summary_df : pd.DataFrame
-        Aggregated dimensionality results.  Expected columns depend on context:
-
-        - With sweep: ``sweep_var``, ``mi_mean``, ``mi_std``,
-          ``pr_singular_mean``, ``pr_singular_std``.
-        - Without sweep (single row): same column names, single row.
-    sweep_var : str, optional
-        Name of the sweep variable column (e.g. ``'embedding_dim'``).  When
-        ``None`` or absent from the DataFrame, a single-point display is used.
-    units : str, optional
-        MI units for axis labels (e.g. ``'bits'``).  Defaults to ``'bits'``.
-    axes : None, plt.Axes, or (plt.Axes, plt.Axes), optional
-        Axes to plot on.
-
-        - ``None`` (default) — create a new figure with one or two subplots.
-        - Single ``plt.Axes`` — use for the MI panel only; PR panel is skipped.
-        - 2-tuple of ``plt.Axes`` — use as ``(ax_mi, ax_pr)``.
+    details : dict
+        ``result.details`` from a ``mode='dimensionality'`` run. Must contain
+        ``'stability_per_rank'`` (a dict as produced by
+        ``_compute_stability_report`` in ``analysis/dimensionality.py``).
+    ax : plt.Axes, optional
+        Axes to plot on. Creates a new figure if ``None``.
     show : bool, optional
-        Whether to call ``plt.show()`` at the end.  Set to ``False`` when
-        embedding this plot in a larger figure.  Defaults to ``True``.
+        Whether to call ``plt.show()`` at the end. Defaults to True.
     **kwargs
-        Additional keyword arguments forwarded to ``ax.plot`` for the MI curve.
+        Additional keyword arguments forwarded to ``ax.bar``.
 
     Returns
     -------
     plt.Axes
-        The MI (top) axes.  When a two-panel figure is created internally, the
-        PR axes is accessible via ``ax_mi.figure.axes[1]``.
     """
-    has_pr = 'pr_singular_mean' in summary_df.columns
-    has_sweep = (
-        sweep_var is not None
-        and sweep_var in summary_df.columns
-        and len(summary_df) > 1
-    )
-    figsize = kwargs.pop('figsize', (8, 8 if has_pr else 5))
-
-    # --- Resolve axes ---
-    created_fig = axes is None
-    if axes is None:
-        if has_pr:
-            fig, (ax_mi, ax_pr) = plt.subplots(
-                2, 1, figsize=figsize,
-                gridspec_kw={'hspace': 0.35},
-                sharex=True if has_sweep else False,
-            )
-        else:
-            fig, ax_mi = plt.subplots(1, 1, figsize=figsize)
-            ax_pr = None
-    elif isinstance(axes, (list, tuple)) and len(axes) == 2:
-        ax_mi, ax_pr = axes
-    else:
-        ax_mi = axes
-        ax_pr = None
-        has_pr = False
-
-    # --- MI panel ---
-    if has_sweep:
-        ax_mi.plot(summary_df[sweep_var], summary_df['mi_mean'],
-                   'o-', label='Mean MI', **kwargs)
-        if 'mi_std' in summary_df.columns:
-            ax_mi.fill_between(
-                summary_df[sweep_var],
-                summary_df['mi_mean'] - summary_df['mi_std'],
-                summary_df['mi_mean'] + summary_df['mi_std'],
-                alpha=0.2, label='±1 Std Dev',
-            )
-        if pd.api.types.is_numeric_dtype(summary_df[sweep_var]) and all(
-            summary_df[sweep_var] == np.floor(summary_df[sweep_var])
-        ):
-            ax_mi.xaxis.set_major_locator(MaxNLocator(integer=True))
-        if not has_pr:
-            ax_mi.set_xlabel(sweep_var.replace('_', ' ').title(), fontsize=11)
-    else:
-        mi_mean = float(summary_df['mi_mean'].iloc[0])
-        mi_std = float(summary_df['mi_std'].iloc[0]) if 'mi_std' in summary_df.columns else 0.0
-        ax_mi.errorbar([0], [mi_mean], yerr=[mi_std], fmt='o', capsize=6,
-                       color='steelblue', markersize=8)
-        ax_mi.annotate(
-            f'{mi_mean:.3f} ± {mi_std:.3f} {units}',
-            xy=(0, mi_mean), xytext=(0.05, 0.80),
-            textcoords='axes fraction', fontsize=10,
-            arrowprops=dict(arrowstyle='->', color='gray', lw=1),
+    per_rank = details.get('stability_per_rank')
+    if not per_rank:
+        raise ValueError(
+            "Cannot plot: details does not contain 'stability_per_rank' (need at "
+            "least 2 splits/reruns to compute cross-run stability -- see the "
+            "warning emitted by run_dimensionality_analysis if this is missing)."
         )
-        ax_mi.set_xticks([])
 
-    ax_mi.set_ylabel(f'MI ({units})', fontsize=11)
-    ax_mi.set_title('Dimensionality Analysis — MI', fontsize=12)
-    if has_sweep:
-        ax_mi.legend(fontsize=9)
-    ax_mi.grid(True, linestyle=':')
-    sns.despine(ax=ax_mi)
+    ranks = sorted(per_rank.keys())
+    stable_set = set(details.get('stable_directions', []))
+    degenerate_groups = details.get('stable_but_degenerate_groups', [])
+    degenerate_set = {r for group in degenerate_groups for r in group}
 
-    # --- Participation Ratio panel ---
-    if has_pr and ax_pr is not None:
-        if has_sweep:
-            ax_pr.plot(summary_df[sweep_var], summary_df['pr_singular_mean'],
-                       's-', color='teal', label='Mean PR')
-            if 'pr_singular_std' in summary_df.columns:
-                ax_pr.fill_between(
-                    summary_df[sweep_var],
-                    summary_df['pr_singular_mean'] - summary_df['pr_singular_std'],
-                    summary_df['pr_singular_mean'] + summary_df['pr_singular_std'],
-                    alpha=0.2, color='teal', label='±1 Std Dev',
-                )
-            if pd.api.types.is_numeric_dtype(summary_df[sweep_var]) and all(
-                summary_df[sweep_var] == np.floor(summary_df[sweep_var])
-            ):
-                ax_pr.xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax_pr.set_xlabel(sweep_var.replace('_', ' ').title(), fontsize=11)
+    strengths = [per_rank[r].get('mean_strength') or 0.0 for r in ranks]
+    colors, hatches = [], []
+    for r in ranks:
+        if r in stable_set:
+            colors.append('#2ca02c'); hatches.append(None)
+        elif r in degenerate_set:
+            colors.append('#d4a017'); hatches.append('//')
         else:
-            pr_mean = float(summary_df['pr_singular_mean'].iloc[0])
-            pr_std = (
-                float(summary_df['pr_singular_std'].iloc[0])
-                if 'pr_singular_std' in summary_df.columns else 0.0
-            )
-            ax_pr.errorbar([0], [pr_mean], yerr=[pr_std], fmt='s', capsize=6,
-                           color='teal', markersize=8)
-            ax_pr.annotate(
-                f'{pr_mean:.2f} ± {pr_std:.2f}',
-                xy=(0, pr_mean), xytext=(0.05, 0.80),
-                textcoords='axes fraction', fontsize=10,
-                arrowprops=dict(arrowstyle='->', color='gray', lw=1),
-            )
-            ax_pr.set_xticks([])
+            colors.append('#b0b0b0'); hatches.append(None)
 
-        ax_pr.set_ylabel('Participation Ratio (Singular)', fontsize=11)
-        ax_pr.set_title('Participation Ratio — pr_singular (Effective Dimensions)', fontsize=12)
-        if has_sweep:
-            ax_pr.legend(fontsize=9)
-        ax_pr.grid(True, linestyle=':')
-        sns.despine(ax=ax_pr)
+    created_fig = ax is None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=kwargs.pop('figsize', (8, 5)))
+
+    bars = ax.bar([str(r) for r in ranks], strengths, color=colors,
+                  edgecolor='white', linewidth=0.5, **kwargs)
+    for bar, hatch in zip(bars, hatches):
+        if hatch:
+            bar.set_hatch(hatch)
+
+    if any(s > 0 for s in strengths):
+        ax.set_yscale('log')
+    ax.set_xlabel('Rank', fontsize=11)
+    ax.set_ylabel('Mean singular-value strength (across splits)', fontsize=11)
+    ax.set_title('Dimensionality: cross-run-stable directions', fontsize=12)
+
+    # Bracket contiguous degenerate groups above their bars.
+    if strengths:
+        y_top = max(strengths) * 1.15
+        for group in degenerate_groups:
+            xs = [ranks.index(r) for r in group]
+            ax.plot([min(xs), max(xs)], [y_top, y_top], color='#d4a017', lw=1.5)
+            ax.text(np.mean(xs), y_top * 1.05, 'grouped', ha='center', fontsize=8, color='#d4a017')
+
+    legend_handles = [
+        patches.Patch(facecolor='#2ca02c', label='Stable (individually trustworthy)'),
+        patches.Patch(facecolor='#d4a017', hatch='//', label='Stable, degenerate group'),
+        patches.Patch(facecolor='#b0b0b0', label='Not stable / below noise floor'),
+    ]
+    ax.legend(handles=legend_handles, fontsize=8, loc='upper right')
+    ax.grid(True, axis='y', linestyle=':')
+    sns.despine(ax=ax)
 
     if created_fig:
         plt.tight_layout()
-    if show:
-        plt.show()
-    return ax_mi
-
-
-def plot_noise_ladder(ladder_df: pd.DataFrame, ax: Optional[plt.Axes] = None,
-                      overlay_mi: bool = False, show: bool = True) -> plt.Axes:
-    """Plots the ceiling-escape noise-injection ladder (both PR variants vs. log(sigma_add)).
-
-    Plots the estimated dimension ``d_hat`` from both ``pr_eig`` and
-    ``pr_singular`` against ``log(sigma_add)``, with the detached band shaded.
-    Not the per-``k_z`` MI curve.
-
-    Parameters
-    ----------
-    ladder_df : pd.DataFrame
-        The per-rung table from ``result.details['sigma_add_ladder']``. Expected
-        columns: ``sigma_add``, ``pr_eig_mean``, ``pr_singular_mean``, ``regime``,
-        and (if ``overlay_mi=True``) ``mi_mean``.
-    ax : plt.Axes, optional
-        Axes to plot on. Creates a new figure if ``None``.
-    overlay_mi : bool, optional
-        If True, overlays MI vs sigma_add on a secondary y-axis. Defaults to False.
-    show : bool, optional
-        Whether to call ``plt.show()``. Defaults to True.
-
-    Returns
-    -------
-    plt.Axes
-    """
-    df = ladder_df.sort_values('sigma_add').reset_index(drop=True)
-
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 5))
-
-    # Shade the contiguous detached band.
-    detached_mask = (df['regime'] == 'detached').to_numpy()
-    if detached_mask.any():
-        x = df['sigma_add'].to_numpy()
-        idx = np.where(detached_mask)[0]
-        lo, hi = x[idx.min()], x[idx.max()]
-        ax.axvspan(lo, hi, color='mediumseagreen', alpha=0.15, label='Detached band', zorder=0)
-
-    if 'pr_eig_mean' in df.columns:
-        ax.plot(df['sigma_add'], df['pr_eig_mean'], 'o-', color='tab:blue', label=r'$\hat{d}$ (pr_eig)')
-        if 'pr_eig_std' in df.columns:
-            ax.fill_between(df['sigma_add'], df['pr_eig_mean'] - df['pr_eig_std'],
-                            df['pr_eig_mean'] + df['pr_eig_std'], alpha=0.15, color='tab:blue')
-    if 'pr_singular_mean' in df.columns:
-        ax.plot(df['sigma_add'], df['pr_singular_mean'], 's-', color='tab:orange', label=r'$\hat{d}$ (pr_singular)')
-        if 'pr_singular_std' in df.columns:
-            ax.fill_between(df['sigma_add'], df['pr_singular_mean'] - df['pr_singular_std'],
-                            df['pr_singular_mean'] + df['pr_singular_std'], alpha=0.15, color='tab:orange')
-
-    ax.set_xscale('log')
-    ax.set_xlabel(r'$\sigma_{add}$ (log scale, per-channel std units)')
-    ax.set_ylabel(r'Estimated dimension $\hat{d}$')
-    ax.set_title('Noise-Injection Ladder')
-    ax.grid(True, linestyle=':')
-    sns.despine(ax=ax)
-
-    if overlay_mi and 'mi_mean' in df.columns:
-        ax2 = ax.twinx()
-        ax2.plot(df['sigma_add'], df['mi_mean'], 'd--', color='gray', alpha=0.7, label='MI')
-        ax2.set_ylabel('MI')
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2, fontsize=9)
-    else:
-        ax.legend(fontsize=9)
-
     if show:
         plt.show()
     return ax

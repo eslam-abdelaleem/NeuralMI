@@ -606,6 +606,68 @@ def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[s
     return metrics
 
 
+def compute_regime_diagnostic(x: Union[np.ndarray, torch.Tensor],
+                              separable_threshold: float = 3.0) -> Dict[str, Any]:
+    """Cheap (no training), free-standing diagnostic: does the raw channel data
+    of one view look "separable" (each channel driven mostly by a single
+    underlying factor -- a block/grouped correlation structure) or "entangled"
+    (mixed-selectivity -- every channel reflects several factors jointly)?
+
+    Not a dimensionality count and not wired into any other computation --
+    informational context only. Empirically, an isolated large ratio between
+    consecutive eigenvalues of the within-view channel correlation matrix
+    marks the separable case; a flat/gradual ratio curve marks the entangled
+    case. The default threshold (3.0) is a rough heuristic calibrated on
+    exactly two validated example cases (separable ~14-16x, genuine
+    joint/radial entangled ~1.7x) -- treat it as a guide, not a precise
+    cutoff; ``peak_val`` is always returned alongside the label so a caller
+    can judge borderline cases directly. A mild nonlinearity (e.g. a
+    linear-projection-then-tanh) is not a fair "entangled" case and reads as
+    separable-like -- this diagnostic responds to whether there is a clean
+    channel-to-factor grouping, not to nonlinearity as such (even a pure
+    rotation of independently-driven channels destroys that grouping and
+    reads as entangled-like).
+
+    Parameters
+    ----------
+    x : np.ndarray or torch.Tensor
+        Raw channel data for one view, shape ``(N, C)`` or ``(N, C, W)``. For
+        3-D input each ``(sample, window-position)`` pair is treated as an
+        independent observation of the ``C`` channels.
+    separable_threshold : float, optional
+        Peak consecutive-eigenvalue-ratio above which the regime is labeled
+        ``'separable-like'``. Defaults to 3.0.
+
+    Returns
+    -------
+    dict with keys ``'eigvals'``, ``'ratios'``, ``'peak_rank'``, ``'peak_val'``,
+    ``'regime'`` (``'separable-like'`` or ``'entangled-like'``).
+    """
+    if torch.is_tensor(x):
+        arr = x.detach().cpu().float().numpy()
+    else:
+        arr = np.asarray(x, dtype=np.float64)
+    if arr.ndim == 3:
+        arr = arr.transpose(0, 2, 1).reshape(-1, arr.shape[1])
+    if arr.shape[1] < 2:
+        raise ValueError(
+            f"compute_regime_diagnostic requires at least 2 channels, got shape {arr.shape}."
+        )
+
+    arr_c = arr - arr.mean(axis=0, keepdims=True)
+    corr = np.corrcoef(arr_c, rowvar=False)
+    eigvals = np.linalg.eigvalsh(corr)[::-1]
+    eigvals = np.clip(eigvals, 1e-8, None)
+    ratios = eigvals[:-1] / eigvals[1:]
+    peak_idx = int(np.argmax(ratios))
+    peak_val = float(ratios[peak_idx])
+    regime = 'separable-like' if peak_val >= separable_threshold else 'entangled-like'
+    return {
+        'eigvals': eigvals.tolist(), 'ratios': ratios.tolist(),
+        'peak_rank': peak_idx + 1, 'peak_val': peak_val, 'regime': regime,
+    }
+
+
 def anscombe_transform(counts: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
     """Canonical Anscombe variance-stabilizing transform for count data: ``2*sqrt(x + 3/8)``.
 
@@ -628,3 +690,38 @@ def anscombe_transform(counts: Union[np.ndarray, torch.Tensor]) -> Union[np.ndar
         return 2.0 * torch.sqrt(counts.clamp(min=0) + 0.375)
     arr = np.asarray(counts, dtype=np.float64)
     return 2.0 * np.sqrt(np.clip(arr, 0, None) + 0.375)
+
+
+def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
+                                 window_size: float, gap_fraction: float,
+                                 path_label: str = "") -> bool:
+    """Warn if a blocked train/test split's gap doesn't fully separate windows in time.
+
+    ``gap_size`` (a count of *windows* excluded on each side of a test block,
+    already computed by the caller) buys a time-domain buffer of
+    ``gap_size * step``. With overlapping windows (``step < window_size``) that
+    buffer can be shorter than a single window, in which case a train window and
+    a test window can share raw samples even though their *indices* don't
+    overlap -- a leakage channel distinct from (and not caught by) the index
+    split itself. Shared with the transfer-entropy path (``step=1``,
+    ``window_size=history_window`` there), which builds windows via ``unfold``
+    and bypasses ``WindowManager`` entirely.
+
+    Returns True if a leak was detected (and a warning logged), else False.
+    """
+    if step <= 0 or window_size <= 0:
+        return False
+    buffer = gap_size * step
+    if buffer >= window_size:
+        return False
+    min_gap_fraction = (window_size / (block * step)) if (block > 0 and step > 0) else float('inf')
+    _where = f" ({path_label})" if path_label else ""
+    logger.warning(
+        f"Blocked split may leak raw samples between train and test{_where}: "
+        f"gap_size={gap_size} windows x step={step} = {buffer:.3g} samples of "
+        f"buffer, but window_size={window_size}. Train and test windows can "
+        f"share up to {window_size - buffer:.3g} samples. Increase "
+        f"split_gap_fraction to at least {min_gap_fraction:.4f} "
+        f"(currently {gap_fraction}) to eliminate this."
+    )
+    return True

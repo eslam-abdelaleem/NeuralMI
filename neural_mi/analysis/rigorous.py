@@ -219,12 +219,75 @@ def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
     }
 
 
+SATURATION_WARNING_THRESHOLD = 0.85  # matches trainer.py's CEILING_PROXIMITY_WARNING_THRESHOLD
+
+
+def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) -> Dict[str, Any]:
+    """Per-gamma diagnostics the extrapolation currently has no visibility into.
+
+    Both are blind spots for the same underlying reason: ``_find_linear_region``
+    only looks at curvature (|a2/a1|) in gamma, and both non-stationarity and
+    ceiling saturation are approximately *smooth* in gamma -- they inflate or
+    suppress every rung's train_mi by a similar amount without bending the
+    fitted line, so a real problem can sail through that check untouched.
+
+    Spread : the std of train_mi across the ``gamma`` independently-trained
+        chunks at each gamma level. With contiguous (temporal) chunking this
+        is directly informative: large spread at high gamma means different
+        segments of the recording give different answers -- non-stationarity
+        showing up for free, something the library has no other diagnostic
+        for. gamma=1 has a single chunk, so its spread is always 0.0/NaN
+        (not a real signal, just nothing to compare).
+
+    Ceiling / saturation : each chunk has its own train_eval_size and
+        therefore its own ceiling; the deepest gammas have the smallest
+        chunks (lowest ceilings) while most influencing the fitted slope.
+        Warns by name when the gammas actually used in the fit are, on
+        average, saturated.
+    """
+    out: Dict[str, Any] = {
+        'per_gamma_train_mi_spread': {},
+        'per_gamma_ceiling_mi': {},
+        'per_gamma_saturation': {},
+    }
+    has_ceiling_cols = 'train_ceiling_mi' in group.columns and 'train_saturation' in group.columns
+    saturated_gammas = []
+    for gamma, sub in group.groupby('gamma'):
+        g = int(gamma)
+        vals = sub['train_mi'].dropna()
+        out['per_gamma_train_mi_spread'][g] = float(vals.std()) if len(vals) > 1 else 0.0
+        if has_ceiling_cols:
+            ceil_vals = sub['train_ceiling_mi'].dropna()
+            sat_vals = sub['train_saturation'].dropna()
+            mean_ceil = float(ceil_vals.mean()) if len(ceil_vals) else float('nan')
+            mean_sat = float(sat_vals.mean()) if len(sat_vals) else float('nan')
+            out['per_gamma_ceiling_mi'][g] = mean_ceil
+            out['per_gamma_saturation'][g] = mean_sat
+            if g in gammas_used and mean_sat == mean_sat and mean_sat > SATURATION_WARNING_THRESHOLD:
+                saturated_gammas.append(g)
+    if saturated_gammas:
+        logger.warning(
+            f"Rigorous fit uses gamma={sorted(saturated_gammas)}, which are "
+            f"saturated (mean train_saturation > {SATURATION_WARNING_THRESHOLD:.0%} "
+            f"of their own ceiling). An extrapolation anchored on saturated "
+            f"rungs cannot be trusted -- the fitted slope reflects the ceiling "
+            f"as much as the true bias. Consider increasing max_eval_samples "
+            f"or narrowing gamma_range to exclude these."
+        )
+        out['saturated_gammas'] = sorted(saturated_gammas)
+    else:
+        out['saturated_gammas'] = []
+    return out
+
+
 def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                                delta_threshold: float, min_gamma_points: int,
                                confidence_level: float,
                                residual_threshold: float = 2.5,
                                r2_threshold: float = 0.90,
-                               leverage_threshold: float = 0.20) -> List[Dict[str, Any]]:
+                               leverage_threshold: float = 0.20,
+                               chunking_mode: str = 'permuted',
+                               n_tasks_created: int = 0) -> List[Dict[str, Any]]:
     """Groups results and performs bias correction for each group."""
     valid_df = df.dropna(subset=['gamma', 'train_mi'])
     if valid_df.empty:
@@ -260,6 +323,7 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             diagnostics = _compute_fit_diagnostics(
                 group, gammas_used, residual_threshold, r2_threshold, leverage_threshold
             )
+            per_gamma_diagnostics = _compute_per_gamma_diagnostics(group, gammas_used)
 
             if diagnostics['leverage_warning']:
                 is_reliable = False
@@ -274,6 +338,20 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                     f"(large studentized residuals from heteroscedastic WLS noise — "
                     f"informational only)."
                 )
+            # Saturation is smooth in gamma -- the same blind spot
+            # _find_linear_region's curvature check and leverage_warning both
+            # have, confirmed empirically (w=50 acceptance run: 8/10 gammas
+            # saturated, curvature and leverage checks both passed anyway).
+            # Gate is_reliable the same way leverage_warning already does,
+            # rather than leaving this purely informational -- a fit anchored
+            # on saturated rungs is exactly the kind of unreliable this flag
+            # exists to catch.
+            if per_gamma_diagnostics['saturated_gammas']:
+                is_reliable = False
+                logger.warning(
+                    f"Fit for {param_dict} marked unreliable: gamma="
+                    f"{per_gamma_diagnostics['saturated_gammas']} used in the fit are ceiling-saturated."
+                )
 
             param_dict.update({
                 'mi_corrected': mi_corrected,
@@ -282,8 +360,11 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                 'slope': slope,
                 'is_reliable': is_reliable,
                 'gammas_used': gammas_used,
+                'chunking_mode': chunking_mode,
+                'n_tasks_created': n_tasks_created,
             })
             param_dict.update(diagnostics)
+            param_dict.update(per_gamma_diagnostics)
             param_dict.pop('dummy_group', None)
             corrected_results.append(param_dict)
         except InsufficientDataError as e:
@@ -326,7 +407,8 @@ class AnalysisWorkflow:
 
     def run(self, param_grid: Optional[Dict[str, List]] = None,
             gamma_range=range(1, 11),
-            n_workers: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+            n_workers: Optional[int] = None,
+            temporal_chunking: Optional[bool] = None, **kwargs) -> Dict[str, Any]:
         """Executes the full rigorous analysis workflow.
 
         This involves preparing tasks for different data subsets (controlled by
@@ -342,6 +424,11 @@ class AnalysisWorkflow:
             Defaults to ``range(1, 11)``.
         n_workers : int, optional
             The number of worker processes to use. Defaults to 1.
+        temporal_chunking : bool, optional
+            Controls how the gamma-chunk subsampling orders data (see
+            ``_prepare_tasks`` for the full rationale). ``None`` (default)
+            auto-detects from ``base_params['leak_check_window_size']``;
+            pass ``True``/``False`` to override.
         **kwargs : Dict[str, Any]
             Additional keyword arguments for the bias correction, such as
             ``delta_threshold``, ``min_gamma_points``, ``confidence_level``,
@@ -353,15 +440,34 @@ class AnalysisWorkflow:
             A dictionary containing:
 
             - ``'corrected_results'`` : list of per-group correction dicts.
+              Each includes ``'chunking_mode'`` (``'contiguous'`` or
+              ``'permuted'``, the resolved choice above),
+              ``'n_tasks_created'``, ``'per_gamma_train_mi_spread'``,
+              ``'per_gamma_ceiling_mi'``, and ``'per_gamma_saturation'``.
             - ``'raw_results_df'`` : pd.DataFrame — raw sweep results with one
               row per training run.  Key columns: ``gamma``, ``train_mi``.
         """
         n_workers = n_workers if n_workers is not None else 1
         show_progress = self.base_params.get('show_progress', True)
         logger.info(f"Starting rigorous analysis with {n_workers} workers...")
-        tasks = self._prepare_tasks(param_grid, gamma_range)
+        tasks = self._prepare_tasks(param_grid, gamma_range, temporal_chunking=temporal_chunking)
         if not tasks:
             return {"corrected_results": [], "raw_results_df": pd.DataFrame()}
+
+        # Fix 3: gamma_range=range(1,11) should create sum(1..10)=55 tasks per
+        # param combination -- verify rather than assume, since a silently
+        # truncated ladder would invalidate every rigorous result.
+        expected_per_combo = sum(gamma_range)
+        n_combos = max(1, len(param_grid or {}) and len(list(itertools.product(
+            *(param_grid or {}).values()))) or 1)
+        expected_total = expected_per_combo * n_combos
+        if len(tasks) != expected_total:
+            logger.warning(
+                f"Rigorous analysis: expected {expected_total} tasks "
+                f"({n_combos} combo(s) x sum(gamma_range)={expected_per_combo}) "
+                f"but created {len(tasks)}. The gamma ladder may be truncated -- "
+                f"investigate before trusting the extrapolation."
+            )
 
         if n_workers <= 1:
             logger.info("Running rigorous analysis sequentially (n_workers=1)...")
@@ -391,18 +497,50 @@ class AnalysisWorkflow:
             'leverage_threshold': kwargs.pop('leverage_threshold', 0.20),
         }
 
-        corrected_results = _post_process_and_correct(raw_results_df, **correction_kwargs)
+        corrected_results = _post_process_and_correct(
+            raw_results_df, chunking_mode=self.resolved_chunking_mode,
+            n_tasks_created=len(tasks), **correction_kwargs)
         return {"corrected_results": corrected_results, "raw_results_df": raw_results_df}
 
-    def _prepare_tasks(self, param_grid: Optional[Dict[str, List]], gamma_range) -> List[tuple]:
-        """Prepares tasks using a hierarchical master-permutation subsampling strategy.
+    def _prepare_tasks(self, param_grid: Optional[Dict[str, List]], gamma_range,
+                       temporal_chunking: Optional[bool] = None) -> List[tuple]:
+        """Prepares tasks using a hierarchical master-ordering subsampling strategy.
 
-        Generate one master permutation at the start.  For each gamma G,
-        split the master permutation into G equal chunks.  This ensures:
+        Generate one master ordering at the start.  For each gamma G, split
+        the master ordering into G equal chunks.  This ensures:
 
         - The gamma=2 subsets are literally halves of the gamma=1 dataset.
         - Each gamma level sees a consistent view of the data, only varying in N.
         - The linear fit extrapolates pure N-dependent bias, not noise variation.
+
+        The master ordering is either a random permutation or the identity
+        (contiguous, time-order-preserving) ordering, chosen by
+        ``temporal_chunking``:
+
+        - ``None`` (default): auto-detect from ``leak_check_window_size`` in
+          ``base_params`` (set exactly when a windowed processor built the
+          data -- see ``run.py`` / Phase 1 Fix 2). Present -> contiguous.
+          Absent -> permuted (unchanged behaviour for i.i.d. data).
+        - ``True`` / ``False``: explicit override.
+
+        **Why this matters.** A random permutation is the right choice for
+        i.i.d. data -- it doesn't matter what order rows appear in, and it
+        keeps each gamma-chunk representative of the whole dataset. But for
+        temporal data, ``Trainer._create_blocked_split`` takes *contiguous
+        index blocks* of whatever ordering it receives to form the train/test
+        split. A shuffled ordering makes those blocks random in time on
+        autocorrelated data -- exactly the leakage ``split_mode='blocked'``
+        exists to prevent, reintroduced inside every rung of the bias-
+        correction ladder. Contiguous chunks keep each chunk's rows in time
+        order, so the blocked split within a chunk means what it's supposed
+        to.
+
+        **Trade-off, not a strict improvement.** Random chunks each spanned
+        the whole recording, averaging over any non-stationarity. Contiguous
+        chunks do not -- at high gamma, each chunk is a short segment, and if
+        the underlying process drifts, different chunks sample different
+        regimes. Watch ``per_gamma_train_mi_spread`` in the result details:
+        large spread at high gamma is exactly this showing up.
         """
         tasks = []
         run_id_base = str(uuid.uuid4())
@@ -415,10 +553,14 @@ class AnalysisWorkflow:
 
         N = self.x_data.shape[0]
 
+        is_temporal = (temporal_chunking if temporal_chunking is not None
+                      else self.base_params.get('leak_check_window_size') is not None)
+        self.resolved_chunking_mode = 'contiguous' if is_temporal else 'permuted'
+
         for i_combo, params in enumerate(param_combinations):
             current_params = {**self.base_params, **params}
 
-            master_permutation = np.random.permutation(N)
+            master_permutation = np.arange(N) if is_temporal else np.random.permutation(N)
 
             for gamma in gamma_range:
                 current_params['gamma'] = gamma
@@ -449,7 +591,12 @@ class AnalysisWorkflow:
                     current_params['_seed_key'] = f"c{i_combo}_g{gamma}_s{i_subset}"
                     tasks.append((x_subset, y_subset, current_params.copy(), task_run_id))
 
-        logger.debug(f"Created {len(tasks)} tasks to run...")
+        self.n_tasks_created = len(tasks)
+        logger.info(
+            f"Rigorous analysis: created {len(tasks)} training tasks "
+            f"({len(param_combinations)} param combo(s) x sum(gamma_range)={sum(gamma_range)} "
+            f"chunks each, chunking={self.resolved_chunking_mode})."
+        )
         return tasks
 
 
@@ -545,6 +692,7 @@ def run_rigorous_scalar_analysis(
     r2_threshold: float = 0.90,
     leverage_threshold: float = 0.20,
     verbose: bool = False,
+    temporal_chunking: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Bias-corrected estimation of a compound scalar quantity via rigorous extrapolation.
 
@@ -635,7 +783,21 @@ def run_rigorous_scalar_analysis(
         values (i.e. almost every ``scalar_fn`` call failed).
     """
     N = x_data.shape[0]
-    master_perm = np.random.permutation(N)
+    # Same reasoning as AnalysisWorkflow._prepare_tasks: a random ordering is
+    # fine for i.i.d. scalar quantities, but this helper also backs
+    # mode='transfer' (rigorous=True), which is unconditionally temporal (TE
+    # is built from time-ordered history windows) -- run.py passes
+    # temporal_chunking=True explicitly there, since base_params at this call
+    # site predates run_transfer_entropy's own leak_check_window_size
+    # injection (it's set per-gamma-chunk, inside _te_rigorous_scalar, after
+    # chunking has already happened) and so isn't available to auto-detect
+    # from here. Falls back to the same base_params signal as the main
+    # workflow for other callers (e.g. conditional MI), where it is
+    # available in time.
+    is_temporal = (temporal_chunking if temporal_chunking is not None
+                   else base_params.get('leak_check_window_size') is not None)
+    resolved_chunking_mode = 'contiguous' if is_temporal else 'permuted'
+    master_perm = np.arange(N) if is_temporal else np.random.permutation(N)
 
     tasks = []
     for gamma in gamma_range:
@@ -724,6 +886,20 @@ def run_rigorous_scalar_analysis(
             "informational only)."
         )
 
+    # Spread-across-chunks diagnostic (Fix 2a) applies here the same way as
+    # the main workflow -- train_mi is available per chunk. The per-gamma
+    # ceiling/saturation half (Fix 2b) does not: scalar_fn (e.g.
+    # _te_rigorous_scalar) returns a bare float, not the richer per-run dict
+    # AnalysisWorkflow's tasks produce, so train_ceiling_mi/train_saturation
+    # were never propagated through _run_scalar_fn_task. Extending that would
+    # mean changing the scalar_fn contract for every caller of this generic
+    # helper (conditional MI's rigorous path too) -- a larger change than
+    # this fix, flagged for a later phase rather than done here.
+    per_gamma_spread = {
+        int(gamma): (float(sub['train_mi'].std()) if len(sub) > 1 else 0.0)
+        for gamma, sub in df.groupby('gamma')
+    }
+
     return {
         'mi_corrected': mi_corrected,
         'mi_error': mi_error,
@@ -732,5 +908,8 @@ def run_rigorous_scalar_analysis(
         'is_reliable': is_reliable,
         'gammas_used': gammas_used,
         'raw_results_df': df,
+        'chunking_mode': resolved_chunking_mode,
+        'n_tasks_created': len(tasks),
+        'per_gamma_train_mi_spread': per_gamma_spread,
         **diagnostics,
     }

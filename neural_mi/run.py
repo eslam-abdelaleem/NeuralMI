@@ -669,6 +669,17 @@ def _run_flat(
             base_params['processor_params_x']['preprocessed'] = True
             base_params['processor_params_y']['preprocessed'] = True
 
+            # Windowing happens once, here -- the dataset that reaches the
+            # Trainer downstream is a plain, already-windowed PairedDataset
+            # with no window_manager of its own (processor_type_x/y were just
+            # wiped to None above). Capture the window geometry now, while
+            # dataset.window_manager is still live, so the blocked-split
+            # leakage check has something to validate against.
+            _wm = getattr(dataset, 'window_manager', None)
+            if _wm is not None:
+                base_params['leak_check_window_size'] = _wm.window_size
+                base_params['leak_check_step'] = _wm.resolve_step()
+
             _warn_small_sample(dataset, base_params)
 
             if mode in ('dimensionality', 'pairwise'):
@@ -679,6 +690,8 @@ def _run_flat(
                 if y_data is None: raise ValueError(f"y_data must be provided for mode '{mode}'.")
                 x_run_data = dataset.x_data
                 y_run_data = dataset.y_data
+
+        _warn_if_random_time_shifting_dead(base_params, mode, is_proc_sweep)
 
         from .analysis.sweep import ParameterSweep
         if mode == 'sweep':
@@ -770,13 +783,10 @@ def _run_flat(
                 x_run_data, base_params, y_data=y_run_data,
                 sweep_grid=sweep_grid,
                 processor_type_x=processor_type_x, processor_type_y=processor_type_y,
+                user_set_keys=_pre_default_keys,
                 **analysis_kwargs)
             df = _convert_mi_units(df, output_units == 'bits')
             group_vars = [key for key in (sweep_grid or {}).keys() if key != 'run_id']
-            if 'sigma_add' in df.columns and 'sigma_add' not in group_vars:
-                # Noise-injection ladder: group per rung so mi_mean/pr_*_mean reflect
-                # the across-split spread at each sigma_add level, not a mix of levels.
-                group_vars.append('sigma_add')
             metrics = ['train_mi', 'pr_eig', 'pr_singular']
             valid_metrics = [m for m in metrics if m in df.columns]
             if group_vars:
@@ -797,11 +807,6 @@ def _run_flat(
             result = Results(mode=mode, dataframe=agg_df, params={**run_params},
                              details={'raw_results': df})
             if _dim_embeddings is not None:
-                if 'sigma_add_ladder' in _dim_embeddings:
-                    # Keep the ladder's mi_mean/mi_std in the same units as
-                    # result.dataframe (ceiling_nats is always nats, by name).
-                    _dim_embeddings['sigma_add_ladder'] = _convert_mi_units(
-                        _dim_embeddings['sigma_add_ladder'], output_units == 'bits')
                 result.details.update(_dim_embeddings)
             if permutation_test and y_run_data is not None:
                 _null_clipped, _null_raw = _run_permutation_test(
@@ -1011,6 +1016,13 @@ def _run_flat(
                                   'prediction_horizon': prediction_horizon,
                                   'bidirectional': bidirectional_te},
                     n_workers=n_workers,
+                    # Transfer entropy is unconditionally temporal (built from
+                    # time-ordered history windows via unfold) -- forced True
+                    # rather than auto-detected, since base_params here
+                    # predates run_transfer_entropy's own leak_check_window_size
+                    # injection (set per-chunk, inside _te_rigorous_scalar,
+                    # after this call's chunking has already happened).
+                    temporal_chunking=True,
                     **_rig_kwargs,
                 )
                 # _convert_mi_units already recurses into rig_details['raw_results_df']
@@ -1174,6 +1186,46 @@ def _warn_small_sample(dataset, base_params: dict) -> None:
                 UserWarning,
                 stacklevel=4,
             )
+
+
+# Modes/paths where windowing is deferred to the worker that trains the model,
+# so the dataset it builds is still a genuine PairedTemporalDataset with a
+# live WindowManager -- random_time_shifting (and anything else gated on
+# is_temporal at the Trainer) is actually reachable there. Everywhere else,
+# run.py windows the data once, up front, and hands the Trainer an
+# already-windowed static PairedDataset that has never heard of time.
+def _random_time_shifting_is_reachable(mode: str, is_proc_sweep: bool) -> bool:
+    return is_proc_sweep or mode == 'lag'
+
+
+def _warn_if_random_time_shifting_dead(base_params: dict, mode: str, is_proc_sweep: bool) -> None:
+    """Warn once, here, if random_time_shifting was explicitly requested but
+    cannot take effect on this mode/processing path.
+
+    Placed in run.py (not deep in the training loop) because this is the
+    earliest point where both the resolved mode and whether processing will
+    be deferred to the worker are known. Only fires when the user explicitly
+    asked for it -- the library's own schema default is False, so an absent
+    or False value here is not a case of "requested but ignored" and stays
+    silent, matching the base rate of no-op for that setting.
+    """
+    if base_params.get('random_time_shifting') is not True:
+        return
+    if _random_time_shifting_is_reachable(mode, is_proc_sweep):
+        return
+    warnings.warn(
+        f"random_time_shifting=True was requested but has no effect for "
+        f"mode='{mode}' with this configuration: windowing is applied once, "
+        f"eagerly, before training starts, so the Trainer receives an "
+        f"already-windowed static dataset with no notion of time left to "
+        f"shift. This option currently only takes effect when windowing is "
+        f"deferred to the training worker -- mode='lag', or mode='sweep' "
+        f"when a processor parameter (e.g. window_size) is itself part of "
+        f"the sweep grid. Pass random_time_shifting=False to silence this "
+        f"warning.",
+        UserWarning,
+        stacklevel=4,
+    )
 
 
 def _run_single_permutation(args):

@@ -6,7 +6,7 @@
 
 **NeuralMI** is a Python library designed to provide neuroscientists with a complete, end-to-end workflow for robustly and quickly estimating mutual information from complex neural data.
 
-In modern neuroscience, MI estimation is usually not possible and using black-box methods is rarely enough. Estimates can be plagued by finite-sampling bias and estimator variance, leading to results that aren't scientifically rigorous. `NeuralMI` solves this by moving beyond simple point estimates to incorporate essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and novel analyses of intrinsic dimensionality. It is built for researchers who need to analyze complex relationships in continuous time-series (like LFP or EEG), discrete spike trains, and categorical state data.
+In modern neuroscience, MI estimation is usually not possible and using black-box methods is rarely enough. Estimates can be plagued by finite-sampling bias and estimator variance, leading to results that aren't scientifically rigorous. `NeuralMI` solves this by moving beyond simple point estimates to incorporate essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and cross-run-validated analysis of shared latent structure. It is built for researchers who need to analyze complex relationships in continuous time-series (like LFP or EEG), discrete spike trains, and categorical state data.
 
 **A note on what every estimate means:** `NeuralMI`'s estimators are variational **lower bounds** on the true mutual information, not the exact value. This is what makes them tractable on high-dimensional neural data, but it has two direct consequences worth knowing before you interpret a number: a reported estimate can under-report the true MI but never over-report it, and each estimator has a ceiling set by its evaluation batch size (`log(batch_size)` for the default InfoNCE estimator). See [Tutorial 0](tutorials/00_Why_and_How_MI_Estimation_Works.ipynb) for the full mechanics behind this.
 
@@ -18,7 +18,7 @@ In modern neuroscience, MI estimation is usually not possible and using black-bo
     * **`estimate`**: Get a quick, single MI estimate for initial exploration.
     * **`sweep`**: Perform parallelized sweeps over any model or data processing hyperparameter.
     * **`lag`**: Find the precise temporal offset between two time-series through a specialized sweep.
-    * **`dimensionality`**: Characterize the internal complexity of a neural population or between two neural populations by finding its latent dimensionality.
+    * **`dimensionality`**: Find directions of shared structure within a neural population, or between two, that reproduce reliably across independent retrainings.
     * **`precision`**: Find the precise threshold at which spike-timing resolution matters.
     * **`conditional`**: Compute Conditional Mutual Information (CMI) to isolate direct relationships.
     * **`transfer`**: Estimate Transfer Entropy to understand directed information flow over time.
@@ -28,7 +28,7 @@ In modern neuroscience, MI estimation is usually not possible and using black-bo
     * `SpikeProcessor`: Convert raw spike times into an analyzable format.
     * `CategoricalProcessor`: Process discrete behavioral or stimulus state data.
 * **Smart Data Splitting**: Automatically handles train/test splits for both **temporal** data (default `'blocked'` split) and **IID** data (`split_mode='random'`) to ensure valid, reliable estimates.
-* **Built-in Visualizations:** Generate plots for dimensionality curves and bias-correction fits with a single command.
+* **Built-in Visualizations:** Generate plots for stable-direction charts and bias-correction fits with a single command.
 * **Flexible & Extensible:** Choose from multiple MI estimators (`InfoNCE`, `SMILE`, etc.) and provide your own pre-initialized PyTorch models for advanced use cases.
 
 ## Quickstart: An Accurate Estimate

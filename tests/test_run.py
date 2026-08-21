@@ -117,13 +117,13 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
 
 def test_run_dimensionality_mode_returns_results_with_dataframe(raw_gaussian_data):
     """
-    Verifies that mode='dimensionality' returns a Results object with the new spectral metrics.
+    Verifies that mode='dimensionality' returns a Results object with the new
+    cross-run-stability-based output (stable_directions, regime_x, converged),
+    plus pr_eig/pr_singular kept as a secondary, non-headline diagnostic.
     Uses raw 2D data (N, C) so that shape[1] gives the channel count correctly.
     """
     x_data, _ = raw_gaussian_data
 
-    # We no longer need to sweep embedding_dim for dimensionality.
-    # The new engine handles the large bottleneck automatically.
     result = nmi.run(
         x_data,
         mode='dimensionality',
@@ -136,11 +136,18 @@ def test_run_dimensionality_mode_returns_results_with_dataframe(raw_gaussian_dat
 
     assert isinstance(result, Results)
     assert isinstance(result.dataframe, pd.DataFrame)
-    # Check for our new spectral metrics instead of mi_mean
+    # pr_eig/pr_singular are kept as a secondary diagnostic, not the mode's answer.
     assert 'pr_eig_mean' in result.dataframe.columns
     assert 'pr_singular_mean' in result.dataframe.columns
     assert 'mi_mean' in result.dataframe.columns
     assert result.mi_estimate is None
+    # The mode's actual headline output.
+    assert 'regime_x' in result.details
+    assert result.details['regime_x']['regime'] in ('separable-like', 'entangled-like')
+    assert 'stable_directions' in result.details
+    assert 'stable_but_degenerate_groups' in result.details
+    assert isinstance(result.details['n_stable_total'], int)
+    assert isinstance(result.details['converged'], bool)
 
 def test_run_with_continuous_processor_returns_results(raw_gaussian_data):
     """

@@ -73,3 +73,18 @@ Explore the library's most powerful features and learn how to extend it.
    tutorials/06_Temporal_Questions
    tutorials/07_Population_Questions
    tutorials/08_Models_Estimators_and_Validation
+
+Benchmark: NeuralMI vs. Classical Estimators
+---------------------------------------------
+
+Not a tutorial — a separate notebook answering a different question: *why*
+reach for a neural estimator instead of a classical one? It compares
+``NeuralMI`` against the KSG estimator and geometric intrinsic-dimension
+estimators (MLE, Two-NN) on problems chosen to be hard for them. Useful if
+you're deciding whether a neural estimator is the right tool for your data,
+rather than learning the library itself.
+
+.. toctree::
+   :maxdepth: 1
+
+   tutorials/vs_classical_estimators

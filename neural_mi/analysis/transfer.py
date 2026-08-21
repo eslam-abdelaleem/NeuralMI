@@ -160,6 +160,16 @@ def run_transfer_entropy(
         f"Transfer Entropy: building windows "
         f"(history_window={history_window}, prediction_horizon={prediction_horizon})..."
     )
+    # _build_te_arrays windows via unfold(0, history_window, 1) -- stride 1,
+    # bypassing WindowManager entirely -- so the blocked-split leakage check
+    # (same mechanism as the WindowManager path; see run.py/trainer.py) needs
+    # its window geometry passed explicitly here instead. Set once; reused by
+    # every _joint_marginal_difference call below (joint/marginal, both
+    # directions if bidirectional), since history_window and the stride-1
+    # construction don't change between them.
+    base_params = dict(base_params)
+    base_params['leak_check_window_size'] = history_window
+    base_params['leak_check_step'] = 1
     x_past, y_past, y_future = _build_te_arrays(
         x_data, y_data, history_window, prediction_horizon
     )
@@ -187,6 +197,12 @@ def run_transfer_entropy(
         'n_samples': n_samples,
         'bidirectional': bidirectional,
     }
+    # TE is a difference of two separately-trained estimates with separate
+    # ceilings -- surface both components' diagnostics (Fix 6), not just one,
+    # since a healthy joint estimate can still hide a saturated marginal one
+    # (or vice versa) that the difference alone wouldn't reveal.
+    result['diagnostics_joint'] = _extract_diagnostics(results_joint)
+    result['diagnostics_marginal'] = _extract_diagnostics(results_marginal)
 
     if bidirectional:
         logger.info("Transfer Entropy (bidirectional): estimating TE(Y→X)...")
@@ -219,9 +235,35 @@ def run_transfer_entropy(
             'raw_yxpast_xfuture': results_joint_yx,
             'raw_xpast_xfuture': results_marginal_yx,
             'directionality_index': directionality_index,
+            'diagnostics_joint_yx': _extract_diagnostics(results_joint_yx),
+            'diagnostics_marginal_yx': _extract_diagnostics(results_marginal_yx),
         })
 
     return result
+
+
+_DIAGNOSTIC_KEYS = (
+    'eval_size', 'train_eval_size', 'test_ceiling_mi', 'train_ceiling_mi',
+    'test_saturation', 'train_saturation', 'test_trace_saturated_fraction',
+)
+
+
+def _extract_diagnostics(task_results: list) -> Optional[Dict[str, Any]]:
+    """Pull the ceiling/saturation diagnostics (Fix 6) out of a ParameterSweep
+    task-result list, for the representative (last) task.
+
+    Transfer entropy is a difference of two separately-trained estimates, each
+    with its own eval_size/ceiling -- this surfaces one component's numbers
+    at the top level so a caller doesn't have to dig into raw_*future lists.
+    Uses the last entry (consistent with how the rest of the codebase treats
+    "no natural aggregation, pick one representative result" when a
+    sweep_grid produces more than one row -- see run.py's sweep-embeddings
+    handling); with no sweep_grid (the common case) there is exactly one.
+    """
+    if not task_results:
+        return None
+    last = task_results[-1]
+    return {k: last.get(k) for k in _DIAGNOSTIC_KEYS if k in last}
 
 
 def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
