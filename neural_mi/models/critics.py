@@ -10,6 +10,26 @@ import torch
 import torch.nn as nn
 from typing import Any, Optional, Tuple
 
+
+def _batch_size_of(x) -> int:
+    """Batch size of x, whether x is a plain tensor or a tuple/list of
+    tensors sharing a leading (sample) dimension -- DualBranchEmbedding's
+    compound ``(a_batch, c_batch)`` input, in particular."""
+    return (x[0] if isinstance(x, (tuple, list)) else x).shape[0]
+
+
+def _device_of(x) -> torch.device:
+    return (x[0] if isinstance(x, (tuple, list)) else x).device
+
+
+def _slice_batch(x, start: int, end: int):
+    """Slice the leading (batch) dimension of x, whether x is a plain
+    tensor or a tuple/list of tensors sharing that dimension."""
+    if isinstance(x, (tuple, list)):
+        return tuple(t[start:end] for t in x)
+    return x[start:end]
+
+
 class BaseCritic(nn.Module):
     """Abstract base class for critic models.
 
@@ -47,7 +67,7 @@ class BaseCritic(nn.Module):
         additional division by the full batch size is applied, as that would
         double-count the normalization already performed inside the wrapper.
         """
-        batch_size = x.shape[0]
+        batch_size = _batch_size_of(x)
         n_chunks = 0
 
         # Fast path for small datasets — wrapper already gives per-sample mean KL.
@@ -59,14 +79,14 @@ class BaseCritic(nn.Module):
 
         # Chunked processing to prevent OOM
         x_embeds, y_embeds = [], []
-        total_kl_acc = torch.tensor(0.0, device=x.device)
+        total_kl_acc = torch.tensor(0.0, device=_device_of(x))
 
         for i in range(0, batch_size, max_n_batches):
             end_idx = min(i + max_n_batches, batch_size)
             chunk_size = end_idx - i
 
-            x_out = net_x(x[i:end_idx])
-            y_out = net_y(y[i:end_idx])
+            x_out = net_x(_slice_batch(x, i, end_idx))
+            y_out = net_y(_slice_batch(y, i, end_idx))
 
             x_emb, y_emb, kl = self._get_embeddings_and_kl(x_out, y_out)
 
@@ -184,7 +204,9 @@ class HybridCritic(BaseCritic):
         self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size = x.size(0)
+        # x may be a plain tensor or a tuple (DualBranchEmbedding's compound
+        # (a_batch, c_batch) input) -- _batch_size_of handles both.
+        batch_size = _batch_size_of(x)
 
         # 1. Embed inputs (chunked over samples to bound encoder memory).
         x_embedded, y_embedded, total_kl_loss = self._compute_embeddings_chunked(

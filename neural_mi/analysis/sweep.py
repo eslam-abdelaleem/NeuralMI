@@ -56,6 +56,19 @@ class ParameterSweep:
                 'n_channels_y': y_data.shape[1] if y_data is not None else 0,
                 **kwargs
             })
+        elif isinstance(x_data, tuple):
+            # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
+            # mode='conditional'(align='dual_branch')) -- dims become a
+            # matching 2-tuple instead of a single int, exactly what
+            # DualBranchEmbedding's constructor expects as `input_dim`.
+            a_data, c_data = x_data
+            self.base_params.update({
+                'input_dim_x': (a_data.shape[1] * a_data.shape[2], c_data.shape[1] * c_data.shape[2]),
+                'input_dim_y': y_data.shape[1] * y_data.shape[2] if y_data is not None else 0,
+                'n_channels_x': (a_data.shape[1], c_data.shape[1]),
+                'n_channels_y': y_data.shape[1] if y_data is not None else 0,
+                **kwargs
+            })
         else:
              self.base_params.update(kwargs)
 
@@ -83,10 +96,11 @@ class ParameterSweep:
                 for _arr in (self.x_data, self.y_data):
                     if _arr is None:
                         continue
-                    if isinstance(_arr, torch.Tensor):
-                        _ds_bytes += _arr.element_size() * _arr.nelement()
-                    elif hasattr(_arr, 'nbytes'):
-                        _ds_bytes += _arr.nbytes
+                    for _part in (_arr if isinstance(_arr, tuple) else (_arr,)):
+                        if isinstance(_part, torch.Tensor):
+                            _ds_bytes += _part.element_size() * _part.nelement()
+                        elif hasattr(_part, 'nbytes'):
+                            _ds_bytes += _part.nbytes
                 if _ds_bytes > 0:
                     warnings.warn(
                         f"Running {len(tasks)} sequential tasks with "
@@ -220,6 +234,12 @@ class ParameterSweep:
                 task_data_y = _ensure_cpu(self.y_data)
             else:
                 x_to_send, y_to_send = self.x_data, self.y_data
+                if max_samples_per_task and isinstance(self.x_data, tuple):
+                    raise NotImplementedError(
+                        "max_samples_per_task is not supported with compound "
+                        "(tuple) X-role data (mode='conditional'(align='dual_branch')). "
+                        "Not needed for the quantities that use this path."
+                    )
                 if max_samples_per_task and self.x_data is not None and self.x_data.shape[0] > max_samples_per_task:
                     indices = np.random.choice(self.x_data.shape[0], max_samples_per_task, replace=False)
                     x_to_send = self.x_data[indices]

@@ -39,7 +39,7 @@ class SubsetView:
             Channel indices to select from Y data
         max_index_reduction : float, optional
             Maximum tolerated fractional drop in the number of valid windows
-            after a dataset rebuild (e.g. due to random_time_shifting).
+            after a dataset rebuild (e.g. due to shift_time).
             If the window count drops by more than this fraction, a warning is
             emitted with the old and new counts. Default is 0.05 (5%).
             Set to 1.0 to suppress warnings entirely.
@@ -178,7 +178,7 @@ class SubsetView:
         If the number of valid windows drops by more than
         `max_index_reduction` (default 5%) after the rebuild, a warning is
         emitted with the old and new counts. This makes silent dataset shrinkage
-        visible when random_time_shifting pushes windows out of valid range.
+        visible when shift_time pushes windows out of valid range.
         """
         if not self.is_temporal or self.times is None:
             return
@@ -199,7 +199,7 @@ class SubsetView:
                 logger.warning(
                     f"SubsetView: window count dropped from {old_count} to "
                     f"{new_count} ({reduction:.1%} reduction) after dataset "
-                    f"rebuild. This usually means random_time_shifting moved "
+                    f"rebuild. This usually means shift_time moved "
                     f"windows outside the valid recording range. Consider "
                     f"reducing the shift magnitude, or set "
                     f"max_index_reduction > {self.max_index_reduction:.0%} "

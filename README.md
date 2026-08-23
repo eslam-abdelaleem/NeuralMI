@@ -21,7 +21,8 @@ In modern neuroscience, MI estimation is usually not possible and using black-bo
     * **`dimensionality`**: Find directions of shared structure within a neural population, or between two, that reproduce reliably across independent retrainings.
     * **`precision`**: Find the precise threshold at which spike-timing resolution matters.
     * **`conditional`**: Compute Conditional Mutual Information (CMI) to isolate direct relationships.
-    * **`transfer`**: Estimate Transfer Entropy to understand directed information flow over time.
+    * **`transfer`**: Estimate Transfer Entropy to understand directed information flow over time, optionally controlling for a third signal (conditional transfer entropy).
+    * **`interaction`**: Compute Interaction Information to see how a third population changes what two others share, redundancy or synergy.
     * **`pairwise`**: Rapidly build all-to-all functional connectivity matrices.
 * **Neuroscience-Ready Data Processors:**
     * `ContinuousProcessor`: Seamlessly handle windowing of LFP, EEG, or calcium imaging data.

@@ -139,42 +139,129 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Dataset construction — with module-level cache for static datasets.
     # ------------------------------------------------------------------
-    _cache_key = _dataset_cache_key(x_data, y_data,
-                                    {**params, 'dataset_device': _data_device})
-    dataset = None
-    with _DATASET_CACHE_LOCK:
-        _cache_entry = _DATASET_CACHE.get(_cache_key)
-    if _cache_entry is not None:
-        _cached_dataset, _x_ref, _y_ref = _cache_entry
-        _x_is_live = _x_ref is None or _x_ref() is x_data
-        _y_is_live = _y_ref is None or _y_ref() is y_data
-        if _x_is_live and _y_is_live:
-            dataset = _cached_dataset
-        else:
-            logger.debug("Dataset cache key collision (stale data_ptr/id) — rebuilding.")
-
-    if dataset is None:
-        dataset = create_dataset(
-            x_data, y_data,
-            processor_type_x=params.get('processor_type_x'),
-            processor_type_y=params.get('processor_type_y'),
-            processor_params_x=params.get('processor_params_x'),
-            processor_params_y=params.get('processor_params_y'),
-            data_device=_data_device,
+    _shift_proc_x = params.get('processor_type_x')
+    _shift_proc_y = params.get('processor_type_y')
+    if _shift_proc_y is None:
+        _shift_proc_y = _shift_proc_x  # None -> "inherit X", create_dataset's own convention
+    _REGULAR_GRID_TYPES = {'continuous', 'categorical'}
+    if (params.get('shift_windows') and _shift_proc_x in _REGULAR_GRID_TYPES
+            and _shift_proc_y in _REGULAR_GRID_TYPES):
+        # Cheap reslice-based per-epoch window shift (see
+        # neural_mi/data/shift_windowing.py). BOTH x and y must resolve to
+        # 'continuous' or 'categorical' (after the None->inherit-X
+        # resolution above), independently -- so continuous+continuous,
+        # categorical+categorical, and continuous+categorical are all
+        # supported, but 'spike' data (a ragged per-neuron spike-time list
+        # this path can't torch.unfold) is not. run.py's
+        # _defer_for_shift_windows already gates on the same condition so
+        # this branch is only ever reached for a supported pair in
+        # practice, but the check is repeated here rather than trusted,
+        # since this function can in principle be called on data that
+        # bypassed that gate (e.g. a future caller building `params`
+        # directly).
+        # Builds its own PairedDataset directly from an initial (shift=0)
+        # windowing and stashes the raw-array shifter Trainer.train() uses
+        # to reslice every epoch. Never cached: like a temporal dataset,
+        # its .data is mutated in place across the run.
+        from neural_mi.data.shift_windowing import (
+            PairedWindowShifter, seconds_to_samples, make_categorical_encoder,
         )
-        # Only cache immutable static datasets — temporal datasets are mutated
-        # by time_shift() during training and must not be shared.
-        if isinstance(dataset, PairedDataset):
-            with _DATASET_CACHE_LOCK:
-                if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
-                    # Evict the oldest entry (dict preserves insertion order).
-                    _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
-                _DATASET_CACHE[_cache_key] = (dataset, _safe_weakref(x_data), _safe_weakref(y_data))
-            logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
-        else:
-            logger.debug("Temporal dataset — skipping cache (mutable via time_shift).")
+        from neural_mi.data.temporal import relabel_categorical_data
+        from neural_mi.data.static import StaticDataset
+        _wp_x = params.get('processor_params_x') or {}
+        _wp_y = params.get('processor_params_y') or _wp_x
+        _window_size = _wp_x.get('window_size')
+        _step_size = _wp_x.get('step_size') or _window_size
+        if _window_size is None:
+            raise ValueError(
+                "shift_windows=True requires processor_params_x={'window_size': ...} "
+                "(optionally 'step_size', defaults to window_size)."
+            )
+        # window_size/step_size are in the shared WindowManager unit --
+        # seconds if 'sample_rate' is set, otherwise raw samples (period=1).
+        # Convert to each side's own sample count independently, since X and
+        # Y may use different sample rates (see PairedWindowShifter's
+        # docstring for why the truncation/shift logic must then work in a
+        # common *duration*, not a common raw sample count).
+        _rate_x = _wp_x.get('sample_rate')
+        _rate_y = _wp_y.get('sample_rate')
+        _period_x = 1.0 / _rate_x if _rate_x else 1.0
+        _period_y = 1.0 / _rate_y if _rate_y else 1.0
+        _window_size_x = seconds_to_samples(_window_size, _period_x)
+        _step_size_x = seconds_to_samples(_step_size, _period_x)
+        _window_size_y = seconds_to_samples(_window_size, _period_y)
+        _step_size_y = seconds_to_samples(_step_size, _period_y)
+        # dataset has no window_manager (it's a plain PairedDataset of
+        # pre-shifted StaticDatasets) -- pass the geometry explicitly so the
+        # blocked-split leakage check in Trainer._create_blocked_split still
+        # has something to validate against.
+        params['leak_check_window_size'] = _window_size_x
+        params['leak_check_step'] = _step_size_x
+
+        def _prep_shift_side(data, proc_type, proc_params):
+            if proc_type == 'categorical':
+                arr = relabel_categorical_data(data)  # (T, C) int32, same
+                # relabeling CategoricalWindowDataset itself would apply.
+                raw = torch.as_tensor(arr, dtype=torch.long)
+                n_categories = int(raw.max().item()) + 1 if raw.numel() > 0 else 1
+                encoder = make_categorical_encoder(n_categories, proc_params.get('encoding', 'majority_vote'))
+                return raw, encoder
+            raw = data if torch.is_tensor(data) else torch.as_tensor(np.asarray(data), dtype=torch.float32)
+            if raw.ndim == 1:
+                raw = raw.unsqueeze(-1)
+            return raw, None
+
+        _raw_x, _encoder_x = _prep_shift_side(x_data, _shift_proc_x, _wp_x)
+        _raw_y, _encoder_y = _prep_shift_side(y_data, _shift_proc_y, _wp_y)
+        _shifter = PairedWindowShifter(
+            _raw_x, _raw_y, _window_size_x, _step_size_x, _window_size_y, _step_size_y,
+            encoder_x=_encoder_x, encoder_y=_encoder_y, period_x=_period_x, period_y=_period_y,
+        )
+        _x0, _y0 = _shifter.windows_at(0)
+        dataset = PairedDataset(StaticDataset(_x0, data_device=_data_device),
+                                StaticDataset(_y0, data_device=_data_device))
+        dataset._window_shifter = _shifter
+        _cache_key = None  # never cached (mutated in place every epoch); the
+        # cleanup step near the end of this function reads _cache_key back
+        # out of _DATASET_CACHE to decide whether `dataset` is safe to `del`
+        # -- None always misses, so it's always deleted, correctly, here.
     else:
-        logger.debug("Dataset cache hit — reusing pre-built dataset.")
+        _cache_key = _dataset_cache_key(x_data, y_data,
+                                        {**params, 'dataset_device': _data_device})
+        dataset = None
+        with _DATASET_CACHE_LOCK:
+            _cache_entry = _DATASET_CACHE.get(_cache_key)
+        if _cache_entry is not None:
+            _cached_dataset, _x_ref, _y_ref = _cache_entry
+            _x_is_live = _x_ref is None or _x_ref() is x_data
+            _y_is_live = _y_ref is None or _y_ref() is y_data
+            if _x_is_live and _y_is_live:
+                dataset = _cached_dataset
+            else:
+                logger.debug("Dataset cache key collision (stale data_ptr/id) — rebuilding.")
+
+        if dataset is None:
+            dataset = create_dataset(
+                x_data, y_data,
+                processor_type_x=params.get('processor_type_x'),
+                processor_type_y=params.get('processor_type_y'),
+                processor_params_x=params.get('processor_params_x'),
+                processor_params_y=params.get('processor_params_y'),
+                data_device=_data_device,
+            )
+            # Only cache immutable static datasets — temporal datasets are mutated
+            # by time_shift() during training and must not be shared.
+            if isinstance(dataset, PairedDataset):
+                with _DATASET_CACHE_LOCK:
+                    if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
+                        # Evict the oldest entry (dict preserves insertion order).
+                        _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
+                    _DATASET_CACHE[_cache_key] = (dataset, _safe_weakref(x_data), _safe_weakref(y_data))
+                logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
+            else:
+                logger.debug("Temporal dataset — skipping cache (mutable via time_shift).")
+        else:
+            logger.debug("Dataset cache hit — reusing pre-built dataset.")
 
     # Models that natively support 4-D input (N, C, H, W):
     #   'cnn2d' — Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
@@ -186,7 +273,17 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     #                   if the user proceeds.  Use 'cnn2d' or 'mlp' instead.
     _4D_NATIVE = {'cnn2d', 'mlp', 'pretrained_backbone'}
 
-    if dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
+    if isinstance(dataset.x_data, tuple):
+        # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
+        # mode='conditional'(align='dual_branch')) -- dims become a matching
+        # 2-tuple instead of a single int. The hasattr(..., 'shape') guard
+        # below is False for a tuple, so without this branch the whole
+        # dim-computation block would be silently skipped and
+        # DualBranchEmbedding would never receive the dims it needs.
+        _a, _c = dataset.x_data
+        params['n_channels_x'] = (_a.shape[1], _c.shape[1])
+        params['input_dim_x'] = (_a.shape[1] * _a.shape[2], _c.shape[1] * _c.shape[2])
+    elif dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
         _x = dataset.x_data
         params['n_channels_x'] = _x.shape[1]
         if _x.ndim == 4:
@@ -331,8 +428,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         params['batch_size'],
         train_fraction=params.get('train_fraction', 0.9),
         n_test_blocks=params.get('n_test_blocks', 5),
-        random_time_shifting=params.get('random_time_shifting', False),
-        epochs_to_max_shift=params.get('epochs_to_max_shift', 5),
+        shift_time=params.get('shift_time', True),
+        shift_windows=params.get('shift_windows', True),
         patience=params['patience'],
         smoothing_sigma=params.get('smoothing_sigma', 1.0),
         median_window=params.get('median_window', 5),
@@ -379,13 +476,18 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             logger.warning("return_embeddings=True but y_data is None. Skipping embedding extraction.")
         else:
             trainer.model.eval()
-            _n = _all_x.shape[0]
+            # _all_x may be a plain tensor or a tuple (DualBranchEmbedding's
+            # compound "X-role" data, mode='conditional'(align='dual_branch')).
+            _is_tuple_x = isinstance(_all_x, tuple)
+            _n = (_all_x[0] if _is_tuple_x else _all_x).shape[0]
             _zx_parts, _zy_parts = [], []
             with torch.no_grad():
                 for _start in range(0, _n, _EMBEDDING_BATCH):
                     _end = min(_start + _EMBEDDING_BATCH, _n)
+                    _x_batch = (tuple(t[_start:_end].to(device) for t in _all_x)
+                                if _is_tuple_x else _all_x[_start:_end].to(device))
                     _bzx, _bzy = trainer.model.get_embeddings(
-                        _all_x[_start:_end].to(device),
+                        _x_batch,
                         _all_y[_start:_end].to(device),
                     )
                     _zx_parts.append(_bzx.detach().cpu())

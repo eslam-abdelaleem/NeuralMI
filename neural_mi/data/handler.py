@@ -6,8 +6,22 @@ from .temporal import (
     ContinuousWindowDataset, SpikeWindowDataset, BinnedSpikeDataset, CategoricalWindowDataset,
 )
 from .static import StaticDataset
+from .shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from torch.utils.data import Dataset
 from neural_mi.logger import logger
+
+
+def _truncate_leading(data, min_len: int):
+    """Truncate the leading (sample) dimension to ``min_len``, whether
+    ``data`` is a plain tensor or a tuple of tensors sharing that dimension
+    (``StaticDataset``'s compound "X-role" data for
+    ``mode='conditional'(align='dual_branch')``). A naive ``data[:min_len]``
+    on a raw tuple would slice the *outer* 2-element tuple instead of
+    truncating each inner tensor -- this is the fix for that.
+    """
+    if isinstance(data, tuple):
+        return tuple(d[:min_len] for d in data)
+    return data[:min_len]
 
 
 class WindowManager:
@@ -312,8 +326,8 @@ class PairedDataset(Dataset):
                 f"Truncating both to {min_len} samples "
                 f"({lost} samples discarded, {pct:.1f}% of the larger dataset lost)."
             )
-            self.x_dataset.data = self.x_dataset.data[:min_len]
-            self.y_dataset.data = self.y_dataset.data[:min_len]
+            self.x_dataset.data = _truncate_leading(self.x_dataset.data, min_len)
+            self.y_dataset.data = _truncate_leading(self.y_dataset.data, min_len)
             # Invalidate lazily-allocated data_master so it is re-cloned from
             # the truncated data the next time apply_noise/apply_precision runs.
             self.x_dataset.data_master = None
@@ -457,6 +471,34 @@ def create_dataset(
                 f"{_static_name} a real processor_type too (e.g. 'continuous'), or "
                 f"pre-process both variables yourself and pass processor_type_x=None and "
                 f"processor_type_y=None for both."
+            )
+
+        # 'spike' timestamps are always in seconds; 'continuous'/'categorical'
+        # default to raw sample-index units unless 'sample_rate' is given.
+        # X and Y share a single WindowManager (below), which combines their
+        # get_temporal_extent() values via plain numeric min/max -- if the two
+        # sides are in different units, that combination is meaningless (e.g.
+        # a 20000-sample continuous recording with no sample_rate paired with
+        # a 40-second spike recording silently windows only "sample 0 to 40"
+        # of the continuous side, discarding 99.8% of it, with no error).
+        # This is unrelated to shifting -- it affects any use of a mismatched
+        # pair, so it's checked here rather than only when a shift is
+        # requested (see shift_windowing.mixed_pair_sample_rate_ok, reused
+        # here so "which pairs need a shared unit" is defined in one place).
+        if (shift_family(proc_type_x, proc_type_y) == 'mixed'
+                and not mixed_pair_sample_rate_ok(proc_type_x, proc_params_x, proc_type_y, proc_params_y)):
+            _regular_side, _regular_type = (
+                ('x', proc_type_x) if proc_type_x != 'spike' else ('y', proc_type_y)
+            )
+            logger.warning(
+                f"processor_type mixes 'spike' with '{_regular_type}' on side "
+                f"{_regular_side}, with no 'sample_rate' set on that side. 'spike' "
+                f"timestamps are always in seconds; '{_regular_type}' defaults to raw "
+                f"sample-index units without a sample_rate -- X and Y's window "
+                f"boundaries may not correspond to the same real time, so window "
+                f"alignment (and therefore this pairing's validity) may be "
+                f"meaningless. Pass processor_params_{_regular_side}="
+                f"{{'sample_rate': ...}} to put both sides on a shared time unit."
             )
 
         # X and Y share a single WindowManager, so they must use the same window_size.

@@ -180,7 +180,10 @@ class TestConditionalMICategoricalZ:
         window_size = 10
         x_raw, y_raw, z_raw = self._confounded_data(window_size=window_size)
         model = Model(hidden_dim=32, embedding_dim=8, n_layers=1)
-        training = Training(n_epochs=40, patience=15)
+        # shift_windows=False: mode='conditional' (the second call below) never
+        # reaches shift_windows, so leaving it at its default for the mode='estimate'
+        # call would make `raw` and `conditioned` trained under different dynamics.
+        training = Training(n_epochs=40, patience=15, shift_windows=False)
         processing = nmi.Processing(
             x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
             y='continuous', y_params={'window_size': window_size, 'step_size': window_size},

@@ -147,6 +147,20 @@ class Results:
             if mi_z_y is not None:
                 print(f"  I(Z;Y)            : {mi_z_y:.4f} {units}")
 
+        elif self.mode == 'interaction':
+            mi_xw_y = self.details.get('mi_xw_y')
+            mi_x_y  = self.details.get('mi_x_y')
+            mi_w_y  = self.details.get('mi_w_y')
+            ii      = self.details.get('interaction_info')
+            if ii is not None:
+                print(f"  II                : {ii:.4f} {units}")
+            if mi_xw_y is not None:
+                print(f"  I(X,W;Y)          : {mi_xw_y:.4f} {units}")
+            if mi_x_y is not None:
+                print(f"  I(X;Y)            : {mi_x_y:.4f} {units}")
+            if mi_w_y is not None:
+                print(f"  I(W;Y)            : {mi_w_y:.4f} {units}")
+
         elif self.mode == 'transfer':
             te_xy = self.details.get('te_xy')
             te_yx = self.details.get('te_yx')
@@ -193,7 +207,7 @@ class Results:
                     print("  ✓  is_reliable = True")
                     if r_squared is not None and not math.isnan(r_squared):
                         print(f"     R² = {r_squared:.3f}")
-            elif self.mode in ('conditional', 'transfer') and self.params.get('rigorous'):
+            elif self.mode in ('conditional', 'transfer', 'interaction') and self.params.get('rigorous'):
                 mi_err = self.details.get('mi_error')
                 mi_err_pred = self.details.get('mi_error_pred')
                 is_reliable = self.details.get('is_reliable')
@@ -440,6 +454,40 @@ class Results:
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + max(_values) * 0.02,
                     f'{val:.3f}', ha='center', va='bottom', fontsize=9,
+                )
+            import seaborn as _sns
+            _sns.despine(ax=ax)
+
+        elif self.mode == 'interaction':
+            # Bar chart showing the three MI components and the II estimate.
+            mi_xw_y = self.details.get('mi_xw_y')
+            mi_x_y = self.details.get('mi_x_y')
+            mi_w_y = self.details.get('mi_w_y')
+            ii = self.details.get('interaction_info')
+            if ii is None and mi_xw_y is None:
+                raise ValueError(
+                    "Cannot plot interaction results: 'interaction_info' and 'mi_xw_y' "
+                    "are missing from result.details. "
+                    f"Present keys: {sorted(self.details.keys())}."
+                )
+            _labels = ['I(X,W;Y)', 'I(X;Y)', 'I(W;Y)', 'II']
+            _values = [mi_xw_y, mi_x_y, mi_w_y, ii]
+            _colors = ['steelblue', 'darkorange', 'mediumpurple', 'mediumseagreen']
+            valid = [(l, v, c) for l, v, c in zip(_labels, _values, _colors) if v is not None]
+            _labels, _values, _colors = (list(x) for x in zip(*valid))
+            bars = ax.bar(_labels, _values, color=_colors, width=0.5, edgecolor='white')
+            ax.set_ylabel(f'Mutual Information ({units})', fontsize=12)
+            ax.set_title('Interaction Information Components', fontsize=13)
+            ax.grid(True, axis='y', alpha=0.3)
+            ax.axhline(0, color='black', linewidth=0.8)
+            _max_abs = max(abs(v) for v in _values) or 1.0
+            for bar, val in zip(bars, _values):
+                _va = 'bottom' if val >= 0 else 'top'
+                _offset = _max_abs * 0.02 * (1 if val >= 0 else -1)
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + _offset,
+                    f'{val:.3f}', ha='center', va=_va, fontsize=9,
                 )
             import seaborn as _sns
             _sns.despine(ax=ax)

@@ -384,13 +384,13 @@ def test_transfer_mode_returns_diagnostics_for_both_components():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1.5 spec: warn once when random_time_shifting cannot take effect (Task 2)
+# Phase 1.5 spec: warn once when shift_time cannot take effect (Task 2)
 # ---------------------------------------------------------------------------
 
-def test_random_time_shifting_warns_when_explicitly_requested_but_dead():
+def test_shift_time_warns_when_explicitly_requested_but_dead():
     """mode='estimate' with a windowed processor windows eagerly in run.py;
     the Trainer never sees a temporal dataset, so an explicit
-    random_time_shifting=True must warn that it has no effect."""
+    shift_time=True must warn that it has no effect."""
     np.random.seed(0)
     x = np.random.randn(3000, 2).astype('float32')
     y = np.random.randn(3000, 2).astype('float32')
@@ -399,16 +399,18 @@ def test_random_time_shifting_warns_when_explicitly_requested_but_dead():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         nmi.run(x, y, mode='estimate', processing=proc,
-               training=Training(n_epochs=1, patience=1, random_time_shifting=True),
+               training=Training(n_epochs=1, patience=1, shift_time=True),
                n_workers=1, show_progress=False, seed=0)
-    msgs = [str(w.message) for w in caught if 'random_time_shifting' in str(w.message)]
-    assert msgs, "Expected a random_time_shifting warning"
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert msgs, "Expected a shift_time warning"
     assert "mode='estimate'" in msgs[0]
 
 
-def test_random_time_shifting_silent_when_not_requested():
-    """The schema default is False, not True -- an unset random_time_shifting
-    is not a 'requested but ignored' case and must stay silent."""
+def test_shift_time_silent_when_not_requested():
+    """shift_time defaults to True, but for this continuous+continuous pair
+    at mode='estimate' only shift_windows is reachable -- an unset (schema-
+    defaulted) shift_time must stay silent, since the user never explicitly
+    asked for it here."""
     np.random.seed(0)
     x = np.random.randn(3000, 2).astype('float32')
     y = np.random.randn(3000, 2).astype('float32')
@@ -419,11 +421,11 @@ def test_random_time_shifting_silent_when_not_requested():
         nmi.run(x, y, mode='estimate', processing=proc,
                training=Training(n_epochs=1, patience=1),
                n_workers=1, show_progress=False, seed=0)
-    msgs = [str(w.message) for w in caught if 'random_time_shifting' in str(w.message)]
-    assert not msgs, f"Did not expect a random_time_shifting warning; got: {msgs}"
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"
 
 
-def test_random_time_shifting_silent_when_explicitly_false():
+def test_shift_time_silent_when_explicitly_false():
     """An explicit False must not warn -- the user already opted out."""
     np.random.seed(0)
     x = np.random.randn(3000, 2).astype('float32')
@@ -433,13 +435,13 @@ def test_random_time_shifting_silent_when_explicitly_false():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         nmi.run(x, y, mode='estimate', processing=proc,
-               training=Training(n_epochs=1, patience=1, random_time_shifting=False),
+               training=Training(n_epochs=1, patience=1, shift_time=False),
                n_workers=1, show_progress=False, seed=0)
-    msgs = [str(w.message) for w in caught if 'random_time_shifting' in str(w.message)]
-    assert not msgs, f"Did not expect a random_time_shifting warning; got: {msgs}"
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"
 
 
-def test_random_time_shifting_silent_when_reachable_via_mode_lag():
+def test_shift_time_silent_when_reachable_via_mode_lag():
     """mode='lag' defers processing to the worker, so the feature genuinely
     works there -- an explicit True must not warn."""
     np.random.seed(0)
@@ -450,7 +452,236 @@ def test_random_time_shifting_silent_when_reachable_via_mode_lag():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         nmi.run(x, y, mode='lag', lag=nmi.Lag(lag_range=[0]), processing=proc,
-               training=Training(n_epochs=1, patience=1, random_time_shifting=True),
+               training=Training(n_epochs=1, patience=1, shift_time=True),
                n_workers=1, show_progress=False, seed=0)
-    msgs = [str(w.message) for w in caught if 'random_time_shifting' in str(w.message)]
-    assert not msgs, f"Did not expect a random_time_shifting warning on mode='lag'; got: {msgs}"
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_time warning on mode='lag'; got: {msgs}"
+
+
+# ---------------------------------------------------------------------------
+# Shift-mechanism reachability extension: categorical/mixed-regular pairs for
+# shift_windows, spike+spike and sample_rate-gated mixed pairs for
+# shift_time.
+# ---------------------------------------------------------------------------
+
+def _spike_trains(n_neurons, n_seconds, rate, seed=0):
+    rng = np.random.default_rng(seed)
+    return [np.sort(rng.uniform(0, n_seconds, rng.poisson(n_seconds * rate))) for _ in range(n_neurons)]
+
+
+def test_shift_windows_silent_for_categorical_pair():
+    """categorical+categorical must be reachable now, not just continuous+continuous."""
+    np.random.seed(0)
+    x = np.random.randint(0, 4, size=(3000, 2)).astype('int64')
+    y = np.random.randint(0, 3, size=(3000, 2)).astype('int64')
+    proc = nmi.Processing(x='categorical', x_params={'window_size': 20, 'step_size': 20},
+                          y='categorical', y_params={'window_size': 20, 'step_size': 20})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='estimate', processing=proc,
+               training=Training(n_epochs=1, patience=1, shift_windows=True),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_windows warning for categorical+categorical; got: {msgs}"
+
+
+def test_shift_windows_silent_for_continuous_categorical_mixed_pair():
+    np.random.seed(0)
+    x = np.random.randn(3000, 2).astype('float32')
+    y = np.random.randint(0, 4, size=(3000, 2)).astype('int64')
+    proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                          y='categorical', y_params={'window_size': 20, 'step_size': 20})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='estimate', processing=proc,
+               training=Training(n_epochs=1, patience=1, shift_windows=True),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_windows warning for a continuous+categorical pair; got: {msgs}"
+
+
+def test_shift_windows_still_warns_for_spike():
+    """spike is not part of the 'regular' family -- shift_windows must
+    still warn (and fall back) rather than silently misinterpret spike data.
+
+    A continuous+spike pair without a shared time unit (no sample_rate on
+    the continuous side) is itself a pre-existing, orthogonal correctness
+    gap (window_size means raw samples for X but seconds for Y) that can
+    make training degenerate -- irrelevant to what's being checked here, so
+    a TrainingError from that mismatch is tolerated; only the warning
+    (raised before training starts) matters for this test.
+    """
+    np.random.seed(0)
+    x = np.random.randn(3000, 2).astype('float32')
+    spikes = _spike_trains(3, 300.0, 5.0)
+    proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                          y='spike', y_params={'window_size': 2.0, 'step_size': 2.0})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        try:
+            nmi.run(x, spikes, mode='estimate', processing=proc,
+                   training=Training(n_epochs=1, patience=1, shift_windows=True),
+                   n_workers=1, show_progress=False, seed=0)
+        except TrainingError:
+            pass
+    msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+    assert msgs, "Expected a shift_windows warning for a continuous+spike pair"
+
+
+def test_shift_time_silent_for_spike_pair_at_mode_estimate():
+    """spike+spike is now reachable at mode='estimate' (both sides natively
+    in seconds, no cross-unit concern) -- an explicit True must not warn."""
+    x = _spike_trains(4, 400.0, 8.0, seed=1)
+    y = _spike_trains(4, 400.0, 8.0, seed=2)
+    proc = nmi.Processing(x='spike', x_params={'window_size': 2.0, 'step_size': 2.0},
+                          y='spike', y_params={'window_size': 2.0, 'step_size': 2.0})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='estimate', processing=proc,
+               training=Training(n_epochs=1, patience=1, shift_time=True),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_time warning for spike+spike; got: {msgs}"
+
+
+def test_shift_time_warns_for_mixed_pair_without_sample_rate():
+    """A mixed continuous+spike pair without 'sample_rate' on the continuous
+    side has no common time unit for a shift value to mean -- must warn and
+    fall back, not silently misalign X/Y."""
+    np.random.seed(0)
+    x = np.random.randn(3000, 2).astype('float32')
+    spikes = _spike_trains(3, 300.0, 5.0)
+    proc = nmi.Processing(x='continuous', x_params={'window_size': 5, 'step_size': 5},
+                          y='spike', y_params={'window_size': 5.0, 'step_size': 5.0})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, spikes, mode='estimate', processing=proc,
+               training=Training(n_epochs=1, patience=1, shift_time=True),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert msgs, "Expected a shift_time warning for a mixed pair without sample_rate"
+    assert 'sample_rate' in msgs[0]
+
+
+def test_shift_windows_silent_for_plain_sweep():
+    """Plain (non-processor-swept) mode='sweep' dispatches independent
+    training runs from the same raw data, same as mode='estimate' -- must
+    be reachable too, not just 'estimate'."""
+    np.random.seed(0)
+    x = np.random.randn(5000, 2).astype('float32')
+    y = np.random.randn(5000, 2).astype('float32')
+    proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                          y='continuous', y_params={'window_size': 20, 'step_size': 20})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='sweep', processing=proc, sweep_grid={'hidden_dim': [8, 16]},
+               training=Training(n_epochs=1, patience=1, shift_windows=True),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_windows warning for plain mode='sweep'; got: {msgs}"
+
+
+def test_shift_time_silent_for_spike_pair_in_plain_sweep():
+    x = _spike_trains(4, 400.0, 8.0, seed=1)
+    y = _spike_trains(4, 400.0, 8.0, seed=2)
+    proc = nmi.Processing(x='spike', x_params={'window_size': 2.0, 'step_size': 2.0},
+                          y='spike', y_params={'window_size': 2.0, 'step_size': 2.0})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='sweep', processing=proc, sweep_grid={'hidden_dim': [8, 16]},
+               training=Training(n_epochs=1, patience=1, shift_time=True),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_time warning for spike+spike in plain sweep; got: {msgs}"
+
+
+def test_shift_time_still_warns_for_plain_sweep_regular_pair():
+    """continuous+continuous still isn't a shift_time case even in
+    a now-reachable mode -- shift_windows remains the right tool."""
+    np.random.seed(0)
+    x = np.random.randn(5000, 2).astype('float32')
+    y = np.random.randn(5000, 2).astype('float32')
+    proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                          y='continuous', y_params={'window_size': 20, 'step_size': 20})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='sweep', processing=proc, sweep_grid={'hidden_dim': [8, 16]},
+               training=Training(n_epochs=1, patience=1, shift_time=True),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert msgs, "Expected a shift_time warning for a regular pair even in plain sweep"
+
+
+def test_shift_time_silent_for_mixed_pair_with_sample_rate():
+    """The same mixed pair, but with 'sample_rate' set on the continuous
+    side, has a common time unit (seconds) with spike -- must not warn."""
+    np.random.seed(0)
+    sample_rate = 100.0
+    x = np.random.randn(30000, 2).astype('float32')  # 300s at 100Hz
+    spikes = _spike_trains(3, 300.0, 5.0)
+    proc = nmi.Processing(x='continuous',
+                          x_params={'window_size': 5.0, 'step_size': 5.0, 'sample_rate': sample_rate},
+                          y='spike', y_params={'window_size': 5.0, 'step_size': 5.0})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, spikes, mode='estimate', processing=proc,
+               training=Training(n_epochs=1, patience=1, shift_time=True),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_time warning for a rate-equipped mixed pair; got: {msgs}"
+
+
+# ---------------------------------------------------------------------------
+# shift_windows/shift_time both default to True -- a schema-defaulted (unset)
+# value must engage exactly like an explicit True for a reachable pair, not
+# just stay silent for an unreachable one (already covered above).
+# ---------------------------------------------------------------------------
+
+def test_shift_windows_engages_silently_by_default_for_continuous_pair():
+    """No shift_windows kwarg at all: the schema default (True) must engage
+    for this reachable continuous+continuous pair without warning."""
+    np.random.seed(0)
+    x = np.random.randn(3000, 2).astype('float32')
+    y = np.random.randn(3000, 2).astype('float32')
+    proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                          y='continuous', y_params={'window_size': 20, 'step_size': 20})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='estimate', processing=proc,
+               training=Training(n_epochs=1, patience=1),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
+
+
+def test_shift_windows_engages_silently_by_default_for_categorical_pair():
+    """Same as above, categorical+categorical: the reslice mechanism must be
+    reachable by default, not just when explicitly requested."""
+    np.random.seed(0)
+    x = np.random.randint(0, 4, size=(3000, 2)).astype('int64')
+    y = np.random.randint(0, 3, size=(3000, 2)).astype('int64')
+    proc = nmi.Processing(x='categorical', x_params={'window_size': 20, 'step_size': 20},
+                          y='categorical', y_params={'window_size': 20, 'step_size': 20})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='estimate', processing=proc,
+               training=Training(n_epochs=1, patience=1),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
+
+
+def test_shift_time_engages_silently_by_default_for_spike_pair():
+    """No shift_time kwarg at all: the schema default (True) must engage for
+    this reachable spike+spike pair at mode='estimate' without warning."""
+    x = _spike_trains(4, 400.0, 8.0, seed=1)
+    y = _spike_trains(4, 400.0, 8.0, seed=2)
+    proc = nmi.Processing(x='spike', x_params={'window_size': 2.0, 'step_size': 2.0},
+                          y='spike', y_params={'window_size': 2.0, 'step_size': 2.0})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='estimate', processing=proc,
+               training=Training(n_epochs=1, patience=1),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"

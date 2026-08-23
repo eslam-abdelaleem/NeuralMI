@@ -7,6 +7,254 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Temporal window shifting: renamed, on by default, ramp removed
+
+`epoch_window_shift`/`random_time_shifting` are renamed to `shift_windows`/
+`shift_time` (matching `Training`'s other verb+noun boolean flags, e.g.
+`use_amp`/`track_embeddings`) and both now **default to `True`** wherever
+they apply, since extensive testing showed genuinely better-generalizing
+models (better held-out test MI, especially in the small-sample regime,
+with the un-shifted baseline hitting a hard ceiling no amount of extra
+training crosses) with no case where it hurts. If `n_epochs`/`patience`
+need adjusting for a given dataset, the existing "under-trained lower
+bound" warning already flags it; it isn't auto-scaled.
+
+- **Breaking rename**: `epoch_window_shift` → `shift_windows`,
+  `random_time_shifting` → `shift_time`, throughout the public API,
+  internal helpers, and tests. `EpochWindowShifter`/
+  `PairedEpochWindowShifter` (`neural_mi/data/shift_windowing.py`) are
+  renamed to `WindowShifter`/`PairedWindowShifter`.
+- **`shift_time`'s `epochs_to_max_shift` warm-up ramp is removed
+  entirely**, not deprecated — it measured no benefit across several ramp
+  lengths and added a parameter with nothing left for it to control once
+  gone. Both mechanisms now shift at full magnitude from epoch 0, matching
+  `shift_windows`'s existing (unramped) behavior.
+- **`shift_windows`'s shift range no longer depends on `step_size`**: it's
+  drawn from `[0, window_size)` rather than `[0, step_size)`. Byte-identical
+  to before whenever `step_size == window_size` (the common case, since
+  `step_size` usually isn't set); only changes behavior (more conservative,
+  fewer windows) when `step_size` is explicitly set smaller than
+  `window_size`.
+- Flipping the default required a companion fix in `run.py`: the
+  "has no effect for this configuration" warnings now only fire when the
+  user explicitly set the flag (reusing the existing `_pre_default_keys`
+  explicit-vs-defaulted tracking), so a schema-defaulted `True` that
+  doesn't apply to a given pair stays silent instead of warning.
+
+### Fixed: `random_time_shifting`/`epoch_window_shift` could leak into the reported estimate
+
+Both mechanisms are meant to affect training dynamics only. They didn't:
+the final `test_mi`/`train_mi` (and per-epoch history used for early
+stopping and best-epoch selection, decoder reconstruction loss, spectral
+metrics, per-epoch embedding tracking) was evaluated against
+`dataset.x_dataset`/`.y_dataset` as they stood *after* the epoch loop
+ended — i.e. whichever shift happened to be applied at the end of the last
+epoch trained, which is essentially never the same shift that was in
+effect when the best-epoch checkpoint was actually selected. The reported
+number therefore depended partly on incidental timing, not just model
+quality. Live comparison for one case: -0.0554 nats (stale-shift eval,
+what the old code produced) vs. -0.0645 nats (the correct, canonical-view
+number) — a real, non-rounding difference.
+
+Fixed in `neural_mi/training/trainer.py`: a frozen snapshot of the data
+(taken before any shift) plus the original, non-drifting test/train-eval
+index arrays are now used for every evaluation/diagnostic read; training
+batches still read the live, currently-shifted data. For
+`random_time_shifting` this closes a second, related gap:
+`SubsetView.indices` for a real temporal dataset re-derives from stored
+time ranges on every rebuild (the ordinary, now-bounded edge effect from
+the SubsetView fix below), so even with frozen *content* the *index set*
+itself could still drift — evaluation now uses the original index arrays
+directly, sidestepping `SubsetView`'s live-tracking machinery entirely for
+this purpose. Verified via a live before/after re-evaluation matching the
+trained model against an independently-reconstructed canonical view, for
+both mechanisms, down to floating-point equality.
+
+### Temporal window shifting: plain-sweep reachability, cross-unit warning, honest default
+
+Small follow-ups to the shift-coverage work below.
+
+- **`epoch_window_shift`/`random_time_shifting` now reachable at plain
+  (non-processor-swept) `mode='sweep'`**, not just `mode='estimate'` — any
+  mode dispatching independent training runs from the same raw data
+  qualifies equally. `mode='pairwise'` is deliberately excluded: despite
+  also being "independent sub-runs," its per-channel dispatch needs an
+  already-windowed array to slice channels from, a real restructuring of
+  `pairwise.py` rather than a gating change — flagged, not attempted.
+- **New warning in `create_dataset`**: pairing `spike` with `continuous`/
+  `categorical` when the regular-grid side lacks `sample_rate` now warns
+  that window alignment may be meaningless, independent of whether any
+  shift is requested — `PairedTemporalDataset` combines both sides'
+  temporal extents via plain numeric `min`/`max`, which silently produces
+  wrong results if the two sides aren't already in the same time unit.
+- **Fixed a misleading default**: `Trainer.train()`'s own signature said
+  `random_time_shifting: bool = True`, while the real, user-facing default
+  (enforced by `task.py`, always passed explicitly) was already `False`.
+  No caller relied on the naked default taking effect on temporal data
+  (verified) — this is a same-behavior, honesty-only fix.
+
+### Temporal window shifting: categorical/mixed-pair/spike coverage, and a SubsetView correctness fix
+
+Extends the `epoch_window_shift`/`random_time_shifting` work below to more
+`processor_type` pairs, and fixes a real bug found while doing so. See
+`NEURALMI_REFERENCE.md`'s "Temporal Window Shifting" section for the full
+per-pair reachability table.
+
+- **`epoch_window_shift` now covers the whole "regular grid" family**:
+  `categorical`+`categorical` and `continuous`+`categorical` (either order),
+  not just `continuous`+`continuous`. Categorical data is re-encoded
+  (`majority_vote`/`probability`/`full_trajectory`) via a new vectorized
+  step in `neural_mi/data/shift_windowing.py` after each reslice, matching
+  `CategoricalWindowDataset`'s three encodings exactly (verified
+  byte-identical at shift=0). Also fixes a latent bug: `window_size`/
+  `step_size` in `processor_params` are in seconds whenever `sample_rate`
+  is set, but were previously passed straight to `torch.unfold` (which
+  requires an integer sample count) — would have crashed with a confusing
+  `TypeError`. Now converted per-side via each side's own `sample_rate`,
+  which also makes X and Y correctly handle *different* sample rates.
+- **`random_time_shifting` is now reachable at `mode='estimate'`** for
+  `spike`+`spike` pairs (previously only `mode='lag'`/processor-swept
+  `mode='sweep'`), and for mixed `spike`+continuous/categorical pairs when
+  the non-spike side has `sample_rate` set (required so a shift value means
+  the same real time on both sides; without it, the pair is left unshifted
+  with an explanatory warning rather than silently misaligned).
+- **`SpikeWindowDataset`/`BinnedSpikeDataset` windowing vectorized**: the
+  Python-level `for w in range(n_windows)` two-pointer loop is replaced
+  with two `np.searchsorted` calls plus a vectorized ragged-to-flat scatter
+  — verified byte-identical to the original loop across overlapping,
+  non-overlapping, sparse, and empty-neuron cases.
+- **Fixed: `SubsetView` eval-subset bug** (`neural_mi/training/trainer.py`).
+  The training-evaluation subsample (`train_eval_idx`, used for the
+  reported train MI and `eval_train`'s per-epoch tracking) was built via
+  `np.random.choice` — a scattered sample that `SubsetView` can only
+  represent as thousands of degenerate zero-width time ranges, which
+  collide or drop en masse on the very next window rebuild (observed: up
+  to 100% loss on a single shift). Root-cause fixed, not gated around: the
+  eval subsample is now built from proportional *contiguous* sub-chunks of
+  the train split's own contiguous segments (`Trainer._select_train_eval_indices`),
+  the same representation `train_view`/`test_view` already handle safely.
+  Also closes a separate, sharper latent risk where the `eval_train`
+  per-epoch subset bypassed `SubsetView` entirely and could index past the
+  end of a rebuilt dataset. This was a pre-existing bug affecting *any*
+  processor type through the already-shipped `mode='lag'`/processor-swept
+  `mode='sweep'` paths, not something this pass introduced — fixing it
+  benefits existing callers too.
+
+### `Training(epoch_window_shift=True)`: cheap per-epoch window-tiling shift for regularly-sampled data
+
+New, narrower alternative to `random_time_shifting` for the common case:
+regularly-sampled data windowed via a fixed `window_size`/`step_size`.
+`random_time_shifting` (gated on `PairedTemporalDataset`) rebuilds the
+entire windowed array via `np.interp` on every shift, at a cost independent
+of shift size (confirmed: shift=0 costs the same as shift=10), and has a
+separate bug where the training-evaluation subset loses over half its
+windows on the first rebuild regardless of shift magnitude. `epoch_window_shift`
+sidesteps both: for a regular grid, shifting which sample starts the tiling
+is a plain re-slice (`neural_mi/data/shift_windowing.py`'s
+`EpochWindowShifter`, `torch.Tensor.unfold`-based, no interpolation, no
+time-vector, no `SubsetView`), with the window count held fixed across
+every shift so train/test/eval splits stay valid throughout. No ramp-up
+schedule (shifts at full magnitude from epoch 0) — `epochs_to_max_shift`-style
+ramping showed no measurable accuracy benefit in direct testing, across
+ramp settings from 1 to 40 epochs. Benchmarked against
+`random_time_shifting` (5-seed shared-latent Gaussian oracle,
+`mode='estimate'`): comparable or faster wall-clock (39.1s ± 1.2s vs. the
+old mechanism's 50.4s ± 16.7s baseline — also far more consistent, no
+interpolation-cost variance), a real train/test-gap reduction (+0.196 ->
++0.138), and zero eval-subset warnings. Wired up for `mode='estimate'` with
+a `continuous` processor only for this pass; extending reach to more modes
+is a natural follow-up, not bundled in. New
+`_warn_if_epoch_window_shift_dead` (`run.py`) mirrors the existing
+`random_time_shifting` reachability warning.
+
+### `DualBranchEmbedding` and `Conditional(align='dual_branch')`: MI rate, instantaneous exchange, directed information rate
+
+The three remaining quantities in the taxonomy (`THEORY.md` §11) all need
+$A$ and $C$ at genuinely different window lengths, beyond
+`mode='conditional''`'s existing small trim tolerance. New
+`DualBranchEmbedding` (`neural_mi/models/embeddings.py`), used via
+`custom_embedding_cls=DualBranchEmbedding`: two independent sub-embedding
+networks, one per input length, fused by a small MLP, replacing what would
+otherwise require zero-padding the shorter array. New
+`Conditional(align='dual_branch')` opt-in (`neural_mi/config.py`,
+`neural_mi/analysis/conditional.py`) builds the "X-role" data as a tuple
+`(a_data, c_data)` instead of concatenating; `align=None` (the default)
+keeps today's concatenation-and-trim behavior byte-for-byte unchanged.
+
+Threading a tuple through the pipeline touched every layer between data and
+training: `StaticDataset`, `PairedDataset._align_datasets`, `ParameterSweep`,
+`analysis/task.py`'s dim computation, `Trainer`'s batch-slicing (new
+`_batch_size_of`/`_to_device`/`_index_batch` helpers), and the critic layer's
+`_compute_embeddings_chunked`/`HybridCritic.forward` (new
+`_batch_size_of`/`_device_of`/`_slice_batch` helpers), each a small,
+mechanical `isinstance(x, tuple)` branch. `rigorous.py` itself needed no
+changes: Z rides along via the existing `extra_data` mechanism, and the
+tuple is assembled only at the `_cmi_rigorous_scalar` boundary. `_ensure_cpu`
+(`neural_mi/utils.py`) now recurses into tuples, closing a real
+`n_workers > 1` spawn-boundary risk (a GPU/MPS-resident tuple element would
+otherwise silently never reach CPU before pickling).
+
+New `neural_mi.mi_rate`, `neural_mi.instantaneous_exchange`,
+`neural_mi.directed_information_rate` convenience functions
+(`neural_mi/quantities.py`), each building the right $A$/$B$/$C$ arrays and
+requiring a `DualBranchEmbedding`-configured `model=` (raises a clear
+`ValueError` upfront otherwise). Directed information rate is estimated
+directly rather than via its exact $\text{TE} + $ instantaneous-exchange
+decomposition, to avoid compounding transfer entropy's small-residual
+fragility into an otherwise well-behaved quantity; the identity is a
+test-suite cross-check only. `use_variational=True` and `mode='sweep'`'s
+`max_samples_per_task` are explicitly unsupported with `DualBranchEmbedding`,
+raising a clear error rather than a silent wrong result.
+
+### New `mode='interaction'`: interaction information
+
+Computes `II = I(X,W;Y) - I(X;Y) - I(W;Y)` via `Interaction(w_data=...)`, new
+`neural_mi/analysis/interaction.py`. The one quantity in the taxonomy
+(`THEORY.md` §12) that isn't a single conditional-MI call, three separate MI
+estimates combined by a formula, reusing `_joint_marginal_difference` once
+plus a new `_single_mi_mean` helper for the standalone `I(W;Y)` term (three
+sweeps total, not four). New `Interaction` config dataclass
+(`neural_mi/config.py`, mirrors `Conditional`'s `z_*` split), new
+`MODE_KWARGS_SCHEMA['interaction']` entry, new `Results.plot()`/`summary()`
+branches (a 4-bar chart of the three components plus II, correctly handling
+II's sign since it's the one quantity here that can legitimately be
+negative). Works with `rigorous=True` and `permutation_test=True`, same
+mechanics as `mode='conditional'`. New
+`neural_mi.interaction_information(...)` convenience function.
+
+### `mode='transfer'`: conditional transfer entropy via `Transfer(w_data=...)`
+
+`Transfer` (`neural_mi/config.py`) gains `w_data`/`w_time`/`w_processor_type`/
+`w_processor_params`, mirroring `Conditional`'s existing `z_*` split. When
+`w_data` is provided, `run_transfer_entropy` (`neural_mi/analysis/transfer.py`)
+folds a third signal's history ($W_{past}$, built the same way as
+$X_{past}$/$Y_{past}$) into both the joint and marginal conditioning arrays,
+computing $\text{TE}_{X\to Y}(W) = I(X_{past}; Y_0 \mid Y_{past}, W_{past})$
+instead of plain TE, see `THEORY.md` §11. `w_data=None` (the default) is
+byte-for-byte identical to before this parameter existed. Works with
+`rigorous=True`: `_te_rigorous_scalar` now accepts and forwards `w_data`,
+chunked per-gamma via the same `extra_data` mechanism `z_data` already uses
+for `mode='conditional'`'s rigorous path. New
+`neural_mi.conditional_transfer_entropy(...)` convenience function.
+
+### `neural_mi/quantities.py`: named convenience functions for temporal information quantities
+
+Five unconditioned $I(A;B)$ quantities on offset slices of one or two raw
+time series (`active_information_storage`, `excess_entropy`,
+`instantaneous_mi`, `cross_predictive_information`, `block_mi`), see
+`THEORY.md` §11 for definitions and `NEURALMI_REFERENCE.md` §13 for the API.
+Each is a thin wrapper around `mode='estimate'`, no new estimation mechanism;
+discoverability lives at this convenience-function layer rather than growing
+the `mode=` enum, since `mode=` tracks estimation mechanism, not scientific
+question. New `neural_mi/analysis/offsets.py` generalizes the sliding-window
+construction already used internally by `mode='transfer'`
+(`build_past_future`, `build_cross_offset`) for the single- and
+unconditioned-two-signal cases. Each function's construction parameter (`k`,
+`past_k`, `window_size`) accepts an iterable to dispatch a parallel sweep
+(new `neural_mi/parallel.py`'s `dispatch_tasks`, the same `spawn`-pool idiom
+already used independently in `rigorous.py`/`dimensionality.py`/`pairwise.py`/
+`sweep.py`, factored into one shared helper) and returns a `DataFrame`.
+
 ### `mode='dimensionality'`: cross-run-stable directions of shared structure
 
 `mode='dimensionality'` (`neural_mi/analysis/dimensionality.py`, `neural_mi/config.py`,

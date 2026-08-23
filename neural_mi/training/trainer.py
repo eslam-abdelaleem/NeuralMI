@@ -46,6 +46,29 @@ def _sample_with_minimum_distance(n: int, k: int, d: int) -> np.ndarray:
     sample = np.random.choice(n - (k - 1) * (d - 1), k, replace=False)
     return np.array([s + (d - 1) * r for s, r in zip(sample, _ranks(sample))])
 
+
+def _batch_size_of(x) -> int:
+    """Leading (sample) dim of x, whether x is a plain tensor or a tuple
+    (DualBranchEmbedding's compound "X-role" data, mode='conditional'
+    (align='dual_branch')) sharing that dimension."""
+    return (x[0] if isinstance(x, tuple) else x).shape[0]
+
+
+def _to_device(x, device):
+    """``.to(device)``, mapped over each element if x is a tuple."""
+    if isinstance(x, tuple):
+        return tuple(t.to(device) for t in x)
+    return x.to(device)
+
+
+def _index_batch(x, idx):
+    """Index the leading (sample) dim of x by idx (an int array/tensor or a
+    slice), mapped over each element if x is a tuple."""
+    if isinstance(x, tuple):
+        return tuple(t[idx] for t in x)
+    return x[idx]
+
+
 class Trainer:
     """Manages the training loop for a critic model.
 
@@ -149,7 +172,8 @@ class Trainer:
 
     def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
               train_fraction: float = 0.9, n_test_blocks: int = 5,
-              random_time_shifting: bool = True, epochs_to_max_shift: int = 5,
+              shift_time: bool = False,
+              shift_windows: bool = False,
               patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5,
               min_improvement: float = 0.001,
               save_best_model_path: Optional[str] = None, run_id: Optional[str] = None,
@@ -189,12 +213,22 @@ class Trainer:
         n_test_blocks : int, optional
             For 'blocked' split_mode, the number of contiguous blocks for the test set.
             Defaults to 5.
-        random_time_shifting : bool, optional
-            If data is temporal and windowed, will randomly shift in time to encourage learning 
-            a robust representation of data
-        epochs_to_max_shift : int, optional
-            Number of epochs at start to wait before time shifting. 
-            Can be useful to burn-in a working model before time shifting full amounts
+        shift_time : bool, optional
+            For temporal, windowed data: re-tiles the windows from a fresh
+            random time offset every epoch (via `PairedTemporalDataset.time_shift`),
+            so training doesn't see one fixed set of window boundaries.
+            Shifts at full magnitude every epoch, up to `window_manager.window_size`.
+            A no-op on a non-temporal dataset.
+        shift_windows : bool, optional
+            Cheaper, narrower alternative to `shift_time` for regularly-sampled
+            data windowed via a fixed `window_size`/`step_size`: re-slices
+            (not interpolates) a fresh window tiling from a random integer
+            sample offset every epoch, at negligible per-epoch cost. Shifts
+            at full magnitude every epoch, up to `window_size` samples. Only
+            takes effect when `dataset` was built with an attached
+            `_window_shifter` (`neural_mi/data/shift_windowing.py`); a
+            no-op otherwise. Mutually exclusive in practice with
+            `shift_time` (they gate on different dataset types).
         patience : int, optional
             Epochs to wait for improvement before early stopping. Defaults to 10.
         smoothing_sigma : float, optional
@@ -313,13 +347,6 @@ class Trainer:
         """
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         is_temporal = isinstance(dataset, PairedTemporalDataset)
-        if is_temporal and random_time_shifting and patience < epochs_to_max_shift:
-            logger.warning(
-                f"patience={patience} < epochs_to_max_shift={epochs_to_max_shift}: "
-                f"early stopping may fire before random_time_shifting has reached its "
-                f"full range. The model may train only on unshifted windows. Consider "
-                f"increasing patience or decreasing epochs_to_max_shift."
-            )
 
         # Move decoders to device and set to training mode
         if self.decoder_x is not None:
@@ -384,7 +411,7 @@ class Trainer:
             )
         # Clamp to available training samples to avoid ValueError from np.random.choice
         actual_train_subset_size = min(actual_train_subset_size, len(train_idx))
-        train_eval_idx = np.random.choice(train_idx, actual_train_subset_size, replace=False)
+        train_eval_idx = self._select_train_eval_indices(train_idx, actual_train_subset_size, is_temporal)
         train_eval_view = SubsetView(dataset, indices=train_eval_idx, max_index_reduction=max_index_reduction)
 
         # Determine the subset for per-epoch train MI tracking (eval_train parameter)
@@ -400,7 +427,15 @@ class Trainer:
                 _do_epoch_train_eval = False
                 epoch_train_n = 0
             if _do_epoch_train_eval:
-                epoch_train_eval_idx = np.random.choice(train_idx, epoch_train_n, replace=False)
+                epoch_train_eval_idx = self._select_train_eval_indices(train_idx, epoch_train_n, is_temporal)
+                # Wrapped in a SubsetView (like train_view/test_view/train_eval_view)
+                # rather than indexed as a plain fixed array -- for temporal data a
+                # shift_time rebuild can shrink window_manager.n_windows (windows
+                # failing min_coverage_fraction after the shift get dropped),
+                # which would otherwise leave this array's indices pointing past
+                # the end of the rebuilt dataset.
+                epoch_train_eval_view = SubsetView(dataset, indices=epoch_train_eval_idx,
+                                                   max_index_reduction=max_index_reduction)
         else:
             _do_epoch_train_eval = False
 
@@ -464,6 +499,30 @@ class Trainer:
         )
         _scaler = torch.amp.GradScaler('cuda') if _amp_active else None
 
+        # shift_time/shift_windows are training-time augmentations only:
+        # evaluation always reads a frozen, pre-shift snapshot (both the
+        # data and the index arrays, not SubsetView's live-updating
+        # `.indices`, which can drift for `shift_time`'s real
+        # PairedTemporalDataset across rebuilds) rather than whatever the
+        # dataset currently holds. Training batches still read the live,
+        # currently-shifted `dataset.x_dataset`/`.y_dataset` below.
+        _window_shifter = getattr(dataset, '_window_shifter', None)
+        _shifting_active = (is_temporal and shift_time) or (shift_windows and _window_shifter is not None)
+        if _shifting_active:
+            _eval_x_source = dataset.x_dataset.data.detach().clone()
+            _eval_y_source = dataset.y_dataset.data.detach().clone()
+            _eval_test_idx = torch.as_tensor(test_idx, dtype=torch.long)
+            _eval_train_eval_idx = torch.as_tensor(train_eval_idx, dtype=torch.long)
+            if _do_epoch_train_eval:
+                _eval_epoch_train_eval_idx = torch.as_tensor(epoch_train_eval_idx, dtype=torch.long)
+        else:
+            _eval_x_source = dataset.x_dataset
+            _eval_y_source = dataset.y_dataset
+            _eval_test_idx = test_view.indices
+            _eval_train_eval_idx = train_eval_view.indices
+            if _do_epoch_train_eval:
+                _eval_epoch_train_eval_idx = epoch_train_eval_view.indices
+
         history, train_history, metrics_tracked, best_mi, no_improve = [], [], [], -float('inf'), 0
         embedding_history_x: list = []
         embedding_history_y: list = []
@@ -497,7 +556,7 @@ class Trainer:
             
             for batch_idx in shuffled_train_idx.split(batch_size):
                 self.optimizer.zero_grad()
-                x_batch = dataset.x_dataset[batch_idx, ...].to(self.device)
+                x_batch = _to_device(dataset.x_dataset[batch_idx, ...], self.device)
                 y_batch = dataset.y_dataset[batch_idx, ...].to(self.device)
                 if self.aug_params_x:
                     x_batch = apply_augmentations(x_batch, self.aug_params_x)
@@ -554,21 +613,21 @@ class Trainer:
             if self.decoder_y is not None:
                 self.decoder_y.eval()
             with torch.no_grad():
-                x_test = dataset.x_dataset[test_view.indices, ...]
-                y_test = dataset.y_dataset[test_view.indices, ...]
+                x_test = _eval_x_source[_eval_test_idx, ...]
+                y_test = _eval_y_source[_eval_test_idx, ...]
                 mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples)
 
                 if _do_epoch_train_eval:
-                    x_etrain = dataset.x_dataset[epoch_train_eval_idx, ...]
-                    y_etrain = dataset.y_dataset[epoch_train_eval_idx, ...]
+                    x_etrain = _eval_x_source[_eval_epoch_train_eval_idx, ...]
+                    y_etrain = _eval_y_source[_eval_epoch_train_eval_idx, ...]
                     train_mi_nats = self._safe_eval_mi(x_etrain, y_etrain, max_eval_samples)
                     train_history.append(train_mi_nats)
 
                 # Per-epoch spectral history if requested (can be expensive, so optional)
                 if track_spectral_history:
                     metrics_during = self._extract_spectral_metrics(
-                        dataset.x_dataset[train_eval_view.indices, ...],
-                        dataset.y_dataset[train_eval_view.indices, ...],
+                        _eval_x_source[_eval_train_eval_idx, ...],
+                        _eval_y_source[_eval_train_eval_idx, ...],
                     )
                     metrics_tracked.append(metrics_during)
 
@@ -577,8 +636,8 @@ class Trainer:
                     _zx_list, _zy_list = [], []
                     for _b_start in range(0, embed_track_n, batch_size):
                         _b_idx = embed_track_idx[_b_start:_b_start + batch_size]
-                        _xb = dataset.x_dataset[_b_idx, ...].to(self.device)
-                        _yb = dataset.y_dataset[_b_idx, ...].to(self.device)
+                        _xb = _to_device(_eval_x_source[_b_idx, ...], self.device)
+                        _yb = _eval_y_source[_b_idx, ...].to(self.device)
                         _zx_b, _zy_b = self.model.get_embeddings(_xb, _yb)
                         _zx_list.append(_zx_b.cpu().numpy())
                         _zy_list.append(_zy_b.cpu().numpy())
@@ -624,10 +683,20 @@ class Trainer:
             improvement = (smoothed_nats - best_mi) / (abs(best_mi) + 1e-8) if has_valid_baseline else float('inf')
 
             # Data Augmentation: Temporal Shifting
-            if is_temporal and random_time_shifting:
-                max_shift = np.clip(epoch / epochs_to_max_shift, 0, 1) * dataset.window_manager.window_size
-                time_shift = np.random.uniform(high=max_shift)
+            if is_temporal and shift_time:
+                time_shift = np.random.uniform(high=dataset.window_manager.window_size)
                 dataset.time_shift(offset_x=time_shift, offset_y=time_shift)
+
+            # Data Augmentation: cheap reslice-based window shift (see
+            # neural_mi/data/shift_windowing.py). No-op unless `dataset` was
+            # built with an attached shifter.
+            if shift_windows and _window_shifter is not None:
+                _shift = _window_shifter.random_shift()
+                _x_shifted, _y_shifted = _window_shifter.windows_at(_shift)
+                dataset.x_dataset.data = _x_shifted
+                dataset.y_dataset.data = _y_shifted
+                dataset.x_dataset.data_master = None
+                dataset.y_dataset.data_master = None
 
             if display_progress:
                 epoch_iterator.set_description(f"Run {run_id or ''} | MI: {mi_nats * nats_to_bits:.3f}")
@@ -666,11 +735,11 @@ class Trainer:
             
         with torch.no_grad():
             final_test_mi = self._safe_eval_mi(
-                dataset.x_dataset[test_view.indices, ...], 
-                dataset.y_dataset[test_view.indices, ...], max_eval_samples)
+                _eval_x_source[_eval_test_idx, ...],
+                _eval_y_source[_eval_test_idx, ...], max_eval_samples)
             final_train_mi = self._safe_eval_mi(
-                dataset.x_dataset[train_eval_view.indices, ...], 
-                dataset.y_dataset[train_eval_view.indices, ...], max_eval_samples)
+                _eval_x_source[_eval_train_eval_idx, ...],
+                _eval_y_source[_eval_train_eval_idx, ...], max_eval_samples)
         
         from neural_mi.estimators import infonce_lower_bound
         _scale = nats_to_bits  # 1/ln(2) for bits, 1.0 for nats -- same scale as every other reported MI
@@ -786,8 +855,8 @@ class Trainer:
                 self.model.load_state_dict(_cons_state)
                 with torch.no_grad():
                     _conservative_train_mi = self._safe_eval_mi(
-                        dataset.x_dataset[train_eval_view.indices, ...],
-                        dataset.y_dataset[train_eval_view.indices, ...],
+                        _eval_x_source[_eval_train_eval_idx, ...],
+                        _eval_y_source[_eval_train_eval_idx, ...],
                         max_eval_samples,
                     )
                 self.model.load_state_dict(best_model_state)
@@ -897,8 +966,8 @@ class Trainer:
         if self.decoder_x is not None or self.decoder_y is not None:
             with torch.no_grad():
                 # Evaluate on train eval subset
-                _tx = dataset.x_dataset[train_eval_view.indices, ...].to(self.device)
-                _ty = dataset.y_dataset[train_eval_view.indices, ...].to(self.device)
+                _tx = _to_device(_eval_x_source[_eval_train_eval_idx, ...], self.device)
+                _ty = _eval_y_source[_eval_train_eval_idx, ...].to(self.device)
                 _zx, _zy = self.model.get_embeddings(_tx, _ty)  # uses existing no_grad method
                 _recon_loss = 0.0
                 if self.decoder_x is not None:
@@ -914,8 +983,8 @@ class Trainer:
         # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) at the best epoch --
         # always computed, independent of track_spectral_history above.
         metrics_final = self._extract_spectral_metrics(
-            dataset.x_dataset[train_eval_view.indices, ...],
-            dataset.y_dataset[train_eval_view.indices, ...],
+            _eval_x_source[_eval_train_eval_idx, ...],
+            _eval_y_source[_eval_train_eval_idx, ...],
         )
         results.update(metrics_final)
 
@@ -970,15 +1039,15 @@ class Trainer:
             Maximum number of samples for a single evaluation call. If the dataset
             is larger, a random subset of this size is drawn once.
         """
-        n_samples = x.shape[0]
+        n_samples = _batch_size_of(x)
         if n_samples < 2:
             return float('nan')
 
         if n_samples > max_samples:
-            # Sample once 
+            # Sample once
             idx = np.random.choice(n_samples, max_samples, replace=False)
             idx_t = torch.from_numpy(idx)
-            x = x[idx_t]
+            x = _index_batch(x, idx_t)
             y = y[idx_t]
 
         result = self._eval_mi(x, y)
@@ -991,7 +1060,7 @@ class Trainer:
         return result
 
     def _eval_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
-        scores, _ = self.model(x.to(self.device), y.to(self.device))
+        scores, _ = self.model(_to_device(x, self.device), y.to(self.device))
         if torch.isnan(scores).any():
             logger.warning(
                 "Score matrix contains NaN values during evaluation. "
@@ -1019,7 +1088,7 @@ class Trainer:
         """
         self.model.eval()
         with torch.no_grad():
-            zx, zy = self.model.get_embeddings(x.to(self.device), y.to(self.device))
+            zx, zy = self.model.get_embeddings(_to_device(x, self.device), y.to(self.device))
 
         spectrum = compute_cross_covariance_spectrum(zx, zy, whitening=self.spectral_whitening)
         metrics = compute_spectral_metrics(spectrum)
@@ -1099,5 +1168,82 @@ class Trainer:
             train_idx = np.setdiff1d(np.arange(n), test_idx)
 
         return train_idx, test_idx
+
+    def _select_train_eval_indices(self, train_idx: np.ndarray, target_size: int,
+                                   is_temporal: bool) -> np.ndarray:
+        """Select a representative subset of ``train_idx`` for train-MI
+        evaluation (the final report, and per-epoch tracking via
+        ``eval_train``).
+
+        For static data a plain random subsample is fine -- there's no
+        temporal structure whose contiguity needs to survive anything.
+
+        For temporal data, a *scattered* random subsample is wrong even
+        when ``shift_time``/``shift_windows`` never fires
+        for this run: ``SubsetView`` tracks a temporal subset by converting
+        it to time ranges once, then re-deriving indices from those ranges
+        whenever the dataset's windows are rebuilt (`views.py`). A random
+        scatter of individual window indices has almost no contiguous
+        runs, so it degenerates into one zero-width time range per index --
+        thousands of them for a large subset. Re-quantizing that many
+        degenerate ranges against a shifted window grid collides many of
+        them onto the same window (deduplicated away) or drops them into a
+        gap between windows entirely, silently discarding a large fraction
+        of the subset on the very next shift. This is a lossy
+        representation problem, not a "large shift" problem -- it fires
+        regardless of shift magnitude once the subset is scattered enough.
+
+        The fix is to never *construct* a scattered temporal subset in the
+        first place: ``train_idx`` for temporal data is itself a union of a
+        handful of contiguous segments (whatever's left after
+        ``_create_blocked_split`` carves out test blocks + gap buffers).
+        Pick one contiguous sub-chunk per segment, sized proportionally to
+        that segment's length, so the eval subset stays representable as a
+        handful of wide time ranges -- exactly what ``SubsetView`` already
+        handles correctly and cheaply across rebuilds (`train_view`/
+        `test_view` are also wide contiguous ranges) -- while still
+        covering every part of the recording rather than sampling
+        disproportionately from just one segment (a non-stationary
+        recording would otherwise bias the eval MI toward whichever
+        segment happened to be sampled, the same "don't let one chunk
+        dominate" reasoning behind the contiguous-chunking fix in
+        `analysis/rigorous.py`).
+        """
+        if target_size >= len(train_idx):
+            return train_idx.copy()
+        if not is_temporal:
+            return np.random.choice(train_idx, target_size, replace=False)
+
+        sorted_idx = np.sort(train_idx)
+        breaks = np.where(np.diff(sorted_idx) > 1)[0]
+        seg_starts = np.concatenate([[0], breaks + 1])
+        seg_ends = np.concatenate([breaks + 1, [len(sorted_idx)]])  # exclusive
+        seg_lens = seg_ends - seg_starts
+
+        raw_alloc = seg_lens / seg_lens.sum() * target_size
+        alloc = np.floor(raw_alloc).astype(int)
+        remainder = target_size - int(alloc.sum())
+        if remainder > 0:
+            # Give the extra samples to the segments with the largest
+            # fractional remainder first, so the total matches target_size
+            # exactly without a per-segment allocation bias.
+            order = np.argsort(-(raw_alloc - alloc))
+            for i in order[:remainder]:
+                alloc[i] += 1
+        alloc = np.minimum(alloc, seg_lens)
+
+        chosen = []
+        for start, end, n_take in zip(seg_starts, seg_ends, alloc):
+            if n_take <= 0:
+                continue
+            seg = sorted_idx[start:end]
+            if n_take >= len(seg):
+                chosen.append(seg)
+                continue
+            # A random contiguous window within the segment (not always its
+            # own start), so repeated runs don't all sample the same edge.
+            offset = np.random.randint(0, len(seg) - n_take + 1)
+            chosen.append(seg[offset:offset + n_take])
+        return np.concatenate(chosen) if chosen else np.array([], dtype=train_idx.dtype)
 
 

@@ -21,9 +21,11 @@ BASE_PARAMS_SCHEMA = {
     'show_progress': {'type': bool, 'default': True},
     'device': {'type': (str, type(None), torch.device), 'default': None},
     'split_mode': {'type': str, 'default': 'blocked'},
-    'random_time_shifting': {'type': bool, 'default': False},
-    # min=1: epoch / epochs_to_max_shift divides by this value (see Trainer).
-    'epochs_to_max_shift': {'type': int, 'min': 1, 'default': 5},
+    'shift_time': {'type': bool, 'default': True},
+    # Cheap reslice-based alternative to shift_time for regularly-sampled
+    # data (neural_mi/data/shift_windowing.py); wired up for mode='estimate'
+    # with a real processor only, see run.py's _warn_if_shift_windows_dead.
+    'shift_windows': {'type': bool, 'default': True},
     'smoothing_sigma': {'type': float, 'min': 0.0, 'default': 1.0},
     'median_window': {'type': int, 'min': 1, 'default': 5},
     'min_improvement': {'type': float, 'min': 0.0, 'default': 0.001},
@@ -213,6 +215,7 @@ MODE_KWARGS_SCHEMA = {
     },
     'conditional': {
         'n_workers': {'type': int, 'default': 1},
+        'align': {'type': (str, type(None)), 'default': None},
         'rigorous': {'type': bool, 'default': False},
         'gamma_range': {'type': (range, list, type(None)), 'default': None},
         'delta_threshold': {'type': float, 'default': 0.1},
@@ -238,6 +241,18 @@ MODE_KWARGS_SCHEMA = {
         # the transfer path regardless of what's passed here -- exposed in
         # the schema for consistency/validation, not because it's meant to
         # be overridden per-call.
+        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
+    },
+    'interaction': {
+        'n_workers': {'type': int, 'default': 1},
+        'rigorous': {'type': bool, 'default': False},
+        'gamma_range': {'type': (range, list, type(None)), 'default': None},
+        'delta_threshold': {'type': float, 'default': 0.1},
+        'min_gamma_points': {'type': int, 'default': 5},
+        'confidence_level': {'type': float, 'default': 0.68},
+        'residual_threshold': {'type': float, 'default': 2.5},
+        'r2_threshold': {'type': float, 'default': 0.90},
+        'leverage_threshold': {'type': float, 'default': 0.20},
         'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'pairwise': {

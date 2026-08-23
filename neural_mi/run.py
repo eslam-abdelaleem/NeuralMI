@@ -20,8 +20,10 @@ from .analysis.precision import run_precision_analysis
 from .analysis.lag import run_lag_analysis
 from .analysis.conditional import run_conditional_mi
 from .analysis.transfer import run_transfer_entropy
+from .analysis.interaction import run_interaction_information
 from .analysis.pairwise import run_pairwise_mi
 from .data.handler import create_dataset
+from .data.shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .utils import get_device
@@ -31,14 +33,14 @@ import inspect as _inspect
 from .config import (
     Model, Training, Split, Estimator, Output, Processing,
     Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional,
-    Pairwise, Sweep, as_config,
+    Interaction, Pairwise, Sweep, as_config,
 )
 
 # Mode name -> its dedicated config class (modes not listed take no mode config).
 _MODE_CONFIG_CLASSES = {
     'rigorous': Rigorous, 'precision': Precision, 'lag': Lag,
     'transfer': Transfer, 'dimensionality': Dimensionality, 'conditional': Conditional,
-    'pairwise': Pairwise, 'sweep': Sweep,
+    'interaction': Interaction, 'pairwise': Pairwise, 'sweep': Sweep,
 }
 
 
@@ -75,6 +77,7 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
             'i_xypast_yfuture', 'i_ypast_yfuture',
             'i_yxpast_xfuture', 'i_xpast_xfuture',
             'cmi_estimate', 'mi_xz_y', 'mi_z_y',
+            'interaction_info', 'mi_xw_y', 'mi_x_y', 'mi_w_y',
             'mi_corrected', 'mi_error', 'mi_error_pred', 'slope',
         )
         for k in _MI_SCALAR_KEYS:
@@ -161,6 +164,7 @@ def run(
     transfer: Optional[Union[Transfer, Dict[str, Any]]] = None,
     dimensionality: Optional[Union[Dimensionality, Dict[str, Any]]] = None,
     conditional: Optional[Union[Conditional, Dict[str, Any]]] = None,
+    interaction: Optional[Union[Interaction, Dict[str, Any]]] = None,
     pairwise: Optional[Union[Pairwise, Dict[str, Any]]] = None,
     sweep: Optional[Union[Sweep, Dict[str, Any]]] = None,
     n_workers: int = 1,
@@ -193,7 +197,7 @@ def run(
         Already-processed data (``processing=None``) is shape
         ``(n_samples, n_channels, window_size)`` (3-D) or ``(n_samples, n_channels)``
         (2-D, treated as a trailing window size of 1).
-    mode : {'estimate','sweep','rigorous','dimensionality','lag','precision','conditional','transfer','pairwise'}
+    mode : {'estimate','sweep','rigorous','dimensionality','lag','precision','conditional','interaction','transfer','pairwise'}
         The analysis to run.
     processing : Processing or dict, optional
         Raw-data processors, e.g. ``Processing(x='continuous', x_params={'window_size': 1})``.
@@ -210,12 +214,13 @@ def run(
         Units, spectral tracking, embedding returns, and display labels.
     sweep_grid : dict, optional
         Parameter grid for ``mode='sweep'``/``'dimensionality'``.
-    rigorous, precision, lag, transfer, dimensionality, conditional, pairwise, sweep : mode config or dict, optional
+    rigorous, precision, lag, transfer, dimensionality, conditional, interaction, pairwise, sweep : mode config or dict, optional
         Mode-specific parameters; only the one matching ``mode`` is used. E.g.
         ``rigorous=Rigorous(confidence_level=0.68)``,
         ``precision=Precision(tau_grid=[...])``,
-        ``transfer=Transfer(history_window=10)``,
+        ``transfer=Transfer(history_window=10)`` (or ``Transfer(history_window=10, w_data=w)`` for conditional TE),
         ``conditional=Conditional(z_data=z)``,
+        ``interaction=Interaction(w_data=w)``,
         ``pairwise=Pairwise(pairs=[(0, 1), (0, 2)])``,
         ``sweep=Sweep(max_samples_per_task=1000)``.
     n_workers : int, default=1
@@ -308,7 +313,8 @@ def run(
     # Mode-specific config: only the one matching `mode` is consulted.
     _provided = {'rigorous': rigorous, 'precision': precision, 'lag': lag,
                  'transfer': transfer, 'dimensionality': dimensionality,
-                 'conditional': conditional, 'pairwise': pairwise, 'sweep': sweep}
+                 'conditional': conditional, 'interaction': interaction,
+                 'pairwise': pairwise, 'sweep': sweep}
     _stray = [name for name, cfg in _provided.items() if cfg is not None and name != mode]
     if _stray:
         warnings.warn(
@@ -320,12 +326,16 @@ def run(
         mode_cfg = as_config(_provided[mode], _MODE_CONFIG_CLASSES[mode])
         if mode_cfg is not None:
             if isinstance(mode_cfg, Transfer):
+                flat.update(mode_cfg.to_w_kwargs())
                 ak = mode_cfg.to_analysis_kwargs()
                 if 'bidirectional' in ak:
                     flat['bidirectional_te'] = ak.pop('bidirectional')
                 _route_analysis(ak)
             elif isinstance(mode_cfg, Conditional):
                 flat.update(mode_cfg.to_z_kwargs())
+                _route_analysis(mode_cfg.to_analysis_kwargs())
+            elif isinstance(mode_cfg, Interaction):
+                flat.update(mode_cfg.to_w_kwargs())
                 _route_analysis(mode_cfg.to_analysis_kwargs())
             else:
                 _route_analysis(mode_cfg.to_analysis_kwargs())
@@ -396,6 +406,10 @@ def _run_flat(
     history_window: Optional[int] = None,
     prediction_horizon: int = 1,
     bidirectional_te: bool = False,
+    w_data: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    w_time: Optional[np.ndarray] = None,
+    w_processor_type: Optional[str] = None,
+    w_processor_params: Optional[Dict[str, Any]] = None,
     n_epochs: Optional[int] = None,
     batch_size: Optional[int] = None,
     shared_encoder: Optional[bool] = None,
@@ -542,7 +556,7 @@ def _run_flat(
                 f"permutation_test=True is not supported for mode='{mode}'. "
                 f"This mode already produces an analytical error estimate. "
                 f"Use mode='estimate', 'sweep', 'dimensionality', 'lag', "
-                f"'conditional', or 'transfer' for permutation testing."
+                f"'conditional', 'interaction', or 'transfer' for permutation testing."
             )
 
         # Verify conditional MI input
@@ -551,6 +565,14 @@ def _run_flat(
                 f"z_data was provided but mode='{mode}' does not use it. "
                 f"z_data is only consumed by mode='conditional'. "
                 f"If you intended to compute conditional MI, set mode='conditional'."
+            )
+
+        # Verify interaction-information / conditional-TE input
+        if w_data is not None and mode not in ('interaction', 'transfer'):
+            logger.warning(
+                f"w_data was provided but mode='{mode}' does not use it. "
+                f"w_data is only consumed by mode='interaction' (interaction information) "
+                f"and mode='transfer' (conditional transfer entropy)."
             )
 
         # Validate parameters and apply defaults to base_params
@@ -581,7 +603,16 @@ def _run_flat(
         # to allow 'gru'/'lstm' on pre-processed data without re-running a
         # processor.
         _has_time_dim = hasattr(x_data, 'ndim') and x_data.ndim == 3
-        if _processor is None and str(_embedding).lower() in ('gru', 'lstm') and not _has_time_dim:
+        # mode='transfer' builds its own (N, C, history_window) arrays from
+        # raw 2-D (T, n_channels) input internally, via unfold
+        # (analysis/transfer.py's _build_te_arrays) -- raw 2-D input there is
+        # the intended, documented shape, not a mistake this check should
+        # catch. Everywhere else (mode='estimate'/'conditional'/'interaction'/
+        # etc.), the caller is expected to have already windowed the data
+        # themselves before it reaches this validation.
+        _mode_builds_own_windows = mode == 'transfer'
+        if (_processor is None and str(_embedding).lower() in ('gru', 'lstm')
+                and not _has_time_dim and not _mode_builds_own_windows):
             raise ValueError(
                 f"embedding_model='{_embedding}' requires sequential input but "
                 f"processor_type=None produces a StaticDataset with no time dimension. "
@@ -615,7 +646,44 @@ def _run_flat(
                 t = t.unsqueeze(-1)
             return t
 
-        if is_proc_sweep or mode == 'lag':
+        # Both shift_windows (neural_mi/data/shift_windowing.py) and a
+        # reachability extension for shift_time need the raw,
+        # unwindowed arrays to survive to task.py::run_training_task -- same
+        # "defer, don't window here" treatment as is_proc_sweep/mode='lag'.
+        # Scoped to 'estimate' and plain (non-processor-swept) 'sweep': both
+        # dispatch one or more *independent* training runs from the same raw
+        # data, with no cross-run comparison that independent per-run shift
+        # randomness could corrupt (unlike mode='pairwise', whose per-channel
+        # dispatch needs an already-windowed array to slice channels from --
+        # a real, separate restructuring, not a gating change; or
+        # 'dimensionality'/'rigorous'/'precision'/'conditional'/'transfer'/
+        # 'interaction', which need a *shared* shift schedule across their
+        # sub-runs -- see NEURALMI_REFERENCE.md's shift-mechanisms section).
+        # processor_type_y=None means "inherit X's type" (create_dataset's
+        # own convention, handler.py: proc_type_y = processor_type_y or
+        # processor_type_x).
+        _SHIFT_SAFE_MODES = ('estimate', 'sweep')
+        _effective_processor_type_y = processor_type_y if processor_type_y is not None else processor_type_x
+        _shift_pair_family = shift_family(processor_type_x, _effective_processor_type_y)
+        # shift_windows: the cheap reslice mechanism, for the 'regular'
+        # family (continuous/categorical, either side, need not match).
+        _defer_for_shift_windows = (mode in _SHIFT_SAFE_MODES and base_params.get('shift_windows')
+                                    and _shift_pair_family == 'regular')
+        # shift_time: the general PairedTemporalDataset/time_shift
+        # mechanism, reachable for 'spike' pairs (no cross-unit concerns,
+        # both sides natively in seconds) and 'mixed' pairs *only* when the
+        # regular-grid side has 'sample_rate' set (so a shift value means
+        # the same real time on both sides -- otherwise the pairing's own
+        # window alignment is already questionable, see
+        # NEURALMI_REFERENCE.md). Deliberately excludes 'regular' pairs --
+        # those already have the strictly better shift_windows.
+        _defer_for_shift_time = (mode in _SHIFT_SAFE_MODES and base_params.get('shift_time')
+                                 and (_shift_pair_family == 'spike'
+                                      or (_shift_pair_family == 'mixed'
+                                          and mixed_pair_sample_rate_ok(
+                                              processor_type_x, processor_params_x,
+                                              _effective_processor_type_y, processor_params_y))))
+        if is_proc_sweep or mode == 'lag' or _defer_for_shift_windows or _defer_for_shift_time:
             logger.info("Detected sweep over processor or lag parameters. Deferring data processing to workers.")
             x_run_data, y_run_data = x_data, y_data
         elif processor_type_x is None and processor_type_y is None:
@@ -691,7 +759,11 @@ def _run_flat(
                 x_run_data = dataset.x_data
                 y_run_data = dataset.y_data
 
-        _warn_if_random_time_shifting_dead(base_params, mode, is_proc_sweep)
+        _warn_if_shift_time_dead(base_params, mode, is_proc_sweep, processor_type_x,
+                                 processor_params_x, _effective_processor_type_y, processor_params_y,
+                                 user_set_keys=_pre_default_keys)
+        _warn_if_shift_windows_dead(base_params, mode, processor_type_x, _effective_processor_type_y,
+                                    user_set_keys=_pre_default_keys)
 
         from .analysis.sweep import ParameterSweep
         if mode == 'sweep':
@@ -901,6 +973,13 @@ def _run_flat(
         elif mode == 'conditional':
             if z_data is None:
                 raise ValueError("`z_data` must be provided for mode='conditional'.")
+            if analysis_kwargs.get('align') == 'dual_branch' and permutation_test:
+                raise NotImplementedError(
+                    "permutation_test=True is not supported with "
+                    "Conditional(align='dual_branch'). The permutation baseline "
+                    "would need the same dual-branch construction _run_single_permutation "
+                    "doesn't have wired up; not needed for this pass."
+                )
             # Process z_data if a processor type is given; otherwise assume pre-processed
             if z_processor_type is not None:
                 from .data.handler import create_dataset as _cds
@@ -919,6 +998,7 @@ def _run_flat(
                 z_run_data = z_data if torch.is_tensor(z_data) else torch.from_numpy(np.array(z_data)).float()
             n_workers = analysis_kwargs.get('n_workers', 1)
             use_rigorous = analysis_kwargs.pop('rigorous', False)
+            _align = analysis_kwargs.pop('align', None)
             if use_rigorous:
                 from .analysis.rigorous import run_rigorous_scalar_analysis
                 from .analysis.conditional import _cmi_rigorous_scalar
@@ -935,11 +1015,16 @@ def _run_flat(
                 # Parallelised across gamma-chunk tasks (like plain mode='rigorous');
                 # each individual chunk's CMI call runs with n_workers=1 internally
                 # (see _cmi_rigorous_scalar) to avoid nested multiprocessing pools.
+                # z_run_data is passed as both 'z_data' and 'c_data' -- x_data
+                # stays a plain tensor throughout this call (align='dual_branch'
+                # never touches rigorous.py's own chunking), _cmi_rigorous_scalar
+                # picks whichever of the two it needs based on 'align' and
+                # assembles the tuple only at that boundary.
                 rig_details = run_rigorous_scalar_analysis(
                     scalar_fn=_cmi_rigorous_scalar,
                     x_data=x_run_data, y_data=y_run_data, base_params=base_params,
-                    extra_data={'z_data': z_run_data},
-                    extra_kwargs={'sweep_grid': sweep_grid},
+                    extra_data={'z_data': z_run_data, 'c_data': z_run_data},
+                    extra_kwargs={'sweep_grid': sweep_grid, 'align': _align},
                     n_workers=n_workers,
                     **_rig_kwargs,
                 )
@@ -955,9 +1040,12 @@ def _run_flat(
                     params={**run_params, 'rigorous': True},
                     details=rig_details,
                 )
-            # Standard (non-rigorous) path
+            # Standard (non-rigorous) path. z_run_data is passed as both
+            # z_data and c_data -- run_conditional_mi uses whichever it
+            # needs based on align.
             raw = run_conditional_mi(x_run_data, y_run_data, z_run_data, base_params,
-                                     sweep_grid=sweep_grid, n_workers=n_workers)
+                                     sweep_grid=sweep_grid, n_workers=n_workers,
+                                     align=_align, c_data=z_run_data)
             raw = _convert_mi_units(raw, output_units == 'bits')
             cmi = raw['cmi_estimate']
             result = Results(mode=mode, mi_estimate=cmi, params=run_params, details=raw)
@@ -965,6 +1053,74 @@ def _run_flat(
                 _null_clipped, _null_raw = _run_permutation_test(
                     x_run_data, y_run_data, base_params, 'conditional', sweep_grid,
                     n_permutations, analysis_kwargs, z_data=z_run_data
+                )
+                result.details['null_distribution'] = _null_clipped
+                result.details['null_distribution_raw'] = _null_raw
+            return result
+
+        elif mode == 'interaction':
+            if w_data is None:
+                raise ValueError("`w_data` must be provided for mode='interaction'.")
+            # Process w_data if a processor type is given; otherwise assume pre-processed
+            # (same pattern as z_data for mode='conditional' -- interaction information's
+            # W is a third population, not a growing-history conditioning array, so it
+            # needs no special-casing beyond that).
+            if w_processor_type is not None:
+                from .data.handler import create_dataset as _cds
+                w_dataset = _cds(
+                    x_data=w_data, y_data=None,
+                    x_time=w_time,
+                    processor_type_x=w_processor_type,
+                    processor_params_x=w_processor_params or {}
+                )
+                w_run_data = w_dataset.x_data
+            else:
+                w_run_data = w_data if torch.is_tensor(w_data) else torch.from_numpy(np.array(w_data)).float()
+            n_workers = analysis_kwargs.get('n_workers', 1)
+            use_rigorous = analysis_kwargs.pop('rigorous', False)
+            if use_rigorous:
+                from .analysis.rigorous import run_rigorous_scalar_analysis
+                from .analysis.interaction import _ii_rigorous_scalar
+                _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
+                _rig_kwargs = {
+                    'gamma_range': _gamma_range,
+                    'delta_threshold': analysis_kwargs.pop('delta_threshold', delta_threshold),
+                    'min_gamma_points': analysis_kwargs.pop('min_gamma_points', min_gamma_points),
+                    'confidence_level': analysis_kwargs.pop('confidence_level', confidence_level),
+                    'residual_threshold': analysis_kwargs.pop('residual_threshold', 2.5),
+                    'r2_threshold': analysis_kwargs.pop('r2_threshold', 0.90),
+                    'leverage_threshold': analysis_kwargs.pop('leverage_threshold', 0.20),
+                }
+                # Parallelised across gamma-chunk tasks (like plain mode='rigorous');
+                # each individual chunk's II call runs with n_workers=1 internally
+                # (see _ii_rigorous_scalar) to avoid nested multiprocessing pools.
+                rig_details = run_rigorous_scalar_analysis(
+                    scalar_fn=_ii_rigorous_scalar,
+                    x_data=x_run_data, y_data=y_run_data, base_params=base_params,
+                    extra_data={'w_data': w_run_data},
+                    extra_kwargs={'sweep_grid': sweep_grid},
+                    n_workers=n_workers,
+                    **_rig_kwargs,
+                )
+                rig_details = _convert_mi_units(rig_details, output_units == 'bits')
+                raw_df = rig_details.pop('raw_results_df', pd.DataFrame())
+                return Results(
+                    mode=mode,
+                    mi_estimate=rig_details.get('mi_corrected'),
+                    dataframe=raw_df,
+                    params={**run_params, 'rigorous': True},
+                    details=rig_details,
+                )
+            # Standard (non-rigorous) path
+            raw = run_interaction_information(x_run_data, y_run_data, w_run_data, base_params,
+                                              sweep_grid=sweep_grid, n_workers=n_workers)
+            raw = _convert_mi_units(raw, output_units == 'bits')
+            ii = raw['interaction_info']
+            result = Results(mode=mode, mi_estimate=ii, params=run_params, details=raw)
+            if permutation_test:
+                _null_clipped, _null_raw = _run_permutation_test(
+                    x_run_data, y_run_data, base_params, 'interaction', sweep_grid,
+                    n_permutations, analysis_kwargs, w_data=w_run_data
                 )
                 result.details['null_distribution'] = _null_clipped
                 result.details['null_distribution_raw'] = _null_raw
@@ -990,6 +1146,31 @@ def _run_flat(
                     "Pass the raw time-series directly (without a windowed processor) and let "
                     "mode='transfer' build its own history/prediction arrays internally."
                 )
+            # Optional third conditioning signal for conditional transfer entropy
+            # (TE(X->Y|W) instead of plain TE(X->Y)) -- same raw 2-D convention as
+            # x_data/y_data, since it feeds the same internal unfold-based W_past
+            # construction as run_transfer_entropy already does for Y_past.
+            w_run_data = None
+            if w_data is not None:
+                if w_processor_type is not None:
+                    from .data.handler import create_dataset as _cds
+                    w_dataset = _cds(
+                        x_data=w_data, y_data=None,
+                        x_time=w_time,
+                        processor_type_x=w_processor_type,
+                        processor_params_x=w_processor_params or {}
+                    )
+                    w_run_data = w_dataset.x_data
+                else:
+                    w_run_data = w_data if torch.is_tensor(w_data) else torch.from_numpy(np.array(w_data)).float()
+                w_run_data = _to_2d(w_run_data)
+                if w_run_data.ndim == 3:
+                    raise ValueError(
+                        "mode='transfer' requires w_data of shape (n_timepoints, n_channels) "
+                        f"(2-D), but received a 3-D array of shape {tuple(w_run_data.shape)}. "
+                        "Pass the raw time-series directly and let mode='transfer' build its "
+                        "own W_past history array internally, the same as x_data/y_data."
+                    )
             n_workers = analysis_kwargs.get('n_workers', 1)
             use_rigorous = analysis_kwargs.pop('rigorous', False)
             if use_rigorous:
@@ -1011,7 +1192,12 @@ def _run_flat(
                 rig_details = run_rigorous_scalar_analysis(
                     scalar_fn=_te_rigorous_scalar,
                     x_data=_x_te, y_data=_y_te, base_params=base_params,
-                    extra_data=None,
+                    # w_data must be chunked identically to x_data/y_data for every
+                    # gamma-chunk, so it goes through extra_data (already correct for
+                    # this, proven by z_data's use of the same mechanism in
+                    # mode='conditional' above), not extra_kwargs, which is passed
+                    # unsplit to every chunk and would be wrong for per-chunk-varying data.
+                    extra_data={'w_data': w_run_data} if w_run_data is not None else None,
                     extra_kwargs={'sweep_grid': sweep_grid, 'history_window': history_window,
                                   'prediction_horizon': prediction_horizon,
                                   'bidirectional': bidirectional_te},
@@ -1042,7 +1228,8 @@ def _run_flat(
                                        history_window=history_window,
                                        prediction_horizon=prediction_horizon,
                                        sweep_grid=sweep_grid, n_workers=n_workers,
-                                       bidirectional=bidirectional_te)
+                                       bidirectional=bidirectional_te,
+                                       w_data=w_run_data)
             raw = _convert_mi_units(raw, output_units == 'bits')
             te = raw['te_estimate']
             result = Results(mode=mode, mi_estimate=te, params=run_params, details=raw)
@@ -1121,7 +1308,7 @@ def _run_flat(
             raise ValueError(
                 f"Unknown mode: '{mode}'. "
                 f"Expected one of: 'estimate', 'sweep', 'dimensionality', 'rigorous', "
-                f"'lag', 'precision', 'conditional', 'transfer', 'pairwise'."
+                f"'lag', 'precision', 'conditional', 'interaction', 'transfer', 'pairwise'."
             )
     finally:
         logger.setLevel(_prev_level)
@@ -1190,39 +1377,138 @@ def _warn_small_sample(dataset, base_params: dict) -> None:
 
 # Modes/paths where windowing is deferred to the worker that trains the model,
 # so the dataset it builds is still a genuine PairedTemporalDataset with a
-# live WindowManager -- random_time_shifting (and anything else gated on
+# live WindowManager -- shift_time (and anything else gated on
 # is_temporal at the Trainer) is actually reachable there. Everywhere else,
 # run.py windows the data once, up front, and hands the Trainer an
 # already-windowed static PairedDataset that has never heard of time.
-def _random_time_shifting_is_reachable(mode: str, is_proc_sweep: bool) -> bool:
-    return is_proc_sweep or mode == 'lag'
+def _shift_time_is_reachable(mode: str, is_proc_sweep: bool,
+                             processor_type_x: Optional[str] = None,
+                             effective_processor_type_y: Optional[str] = None,
+                             processor_params_x: Optional[dict] = None,
+                             processor_params_y: Optional[dict] = None) -> bool:
+    if is_proc_sweep or mode == 'lag':
+        return True
+    if mode not in ('estimate', 'sweep'):
+        return False
+    _family = shift_family(processor_type_x, effective_processor_type_y)
+    if _family == 'spike':
+        return True
+    if _family == 'mixed':
+        return mixed_pair_sample_rate_ok(processor_type_x, processor_params_x,
+                                         effective_processor_type_y, processor_params_y)
+    return False
 
 
-def _warn_if_random_time_shifting_dead(base_params: dict, mode: str, is_proc_sweep: bool) -> None:
-    """Warn once, here, if random_time_shifting was explicitly requested but
-    cannot take effect on this mode/processing path.
+def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
+                             processor_type_x: Optional[str] = None,
+                             processor_params_x: Optional[dict] = None,
+                             effective_processor_type_y: Optional[str] = None,
+                             processor_params_y: Optional[dict] = None,
+                             user_set_keys: Optional[set] = None) -> None:
+    """Warn once, here, if shift_time was requested but cannot take effect
+    on this mode/processing path.
 
     Placed in run.py (not deep in the training loop) because this is the
     earliest point where both the resolved mode and whether processing will
     be deferred to the worker are known. Only fires when the user explicitly
-    asked for it -- the library's own schema default is False, so an absent
-    or False value here is not a case of "requested but ignored" and stays
-    silent, matching the base rate of no-op for that setting.
+    set `shift_time=True` (i.e. the key was present in `base_params` before
+    `apply_defaults()` ran, per `user_set_keys`) -- a value that only came
+    from the schema default stays silent even when it has no effect, since
+    the user never asked for it on this pair.
+
+    Beyond `mode='lag'`, this is also reachable at `mode='estimate'` and
+    plain (non-processor-swept) `mode='sweep'` for `shift_family(...) ==
+    'spike'` (spike+spike -- both sides natively in seconds, no cross-unit
+    concern) and for `'mixed'` pairs (one side spike, the other continuous/
+    categorical) *only when* the regular-grid side has `sample_rate` set --
+    see `shift_windowing.mixed_pair_sample_rate_ok` and
+    `NEURALMI_REFERENCE.md`'s shift-mechanisms section for why that's
+    required rather than optional. `'regular'` pairs (continuous/
+    categorical on both sides) are deliberately excluded even there -- they
+    already have the strictly cheaper, bug-free `shift_windows`
+    mechanism; routing them through this one too would just reopen its
+    `SubsetView` risk for no benefit. Processor-swept `mode='sweep'` is
+    reachable regardless of processor type (`is_proc_sweep` alone triggers
+    it), unrelated to this pair-based logic. `mode='pairwise'` is NOT
+    included despite dispatching independent sub-runs like 'estimate'/
+    plain-'sweep' do -- its per-channel dispatch needs an already-windowed
+    array to slice channels from, a real restructuring rather than a gating
+    change.
     """
-    if base_params.get('random_time_shifting') is not True:
+    if user_set_keys is not None and 'shift_time' not in user_set_keys:
         return
-    if _random_time_shifting_is_reachable(mode, is_proc_sweep):
+    if base_params.get('shift_time') is not True:
         return
+    if _shift_time_is_reachable(mode, is_proc_sweep, processor_type_x,
+                                effective_processor_type_y, processor_params_x, processor_params_y):
+        return
+    _family = shift_family(processor_type_x, effective_processor_type_y)
+    _mixed_hint = ""
+    if mode in ('estimate', 'sweep') and _family == 'mixed':
+        _mixed_hint = (
+            " This pair mixes 'spike' with 'continuous'/'categorical': a shift "
+            "value means seconds for spike but raw sample-index units for the "
+            "other side unless it has a 'sample_rate'. Pass "
+            "processor_params_x={'sample_rate': ...} (or processor_params_y) "
+            "on whichever side is 'continuous'/'categorical' to enable shifting "
+            "for this pair."
+        )
     warnings.warn(
-        f"random_time_shifting=True was requested but has no effect for "
+        f"shift_time=True was requested but has no effect for "
         f"mode='{mode}' with this configuration: windowing is applied once, "
         f"eagerly, before training starts, so the Trainer receives an "
         f"already-windowed static dataset with no notion of time left to "
         f"shift. This option currently only takes effect when windowing is "
-        f"deferred to the training worker -- mode='lag', or mode='sweep' "
-        f"when a processor parameter (e.g. window_size) is itself part of "
-        f"the sweep grid. Pass random_time_shifting=False to silence this "
-        f"warning.",
+        f"deferred to the training worker -- mode='lag'; mode='sweep' when a "
+        f"processor parameter (e.g. window_size) is itself part of the sweep "
+        f"grid; or mode='estimate'/plain mode='sweep' with a 'spike'+'spike' "
+        f"pair (or a mixed spike/continuous(-categorical) pair with "
+        f"'sample_rate' set on the non-spike side).{_mixed_hint} For "
+        f"continuous/categorical pairs, prefer Training(shift_windows=True) "
+        f"instead -- cheaper and without this mechanism's SubsetView caveat. "
+        f"Pass shift_time=False to silence this warning.",
+        UserWarning,
+        stacklevel=4,
+    )
+
+
+def _warn_if_shift_windows_dead(base_params: dict, mode: str, processor_type_x: Optional[str],
+                                effective_processor_type_y: Optional[str],
+                                user_set_keys: Optional[set] = None) -> None:
+    """Sibling to `_warn_if_shift_time_dead`: warn if `shift_windows=True`
+    was requested but this pass only wires it up for `mode='estimate'`/
+    plain (non-processor-swept) `mode='sweep'` with `shift_family(...) ==
+    'regular'` -- both `processor_type_x` and the effective
+    `processor_type_y` (after the `None` -> "inherit X" convention) in
+    `{'continuous', 'categorical'}` (need not match each other --
+    continuous+categorical is fine), not 'spike' on either side (see the
+    matching comment at the `_defer_for_shift_windows` call site in
+    `_run_flat` for why a mismatched pair would silently misbehave rather
+    than just be inert), and not `None` on either side
+    (`neural_mi/data/shift_windowing.py` needs the raw array +
+    window_size/step_size; there's nothing to reslice without them).
+    `mode='pairwise'` is deliberately not included -- see the matching note
+    in `_warn_if_shift_time_dead`. Same explicit-vs-defaulted convention as
+    the sibling check.
+    """
+    if user_set_keys is not None and 'shift_windows' not in user_set_keys:
+        return
+    if base_params.get('shift_windows') is not True:
+        return
+    if mode in ('estimate', 'sweep') and shift_family(processor_type_x, effective_processor_type_y) == 'regular':
+        return
+    warnings.warn(
+        f"shift_windows=True was requested but has no effect for "
+        f"mode='{mode}' with processor_type_x={processor_type_x!r}, "
+        f"processor_type_y={effective_processor_type_y!r} (effective). "
+        f"This is currently wired up only for mode='estimate'/plain "
+        f"mode='sweep' with processor_type_x and processor_type_y both in "
+        f"{{'continuous', 'categorical'}} (e.g. Processing(x='continuous', "
+        f"x_params={{'window_size': ...}}, y='categorical', "
+        f"y_params={{'window_size': ...}})) -- 'spike' is not supported by "
+        f"this mechanism on either side (no regular sampling grid to "
+        f"reslice; use Training(shift_time=True) for spike data "
+        f"instead). Pass shift_windows=False to silence this warning.",
         UserWarning,
         stacklevel=4,
     )
@@ -1287,6 +1573,15 @@ def _run_single_permutation(args):
             mi_raw = (float(_np.nanmean(_rxz)) - float(_np.nanmean(_rz))
                       if _rxz and _rz else mi_clipped)
             return mi_clipped, mi_raw
+
+        elif mode == 'interaction':
+            from neural_mi.analysis.interaction import run_interaction_information as _rii
+            w_data = mode_kwargs.get('w_data')
+            raw = _rii(x_data, y_perm, w_data, base_params.copy(), n_workers=1)
+            mi_clipped = raw['interaction_info']
+            # Raw II has no single joint/marginal pair (it's a 3-term combination),
+            # so there's no equally cheap "raw" counterpart -- reuse the clipped value.
+            return mi_clipped, mi_clipped
 
         elif mode == 'transfer':
             from neural_mi.analysis.transfer import run_transfer_entropy as _rte

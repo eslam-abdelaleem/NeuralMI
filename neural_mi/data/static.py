@@ -69,8 +69,17 @@ class StaticDataset(BaseStaticDataset):
         """
         Parameters
         ----------
-        data : array-like or torch.Tensor
-            Data of shape (n_observations, n_channels, ...)
+        data : array-like, torch.Tensor, or 2-tuple of either
+            Data of shape (n_observations, n_channels, ...). A 2-tuple
+            ``(a_data, c_data)`` is the compound "X-role" input used by
+            ``mode='conditional'``'s ``align='dual_branch'`` path (paired
+            with ``DualBranchEmbedding``, see ``THEORY.md``): each element is
+            processed exactly like a single-array ``data`` would be, then
+            stored as a matching tuple, so the two can have different
+            trailing (window) shapes while sharing the leading (sample)
+            dimension. A plain Python ``list`` is not treated this way, that
+            still means "array-like, convert via ``np.array``", only an
+            actual ``tuple`` triggers the compound path.
         device : str, optional
             Compute device (kept for reference; not used for data storage).
         data_device : str, optional
@@ -78,7 +87,23 @@ class StaticDataset(BaseStaticDataset):
             Pass ``'auto'`` to use the compute device instead.
         """
         super().__init__(device, data_device)
-        
+
+        if isinstance(data, tuple):
+            if len(data) != 2:
+                raise ValueError(
+                    f"StaticDataset's compound (tuple) data must have exactly 2 "
+                    f"elements (a_data, c_data), got {len(data)}."
+                )
+            self.data = tuple(self._prepare_one(d) for d in data)
+            return
+
+        self.data = self._prepare_one(data)
+
+    def _prepare_one(self, data) -> torch.Tensor:
+        """Validate and reshape a single array-like into a
+        ``(n_observations, n_channels, *extra_dimensions)`` tensor. Factored
+        out of ``__init__`` so the compound (tuple) path can apply the exact
+        same treatment to each of its two elements."""
         # Validate input type and convert to numpy if it's a list
         if isinstance(data, list):
             data = np.array(data)
@@ -92,28 +117,40 @@ class StaticDataset(BaseStaticDataset):
         if not np.all(np.isfinite(data)):
             raise ValueError("Data contains NaN or infinite values")
 
-        # Reshape input data array to tensor of shape `(n_observations, n_channels, *extra_dimensions)` 
+        # Reshape input data array to tensor of shape `(n_observations, n_channels, *extra_dimensions)`
         # Reshape depending on original shape
         if data.ndim == 1:
             reshaped = data.reshape([-1,1,1])
         elif data.ndim == 2:
             reshaped = data[:, :, None]
         else:
-            # Higher-dimensional observations: 
-            # Not possible to infer which dim is channel vs observation vs extra, 
+            # Higher-dimensional observations:
+            # Not possible to infer which dim is channel vs observation vs extra,
             # so leaving to original shape (on user to get correct)
             reshaped = data
-        self.data = torch.tensor(reshaped, device=self.data_device, dtype=torch.float32)
+        return torch.tensor(reshaped, device=self.data_device, dtype=torch.float32)
 
     def __getitem__(self, idx):
         """Return data at index."""
+        if isinstance(self.data, tuple):
+            return tuple(d[idx] for d in self.data)
         return self.data[idx]
-    
+
     def __len__(self):
+        if isinstance(self.data, tuple):
+            return self.data[0].shape[0]
         return self.data.shape[0]
 
     def apply_noise(self, amplitude):
         """Add Gaussian noise to data."""
+        if isinstance(self.data, tuple):
+            raise NotImplementedError(
+                "apply_noise is not supported for StaticDataset's compound "
+                "(tuple) data (mode='conditional'(align='dual_branch')). "
+                "mode='precision' isn't used with the quantities that need "
+                "this path (MI rate, instantaneous exchange, directed "
+                "information rate)."
+            )
         # Allocate data_master if not allocated yet
         if self.data_master is None:
             self.data_master = self.data.detach().clone()
@@ -122,6 +159,14 @@ class StaticDataset(BaseStaticDataset):
 
     def apply_precision(self, precision_level):
         """Round data to a specific resolution/precision level."""
+        if isinstance(self.data, tuple):
+            raise NotImplementedError(
+                "apply_precision is not supported for StaticDataset's compound "
+                "(tuple) data (mode='conditional'(align='dual_branch')). "
+                "mode='precision' isn't used with the quantities that need "
+                "this path (MI rate, instantaneous exchange, directed "
+                "information rate)."
+            )
         # Allocate data_master if not allocated yet
         if self.data_master is None:
             self.data_master = self.data.detach().clone()

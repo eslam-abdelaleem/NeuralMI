@@ -29,7 +29,12 @@ def _ensure_cpu(data):
     every tensor before adding it to a Pool task tuple.
 
     Non-tensor inputs (numpy arrays, None, etc.) are returned unchanged.
+    A tuple (DualBranchEmbedding's compound "X-role" data) is mapped over
+    element-wise, so a GPU/MPS-resident element inside it actually gets
+    moved before crossing the spawn boundary too.
     """
+    if isinstance(data, tuple):
+        return tuple(_ensure_cpu(d) for d in data)
     if isinstance(data, torch.Tensor) and data.device.type != 'cpu':
         return data.cpu()
     return data
@@ -288,7 +293,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # sample counts are modest. 500k is a practical threshold — not a hard limit.
     _first_hidden = hidden_dim[0] if isinstance(hidden_dim, list) else hidden_dim
     _last_hidden  = hidden_dim[-1] if isinstance(hidden_dim, list) else hidden_dim
-    first_layer_params = input_dim_x * _first_hidden
+    # input_dim_x is a 2-tuple (dim_a, dim_c) for DualBranchEmbedding's compound
+    # X-role input (mode='conditional'(align='dual_branch')) -- sum the two
+    # branches' sizes for this warning's purposes, same total parameter count
+    # either way (two smaller first layers vs. one combined estimate).
+    _input_dim_x_total = sum(input_dim_x) if isinstance(input_dim_x, tuple) else input_dim_x
+    first_layer_params = _input_dim_x_total * _first_hidden
     if first_layer_params > 500_000:
         logger.warning(
             f"Large first embedding layer detected: input_dim_x={input_dim_x} x "

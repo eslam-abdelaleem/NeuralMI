@@ -28,12 +28,14 @@
    - 6.7 `conditional` — Conditional MI
    - 6.8 `transfer` — Transfer Entropy
    - 6.9 `pairwise` — Channel-to-Channel MI Matrix
+   - 6.10 `interaction` — Interaction Information
 7. [The `Results` Object](#7-the-results-object)
 8. [Base Parameters Reference](#8-base-parameters-reference)
 9. [Data Generators](#9-data-generators)
 10. [Model Architecture Reference](#10-model-architecture-reference)
 11. [Exceptions](#11-exceptions)
 12. [Design Decisions & Internals](#12-design-decisions--internals)
+13. [Information-Quantities Convenience Functions](#13-information-quantities-convenience-functions)
 
 **Appendices**
 - [A — Enhanced Rigorous Mode Diagnostics](#enhanced-rigorous-mode-diagnostics)
@@ -601,6 +603,17 @@ match X's window: `z_processor_type='categorical'`'s `'majority_vote'` and
 X's window, and `'full_trajectory'` (genuine per-timepoint resolution) keeps
 its own timepoint axis.
 
+**`align='dual_branch'`:** for the rarer case where X and Z genuinely differ
+in window length beyond the small trim tolerance the default path applies
+(MI rate, instantaneous exchange, directed information rate, see
+`THEORY.md` §11 and §13 below). Instead of concatenating, X and Z flow
+through the pipeline as a tuple, each embedded by its own sub-network via
+`custom_embedding_cls=DualBranchEmbedding` (set on `Model(...)`; required
+when `align='dual_branch'` is set, or the run raises a clear error). Leave
+`align` unset (`None`, the default) unless a mismatch this large is
+expected. Not supported together with `permutation_test=True` or
+`use_variational=True`; both raise a clear error.
+
 **Returns:** `Results` with:
 - `result.mi_estimate` — float: I(X; Y | Z)
 - `result.details`:
@@ -635,6 +648,11 @@ where `x_past`, `y_past` are the `history_window` most recent samples and `y_fut
 **Key parameters:**
 - `prediction_horizon=1` — samples ahead to predict
 - `Transfer(bidirectional=...)` — default `False`; if `True`, also compute TE(Y→X) and return a directionality index. When `False`, a warning is logged recommending bidirectional evaluation to detect spurious causal claims.
+- `Transfer(w_data=...)` — optional third conditioning signal, `(T, n_channels_w)`, same leading dimension as `x_data`/`y_data`. Computes *conditional* transfer entropy instead of plain TE:
+  ```
+  TE(X→Y|W) = I(x_past, y_past, w_past ; y_future) − I(y_past, w_past ; y_future)
+  ```
+  `w_past` is built the same way as `x_past`/`y_past` (same `history_window`), folded into both the joint and marginal conditioning arrays, and into both directions when `bidirectional=True`. `w_data=None` (the default) is byte-for-byte identical to plain TE. Optional `w_time`/`w_processor_type`/`w_processor_params` mirror `Conditional`'s `z_*` fields if `w_data` needs its own preprocessing before use; the raw, already-numeric case (the common one) needs none of them. Works with `rigorous=True` (see Appendix C); `w_data` is chunked identically to `x_data`/`y_data` for every gamma-chunk.
 
 **Returns:** `Results` with:
 - `result.mi_estimate` — float: TE(X→Y) in `output_units`
@@ -669,9 +687,15 @@ result = nmi.run(x, y, mode='transfer',
 print(f"TE(X→Y) = {result.details['te_xy']:.3f} bits")
 print(f"TE(Y→X) = {result.details['te_yx']:.3f} bits")
 print(f"Directionality index = {result.details['directionality_index']:.3f}")
+
+# Conditional TE — control for a third signal's influence
+result = nmi.run(x, y, mode='transfer',
+                 transfer=Transfer(history_window=20, w_data=w),
+                 n_workers=4)
+print(f"TE(X→Y|W) = {result.mi_estimate:.3f} bits")
 ```
 
-**Note:** `x_data` and `y_data` must be 2D here: `(T, n_channels)`, i.e., a raw temporal sequence. The library builds sliding windows internally.
+**Note:** `x_data`, `y_data`, and (if given) `w_data` must be 2D here: `(T, n_channels)`, i.e., a raw temporal sequence. The library builds sliding windows internally.
 
 ---
 
@@ -703,6 +727,44 @@ result = nmi.run(spike_x, lfp_y, mode='pairwise',
                  processing=Processing(x='spike', y='continuous'),
                  n_workers=8)
 df = result.dataframe    # ch_x, ch_y, mi_mean, mi_std
+```
+
+---
+
+### 6.10 `interaction` — Interaction Information
+
+**What it does:** Computes interaction information, how much shared information between X and Y changes once a third population W is also observed:
+
+```
+II = I(X, W; Y) − I(X; Y) − I(W; Y)
+```
+
+The one quantity in the taxonomy (`THEORY.md` §12) that isn't a single conditional MI call: three separate MI estimates combined by a formula rather than a two-term chain-rule difference. `x_data` and `w_data` are concatenated along the channel axis to build the joint `I(X,W;Y)` term, so they must share the same window size; `y_data` can differ.
+
+**Required:** `Interaction(w_data=...)`, `w_data` shape `(n_samples, n_channels_w, window_size)` (or `(n_samples, n_channels_w)`, treated as window size 1), same leading dimension as `x_data`/`y_data`.
+
+**Key parameters:**
+- `Interaction(w_time=..., w_processor_type=..., w_processor_params=...)` — optional, mirrors `Conditional`'s `z_*` fields if `w_data` needs its own preprocessing before use.
+- `Interaction(rigorous=True, gamma_range=..., ...)` — bias-corrected extrapolation, same mechanics as `mode='conditional'`/`mode='transfer'`'s rigorous path (Appendix C).
+
+**Returns:** `Results` with:
+- `result.mi_estimate` — float: II in `output_units` (can be negative: redundancy gives II < 0, synergy gives II > 0, see `THEORY.md` §12)
+- `result.details`:
+  - `interaction_info` — same as `mi_estimate`
+  - `mi_xw_y` — I(X,W;Y)
+  - `mi_x_y` — I(X;Y)
+  - `mi_w_y` — I(W;Y)
+  - `raw_xw_y`, `raw_x_y`, `raw_w_y` — per-run lists for the three component sweeps
+
+```python
+result = nmi.run(x, y, mode='interaction',
+                 interaction=Interaction(w_data=w),
+                 training=Training(n_epochs=100),
+                 n_workers=4)
+print(f"II = {result.mi_estimate:.3f} bits")
+print(f"I(X,W;Y)={result.details['mi_xw_y']:.3f}, "
+      f"I(X;Y)={result.details['mi_x_y']:.3f}, "
+      f"I(W;Y)={result.details['mi_w_y']:.3f}")
 ```
 
 ---
@@ -1173,6 +1235,8 @@ from neural_mi.models import (
 
 `CNN2D` uses `AdaptiveAvgPool2d(1)` after the convolutional stack so it accepts any spatial size. All embeddings output `(batch, embedding_dim)`.
 
+**`DualBranchEmbedding`** is the one exception to the "single window length" rule above: used via `custom_embedding_cls=DualBranchEmbedding` (not a `embedding_model=` string) together with `Conditional(align='dual_branch')` (§6.7), for the case where X and Z genuinely differ in window length (`mi_rate`/`instantaneous_exchange`/`directed_information_rate`, §13). `input_dim` is a 2-tuple `(dim_a, dim_c)` for the compound side, or a plain `int` for the ordinary side; `build_critic` passes `custom_embedding_cls` through unchanged to both, so one class instance serves each role. Two independent `branch_cls` sub-networks (default `GRU`), each at its own length, fused by a small MLP. Not compatible with `use_variational=True` or `mode='sweep'`'s `max_samples_per_task`, both raise a clear error. A non-default `branch_cls` needs a thin subclass (see the class docstring), since `build_critic` only ever passes the fixed `(input_dim, hidden_dim, embed_dim, n_layers)` contract through to a custom class.
+
 ### Critics (`neural_mi.models`)
 
 ```python
@@ -1274,6 +1338,28 @@ The output DataFrame uses columns `ch_x`, `ch_y`, `mi_mean`, `mi_std` (integer c
 ### Online Augmentations — Training Only
 Augmentations are applied inside the `Trainer` batch loop and are deliberately skipped during evaluation. This means the test-set MI estimate is always computed on clean data, regardless of augmentation settings — preventing artificially inflated generalisation scores. The application order within a batch is always **spatial → non-spatial → custom**, matching the order shown in §8. Spatial augmentations on non-4-D input emit a `UserWarning` and are skipped gracefully rather than raising an error, so the same `augmentation_params` dict can be used across model types without defensive branching.
 
+### Temporal Window Shifting — Two Mechanisms, Different Reach
+
+`Training(shift_windows=True)` and `Training(shift_time=True)` each re-tile a windowed dataset with a different random start offset every epoch, so training sees a different set of window boundaries each pass rather than one fixed tiling — a temporal augmentation, on by default wherever it applies. Which mechanism a given pair uses depends on its data structure: regularly-sampled grid data (`continuous`, `categorical`) can be re-tiled with a plain re-slice (`torch.Tensor.unfold`), while irregular, event-based data (`spike`) needs its window contents recomputed from the raw events on every shift.
+
+Which pair uses which mechanism (`processor_type_x`, effective `processor_type_y`):
+
+| X / Y | mechanism | notes |
+|---|---|---|
+| `continuous` + `continuous`, `categorical` + `categorical`, `continuous` + `categorical` | `shift_windows` | the "regular grid" family — cheap reslice |
+| `spike` + `spike` | `shift_time` | both sides natively in seconds, no cross-unit concern |
+| `spike` + (`continuous`/`categorical`), either order | `shift_time`, **only if** the continuous/categorical side has `sample_rate` set | otherwise a shift value would mean seconds on one side and raw samples on the other |
+| anything + `None` (pre-processed/static) | neither | no raw signal to reslice from |
+
+Both are reachable at `mode='estimate'` and plain (non-processor-swept) `mode='sweep'`. `shift_time` additionally reaches `mode='lag'` and processor-swept `mode='sweep'`. Neither reaches `mode='pairwise'` (its per-channel dispatch needs an already-windowed array to slice channels from) or the comparison modes (`dimensionality`/`rigorous`/`precision`/`conditional`/`transfer`/`interaction`), which compare or subtract sub-run results against each other and need every sub-run to see identical windows.
+
+- **`shift_windows`** is the mechanism for the "regular grid" family (`continuous`, `categorical`, in any combination). Because the sampling grid is regular, shifting is a plain re-slice (`torch.Tensor.unfold`, no interpolation), and the window count is held fixed across every shift, so it never disturbs the train/test split and never constructs a `SubsetView`. For `categorical` data the reslice is followed by a vectorized re-encoding step (`majority_vote`/`probability`/`full_trajectory`, matching `CategoricalWindowDataset`'s own three modes). If X and Y use different `sample_rate`s, each side's `window_size`/`step_size`/shift is converted to its own native sample count independently, keeping both sides' tiling in sync by real time. The shift is drawn fresh each epoch, uniformly from `[0, window_size)`, independent of `step_size`.
+- **`shift_time`** takes effect when windowing is deferred to the training worker (see reach above). It rebuilds the entire windowed array on every shift (interpolation for continuous, a vectorized `searchsorted`-based rebin for spike), so every epoch pays a rebuild cost. For a mixed `spike`+regular-grid pair without `sample_rate` on the regular-grid side, the library refuses to shift (warns and leaves the pair unshifted) rather than silently misalign X and Y. `shift_windows` is always preferred for the regular-grid family; `shift_time` is the only option for `spike` data and for `mode='lag'`/processor-swept `mode='sweep'`.
+- **A cross-unit gap, independent of shifting**: pairing `spike` with `continuous`/`categorical` when the regular-grid side lacks `sample_rate` produces a warning from `create_dataset` regardless of whether any shift is requested — `PairedTemporalDataset` combines both sides' temporal extents via plain numeric `min`/`max`, which is only meaningful if both sides are already in the same time unit.
+- **Evaluation is decoupled from training's shift state.** The reported `test_mi`/`train_mi` (and everything derived from it: early stopping, best-epoch selection, decoder reconstruction loss, spectral metrics, per-epoch embedding tracking) is always measured against a frozen snapshot of the data taken before any shift, using the original test/train-eval index arrays rather than `SubsetView`'s live-updating `.indices`. Training batches see the live, currently-shifted data.
+
+Set `shift_windows=False`/`shift_time=False` to disable shifting for a specific pair. If `n_epochs`/`patience` need adjusting for a particular dataset, the "under-trained lower bound" warning already flags it regardless of cause.
+
 ### Logging
 ```python
 import neural_mi as nmi
@@ -1282,6 +1368,91 @@ nmi.set_verbosity(logging.DEBUG)    # Fine-grained control
 ```
 
 Or pass `verbose=True` to `run()` for per-call verbosity.
+
+---
+
+## 13. Information-Quantities Convenience Functions
+
+`neural_mi/quantities.py` provides named functions for the temporal
+information quantities described in `THEORY.md` §11, thin wrappers that
+build the right offset arrays and call `run(mode='estimate', ...)`
+underneath, so they accept the same `model=`/`training=`/etc. keyword
+arguments as `run()` and return the same `Results` object. Most of these
+need no new `mode=` string at all, `mode=` tracks estimation *mechanism*
+(how many sweeps run and how they're combined), and every quantity except
+interaction information is a single sweep under an existing mechanism
+(`mode='estimate'`, `mode='transfer'`). Interaction information is the one
+exception, a genuine three-sweep combination, so it gets its own
+`mode='interaction'` (§6.10) with a matching convenience function.
+
+Each function's construction parameter (`k`, `past_k`, `window_size`) accepts
+either a scalar (one call, one `Results`) or an iterable, which dispatches a
+parallel sweep across values via `n_workers` and returns a `pandas.DataFrame`
+instead:
+
+```python
+import neural_mi as nmi
+
+# Single value -> Results, same as mode='estimate'
+r = nmi.active_information_storage(x_data, k=10)
+
+# Iterable -> DataFrame with columns 'k', 'mi_estimate', dispatched in parallel
+df = nmi.active_information_storage(x_data, k=[5, 10, 20], n_workers=4)
+```
+
+| Function | Quantity | Construction |
+|---|---|---|
+| `active_information_storage(x_data, k, future_k=1, ...)` | $I(X_{past}; X_0)$ | `offsets.build_past_future(x_data, past_len=k, future_len=future_k)` |
+| `excess_entropy(x_data, k, future_k, ...)` | $I(X_{past}; X_{fut})$ | same, with a multi-sample `future_k` |
+| `instantaneous_mi(x_data, y_data, ...)` | $I(X_0; Y_0)$ | direct pass-through to `mode='estimate'`, no construction |
+| `cross_predictive_information(x_data, y_data, past_k, future_k=1, ...)` | $I(X_{past}; Y_{fut})$ | `offsets.build_cross_offset(x_data, y_data, past_len=past_k, future_len=future_k)` |
+| `block_mi(x_data, y_data, window_size, ...)` | $I(X_{1:w}; Y_{1:w})$ | `Processing(x='continuous', y='continuous', x_params={'window_size': ...}, ...)` |
+| `conditional_transfer_entropy(x_data, y_data, w_data, history_window, ...)` | $I(Y_0; X_{past} \mid Y_{past}, W_{past})$ | `mode='transfer'` with `Transfer(w_data=...)`, see §6.8 |
+| `interaction_information(x_data, y_data, w_data, ...)` | $I(X,W;Y) - I(X;Y) - I(W;Y)$ | `mode='interaction'`, see §6.10 |
+| `mi_rate(x_data, y_data, h, W=20, ...)` | $I(X_{all}; Y_0 \mid Y_{past}(h))$ | `mode='conditional'` with `align='dual_branch'`, see below |
+| `instantaneous_exchange(x_data, y_data, k, ...)` | $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$ | same |
+| `directed_information_rate(x_data, y_data, k, ...)` | $I(X_{past}(k), X_0; Y_0 \mid Y_{past}(k))$ | same |
+
+`x_data`/`y_data` for the first four are raw, unwindowed `(T, n_channels)`
+arrays. The offset construction builds the windowed shape internally, using
+the same `torch.Tensor.unfold`-based sliding window `mode='transfer'`
+already uses for its own past/future arrays (`neural_mi/analysis/offsets.py`).
+`block_mi` is the exception: it routes through the library's own `Processing`
+windowing rather than a hand-built offset, since $X_{1:w}$ vs. $Y_{1:w}$ is
+literally what a windowed processor already builds correctly (interpolation,
+coverage validation, blocked-split geometry included).
+
+The sweep path (an iterable construction parameter) dispatches via
+`neural_mi.parallel.dispatch_tasks`, the same `spawn`-context worker-pool
+idiom used throughout the library (`analysis/rigorous.py`,
+`analysis/dimensionality.py`, `analysis/pairwise.py`,
+`analysis/sweep.py`), factored into one shared helper rather than a
+seventh independent copy. It intentionally returns a plain `DataFrame`
+rather than a `Results` with full `plot()`/`summary()` support, a
+reasonable future enhancement, not required to make the parameter
+sweepable.
+
+`mi_rate`, `instantaneous_exchange`, and `directed_information_rate` are the
+three exceptions to "no new estimation machinery": $A$ and $C$ genuinely
+differ in window length for all three, so they need
+`model=Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding, ...)`
+and route through `Conditional(align='dual_branch')` (§6.7) automatically.
+Each raises a clear `ValueError` upfront if `model=` isn't configured with a
+`DualBranchEmbedding`-based `custom_embedding_cls`, at the `h`/`k > 0`
+boundary where a mismatch actually occurs (`h=0`/`k=0` has no conditioning
+at all and needs no special model). See `THEORY.md` §11 for the array
+construction and why directed information rate is estimated directly rather
+than via its exact TE + instantaneous-exchange decomposition, and §10.
+
+```python
+from neural_mi import Model, Training, mi_rate
+from neural_mi.models import DualBranchEmbedding
+
+model = Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding,
+              embedding_dim=16, hidden_dim=64, n_layers=2)
+df = mi_rate(x_data, y_data, h=[0, 5, 10, 20], W=20, model=model,
+             training=Training(n_epochs=100), n_workers=4)
+```
 
 ---
 
@@ -1442,3 +1613,12 @@ Same as `mode='rigorous'`: `mi_corrected`, `mi_error`, `slope`, `is_reliable`,
 
 `result.params['rigorous']` is set to `True` to distinguish these results from
 standard conditional/transfer results.
+
+`rigorous=True` also works with `Conditional(align='dual_branch', ...)`
+(`mi_rate`/`instantaneous_exchange`/`directed_information_rate`, §13):
+bias correction is a property of the InfoNCE-family estimator itself, not
+of which array-construction path built X and Z, so no separate rigorous
+mechanism is needed. X stays a plain tensor throughout the γ-chunking
+internals; Z rides along via the same `extra_data` mechanism already used
+for the ordinary conditional-rigorous path, and the tuple is assembled only
+at the point where `run_conditional_mi` is actually called.

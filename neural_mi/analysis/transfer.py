@@ -74,6 +74,15 @@ def _build_te_arrays(
     return x_past, y_past, y_future
 
 
+def _build_w_past(w_data: torch.Tensor, history_window: int, n_valid: int) -> torch.Tensor:
+    """Build W_past, matching X_past/Y_past's construction exactly (same
+    ``history_window``, same stride-1 unfold, truncated to the same
+    ``n_valid`` count so it aligns sample-for-sample with the other arrays)."""
+    if not isinstance(w_data, torch.Tensor):
+        w_data = torch.as_tensor(np.asarray(w_data), dtype=torch.float32)
+    return w_data.unfold(0, history_window, 1)[:n_valid]
+
+
 def run_transfer_entropy(
     x_data: torch.Tensor,
     y_data: torch.Tensor,
@@ -83,6 +92,7 @@ def run_transfer_entropy(
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
     bidirectional: bool = False,
+    w_data: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
     """Estimates transfer entropy TE(X→Y), and optionally TE(Y→X).
 
@@ -112,6 +122,15 @@ def run_transfer_entropy(
     bidirectional : bool, optional
         If True, also compute TE(Y→X) and return a directionality index.
         Defaults to False.
+    w_data : torch.Tensor, optional
+        Raw time-series data for a third conditioning signal W, shape
+        ``(T, n_channels_w)``. When provided, computes *conditional* transfer
+        entropy TE(X→Y|W) = I(y_future; x_past | y_past, w_past) instead of
+        plain TE(X→Y). W_past (built the same way as X_past/Y_past, same
+        ``history_window``) is folded into both the joint and marginal
+        conditioning arrays. ``None`` (the default) reproduces plain TE
+        exactly, unchanged from before this parameter existed. Applied to
+        both directions when ``bidirectional=True``.
 
     Returns
     -------
@@ -178,9 +197,14 @@ def run_transfer_entropy(
 
     # Joint past: concatenate x_past and y_past along channel dim
     xy_past = torch.cat([x_past, y_past], dim=1)
+    y_past_cond = y_past
+    if w_data is not None:
+        w_past = _build_w_past(w_data, history_window, n_samples)
+        xy_past = torch.cat([xy_past, w_past], dim=1)
+        y_past_cond = torch.cat([y_past, w_past], dim=1)
 
     te, mi_joint, mi_marginal, results_joint, results_marginal = _joint_marginal_difference(
-        xy_past, y_future, y_past, y_future,
+        xy_past, y_future, y_past_cond, y_future,
         base_params, sweep_grid, n_workers,
         quantity_name="TE(X→Y)",
         joint_label="xy_past;y_future", marginal_label="y_past;y_future",
@@ -211,9 +235,15 @@ def run_transfer_entropy(
             y_data, x_data, history_window, prediction_horizon
         )
         yx_past = torch.cat([y_past_b, x_past_b], dim=1)
+        x_past_cond = x_past_b
+        if w_data is not None:
+            # Reuse the same w_past computed above -- same history_window,
+            # same n_samples, so it aligns with this direction's arrays too.
+            yx_past = torch.cat([yx_past, w_past], dim=1)
+            x_past_cond = torch.cat([x_past_b, w_past], dim=1)
 
         te_yx, mi_joint_yx, mi_marginal_yx, results_joint_yx, results_marginal_yx = _joint_marginal_difference(
-            yx_past, x_future, x_past_b, x_future,
+            yx_past, x_future, x_past_cond, x_future,
             base_params, sweep_grid, n_workers,
             quantity_name="TE(Y→X)",
             joint_label="yx_past;x_future", marginal_label="x_past;x_future",
@@ -267,7 +297,7 @@ def _extract_diagnostics(task_results: list) -> Optional[Dict[str, Any]]:
 
 
 def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
-                        prediction_horizon=1, bidirectional=False) -> float:
+                        prediction_horizon=1, bidirectional=False, w_data=None) -> float:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of TE.
 
     ``run_rigorous_scalar_analysis`` dispatches many of these (one per
@@ -276,6 +306,11 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
     with ``n_workers=1`` internally to avoid nested pools, matching the
     outer-loop-gets-workers / inner-loop-sequential convention used for
     dimensionality-mode splits.
+
+    ``w_data`` arrives here already sliced to this gamma-chunk's samples (via
+    ``run_rigorous_scalar_analysis``'s ``extra_data`` mechanism, the same one
+    ``z_data`` already uses for ``mode='conditional'``'s rigorous path), not
+    the full signal -- forwarded straight through to ``run_transfer_entropy``.
     """
     raw = run_transfer_entropy(
         x_s, y_s, bp,
@@ -284,5 +319,6 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
         sweep_grid=sweep_grid,
         n_workers=1,
         bidirectional=bidirectional,
+        w_data=w_data,
     )
     return raw['te_estimate']

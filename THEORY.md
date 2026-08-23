@@ -280,3 +280,228 @@ Two consequences worth being explicit about:
 
 - **Values at different `window_size` settings are not directly comparable** as "how much do X and Y share" — a larger window will generically report a larger raw MI regardless of whether the underlying coupling actually changed, simply because it's built from more raw data. Comparing across `window_size` meaningfully requires either a rate (MI per unit time, e.g. dividing by `window_size` and the sample rate) or looking at the marginal MI gained per additional window sample, not the raw per-window value.
 - **A raw (non-rate) MI-vs-`window_size` sweep whose values rise and then *fall* is reporting an estimation artifact, not a real property of the data** — per the extensivity argument above, the true quantity cannot decline. A decline is generically explained by the evaluation set shrinking as `window_size` grows (fewer windows fit in a fixed-length recording, so `eval_size`/`train_eval_size` fall and the ceiling drops with them — §2.1) and/or a fixed embedding capacity failing to keep up with a growing `window_size`'s input dimensionality. Check `result.details['eval_size']` / `['test_ceiling_mi']` / `['train_ceiling_mi']` alongside any such sweep before reading a shape into it.
+
+## 11. Temporal Information Quantities
+
+Beyond a single window's MI, a family of related quantities describe how
+information is organized *across time* within and between two processes $X$
+and $Y$. Every one of them, with one exception (interaction information,
+which combines three separate MI estimates via a formula rather than being a
+single conditional MI), reduces to
+
+$$I(A; B \mid C)$$
+
+for a particular choice of **which time offsets go into $A$, $B$, and $C$**.
+Using the convention $X_{past} = X_{t-k:t-1}$, $X_{fut} = X_{t:t+k-1}$,
+$X_0 = X_t$, and $X_{all} = X_{t-k:t+k}$ (a two-sided window), the quantities
+this section covers are:
+
+| Quantity | $A$ | $B$ | $C$ |
+|---|---|---|---|
+| Active information storage | $X_{past}$ | $X_0$ | — |
+| Excess entropy | $X_{past}$ | $X_{fut}$ | — |
+| Instantaneous MI | $X_0$ | $Y_0$ | — |
+| Block MI (§10) | $X_{1:w}$ | $Y_{1:w}$ | — |
+| Cross-predictive information | $X_{past}$ | $Y_{fut}$ | — |
+| Transfer entropy | $X_{past}$ | $Y_0$ | $Y_{past}$ |
+| Conditional transfer entropy | $X_{past}$ | $Y_0$ | $Y_{past}, W_{past}$ |
+| MI rate | $X_{all}$ | $Y_0$ | $Y_{past}(h)$ |
+| Instantaneous exchange | $X_0$ | $Y_0$ | $X_{past}, Y_{past}$ |
+| Directed information rate | $X_{past}, X_0$ | $Y_0$ | $Y_{past}$ |
+
+The first four are unconditioned (no $C$): a single $I(A;B)$ estimate, no
+subtraction, no amplification risk. `neural_mi/quantities.py` provides thin
+convenience functions for these (`active_information_storage`,
+`excess_entropy`, `instantaneous_mi`, `cross_predictive_information`,
+`block_mi`), each building the right offset arrays and calling
+`mode='estimate'` underneath, with no new estimation machinery. This table
+entry is purely a data-construction problem once $I(A;B)$ itself is solved.
+
+### Active information storage and excess entropy
+
+**Active information storage**, $AIS_X = I(X_{past}; X_0)$, measures how much
+a process's own recent history predicts its present value: how much of $X$
+is "stored" rather than novel at each step.
+
+**Excess entropy**, $E_X = I(X_{past}; X_{fut})$, is the same construction
+with a multi-sample future window instead of a single present time step.
+Since a longer future window can only reveal more about the past (mutual
+information is monotonically non-decreasing under adding more observed
+variables, the same extensivity argument as §10), $E_X \ge AIS_X$ always.
+
+Both are built via `neural_mi.analysis.offsets.build_past_future`, a sliding
+window over one signal (`torch.Tensor.unfold`, a view not a copy):
+$X_{past}[i] = X_{i:i+k}$ and $X_{fut}[i] = X_{i+k:i+k+m}$, so the future
+window starts exactly where the past window ends.
+
+### Instantaneous MI and cross-predictive information
+
+**Instantaneous MI**, $I(X_0; Y_0)$, is plain, unwindowed MI between two
+processes at matching time indices, needing no offset construction at all;
+it's exactly what `mode='estimate'` computes directly.
+
+**Cross-predictive information**, $I(X_{past}; Y_{fut})$, asks how much a
+window of $X$'s past tells you about a window of $Y$'s future. It's
+unconditioned, so it doesn't isolate $X$'s *unique* contribution the way
+transfer entropy (§6.8 in `NEURALMI_REFERENCE.md`) does by subtracting out
+$Y$'s own predictability of its future; it just measures the raw shared
+predictive content. One training run, no subtraction, no amplification
+risk. Built via `neural_mi.analysis.offsets.build_cross_offset`, which
+reuses the same sliding-window construction transfer entropy's
+array-building already uses internally.
+
+### Block MI
+
+**Block MI**, $I(X_{1:w}; Y_{1:w})$, is already exactly what `mode='estimate'`
+computes with a windowed processor. See §10 for its extensivity properties
+and why raw values aren't comparable across `window_size`. `block_mi()` in
+`neural_mi/quantities.py` exists for naming symmetry with the rest of this
+section, not new estimation logic.
+
+### Transfer entropy and conditional transfer entropy
+
+**Transfer entropy**, $\text{TE}_{X\to Y} = I(X_{past}; Y_0 \mid Y_{past})$
+(Schreiber, 2000), is the first quantity in this section that actually
+conditions on something: conditioning on $Y_{past}$ is what makes it
+*directed* rather than symmetric, since it specifically removes $Y$'s own
+storage (§"Active information storage" above) from being mistakenly counted
+as something $X$ transferred. Computed via the chain-rule identity
+$\text{TE}_{X\to Y} = I(X_{past}, Y_{past}; Y_0) - I(Y_{past}; Y_0)$, a
+difference of two separately-trained MI estimates, via `mode='transfer'`.
+
+**Conditional transfer entropy**, $\text{TE}_{X\to Y}(W) = I(X_{past}; Y_0
+\mid Y_{past}, W_{past})$, adds a third process's history to the
+conditioning side, asking how much of $X$'s apparent influence on $Y$
+survives once a third process $W$'s own history is also controlled for. If
+$W$ explains away most of $X$'s apparent contribution, that contribution was
+likely mediated through $W$ rather than a direct $X\to Y$ pathway. It's
+built by folding $W_{past}$ (constructed the same way as
+$X_{past}$/$Y_{past}$, same `history_window`) into both the joint and
+marginal conditioning arrays, via `Transfer(w_data=...)`; see
+`NEURALMI_REFERENCE.md` §6.8.
+
+Both are, by construction, a *difference* of two independently-trained
+estimates rather than a large fraction of their own components, the same
+"small residual relative to its components" shape identified as fragile
+elsewhere in this section's validation. Conditional transfer entropy is the
+more fragile of the two: introducing a third conditioning signal that
+explains away most of the plain-TE signal shrinks the residual further,
+amplifying whatever noise the two component estimates carry. Report the
+component estimates (`result.details['i_xypast_yfuture']`, etc.) alongside
+the point estimate rather than trusting the difference in isolation, and
+prefer more training data/epochs here before reading much into a small
+absolute value.
+
+### MI rate, instantaneous exchange, and directed information rate
+
+These three share a trait the rest of this section doesn't: $A$ and $C$
+genuinely differ in window length, not the one-sample rounding difference
+`mode='conditional'` already tolerates when trimming to a shared start.
+
+**MI rate**, $I(X_{all}; Y_0 \mid Y_{past}(h))$, is the two-sided,
+per-sample information rate between $X$ and $Y$ as $h \to \infty$: how much
+$X$'s value in a symmetric window around the present tells you about $Y$'s
+present, once enough of $Y$'s own past is controlled for that little of its
+remaining predictability is really $Y$'s own storage. $X_{all}$ is
+two-sided (spans both $X_{past}$ and $X_{fut}$ around the same center as
+$Y_0$) because a one-sided window would let $X$'s future values act as a
+proxy for $Y$'s own future, per the feedback consideration behind
+information rate's usual two-sided definition. In practice, `mi_rate(h=[...])`
+swept over increasing $h$ should converge to a stable value once $h$ is
+large enough to have absorbed $Y$'s own dependence structure; a value still
+drifting upward at the largest $h$ tried means $h$ hasn't reached that
+point yet, not that the estimator is unreliable.
+
+**Instantaneous exchange**, $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$,
+asks how much $X$ and $Y$ share at the same instant that isn't already
+explained by their separate, shared pasts. Unlike transfer entropy, this
+term tends to be large relative to its two components in a system with real
+shared instantaneous structure (a shared upstream driver affecting both
+processes at the same time step), so it doesn't inherit transfer entropy's
+amplification fragility even though it's also computed as a difference of
+two independently-trained estimates.
+
+**Directed information rate**, $I(X_{past}(k), X_0; Y_0 \mid Y_{past}(k))$,
+is the total directed relationship between $X$ and $Y$: everything $X$'s
+past-and-present together tell you about $Y$'s present beyond $Y$'s own
+past. It decomposes exactly as $\text{TE}_{X\to Y} + $ instantaneous
+exchange (both sides share the same $B$ and, once $X_0$ is moved from $A$ to
+being folded in, the same effective conditioning), a decomposition that's
+useful as a sanity check but not as the estimation method: composing it from
+its two parts would sum transfer entropy's small, high-variance residual
+into an otherwise well-behaved quantity, reintroducing the fragility a
+direct estimate avoids. `directed_information_rate()` always estimates it
+directly, from its own $A$/$B$/$C$ arrays.
+
+All three need `Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding, ...)`
+and `Conditional(align='dual_branch')` (handled automatically by
+`neural_mi.quantities.mi_rate`/`instantaneous_exchange`/`directed_information_rate`,
+which raise a clear error if the model isn't configured this way). See
+"DualBranchEmbedding" below for why, and `NEURALMI_REFERENCE.md` §13 for the
+full API.
+
+### DualBranchEmbedding
+
+`mode='conditional'` ordinarily concatenates $X$ and $Z$ into one array
+before embedding, which requires them to share a window length (a
+one-sample mismatch is trimmed automatically; anything more raises an
+error). MI rate, instantaneous exchange, and directed information rate all
+need $A$ and $C$ at genuinely different lengths, so forcing a shared length
+would mean zero-padding the shorter one out to match, letting the network
+learn on its own to ignore a constant-zero region rather than that being
+handled structurally.
+
+`DualBranchEmbedding` avoids the padding: two independent sub-embedding
+networks, one per input length, each processing its own array natively (an
+RNN-family branch's weights depend only on channel count, not on sequence
+length, so there's no length-matching constraint between the branches at
+all), fused by a small MLP into one embedding vector. It's used via
+`custom_embedding_cls=DualBranchEmbedding` on the existing
+`custom_embedding_cls` extension point, not a new `embedding_model=` string,
+since a genuinely new embedding-model enum entry would touch several
+unrelated validation paths for no benefit here. `Conditional(align='dual_branch')`
+is the corresponding data-side opt-in: it builds the "X-role" data as a
+tuple `(a_data, c_data)` instead of concatenating, which
+`DualBranchEmbedding` (and the rest of the training pipeline: dataset,
+sweep, task, trainer, critic layers) knows how to handle. Not supported
+with `use_variational=True` or `mode='sweep'`'s `max_samples_per_task`; both
+raise a clear error rather than a silent wrong result if attempted.
+
+## 12. Interaction Information
+
+The one quantity in this taxonomy that isn't a single $I(A;B \mid C)$
+estimate. Interaction information asks how much shared information between
+two populations $X$ and $Y$ changes once a third population $W$ is also
+observed:
+
+$$II = I(X, W; Y) - I(X; Y) - I(W; Y)$$
+
+Three separate MI estimates, combined by a formula, computed via
+`mode='interaction'`. Two internally-related quantities emerge from the
+same three terms: $I(X,W;Y) - I(X;Y)$ is $W$'s marginal contribution once
+$X$ is already known, and by symmetry $I(X,W;Y) - I(W;Y)$ is $X$'s marginal
+contribution once $W$ is already known; $II$ is what's left after
+subtracting both marginal contributions from the joint, the part of the
+relationship that only shows up when $X$ and $W$ are considered together.
+
+Unlike every quantity in §11, $II$ is signed and can be positive or
+negative, and both directions have a standard reading:
+
+- **$II < 0$ (redundancy)**: $X$ and $W$ carry overlapping information
+  about $Y$, so observing both together tells you less than the sum of
+  observing each alone would suggest. The common case is a shared upstream
+  cause: if $X$ and $W$ are both driven by the same underlying process that
+  also drives $Y$, each is a partial proxy for that process, and knowing
+  one reduces how much additional information the other can offer.
+- **$II > 0$ (synergy)**: $X$ and $W$ together reveal something about $Y$
+  that neither reveals alone, for example if $Y$ depends on some
+  combination of $X$ and $W$ (an XOR-like relationship is the canonical
+  case) that isn't visible from either variable in isolation.
+
+Like transfer entropy, this is built from independently-trained estimates
+combined by subtraction rather than being a single large-fraction quantity,
+so the same fragility considerations from §11 apply: report the three
+component estimates (`result.details['mi_xw_y']`, `['mi_x_y']`,
+`['mi_w_y']`) alongside `interaction_info`, not in place of it, especially
+when the estimate is close to zero and its sign is the main thing being
+asked about. See `NEURALMI_REFERENCE.md` §6.10 for the full API.

@@ -8,10 +8,10 @@ import torch
 from unittest.mock import patch
 from neural_mi.analysis.dimensionality import run_dimensionality_analysis
 
-# random_time_shifting disabled to avoid dynamic window sizing issues in tests.
+# shift_time disabled to avoid dynamic window sizing issues in tests.
 MODEL_TEST = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
 TRAINING_TEST = Training(n_epochs=2, learning_rate=1e-4, batch_size=32,
-                         patience=1, random_time_shifting=False)
+                         patience=1, shift_time=False)
 
 @pytest.mark.parametrize("processor_type", ["continuous", "categorical", "spike"])
 def test_run_lag_mode(processor_type):

@@ -11,12 +11,18 @@ from .run import run
 from .config import (
     Model, Training, Split, Estimator, Output, Processing,
     Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional,
-    Pairwise, Sweep,
+    Interaction, Pairwise, Sweep,
 )
 from .logger import logger, set_verbosity, set_verbose
 from .results import Results
 from .exceptions import NeuralMIError, DataShapeError, InsufficientDataError, TrainingError
 from .embeddings_io import extract_embeddings
+from .quantities import (
+    active_information_storage, excess_entropy, instantaneous_mi,
+    cross_predictive_information, block_mi, conditional_transfer_entropy,
+    interaction_information, mi_rate, instantaneous_exchange,
+    directed_information_rate,
+)
 from . import data
 from . import generators
 from . import estimators
@@ -30,7 +36,7 @@ __all__ = [
     'run',
     'Model', 'Training', 'Split', 'Estimator', 'Output', 'Processing',
     'Rigorous', 'Precision', 'Lag', 'Transfer', 'Dimensionality', 'Conditional',
-    'Pairwise', 'Sweep',
+    'Interaction', 'Pairwise', 'Sweep',
     'Results',
     'logger',
     'set_verbosity',
@@ -40,6 +46,10 @@ __all__ = [
     'InsufficientDataError',
     'TrainingError',
     'extract_embeddings',
+    'active_information_storage', 'excess_entropy', 'instantaneous_mi',
+    'cross_predictive_information', 'block_mi', 'conditional_transfer_entropy',
+    'interaction_information', 'mi_rate', 'instantaneous_exchange',
+    'directed_information_rate',
     'data',
     'generators',
     'estimators',

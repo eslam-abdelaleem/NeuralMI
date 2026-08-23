@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 __all__ = [
     "Model", "Training", "Split", "Estimator", "Output", "Processing",
     "Rigorous", "Precision", "Lag", "Transfer", "Dimensionality", "Conditional",
-    "Pairwise", "Sweep",
+    "Interaction", "Pairwise", "Sweep",
     "as_config",
 ]
 
@@ -138,8 +138,8 @@ class Training:
     train_subset_size: Optional[int] = None
     lr_head_multiplier: Optional[float] = None
     save_best_model_path: Optional[str] = None
-    random_time_shifting: Optional[bool] = None
-    epochs_to_max_shift: Optional[int] = None
+    shift_time: Optional[bool] = None
+    shift_windows: Optional[bool] = None
     augmentation_params: Optional[Dict[str, Any]] = None
     augmentation_params_x: Optional[Dict[str, Any]] = None
     augmentation_params_y: Optional[Dict[str, Any]] = None
@@ -271,10 +271,21 @@ class Lag:
 
 @dataclass
 class Transfer:
-    """Parameters for ``mode='transfer'`` transfer entropy."""
+    """Parameters for ``mode='transfer'`` transfer entropy.
+
+    ``w_data`` adds a third signal to the conditioning side, computing
+    conditional transfer entropy TE(X->Y|W) = I(Y_0; X_past | Y_past, W_past)
+    instead of plain TE(X->Y) = I(Y_0; X_past | Y_past). Leave ``w_data=None``
+    (the default) for plain transfer entropy, unchanged from before this field
+    existed.
+    """
     history_window: Optional[int] = None
     prediction_horizon: Optional[int] = None
     bidirectional: Optional[bool] = None
+    w_data: Optional[Any] = None
+    w_time: Optional[Any] = None
+    w_processor_type: Optional[str] = None
+    w_processor_params: Optional[Dict[str, Any]] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
     delta_threshold: Optional[float] = None
@@ -284,8 +295,18 @@ class Transfer:
     r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
+    # w_* are consumed as dedicated run arguments; the rest are analysis kwargs
+    # (same split as Conditional's z_* fields, see below).
+    _W_FIELDS = ("w_data", "w_time", "w_processor_type", "w_processor_params")
+
+    def to_w_kwargs(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}
+
     def to_analysis_kwargs(self) -> Dict[str, Any]:
-        return _non_none(self)
+        d = _non_none(self)
+        for k in self._W_FIELDS:
+            d.pop(k, None)
+        return d
 
 
 @dataclass
@@ -328,11 +349,21 @@ class Dimensionality:
 
 @dataclass
 class Conditional:
-    """Parameters for ``mode='conditional'`` conditional MI (the Z variable)."""
+    """Parameters for ``mode='conditional'`` conditional MI (the Z variable).
+
+    ``align='dual_branch'`` is for the case where Z genuinely differs from
+    X in window length (MI rate, instantaneous exchange, directed
+    information rate, see ``THEORY.md``), beyond the small trim tolerance
+    the default path applies. It routes Z into a
+    ``DualBranchEmbedding``-based ``custom_embedding_cls`` (set separately
+    via ``Model(...)``) instead of concatenating X and Z at the data level.
+    Leave unset (``None``, today's behavior) unless you know you need it.
+    """
     z_data: Optional[Any] = None
     z_time: Optional[Any] = None
     z_processor_type: Optional[str] = None
     z_processor_params: Optional[Dict[str, Any]] = None
+    align: Optional[str] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
     delta_threshold: Optional[float] = None
@@ -351,6 +382,42 @@ class Conditional:
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         d = _non_none(self)
         for k in self._Z_FIELDS:
+            d.pop(k, None)
+        return d
+
+
+@dataclass
+class Interaction:
+    """Parameters for ``mode='interaction'`` interaction information (the W variable).
+
+    II = I(X,W;Y) - I(X;Y) - I(W;Y): how much shared information between X
+    and Y changes once a third population W is also observed. The one
+    quantity in the taxonomy that isn't a single conditional MI call --
+    three separate MI estimates combined by a formula. See ``THEORY.md``.
+    """
+    w_data: Optional[Any] = None
+    w_time: Optional[Any] = None
+    w_processor_type: Optional[str] = None
+    w_processor_params: Optional[Dict[str, Any]] = None
+    rigorous: Optional[bool] = None
+    gamma_range: Optional[Any] = None
+    delta_threshold: Optional[float] = None
+    min_gamma_points: Optional[int] = None
+    confidence_level: Optional[float] = None
+    residual_threshold: Optional[float] = None
+    r2_threshold: Optional[float] = None
+    leverage_threshold: Optional[float] = None
+
+    # w_* are consumed as dedicated run arguments; the rest are analysis kwargs
+    # (same split as Conditional's z_* fields).
+    _W_FIELDS = ("w_data", "w_time", "w_processor_type", "w_processor_params")
+
+    def to_w_kwargs(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}
+
+    def to_analysis_kwargs(self) -> Dict[str, Any]:
+        d = _non_none(self)
+        for k in self._W_FIELDS:
             d.pop(k, None)
         return d
 

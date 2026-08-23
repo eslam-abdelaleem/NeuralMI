@@ -46,6 +46,8 @@ def run_conditional_mi(
     base_params: Dict[str, Any],
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
+    align: Optional[str] = None,
+    c_data: Optional[torch.Tensor] = None,
 ) -> Dict[str, Any]:
     """Estimates conditional mutual information I(X; Y | Z).
 
@@ -69,12 +71,29 @@ def run_conditional_mi(
         concatenation, for conditioning variables with no temporal extent
         within a window (e.g. a categorical Z encoded with 'majority_vote' or
         'probability' — see ``run._reshape_categorical_z_for_conditional``).
+        Ignored (may be ``None``) when ``align='dual_branch'`` and ``c_data``
+        is given instead.
     base_params : Dict[str, Any]
         Fixed parameters for the MI estimator. Passed to both sweep runs.
     sweep_grid : Dict[str, List], optional
         Optional hyperparameter grid, e.g. ``{'run_id': range(5)}``.
     n_workers : int, optional
         Number of parallel workers. Defaults to 1.
+    align : {None, 'dual_branch'}, optional
+        ``None`` (the default): today's behavior, unchanged -- concatenate
+        X and Z along the channel axis, tolerating only a 1-sample edge-case
+        mismatch (see ``_WINDOW_SIZE_TRIM_TOLERANCE``) before raising.
+        ``'dual_branch'``: for MI rate, instantaneous exchange, and directed
+        information rate, where A and C genuinely differ in window length.
+        Builds ``(x_data, c_data)`` as a tuple instead of concatenating, for
+        a ``DualBranchEmbedding``-based ``custom_embedding_cls`` (set
+        separately via ``Model(...)``, this function doesn't inject it) to
+        process each at its own length. See ``THEORY.md``.
+    c_data : torch.Tensor, optional
+        The conditioning variable for the ``align='dual_branch'`` path,
+        shape ``(n_samples, n_channels_c, window_size_c)`` -- ``window_size_c``
+        may differ from ``x_data``'s window size, that's the entire point.
+        Required (and ``z_data`` is ignored) when ``align='dual_branch'``.
 
     Returns
     -------
@@ -86,6 +105,38 @@ def run_conditional_mi(
         - ``'raw_xz_y'`` : list of result dicts from the XZ→Y sweep.
         - ``'raw_z_y'`` : list of result dicts from the Z→Y sweep.
     """
+    if align == 'dual_branch':
+        if c_data is None:
+            raise ValueError("c_data must be provided when align='dual_branch'.")
+        x_data = x_data.unsqueeze(-1) if x_data.ndim == 2 else x_data
+        y_data = y_data.unsqueeze(-1) if y_data.ndim == 2 else y_data
+        c_data = c_data.unsqueeze(-1) if c_data.ndim == 2 else c_data
+        device = x_data.device
+        y_data = y_data.to(device)
+        c_data = c_data.to(device)
+        if x_data.shape[0] != y_data.shape[0] or x_data.shape[0] != c_data.shape[0]:
+            raise ValueError(
+                "x_data, y_data, and c_data must have the same number of samples. "
+                f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(c_data.shape)}."
+            )
+        # No window-size trim/tolerance here -- a mismatch is expected and
+        # required for this path, that's the entire reason it exists.
+        xc_data = (x_data, c_data)
+        cmi, mi_xc_y, mi_c_y, results_xc_y, results_c_y = _joint_marginal_difference(
+            xc_data, y_data, c_data, y_data,
+            base_params, sweep_grid, n_workers,
+            quantity_name="Conditional MI (dual-branch)",
+            joint_label="XC;Y", marginal_label="C;Y",
+            joint_key="mi_xz_y", marginal_key="mi_z_y",
+        )
+        return {
+            'cmi_estimate': cmi,
+            'mi_xz_y': mi_xc_y,
+            'mi_z_y': mi_c_y,
+            'raw_xz_y': results_xc_y,
+            'raw_z_y': results_c_y,
+        }
+
     # Normalise all inputs to the same ndim before shape comparison and cat.
     # StaticDataset delivers (N, C, 1) tensors, but z_data is often passed as
     # raw 2-D (N, C) when no z_processor_type is given.  Unsqueeze the missing
@@ -154,7 +205,10 @@ def run_conditional_mi(
             raise ValueError(
                 "x_data and z_data must have the same window size to be concatenated "
                 f"into XZ. Got window sizes {x_data.shape[2]} and {z_data.shape[2]} "
-                f"(full shapes {tuple(x_data.shape)}, {tuple(z_data.shape)})."
+                f"(full shapes {tuple(x_data.shape)}, {tuple(z_data.shape)}). "
+                f"Pass align='dual_branch' (with c_data=z_data) if this mismatch is "
+                f"expected -- see mi_rate/instantaneous_exchange/directed_information_rate "
+                f"in neural_mi/quantities.py."
             )
 
     # Build XZ by concatenating along the channel dimension (dim=1)
@@ -177,7 +231,8 @@ def run_conditional_mi(
     }
 
 
-def _cmi_rigorous_scalar(x_s, y_s, bp, z_data=None, sweep_grid=None) -> float:
+def _cmi_rigorous_scalar(x_s, y_s, bp, z_data=None, sweep_grid=None,
+                         align=None, c_data=None) -> float:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of CMI.
 
     ``run_rigorous_scalar_analysis`` dispatches many of these (one per
@@ -186,6 +241,13 @@ def _cmi_rigorous_scalar(x_s, y_s, bp, z_data=None, sweep_grid=None) -> float:
     with ``n_workers=1`` internally to avoid nested pools, matching the
     outer-loop-gets-workers / inner-loop-sequential convention used for
     dimensionality-mode splits.
+
+    For ``align='dual_branch'``, ``c_data`` arrives here already sliced to
+    this gamma-chunk's samples (via ``extra_data``, the same mechanism
+    ``z_data`` already uses) -- ``x_s`` stays a plain tensor throughout
+    ``run_rigorous_scalar_analysis``'s own chunking, the tuple is only
+    assembled here, at this boundary, by ``run_conditional_mi`` itself.
     """
-    raw = run_conditional_mi(x_s, y_s, z_data, bp, sweep_grid=sweep_grid, n_workers=1)
+    raw = run_conditional_mi(x_s, y_s, z_data, bp, sweep_grid=sweep_grid,
+                             n_workers=1, align=align, c_data=c_data)
     return raw['cmi_estimate']

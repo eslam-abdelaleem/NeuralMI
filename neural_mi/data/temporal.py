@@ -7,6 +7,60 @@ from neural_mi.utils import get_device
 from neural_mi.logger import logger
 
 
+def relabel_categorical_data(data) -> np.ndarray:
+    """Coerce ``data`` to non-negative, consecutive integer category codes.
+
+    Shared by :class:`CategoricalWindowDataset` and the reslice-based
+    ``shift_windows`` path (``neural_mi/data/shift_windowing.py``) so
+    both apply the exact same auto-relabeling/validation to categorical
+    input, regardless of which windowing mechanism ends up used.
+
+    Parameters
+    ----------
+    data : array-like
+        Categorical data of shape ``(n_timepoints, n_channels)`` (or
+        ``(n_timepoints,)``, treated as one channel).
+
+    Returns
+    -------
+    np.ndarray
+        ``(n_timepoints, n_channels)`` array of dtype ``int32``.
+    """
+    arr = np.array(data)
+    if arr.ndim == 1:
+        arr = np.expand_dims(arr, 1)  # (n_timepoints, 1), mirrors ContinuousWindowDataset
+    if not np.issubdtype(arr.dtype, np.integer):
+        # return_inverse always returns a flattened array regardless of
+        # input shape (both NumPy <2.0 and current behavior) -- reshape
+        # back or multi-channel labels get silently collapsed to 1-D.
+        original_dtype = arr.dtype
+        unique_labels, indices = np.unique(arr, return_inverse=True)
+        arr = indices.reshape(arr.shape)
+        logger.warning(
+            f"CategoricalWindowDataset: input data has dtype {original_dtype}, not an "
+            f"integer type. Automatically relabeled to consecutive integer category "
+            f"codes 0..{len(unique_labels) - 1}, assigned in ascending sorted order of "
+            f"the {len(unique_labels)} distinct values found ({unique_labels[:10].tolist()}"
+            f"{', ...' if len(unique_labels) > 10 else ''}). Pass already-integer-coded "
+            f"data (e.g. `data.astype(int)`) if you need to control the code assignment "
+            f"yourself."
+        )
+    elif arr.size > 0 and arr.min() < 0:
+        # Integer-typed input skips the relabeling above, so a negative
+        # label would otherwise reach np.bincount downstream (via
+        # n_categories = data.max() + 1) and raise an opaque error there.
+        raise ValueError(
+            f"CategoricalWindowDataset: integer-typed labels must be "
+            f"non-negative (they are used directly as category indices "
+            f"for np.bincount); got a minimum value of {arr.min()}. "
+            f"Non-integer labels (e.g. strings or floats) are relabeled "
+            f"to consecutive non-negative integers automatically -- if "
+            f"these values are meant to be category codes, remap them "
+            f"to [0, n_categories) first."
+        )
+    return np.asarray(arr, dtype=np.int32)
+
+
 def max_events_in_window(event_times: np.ndarray, window_size: float) -> int:
     """
     Find the maximum number of events that can fit in a window of given size.
@@ -638,35 +692,43 @@ class SpikeWindowDataset(TemporalWindowDataset):
         data = np.full(data_shape, self.no_spike_value, dtype=np.float32)
         self._cached_window_inds = []
 
-        # Two-pointer loop: O(n_spikes + n_windows) per neuron.
-        # Works correctly for both overlapping and non-overlapping windows:
-        # a spike belongs to window w iff  wt[w] <= spike_time < wt[w] + ws.
+        # Vectorized boundary search: O(n_spikes*log + n_windows) per neuron,
+        # same complexity class as the two-pointer approach it replaces but
+        # with no Python-level per-window loop. wt (and wt+ws) are sorted, so
+        # a spike belongs to window w iff wt[w] <= spike_time < wt[w]+ws, and
+        # L[w]=searchsorted(spikes, wt[w]) / R[w]=searchsorted(spikes, wt[w]+ws)
+        # give exactly the two-pointer version's L/R for every window in one
+        # call each (searchsorted is exact, not an approximation of the scan).
+        # Correct for both overlapping and non-overlapping windows -- a
+        # single spike can land in multiple windows' [L, R) ranges.
         for i in range(len(self.data_orig)):
             spikes = self.data_orig[i]  # pre-sorted
 
-            # Restrict to spikes that could fall in any window
             if len(spikes) == 0 or n_windows == 0:
                 self._cached_window_inds.append(np.array([], dtype=np.intp))
                 continue
 
             spikes = spikes[(spikes >= wt[0]) & (spikes < wt[-1] + ws)]
-            has_data = np.zeros(n_windows, dtype=bool)
+            if len(spikes) == 0:
+                self._cached_window_inds.append(np.array([], dtype=np.intp))
+                continue
 
-            L = R = 0
-            for w in range(n_windows):
-                w_start = wt[w]
-                w_end = w_start + ws
-                # Advance L past spikes that ended before this window
-                while L < len(spikes) and spikes[L] < w_start:
-                    L += 1
-                # Advance R to include all spikes in this window
-                while R < len(spikes) and spikes[R] < w_end:
-                    R += 1
-                # spikes[L:R] all fall in [w_start, w_end)
-                n_sp = min(R - L, self.max_samples_per_window)
-                if n_sp > 0:
-                    data[w, i, :n_sp] = spikes[L:L + n_sp] - w_start
-                    has_data[w] = True
+            L = np.searchsorted(spikes, wt, side='left')
+            R = np.searchsorted(spikes, wt + ws, side='left')
+            n_sp = np.minimum(R - L, self.max_samples_per_window)
+            has_data = n_sp > 0
+
+            total = int(n_sp.sum())
+            if total > 0:
+                # Ragged-to-flat scatter: window_idx_flat/pos_flat give each
+                # (window, in-window slot) pair without a Python loop over
+                # windows -- the standard "cumulative offset" vectorization
+                # for variable-length per-row segments.
+                window_idx_flat = np.repeat(np.arange(n_windows), n_sp)
+                seg_starts = np.cumsum(n_sp) - n_sp
+                pos_flat = np.arange(total) - np.repeat(seg_starts, n_sp)
+                spike_idx_flat = np.repeat(L, n_sp) + pos_flat
+                data[window_idx_flat, i, pos_flat] = spikes[spike_idx_flat] - wt[window_idx_flat]
 
             self._cached_window_inds.append(np.where(has_data)[0])
 
@@ -788,8 +850,11 @@ class BinnedSpikeDataset(TemporalWindowDataset):
         # misreport spikes/second; normalize by the actual bin width used.
         actual_bin_width = ws / n_bins
 
-        # Two-pointer loop: correctly handles overlapping windows.
-        # Each spike contributes to every window whose range contains it.
+        # Vectorized boundary search (see SpikeWindowDataset.move_data_to_windows
+        # for the same technique/rationale): L[w]/R[w] via one searchsorted
+        # call each instead of a Python-level two-pointer loop over windows.
+        # Correctly handles overlapping windows -- a spike contributes to
+        # every window whose range contains it.
         for i, spikes in enumerate(self.data_orig):
             if len(spikes) == 0 or n_windows == 0:
                 continue
@@ -798,19 +863,24 @@ class BinnedSpikeDataset(TemporalWindowDataset):
             if len(spikes) == 0:
                 continue
 
-            L = R = 0
-            for w in range(n_windows):
-                w_start = wt[w]
-                w_end = w_start + ws
-                while L < len(spikes) and spikes[L] < w_start:
-                    L += 1
-                while R < len(spikes) and spikes[R] < w_end:
-                    R += 1
-                if R > L:
-                    rel_times = spikes[L:R] - w_start
-                    bin_idx = np.floor(rel_times / ws * n_bins).astype(np.int32)
-                    bin_idx = np.clip(bin_idx, 0, n_bins - 1)
-                    np.add.at(data[w, i, :], bin_idx, 1.0)
+            L = np.searchsorted(spikes, wt, side='left')
+            R = np.searchsorted(spikes, wt + ws, side='left')
+            counts = R - L  # not capped -- every spike in range contributes to a bin
+            total = int(counts.sum())
+            if total > 0:
+                # Ragged-to-flat scatter, same cumulative-offset trick as
+                # SpikeWindowDataset: (window, spike-in-window) pairs without
+                # a Python loop over windows.
+                window_idx_flat = np.repeat(np.arange(n_windows), counts)
+                seg_starts = np.cumsum(counts) - counts
+                pos_flat = np.arange(total) - np.repeat(seg_starts, counts)
+                spike_idx_flat = np.repeat(L, counts) + pos_flat
+                rel_times_flat = spikes[spike_idx_flat] - wt[window_idx_flat]
+                bin_idx_flat = np.floor(rel_times_flat / ws * n_bins).astype(np.int32)
+                bin_idx_flat = np.clip(bin_idx_flat, 0, n_bins - 1)
+                # np.add.at (not plain assignment) since multiple spikes can
+                # land in the same (window, bin) pair and must accumulate.
+                np.add.at(data[:, i, :], (window_idx_flat, bin_idx_flat), 1.0)
 
             if self.normalize:
                 data[:, i, :] /= actual_bin_width
@@ -886,39 +956,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         """
         super().__init__(window_manager, device, data_device)
 
-        arr = np.array(data)
-        if arr.ndim == 1:
-            arr = np.expand_dims(arr, 1)  # (n_timepoints, 1), mirrors ContinuousWindowDataset
-        if not np.issubdtype(arr.dtype, np.integer):
-            # return_inverse always returns a flattened array regardless of
-            # input shape (both NumPy <2.0 and current behavior) -- reshape
-            # back or multi-channel labels get silently collapsed to 1-D.
-            original_dtype = arr.dtype
-            unique_labels, indices = np.unique(arr, return_inverse=True)
-            arr = indices.reshape(arr.shape)
-            logger.warning(
-                f"CategoricalWindowDataset: input data has dtype {original_dtype}, not an "
-                f"integer type. Automatically relabeled to consecutive integer category "
-                f"codes 0..{len(unique_labels) - 1}, assigned in ascending sorted order of "
-                f"the {len(unique_labels)} distinct values found ({unique_labels[:10].tolist()}"
-                f"{', ...' if len(unique_labels) > 10 else ''}). Pass already-integer-coded "
-                f"data (e.g. `data.astype(int)`) if you need to control the code assignment "
-                f"yourself."
-            )
-        elif arr.size > 0 and arr.min() < 0:
-            # Integer-typed input skips the relabeling above, so a negative
-            # label would otherwise reach np.bincount downstream (via
-            # n_categories = data.max() + 1) and raise an opaque error there.
-            raise ValueError(
-                f"CategoricalWindowDataset: integer-typed labels must be "
-                f"non-negative (they are used directly as category indices "
-                f"for np.bincount); got a minimum value of {arr.min()}. "
-                f"Non-integer labels (e.g. strings or floats) are relabeled "
-                f"to consecutive non-negative integers automatically -- if "
-                f"these values are meant to be category codes, remap them "
-                f"to [0, n_categories) first."
-            )
-        self.data_orig = np.asarray(arr, dtype=np.int32)
+        self.data_orig = relabel_categorical_data(data)
 
         if time_vector is not None:
             self.time_vector = np.asarray(time_vector)
