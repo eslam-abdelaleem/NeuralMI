@@ -893,6 +893,15 @@ class Trainer:
             'test_mi_history': history,
             'all_mi_negative': _all_mi_negative,
         }
+        if _shifting_active:
+            # Any post-training read of the dataset (e.g. task.py's
+            # return_embeddings extraction) must use this frozen, pre-shift
+            # snapshot rather than dataset.x_data/y_data directly -- those
+            # properties reflect whatever shift was last applied during
+            # training, not the canonical view best_model_state was scored
+            # against.
+            results['_frozen_eval_x'] = _eval_x_source
+            results['_frozen_eval_y'] = _eval_y_source
         if _eval_size is not None:
             # eval_size = min(len(test_idx), max_eval_samples): the *test-side*
             # evaluation denominator (unchanged meaning -- e.g. the

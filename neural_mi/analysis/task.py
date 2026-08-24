@@ -469,9 +469,13 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # Optionally extract embeddings from the trained model.
     # Uses the full dataset in original sample order — no capping, no shuffling —
     # so the returned arrays align index-for-index with the caller's raw data.
+    # Reads through the frozen pre-shift snapshot when one was taken (shift_windows/
+    # shift_time were active): dataset.x_data/.y_data reflect whatever shift was
+    # last applied during training, not the canonical view best_model_state was
+    # scored against.
     if params.get('return_embeddings', False):
-        _all_x = dataset.x_data
-        _all_y = dataset.y_data
+        _all_x = results.get('_frozen_eval_x', dataset.x_data)
+        _all_y = results.get('_frozen_eval_y', dataset.y_data)
         if _all_y is None:
             logger.warning("return_embeddings=True but y_data is None. Skipping embedding extraction.")
         else:
@@ -519,6 +523,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                         results['embeddings_rotation_x'] = _rot['rotation_x']
                         results['embeddings_rotation_y'] = _rot['rotation_y']
                     logger.debug("Computed rotated embeddings (whitening=%r).", _whitening)
+
+    results.pop('_frozen_eval_x', None)
+    results.pop('_frozen_eval_y', None)
 
     return_params = params.copy()
     return_params.pop('custom_critic', None)

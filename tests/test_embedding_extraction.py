@@ -75,6 +75,45 @@ def test_return_embeddings_false_no_keys(simple_data):
     assert 'embeddings_y' not in results.details
 
 
+def test_return_embeddings_uses_frozen_snapshot_not_live_shift_state(tmp_path, monkeypatch):
+    """return_embeddings=True combined with shift_windows=True must extract
+    embeddings from the canonical (shift=0) view -- the same view the reported
+    test_mi/train_mi are already scored against -- not whatever shift was left
+    over in the dataset after the last training epoch."""
+    from neural_mi.data.shift_windowing import WindowShifter, safe_n_windows
+
+    np.random.seed(0)
+    torch.manual_seed(0)
+    T, C, window_size = 3000, 2, 20
+    x = np.random.randn(T, C).astype('float32')
+    y = np.random.randn(T, C).astype('float32')
+
+    # Force every drawn shift to a fixed, large, non-zero value so the dataset's
+    # live .data is guaranteed to differ from the canonical shift=0 view by the
+    # time training ends.
+    monkeypatch.setattr(WindowShifter, 'random_shift', lambda self, generator=None: window_size // 2)
+
+    proc = nmi.Processing(x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
+                          y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
+    model_path = str(tmp_path / 'model.pt')
+    results = nmi.run(
+        x, y, mode='estimate', processing=proc,
+        model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+        training=Training(n_epochs=5, patience=10, shift_windows=True,
+                          save_best_model_path=model_path),
+        output=Output(return_embeddings=True),
+        n_workers=1, show_progress=False, seed=0,
+    )
+
+    n_windows = safe_n_windows(T, window_size, window_size)
+    x_canonical = torch.as_tensor(x).unfold(0, window_size, window_size)[:n_windows].contiguous()
+    y_canonical = torch.as_tensor(y).unfold(0, window_size, window_size)[:n_windows].contiguous()
+    zx_expected, zy_expected = nmi.extract_embeddings(model_path, x_canonical, y_canonical)
+
+    np.testing.assert_allclose(results.details['embeddings_x'], zx_expected, atol=1e-6)
+    np.testing.assert_allclose(results.details['embeddings_y'], zy_expected, atol=1e-6)
+
+
 def test_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
     """max_eval_samples must not cap embedding extraction (it only controls eval MI)."""
     x, y = simple_data  # 500 samples

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed: `return_embeddings=True` could read live-shifted data instead of the frozen eval snapshot
+
+When `shift_windows`/`shift_time` is active, `dataset.x_data`/`.y_data`
+reflect whichever shift was last applied during training. Embedding
+extraction (`task.py`) read them directly, diverging from the canonical,
+frozen pre-shift view that `best_model_state` was actually scored against
+(everything else — `test_mi`/`train_mi`, spectral metrics, decoder loss —
+already reads through that frozen snapshot). `Trainer.train()` now exposes
+the snapshot in its results dict when shifting was active; embedding
+extraction reads through it when present.
+
 ### Temporal window shifting: renamed, on by default, ramp removed
 
 `epoch_window_shift`/`random_time_shifting` are renamed to `shift_windows`/
