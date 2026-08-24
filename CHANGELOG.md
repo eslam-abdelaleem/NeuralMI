@@ -18,6 +18,17 @@ already reads through that frozen snapshot). `Trainer.train()` now exposes
 the snapshot in its results dict when shifting was active; embedding
 extraction reads through it when present.
 
+### `shift_windows`/`shift_time` now reachable at `mode='pairwise'`
+
+Each channel pair in `mode='pairwise'` trains independently, with no
+cross-pair comparison — the same property that already made `mode='estimate'`
+and plain `mode='sweep'` safe to extend. `analysis/pairwise.py` now accepts
+raw, unwindowed per-channel data and defers windowing to each pair's own
+dispatch (reusing `task.py::run_training_task`'s existing deferred-windowing
+path) instead of requiring an already-windowed array up front. This
+supersedes the exclusion noted below ("Temporal window shifting: plain-sweep
+reachability...").
+
 ### Temporal window shifting: renamed, on by default, ramp removed
 
 `epoch_window_shift`/`random_time_shifting` are renamed to `shift_windows`/

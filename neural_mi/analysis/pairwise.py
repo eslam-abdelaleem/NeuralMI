@@ -32,6 +32,24 @@ from neural_mi.logger import logger
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 
 
+def _n_channels_of(data) -> int:
+    """Channel count for any of the three accepted `x_data`/`y_data` shapes."""
+    return len(data) if isinstance(data, list) else data.shape[1]
+
+
+def _slice_channel(data, k: int):
+    """One channel's data, in whatever representation `data` itself uses:
+    a length-1 list for raw spike data (a list of per-neuron spike-time
+    arrays, windowing deferred to the per-pair worker), a raw ``(T, 1)``
+    slice for 2-D deferred continuous/categorical data, or a windowed
+    ``(N, 1, W)`` slice for already-windowed 3-D data."""
+    if isinstance(data, list):
+        return [data[k]]
+    if data.ndim == 2:
+        return data[:, k:k + 1]
+    return data[:, k:k + 1, :]
+
+
 def _run_pair_task(args: tuple) -> Dict[str, Any]:
     """Run one channel pair's MI sweep and return its summary row.
 
@@ -41,7 +59,13 @@ def _run_pair_task(args: tuple) -> Dict[str, Any]:
     """
     i, j, xi, yj, base_params, sweep_grid, n_workers = args
     sweep = ParameterSweep(x_data=xi, y_data=yj, base_params=base_params.copy())
-    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False)
+    # A raw (not already-windowed-3-D) per-channel slice -- a 2-D continuous/
+    # categorical array/tensor, or a length-1 list of raw spike times -- means
+    # windowing was deferred to this pair (shift_windows/shift_time
+    # reachability); is_proc_sweep=True routes it through per-pair windowing
+    # instead of treating it as already pre-processed.
+    _is_raw = not (hasattr(xi, 'ndim') and xi.ndim == 3)
+    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=_is_raw)
     vals = [r['train_mi'] for r in results if 'train_mi' in r]
     if not vals:
         logger.warning(f"  Pair (ch_x={i}, ch_y={j}): all runs failed, recording NaN.")
@@ -142,22 +166,38 @@ def run_pairwise_mi(
           ``mi_mean``, ``mi_std``.
         - ``'n_channels'`` : int or (int, int) — number of channels.
     """
-    if x_data.ndim != 3:
+    # A list means raw spike data (one spike-time array per neuron), windowing
+    # deferred to this call (shift_time reachability). A 2-D array/tensor means
+    # raw (T, n_channels) continuous/categorical data, windowing deferred the
+    # same way (shift_windows reachability -- run.py's _SHIFT_SAFE_MODES). A
+    # 3-D array/tensor means already-windowed (n_samples, n_channels,
+    # window_size) data, the ordinary eager-windowing path. Either way each
+    # channel pair is windowed/resliced independently by its own worker once
+    # deferred. Accepts numpy arrays as well as tensors -- the deferred path
+    # forwards whatever the caller originally passed, unconverted.
+    if not (isinstance(x_data, list) or (hasattr(x_data, 'ndim') and x_data.ndim in (2, 3))):
         raise ValueError(
-            "run_pairwise_mi expects x_data of shape (n_samples, n_channels, window_size). "
-            f"Got shape {tuple(x_data.shape)}."
+            "run_pairwise_mi expects x_data of shape (n_samples, n_channels, window_size), "
+            "raw (n_samples, n_channels), or a list of per-neuron spike-time arrays. "
+            f"Got {type(x_data).__name__}"
+            + (f" with shape {tuple(x_data.shape)}." if hasattr(x_data, 'shape') else ".")
         )
 
     cross_mode = y_data is not None
 
     if cross_mode:
-        if y_data.ndim != 3:
+        _same_kind = (isinstance(x_data, list) and isinstance(y_data, list)) or (
+            hasattr(x_data, 'ndim') and hasattr(y_data, 'ndim')
+            and x_data.ndim == y_data.ndim
+        )
+        if not _same_kind:
             raise ValueError(
-                "run_pairwise_mi expects y_data of shape (n_samples, n_channels, window_size). "
-                f"Got shape {tuple(y_data.shape)}."
+                "x_data and y_data must both be raw (n_samples, n_channels), both "
+                "already-windowed (n_samples, n_channels, window_size), or both a "
+                "list of per-neuron spike-time arrays."
             )
-        n_ch_x = x_data.shape[1]
-        n_ch_y = y_data.shape[1]
+        n_ch_x = _n_channels_of(x_data)
+        n_ch_y = _n_channels_of(y_data)
         if pairs is None:
             pairs = [(i, j) for i in range(n_ch_x) for j in range(n_ch_y)]
 
@@ -169,7 +209,7 @@ def run_pairwise_mi(
         mi_matrix = np.zeros((n_ch_x, n_ch_y))
         show_progress = base_params.get('show_progress', True)
         pair_tasks = [
-            (i, j, _ensure_cpu(x_data[:, i: i + 1, :]), _ensure_cpu(y_data[:, j: j + 1, :]),
+            (i, j, _ensure_cpu(_slice_channel(x_data, i)), _ensure_cpu(_slice_channel(y_data, j)),
              base_params, sweep_grid)
             for (i, j) in pairs
         ]
@@ -187,7 +227,7 @@ def run_pairwise_mi(
 
     else:
         # ---- Self-pairwise mode ------------------------------------------------
-        n_channels = x_data.shape[1]
+        n_channels = _n_channels_of(x_data)
         if n_channels < 2:
             raise ValueError(
                 f"Pairwise MI requires at least 2 channels, got n_channels={n_channels}."
@@ -203,7 +243,7 @@ def run_pairwise_mi(
         mi_matrix = np.zeros((n_channels, n_channels))
         show_progress = base_params.get('show_progress', True)
         pair_tasks = [
-            (i, j, _ensure_cpu(x_data[:, i: i + 1, :]), _ensure_cpu(x_data[:, j: j + 1, :]),
+            (i, j, _ensure_cpu(_slice_channel(x_data, i)), _ensure_cpu(_slice_channel(x_data, j)),
              base_params, sweep_grid)
             for (i, j) in pairs
         ]

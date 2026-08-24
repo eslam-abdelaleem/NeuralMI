@@ -685,3 +685,59 @@ def test_shift_time_engages_silently_by_default_for_spike_pair():
                n_workers=1, show_progress=False, seed=0)
     msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
     assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"
+
+
+# ---------------------------------------------------------------------------
+# mode='pairwise': each channel pair is fully independent (no cross-pair
+# comparison), so both mechanisms are reachable there too, at zero design risk.
+# ---------------------------------------------------------------------------
+
+def test_pairwise_shift_windows_engages_silently_by_default_for_continuous_pair():
+    """No shift_windows kwarg at all: the schema default (True) must engage
+    for a reachable continuous+continuous pairwise dispatch without warning."""
+    np.random.seed(0)
+    x = np.random.randn(3000, 3).astype('float32')
+    proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, mode='pairwise', processing=proc,
+               training=Training(n_epochs=1, patience=1),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
+
+
+def test_pairwise_shift_time_engages_silently_by_default_for_spike_pair():
+    """No shift_time kwarg at all: the schema default (True) must engage for
+    a reachable spike+spike pairwise (cross) dispatch without warning."""
+    x = _spike_trains(3, 400.0, 8.0, seed=1)
+    y = _spike_trains(2, 400.0, 8.0, seed=2)
+    proc = nmi.Processing(x='spike', x_params={'window_size': 2.0, 'step_size': 2.0},
+                          y='spike', y_params={'window_size': 2.0, 'step_size': 2.0})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        nmi.run(x, y, mode='pairwise', processing=proc,
+               training=Training(n_epochs=1, patience=1),
+               n_workers=1, show_progress=False, seed=0)
+    msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
+    assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"
+
+
+def test_pairwise_shift_windows_still_warns_for_spike():
+    """spike is not part of the 'regular' family -- shift_windows must still
+    warn for pairwise, same as it does for mode='estimate'."""
+    np.random.seed(0)
+    x = np.random.randn(3000, 2).astype('float32')
+    spikes = _spike_trains(3, 300.0, 5.0)
+    proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                          y='spike', y_params={'window_size': 2.0, 'step_size': 2.0})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        try:
+            nmi.run(x, spikes, mode='pairwise', processing=proc,
+                   training=Training(n_epochs=1, patience=1, shift_windows=True),
+                   n_workers=1, show_progress=False, seed=0)
+        except TrainingError:
+            pass
+    msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+    assert msgs, "Expected a shift_windows warning for a continuous+spike pairwise pair"
