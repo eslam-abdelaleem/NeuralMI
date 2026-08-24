@@ -1,8 +1,12 @@
 # tests/test_precision.py
+import numpy as np
 import torch
 import pandas as pd
 
+import neural_mi.analysis.precision as precision_module
 from neural_mi.analysis.precision import apply_corruption, run_precision_analysis
+from neural_mi.data.shift_windowing import WindowShifter, PairedWindowShifter
+from neural_mi.training.trainer import Trainer
 
 def test_apply_corruption_rounding():
     """Tests the deterministic rounding mathematical logic."""
@@ -113,3 +117,95 @@ def test_run_precision_analysis_corrupt_target_both():
     )
     assert results['details']['corrupt_target'] == 'both'
     assert 'dataframe' in results
+
+
+def test_run_precision_analysis_shift_windows_reaches_reachable_pair():
+    """shift_windows=True with a real continuous processor + window_size
+    must engage (build a shift-capable dataset) rather than being silently
+    dropped -- no crash, finite results."""
+    np.random.seed(0)
+    torch.manual_seed(0)
+    T, C, window_size = 3000, 2, 20
+    x_data = np.random.randn(T, C).astype('float32')
+    y_data = np.random.randn(T, C).astype('float32')
+    base_params = {
+        'critic_type': 'separable', 'n_epochs': 2, 'batch_size': 16,
+        'learning_rate': 5e-4, 'device': 'cpu', 'hidden_dim': 8,
+        'embedding_dim': 4, 'n_layers': 1, 'use_variational': False,
+        'embedding_model': 'mlp', 'max_n_batches': 512, 'kernel_size': 3,
+        'bidirectional': False, 'nhead': 4,
+        'processor_type_x': 'continuous',
+        'processor_params_x': {'window_size': window_size, 'step_size': window_size},
+        'shift_windows': True,
+    }
+    results = run_precision_analysis(
+        x_data, y_data, base_params, tau_grid=[0.1, 0.5], corrupt_target='x',
+        corruption_method='rounding', threshold_ratio=0.9,
+    )
+    assert np.isfinite(results['details']['baseline_mi'])
+    assert np.all(np.isfinite(results['dataframe']['train_mi'].values))
+
+
+def test_run_precision_analysis_corruption_sweep_uses_frozen_snapshot_not_live_shift_state(monkeypatch):
+    """The corruption sweep must corrupt the frozen, canonical (pre-shift)
+    view -- not whatever shift state the live dataset happens to be in
+    when training ends. Forces every drawn shift to a large, fixed,
+    non-zero value so the dataset's live .data is guaranteed to differ
+    from the canonical shift=0 view by the time training completes, then
+    checks the tau=0.0 corruption call (a no-op, so it receives
+    x_train_raw/y_train_raw unchanged) against an independently
+    reconstructed canonical view."""
+    np.random.seed(0)
+    torch.manual_seed(0)
+    T, C, window_size = 3000, 2, 20
+    x_data = np.random.randn(T, C).astype('float32')
+    y_data = np.random.randn(T, C).astype('float32')
+
+    monkeypatch.setattr(WindowShifter, 'random_shift', lambda self, generator=None: window_size - 1)
+
+    _captured_split = {}
+    _real_create_blocked_split = Trainer._create_blocked_split
+
+    def _capture_split(self, *args, **kwargs):
+        result = _real_create_blocked_split(self, *args, **kwargs)
+        _captured_split['train_idx'], _captured_split['test_idx'] = result
+        return result
+    monkeypatch.setattr(Trainer, '_create_blocked_split', _capture_split)
+
+    _captured_tau0 = []
+    _real_apply_corruption = precision_module.apply_corruption
+
+    def _capture_corruption(data, tau, method):
+        if tau == 0.0:
+            _captured_tau0.append(data.clone())
+        return _real_apply_corruption(data, tau, method)
+    monkeypatch.setattr(precision_module, 'apply_corruption', _capture_corruption)
+
+    base_params = {
+        'critic_type': 'separable', 'n_epochs': 3, 'batch_size': 16,
+        'learning_rate': 5e-4, 'device': 'cpu', 'hidden_dim': 8,
+        'embedding_dim': 4, 'n_layers': 1, 'use_variational': False,
+        'embedding_model': 'mlp', 'max_n_batches': 512, 'kernel_size': 3,
+        'bidirectional': False, 'nhead': 4,
+        'processor_type_x': 'continuous',
+        'processor_params_x': {'window_size': window_size, 'step_size': window_size},
+        'shift_windows': True,
+    }
+    run_precision_analysis(
+        x_data, y_data, base_params, tau_grid=[0.5], corrupt_target='both',
+        corruption_method='rounding', threshold_ratio=0.9,
+    )
+
+    assert len(_captured_tau0) == 2, "Expected one tau=0.0 apply_corruption call each for x and y"
+    train_idx = _captured_split['train_idx']
+
+    # Independently reconstruct the canonical (shift=0) view from the same
+    # raw arrays -- deterministic regardless of what shift the live dataset
+    # ended training at.
+    raw_x = torch.as_tensor(x_data)
+    raw_y = torch.as_tensor(y_data)
+    shifter = PairedWindowShifter(raw_x, raw_y, window_size, window_size)
+    x0, y0 = shifter.windows_at(0)
+
+    torch.testing.assert_close(_captured_tau0[0], x0[train_idx])
+    torch.testing.assert_close(_captured_tau0[1], y0[train_idx])

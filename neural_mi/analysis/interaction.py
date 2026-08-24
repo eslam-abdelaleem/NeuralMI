@@ -26,7 +26,7 @@ def _ensure_3d(t: torch.Tensor) -> torch.Tensor:
 def _single_mi_mean(
     x: torch.Tensor, y: torch.Tensor, base_params: Dict[str, Any],
     sweep_grid: Optional[Dict[str, Any]], n_workers: int,
-    *, quantity_name: str, label: str,
+    *, quantity_name: str, label: str, is_proc_sweep: bool = False,
 ) -> tuple:
     """Run one ``ParameterSweep``, return ``(mean(train_mi), raw_results)``.
 
@@ -36,7 +36,7 @@ def _single_mi_mean(
     """
     logger.info(f"{quantity_name}: estimating I({label})...")
     sweep = ParameterSweep(x_data=x, y_data=y, base_params=base_params.copy())
-    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False)
+    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
     vals = [r['train_mi'] for r in results if 'train_mi' in r]
     if not vals:
         raise RuntimeError(f"{quantity_name}: all I({label}) runs failed, no valid train_mi values.")
@@ -51,6 +51,7 @@ def run_interaction_information(
     base_params: Dict[str, Any],
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
+    raw_deferred: bool = False,
 ) -> Dict[str, Any]:
     """Estimates interaction information II = I(X,W;Y) - I(X;Y) - I(W;Y).
 
@@ -75,6 +76,15 @@ def run_interaction_information(
         Optional hyperparameter grid, e.g. ``{'run_id': range(5)}``.
     n_workers : int, optional
         Number of parallel workers. Defaults to 1.
+    raw_deferred : bool, optional
+        ``True`` when ``x_data``/``y_data``/``w_data`` are raw, unwindowed
+        arrays and windowing should be deferred to each sweep's own
+        dispatch (shift_windows/shift_time reachability) -- the caller
+        (``run.py``) has already verified W's processor family matches X's,
+        so the raw channel-concat below produces the same paired,
+        shift-aware windowing every other reachable mode already gets.
+        Skips the windowed-shape validation below entirely, since raw 2-D
+        arrays don't share a meaningful "window size" to compare yet.
 
     Returns
     -------
@@ -86,24 +96,31 @@ def run_interaction_information(
         - ``'mi_w_y'`` : float — mean I(W;Y).
         - ``'raw_xw_y'``, ``'raw_x_y'``, ``'raw_w_y'`` : list of result dicts.
     """
-    x_data = _ensure_3d(x_data)
-    y_data = _ensure_3d(y_data)
-    w_data = _ensure_3d(w_data)
-    device = x_data.device
-    y_data = y_data.to(device)
-    w_data = w_data.to(device)
+    if raw_deferred:
+        # x_data/y_data/w_data arrive here exactly as the caller passed
+        # them in (not yet tensors, possibly numpy arrays) -- torch.cat
+        # below needs actual tensors of a matching dtype.
+        _to_t = lambda a: a if torch.is_tensor(a) else torch.as_tensor(a, dtype=torch.float32)
+        x_data, y_data, w_data = _to_t(x_data), _to_t(y_data), _to_t(w_data)
+    else:
+        x_data = _ensure_3d(x_data)
+        y_data = _ensure_3d(y_data)
+        w_data = _ensure_3d(w_data)
+        device = x_data.device
+        y_data = y_data.to(device)
+        w_data = w_data.to(device)
 
-    if x_data.shape[0] != y_data.shape[0] or x_data.shape[0] != w_data.shape[0]:
-        raise ValueError(
-            "x_data, y_data, and w_data must have the same number of samples. "
-            f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(w_data.shape)}."
-        )
-    if x_data.shape[2] != w_data.shape[2]:
-        raise ValueError(
-            "x_data and w_data must have the same window size to be concatenated "
-            f"into XW. Got window sizes {x_data.shape[2]} and {w_data.shape[2]} "
-            f"(full shapes {tuple(x_data.shape)}, {tuple(w_data.shape)})."
-        )
+        if x_data.shape[0] != y_data.shape[0] or x_data.shape[0] != w_data.shape[0]:
+            raise ValueError(
+                "x_data, y_data, and w_data must have the same number of samples. "
+                f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(w_data.shape)}."
+            )
+        if x_data.shape[2] != w_data.shape[2]:
+            raise ValueError(
+                "x_data and w_data must have the same window size to be concatenated "
+                f"into XW. Got window sizes {x_data.shape[2]} and {w_data.shape[2]} "
+                f"(full shapes {tuple(x_data.shape)}, {tuple(w_data.shape)})."
+            )
 
     xw_data = torch.cat([x_data, w_data], dim=1)
 
@@ -113,10 +130,12 @@ def run_interaction_information(
         quantity_name="Interaction information",
         joint_label="X,W;Y", marginal_label="X;Y",
         joint_key="mi_xw_y", marginal_key="mi_x_y",
+        is_proc_sweep=raw_deferred,
     )
     mi_w_y, raw_w_y = _single_mi_mean(
         w_data, y_data, base_params, sweep_grid, n_workers,
         quantity_name="Interaction information", label="W;Y",
+        is_proc_sweep=raw_deferred,
     )
 
     ii = mi_xw_y - mi_x_y - mi_w_y

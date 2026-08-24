@@ -48,6 +48,7 @@ def run_conditional_mi(
     n_workers: int = 1,
     align: Optional[str] = None,
     c_data: Optional[torch.Tensor] = None,
+    raw_deferred: bool = False,
 ) -> Dict[str, Any]:
     """Estimates conditional mutual information I(X; Y | Z).
 
@@ -94,6 +95,16 @@ def run_conditional_mi(
         shape ``(n_samples, n_channels_c, window_size_c)`` -- ``window_size_c``
         may differ from ``x_data``'s window size, that's the entire point.
         Required (and ``z_data`` is ignored) when ``align='dual_branch'``.
+    raw_deferred : bool, optional
+        ``True`` when ``x_data``/``y_data``/``z_data`` are raw, unwindowed
+        arrays and windowing should be deferred to each sweep's own
+        dispatch (shift_windows/shift_time reachability) -- the caller
+        (``run.py``) has already verified Z's processor family matches X's,
+        so the raw channel-concat below produces the same paired,
+        shift-aware windowing every other reachable mode already gets.
+        Mutually exclusive with ``align='dual_branch'``. Skips the
+        windowed-shape validation/trim-tolerance logic entirely, since raw
+        2-D arrays don't share a meaningful "window size" to compare yet.
 
     Returns
     -------
@@ -135,6 +146,34 @@ def run_conditional_mi(
             'mi_z_y': mi_c_y,
             'raw_xz_y': results_xc_y,
             'raw_z_y': results_c_y,
+        }
+
+    if raw_deferred:
+        # Raw channel-concat, same torch.cat(dim=1) as the windowed path
+        # below, just on 2-D (T, C) arrays instead of 3-D (N, C, W) ones --
+        # produces one combined raw "X-role" array that flows through the
+        # ordinary paired shift-windows/shift-time mechanism, keeping X and
+        # Z synchronized under any shift since they're one array now.
+        # x_data/y_data/z_data arrive here exactly as the caller passed them
+        # in (not yet tensors, possibly numpy arrays) -- torch.cat needs
+        # actual tensors of a matching dtype.
+        _to_t = lambda a: a if torch.is_tensor(a) else torch.as_tensor(a, dtype=torch.float32)
+        x_data, y_data, z_data = _to_t(x_data), _to_t(y_data), _to_t(z_data)
+        xz_data = torch.cat([x_data, z_data], dim=1)
+        cmi, mi_xz_y, mi_z_y, results_xz_y, results_z_y = _joint_marginal_difference(
+            xz_data, y_data, z_data, y_data,
+            base_params, sweep_grid, n_workers,
+            quantity_name="Conditional MI",
+            joint_label="XZ;Y", marginal_label="Z;Y",
+            joint_key="mi_xz_y", marginal_key="mi_z_y",
+            is_proc_sweep=True,
+        )
+        return {
+            'cmi_estimate': cmi,
+            'mi_xz_y': mi_xz_y,
+            'mi_z_y': mi_z_y,
+            'raw_xz_y': results_xz_y,
+            'raw_z_y': results_z_y,
         }
 
     # Normalise all inputs to the same ndim before shape comparison and cat.

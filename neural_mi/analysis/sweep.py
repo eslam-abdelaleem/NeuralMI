@@ -274,6 +274,7 @@ def _joint_marginal_difference(
     quantity_name: str,
     joint_label: str, marginal_label: str,
     joint_key: str, marginal_key: str,
+    is_proc_sweep: bool = False,
 ) -> tuple:
     """Estimate a chain-rule difference I(joint) - I(marginal) via two
     independent ParameterSweep runs.
@@ -299,6 +300,13 @@ def _joint_marginal_difference(
     joint_key, marginal_key : str
         The caller's result-dict key names for the two component MI values,
         named in the negative-value warning so a user knows where to find them.
+    is_proc_sweep : bool, optional
+        Pass ``True`` when ``joint_x``/``marginal_x`` are raw, unwindowed
+        data (shift_windows/shift_time reachability -- the caller has
+        already concatenated the conditioning variable onto X at the raw
+        level, before windowing, so both sweeps window and shift their own
+        copy independently). Default ``False`` matches every other caller's
+        already-windowed data.
 
     Returns
     -------
@@ -307,11 +315,11 @@ def _joint_marginal_difference(
     """
     logger.info(f"{quantity_name}: estimating I({joint_label})...")
     sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=base_params.copy())
-    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False)
+    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y, base_params=base_params.copy())
-    results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=False)
+    results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
     marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]

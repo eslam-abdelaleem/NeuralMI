@@ -157,3 +157,70 @@ class TestInteractionInformationAccuracy:
         assert r.mi_estimate < 0.3  # not a tight match (II is a 3-term combination,
         # the same "small residual" fragility discussed in THEORY.md applies), but the
         # redundancy signature (clearly not a large positive synergy value) should hold.
+
+
+class TestInteractionShiftWindows:
+    """shift_windows reachability: W is raw-concatenated onto X before
+    windowing (rather than after) whenever W is 'continuous' and matches
+    X's processor family."""
+
+    def test_engages_silently_for_matching_continuous_pair(self):
+        """No warning: shift_windows must actually reach mode='interaction'
+        when X and W are both 'continuous', not just stay silently inert."""
+        import warnings
+        np.random.seed(0)
+        x = np.random.randn(3000, 2).astype('float32')
+        y = np.random.randn(3000, 2).astype('float32')
+        w = np.random.randn(3000, 1).astype('float32')
+        window_size = 20
+        processing = nmi.Processing(x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
+                                    y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            nmi.run(
+                x, y, mode='interaction',
+                interaction=Interaction(w_data=w, w_processor_type='continuous',
+                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
+                processing=processing,
+                training=Training(n_epochs=1, patience=1, shift_windows=True),
+                n_workers=1, show_progress=False, seed=0,
+            )
+        msgs = [str(w_msg.message) for w_msg in caught if 'shift_windows' in str(w_msg.message)]
+        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
+
+    def test_w_equal_to_x_gives_consistent_components_under_shift(self):
+        """Correctness/desync check: if W is an exact copy of X (same raw
+        array, same window_size/step_size), W adds zero information beyond
+        X, so I(X,W;Y) and I(W;Y) should both closely match I(X;Y) -- with
+        shift_windows on. A one-window desync between X's and W's
+        independent reslicing would make the concatenated W look like
+        genuinely new information relative to X, inflating I(X,W;Y) above
+        I(X;Y)/I(W;Y) and breaking this expectation."""
+        np.random.seed(0)
+        torch.manual_seed(0)
+        T, window_size = 4000, 20
+        x = np.random.randn(T, 2).astype('float32')
+        y = np.random.randn(T, 2).astype('float32')
+        w = x.copy()  # exact copy of X -- zero information beyond X, if aligned
+        processing = nmi.Processing(x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
+                                    y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
+        results = nmi.run(
+            x, y, mode='interaction',
+            interaction=Interaction(w_data=w, w_processor_type='continuous',
+                                   w_processor_params={'window_size': window_size, 'step_size': window_size}),
+            processing=processing,
+            model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+            training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
+            n_workers=1, show_progress=False, seed=0,
+        )
+        details = results.details
+        for a, b, name_a, name_b in [
+            (details['mi_xw_y'], details['mi_x_y'], 'I(X,W;Y)', 'I(X;Y)'),
+            (details['mi_w_y'], details['mi_x_y'], 'I(W;Y)', 'I(X;Y)'),
+        ]:
+            assert np.isfinite(a) and np.isfinite(b)
+            assert abs(a - b) < 0.3, (
+                f"W=X exactly should make {name_a}={a:.3f} closely match {name_b}={b:.3f} -- "
+                f"a large gap suggests X and W's independent reslicing desynchronized "
+                f"under shift_windows."
+            )

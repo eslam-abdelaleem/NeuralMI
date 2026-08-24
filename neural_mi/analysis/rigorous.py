@@ -24,6 +24,9 @@ from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger
 from neural_mi.exceptions import InsufficientDataError, TrainingError
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
+from neural_mi.data.shift_windowing import (
+    n_windows_if_deferred, shift_family, chunk_window_range_to_raw, seconds_to_samples,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -397,13 +400,21 @@ class AnalysisWorkflow:
         # Copy so callers of run_rigorous_analysis() (or AnalysisWorkflow
         # directly) never see their base_params dict mutated in place.
         self.base_params = dict(base_params)
-        self.base_params.update({
-            'input_dim_x': int(np.prod(x_data.shape[1:])),
-            'input_dim_y': int(np.prod(y_data.shape[1:])),
-            'n_channels_x': x_data.shape[1],
-            'n_channels_y': y_data.shape[1],
-            **kwargs
-        })
+        # Raw (2-D), unwindowed data (shift_windows reachability) has no
+        # per-window shape to infer dims from yet -- defer to task.py's own
+        # per-task dimension inference once each chunk is actually windowed.
+        # hasattr guards against spike data (a ragged per-neuron spike-time
+        # list, no .shape) reaching here directly -- never actually deferred
+        # today (shift_time is not yet extended to 'rigorous'), but safer
+        # than assuming a tensor.
+        if hasattr(x_data, 'shape') and x_data.ndim != 2:
+            self.base_params.update({
+                'input_dim_x': int(np.prod(x_data.shape[1:])),
+                'input_dim_y': int(np.prod(y_data.shape[1:])),
+                'n_channels_x': x_data.shape[1],
+                'n_channels_y': y_data.shape[1],
+            })
+        self.base_params.update(kwargs)
 
     def run(self, param_grid: Optional[Dict[str, List]] = None,
             gamma_range=range(1, 11),
@@ -551,11 +562,36 @@ class AnalysisWorkflow:
         keys, values = zip(*param_grid.items()) if param_grid else ([], [])
         param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if param_grid else [{}]
 
-        N = self.x_data.shape[0]
+        # Raw (2-D), unwindowed data (shift_windows reachability): windowing
+        # hasn't happened yet, so `leak_check_window_size` (normally set by
+        # run.py's eager windowing) isn't present yet either -- this data is
+        # temporal regardless, and N must be the shift-invariant window
+        # count, not a raw sample count.
+        _proc_x = self.base_params.get('processor_type_x')
+        _proc_y = self.base_params.get('processor_type_y') or _proc_x
+        _is_raw_deferred = (self.x_data.ndim == 2 and self.base_params.get('shift_windows')
+                            and shift_family(_proc_x, _proc_y) == 'regular')
+        N = n_windows_if_deferred(self.x_data, self.y_data, self.base_params)
 
         is_temporal = (temporal_chunking if temporal_chunking is not None
-                      else self.base_params.get('leak_check_window_size') is not None)
+                      else (self.base_params.get('leak_check_window_size') is not None or _is_raw_deferred))
         self.resolved_chunking_mode = 'contiguous' if is_temporal else 'permuted'
+
+        if _is_raw_deferred:
+            # Per-side window_size/step_size in raw-sample units, computed
+            # once (rigorous doesn't route param_grid combos into
+            # processor_params_x/y -- see sweep.py's own routing for
+            # contrast -- so these can't vary per combo here).
+            _wp_x = self.base_params.get('processor_params_x') or {}
+            _wp_y = self.base_params.get('processor_params_y') or _wp_x
+            _window_size = _wp_x.get('window_size')
+            _step_size = _wp_x.get('step_size') or _window_size
+            _period_x = 1.0 / _wp_x['sample_rate'] if _wp_x.get('sample_rate') else 1.0
+            _period_y = 1.0 / _wp_y['sample_rate'] if _wp_y.get('sample_rate') else 1.0
+            _window_size_x = seconds_to_samples(_window_size, _period_x)
+            _step_size_x = seconds_to_samples(_step_size, _period_x)
+            _window_size_y = seconds_to_samples(_window_size, _period_y)
+            _step_size_y = seconds_to_samples(_step_size, _period_y)
 
         for i_combo, params in enumerate(param_combinations):
             current_params = {**self.base_params, **params}
@@ -581,8 +617,20 @@ class AnalysisWorkflow:
                     )
 
                 for i_subset, subset_indices in enumerate(chunks):
-                    x_subset = _ensure_cpu(self.x_data[subset_indices])
-                    y_subset = _ensure_cpu(self.y_data[subset_indices])
+                    if _is_raw_deferred:
+                        # subset_indices is a contiguous window-index range
+                        # (guaranteed by master_permutation = np.arange(N)
+                        # for is_temporal=True); translate to the raw
+                        # sample range that reproduces exactly this many
+                        # windows under any per-epoch shift.
+                        lo, hi = int(subset_indices[0]), int(subset_indices[-1]) + 1
+                        rx0, rx1 = chunk_window_range_to_raw(lo, hi, _window_size_x, _step_size_x)
+                        ry0, ry1 = chunk_window_range_to_raw(lo, hi, _window_size_y, _step_size_y)
+                        x_subset = _ensure_cpu(self.x_data[rx0:rx1])
+                        y_subset = _ensure_cpu(self.y_data[ry0:ry1])
+                    else:
+                        x_subset = _ensure_cpu(self.x_data[subset_indices])
+                        y_subset = _ensure_cpu(self.y_data[subset_indices])
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
                     # Purely deterministic per-task key for run_training_task's seeding
                     # (see task.py) -- unlike task_run_id above, excludes the random

@@ -220,3 +220,69 @@ class TestConditionalMICategoricalZ:
             f"raw MI(X;Y) mean={mean_raw:.3f} bits after conditioning on the true confounder Z "
             f"(per-seed raw={raw_estimates}, conditioned={conditioned_estimates})."
         )
+
+
+class TestConditionalShiftWindows:
+    """shift_windows reachability: Z is raw-concatenated onto X before
+    windowing (rather than after) whenever Z is 'continuous' and matches
+    X's processor family."""
+
+    def test_engages_silently_for_matching_continuous_pair(self):
+        """No warning: shift_windows must actually reach mode='conditional'
+        when X and Z are both 'continuous', not just stay silently inert."""
+        np.random.seed(0)
+        x = np.random.randn(3000, 2).astype('float32')
+        y = np.random.randn(3000, 2).astype('float32')
+        z = np.random.randn(3000, 1).astype('float32')
+        window_size = 20
+        processing = nmi.Processing(x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
+                                    y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
+        import warnings
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            nmi.run(
+                x, y, mode='conditional',
+                conditional=Conditional(z_data=z, z_processor_type='continuous',
+                                       z_processor_params={'window_size': window_size, 'step_size': window_size}),
+                processing=processing,
+                training=Training(n_epochs=1, patience=1, shift_windows=True),
+                n_workers=1, show_progress=False, seed=0,
+            )
+        msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
+
+    def test_z_equal_to_x_gives_near_zero_cmi_under_shift(self):
+        """Correctness/desync check: if Z is an exact copy of X (same raw
+        array, same window_size/step_size), Z carries zero information
+        beyond X, so I(XZ;Y) should match I(Z;Y) closely and CMI should be
+        near zero -- with shift_windows on. A one-window desync between X's
+        and Z's independent reslicing would make the concatenated Z look
+        like genuinely new information relative to X, inflating I(XZ;Y)
+        well above I(Z;Y) and breaking this exact-zero expectation."""
+        np.random.seed(0)
+        torch.manual_seed(0)
+        T, window_size = 4000, 20
+        x = np.random.randn(T, 2).astype('float32')
+        y = np.random.randn(T, 2).astype('float32')
+        z = x.copy()  # exact copy of X -- zero information beyond X, if aligned
+        processing = nmi.Processing(x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
+                                    y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
+        results = nmi.run(
+            x, y, mode='conditional',
+            conditional=Conditional(z_data=z, z_processor_type='continuous',
+                                   z_processor_params={'window_size': window_size, 'step_size': window_size}),
+            processing=processing,
+            model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+            training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
+            n_workers=1, show_progress=False, seed=0,
+        )
+        details = results.details
+        assert np.isfinite(details['mi_xz_y']) and np.isfinite(details['mi_z_y'])
+        assert abs(details['mi_xz_y'] - details['mi_z_y']) < 0.3, (
+            f"Z=X exactly should make I(XZ;Y)={details['mi_xz_y']:.3f} closely match "
+            f"I(Z;Y)={details['mi_z_y']:.3f} -- a large gap suggests X and Z's independent "
+            f"reslicing desynchronized under shift_windows."
+        )
+        assert abs(results.mi_estimate) < 0.3, (
+            f"CMI should be near zero when Z=X exactly, got {results.mi_estimate:.3f}"
+        )

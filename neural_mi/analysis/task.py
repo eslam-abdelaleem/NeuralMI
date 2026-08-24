@@ -139,88 +139,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Dataset construction — with module-level cache for static datasets.
     # ------------------------------------------------------------------
-    _shift_proc_x = params.get('processor_type_x')
-    _shift_proc_y = params.get('processor_type_y')
-    if _shift_proc_y is None:
-        _shift_proc_y = _shift_proc_x  # None -> "inherit X", create_dataset's own convention
-    _REGULAR_GRID_TYPES = {'continuous', 'categorical'}
-    if (params.get('shift_windows') and _shift_proc_x in _REGULAR_GRID_TYPES
-            and _shift_proc_y in _REGULAR_GRID_TYPES):
-        # Cheap reslice-based per-epoch window shift (see
-        # neural_mi/data/shift_windowing.py). BOTH x and y must resolve to
-        # 'continuous' or 'categorical' (after the None->inherit-X
-        # resolution above), independently -- so continuous+continuous,
-        # categorical+categorical, and continuous+categorical are all
-        # supported, but 'spike' data (a ragged per-neuron spike-time list
-        # this path can't torch.unfold) is not. run.py's
-        # _defer_for_shift_windows already gates on the same condition so
-        # this branch is only ever reached for a supported pair in
-        # practice, but the check is repeated here rather than trusted,
-        # since this function can in principle be called on data that
-        # bypassed that gate (e.g. a future caller building `params`
-        # directly).
-        # Builds its own PairedDataset directly from an initial (shift=0)
-        # windowing and stashes the raw-array shifter Trainer.train() uses
-        # to reslice every epoch. Never cached: like a temporal dataset,
-        # its .data is mutated in place across the run.
-        from neural_mi.data.shift_windowing import (
-            PairedWindowShifter, seconds_to_samples, make_categorical_encoder,
-        )
-        from neural_mi.data.temporal import relabel_categorical_data
-        from neural_mi.data.static import StaticDataset
-        _wp_x = params.get('processor_params_x') or {}
-        _wp_y = params.get('processor_params_y') or _wp_x
-        _window_size = _wp_x.get('window_size')
-        _step_size = _wp_x.get('step_size') or _window_size
-        if _window_size is None:
-            raise ValueError(
-                "shift_windows=True requires processor_params_x={'window_size': ...} "
-                "(optionally 'step_size', defaults to window_size)."
-            )
-        # window_size/step_size are in the shared WindowManager unit --
-        # seconds if 'sample_rate' is set, otherwise raw samples (period=1).
-        # Convert to each side's own sample count independently, since X and
-        # Y may use different sample rates (see PairedWindowShifter's
-        # docstring for why the truncation/shift logic must then work in a
-        # common *duration*, not a common raw sample count).
-        _rate_x = _wp_x.get('sample_rate')
-        _rate_y = _wp_y.get('sample_rate')
-        _period_x = 1.0 / _rate_x if _rate_x else 1.0
-        _period_y = 1.0 / _rate_y if _rate_y else 1.0
-        _window_size_x = seconds_to_samples(_window_size, _period_x)
-        _step_size_x = seconds_to_samples(_step_size, _period_x)
-        _window_size_y = seconds_to_samples(_window_size, _period_y)
-        _step_size_y = seconds_to_samples(_step_size, _period_y)
-        # dataset has no window_manager (it's a plain PairedDataset of
-        # pre-shifted StaticDatasets) -- pass the geometry explicitly so the
-        # blocked-split leakage check in Trainer._create_blocked_split still
-        # has something to validate against.
-        params['leak_check_window_size'] = _window_size_x
-        params['leak_check_step'] = _step_size_x
-
-        def _prep_shift_side(data, proc_type, proc_params):
-            if proc_type == 'categorical':
-                arr = relabel_categorical_data(data)  # (T, C) int32, same
-                # relabeling CategoricalWindowDataset itself would apply.
-                raw = torch.as_tensor(arr, dtype=torch.long)
-                n_categories = int(raw.max().item()) + 1 if raw.numel() > 0 else 1
-                encoder = make_categorical_encoder(n_categories, proc_params.get('encoding', 'majority_vote'))
-                return raw, encoder
-            raw = data if torch.is_tensor(data) else torch.as_tensor(np.asarray(data), dtype=torch.float32)
-            if raw.ndim == 1:
-                raw = raw.unsqueeze(-1)
-            return raw, None
-
-        _raw_x, _encoder_x = _prep_shift_side(x_data, _shift_proc_x, _wp_x)
-        _raw_y, _encoder_y = _prep_shift_side(y_data, _shift_proc_y, _wp_y)
-        _shifter = PairedWindowShifter(
-            _raw_x, _raw_y, _window_size_x, _step_size_x, _window_size_y, _step_size_y,
-            encoder_x=_encoder_x, encoder_y=_encoder_y, period_x=_period_x, period_y=_period_y,
-        )
-        _x0, _y0 = _shifter.windows_at(0)
-        dataset = PairedDataset(StaticDataset(_x0, data_device=_data_device),
-                                StaticDataset(_y0, data_device=_data_device))
-        dataset._window_shifter = _shifter
+    from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
+    dataset = try_build_shift_windows_dataset(x_data, y_data, params, data_device=_data_device)
+    if dataset is not None:
         _cache_key = None  # never cached (mutated in place every epoch); the
         # cleanup step near the end of this function reads _cache_key back
         # out of _DATASET_CACHE to decide whether `dataset` is safe to `del`

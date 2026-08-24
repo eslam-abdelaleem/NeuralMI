@@ -96,6 +96,24 @@ def _safe_regime_diagnostic(x: torch.Tensor) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _n_samples_for_shared_split(x_data, y_data, analysis_params: Dict[str, Any]) -> int:
+    """Number of units the shared train/test split should be computed over.
+
+    For already-windowed data (the common case), this is just
+    ``x_data.shape[0]``. When windowing has been deferred (``x_data`` is
+    raw, 2-D, and ``shift_windows`` was requested for a regular-grid pair),
+    ``x_data.shape[0]`` is a raw sample count, not a window count -- reusing
+    it directly would compute indices in the wrong space entirely. Delegates
+    to :func:`~neural_mi.data.shift_windowing.n_windows_if_deferred` for the
+    shift-invariant window count in that case (intrinsic mode passes
+    ``y_data=None`` since every split pairs two channel-groups of the same
+    ``x_data``, sharing one ``window_size``/``step_size``; interaction mode
+    passes the real ``y_data``, which may use different processor params).
+    """
+    from neural_mi.data.shift_windowing import n_windows_if_deferred
+    return n_windows_if_deferred(x_data, y_data, analysis_params)
+
+
 def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int) -> Tuple[np.ndarray, np.ndarray]:
     """Return (train_indices, test_indices) shared across every split/rerun in
     this dimensionality run, so the cross-run stability check always compares
@@ -490,7 +508,7 @@ def run_dimensionality_analysis(
     # sample dimension by `lag` and only ever performs a single split anyway
     # (no cross-run comparison is meaningful there).
     if y_data is not None or split_method != 'temporal':
-        n_samples = x_data.shape[0]
+        n_samples = _n_samples_for_shared_split(x_data, y_data, analysis_params)
         train_idx, test_idx = _get_or_create_shared_split(analysis_params, n_samples)
         analysis_params['train_indices'] = train_idx
         analysis_params['test_indices'] = test_idx

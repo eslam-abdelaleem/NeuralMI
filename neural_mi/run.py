@@ -43,6 +43,22 @@ _MODE_CONFIG_CLASSES = {
     'interaction': Interaction, 'pairwise': Pairwise, 'sweep': Sweep,
 }
 
+# Modes that dispatch one or more independent training runs from raw,
+# unwindowed data with no cross-run comparison for per-run shift randomness
+# to disturb (or, for 'dimensionality'/'precision', a comparison/evaluation
+# that already only reads a frozen, shared, pre-shift view) -- see
+# shift-related gating/warnings below and in `_run_flat`.
+_SHIFT_SAFE_MODES = ('estimate', 'sweep', 'pairwise', 'dimensionality', 'precision')
+# 'rigorous' additionally supports shift_windows specifically: its
+# bias-correction ladder's chunk boundaries are translated into raw sample
+# ranges (see rigorous.py::AnalysisWorkflow._prepare_tasks), a fix scoped to
+# the regular-grid/contiguous-chunking case only. shift_time's equivalent
+# for spike data (translating a chunk into a raw time range for a ragged
+# per-neuron spike-time list) is a separate, harder problem, not attempted
+# this pass -- so 'rigorous' is deliberately NOT in _SHIFT_SAFE_MODES itself,
+# which both mechanisms' gating reads.
+_SHIFT_WINDOWS_SAFE_MODES = _SHIFT_SAFE_MODES + ('rigorous',)
+
 
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
     """Recursively converts MI values in results from nats to bits."""
@@ -650,23 +666,18 @@ def _run_flat(
         # reachability extension for shift_time need the raw,
         # unwindowed arrays to survive to task.py::run_training_task -- same
         # "defer, don't window here" treatment as is_proc_sweep/mode='lag'.
-        # Scoped to modes that dispatch one or more *independent* training
-        # runs with no cross-run comparison that independent per-run shift
-        # randomness could corrupt: 'estimate', plain (non-processor-swept)
-        # 'sweep', and 'pairwise' (each channel pair is fully independent --
-        # pairwise.py accepts raw per-channel data and windows it per-pair
-        # once deferred). 'dimensionality'/'rigorous'/'precision'/
-        # 'conditional'/'transfer'/'interaction' need a *shared* shift
-        # schedule across their sub-runs and are handled separately.
+        # See _SHIFT_SAFE_MODES/_SHIFT_WINDOWS_SAFE_MODES (module scope) for
+        # which modes qualify for which mechanism and why. 'transfer' needs
+        # real additional orchestration (past/future construction) and is
+        # handled separately, with its own gating (not attempted this pass).
         # processor_type_y=None means "inherit X's type" (create_dataset's
         # own convention, handler.py: proc_type_y = processor_type_y or
         # processor_type_x).
-        _SHIFT_SAFE_MODES = ('estimate', 'sweep', 'pairwise')
         _effective_processor_type_y = processor_type_y if processor_type_y is not None else processor_type_x
         _shift_pair_family = shift_family(processor_type_x, _effective_processor_type_y)
         # shift_windows: the cheap reslice mechanism, for the 'regular'
         # family (continuous/categorical, either side, need not match).
-        _defer_for_shift_windows = (mode in _SHIFT_SAFE_MODES and base_params.get('shift_windows')
+        _defer_for_shift_windows = (mode in _SHIFT_WINDOWS_SAFE_MODES and base_params.get('shift_windows')
                                     and _shift_pair_family == 'regular')
         # shift_time: the general PairedTemporalDataset/time_shift
         # mechanism, reachable for 'spike' pairs (no cross-unit concerns,
@@ -682,7 +693,32 @@ def _run_flat(
                                           and mixed_pair_sample_rate_ok(
                                               processor_type_x, processor_params_x,
                                               _effective_processor_type_y, processor_params_y))))
-        if is_proc_sweep or mode == 'lag' or _defer_for_shift_windows or _defer_for_shift_time:
+        # 'conditional'/'interaction': shift_windows reachable when the
+        # conditioning variable (z_data/w_data) is 'continuous', X is also
+        # 'continuous', and (for conditional) align != 'dual_branch'. Both
+        # must be exactly 'continuous', not just "the same family" --
+        # 'categorical' is excluded even when Z/W also uses it, since
+        # concatenating raw categorical labels infers one shared
+        # n_categories from the combined array's max value, silently
+        # conflating X's and Z's category counts if they differ. 'spike' is
+        # excluded too -- concatenating raw per-neuron spike-time lists is a
+        # separate, harder mechanism (shift_time), not attempted this pass.
+        # See conditional.py/interaction.py's `raw_deferred` path for how
+        # the raw concat + deferred windowing actually happens. Excludes
+        # the rigorous=True sub-path -- rigorous.py's own chunk-boundary
+        # translation (see AnalysisWorkflow._prepare_tasks) hasn't been
+        # extended to this raw-concat scenario, shared follow-on work once
+        # this pass's rigorous.py fix exists, not attempted here.
+        _cond_var_type = z_processor_type if mode == 'conditional' else (
+            w_processor_type if mode == 'interaction' else None)
+        _defer_for_conditional_interaction = (
+            mode in ('conditional', 'interaction') and base_params.get('shift_windows')
+            and processor_type_x == 'continuous' and _cond_var_type == 'continuous'
+            and not analysis_kwargs.get('rigorous', False)
+            and (mode != 'conditional' or analysis_kwargs.get('align') != 'dual_branch')
+        )
+        if (is_proc_sweep or mode == 'lag' or _defer_for_shift_windows or _defer_for_shift_time
+                or _defer_for_conditional_interaction):
             logger.info("Detected sweep over processor or lag parameters. Deferring data processing to workers.")
             x_run_data, y_run_data = x_data, y_data
         elif processor_type_x is None and processor_type_y is None:
@@ -762,7 +798,8 @@ def _run_flat(
                                  processor_params_x, _effective_processor_type_y, processor_params_y,
                                  user_set_keys=_pre_default_keys)
         _warn_if_shift_windows_dead(base_params, mode, processor_type_x, _effective_processor_type_y,
-                                    user_set_keys=_pre_default_keys)
+                                    user_set_keys=_pre_default_keys,
+                                    extra_reachable=_defer_for_conditional_interaction)
 
         from .analysis.sweep import ParameterSweep
         if mode == 'sweep':
@@ -979,8 +1016,17 @@ def _run_flat(
                     "would need the same dual-branch construction _run_single_permutation "
                     "doesn't have wired up; not needed for this pass."
                 )
-            # Process z_data if a processor type is given; otherwise assume pre-processed
-            if z_processor_type is not None:
+            # Process z_data if a processor type is given; otherwise assume pre-processed.
+            # When _defer_for_conditional_interaction, keep z_data raw too --
+            # same "defer, don't window here" treatment x_run_data/y_run_data
+            # already got above -- so run_conditional_mi's raw_deferred path
+            # can concatenate raw X and raw Z before windowing. Left exactly
+            # as passed in (not even converted to a tensor here, matching
+            # x_run_data/y_run_data's own treatment on this path) --
+            # run_conditional_mi's raw_deferred branch converts it.
+            if _defer_for_conditional_interaction:
+                z_run_data = z_data
+            elif z_processor_type is not None:
                 from .data.handler import create_dataset as _cds
                 z_dataset = _cds(
                     x_data=z_data, y_data=None,
@@ -1044,7 +1090,8 @@ def _run_flat(
             # needs based on align.
             raw = run_conditional_mi(x_run_data, y_run_data, z_run_data, base_params,
                                      sweep_grid=sweep_grid, n_workers=n_workers,
-                                     align=_align, c_data=z_run_data)
+                                     align=_align, c_data=z_run_data,
+                                     raw_deferred=_defer_for_conditional_interaction)
             raw = _convert_mi_units(raw, output_units == 'bits')
             cmi = raw['cmi_estimate']
             result = Results(mode=mode, mi_estimate=cmi, params=run_params, details=raw)
@@ -1063,8 +1110,13 @@ def _run_flat(
             # Process w_data if a processor type is given; otherwise assume pre-processed
             # (same pattern as z_data for mode='conditional' -- interaction information's
             # W is a third population, not a growing-history conditioning array, so it
-            # needs no special-casing beyond that).
-            if w_processor_type is not None:
+            # needs no special-casing beyond that). When
+            # _defer_for_conditional_interaction, keep w_data raw too, left
+            # exactly as passed in -- run_interaction_information's
+            # raw_deferred branch converts it.
+            if _defer_for_conditional_interaction:
+                w_run_data = w_data
+            elif w_processor_type is not None:
                 from .data.handler import create_dataset as _cds
                 w_dataset = _cds(
                     x_data=w_data, y_data=None,
@@ -1112,7 +1164,8 @@ def _run_flat(
                 )
             # Standard (non-rigorous) path
             raw = run_interaction_information(x_run_data, y_run_data, w_run_data, base_params,
-                                              sweep_grid=sweep_grid, n_workers=n_workers)
+                                              sweep_grid=sweep_grid, n_workers=n_workers,
+                                              raw_deferred=_defer_for_conditional_interaction)
             raw = _convert_mi_units(raw, output_units == 'bits')
             ii = raw['interaction_info']
             result = Results(mode=mode, mi_estimate=ii, params=run_params, details=raw)
@@ -1387,7 +1440,7 @@ def _shift_time_is_reachable(mode: str, is_proc_sweep: bool,
                              processor_params_y: Optional[dict] = None) -> bool:
     if is_proc_sweep or mode == 'lag':
         return True
-    if mode not in ('estimate', 'sweep', 'pairwise'):
+    if mode not in _SHIFT_SAFE_MODES:
         return False
     _family = shift_family(processor_type_x, effective_processor_type_y)
     if _family == 'spike':
@@ -1415,10 +1468,12 @@ def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
     from the schema default stays silent even when it has no effect, since
     the user never asked for it on this pair.
 
-    Beyond `mode='lag'`, this is also reachable at `mode='estimate'`, plain
-    (non-processor-swept) `mode='sweep'`, and `mode='pairwise'` (each
-    channel pair dispatches its own independent training run, so per-pair
-    shift randomness has no cross-run comparison to corrupt) for
+    Beyond `mode='lag'`, this is also reachable at every mode in
+    `_SHIFT_SAFE_MODES` (module scope: `estimate`, plain `sweep`,
+    `pairwise`, `dimensionality`, `precision` -- each dispatches
+    independent training run(s), or a comparison/evaluation that only
+    reads a frozen, pre-shift view, with nothing for per-run shift
+    randomness to corrupt) for
     `shift_family(...) == 'spike'` (spike+spike -- both sides natively in
     seconds, no cross-unit concern) and for `'mixed'` pairs (one side
     spike, the other continuous/categorical) *only when* the regular-grid
@@ -1441,7 +1496,7 @@ def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
         return
     _family = shift_family(processor_type_x, effective_processor_type_y)
     _mixed_hint = ""
-    if mode in ('estimate', 'sweep', 'pairwise') and _family == 'mixed':
+    if mode in _SHIFT_SAFE_MODES and _family == 'mixed':
         _mixed_hint = (
             " This pair mixes 'spike' with 'continuous'/'categorical': a shift "
             "value means seconds for spike but raw sample-index units for the "
@@ -1458,7 +1513,7 @@ def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
         f"shift. This option currently only takes effect when windowing is "
         f"deferred to the training worker -- mode='lag'; mode='sweep' when a "
         f"processor parameter (e.g. window_size) is itself part of the sweep "
-        f"grid; or mode='estimate'/plain mode='sweep'/mode='pairwise' with a "
+        f"grid; or mode in {list(_SHIFT_SAFE_MODES)} with a "
         f"'spike'+'spike' pair (or a mixed spike/continuous(-categorical) pair "
         f"with 'sample_rate' set on the non-spike side).{_mixed_hint} For "
         f"continuous/categorical pairs, prefer Training(shift_windows=True) "
@@ -1471,33 +1526,44 @@ def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
 
 def _warn_if_shift_windows_dead(base_params: dict, mode: str, processor_type_x: Optional[str],
                                 effective_processor_type_y: Optional[str],
-                                user_set_keys: Optional[set] = None) -> None:
+                                user_set_keys: Optional[set] = None,
+                                extra_reachable: bool = False) -> None:
     """Sibling to `_warn_if_shift_time_dead`: warn if `shift_windows=True`
-    was requested but this pass only wires it up for `mode='estimate'`,
-    plain (non-processor-swept) `mode='sweep'`, and `mode='pairwise'` with
-    `shift_family(...) == 'regular'` -- both `processor_type_x` and the
-    effective `processor_type_y` (after the `None` -> "inherit X"
-    convention) in `{'continuous', 'categorical'}` (need not match each
-    other -- continuous+categorical is fine), not 'spike' on either side
-    (see the matching comment at the `_defer_for_shift_windows` call site
-    in `_run_flat` for why a mismatched pair would silently misbehave
-    rather than just be inert), and not `None` on either side
+    was requested but this pass only wires it up for modes in
+    `_SHIFT_WINDOWS_SAFE_MODES` (module scope) with `shift_family(...) ==
+    'regular'` -- both `processor_type_x` and the effective
+    `processor_type_y` (after the `None` -> "inherit X" convention) in
+    `{'continuous', 'categorical'}` (need not match each other --
+    continuous+categorical is fine), not 'spike' on either side (see the
+    matching comment at the `_defer_for_shift_windows` call site in
+    `_run_flat` for why a mismatched pair would silently misbehave rather
+    than just be inert), and not `None` on either side
     (`neural_mi/data/shift_windowing.py` needs the raw array +
     window_size/step_size; there's nothing to reslice without them). Same
     explicit-vs-defaulted convention as the sibling check.
+
+    extra_reachable : bool, optional
+        Set by the caller for a reachability path this function doesn't
+        derive from `mode`/`processor_type_x`/`effective_processor_type_y`
+        alone -- currently `_defer_for_conditional_interaction` (`mode` in
+        `('conditional', 'interaction')` with a 'continuous' conditioning
+        variable matching X's family). `True` silences the warning the same
+        as the mode/family check below.
     """
     if user_set_keys is not None and 'shift_windows' not in user_set_keys:
         return
     if base_params.get('shift_windows') is not True:
         return
-    if mode in ('estimate', 'sweep', 'pairwise') and shift_family(processor_type_x, effective_processor_type_y) == 'regular':
+    if extra_reachable:
+        return
+    if mode in _SHIFT_WINDOWS_SAFE_MODES and shift_family(processor_type_x, effective_processor_type_y) == 'regular':
         return
     warnings.warn(
         f"shift_windows=True was requested but has no effect for "
         f"mode='{mode}' with processor_type_x={processor_type_x!r}, "
         f"processor_type_y={effective_processor_type_y!r} (effective). "
-        f"This is currently wired up only for mode='estimate', plain "
-        f"mode='sweep', and mode='pairwise' with processor_type_x and "
+        f"This is currently wired up only for mode in "
+        f"{list(_SHIFT_WINDOWS_SAFE_MODES)} with processor_type_x and "
         f"processor_type_y both in "
         f"{{'continuous', 'categorical'}} (e.g. Processing(x='continuous', "
         f"x_params={{'window_size': ...}}, y='categorical', "

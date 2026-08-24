@@ -347,3 +347,89 @@ class TestGetTrainingEmbeddings:
             if p.requires_grad:
                 assert p.grad is not None
                 break
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# shift_windows reachability: chunk-to-raw-range translation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestChunkWindowRangeToRaw:
+    """chunk_window_range_to_raw must translate a [lo, hi) window-index
+    chunk into a raw sample range that reproduces exactly those windows --
+    the actual correctness property rigorous's bias-correction ladder
+    depends on (gamma=2's two chunks must together equal gamma=1's chunk,
+    now expressed in raw ranges instead of window indices)."""
+
+    def test_chunk_matches_global_windowing_at_shift_zero(self):
+        from neural_mi.data.shift_windowing import (
+            chunk_window_range_to_raw, safe_n_windows, PairedWindowShifter,
+        )
+        torch.manual_seed(0)
+        T, C, window_size, step_size = 3000, 2, 20, 20
+        raw_x = torch.randn(T, C)
+        raw_y = torch.randn(T, C)
+        N = safe_n_windows(T, window_size, step_size)
+
+        global_shifter = PairedWindowShifter(raw_x, raw_y, window_size, step_size)
+        gx0, gy0 = global_shifter.windows_at(0)
+
+        for lo, hi in [(0, N // 2), (N // 2, N), (0, N)]:
+            rx0, rx1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
+            ry0, ry1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
+            chunk_shifter = PairedWindowShifter(raw_x[rx0:rx1], raw_y[ry0:ry1], window_size, step_size)
+            assert chunk_shifter.n_windows == hi - lo, (
+                f"chunk [{lo},{hi}) should produce exactly {hi - lo} windows, "
+                f"got {chunk_shifter.n_windows}"
+            )
+            cx0, cy0 = chunk_shifter.windows_at(0)
+            torch.testing.assert_close(cx0, gx0[lo:hi])
+            torch.testing.assert_close(cy0, gy0[lo:hi])
+
+    def test_chunk_survives_any_shift_not_just_zero(self):
+        """The whole point of the margin in chunk_window_range_to_raw: the
+        chunk must still yield exactly hi-lo windows at the worst-case
+        shift (window_size - 1), not just at shift=0."""
+        from neural_mi.data.shift_windowing import chunk_window_range_to_raw, safe_n_windows, PairedWindowShifter
+        torch.manual_seed(0)
+        T, C, window_size, step_size = 3000, 2, 20, 20
+        raw_x = torch.randn(T, C)
+        raw_y = torch.randn(T, C)
+        N = safe_n_windows(T, window_size, step_size)
+        lo, hi = 3, 10
+        rx0, rx1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
+        chunk_shifter = PairedWindowShifter(raw_x[rx0:rx1], raw_y[rx0:rx1], window_size, step_size)
+        assert chunk_shifter.n_windows == hi - lo
+        cx_max, cy_max = chunk_shifter.windows_at(window_size - 1)
+        assert cx_max.shape[0] == hi - lo
+        assert cy_max.shape[0] == hi - lo
+
+
+class TestRigorousShiftWindowsEndToEnd:
+    """A real (un-mocked) run confirming rigorous's deferred-windowing path
+    dispatches the expected number of tasks and produces finite results --
+    if the chunk-to-raw-range translation were wrong, this would either
+    crash (out-of-bounds raw slice) or silently create wrong-sized chunks
+    (caught by the task-count check already built into AnalysisWorkflow.run,
+    which warns if len(tasks) != expected_total)."""
+
+    def test_rigorous_shift_windows_no_crash_and_expected_task_count(self, caplog):
+        import neural_mi as nmi
+        from neural_mi import Training, Rigorous
+
+        torch.manual_seed(0)
+        np.random.seed(0)
+        x = np.random.randn(4000, 2).astype('float32')
+        y = np.random.randn(4000, 2).astype('float32')
+        proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                              y='continuous', y_params={'window_size': 20, 'step_size': 20})
+        results = nmi.run(
+            x, y, mode='rigorous', processing=proc,
+            training=Training(n_epochs=1, batch_size=16, shift_windows=True,
+                              min_reliable_samples=1),
+            rigorous=Rigorous(gamma_range=range(1, 4)),
+            n_workers=1, show_progress=False, seed=0,
+        )
+        assert "may be truncated" not in caplog.text
+        raw_df = results.dataframe
+        assert len(raw_df) == sum(range(1, 4))  # 1 + 2 + 3 = 6 tasks
+        assert np.all(np.isfinite(raw_df['train_mi'].values))

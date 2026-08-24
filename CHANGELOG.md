@@ -7,6 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Verified: shift reachability against exact Gaussian-oracle ground truth (`precision`/`dimensionality`/`rigorous`/`conditional`/`interaction`)
+
+Benchmarked all five newly-reachable modes with `shift_windows` on vs. off
+against exact ground truth (shared-latent Gaussian construction, same
+oracle machinery used elsewhere this session), 3 seeds each, using the
+same encoder (`gru` + a custom recurrent `LRUEmbedding`, matching
+`information_quantities_tutorial.ipynb`'s own choice for windowed data)
+and split (`blocked`, `train_fraction=0.8`) the taxonomy notebook itself
+validates with, with generative parameters chosen so the exact target sits
+comfortably below the achievable ceiling at this sample size (checked
+directly via `test_ceiling_mi`/`train_ceiling_mi`, not assumed).
+
+Result: **no systematic accuracy difference between shift on and off in
+any of the five modes.** Every mode's ratio-to-exact clusters near 1.0 for
+both settings, with seed-to-seed spread consistent with ordinary
+estimator noise (widest for `interaction`/`conditional`, the two
+multi-term "small residual" quantities already flagged as noise-sensitive
+in THEORY.md). `dimensionality` showed shift recovering the full true
+dimensionality (both shared directions) in 2 of 3 seeds vs. 0 of 3 without
+shift — consistent with shift's original motivation (less overfitting to
+one fixed window tiling) — at roughly double the wall-clock (shift-on
+training uses more of the epoch budget before patience triggers, not a
+per-epoch slowdown). No other mode showed a timing concern.
+
+An earlier pass of this same benchmark, using a plain MLP encoder and
+generative parameters whose exact target exceeded the achievable ceiling
+for the sample size used, showed a large, systematic gap for `rigorous`
+and `interaction` and appeared to trace to under-training. That gap is
+superseded by this corrected result: fixing the encoder/ceiling mismatch
+made it disappear, so it was a benchmark-configuration artifact, not a
+real property of `shift_windows` under either setup.
+
+### `mode='transfer'` deliberately excluded from shift reachability
+
+Considered and rejected, rather than left unattempted: `transfer.py` builds
+its past/future arrays via `unfold(0, history_window, 1)` — a stride-1
+slide, so every possible window start position within the recording is
+already a training sample in one epoch (`n_valid ≈ T - history_window`).
+Shifting that construction by `s` samples is equivalent to dropping the
+first `s` samples and relabeling indices: sample `i` after a shift of `s`
+is byte-identical to sample `s+i` before it, since adjacent windows already
+overlap by `history_window - 1` of `history_window` samples. There are no
+new window boundaries for a shift to expose here, unlike the coarse,
+non-overlapping tiling `shift_windows` targets for every other reachable
+mode — so a bespoke TE-shifter mechanism would be real engineering for a
+benefit that doesn't exist for this specific construction. `mode='estimate'`
+with a `gru`/`lstm`/`tcn`/`cnn` embedding on pre-windowed `(N, C, W)` data
+remains available for temporal MI outside the transfer-entropy formula
+specifically, unaffected by this.
+
+### `shift_windows` now reachable at `mode='conditional'`/`mode='interaction'` (continuous-only)
+
+Both modes compute a chain-rule difference/combination of MI terms built by
+concatenating a conditioning variable (`z_data`/`w_data`) onto X along the
+channel axis. That concatenation happened *after* windowing, which would
+have let X and the conditioning variable reslice independently under
+shift — silently misaligning which real time range each one's windows
+cover under the same sample index. Fixed by moving the concatenation
+*before* windowing when reachable: `z_data`/`w_data` and X now
+raw-concatenate into one combined array that flows through the ordinary
+paired shift-windows mechanism, so they always shift together.
+
+Scoped to `processor_type_x == 'continuous'` and the conditioning
+variable's own processor type also exactly `'continuous'` (not merely
+`shift_family(...) == 'regular'`, which would also admit `'categorical'`):
+concatenating raw categorical labels infers one shared `n_categories` from
+the combined array's max value, silently conflating X's and Z's/W's
+category counts if they differ. Also excludes `Conditional(align=
+'dual_branch')` and the `rigorous=True` sub-path for both modes (the
+latter needs the same chunk-boundary translation as plain `mode='rigorous'`
+above, not yet extended to this raw-concat scenario) — none of these are
+attempted this pass.
+
+### `shift_windows` now reachable at `mode='rigorous'`
+
+`rigorous`'s bias-correction ladder splits data into `gamma` equal chunks
+(more, smaller chunks at higher `gamma`), extrapolating `train_mi` vs.
+`gamma` to the infinite-data limit. Chunk boundaries were computed in
+*window-index* space, which only makes sense once eager windowing has
+already happened. With windowing deferred (raw data + `shift_windows`),
+`AnalysisWorkflow._prepare_tasks` now translates each `[lo, hi)`
+window-index chunk into a raw sample range that reproduces exactly
+`hi - lo` windows under any per-epoch shift (`shift_windowing.
+chunk_window_range_to_raw`, using the same margin-reservation logic as
+`safe_n_windows`) — each chunk then independently, shift-aware-ly windows
+its own raw sub-array, preserving the nesting property the extrapolation
+depends on (gamma=2's two chunks are still literally halves of gamma=1's).
+Scoped to the contiguous/temporal chunking mode only (the one that
+co-occurs with a real windowing processor); `shift_time`'s equivalent for
+spike data is a separate, harder problem, not attempted here.
+
+### `shift_windows`/`shift_time` now reachable at `mode='precision'` and `mode='dimensionality'`
+
+Both modes were blocked by the same root cause as `pairwise` before it:
+`run.py` windowed the data eagerly, before either mode ever ran, leaving no
+raw signal to reslice from. `precision` (a single training run, then
+inference-only evaluation of the frozen model) and `dimensionality` (each
+split trains independently, compared only on a frozen, shared, pre-shift
+held-out view) both needed no new shift mechanism once windowing was
+deferred for them — the existing 2-way shift machinery applies unmodified.
+
+- `precision.py` now builds its dataset via the same shared helper
+  (`shift_windowing.try_build_shift_windows_dataset`, extracted from
+  `task.py`'s inline construction so both call sites build this kind of
+  dataset identically) and forwards `shift_time`/`shift_windows` to
+  `trainer.train(...)` — previously absent from that call entirely.
+- Fixed along the way: `precision`'s corruption sweep read
+  `dataset.x_dataset`/`.y_dataset` directly instead of through the frozen
+  pre-shift snapshot `Trainer.train()` already returns when shifting was
+  active — the same class of bug just fixed for embedding extraction,
+  independent of whether shift is ever turned on for this mode.
+- `dimensionality.py`'s shared train/test split (computed once, reused
+  across every split) now computes its window count analytically
+  (`shift_windowing.safe_n_windows`) when windowing is deferred, instead of
+  reading a raw sample count that doesn't correspond to window indices —
+  everything else (per-split dataset construction, per-split shift
+  randomness via the existing per-split RNG reseed) already worked
+  unmodified once deferred.
+
 ### Fixed: `return_embeddings=True` could read live-shifted data instead of the frozen eval snapshot
 
 When `shift_windows`/`shift_time` is active, `dataset.x_data`/`.y_data`

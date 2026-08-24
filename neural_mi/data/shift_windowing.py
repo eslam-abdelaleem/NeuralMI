@@ -234,3 +234,129 @@ class PairedWindowShifter:
 
     def random_shift(self, generator: torch.Generator = None) -> int:
         return self.x.random_shift(generator)
+
+
+def try_build_shift_windows_dataset(x_data, y_data, params: dict, data_device: str = 'cpu'):
+    """Build a ``shift_windows``-capable dataset for a regular-grid
+    (`continuous`/`categorical`) pair from raw, unwindowed ``x_data``/
+    ``y_data``, or return ``None`` if this pair doesn't qualify (caller
+    should fall back to :func:`~neural_mi.data.handler.create_dataset`).
+
+    Mutates ``params`` in place with ``leak_check_window_size``/
+    ``leak_check_step`` when it builds a dataset, since the returned
+    dataset has no ``window_manager`` for :class:`Trainer`'s blocked-split
+    leakage check to read geometry from otherwise. Shared by
+    ``task.py::run_training_task`` and ``precision.py`` so both build this
+    kind of dataset the same way.
+    """
+    _shift_proc_x = params.get('processor_type_x')
+    _shift_proc_y = params.get('processor_type_y')
+    if _shift_proc_y is None:
+        _shift_proc_y = _shift_proc_x  # None -> "inherit X", create_dataset's own convention
+    if not (params.get('shift_windows') and _shift_proc_x in _REGULAR_GRID_PROCESSOR_TYPES
+            and _shift_proc_y in _REGULAR_GRID_PROCESSOR_TYPES):
+        return None
+
+    # Builds its own PairedDataset directly from an initial (shift=0)
+    # windowing and stashes the raw-array shifter Trainer.train() uses to
+    # reslice every epoch. Never cached: like a temporal dataset, its
+    # .data is mutated in place across the run.
+    from neural_mi.data.temporal import relabel_categorical_data
+    from neural_mi.data.static import StaticDataset
+    from neural_mi.data.handler import PairedDataset
+
+    _wp_x = params.get('processor_params_x') or {}
+    _wp_y = params.get('processor_params_y') or _wp_x
+    _window_size = _wp_x.get('window_size')
+    _step_size = _wp_x.get('step_size') or _window_size
+    if _window_size is None:
+        raise ValueError(
+            "shift_windows=True requires processor_params_x={'window_size': ...} "
+            "(optionally 'step_size', defaults to window_size)."
+        )
+    # window_size/step_size are in the shared WindowManager unit -- seconds
+    # if 'sample_rate' is set, otherwise raw samples (period=1). Convert to
+    # each side's own sample count independently, since X and Y may use
+    # different sample rates (see PairedWindowShifter's docstring for why
+    # the truncation/shift logic must then work in a common *duration*,
+    # not a common raw sample count).
+    _rate_x = _wp_x.get('sample_rate')
+    _rate_y = _wp_y.get('sample_rate')
+    _period_x = 1.0 / _rate_x if _rate_x else 1.0
+    _period_y = 1.0 / _rate_y if _rate_y else 1.0
+    _window_size_x = seconds_to_samples(_window_size, _period_x)
+    _step_size_x = seconds_to_samples(_step_size, _period_x)
+    _window_size_y = seconds_to_samples(_window_size, _period_y)
+    _step_size_y = seconds_to_samples(_step_size, _period_y)
+    # dataset has no window_manager (it's a plain PairedDataset of
+    # pre-shifted StaticDatasets) -- pass the geometry explicitly so the
+    # blocked-split leakage check in Trainer._create_blocked_split still
+    # has something to validate against.
+    params['leak_check_window_size'] = _window_size_x
+    params['leak_check_step'] = _step_size_x
+
+    def _prep_shift_side(data, proc_type, proc_params):
+        if proc_type == 'categorical':
+            arr = relabel_categorical_data(data)  # (T, C) int32, same
+            # relabeling CategoricalWindowDataset itself would apply.
+            raw = torch.as_tensor(arr, dtype=torch.long)
+            n_categories = int(raw.max().item()) + 1 if raw.numel() > 0 else 1
+            encoder = make_categorical_encoder(n_categories, proc_params.get('encoding', 'majority_vote'))
+            return raw, encoder
+        import numpy as np
+        raw = data if torch.is_tensor(data) else torch.as_tensor(np.asarray(data), dtype=torch.float32)
+        if raw.ndim == 1:
+            raw = raw.unsqueeze(-1)
+        return raw, None
+
+    _raw_x, _encoder_x = _prep_shift_side(x_data, _shift_proc_x, _wp_x)
+    _raw_y, _encoder_y = _prep_shift_side(y_data, _shift_proc_y, _wp_y)
+    _shifter = PairedWindowShifter(
+        _raw_x, _raw_y, _window_size_x, _step_size_x, _window_size_y, _step_size_y,
+        encoder_x=_encoder_x, encoder_y=_encoder_y, period_x=_period_x, period_y=_period_y,
+    )
+    _x0, _y0 = _shifter.windows_at(0)
+    dataset = PairedDataset(StaticDataset(_x0, data_device=data_device),
+                            StaticDataset(_y0, data_device=data_device))
+    dataset._window_shifter = _shifter
+    return dataset
+
+
+def n_windows_if_deferred(x_data, y_data, params: dict) -> int:
+    """Window count for an (x_data, y_data) pair once windowing is deferred
+    (raw, 2-D x_data + ``shift_windows`` requested for a regular-grid pair),
+    or ``x_data.shape[0]`` unchanged otherwise (already windowed, or shift
+    not requested/reachable for this pair).
+
+    Used wherever an analytical, shift-invariant "how many windows will
+    this pair actually produce" count is needed before any orchestration-
+    specific windowing (a shared train/test split, a bias-correction
+    chunk boundary, ...) has happened yet -- reusing the exact same
+    construction :func:`try_build_shift_windows_dataset` would build, so
+    this can't drift from what actually gets built later.
+    """
+    if not (getattr(x_data, 'ndim', None) == 2 and params.get('shift_windows')):
+        return x_data.shape[0]
+    if y_data is None:
+        _wp_x = params.get('processor_params_x') or {}
+        _window_size = _wp_x.get('window_size')
+        _step_size = _wp_x.get('step_size') or _window_size
+        _period_x = 1.0 / _wp_x['sample_rate'] if _wp_x.get('sample_rate') else 1.0
+        return safe_n_windows(x_data.shape[0], seconds_to_samples(_window_size, _period_x),
+                              seconds_to_samples(_step_size, _period_x))
+    _throwaway = try_build_shift_windows_dataset(x_data, y_data, dict(params), data_device='cpu')
+    return len(_throwaway) if _throwaway is not None else x_data.shape[0]
+
+
+def chunk_window_range_to_raw(lo: int, hi: int, window_size: int, step_size: int) -> Tuple[int, int]:
+    """Raw sample range ``[start, end)`` covering exactly ``hi - lo``
+    windows' worth of content for a contiguous window-index chunk
+    ``[lo, hi)``, plus the same ``window_size - 1`` margin
+    :func:`safe_n_windows` reserves globally -- so
+    ``safe_n_windows(end - start, window_size, step_size) == hi - lo``
+    exactly, and the chunk produces exactly ``hi - lo`` windows under any
+    per-epoch shift in ``[0, window_size)``, not just at shift 0.
+    """
+    start = lo * step_size
+    end = (hi - 1) * step_size + 2 * window_size - 1
+    return start, end

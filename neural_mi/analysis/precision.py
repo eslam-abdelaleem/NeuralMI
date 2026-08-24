@@ -15,6 +15,7 @@ from neural_mi.training.trainer import Trainer
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device
 from neural_mi.data.handler import create_dataset
+from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
 from neural_mi.logger import logger
 from neural_mi.defaults import BASE_PARAMS_SCHEMA
 
@@ -121,14 +122,16 @@ def run_precision_analysis(
     _data_device_raw = base_params.get('dataset_device', 'auto')
     _data_device = str(device) if _data_device_raw == 'auto' else (_data_device_raw or 'cpu')
 
-    dataset = create_dataset(
-        x_data, y_data,
-        processor_type_x=base_params.get('processor_type_x'),
-        processor_type_y=base_params.get('processor_type_y'),
-        processor_params_x=base_params.get('processor_params_x'),
-        processor_params_y=base_params.get('processor_params_y'),
-        data_device=_data_device,
-    )
+    dataset = try_build_shift_windows_dataset(x_data, y_data, base_params, data_device=_data_device)
+    if dataset is None:
+        dataset = create_dataset(
+            x_data, y_data,
+            processor_type_x=base_params.get('processor_type_x'),
+            processor_type_y=base_params.get('processor_type_y'),
+            processor_params_x=base_params.get('processor_params_x'),
+            processor_params_y=base_params.get('processor_params_y'),
+            data_device=_data_device,
+        )
     
     # Update dimensions in base_params based on the dataset
     if dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
@@ -181,6 +184,8 @@ def run_precision_analysis(
         max_eval_samples=base_params.get('max_eval_samples', 5000),
         track_spectral_history=False,  # Skip per-epoch dimensionality math to save time
         scheduler=scheduler,
+        shift_time=base_params.get('shift_time', True),
+        shift_windows=base_params.get('shift_windows', True),
     )
     
     baseline_mi = baseline_results['train_mi']
@@ -191,8 +196,14 @@ def run_precision_analysis(
     # the reported MI consistent with every other mode, which also uses train_mi.
     logger.info(f"Starting precision sweep using '{corruption_method}' on target '{corrupt_target}'...")
     trainer.model.eval()
-    x_train_raw = dataset.x_dataset[train_idx, ...]
-    y_train_raw = dataset.y_dataset[train_idx, ...]
+    # Read through the frozen pre-shift snapshot when shifting was active
+    # (dataset.x_data/.y_data would otherwise reflect whichever shift was
+    # last applied during training, not the canonical original data this
+    # sweep corrupts).
+    _corrupt_x_source = baseline_results.get('_frozen_eval_x', dataset.x_data)
+    _corrupt_y_source = baseline_results.get('_frozen_eval_y', dataset.y_data)
+    x_train_raw = _corrupt_x_source[train_idx, ...]
+    y_train_raw = _corrupt_y_source[train_idx, ...]
     max_eval = base_params.get('max_eval_samples', 5000)
 
     results_list = []

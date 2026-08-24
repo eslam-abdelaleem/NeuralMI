@@ -553,3 +553,79 @@ class TestAnalysisWorkflowDoesNotMutateCallerDict:
         assert original == original_copy, (
             f"caller's base_params was mutated: {original} != {original_copy}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _n_samples_for_shared_split -- shift_windows reachability
+# ---------------------------------------------------------------------------
+
+class TestNSamplesForSharedSplit:
+    """When windowing is deferred (raw 2-D x_data + shift_windows=True), the
+    shared train/test split must be computed over the shift-invariant window
+    count, not the raw sample count -- otherwise it produces indices that
+    don't correspond to any real window in each split's actual dataset."""
+
+    def test_unchanged_for_already_windowed_data(self):
+        from neural_mi.analysis.dimensionality import _n_samples_for_shared_split
+        x = torch.randn(50, 4, 8)  # already windowed (N, C, W)
+        n = _n_samples_for_shared_split(x, None, {'shift_windows': True})
+        assert n == 50
+
+    def test_unchanged_for_raw_data_when_shift_windows_off(self):
+        from neural_mi.analysis.dimensionality import _n_samples_for_shared_split
+        x = torch.randn(3000, 4)  # raw (T, C), shift not requested
+        n = _n_samples_for_shared_split(x, None, {'shift_windows': False})
+        assert n == 3000
+
+    def test_intrinsic_mode_matches_safe_n_windows(self):
+        from neural_mi.analysis.dimensionality import _n_samples_for_shared_split
+        from neural_mi.data.shift_windowing import safe_n_windows
+        x = torch.randn(3000, 4)
+        params = {
+            'shift_windows': True,
+            'processor_params_x': {'window_size': 20, 'step_size': 20},
+        }
+        n = _n_samples_for_shared_split(x, None, params)
+        assert n == safe_n_windows(3000, 20, 20)
+        assert n < 3000  # sanity: genuinely different from the raw count
+
+    def test_interaction_mode_matches_min_of_paired_shifter(self):
+        from neural_mi.analysis.dimensionality import _n_samples_for_shared_split
+        from neural_mi.data.shift_windowing import PairedWindowShifter
+        x = torch.randn(3000, 4)
+        y = torch.randn(2000, 3)  # different length -> different n_windows
+        params = {
+            'shift_windows': True,
+            'processor_type_x': 'continuous', 'processor_type_y': 'continuous',
+            'processor_params_x': {'window_size': 20, 'step_size': 20},
+        }
+        n = _n_samples_for_shared_split(x, y, params)
+        expected = PairedWindowShifter(x, y, 20, 20).n_windows
+        assert n == expected
+        assert n < 3000
+
+
+class TestDimensionalityShiftWindowsEndToEnd:
+    """A real (un-mocked) run confirming the shared split stays valid once
+    each split independently, really windows its own raw data -- if
+    _n_samples_for_shared_split computed the wrong (too-large) count, the
+    shared test/train indices would be out of bounds for each split's
+    actual (much smaller) windowed dataset and this would crash."""
+
+    def test_intrinsic_random_split_shift_windows_no_crash(self):
+        import neural_mi as nmi
+        from neural_mi import Training, Dimensionality
+
+        torch.manual_seed(0)
+        np.random.seed(0)
+        x = np.random.randn(3000, 4).astype('float32')
+        proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20})
+        results = nmi.run(
+            x, mode='dimensionality', processing=proc,
+            training=Training(n_epochs=2, batch_size=16, shift_windows=True),
+            dimensionality=Dimensionality(split_method='random', n_splits=2),
+            n_workers=1, show_progress=False, seed=0,
+        )
+        df = results.details['raw_results']
+        assert len(df) == 2
+        assert np.all(np.isfinite(df['train_mi'].values))
