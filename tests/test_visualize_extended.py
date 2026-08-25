@@ -262,7 +262,7 @@ class TestConditionalPlot:
         r = Results(
             mode='conditional',
             mi_estimate=0.82,
-            details={'cmi_estimate': 0.82, 'mi_xz_y': 1.25, 'mi_z_y': 0.43},
+            details={'cmi_estimate': 0.82, 'mi_xw_y': 1.25, 'mi_w_y': 0.43},
         )
         ax = r.plot(show=False)
         assert isinstance(ax, plt.Axes)
@@ -274,7 +274,7 @@ class TestConditionalPlot:
         r = Results(
             mode='conditional',
             mi_estimate=0.82,
-            details={'cmi_estimate': 0.82, 'mi_xz_y': 1.25, 'mi_z_y': 0.43},
+            details={'cmi_estimate': 0.82, 'mi_xw_y': 1.25, 'mi_w_y': 0.43},
         )
         ax = r.plot(show=False)
         bar_patches = [p for p in ax.patches if hasattr(p, 'get_height')]
@@ -283,11 +283,11 @@ class TestConditionalPlot:
 
     @patch('matplotlib.pyplot.show')
     def test_conditional_partial_details_plots_available(self, mock_show):
-        """When mi_z_y is absent, only two bars should be rendered."""
+        """When mi_w_y is absent, only two bars should be rendered."""
         r = Results(
             mode='conditional',
             mi_estimate=0.82,
-            details={'cmi_estimate': 0.82, 'mi_xz_y': 1.25},  # mi_z_y missing
+            details={'cmi_estimate': 0.82, 'mi_xw_y': 1.25},  # mi_w_y missing
         )
         ax = r.plot(show=False)
         bar_patches = [p for p in ax.patches if hasattr(p, 'get_height')]

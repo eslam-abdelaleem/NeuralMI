@@ -7,6 +7,480 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed: `rigorous=True` crashed for a spike+spike conditioning pair whenever `shift_time=False`
+
+A third-pass audit of the uncommitted window-validity-gap/rename/permutation-shuffle
+work above, specifically checking whether every code path reachable from
+run.py's new deferral flags was actually handled by its callee.
+
+`run.py`'s `_defer_spike_conditional_interaction` (the gate that merges X
+and a spike-type conditioning variable W before windowing, for
+`mode='conditional'`/`'interaction'`) is deliberately unconditional on
+`shift_time` -- it's a correctness requirement for spike coverage, not an
+optional shift-reachability path (see the window-validity-gap fix above).
+So `raw_deferred=True` reaches `run_rigorous_scalar_analysis` with a raw
+(list) `x_data` regardless of `shift_time`. But that function's own
+`_is_spike_deferred` gate additionally required `base_params.get('shift_time')`
+to be truthy -- a leftover from before the window-validity-gap fix made the
+caller's own gate unconditional. With `shift_time=False`, `_is_spike_deferred`
+evaluated `False`, `_is_raw_deferred` also `False` (a Python list has no
+`.ndim`), and execution fell through to `N = x_data.shape[0]`, raising
+`AttributeError: 'list' object has no attribute 'shape'`.
+
+Confirmed via direct reproduction: `nmi.run(x_spikes, y_spikes,
+mode='conditional', conditional=Conditional(w_data=w_spikes,
+w_processor_type='spike', ...), training=Training(shift_time=False),
+rigorous=True)` crashed at exactly `rigorous.py:917` before the fix; same
+for `mode='interaction'`. Fixed by dropping the `shift_time` requirement
+from `_is_spike_deferred`, matching `_defer_spike_conditional_interaction`'s
+own unconditional design -- `spike_shift_grid_info` (which computes the
+margin-reserved window count for this path) already reserves its safety
+margin unconditionally too, so this doesn't change behavior when
+`shift_time=True`, only fixes the `False` case. New regression tests:
+`tests/test_conditional.py::TestConditionalShiftTimeSpike::test_rigorous_no_crash_with_shift_time_false`
+and the identically-named test in `tests/test_interaction.py`.
+
+### Fixed: `mode='interaction'`'s non-deferred path lacked conditional.py's window-count/size trim tolerance for W
+
+Found in the same audit pass. `mode='conditional'` and `mode='interaction'`
+both window their third variable W paired with Y (the window-validity-gap
+fix above), and `conditional.py`'s non-`raw_deferred` construction path
+already tolerates the resulting small boundary effects: a 1-window
+sample-count difference between X-paired-with-Y and W-paired-with-Y (two
+separate `create_dataset` calls, occasionally landing on a different window
+count at the boundary), and a 1-sample window-size difference (the
+continuous processor's interpolation-edge buffer), plus broadcasting a
+collapsed (size-1) W window axis across X's. `interaction.py`'s equivalent
+path had none of this -- only hard `!=` equality checks that raise
+immediately on either kind of mismatch. This path is reached whenever a
+user explicitly sets `Training(shift_windows=False)` with a continuous or
+categorical `w_processor_type` for `mode='interaction'` (the default,
+`shift_windows=True`, routes around it via the raw-deferred merge path
+instead). Fixed by mirroring conditional.py's exact tolerance/broadcast
+logic into interaction.py's non-deferred branch, including its
+`_SAMPLE_COUNT_TRIM_TOLERANCE`/`_WINDOW_SIZE_TRIM_TOLERANCE` constants. New
+tests in `tests/test_interaction.py::TestInteractionInformationPlumbing`:
+`test_sample_count_trim_tolerance_matches_conditional`,
+`test_window_size_broadcast_matches_conditional`, and
+`test_window_size_gap_beyond_tolerance_still_raises` (confirming the
+existing hard-error behavior survives for a genuine mismatch).
+
+### Fixed: `shared_encoder=True` crashed deep inside `DualBranchEmbedding.forward` instead of a clear upfront error
+
+X's role needs the dual (tuple-input) branch, Y's role needs the single
+(plain-tensor) branch -- one shared encoder instance can't be both, since
+they're structurally different `forward()` paths on the same class.
+Previously this only surfaced once training actually started, as a
+confusing `"received a plain tensor input but was constructed with a
+2-tuple input_dim"` `ValueError` from inside `DualBranchEmbedding.forward`
+itself. `build_critic` now checks for a compound (tuple) X-role `input_dim`
+combined with `shared_encoder=True` upfront, alongside the existing
+`shared_encoder` + `critic_type='concat'` check it already had -- same
+class of guard `DualBranchEmbedding`'s docstring already documents for
+`use_variational=True`/`use_decoder=True`/`max_samples_per_task`.
+
+### Fixed: `permutation_test=True` always failed for a raw-deferred conditioning variable
+
+`mode='conditional'`/`mode='interaction'`'s permutation-test dispatch
+(`_run_single_permutation`) never forwarded `raw_deferred`/`w_processor_type`
+into its per-trial `run_conditional_mi`/`run_interaction_information` call,
+unlike the main (non-permutation) run, which already threads both correctly.
+Every trial silently raised inside the eager (non-`raw_deferred`) code
+path -- caught, logged as `"Permutation trial failed: ..."`, contributing a
+`nan` to the null distribution -- whenever the conditioning variable's own
+reachability path kept the data raw: a mixed continuous+categorical
+conditioning variable under `shift_windows=True`, or *any* spike+spike
+conditioning pair (raw_deferred there is unconditional, not just under
+`shift_time`, since merging before windowing is a correctness requirement
+for spike coverage -- see the window-validity-gap fix above -- not just a
+shift-reachability nicety). The end result was silent, not a crash:
+`nmi.run(...)` returned normally with `null_distribution` entirely `nan`,
+easy to miss unless the log was checked. Fixed by threading both through at
+both call sites, matching the main run's own convention exactly.
+`align='dual_branch'` was and remains unaffected -- it already raises a
+clear upfront error for `permutation_test=True`.
+
+### Fixed: `permutation_test`'s null shuffle was a no-op for spike-type Y; added `permutation_shuffle` to choose how it's now broken
+
+`_run_single_permutation`'s shuffle (shared by every mode) did
+`len(y_data)`/`[y_data[i] for i in shuffle_idx]` for any non-array Y, which
+is correct for a plain Python sequence but for spike data, Y is a **list of
+per-neuron spike-time arrays** -- `len()` gives the neuron *count*, and the
+"shuffle" only reordered which list position each neuron's already-complete,
+untouched spike train sat at. The population's joint activity across time
+was byte-for-byte identical before and after; no window of X's and Y's
+temporal correspondence was broken, which is the entire point of a
+permutation-test null. Confirmed by direct inspection, not conjecture: the
+"permuted" list contained the exact same arrays as the original, just
+reordered. Affected every mode that can reach this shuffle with spike-type Y
+(`estimate`, `sweep`, `dimensionality`, `lag`, `conditional`,
+`interaction`) -- entirely untested combination before this pass
+(`tests/test_permutation.py` had no spike coverage at all).
+
+Fixed with a real temporal shuffle of the spike population, selectable via
+a new `run(..., permutation_shuffle='circular'|'block')` parameter
+(default `'circular'`):
+
+- **`'circular'`** (default) -- shift the entire Y population by one shared
+  random offset `Δ ~ Uniform(0, duration)`, wrapping at the recording
+  boundary. A single shared `Δ` (not an independent shift per neuron) is
+  deliberate: it breaks X-Y temporal alignment while leaving Y's own
+  internal cross-neuron structure (synchrony, pairwise correlations) intact
+  -- the same reasoning behind circular shuffles used elsewhere in the
+  spike-train-analysis literature as a population-level null.
+- **`'block'`** (opt-in) -- cut the recording into fixed-size contiguous
+  time blocks (size inferred from `window_size`, else `duration/10`),
+  permute block order, and reassemble a spike train of the same total
+  duration. A coarser-grained null than `'circular'`, useful when
+  trial/epoch boundaries are a more natural shuffle unit than a single
+  global shift.
+
+Per-neuron jitter was considered and explicitly rejected as a third option:
+jitter perturbs each spike's own fine-timing precision, which is a
+different question from whether the population's overall temporal
+alignment with X is broken -- the property a permutation-test null actually
+needs to destroy. (Rate-based nulls -- e.g. redrawing each neuron's spikes
+from a matched-rate homogeneous or inhomogeneous Poisson process -- were
+also considered; not implemented here since they change spike *statistics*,
+not just temporal alignment, which is a larger, separate methodology
+question.)
+
+Both new shuffle functions were self-tested in isolation before
+integration; this caught a half-open-interval bug in the first `'block'`
+implementation where a spike landing exactly at the recording's final edge
+(`t_end`) was silently dropped by the per-block membership mask (`hi`
+exclusive on every block, including the last) -- fixed by making only the
+last block's upper bound inclusive. Verified end-to-end that `'circular'`
+now produces a qualitatively different, more plausible null for genuinely
+correlated spike populations: null MI values drop to near-zero/negative
+against a real estimate well above zero, instead of the old shuffle's null
+values sitting suspiciously close to the real estimate (since nothing had
+actually been broken). New coverage in
+`tests/test_permutation.py::TestSpikePermutationShuffle` (unit tests for
+both shuffle functions plus `_spike_population_extent`'s `n_seconds`
+handling, an invalid-`permutation_shuffle` validation test, and two
+end-to-end regression tests). Non-spike Y (anything with `.shape`) is
+unaffected -- `permutation_shuffle` only has meaning for raw spike-type Y
+and the original row-permutation shuffle is untouched for everything else.
+
+### Fixed: four gaps found auditing the temporal-quantities/shift work for coverage
+
+A deliberate second pass over `quantities.py`, the shift-reachability gates,
+and `DualBranchEmbedding`'s documented incompatibilities, specifically
+looking for anything left half-finished. Four real, reproducible issues
+found and fixed:
+
+- **`return_embeddings=True` silently produced no `embeddings_x`/`embeddings_y`
+  for `mode='conditional'`/`'interaction'`/`'transfer'`** -- no error, no
+  warning, the keys just never appeared in `result.details`, even though
+  `task.py`'s extraction already ran and the arrays sat unused inside
+  `raw_xw_y[0]`/`raw_xypast_yfuture[0]`. These three modes are each a
+  chain-rule difference of two independently-trained models
+  (`_joint_marginal_difference`), so "the embedding" is the *joint* leg's
+  (the one analogous to `mode='estimate'`'s single model) -- a new shared
+  `_extract_embeddings` helper (`analysis/sweep.py`, mirroring
+  `transfer.py`'s existing `_extract_diagnostics` "last representative
+  result" convention, but also stripping the key from every entry to avoid
+  bloating `raw_*` with duplicate large arrays) pulls it to the top level
+  for all three. `mode='transfer'`'s `bidirectional=True` additionally
+  surfaces the reverse direction under `embeddings_x_yx`/`embeddings_y_yx`.
+  This directly affects `mi_rate`/`instantaneous_exchange`/
+  `directed_information_rate` (`h`/`k > 0`) and `interaction_information`,
+  which route through these modes.
+- **`use_decoder=True` crashed with `align='dual_branch'`** -- an opaque
+  `TypeError` from dividing a tuple by a tuple in `task.py`'s window-size
+  computation, instead of a clean error. `DualBranchEmbedding`'s own
+  docstring already documents two other incompatibilities with a clear
+  guard each (`use_variational=True`, `max_samples_per_task`); `use_decoder`
+  needed the same treatment -- now raises `NotImplementedError` upfront,
+  before any training starts.
+- **`show_progress=False` didn't suppress per-task progress bars in
+  `quantities.py`'s sweep dispatch** -- confirmed by direct reproduction.
+  The single-value (non-sweep) path already forwarded `show_progress`
+  correctly; the sweep path's four dispatch helpers (`_run_prebuilt_task`,
+  `_run_block_mi_task`, `_run_transfer_task`, `_run_dual_branch_task`) never
+  threaded it into their own inner `run()` call, so each sweep entry's
+  training loop always showed its own bar regardless of the caller's
+  setting. Isolated to `quantities.py` (`dispatch_tasks` isn't used
+  anywhere else in the codebase), so specific to this session's new API,
+  not a wider pattern. Affects every sweep-capable function in the module.
+- **Documentation gap** (not a code bug): the shift-reachability section
+  explains in detail why `mode='transfer'` is deliberately excluded (its
+  past/future arrays are already a stride-1 `unfold`, so every possible
+  window position is already covered in one epoch -- shifting is a
+  structural no-op). The identical reasoning applies to `mi_rate`/
+  `instantaneous_exchange`/`directed_information_rate`/
+  `active_information_storage`/`excess_entropy`/`cross_predictive_information`
+  (all built the same stride-1-`unfold`-then-`processor_type=None` way),
+  but none of them were mentioned -- a reader had no way to tell "excluded
+  on purpose" from "not gotten to yet". `block_mi` is the one function in
+  the module this does *not* apply to (it routes through a real
+  `Processing(x='continuous', ...)`, so `shift_windows` reaches it
+  normally) -- now called out explicitly too.
+
+### Changed (breaking): `mode='conditional'`'s conditioning variable renamed from "Z" to "W"
+
+`Conditional`'s `z_data`/`z_time`/`z_processor_type`/`z_processor_params`
+are now `w_data`/`w_time`/`w_processor_type`/`w_processor_params` --
+matching `Interaction`/`Transfer`, which already named their own third
+variable `w_data`. `run.py`'s internal handling collapses onto the same
+`w_data`-family parameters `mode='interaction'`/`'transfer'` already share
+(mutually exclusive by `mode`), removing a duplicate parameter set and
+several `if mode == 'conditional' else ...` reconciliation branches.
+`run_conditional_mi`'s output dict keys `mi_xz_y`/`mi_z_y`/`raw_xz_y`/
+`raw_z_y` are now `mi_xw_y`/`mi_w_y`/`raw_xw_y`/`raw_w_y` (matching
+`run_interaction_information`'s existing `mi_xw_y`/`mi_w_y` naming for the
+same kind of quantity -- joint MI of X-concatenated-with-conditioning-
+variable against Y). No compatibility shim for the old names -- update any
+`Conditional(z_data=...)` call to `Conditional(w_data=...)` and any
+`result.details['mi_xz_y']`/`['mi_z_y']` read to `['mi_xw_y']`/`['mi_w_y']`.
+`align='dual_branch'`'s internal `c_data`/`c_processor_type`/
+`c_processor_params` (the `DualBranchEmbedding` compound-branch role,
+distinct from the conditioning-variable-as-such) are unaffected -- they
+were never the confusing pair, since nothing else in the library uses `c`
+for anything.
+
+### Fixed: conditioning-variable window-validity gap producing a sample-count crash for spike data
+
+For `mode='conditional'`/`'interaction'`, the conditioning variable W used
+to be windowed on its own (`create_dataset(w_data, y_data=None, ...)`),
+so its window-validity criterion was only "W has data" -- weaker than X's
+own windows (built paired with Y), which require "X has data AND Y has
+data." For continuous/categorical data this asymmetry is a 1-sample
+boundary effect already absorbed by the existing trim tolerance. For spike
+data, coverage is patchy enough that the gap could exceed the tolerance and
+raise `ValueError: x_data, y_data, and w_data must have the same number of
+samples`, specifically whenever `shift_time=False` (the `shift_time=True`
+path never hit this, since it always merges X and W before windowing
+rather than building W standalone). Fixed two ways:
+
+- The eager (non-deferred) construction path now pairs W with Y instead of
+  windowing it alone, using Y's own effective type/params -- brings W's
+  criterion in line with X's for the regular-grid (continuous/categorical)
+  case, where it already usually held anyway.
+- For a spike+spike conditioning pair specifically, this pairing is not
+  sufficient on its own (two independently-drawn spike populations sharing
+  a Y can diverge by dozens of windows even when both individually require
+  Y's coverage, confirmed empirically). X and W are now always merged into
+  one combined population before windowing -- the same mechanism the
+  `shift_time=True` path already used, now applied unconditionally for
+  spike+spike conditioning rather than gated on `shift_time`, since it's a
+  correctness requirement, not an optional shift-reachability path.
+
+### Added: `LRUEmbedding` and `DualBranchEmbedding` as first-class `embedding_model` options
+
+Both were previously only reachable via `custom_embedding_cls`, with
+`DualBranchEmbedding` additionally requiring an unrelated
+`embedding_model='gru'` string set purely to hit `build_critic`'s
+sequence-vs-flattened shape convention -- a scaffolding pattern from
+testing, not a shipping design.
+
+- **Root mechanism fix**: `BaseEmbedding` gained an `input_style` class
+  attribute (`'channels'` or `'flattened'`, default `'flattened'`) that a
+  class declares on itself; `build_critic` now reads `EmbeddingModel.
+  input_style` directly instead of checking a hardcoded `_sequential_types`
+  set of `embedding_model` strings. A custom class opts into the raw-
+  channel-count convention by setting `input_style = 'channels'` on itself,
+  rather than the caller having to separately set an unrelated
+  `embedding_model=` string as a shape hint. Every built-in sequence-style
+  class (`CNN1D`/`CNN2D`/`GRU`/`LSTM`/`TCN`/`Transformer`/
+  `PretrainedBackboneEmbedding`/`DualBranchEmbedding`) sets it; behavior for
+  every existing class and any pre-existing `custom_embedding_cls` is
+  unchanged (defaults to the same flattened convention as before).
+- **`embedding_model='lru'`**: `LockedDropout`/`LRULayer`/`LRUBlock`/
+  `LRUEmbedding` (a complex-valued diagonal linear state-space recurrence,
+  Orvieto et al. 2023) moved from scratch benchmark scripts into
+  `neural_mi/models/embeddings.py`, now inheriting `BaseEmbedding`. An
+  `LRUDecoder` was added for `use_decoder=True` support, matching
+  `GRUDecoder`'s shape.
+- **`embedding_model='dual_branch'`**: `Model(embedding_model='dual_branch',
+  branch_model='gru', ...)` replaces the old
+  `Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding,
+  ...)` pattern -- `branch_model` (default `'gru'`) picks each branch's own
+  architecture from the same name table `embedding_model` itself resolves
+  against (factored into one `_EMBEDDING_CLASSES` dict in `utils.py`,
+  replacing a chain of `elif` string comparisons). The old
+  `custom_embedding_cls=DualBranchEmbedding` form still works unchanged
+  (`custom_embedding_cls` always takes priority) -- it remains the escape
+  hatch for a genuinely custom (non-built-in) branch architecture, via a
+  thin subclass hardcoding `branch_cls` (see the class docstring).
+  `neural_mi.quantities._require_dual_branch_model` (backing `mi_rate`/
+  `instantaneous_exchange`/`directed_information_rate`) now accepts either
+  form.
+- `NEURALMI_REFERENCE.md`/`THEORY.md` updated throughout: the embedding-
+  models table, the `Conditional(align='dual_branch')` section, the
+  `mi_rate` example, and the generic "Custom Models" section (which now
+  explains `input_style` instead of leaving an undocumented flattened-
+  default trap for a sequence-style custom class).
+
+### Fixed: false `shift_windows=True` "has no effect" warning for `mode='lag'`
+
+`shift_windows` already engaged correctly for `mode='lag'` with regular-grid
+data (`try_build_shift_windows_dataset` is mode-agnostic and was always
+reachable via the same raw/deferred path `is_proc_sweep` uses) -- confirmed
+by direct instrumentation. The only actual bug was `_warn_if_shift_windows_dead`'s
+reachable-modes list not including `'lag'`, producing a false "has no
+effect" warning whenever a user explicitly requested it. Fixed by adding
+`'lag'` to `_SHIFT_WINDOWS_SAFE_MODES`. Also fixed a secondary, pre-existing
+inaccuracy found alongside it: `mode='lag'`'s reported `n_windows` column
+was the raw post-lag-truncation sample count (window count wasn't known at
+that point in the code), not the true window count -- now uses
+`n_windows_if_deferred` for the regular-grid family, matching what training
+actually uses.
+
+### Added: `shift_windows`/`shift_time` reachable for a *mixed*-type or spike conditioning variable, and for `align='dual_branch'`
+
+Three further reachability gaps closed, reusing the shift-reachability
+infrastructure built earlier in this session:
+
+- **Mixed continuous+categorical conditioning variable** (`conditional`/
+  `interaction`, X and the conditioning variable W now allowed to have *different* types, not just
+  matching ones): `shift_windowing.make_multi_categorical_encoder` gained a
+  continuous-passthrough block (`n_categories=None`), plus a broadcast
+  reconciling a categorical block's collapsed window axis against a
+  continuous block's real `window_size` -- the same broadcast
+  `run._reshape_categorical_w_for_conditional` already applies to a lone
+  categorical W. `try_build_shift_windows_dataset`'s block-spec check is now
+  evaluated before the `proc_type` dispatch (previously nested inside the
+  `proc_type == 'categorical'` branch, which would have silently skipped
+  encoding entirely for a continuous-typed joint array with a categorical
+  block inside it).
+- **Spike conditioning variable** (X='spike' and W='spike', matching
+  family only -- a mixed spike + regular-grid conditioning variable remains
+  out of scope, no raw sample axis to concatenate against): concatenation
+  is Python list concatenation (no tensor op), and raw spike-list data
+  already gets genuine `shift_time` re-tiling the moment it reaches
+  `create_dataset`'s eager fallback -- no new per-epoch shifting code
+  needed. `run_rigorous_scalar_analysis` gained a parallel
+  `_is_spike_deferred` branch reusing Phase 1's `spike_shift_grid_info`/
+  `chunk_window_range_to_time`/`slice_spike_data_to_time_range` directly.
+- **`align='dual_branch'`**: a new `DualBranchWindowShifter` (X, C, Y all
+  shift in sync, each in its own window units) generalizes the already-proven
+  `PairedWindowShifter` pattern to a third side, since dual_branch never
+  concatenates X and C (that's its entire premise -- C keeps its own,
+  generally different, window geometry) and so needed a different mechanism
+  than the concat-based one above, not the same one. `Trainer`'s frozen-eval-
+  snapshot path gained tuple-safe indexing (`_detach_clone`, reusing the
+  existing `_index_batch` helper) at the ~10 sites that read
+  `_eval_x_source` directly -- the live per-epoch shift-application code
+  needed no changes, since `StaticDataset`/`PairedDataset` already support a
+  tuple X-role (the already-shipped, non-shifted dual_branch path relies on
+  the same convention). `rigorous=True` together with `align='dual_branch'`
+  and `shift_windows=True` raises a clear `NotImplementedError` rather than
+  being wired through incorrectly -- `run_rigorous_scalar_analysis`'s chunk
+  translation would otherwise reuse X's chunk boundaries for C's raw array,
+  silently misaligning it given C's genuinely different window geometry.
+
+Verified against exact/analytic ground truth per item (Gaussian-oracle
+triple construction for the mixed-type case with a finely-discretized
+categorical W as an approximate continuous-CMI reference; an exact-zero
+construction -- the conditioning variable an exact copy of X -- for the
+spike and dual_branch cases, which have no simple closed-form CMI oracle):
+shift on and off track each other and the reference closely in all three
+cases.
+
+### Fixed: `shift_time` was a no-op on window content
+
+`shift_time` (default-on, reachable at `mode='estimate'`/`pairwise`/`sweep`/
+`lag`, and used internally by `PairedTemporalDataset`) was meant to make
+each epoch train on a different tiling of the same raw signal, exactly like
+`shift_windows` already does for regularly-sampled data. It didn't: on every
+shift, `PairedTemporalDataset.time_shift` rewrote the raw data by `+offset`
+and then re-derived the window grid's start from that data's own (now
+shifted) extent, so the `+offset` term appeared on both sides of every
+window-membership test and canceled out exactly. Window *content* was
+byte-identical regardless of the offset; only the grid's end got clamped
+back to the original recording extent, so window *count* shrank as the
+shift grew. Confirmed for all four temporal dataset types that go through
+this path (spike, continuous and categorical via a mixed pair, binned
+spike).
+
+Fixed by no longer rewriting raw data at all: `time_shift` now slides the
+window grid's start forward over fixed, unmutated raw data (the same
+principle `shift_windows`/`WindowShifter` already use, expressed in
+continuous time instead of discrete samples), reserving a `2*window_size`
+margin so the window count stays exactly fixed for every offset in
+`[0, window_size)`. `Trainer.train()` primes the grid to this final size
+once, before the train/test split, so a recording too short for a safe
+shift fails fast with a clear error instead of partway through training.
+
+Companion fix: the blocked-split leak check's margin (`gap_size*step >=
+window_size`, sized for static overlapping windows) is now doubled to
+`2*window_size` specifically when `is_temporal and shift_time`, since a
+training window's content can now genuinely drift by a full `window_size`
+relative to the frozen eval snapshot. Without this, the content fix alone
+would have silently traded a no-op-training bug for a train/test
+contamination bug.
+
+### Added: `shift_time` reachable at `mode='rigorous'` for spike+spike pairs
+
+Extends this session's rigorous shift-reachability work (previously
+`shift_windows` only, for the regular-grid family) to spike data, now that
+`shift_time` genuinely re-tiles (see the Phase 0 fix above). The
+bias-correction ladder's chunk boundaries are translated into a raw *time*
+range (new `chunk_window_range_to_time`/`slice_spike_data_to_time_range` in
+`shift_windowing.py`) rather than a raw sample range, sliced+re-zeroed
+against the ragged per-neuron spike-time list, with an explicit
+`t_start=0`/`t_end=chunk_span` forced on each chunk's own dataset so its
+window count matches the intended `hi - lo` exactly rather than a shorter,
+data-dependent extent derived from wherever that chunk's actual spikes
+happen to fall. Deliberately scoped to `'spike'+'spike'` pairs only, not
+`'mixed'` (spike + continuous/categorical) pairs at `mode='rigorous'` --
+that would need simultaneous raw-sample-range and raw-time-range chunk
+translation, real additional work not attempted this pass.
+
+### Added: `shift_windows` reachable at `mode='conditional'`/`mode='interaction'`'s `rigorous=True` sub-path
+
+Extends this session's non-rigorous `conditional`/`interaction` shift_windows
+reachability (continuous X, continuous conditioning variable) to their
+`rigorous=True` sub-path too. That path doesn't go through
+`AnalysisWorkflow._prepare_tasks` -- it uses a separate, more general helper,
+`run_rigorous_scalar_analysis`, shared with `mode='transfer'`'s rigorous
+dispatch. Gives it the same `_is_raw_deferred` chunk-to-raw-sample-range
+translation `AnalysisWorkflow` already has, extended to also translate the
+conditioning variable's raw array (`extra_data`), gated on a new explicit
+`raw_deferred` parameter rather than inferred from `shift_windows`/processor
+family alone -- `mode='transfer'`'s rigorous dispatch also reaches this
+helper with genuinely raw 2-D `x_data`/`y_data` (built via a stride-1
+`unfold`, for an unrelated reason, deliberately excluded from both shift
+mechanisms) and must never be misinterpreted as window-size/step_size-
+chunkable data.
+
+### Added: `shift_windows` reachable at `mode='conditional'`/`mode='interaction'` for a categorical conditioning variable
+
+Extends `conditional`/`interaction`'s `shift_windows` reachability from
+`'continuous'`-only to also cover a matching `'categorical'`+`'categorical'`
+X/conditioning-variable pair (X and W must match exactly, not just share
+`shift_family`'s broader 'regular' grouping -- a continuous X paired with a
+categorical conditioning variable still isn't attempted this pass). The
+blocker was never the shift mechanism itself (`WindowShifter`/
+`PairedWindowShifter` don't care what the channels mean); it was that
+relabeling and inferring `n_categories` from the *combined*, already-
+concatenated raw array conflates X's and W's category counts whenever
+they differ.
+
+Fixed by relabeling each side's raw categorical array *separately* (each to
+its own correct `0..n-1` range) before concatenating, and a new
+`make_multi_categorical_encoder(block_specs, encoding)`
+(`shift_windowing.py`) that encodes each channel block against its own
+`n_categories` and folds every block's category axis into the channel axis
+(the same fold `run._reshape_categorical_w_for_conditional` already applies
+to a single categorical conditioning variable in the non-raw-deferred path,
+generalized here to multiple blocks with independent category counts) so
+blocks with different category counts can still be concatenated. Supports
+all three categorical encodings (`majority_vote`, `probability`,
+`full_trajectory`). `_joint_marginal_difference` gained a
+`marginal_base_params` override so the joint (two-block) and marginal
+(one-block) legs of the chain-rule difference can each carry their own
+block spec.
+
+**Companion correctness fix** (applies to the already-shipped continuous
+case too, not just categorical): the raw-deferred path previously windowed
+the concatenated array using only `processor_params_x`'s window_size/
+step_size, silently ignoring a *different* value set on
+`w_processor_params`. Now raises a clear `ValueError`
+on mismatch instead.
+
 ### Verified: shift reachability against exact Gaussian-oracle ground truth (`precision`/`dimensionality`/`rigorous`/`conditional`/`interaction`)
 
 Benchmarked all five newly-reachable modes with `shift_windows` on vs. off

@@ -137,15 +137,15 @@ class Results:
                     print(f"  MI range          : {_finite.min():.4f} – {_finite.max():.4f} {units}")
 
         elif self.mode == 'conditional':
-            mi_xz_y = self.details.get('mi_xz_y')
-            mi_z_y  = self.details.get('mi_z_y')
+            mi_xw_y = self.details.get('mi_xw_y')
+            mi_w_y  = self.details.get('mi_w_y')
             cmi     = self.details.get('cmi_estimate')
             if cmi is not None:
-                print(f"  CMI I(X;Y|Z)      : {cmi:.4f} {units}")
-            if mi_xz_y is not None:
-                print(f"  I(XZ;Y)           : {mi_xz_y:.4f} {units}")
-            if mi_z_y is not None:
-                print(f"  I(Z;Y)            : {mi_z_y:.4f} {units}")
+                print(f"  CMI I(X;Y|W)      : {cmi:.4f} {units}")
+            if mi_xw_y is not None:
+                print(f"  I(XW;Y)           : {mi_xw_y:.4f} {units}")
+            if mi_w_y is not None:
+                print(f"  I(W;Y)            : {mi_w_y:.4f} {units}")
 
         elif self.mode == 'interaction':
             mi_xw_y = self.details.get('mi_xw_y')
@@ -432,16 +432,16 @@ class Results:
         elif self.mode == 'conditional':
             # Bar chart showing the three CMI components.
             cmi = self.details.get('cmi_estimate')
-            mi_xz_y = self.details.get('mi_xz_y')
-            mi_z_y = self.details.get('mi_z_y')
-            if cmi is None and mi_xz_y is None:
+            mi_xw_y = self.details.get('mi_xw_y')
+            mi_w_y = self.details.get('mi_w_y')
+            if cmi is None and mi_xw_y is None:
                 raise ValueError(
-                    "Cannot plot conditional results: 'cmi_estimate' and 'mi_xz_y' "
+                    "Cannot plot conditional results: 'cmi_estimate' and 'mi_xw_y' "
                     "are missing from result.details. "
                     f"Present keys: {sorted(self.details.keys())}."
                 )
-            _labels = ['I(XZ;Y)', 'I(Z;Y)', 'CMI  I(X;Y|Z)']
-            _values = [mi_xz_y, mi_z_y, cmi]
+            _labels = ['I(XW;Y)', 'I(W;Y)', 'CMI  I(X;Y|W)']
+            _values = [mi_xw_y, mi_w_y, cmi]
             _colors = ['steelblue', 'darkorange', 'mediumseagreen']
             valid = [(l, v, c) for l, v, c in zip(_labels, _values, _colors) if v is not None]
             _labels, _values, _colors = (list(x) for x in zip(*valid))

@@ -56,11 +56,16 @@ class ParameterSweep:
                 'n_channels_y': y_data.shape[1] if y_data is not None else 0,
                 **kwargs
             })
-        elif isinstance(x_data, tuple):
+        elif isinstance(x_data, tuple) and isinstance(x_data[0], torch.Tensor) and x_data[0].ndim == 3:
             # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
             # mode='conditional'(align='dual_branch')) -- dims become a
             # matching 2-tuple instead of a single int, exactly what
-            # DualBranchEmbedding's constructor expects as `input_dim`.
+            # DualBranchEmbedding's constructor expects as `input_dim`. Only
+            # when already windowed (3-D): a raw (2-D) tuple -- shift_windows
+            # reachability for dual_branch, X and C not yet windowed -- has
+            # no `.shape[2]` to read yet either, and falls through to the
+            # `else` branch below, dims inferred later by task.py once
+            # actually windowed, same as a raw single tensor already does.
             a_data, c_data = x_data
             self.base_params.update({
                 'input_dim_x': (a_data.shape[1] * a_data.shape[2], c_data.shape[1] * c_data.shape[2]),
@@ -275,11 +280,12 @@ def _joint_marginal_difference(
     joint_label: str, marginal_label: str,
     joint_key: str, marginal_key: str,
     is_proc_sweep: bool = False,
+    marginal_base_params: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     """Estimate a chain-rule difference I(joint) - I(marginal) via two
     independent ParameterSweep runs.
 
-    Shared by conditional MI (I(X;Y|Z) = I(XZ;Y) - I(Z;Y)) and transfer
+    Shared by conditional MI (I(X;Y|W) = I(XW;Y) - I(W;Y)) and transfer
     entropy in both directions (TE(X→Y) = I(xy_past;y_future) -
     I(y_past;y_future), and the same with X/Y swapped for TE(Y→X)) -- all
     three are the identical joint/marginal/difference/negative-value-warning
@@ -307,6 +313,15 @@ def _joint_marginal_difference(
         level, before windowing, so both sweeps window and shift their own
         copy independently). Default ``False`` matches every other caller's
         already-windowed data.
+    marginal_base_params : Dict[str, Any], optional
+        Use this instead of ``base_params`` for the marginal sweep only.
+        Needed when the joint and marginal legs are raw, differently-shaped
+        categorical concatenations (e.g. joint=XZ with two channel blocks,
+        marginal=Z alone with one) that each need their own
+        ``processor_params_x['_categorical_block_specs']`` -- a single
+        shared ``base_params`` can't carry both.  ``None`` (default) reuses
+        ``base_params`` for both sweeps, unchanged from before this
+        parameter existed.
 
     Returns
     -------
@@ -318,7 +333,8 @@ def _joint_marginal_difference(
     results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
-    sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y, base_params=base_params.copy())
+    sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
+                                    base_params=(marginal_base_params or base_params).copy())
     results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
@@ -348,3 +364,33 @@ def _joint_marginal_difference(
             UserWarning, stacklevel=3,
         )
     return difference, mi_joint, mi_marginal, results_joint, results_marginal
+
+
+def _extract_embeddings(task_results: list) -> Optional[Dict[str, Any]]:
+    """Pull ``embeddings_x``/``embeddings_y`` out of a ``ParameterSweep``
+    task-result list and strip them from every entry.
+
+    Shared by conditional MI, interaction information, and transfer entropy's
+    joint leg -- all three are a chain-rule difference of two independently-
+    trained models (see ``_joint_marginal_difference``), so ``return_embeddings``
+    threaded into ``base_params`` produces an ``embeddings_x``/``embeddings_y``
+    pair buried inside each task dict in the *joint* leg's result list
+    (``task.py``'s extraction already runs; it was just never surfaced to the
+    caller's top-level result). Uses the last entry with the key present --
+    same "no natural aggregation, pick one representative result" convention
+    as ``transfer.py``'s ``_extract_diagnostics`` and ``run.py``'s
+    ``mode='sweep'`` embeddings handling -- but also strips the key from
+    every entry (not just the ones before the chosen one), since an
+    embedding array is large enough that leaving copies scattered across
+    ``raw_*`` would meaningfully bloat the result, unlike a few scalar
+    diagnostics.
+    """
+    embeddings = None
+    for r in reversed(task_results):
+        if 'embeddings_x' in r:
+            embeddings = {'embeddings_x': r.get('embeddings_x'), 'embeddings_y': r.get('embeddings_y')}
+            break
+    for r in task_results:
+        r.pop('embeddings_x', None)
+        r.pop('embeddings_y', None)
+    return embeddings

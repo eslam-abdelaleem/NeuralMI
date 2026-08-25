@@ -298,3 +298,199 @@ class TestPairwisePermutation:
                       model=self._MODEL_P, training=self._TRAINING_P,
                       permutation_test=True, n_permutations=2, n_workers=1)
         assert 'null_distribution' not in res.details
+
+
+class TestConditionalInteractionRawDeferredPermutation:
+    """Regression: permutation_test=True for mode='conditional'/'interaction'
+    never forwarded raw_deferred/w_processor_type into the per-trial
+    run_conditional_mi/run_interaction_information call, so every trial
+    silently crashed (caught, logged as 'Permutation trial failed', all
+    entries NaN) whenever the conditioning variable's own reachability path
+    kept x_data/y_data/w_data raw -- a mixed continuous+categorical
+    conditioning variable under shift_windows=True, or a spike+spike
+    conditioning pair (raw_deferred there unconditionally, not just under
+    shift_time, since merging before windowing is a correctness requirement
+    for spike coverage, not just a shift-reachability nicety)."""
+
+    _MODEL_P = Model(embedding_dim=4, hidden_dim=8, n_layers=1)
+    _TRAINING_P = Training(n_epochs=2, learning_rate=1e-3, batch_size=32, patience=2)
+
+    def test_conditional_mixed_type_shift_windows_not_all_nan(self):
+        from neural_mi import Conditional
+        rng = np.random.default_rng(0)
+        T = 3000
+        x = rng.standard_normal((T, 1)).astype('float32')
+        w = rng.integers(0, 4, size=(T, 1)).astype('int64')
+        y = rng.standard_normal((T, 1)).astype('float32')
+        processing = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                                    y='continuous', y_params={'window_size': 20, 'step_size': 20})
+        res = nmi.run(
+            x, y, mode='conditional',
+            conditional=Conditional(w_data=w, w_processor_type='categorical',
+                                   w_processor_params={'window_size': 20, 'step_size': 20}),
+            processing=processing, model=self._MODEL_P,
+            training=Training(n_epochs=2, patience=1, shift_windows=True, batch_size=32),
+            permutation_test=True, n_permutations=2, n_workers=1, show_progress=False,
+        )
+        null = res.details['null_distribution']
+        assert len(null) == 2
+        assert not all(np.isnan(v) for v in null), "null distribution is all-NaN"
+
+    def test_interaction_mixed_type_shift_windows_not_all_nan(self):
+        from neural_mi import Interaction
+        rng = np.random.default_rng(0)
+        T = 3000
+        x = rng.standard_normal((T, 1)).astype('float32')
+        w = rng.integers(0, 4, size=(T, 1)).astype('int64')
+        y = rng.standard_normal((T, 1)).astype('float32')
+        processing = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                                    y='continuous', y_params={'window_size': 20, 'step_size': 20})
+        res = nmi.run(
+            x, y, mode='interaction',
+            interaction=Interaction(w_data=w, w_processor_type='categorical',
+                                   w_processor_params={'window_size': 20, 'step_size': 20}),
+            processing=processing, model=self._MODEL_P,
+            training=Training(n_epochs=2, patience=1, shift_windows=True, batch_size=32),
+            permutation_test=True, n_permutations=2, n_workers=1, show_progress=False,
+        )
+        null = res.details['null_distribution']
+        assert len(null) == 2
+        assert not all(np.isnan(v) for v in null), "null distribution is all-NaN"
+
+    def test_conditional_spike_conditioning_not_all_nan(self):
+        from neural_mi import Conditional
+        np.random.seed(0)
+        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
+            n_neurons=5, duration=40.0, firing_rate=10.0, delay=0.01, jitter=0.002
+        )
+        w_spikes, _ = nmi.generators.generate_correlated_spike_trains(
+            n_neurons=4, duration=40.0, firing_rate=8.0, delay=0.01, jitter=0.002
+        )
+        res = nmi.run(
+            x_spikes, y_spikes, mode='conditional',
+            conditional=Conditional(w_data=w_spikes, w_processor_type='spike',
+                                   w_processor_params={'window_size': 0.05}),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            model=self._MODEL_P, training=self._TRAINING_P,
+            permutation_test=True, n_permutations=2, n_workers=1, show_progress=False,
+        )
+        null = res.details['null_distribution']
+        assert len(null) == 2
+        assert not all(np.isnan(v) for v in null), "null distribution is all-NaN"
+
+
+class TestSpikePermutationShuffle:
+    """Regression: the shared permutation shuffle used to reorder a spike
+    population's *list position* (which array sits where), not its temporal
+    alignment with X -- the reordered list contains the exact same,
+    untouched per-neuron spike trains, so no X<->Y correspondence was ever
+    actually broken. circular (default) and block (opt-in) replace this
+    with an actual temporal permutation."""
+
+    def _make_population(self, n_neurons=4, duration=10.0, seed=0):
+        rng = np.random.default_rng(seed)
+        return [np.sort(rng.uniform(0, duration, size=rng.integers(5, 15)))
+               for _ in range(n_neurons)]
+
+    def test_circular_shift_preserves_spike_counts_and_bounds(self):
+        from neural_mi.run import _circular_shift_spike_population, _spike_population_extent
+        y_data = self._make_population()
+        t_start, t_end = _spike_population_extent(y_data, {})
+        for seed in range(30):
+            np.random.seed(seed)
+            y_perm = _circular_shift_spike_population(y_data, t_start, t_end)
+            for orig, new in zip(y_data, y_perm):
+                assert len(orig) == len(new)
+                assert np.all(new >= t_start - 1e-9) and np.all(new <= t_end + 1e-9)
+                assert np.all(np.diff(new) >= 0), "spike times must stay sorted"
+
+    def test_circular_shift_is_not_identity(self):
+        """A shared random offset must actually move the spikes, not just
+        reproduce the input (which would silently reintroduce the original
+        list-reorder bug's failure mode: a 'shuffle' indistinguishable from
+        no shuffle at all)."""
+        from neural_mi.run import _circular_shift_spike_population, _spike_population_extent
+        y_data = self._make_population()
+        t_start, t_end = _spike_population_extent(y_data, {})
+        np.random.seed(1)
+        y_perm = _circular_shift_spike_population(y_data, t_start, t_end)
+        assert any(not np.allclose(orig, new) for orig, new in zip(y_data, y_perm))
+
+    def test_block_shuffle_preserves_spike_counts_and_bounds(self):
+        """Also exercises the half-open-interval edge case: a spike landing
+        exactly at t_end must not be silently dropped."""
+        from neural_mi.run import _block_shuffle_spike_population, _spike_population_extent
+        y_data = self._make_population()
+        t_start, t_end = _spike_population_extent(y_data, {})
+        y_data = [np.append(st, t_end) for st in y_data]  # force a spike exactly at t_end
+        for seed in range(30):
+            np.random.seed(seed)
+            y_perm = _block_shuffle_spike_population(y_data, t_start, t_end, block_size=2.0)
+            for orig, new in zip(y_data, y_perm):
+                assert len(orig) == len(new), "a spike at t_end must not be dropped"
+                assert np.all(new >= t_start - 1e-9) and np.all(new <= t_end + 1e-9)
+                assert np.all(np.diff(new) >= 0)
+
+    def test_spike_population_extent_uses_n_seconds_when_set(self):
+        from neural_mi.run import _spike_population_extent
+        y_data = [np.array([1.0, 2.0]), np.array([3.0])]
+        t_start, t_end = _spike_population_extent(y_data, {'processor_params_y': {'n_seconds': 100.0}})
+        assert t_start == 1.0
+        assert t_end == 100.0
+
+    def test_spike_population_extent_infers_from_spikes_without_n_seconds(self):
+        from neural_mi.run import _spike_population_extent
+        y_data = [np.array([1.0, 2.0]), np.array([3.0, 4.5])]
+        t_start, t_end = _spike_population_extent(y_data, {})
+        assert t_start == 1.0
+        assert t_end == 4.5
+
+    def test_invalid_permutation_shuffle_raises(self):
+        x, y = np.random.randn(200, 1).astype('float32'), np.random.randn(200, 1).astype('float32')
+        with pytest.raises(ValueError, match="permutation_shuffle"):
+            nmi.run(x, y, mode='estimate', model=_MODEL, training=_TRAINING,
+                   permutation_test=True, n_permutations=2, permutation_shuffle='jitter',
+                   show_progress=False)
+
+    def test_circular_default_gives_lower_null_than_broken_list_reorder(self):
+        """End-to-end sanity check, not just unit-level: for genuinely
+        X<->Y-correlated spike populations, the fixed (circular) null should
+        land meaningfully below the real estimate -- unlike the old
+        list-reorder shuffle, which left the 'permuted' Y statistically
+        identical to the original and so produced null values hugging the
+        real estimate instead of reflecting a broken dependency."""
+        np.random.seed(0)
+        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
+            n_neurons=5, duration=40.0, firing_rate=10.0, delay=0.01, jitter=0.002
+        )
+        model = Model(embedding_dim=8, hidden_dim=16, n_layers=1)
+        training = Training(n_epochs=15, patience=5, batch_size=32)
+        r = nmi.run(
+            x_spikes, y_spikes, mode='estimate',
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            model=model, training=training,
+            permutation_test=True, n_permutations=5, permutation_shuffle='circular',
+            n_workers=1, show_progress=False, seed=0,
+        )
+        null_mean = np.nanmean(r.details['null_distribution'])
+        assert null_mean < r.mi_estimate - 0.02, (
+            f"null mean ({null_mean:.4f}) should sit well below the real "
+            f"estimate ({r.mi_estimate:.4f}) for genuinely correlated populations"
+        )
+
+    def test_block_shuffle_end_to_end(self):
+        np.random.seed(0)
+        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
+            n_neurons=5, duration=40.0, firing_rate=10.0, delay=0.01, jitter=0.002
+        )
+        r = nmi.run(
+            x_spikes, y_spikes, mode='estimate',
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+            training=Training(n_epochs=2, patience=1),
+            permutation_test=True, n_permutations=2, permutation_shuffle='block',
+            n_workers=1, show_progress=False, seed=0,
+        )
+        null = r.details['null_distribution']
+        assert len(null) == 2
+        assert not all(np.isnan(v) for v in null)

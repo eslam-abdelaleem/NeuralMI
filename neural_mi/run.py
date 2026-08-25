@@ -49,15 +49,29 @@ _MODE_CONFIG_CLASSES = {
 # that already only reads a frozen, shared, pre-shift view) -- see
 # shift-related gating/warnings below and in `_run_flat`.
 _SHIFT_SAFE_MODES = ('estimate', 'sweep', 'pairwise', 'dimensionality', 'precision')
-# 'rigorous' additionally supports shift_windows specifically: its
-# bias-correction ladder's chunk boundaries are translated into raw sample
-# ranges (see rigorous.py::AnalysisWorkflow._prepare_tasks), a fix scoped to
-# the regular-grid/contiguous-chunking case only. shift_time's equivalent
-# for spike data (translating a chunk into a raw time range for a ragged
-# per-neuron spike-time list) is a separate, harder problem, not attempted
-# this pass -- so 'rigorous' is deliberately NOT in _SHIFT_SAFE_MODES itself,
-# which both mechanisms' gating reads.
-_SHIFT_WINDOWS_SAFE_MODES = _SHIFT_SAFE_MODES + ('rigorous',)
+# 'rigorous' additionally supports shift_windows for the regular-grid family
+# and shift_time for the spike family (each independently): both mechanisms'
+# bias-correction ladder chunk boundaries are translated into a raw range
+# before that chunk is windowed (see
+# rigorous.py::AnalysisWorkflow._prepare_tasks) -- a raw *sample* range for
+# shift_windows, a raw *time* range (searchsorted-sliced against a ragged
+# per-neuron spike-time list) for shift_time. 'rigorous' is deliberately NOT
+# in _SHIFT_SAFE_MODES itself, since that tuple also gates shift_time's
+# 'mixed'-family reach (spike paired with continuous/categorical), which
+# 'rigorous' does NOT support -- translating a chunk into a raw sample range
+# on one side and a raw time range on the other simultaneously is real
+# additional work, not attempted this pass.
+# 'lag' also supports shift_windows for the regular-grid family: raw,
+# unwindowed lag-shifted data already survives to task.py::run_training_task
+# (mode='lag' forces the same "defer, don't window here" treatment as
+# is_proc_sweep), which calls try_build_shift_windows_dataset unconditionally
+# (mode-agnostic) -- confirmed by direct instrumentation that shift_windows
+# already engages correctly for mode='lag' today. 'lag' was missing from
+# this tuple purely as a reachability-warning bug (a user explicitly setting
+# shift_windows=True for mode='lag' got a false "has no effect" warning even
+# though it was already working), not because the mechanism needed building.
+_SHIFT_WINDOWS_SAFE_MODES = _SHIFT_SAFE_MODES + ('rigorous', 'lag')
+_SHIFT_TIME_RIGOROUS_SAFE_MODES = _SHIFT_SAFE_MODES + ('rigorous',)
 
 
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
@@ -92,7 +106,7 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
             'te_estimate', 'te_xy', 'te_yx',
             'i_xypast_yfuture', 'i_ypast_yfuture',
             'i_yxpast_xfuture', 'i_xpast_xfuture',
-            'cmi_estimate', 'mi_xz_y', 'mi_z_y',
+            'cmi_estimate',
             'interaction_info', 'mi_xw_y', 'mi_x_y', 'mi_w_y',
             'mi_corrected', 'mi_error', 'mi_error_pred', 'slope',
         )
@@ -122,15 +136,15 @@ def _hashable_group_vars(df: pd.DataFrame, group_vars: List[str]) -> pd.DataFram
     return df
 
 
-def _reshape_categorical_z_for_conditional(z_run_data, cat_dataset):
-    """Re-lay-out a categorical-processor Z tensor for ``mode='conditional'``.
+def _reshape_categorical_w_for_conditional(w_run_data, cat_dataset):
+    """Re-lay-out a categorical-processor W tensor for ``mode='conditional'``.
 
-    ``mode='conditional'`` builds XZ by concatenating X and Z along the
+    ``mode='conditional'`` builds XW by concatenating X and W along the
     channel axis, which requires both to share X's window-size axis. The
     categorical processor's encodings don't produce that layout natively:
 
     - ``'majority_vote'`` / ``'probability'`` collapse each window to a
-      single per-category summary, shape ``(N, C, n_categories)`` — Z has no
+      single per-category summary, shape ``(N, C, n_categories)`` — W has no
       temporal extent within a window by construction. Folded here into
       ``C * n_categories`` channels with a size-1 window axis; the caller
       broadcasts that axis against X's window size.
@@ -146,15 +160,15 @@ def _reshape_categorical_z_for_conditional(z_run_data, cat_dataset):
     """
     encoding = cat_dataset.encoding
     n_cat = cat_dataset.n_categories
-    n, c, last = z_run_data.shape
+    n, c, last = w_run_data.shape
     if encoding in ('majority_vote', 'probability'):
-        return z_run_data.reshape(n, c * n_cat, 1)
+        return w_run_data.reshape(n, c * n_cat, 1)
     elif encoding == 'full_trajectory':
         w = cat_dataset.max_samples_per_window
         # (N, C, n_cat*W) -> (N, C, W, n_cat) -> (N, C, n_cat, W) -> (N, C*n_cat, W)
         # The (W, n_cat) un-flatten order matches how _move_full_trajectory
         # wrote columns: col = timepoint_index * n_categories + category.
-        return z_run_data.reshape(n, c, w, n_cat).permute(0, 1, 3, 2).reshape(n, c * n_cat, w)
+        return w_run_data.reshape(n, c, w, n_cat).permute(0, 1, 3, 2).reshape(n, c * n_cat, w)
     else:
         raise ValueError(
             f"Unknown categorical encoding '{encoding}' — cannot prepare it for "
@@ -190,6 +204,7 @@ def run(
     device: Optional[str] = None,
     permutation_test: bool = False,
     n_permutations: int = 1,
+    permutation_shuffle: str = 'circular',
     **_removed: Any,
 ) -> Results:
     """Unified entry point for all NeuralMI analyses (config-based API).
@@ -235,7 +250,7 @@ def run(
         ``rigorous=Rigorous(confidence_level=0.68)``,
         ``precision=Precision(tau_grid=[...])``,
         ``transfer=Transfer(history_window=10)`` (or ``Transfer(history_window=10, w_data=w)`` for conditional TE),
-        ``conditional=Conditional(z_data=z)``,
+        ``conditional=Conditional(w_data=w)``,
         ``interaction=Interaction(w_data=w)``,
         ``pairwise=Pairwise(pairs=[(0, 1), (0, 2)])``,
         ``sweep=Sweep(max_samples_per_task=1000)``.
@@ -348,7 +363,7 @@ def run(
                     flat['bidirectional_te'] = ak.pop('bidirectional')
                 _route_analysis(ak)
             elif isinstance(mode_cfg, Conditional):
-                flat.update(mode_cfg.to_z_kwargs())
+                flat.update(mode_cfg.to_w_kwargs())
                 _route_analysis(mode_cfg.to_analysis_kwargs())
             elif isinstance(mode_cfg, Interaction):
                 flat.update(mode_cfg.to_w_kwargs())
@@ -365,6 +380,7 @@ def run(
     flat['device'] = device
     flat['permutation_test'] = permutation_test
     flat['n_permutations'] = n_permutations
+    flat['permutation_shuffle'] = permutation_shuffle
     analysis_kwargs['n_workers'] = n_workers
 
     if base_params:
@@ -415,10 +431,7 @@ def _run_flat(
     threshold_ratio: float = 0.9,
     permutation_test: bool = False,
     n_permutations: int = 1,
-    z_data: Optional[Union[np.ndarray, torch.Tensor]] = None,
-    z_time: Optional[np.ndarray] = None,
-    z_processor_type: Optional[str] = None,
-    z_processor_params: Optional[Dict[str, Any]] = None,
+    permutation_shuffle: str = 'circular',
     history_window: Optional[int] = None,
     prediction_horizon: int = 1,
     bidirectional_te: bool = False,
@@ -557,6 +570,11 @@ def _run_flat(
         _inject(base_params, 'rotated_embeddings_per_epoch', rotated_embeddings_per_epoch)
         _inject(base_params, 'return_rotation_matrices', return_rotation_matrices)
 
+        if permutation_shuffle not in ('circular', 'block'):
+            raise ValueError(
+                f"permutation_shuffle must be 'circular' or 'block', got {permutation_shuffle!r}."
+            )
+
         if permutation_test and n_permutations < 50:
             warnings.warn(
                 f"permutation_test=True with n_permutations={n_permutations}. "
@@ -575,20 +593,16 @@ def _run_flat(
                 f"'conditional', 'interaction', or 'transfer' for permutation testing."
             )
 
-        # Verify conditional MI input
-        if z_data is not None and mode != 'conditional':
-            logger.warning(
-                f"z_data was provided but mode='{mode}' does not use it. "
-                f"z_data is only consumed by mode='conditional'. "
-                f"If you intended to compute conditional MI, set mode='conditional'."
-            )
-
-        # Verify interaction-information / conditional-TE input
-        if w_data is not None and mode not in ('interaction', 'transfer'):
+        # Verify conditional-MI / interaction-information / conditional-TE input.
+        # w_data is the shared "third variable" slot for all three modes
+        # (Conditional/Interaction/Transfer all name it identically, see
+        # config.py) -- one variable, three possible roles, dispatched by mode.
+        if w_data is not None and mode not in ('conditional', 'interaction', 'transfer'):
             logger.warning(
                 f"w_data was provided but mode='{mode}' does not use it. "
-                f"w_data is only consumed by mode='interaction' (interaction information) "
-                f"and mode='transfer' (conditional transfer entropy)."
+                f"w_data is only consumed by mode='conditional' (conditional MI), "
+                f"mode='interaction' (interaction information), and mode='transfer' "
+                f"(conditional transfer entropy)."
             )
 
         # Validate parameters and apply defaults to base_params
@@ -686,39 +700,129 @@ def _run_flat(
         # the same real time on both sides -- otherwise the pairing's own
         # window alignment is already questionable, see
         # NEURALMI_REFERENCE.md). Deliberately excludes 'regular' pairs --
-        # those already have the strictly better shift_windows.
-        _defer_for_shift_time = (mode in _SHIFT_SAFE_MODES and base_params.get('shift_time')
-                                 and (_shift_pair_family == 'spike'
-                                      or (_shift_pair_family == 'mixed'
-                                          and mixed_pair_sample_rate_ok(
-                                              processor_type_x, processor_params_x,
-                                              _effective_processor_type_y, processor_params_y))))
-        # 'conditional'/'interaction': shift_windows reachable when the
-        # conditioning variable (z_data/w_data) is 'continuous', X is also
-        # 'continuous', and (for conditional) align != 'dual_branch'. Both
-        # must be exactly 'continuous', not just "the same family" --
-        # 'categorical' is excluded even when Z/W also uses it, since
-        # concatenating raw categorical labels infers one shared
-        # n_categories from the combined array's max value, silently
-        # conflating X's and Z's category counts if they differ. 'spike' is
-        # excluded too -- concatenating raw per-neuron spike-time lists is a
-        # separate, harder mechanism (shift_time), not attempted this pass.
-        # See conditional.py/interaction.py's `raw_deferred` path for how
-        # the raw concat + deferred windowing actually happens. Excludes
-        # the rigorous=True sub-path -- rigorous.py's own chunk-boundary
-        # translation (see AnalysisWorkflow._prepare_tasks) hasn't been
-        # extended to this raw-concat scenario, shared follow-on work once
-        # this pass's rigorous.py fix exists, not attempted here.
-        _cond_var_type = z_processor_type if mode == 'conditional' else (
-            w_processor_type if mode == 'interaction' else None)
+        # those already have the strictly better shift_windows. 'rigorous'
+        # reaches only the 'spike' sub-case (_SHIFT_TIME_RIGOROUS_SAFE_MODES);
+        # its 'mixed'-pair chunk translation isn't attempted this pass (see
+        # the comment at _SHIFT_TIME_RIGOROUS_SAFE_MODES's definition).
+        _defer_for_shift_time = (
+            base_params.get('shift_time')
+            and (
+                (_shift_pair_family == 'spike' and mode in _SHIFT_TIME_RIGOROUS_SAFE_MODES)
+                or (_shift_pair_family == 'mixed' and mode in _SHIFT_SAFE_MODES
+                    and mixed_pair_sample_rate_ok(
+                        processor_type_x, processor_params_x,
+                        _effective_processor_type_y, processor_params_y))
+            )
+        )
+        # 'conditional'/'interaction': shift_windows reachable when X and
+        # the conditioning variable (w_data, shared by both modes) are both in
+        # {'continuous', 'categorical'} -- any combination, including mixed
+        # (X continuous + W categorical or vice versa), not just matching
+        # types. A categorical side is relabeled and given its own
+        # n_categories via conditional.py/interaction.py's raw_deferred
+        # branch + shift_windowing.make_multi_categorical_encoder (which
+        # passes a continuous block through unencoded and broadcasts a
+        # categorical block's collapsed window axis up to match it), so
+        # each side's channels are always encoded correctly regardless of
+        # whether the other side matches its type. shift_time is similarly
+        # reachable for a spike+spike pair specifically (matching family
+        # only -- a mixed spike + regular-grid conditioning variable has no
+        # raw sample axis to concatenate against and remains out of scope,
+        # same as the plain X/Y case's own 'mixed' family exclusion from
+        # this raw-concat mechanism). Both gated the same way: (for
+        # conditional) align != 'dual_branch'. See
+        # conditional.py/interaction.py's `raw_deferred` path for how the
+        # raw concat + deferred windowing actually happens. Includes the
+        # rigorous=True sub-path too -- run_rigorous_scalar_analysis's own
+        # chunk-boundary translation (see its _is_raw_deferred/
+        # _is_spike_deferred handling) mirrors AnalysisWorkflow._prepare_tasks's,
+        # so the raw-concat scenario is now covered there as well.
+        _cond_var_type = w_processor_type if mode in ('conditional', 'interaction') else None
+        _regular_types = ('continuous', 'categorical')
+        _not_dual_branch = (mode != 'conditional' or analysis_kwargs.get('align') != 'dual_branch')
+        _defer_regular_conditional_interaction = (
+            mode in ('conditional', 'interaction') and _not_dual_branch
+            and base_params.get('shift_windows')
+            and processor_type_x in _regular_types and _cond_var_type in _regular_types
+        )
+        # Unlike the regular-grid case above, this is NOT gated on
+        # base_params.get('shift_time') -- it's a correctness requirement,
+        # not an optional shift-reachability path. Windowing W separately
+        # (even paired with Y) only guarantees "W has data AND Y has data",
+        # which is a *different* random subset of windows than X's own
+        # "X has data AND Y has data" whenever spike coverage is patchy
+        # (confirmed empirically: two independently-drawn spike populations
+        # sharing a Y can easily diverge by dozens of windows, well past
+        # _SAMPLE_COUNT_TRIM_TOLERANCE). Merging X and W into one combined
+        # population *before* windowing (below) guarantees both share
+        # exactly the same window-validity decision, since it's now one
+        # array being windowed once -- always correct, so always applied
+        # for a spike+spike pair regardless of shift_time.
+        _defer_spike_conditional_interaction = (
+            mode in ('conditional', 'interaction') and _not_dual_branch
+            and processor_type_x == 'spike' and _cond_var_type == 'spike'
+        )
         _defer_for_conditional_interaction = (
-            mode in ('conditional', 'interaction') and base_params.get('shift_windows')
-            and processor_type_x == 'continuous' and _cond_var_type == 'continuous'
-            and not analysis_kwargs.get('rigorous', False)
-            and (mode != 'conditional' or analysis_kwargs.get('align') != 'dual_branch')
+            _defer_regular_conditional_interaction or _defer_spike_conditional_interaction
+        )
+        if _defer_for_conditional_interaction:
+            # Companion correctness fix (applies to the already-shipped
+            # continuous case too, not just categorical): the raw-deferred
+            # path below windows the concatenated array using only
+            # processor_params_x's window_size/step_size -- the
+            # conditioning variable's own w_processor_params window_size/
+            # step_size, if explicitly set to a *different* value, would
+            # otherwise be silently ignored rather than validated.
+            _cond_processor_params = w_processor_params
+            _cond_var_label = 'w_processor_params'
+            _x_window_size = (processor_params_x or {}).get('window_size')
+            _x_step_size = (processor_params_x or {}).get('step_size')
+            _cond_window_size = (_cond_processor_params or {}).get('window_size')
+            _cond_step_size = (_cond_processor_params or {}).get('step_size')
+            if _cond_window_size is not None and _cond_window_size != _x_window_size:
+                raise ValueError(
+                    f"shift_windows=True with mode='{mode}': {_cond_var_label}['window_size']="
+                    f"{_cond_window_size} differs from processor_params_x['window_size']="
+                    f"{_x_window_size}. The conditioning variable is concatenated onto X "
+                    f"*before* windowing and shares X's window grid exactly, so both must "
+                    f"use the same window_size. Remove window_size from {_cond_var_label} "
+                    f"to inherit X's, or set them equal explicitly."
+                )
+            if _cond_step_size is not None and _cond_step_size != _x_step_size:
+                raise ValueError(
+                    f"shift_windows=True with mode='{mode}': {_cond_var_label}['step_size']="
+                    f"{_cond_step_size} differs from processor_params_x['step_size']="
+                    f"{_x_step_size}. The conditioning variable is concatenated onto X "
+                    f"*before* windowing and shares X's window grid exactly, so both must "
+                    f"use the same step_size. Remove step_size from {_cond_var_label} to "
+                    f"inherit X's, or set them equal explicitly."
+                )
+        # align='dual_branch': shift_windows reachable via a genuinely
+        # different mechanism than the concat-based one above -- X and the
+        # conditioning variable (C, still configured via
+        # w_processor_type/w_processor_params, reused as-is) are never
+        # concatenated for dual_branch (that's its entire premise: C keeps
+        # its own, generally different, window geometry), so none of the
+        # matching-window-size validation above applies here. Instead this
+        # reuses PairedWindowShifter's own already-proven pattern (two
+        # independently-shaped sides shifted in sync) via a new 3-way
+        # DualBranchWindowShifter (X, C, Y) -- see
+        # shift_windowing.try_build_shift_windows_dataset_dual_branch.
+        _defer_for_dual_branch_shift_windows = (
+            mode == 'conditional' and analysis_kwargs.get('align') == 'dual_branch'
+            and base_params.get('shift_windows')
+            and processor_type_x in _regular_types and _cond_var_type in _regular_types
+            # Y's type too (unlike the concat-based gate above, which never
+            # needed to check it since it never builds a dataset itself) --
+            # try_build_shift_windows_dataset_dual_branch requires all three
+            # sides in the regular-grid family, and returning None there
+            # would otherwise fall back to create_dataset with a *tuple*
+            # x_data, which it doesn't support (a crash, not a graceful
+            # no-op) if only X and C, not Y, were checked here.
+            and _effective_processor_type_y in _regular_types
         )
         if (is_proc_sweep or mode == 'lag' or _defer_for_shift_windows or _defer_for_shift_time
-                or _defer_for_conditional_interaction):
+                or _defer_for_conditional_interaction or _defer_for_dual_branch_shift_windows):
             logger.info("Detected sweep over processor or lag parameters. Deferring data processing to workers.")
             x_run_data, y_run_data = x_data, y_data
         elif processor_type_x is None and processor_type_y is None:
@@ -796,10 +900,12 @@ def _run_flat(
 
         _warn_if_shift_time_dead(base_params, mode, is_proc_sweep, processor_type_x,
                                  processor_params_x, _effective_processor_type_y, processor_params_y,
-                                 user_set_keys=_pre_default_keys)
+                                 user_set_keys=_pre_default_keys,
+                                 extra_reachable=_defer_spike_conditional_interaction)
         _warn_if_shift_windows_dead(base_params, mode, processor_type_x, _effective_processor_type_y,
                                     user_set_keys=_pre_default_keys,
-                                    extra_reachable=_defer_for_conditional_interaction)
+                                    extra_reachable=(_defer_regular_conditional_interaction
+                                                    or _defer_for_dual_branch_shift_windows))
 
         from .analysis.sweep import ParameterSweep
         if mode == 'sweep':
@@ -837,7 +943,7 @@ def _run_flat(
             if permutation_test:
                 _null_clipped, _null_raw = _run_permutation_test(
                     x_run_data, y_run_data, base_params, mode, sweep_grid,
-                    n_permutations, analysis_kwargs
+                    n_permutations, analysis_kwargs, permutation_shuffle=permutation_shuffle,
                 )
                 result.details['null_distribution'] = _null_clipped
                 result.details['null_distribution_raw'] = _null_raw
@@ -880,7 +986,7 @@ def _run_flat(
             if permutation_test:
                 _null_clipped, _null_raw = _run_permutation_test(
                     x_run_data, y_run_data, base_params, mode, sweep_grid,
-                    n_permutations, analysis_kwargs
+                    n_permutations, analysis_kwargs, permutation_shuffle=permutation_shuffle,
                 )
                 result.details['null_distribution'] = _null_clipped
                 result.details['null_distribution_raw'] = _null_raw
@@ -919,7 +1025,7 @@ def _run_flat(
             if permutation_test and y_run_data is not None:
                 _null_clipped, _null_raw = _run_permutation_test(
                     x_run_data, y_run_data, base_params, mode, sweep_grid,
-                    n_permutations, analysis_kwargs
+                    n_permutations, analysis_kwargs, permutation_shuffle=permutation_shuffle,
                 )
                 result.details['null_distribution'] = _null_clipped
                 result.details['null_distribution_raw'] = _null_raw
@@ -1000,15 +1106,16 @@ def _run_flat(
             if permutation_test:
                 _null_clipped, _null_raw = _run_permutation_test(
                     x_run_data, y_run_data, base_params, mode, sweep_grid,
-                    n_permutations, analysis_kwargs, lag_range=lag_range_val
+                    n_permutations, analysis_kwargs, lag_range=lag_range_val,
+                    permutation_shuffle=permutation_shuffle,
                 )
                 result.details['null_distribution'] = _null_clipped
                 result.details['null_distribution_raw'] = _null_raw
             return result
 
         elif mode == 'conditional':
-            if z_data is None:
-                raise ValueError("`z_data` must be provided for mode='conditional'.")
+            if w_data is None:
+                raise ValueError("`w_data` must be provided for mode='conditional'.")
             if analysis_kwargs.get('align') == 'dual_branch' and permutation_test:
                 raise NotImplementedError(
                     "permutation_test=True is not supported with "
@@ -1016,34 +1123,58 @@ def _run_flat(
                     "would need the same dual-branch construction _run_single_permutation "
                     "doesn't have wired up; not needed for this pass."
                 )
-            # Process z_data if a processor type is given; otherwise assume pre-processed.
-            # When _defer_for_conditional_interaction, keep z_data raw too --
-            # same "defer, don't window here" treatment x_run_data/y_run_data
-            # already got above -- so run_conditional_mi's raw_deferred path
-            # can concatenate raw X and raw Z before windowing. Left exactly
-            # as passed in (not even converted to a tensor here, matching
+            # Process w_data if a processor type is given; otherwise assume pre-processed.
+            # When _defer_for_conditional_interaction (or its dual_branch
+            # sibling), keep w_data raw too -- same "defer, don't window
+            # here" treatment x_run_data/y_run_data already got above -- so
+            # run_conditional_mi's raw_deferred path can concatenate raw X
+            # and raw W before windowing (or, for dual_branch, keep them as
+            # a raw tuple, never concatenated). Left exactly as passed in
+            # (not even converted to a tensor here, matching
             # x_run_data/y_run_data's own treatment on this path) --
             # run_conditional_mi's raw_deferred branch converts it.
-            if _defer_for_conditional_interaction:
-                z_run_data = z_data
-            elif z_processor_type is not None:
+            if _defer_for_conditional_interaction or _defer_for_dual_branch_shift_windows:
+                w_run_data = w_data
+            elif w_processor_type is not None:
                 from .data.handler import create_dataset as _cds
-                z_dataset = _cds(
-                    x_data=z_data, y_data=None,
-                    x_time=z_time,
-                    processor_type_x=z_processor_type,
-                    processor_params_x=z_processor_params or {}
+                # Paired with Y (not built alone) so W's window-validity
+                # criterion is "W has data AND Y has data" -- the same
+                # invariant X's own windows (built above) already enforce.
+                # Windowing W alone would only require "W has data",
+                # silently admitting windows X/Y's own pairing rejects; for
+                # patchy coverage (e.g. spike data) that gap can be large
+                # enough to blow the trim tolerance in
+                # analysis/conditional.py's sample-count check.
+                w_dataset = _cds(
+                    x_data=w_data, y_data=y_data,
+                    x_time=w_time, y_time=y_time,
+                    processor_type_x=w_processor_type,
+                    processor_params_x=w_processor_params or {},
+                    processor_type_y=_effective_processor_type_y,
+                    processor_params_y=processor_params_y or {},
                 )
-                z_run_data = z_dataset.x_data
-                if z_processor_type == 'categorical':
-                    z_run_data = _reshape_categorical_z_for_conditional(
-                        z_run_data, z_dataset.x_dataset
+                w_run_data = w_dataset.x_data
+                if w_processor_type == 'categorical':
+                    w_run_data = _reshape_categorical_w_for_conditional(
+                        w_run_data, w_dataset.x_dataset
                     )
             else:
-                z_run_data = z_data if torch.is_tensor(z_data) else torch.from_numpy(np.array(z_data)).float()
+                w_run_data = w_data if torch.is_tensor(w_data) else torch.from_numpy(np.array(w_data)).float()
             n_workers = analysis_kwargs.get('n_workers', 1)
             use_rigorous = analysis_kwargs.pop('rigorous', False)
             _align = analysis_kwargs.pop('align', None)
+            if use_rigorous and _defer_for_dual_branch_shift_windows:
+                raise NotImplementedError(
+                    "rigorous=True is not supported together with "
+                    "Conditional(align='dual_branch') and shift_windows=True. "
+                    "run_rigorous_scalar_analysis's chunk-to-raw-range translation "
+                    "computes one raw-sample range from X's own window_size and "
+                    "applies it uniformly to every extra_data array -- since "
+                    "dual_branch's C genuinely has its own, different window "
+                    "geometry, reusing X's chunk boundaries for C would silently "
+                    "misalign it per gamma-chunk rather than just being unsupported. "
+                    "Pass shift_windows=False (or drop rigorous=True) to proceed."
+                )
             if use_rigorous:
                 from .analysis.rigorous import run_rigorous_scalar_analysis
                 from .analysis.conditional import _cmi_rigorous_scalar
@@ -1060,7 +1191,7 @@ def _run_flat(
                 # Parallelised across gamma-chunk tasks (like plain mode='rigorous');
                 # each individual chunk's CMI call runs with n_workers=1 internally
                 # (see _cmi_rigorous_scalar) to avoid nested multiprocessing pools.
-                # z_run_data is passed as both 'z_data' and 'c_data' -- x_data
+                # w_run_data is passed as both 'w_data' and 'c_data' -- x_data
                 # stays a plain tensor throughout this call (align='dual_branch'
                 # never touches rigorous.py's own chunking), _cmi_rigorous_scalar
                 # picks whichever of the two it needs based on 'align' and
@@ -1068,9 +1199,12 @@ def _run_flat(
                 rig_details = run_rigorous_scalar_analysis(
                     scalar_fn=_cmi_rigorous_scalar,
                     x_data=x_run_data, y_data=y_run_data, base_params=base_params,
-                    extra_data={'z_data': z_run_data, 'c_data': z_run_data},
-                    extra_kwargs={'sweep_grid': sweep_grid, 'align': _align},
+                    extra_data={'w_data': w_run_data, 'c_data': w_run_data},
+                    extra_kwargs={'sweep_grid': sweep_grid, 'align': _align,
+                                 'raw_deferred': _defer_for_conditional_interaction,
+                                 'w_processor_type': w_processor_type},
                     n_workers=n_workers,
+                    raw_deferred=_defer_for_conditional_interaction,
                     **_rig_kwargs,
                 )
                 # _convert_mi_units already recurses into rig_details['raw_results_df']
@@ -1085,20 +1219,40 @@ def _run_flat(
                     params={**run_params, 'rigorous': True},
                     details=rig_details,
                 )
-            # Standard (non-rigorous) path. z_run_data is passed as both
-            # z_data and c_data -- run_conditional_mi uses whichever it
-            # needs based on align.
-            raw = run_conditional_mi(x_run_data, y_run_data, z_run_data, base_params,
+            # Standard (non-rigorous) path. w_run_data is passed as both
+            # w_data and c_data -- run_conditional_mi uses whichever it
+            # needs based on align. c_processor_type/c_processor_params are
+            # only read by the align='dual_branch' + raw_deferred sub-path
+            # (harmless to always pass -- w_processor_type/w_processor_params
+            # already are C's config by convention, see the dual_branch gate
+            # above).
+            raw = run_conditional_mi(x_run_data, y_run_data, w_run_data, base_params,
                                      sweep_grid=sweep_grid, n_workers=n_workers,
-                                     align=_align, c_data=z_run_data,
-                                     raw_deferred=_defer_for_conditional_interaction)
+                                     align=_align, c_data=w_run_data,
+                                     raw_deferred=_defer_for_conditional_interaction
+                                                 or _defer_for_dual_branch_shift_windows,
+                                     w_processor_type=w_processor_type,
+                                     c_processor_type=w_processor_type,
+                                     c_processor_params=w_processor_params)
             raw = _convert_mi_units(raw, output_units == 'bits')
             cmi = raw['cmi_estimate']
             result = Results(mode=mode, mi_estimate=cmi, params=run_params, details=raw)
             if permutation_test:
+                # x_run_data/y_run_data/w_run_data are raw (unwindowed) here
+                # whenever _defer_for_conditional_interaction fired above (a
+                # mixed-type or spike conditioning pair) -- run_conditional_mi
+                # needs raw_deferred=True (and w_processor_type, since a
+                # mixed pair's W may not share X's type) to window them
+                # correctly instead of treating them as already-windowed
+                # tensors. align='dual_branch' already raises a clear error
+                # earlier for permutation_test, so raw_deferred here only
+                # ever means the concat-based (non-dual_branch) case.
                 _null_clipped, _null_raw = _run_permutation_test(
                     x_run_data, y_run_data, base_params, 'conditional', sweep_grid,
-                    n_permutations, analysis_kwargs, z_data=z_run_data
+                    n_permutations, analysis_kwargs, w_data=w_run_data,
+                    raw_deferred=_defer_for_conditional_interaction,
+                    w_processor_type=w_processor_type,
+                    permutation_shuffle=permutation_shuffle,
                 )
                 result.details['null_distribution'] = _null_clipped
                 result.details['null_distribution_raw'] = _null_raw
@@ -1108,7 +1262,7 @@ def _run_flat(
             if w_data is None:
                 raise ValueError("`w_data` must be provided for mode='interaction'.")
             # Process w_data if a processor type is given; otherwise assume pre-processed
-            # (same pattern as z_data for mode='conditional' -- interaction information's
+            # (same pattern as mode='conditional' -- interaction information's
             # W is a third population, not a growing-history conditioning array, so it
             # needs no special-casing beyond that). When
             # _defer_for_conditional_interaction, keep w_data raw too, left
@@ -1118,11 +1272,17 @@ def _run_flat(
                 w_run_data = w_data
             elif w_processor_type is not None:
                 from .data.handler import create_dataset as _cds
+                # Paired with Y (not built alone) so W's window-validity
+                # criterion is "W has data AND Y has data" -- the same
+                # invariant X's own windows (built above) already enforce.
+                # See mode='conditional''s identical fix above for why.
                 w_dataset = _cds(
-                    x_data=w_data, y_data=None,
-                    x_time=w_time,
+                    x_data=w_data, y_data=y_data,
+                    x_time=w_time, y_time=y_time,
                     processor_type_x=w_processor_type,
-                    processor_params_x=w_processor_params or {}
+                    processor_params_x=w_processor_params or {},
+                    processor_type_y=_effective_processor_type_y,
+                    processor_params_y=processor_params_y or {},
                 )
                 w_run_data = w_dataset.x_data
             else:
@@ -1149,8 +1309,11 @@ def _run_flat(
                     scalar_fn=_ii_rigorous_scalar,
                     x_data=x_run_data, y_data=y_run_data, base_params=base_params,
                     extra_data={'w_data': w_run_data},
-                    extra_kwargs={'sweep_grid': sweep_grid},
+                    extra_kwargs={'sweep_grid': sweep_grid,
+                                 'raw_deferred': _defer_for_conditional_interaction,
+                                 'w_processor_type': w_processor_type},
                     n_workers=n_workers,
+                    raw_deferred=_defer_for_conditional_interaction,
                     **_rig_kwargs,
                 )
                 rig_details = _convert_mi_units(rig_details, output_units == 'bits')
@@ -1165,14 +1328,23 @@ def _run_flat(
             # Standard (non-rigorous) path
             raw = run_interaction_information(x_run_data, y_run_data, w_run_data, base_params,
                                               sweep_grid=sweep_grid, n_workers=n_workers,
-                                              raw_deferred=_defer_for_conditional_interaction)
+                                              raw_deferred=_defer_for_conditional_interaction,
+                                              w_processor_type=w_processor_type)
             raw = _convert_mi_units(raw, output_units == 'bits')
             ii = raw['interaction_info']
             result = Results(mode=mode, mi_estimate=ii, params=run_params, details=raw)
             if permutation_test:
+                # See the identical comment at mode='conditional''s
+                # permutation_test call site: x_run_data/y_run_data/w_run_data
+                # are raw here whenever _defer_for_conditional_interaction
+                # fired, and run_interaction_information needs raw_deferred/
+                # w_processor_type to window them correctly.
                 _null_clipped, _null_raw = _run_permutation_test(
                     x_run_data, y_run_data, base_params, 'interaction', sweep_grid,
-                    n_permutations, analysis_kwargs, w_data=w_run_data
+                    n_permutations, analysis_kwargs, w_data=w_run_data,
+                    raw_deferred=_defer_for_conditional_interaction,
+                    w_processor_type=w_processor_type,
+                    permutation_shuffle=permutation_shuffle,
                 )
                 result.details['null_distribution'] = _null_clipped
                 result.details['null_distribution_raw'] = _null_raw
@@ -1246,7 +1418,7 @@ def _run_flat(
                     x_data=_x_te, y_data=_y_te, base_params=base_params,
                     # w_data must be chunked identically to x_data/y_data for every
                     # gamma-chunk, so it goes through extra_data (already correct for
-                    # this, proven by z_data's use of the same mechanism in
+                    # this, proven by w_data's use of the same mechanism in
                     # mode='conditional' above), not extra_kwargs, which is passed
                     # unsplit to every chunk and would be wrong for per-chunk-varying data.
                     extra_data={'w_data': w_run_data} if w_run_data is not None else None,
@@ -1291,6 +1463,7 @@ def _run_flat(
                     n_permutations, analysis_kwargs,
                     history_window=history_window, prediction_horizon=prediction_horizon,
                     bidirectional_te=bidirectional_te,
+                    permutation_shuffle=permutation_shuffle,
                 )
                 result.details['null_distribution'] = _null_clipped
                 result.details['null_distribution_raw'] = _null_raw
@@ -1343,7 +1516,8 @@ def _run_flat(
                 if pairwise_y is not None:
                     _null_clipped, _null_raw = _run_permutation_test(
                         x_run_data, pairwise_y, base_params, 'pairwise', sweep_grid,
-                        n_permutations, analysis_kwargs, pairs=pairs
+                        n_permutations, analysis_kwargs, pairs=pairs,
+                        permutation_shuffle=permutation_shuffle,
                     )
                     result.details['null_distribution'] = _null_clipped
                     result.details['null_distribution_raw'] = _null_raw
@@ -1440,9 +1614,13 @@ def _shift_time_is_reachable(mode: str, is_proc_sweep: bool,
                              processor_params_y: Optional[dict] = None) -> bool:
     if is_proc_sweep or mode == 'lag':
         return True
+    _family = shift_family(processor_type_x, effective_processor_type_y)
+    if mode == 'rigorous':
+        # Narrower than the other modes below: 'rigorous' only supports the
+        # 'spike' family's chunk-to-raw-time-range translation, not 'mixed'.
+        return _family == 'spike'
     if mode not in _SHIFT_SAFE_MODES:
         return False
-    _family = shift_family(processor_type_x, effective_processor_type_y)
     if _family == 'spike':
         return True
     if _family == 'mixed':
@@ -1456,7 +1634,8 @@ def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
                              processor_params_x: Optional[dict] = None,
                              effective_processor_type_y: Optional[str] = None,
                              processor_params_y: Optional[dict] = None,
-                             user_set_keys: Optional[set] = None) -> None:
+                             user_set_keys: Optional[set] = None,
+                             extra_reachable: bool = False) -> None:
     """Warn once, here, if shift_time was requested but cannot take effect
     on this mode/processing path.
 
@@ -1486,10 +1665,26 @@ def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
     `SubsetView` risk for no benefit. Processor-swept `mode='sweep'` is
     reachable regardless of processor type (`is_proc_sweep` alone triggers
     it), unrelated to this pair-based logic.
+
+    extra_reachable : bool, optional
+        Set by the caller for a reachability path this function doesn't
+        derive from `mode`/`processor_type_x`/`effective_processor_type_y`
+        alone -- currently the spike sub-case of
+        `_defer_spike_conditional_interaction` (`mode` in
+        `('conditional', 'interaction')` with a 'spike' conditioning
+        variable matching X's 'spike' type). `True` silences the warning
+        the same as the mode/family check below. Sibling to
+        `_warn_if_shift_windows_dead`'s own `extra_reachable` -- kept
+        separate (not one shared flag) since a case reachable via one
+        mechanism is not necessarily reachable via the other (e.g. the
+        *regular*-family sub-case of conditional/interaction reachability
+        makes shift_windows reachable but not shift_time).
     """
     if user_set_keys is not None and 'shift_time' not in user_set_keys:
         return
     if base_params.get('shift_time') is not True:
+        return
+    if extra_reachable:
         return
     if _shift_time_is_reachable(mode, is_proc_sweep, processor_type_x,
                                 effective_processor_type_y, processor_params_x, processor_params_y):
@@ -1515,7 +1710,9 @@ def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
         f"processor parameter (e.g. window_size) is itself part of the sweep "
         f"grid; or mode in {list(_SHIFT_SAFE_MODES)} with a "
         f"'spike'+'spike' pair (or a mixed spike/continuous(-categorical) pair "
-        f"with 'sample_rate' set on the non-spike side).{_mixed_hint} For "
+        f"with 'sample_rate' set on the non-spike side); mode='rigorous' also "
+        f"works for a 'spike'+'spike' pair specifically (not mixed)."
+        f"{_mixed_hint} For "
         f"continuous/categorical pairs, prefer Training(shift_windows=True) "
         f"instead -- cheaper and without this mechanism's SubsetView caveat. "
         f"Pass shift_time=False to silence this warning.",
@@ -1576,13 +1773,100 @@ def _warn_if_shift_windows_dead(base_params: dict, mode: str, processor_type_x: 
     )
 
 
+def _spike_population_extent(y_data: list, base_params: dict) -> tuple:
+    """``(t_start, t_end)`` for a raw spike-time population -- mirrors
+    ``SpikeDataset.get_temporal_extent()``'s exact convention (the
+    already-established one for spike data elsewhere in this library, not a
+    new one invented here): ``t_start`` is the earliest spike across
+    neurons; ``t_end`` is ``processor_params_y['n_seconds']`` if the caller
+    explicitly set it (letting a recording extend past its last spike),
+    else the latest spike across neurons.
+    """
+    valid = [np.asarray(st) for st in y_data if len(st) > 0]
+    t_start = min((st[0] for st in valid), default=0.0)
+    n_seconds = (base_params.get('processor_params_y') or {}).get('n_seconds')
+    if n_seconds is not None:
+        t_end = float(n_seconds)
+    else:
+        t_end = max((st[-1] for st in valid), default=0.0)
+    return float(t_start), float(t_end)
+
+
+def _circular_shift_spike_population(y_data: list, t_start: float, t_end: float) -> list:
+    """Shift every neuron's spike train by one shared random offset, wrapping
+    at the recording boundary -- the default permutation-test null for
+    spike-type Y.
+
+    One shared offset (not an independent one per neuron) preserves Y's own
+    internal cross-neuron structure (e.g. any real synchrony within the Y
+    population itself), only breaking Y's temporal correspondence with X --
+    the same reasoning that already rules out per-neuron independent
+    reordering. The offset is drawn uniformly across the *entire* valid
+    range rather than a narrow band, deliberately: the true coupling
+    timescale (if any) is unknown, and a uniform draw is agnostic to it,
+    whether the real dependency (if any) is a fast, precise-timing effect
+    or a slow, shared-drift one.
+    """
+    duration = t_end - t_start
+    if duration <= 0:
+        return [np.asarray(st).copy() for st in y_data]
+    delta = np.random.uniform(0.0, duration)
+    shifted = []
+    for st in y_data:
+        st = np.asarray(st, dtype=float)
+        if st.size == 0:
+            shifted.append(st.copy())
+            continue
+        new_st = t_start + np.mod((st - t_start) + delta, duration)
+        shifted.append(np.sort(new_st))
+    return shifted
+
+
+def _block_shuffle_spike_population(y_data: list, t_start: float, t_end: float,
+                                    block_size: float) -> list:
+    """Cut the recording into fixed-size contiguous blocks and reorder them --
+    the opt-in alternative null for spike-type Y (``permutation_shuffle='block'``).
+
+    Preserves every spike's position *within* its block exactly (unlike
+    circular shift, which preserves the whole train's global statistics but
+    not any fixed block-boundary structure); breaks block-to-block
+    correspondence with X. Reassembled block-by-block into a new spike-time
+    list of the same total duration, so it flows through the same
+    downstream (raw, unwindowed) pipeline as circular shift or the
+    unpermuted data -- no separate windowing/rebuilding needed.
+    """
+    duration = t_end - t_start
+    if duration <= 0 or block_size <= 0:
+        return [np.asarray(st).copy() for st in y_data]
+    n_blocks = max(1, int(round(duration / block_size)))
+    edges = np.linspace(t_start, t_end, n_blocks + 1)
+    order = np.random.permutation(n_blocks)
+    shifted = []
+    for st in y_data:
+        st = np.asarray(st, dtype=float)
+        pieces = []
+        cursor = t_start
+        for b in order:
+            lo, hi = edges[b], edges[b + 1]
+            # Half-open [lo, hi) for every block except the recording's own
+            # last one, which must be closed on the right -- otherwise a
+            # spike landing exactly at t_end (the final edge) matches no
+            # block at all and silently vanishes.
+            in_block = (st >= lo) & (st < hi if b < n_blocks - 1 else st <= hi)
+            pieces.append(st[in_block] - lo + cursor)
+            cursor += (hi - lo)
+        shifted.append(np.sort(np.concatenate(pieces)) if pieces else np.array([]))
+    return shifted
+
+
 def _run_single_permutation(args):
     """Top-level picklable function for one permutation trial.
 
     Parameters
     ----------
     args : tuple
-        ``(x_data, y_data, base_params, mode, sweep_grid, perm_seed, mode_kwargs)``
+        ``(x_data, y_data, base_params, mode, sweep_grid, perm_seed,
+        mode_kwargs, permutation_shuffle)``
 
     Returns
     -------
@@ -1593,14 +1877,32 @@ def _run_single_permutation(args):
     """
     import numpy as _np
     import torch as _torch
-    x_data, y_data, base_params, mode, sweep_grid, perm_seed, mode_kwargs = args
+    x_data, y_data, base_params, mode, sweep_grid, perm_seed, mode_kwargs, permutation_shuffle = args
     _np.random.seed(perm_seed)
-    n = y_data.shape[0] if hasattr(y_data, 'shape') else len(y_data)
-    shuffle_idx = _np.random.permutation(n)
-    if _torch.is_tensor(y_data):
-        y_perm = y_data[shuffle_idx]
+    if isinstance(y_data, list):
+        # Raw spike-type population (list of per-neuron spike-time arrays).
+        # Index-permuting the list (this function's convention for every
+        # other data type) only reorders which array sits at which list
+        # position -- every neuron's own, complete spike train is untouched,
+        # so the population's joint activity across time is byte-for-byte
+        # identical and no X<->Y temporal correspondence is actually broken.
+        t_start, t_end = _spike_population_extent(y_data, base_params)
+        if permutation_shuffle == 'block':
+            block_size = (
+                (base_params.get('processor_params_y') or {}).get('window_size')
+                or (base_params.get('processor_params_x') or {}).get('window_size')
+                or (t_end - t_start) / 10.0
+            )
+            y_perm = _block_shuffle_spike_population(y_data, t_start, t_end, block_size)
+        else:
+            y_perm = _circular_shift_spike_population(y_data, t_start, t_end)
     else:
-        y_perm = [y_data[i] for i in shuffle_idx]
+        n = y_data.shape[0] if hasattr(y_data, 'shape') else len(y_data)
+        shuffle_idx = _np.random.permutation(n)
+        if _torch.is_tensor(y_data):
+            y_perm = y_data[shuffle_idx]
+        else:
+            y_perm = [y_data[i] for i in shuffle_idx]
 
     _nan = float('nan')
     try:
@@ -1626,20 +1928,24 @@ def _run_single_permutation(args):
 
         elif mode == 'conditional':
             from neural_mi.analysis.conditional import run_conditional_mi as _rcmi
-            z_data = mode_kwargs.get('z_data')
-            raw = _rcmi(x_data, y_perm, z_data, base_params.copy(), n_workers=1)
+            w_data = mode_kwargs.get('w_data')
+            raw = _rcmi(x_data, y_perm, w_data, base_params.copy(), n_workers=1,
+                       raw_deferred=mode_kwargs.get('raw_deferred', False),
+                       w_processor_type=mode_kwargs.get('w_processor_type'))
             mi_clipped = raw['cmi_estimate']
-            # Raw CMI = mean(raw_train_mi of XZ→Y sweep) − mean(raw_train_mi of Z→Y sweep)
-            _rxz = [r.get('raw_train_mi', _nan) for r in raw.get('raw_xz_y', [])]
-            _rz = [r.get('raw_train_mi', _nan) for r in raw.get('raw_z_y', [])]
-            mi_raw = (float(_np.nanmean(_rxz)) - float(_np.nanmean(_rz))
-                      if _rxz and _rz else mi_clipped)
+            # Raw CMI = mean(raw_train_mi of XW→Y sweep) − mean(raw_train_mi of W→Y sweep)
+            _rxw = [r.get('raw_train_mi', _nan) for r in raw.get('raw_xw_y', [])]
+            _rw = [r.get('raw_train_mi', _nan) for r in raw.get('raw_w_y', [])]
+            mi_raw = (float(_np.nanmean(_rxw)) - float(_np.nanmean(_rw))
+                      if _rxw and _rw else mi_clipped)
             return mi_clipped, mi_raw
 
         elif mode == 'interaction':
             from neural_mi.analysis.interaction import run_interaction_information as _rii
             w_data = mode_kwargs.get('w_data')
-            raw = _rii(x_data, y_perm, w_data, base_params.copy(), n_workers=1)
+            raw = _rii(x_data, y_perm, w_data, base_params.copy(), n_workers=1,
+                      raw_deferred=mode_kwargs.get('raw_deferred', False),
+                      w_processor_type=mode_kwargs.get('w_processor_type'))
             mi_clipped = raw['interaction_info']
             # Raw II has no single joint/marginal pair (it's a 3-term combination),
             # so there's no equally cheap "raw" counterpart -- reuse the clipped value.
@@ -1680,8 +1986,25 @@ def _run_single_permutation(args):
 
 
 def _run_permutation_test(x_data, y_data, base_params, mode, sweep_grid,
-                          n_permutations, analysis_kwargs, **mode_kwargs):
+                          n_permutations, analysis_kwargs, permutation_shuffle='circular',
+                          **mode_kwargs):
     """Run the permutation null test by shuffling y_data *n_permutations* times.
+
+    permutation_shuffle : {'circular', 'block'}, default='circular'
+        Only affects raw spike-type y_data (a list of per-neuron spike-time
+        arrays) -- non-spike y_data (already an array/tensor, whether raw
+        2-D or already windowed) is unaffected, see
+        ``_run_single_permutation``. ``'circular'``: shift the whole
+        population by one shared random offset, wrapping at the recording
+        boundary -- preserves every spike-timing detail and Y's own
+        internal cross-neuron structure, only breaks temporal alignment
+        with X. ``'block'``: cut the recording into fixed-size contiguous
+        blocks (sized from ``processor_params_y``/``processor_params_x``'s
+        ``window_size``) and reorder them -- preserves exact within-block
+        spike patterns, at the cost of leaving block-boundary structure
+        intact. See CHANGELOG for why a plain index permutation (this
+        function's convention for every other data type) is wrong for a
+        spike-time list.
 
     When ``analysis_kwargs['n_workers'] > 1`` the permutation trials are
     dispatched to a multiprocessing pool so they run in parallel (each
@@ -1708,7 +2031,8 @@ def _run_permutation_test(x_data, y_data, base_params, mode, sweep_grid,
     # Generate independent seeds so parallel workers produce different shuffles
     perm_seeds = [int(np.random.randint(0, 2**31)) for _ in range(n_permutations)]
     perm_args = [
-        (x_data, y_data, base_params.copy(), mode, sweep_grid, seed, dict(mode_kwargs))
+        (x_data, y_data, base_params.copy(), mode, sweep_grid, seed, dict(mode_kwargs),
+         permutation_shuffle)
         for seed in perm_seeds
     ]
 

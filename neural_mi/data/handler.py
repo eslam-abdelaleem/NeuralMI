@@ -87,7 +87,24 @@ class WindowManager:
         self.n_windows = len(self.window_times)
         # Initialize all windows as valid - will be updated by datasets
         self.valid_windows = np.full(self.window_times.size, True, dtype=bool)
-    
+
+    def set_fixed_grid(self, t_start, n_windows):
+        """Deterministically build exactly ``n_windows`` window starts
+        beginning at ``t_start``, spaced by the resolved step.
+
+        Used by the time-shift path instead of ``create_windows()``'s
+        ``np.arange(t_start, t_end, step)`` so the window count stays
+        exactly fixed across repeated shifts -- ``np.arange`` can drop or
+        add a trailing window across float-step boundaries as ``t_start``
+        drifts, which ``create_windows()`` never has to contend with since
+        it's only ever called once per (fixed) t_start/t_end pair.
+        """
+        step = self.resolve_step()
+        self.t_start = t_start
+        self.window_times = t_start + np.arange(n_windows) * step
+        self.n_windows = n_windows
+        self.valid_windows = np.full(n_windows, True, dtype=bool)
+
     def __len__(self):
         """len() will return however many valid windows there are"""
         return self.n_windows
@@ -176,6 +193,13 @@ class PairedTemporalDataset(Dataset):
             raise ValueError(
                 f"Invalid temporal range: t_start={final_start}, t_end={final_end}"
             )
+        # Record the effective (user-bound-aware) range once, for time_shift's
+        # fixed-grid margin reservation -- distinct from original_data_start/
+        # _end above, which is the natural full extent and can be wider than
+        # this when the caller passed an explicit t_start/t_end.
+        if not hasattr(self, '_base_t_start'):
+            self._base_t_start = final_start
+            self._base_t_end = final_end
         # Create windows
         self.window_manager.update_parameters(t_start=final_start, t_end=final_end)
         
@@ -261,13 +285,56 @@ class PairedTemporalDataset(Dataset):
         if precision_y > 0 and self.y_dataset:
             self.y_dataset.apply_precision(precision_y)
     
+    def _reserve_shift_margin(self):
+        """Compute (once, cached) the window count that stays fixed for
+        every shift offset in ``[0, window_size)``.
+
+        The window grid slides forward by up to a full ``window_size`` over
+        fixed, unmutated raw data. Reserving ``2*window_size`` off the
+        effective span (one ``window_size`` so the grid can start that far
+        forward without any window running past ``_base_t_end``, and
+        another so ``set_fixed_grid`` never needs to look earlier than
+        ``_base_t_start``) keeps the same number of windows valid across the
+        whole shift range -- the fixed-grid analogue of
+        ``shift_windowing.safe_n_windows``'s margin for the raw-array-slicing
+        case.
+        """
+        if not hasattr(self, '_shift_n_windows'):
+            step = self.window_manager.resolve_step()
+            window_size = self.window_manager.window_size
+            usable_span = self._base_t_end - self._base_t_start
+            margin = 2 * window_size
+            n_safe = int((usable_span - margin) // step) + 1
+            if n_safe < 1:
+                raise ValueError(
+                    f"Recording span ({usable_span:.6g}) is too short to reserve a "
+                    f"safe time-shift margin ({margin:.6g}, i.e. 2*window_size) with "
+                    f"window_size={window_size}. Reduce window_size, increase the "
+                    f"recording length, or disable shift_time."
+                )
+            self._shift_n_windows = n_safe
+        return self._shift_n_windows
+
     def time_shift(self, offset_x=0, offset_y=0):
-        """Apply time shifts."""
-        if hasattr(self.x_dataset, 'time_shift'):
-            self.x_dataset.time_shift(offset_x)
-        if self.y_dataset and hasattr(self.y_dataset, 'time_shift'):
-            self.y_dataset.time_shift(offset_y)
-        self._initialize_windows(None, None)
+        """Slide the (fixed-size) window grid forward by ``offset_x`` over
+        the fixed, unmutated raw data.
+
+        Does NOT rewrite any raw data -- unlike the child datasets' own
+        ``time_shift()`` (still reachable directly for unit-level callers),
+        which mutate their stored data and derive the grid's live extent
+        from it, causing the offset to cancel out of every window-membership
+        test. ``offset_y`` is accepted for backward compatibility with
+        callers that pass both, but only ``offset_x`` drives the single grid
+        shared by X and Y; production call sites always pass equal values.
+        """
+        if offset_y != offset_x:
+            logger.warning(
+                f"PairedTemporalDataset.time_shift got offset_x={offset_x} != "
+                f"offset_y={offset_y}; only offset_x is used to shift the "
+                f"single window grid shared by X and Y."
+            )
+        n_windows = self._reserve_shift_margin()
+        self.window_manager.set_fixed_grid(self._base_t_start + offset_x, n_windows)
         self._build_windows(time_shift=offset_x)
 
     def set_window_size(self, window_size):

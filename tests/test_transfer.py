@@ -4,7 +4,7 @@ import pytest
 import numpy as np
 import torch
 import neural_mi as nmi
-from neural_mi import Model, Training, Transfer
+from neural_mi import Model, Training, Transfer, Output
 from neural_mi.analysis.transfer import _build_te_arrays
 
 # Minimal model/training configs for fast tests
@@ -91,6 +91,29 @@ class TestTransferEntropy:
         )
         expected = results.details['i_xypast_yfuture'] - results.details['i_ypast_yfuture']
         assert abs(results.mi_estimate - expected) < 1e-6
+
+    def test_return_embeddings_surfaces_at_top_level(self):
+        """Regression: return_embeddings=True used to silently produce no
+        embeddings_x/embeddings_y for mode='transfer'. The joint
+        (xy_past;y_future) leg's embeddings are now pulled to the top level;
+        bidirectional=True additionally surfaces the reverse direction under
+        _yx-suffixed keys."""
+        x = np.random.randn(N, 1)
+        y = np.random.randn(N, 1)
+        results = nmi.run(
+            x, y,
+            mode='transfer',
+            transfer=Transfer(history_window=H, bidirectional=True),
+            model=_MODEL, training=_TRAINING,
+            output=Output(return_embeddings=True),
+            n_workers=1,
+        )
+        assert 'embeddings_x' in results.details
+        assert 'embeddings_y' in results.details
+        assert 'embeddings_x_yx' in results.details
+        assert 'embeddings_y_yx' in results.details
+        assert results.details['embeddings_x'].shape[0] == results.details['n_samples']
+        assert 'embeddings_x' not in results.details['raw_xypast_yfuture'][0]
 
     def test_te_missing_history_window_raises(self):
         """mode='transfer' without history_window should raise ValueError."""

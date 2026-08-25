@@ -71,7 +71,7 @@ The test suite is organized into **22 files** grouped by functional area:
 |------|---------------|
 | `test_analysis.py` | Lag mode (continuous, categorical, spike), dimensionality (random/spatial/temporal splits), spectral metrics (participation ratio, effective rank), task parameter routing |
 | `test_precision.py` | Precision sweep — rounding and noise corruption methods, full pipeline |
-| `test_conditional.py` | CMI independence/correlation properties, `mi_xz_y`/`mi_z_y` details dict |
+| `test_conditional.py` | CMI independence/correlation properties, `mi_xw_y`/`mi_w_y` details dict |
 | `test_transfer.py` | Transfer entropy unidirectional and bidirectional; `te_xy`, `te_yx`, directionality index |
 | `test_pairwise.py` | Self-pairwise and cross-pairwise MI matrices, DataFrame columns, finiteness |
 | `test_permutation.py` | Permutation testing, `null_distribution` in details, default `n_permutations`, rigorous-mode incompatibility |

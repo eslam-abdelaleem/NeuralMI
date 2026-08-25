@@ -73,9 +73,9 @@ def test_processing_renames():
     assert d == {"processor_type_x": "continuous", "processor_params_x": {"window_size": 1}}
 
 
-def test_conditional_splits_z_from_analysis():
-    c = cfg.Conditional(z_data=[1, 2], rigorous=True, confidence_level=0.9)
-    assert c.to_z_kwargs() == {"z_data": [1, 2]}
+def test_conditional_splits_w_from_analysis():
+    c = cfg.Conditional(w_data=[1, 2], rigorous=True, confidence_level=0.9)
+    assert c.to_w_kwargs() == {"w_data": [1, 2]}
     assert c.to_analysis_kwargs() == {"rigorous": True, "confidence_level": 0.9}
 
 

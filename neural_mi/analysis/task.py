@@ -139,8 +139,16 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Dataset construction — with module-level cache for static datasets.
     # ------------------------------------------------------------------
-    from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
-    dataset = try_build_shift_windows_dataset(x_data, y_data, params, data_device=_data_device)
+    from neural_mi.data.shift_windowing import (
+        try_build_shift_windows_dataset, try_build_shift_windows_dataset_dual_branch,
+    )
+    if isinstance(x_data, tuple):
+        # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
+        # mode='conditional'(align='dual_branch')) -- X and C, never
+        # concatenated, each windowed independently.
+        dataset = try_build_shift_windows_dataset_dual_branch(x_data, y_data, params, data_device=_data_device)
+    else:
+        dataset = try_build_shift_windows_dataset(x_data, y_data, params, data_device=_data_device)
     if dataset is not None:
         _cache_key = None  # never cached (mutated in place every epoch); the
         # cleanup step near the end of this function reads _cache_key back
@@ -254,6 +262,18 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     decoder_y = None
     if params.get('use_decoder', False):
         from neural_mi.models.decoders import build_decoder
+
+        _n_channels_x = params.get('n_channels_x', 1)
+        if isinstance(_n_channels_x, tuple):
+            raise NotImplementedError(
+                "use_decoder=True is not supported with a compound (tuple) "
+                "embedding input, e.g. DualBranchEmbedding used via "
+                "mode='conditional'(align='dual_branch'). Reconstructing a "
+                "compound (A, C) input from one fused embedding has no single "
+                "well-defined decoder architecture (unlike use_variational, "
+                "which just needs the base encoder's output dimension). Use "
+                "use_decoder=False for this path."
+            )
         _embedding_model = params.get('embedding_model', 'mlp')
         _embed_dim = params.get('embedding_dim', params.get('hidden_dim', 64))
         _hidden_dim = params.get('hidden_dim', 64)
@@ -261,7 +281,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         _dec_act_x = params.get('decoder_output_activation_x', 'linear')
         _dec_act_y = params.get('decoder_output_activation_y', 'linear')
 
-        _n_channels_x = params.get('n_channels_x', 1)
         _n_channels_y = params.get('n_channels_y', 1)
         _input_dim_x = params.get('input_dim_x', _n_channels_x)
         _input_dim_y = params.get('input_dim_y', _n_channels_y)
@@ -280,6 +299,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             nhead=params.get('nhead', 4),
             height=params.get('input_height_x'),
             width=params.get('input_width_x'),
+            dropout=params.get('dropout', 0.3),
         )
         # Always build a dedicated decoder_y -- X and Y may differ in n_channels/
         # window_size/activation even when shared_encoder=True.
@@ -295,6 +315,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             nhead=params.get('nhead', 4),
             height=params.get('input_height_y'),
             width=params.get('input_width_y'),
+            dropout=params.get('dropout', 0.3),
         )
         logger.debug(
             f"Built decoder_x ({type(decoder_x).__name__}) and decoder_y ({type(decoder_y).__name__}) "

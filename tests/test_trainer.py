@@ -429,6 +429,13 @@ class TestShiftEvaluationConsistency:
         y_ds = ContinuousWindowDataset(raw_y)
         dataset = PairedTemporalDataset(x_ds, y_ds, window_size=20)
 
+        # Prime the shift grid to its final, margin-reserved size before
+        # deriving train/test indices -- Trainer.train() does this
+        # internally too, but a caller supplying custom train_indices/
+        # test_indices (as this test does) must size them against the same
+        # post-priming count Trainer will use.
+        dataset.time_shift(offset_x=0.0, offset_y=0.0)
+
         n = len(dataset)
         train_idx = np.arange(int(n * 0.8))
         test_idx = np.arange(int(n * 0.8), n)

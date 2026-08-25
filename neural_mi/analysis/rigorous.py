@@ -26,6 +26,7 @@ from neural_mi.exceptions import InsufficientDataError, TrainingError
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 from neural_mi.data.shift_windowing import (
     n_windows_if_deferred, shift_family, chunk_window_range_to_raw, seconds_to_samples,
+    spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
 )
 
 
@@ -569,12 +570,25 @@ class AnalysisWorkflow:
         # count, not a raw sample count.
         _proc_x = self.base_params.get('processor_type_x')
         _proc_y = self.base_params.get('processor_type_y') or _proc_x
-        _is_raw_deferred = (self.x_data.ndim == 2 and self.base_params.get('shift_windows')
+        # hasattr guards against spike data (a ragged per-neuron spike-time
+        # list, no .ndim) -- only reachable when _is_spike_deferred below.
+        _is_raw_deferred = (hasattr(self.x_data, 'ndim') and self.x_data.ndim == 2
+                            and self.base_params.get('shift_windows')
                             and shift_family(_proc_x, _proc_y) == 'regular')
-        N = n_windows_if_deferred(self.x_data, self.y_data, self.base_params)
+        # Raw spike data (shift_time reachability, Phase 1): a ragged
+        # per-neuron spike-time list rather than a 2-D tensor -- x_data has
+        # no .ndim at all in this case.
+        _is_spike_deferred = (isinstance(self.x_data, list) and self.base_params.get('shift_time')
+                              and shift_family(_proc_x, _proc_y) == 'spike')
+        if _is_spike_deferred:
+            N, _spike_base_t_start, _spike_window_size, _spike_step_size = spike_shift_grid_info(
+                self.x_data, self.y_data, self.base_params)
+        else:
+            N = n_windows_if_deferred(self.x_data, self.y_data, self.base_params)
 
         is_temporal = (temporal_chunking if temporal_chunking is not None
-                      else (self.base_params.get('leak_check_window_size') is not None or _is_raw_deferred))
+                      else (self.base_params.get('leak_check_window_size') is not None
+                            or _is_raw_deferred or _is_spike_deferred))
         self.resolved_chunking_mode = 'contiguous' if is_temporal else 'permuted'
 
         if _is_raw_deferred:
@@ -628,6 +642,35 @@ class AnalysisWorkflow:
                         ry0, ry1 = chunk_window_range_to_raw(lo, hi, _window_size_y, _step_size_y)
                         x_subset = _ensure_cpu(self.x_data[rx0:rx1])
                         y_subset = _ensure_cpu(self.y_data[ry0:ry1])
+                    elif _is_spike_deferred:
+                        # Same idea as _is_raw_deferred, but the chunk-index
+                        # -> raw-range translation lands in a raw *time*
+                        # range (chunk_window_range_to_time -- Phase 0's
+                        # 2*window_size margin, not chunk_window_range_to_raw's
+                        # window_size-1 one) rather than a raw sample range,
+                        # and the "raw" data is a ragged per-neuron
+                        # spike-time list sliced+re-zeroed rather than
+                        # tensor-sliced. X and Y share one window grid here
+                        # (spike/spike, no per-side sample-rate conversion),
+                        # so both sides use the same time range.
+                        lo, hi = int(subset_indices[0]), int(subset_indices[-1]) + 1
+                        t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, _spike_window_size, _spike_step_size)
+                        chunk_span = t1_rel - t0_rel
+                        t0_abs = _spike_base_t_start + t0_rel
+                        t1_abs = _spike_base_t_start + t1_rel
+                        x_subset = slice_spike_data_to_time_range(self.x_data, t0_abs, t1_abs)
+                        y_subset = slice_spike_data_to_time_range(self.y_data, t0_abs, t1_abs)
+                        # Force this chunk's own PairedTemporalDataset to treat
+                        # [0, chunk_span) as its full base span (exactly what
+                        # chunk_window_range_to_time assumed), instead of
+                        # deriving a shorter, data-dependent extent from
+                        # wherever this slice's actual spikes happen to fall
+                        # -- create_dataset forwards 't_start'/'t_end'
+                        # straight through to PairedTemporalDataset.
+                        current_params['processor_params_x'] = {
+                            **(current_params.get('processor_params_x') or {}),
+                            't_start': 0.0, 't_end': chunk_span,
+                        }
                     else:
                         x_subset = _ensure_cpu(self.x_data[subset_indices])
                         y_subset = _ensure_cpu(self.y_data[subset_indices])
@@ -741,6 +784,7 @@ def run_rigorous_scalar_analysis(
     leverage_threshold: float = 0.20,
     verbose: bool = False,
     temporal_chunking: Optional[bool] = None,
+    raw_deferred: bool = False,
 ) -> Dict[str, Any]:
     """Bias-corrected estimation of a compound scalar quantity via rigorous extrapolation.
 
@@ -802,6 +846,20 @@ def run_rigorous_scalar_analysis(
         Passed to ``_compute_fit_diagnostics``.  Defaults to ``0.20``.
     verbose : bool, optional
         Passed to ``_find_linear_region``.  Defaults to ``False``.
+    raw_deferred : bool, optional
+        ``True`` when ``x_data``/``y_data`` (and every array in
+        ``extra_data``) are raw, unwindowed 2-D arrays and this call should
+        reproduce ``AnalysisWorkflow._prepare_tasks``'s
+        ``shift_windows``-reachability chunk-to-raw-sample-range
+        translation (mirrored here as its own ``_is_raw_deferred`` check).
+        Set explicitly by the caller (``run.py``'s
+        ``_defer_for_conditional_interaction``) rather than inferred from
+        ``base_params`` alone -- this helper is shared with
+        ``mode='transfer'``'s rigorous dispatch, whose own 2-D
+        ``x_data``/``y_data`` are raw for an unrelated reason (built via a
+        stride-1 ``unfold`` internally, deliberately excluded from both
+        shift mechanisms) and must never be reinterpreted as
+        window-size/step_size-chunkable data. Defaults to ``False``.
 
     Returns
     -------
@@ -830,7 +888,43 @@ def run_rigorous_scalar_analysis(
         If fewer than ``min_gamma_points`` rows are collected across all gamma
         values (i.e. almost every ``scalar_fn`` call failed).
     """
-    N = x_data.shape[0]
+    # Raw (2-D), unwindowed X/Y (shift_windows reachability for
+    # conditional/interaction's rigorous=True sub-path, mirroring
+    # AnalysisWorkflow._prepare_tasks's _is_raw_deferred for plain
+    # mode='rigorous'): windowing hasn't happened yet, so N must be the
+    # shift-invariant window count, not x_data's raw sample count. Gated on
+    # the explicit raw_deferred flag (not inferred from base_params alone --
+    # see its docstring entry) since mode='transfer' also reaches this
+    # function with genuinely raw 2-D x_data/y_data, for an unrelated reason.
+    _proc_x = base_params.get('processor_type_x')
+    _proc_y = base_params.get('processor_type_y') or _proc_x
+    _is_raw_deferred = (raw_deferred and hasattr(x_data, 'ndim') and x_data.ndim == 2
+                        and base_params.get('shift_windows') and shift_family(_proc_x, _proc_y) == 'regular')
+    # Spike analogue of _is_raw_deferred above (conditional/interaction's
+    # rigorous=True sub-path for a spike+spike X/conditioning-variable
+    # pair): x_data is a ragged per-neuron spike-time list, no .ndim at
+    # all. Gated the same explicit way -- raw_deferred plus a family check
+    # -- since mode='transfer' also reaches this function with unrelated
+    # raw data that must never be misinterpreted. Deliberately NOT also
+    # gated on base_params.get('shift_time'), unlike _is_raw_deferred's
+    # shift_windows check above: run.py's _defer_spike_conditional_interaction
+    # (the only caller that ever sets raw_deferred=True for a spike+spike
+    # pair) is itself unconditional on shift_time -- merging X and the
+    # conditioning variable before windowing is a correctness requirement
+    # for spike coverage, not an optional shift-reachability path (see its
+    # comment in run.py). Requiring shift_time here too used to mean a
+    # spike+spike conditioning pair with Training(shift_time=False) still
+    # arrived with raw_deferred=True and a list x_data, but fell through to
+    # `else: N = x_data.shape[0]` below and crashed with AttributeError.
+    _is_spike_deferred = (raw_deferred and isinstance(x_data, list)
+                          and shift_family(_proc_x, _proc_y) == 'spike')
+    if _is_spike_deferred:
+        N, _spike_base_t_start, _spike_window_size, _spike_step_size = spike_shift_grid_info(
+            x_data, y_data, base_params)
+    elif _is_raw_deferred:
+        N = n_windows_if_deferred(x_data, y_data, base_params)
+    else:
+        N = x_data.shape[0]
     # Same reasoning as AnalysisWorkflow._prepare_tasks: a random ordering is
     # fine for i.i.d. scalar quantities, but this helper also backs
     # mode='transfer' (rigorous=True), which is unconditionally temporal (TE
@@ -843,23 +937,95 @@ def run_rigorous_scalar_analysis(
     # workflow for other callers (e.g. conditional MI), where it is
     # available in time.
     is_temporal = (temporal_chunking if temporal_chunking is not None
-                   else base_params.get('leak_check_window_size') is not None)
+                   else (base_params.get('leak_check_window_size') is not None
+                         or _is_raw_deferred or _is_spike_deferred))
     resolved_chunking_mode = 'contiguous' if is_temporal else 'permuted'
     master_perm = np.arange(N) if is_temporal else np.random.permutation(N)
+
+    if _is_raw_deferred:
+        # Per-side window_size/step_size in raw-sample units, computed once
+        # (mirrors AnalysisWorkflow._prepare_tasks exactly). extra_data
+        # arrays (w_data/c_data) are translated using X's own
+        # window_size/step_size too, the same convention the non-rigorous
+        # raw_deferred path already uses (conditional.py/interaction.py
+        # concatenate W onto X before windowing, so they share one grid) --
+        # a genuinely independent per-array window_size is a separate,
+        # not-yet-fixed gap (see NEURALMI_REFERENCE.md).
+        _wp_x = base_params.get('processor_params_x') or {}
+        _wp_y = base_params.get('processor_params_y') or _wp_x
+        _window_size = _wp_x.get('window_size')
+        _step_size = _wp_x.get('step_size') or _window_size
+        _period_x = 1.0 / _wp_x['sample_rate'] if _wp_x.get('sample_rate') else 1.0
+        _period_y = 1.0 / _wp_y['sample_rate'] if _wp_y.get('sample_rate') else 1.0
+        _window_size_x = seconds_to_samples(_window_size, _period_x)
+        _step_size_x = seconds_to_samples(_step_size, _period_x)
+        _window_size_y = seconds_to_samples(_window_size, _period_y)
+        _step_size_y = seconds_to_samples(_step_size, _period_y)
 
     tasks = []
     for gamma in gamma_range:
         chunks = np.array_split(master_perm, gamma)
         for chunk_idx in chunks:
-            x_sub = _ensure_cpu(x_data[chunk_idx])
-            y_sub = _ensure_cpu(y_data[chunk_idx])
+            if _is_spike_deferred:
+                # Same idea as _is_raw_deferred, but the chunk-index ->
+                # raw-range translation lands in a raw *time* range
+                # (chunk_window_range_to_time -- the 2*window_size margin
+                # matching PairedTemporalDataset._reserve_shift_margin, not
+                # chunk_window_range_to_raw's window_size-1 one) rather than
+                # a raw sample range, and the "raw" data is a ragged
+                # per-neuron spike-time list sliced+re-zeroed rather than
+                # tensor-sliced. X and the conditioning variable share one
+                # window grid here (spike/spike, no per-side sample-rate
+                # conversion), so both use the same time range -- extra_data
+                # (w_data/c_data) is translated the same way.
+                lo, hi = int(chunk_idx[0]), int(chunk_idx[-1]) + 1
+                t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, _spike_window_size, _spike_step_size)
+                chunk_span = t1_rel - t0_rel
+                t0_abs = _spike_base_t_start + t0_rel
+                t1_abs = _spike_base_t_start + t1_rel
+                x_sub = slice_spike_data_to_time_range(x_data, t0_abs, t1_abs)
+                y_sub = slice_spike_data_to_time_range(y_data, t0_abs, t1_abs)
+                extra_sub = {}
+                if extra_data:
+                    for key, arr in extra_data.items():
+                        extra_sub[key] = slice_spike_data_to_time_range(arr, t0_abs, t1_abs)
+                # Force this chunk's own PairedTemporalDataset to treat
+                # [0, chunk_span) as its full base span (exactly what
+                # chunk_window_range_to_time assumed), instead of deriving a
+                # shorter, data-dependent extent from wherever this slice's
+                # actual spikes happen to fall. A fresh dict per chunk (not
+                # a reassignment of the shared base_params) so this doesn't
+                # leak between iterations.
+                _task_base_params = {**base_params, 'processor_params_x': {
+                    **(base_params.get('processor_params_x') or {}),
+                    't_start': 0.0, 't_end': chunk_span,
+                }}
+            elif _is_raw_deferred:
+                # chunk_idx is a contiguous window-index range (guaranteed by
+                # master_perm = np.arange(N) for is_temporal=True); translate
+                # to the raw sample range reproducing exactly this many
+                # windows under any per-epoch shift.
+                lo, hi = int(chunk_idx[0]), int(chunk_idx[-1]) + 1
+                rx0, rx1 = chunk_window_range_to_raw(lo, hi, _window_size_x, _step_size_x)
+                ry0, ry1 = chunk_window_range_to_raw(lo, hi, _window_size_y, _step_size_y)
+                x_sub = _ensure_cpu(x_data[rx0:rx1])
+                y_sub = _ensure_cpu(y_data[ry0:ry1])
+                extra_sub = {}
+                if extra_data:
+                    for key, arr in extra_data.items():
+                        extra_sub[key] = _ensure_cpu(arr[rx0:rx1])
+                _task_base_params = base_params
+            else:
+                x_sub = _ensure_cpu(x_data[chunk_idx])
+                y_sub = _ensure_cpu(y_data[chunk_idx])
 
-            extra_sub = {}
-            if extra_data:
-                for key, arr in extra_data.items():
-                    extra_sub[key] = _ensure_cpu(arr[chunk_idx])
+                extra_sub = {}
+                if extra_data:
+                    for key, arr in extra_data.items():
+                        extra_sub[key] = _ensure_cpu(arr[chunk_idx])
+                _task_base_params = base_params
 
-            tasks.append((scalar_fn, x_sub, y_sub, base_params.copy(),
+            tasks.append((scalar_fn, x_sub, y_sub, _task_base_params.copy(),
                          extra_sub, extra_kwargs, gamma, len(chunk_idx)))
 
     show_progress = base_params.get('show_progress', True)

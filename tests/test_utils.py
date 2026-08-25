@@ -87,6 +87,93 @@ def test_build_critic_custom_embedding_minimal_signature():
     assert isinstance(critic.embedding_net_x, MinimalCustom)
 
 
+def test_build_critic_custom_embedding_input_style_channels():
+    """A custom class declaring input_style='channels' on itself must receive
+    the raw channel count as input_dim, the same as any built-in sequence
+    model -- the mechanism build_critic uses to decide this no longer reads
+    an unrelated embedding_model= string for a custom class."""
+    import torch.nn as nn
+    from neural_mi.models.embeddings import BaseEmbedding
+
+    class ChannelsStyleCustom(BaseEmbedding):
+        input_style = 'channels'
+
+        def __init__(self, input_dim, hidden_dim, embed_dim, n_layers):
+            super().__init__()
+            self.input_dim = input_dim
+            self.net = nn.Linear(input_dim, embed_dim)
+
+        def forward(self, x):
+            return self.net(x.mean(dim=-1))
+
+    critic = build_critic('separable', DUMMY_EMBEDDING_PARAMS,
+                          custom_embedding_cls=ChannelsStyleCustom)
+    # DUMMY_EMBEDDING_PARAMS: n_channels_x=2 (raw channels), input_dim_x=10
+    # (flattened n_channels*window_size) -- input_style='channels' must
+    # select the former, not the latter.
+    assert critic.embedding_net_x.input_dim == 2
+
+
+def test_build_critic_lru():
+    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'lru'}
+    critic = build_critic('separable', params)
+    assert isinstance(critic, SeparableCritic)
+    from neural_mi.models.embeddings import LRUEmbedding
+    assert isinstance(critic.embedding_net_x, LRUEmbedding)
+    x = torch.randn(3, 2, 5)  # (batch, n_channels_x, window_size)
+    out = critic.embedding_net_x(x)
+    assert out.shape == (3, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
+
+
+def test_build_critic_dual_branch_default_branch_model():
+    """embedding_model='dual_branch' with no branch_model defaults to GRU
+    branches, no custom_embedding_cls needed."""
+    from neural_mi.models.embeddings import DualBranchEmbedding, GRU
+    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'dual_branch',
+              'n_channels_x': (3, 2)}
+    critic = build_critic('separable', params)
+    assert isinstance(critic.embedding_net_x, DualBranchEmbedding)
+    assert isinstance(critic.embedding_net_x.branch_a, GRU)
+    assert isinstance(critic.embedding_net_x.branch_c, GRU)
+    a_batch, c_batch = torch.randn(3, 3, 7), torch.randn(3, 2, 4)
+    out = critic.embedding_net_x((a_batch, c_batch))
+    assert out.shape == (3, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
+
+
+def test_build_critic_dual_branch_custom_branch_model():
+    """branch_model picks which built-in class each branch uses."""
+    from neural_mi.models.embeddings import LSTM
+    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'dual_branch',
+              'branch_model': 'lstm', 'n_channels_x': (3, 2)}
+    critic = build_critic('separable', params)
+    assert isinstance(critic.embedding_net_x.branch_a, LSTM)
+    assert isinstance(critic.embedding_net_x.branch_c, LSTM)
+
+
+def test_build_critic_dual_branch_unknown_branch_model_raises():
+    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'dual_branch',
+              'branch_model': 'not_a_real_model', 'n_channels_x': (3, 2)}
+    with pytest.raises(ValueError, match="branch_model"):
+        build_critic('separable', params)
+
+
+def test_build_critic_dual_branch_custom_embedding_cls_still_works():
+    """Regression: the pre-existing custom_embedding_cls=DualBranchEmbedding
+    form (with embedding_model set purely as a shape hint) must keep working
+    unchanged -- custom_embedding_cls always takes priority over model_type."""
+    from neural_mi.models.embeddings import DualBranchEmbedding, GRU
+    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'gru',
+              'n_channels_x': (3, 2)}
+    critic = build_critic('separable', params, custom_embedding_cls=DualBranchEmbedding)
+    assert isinstance(critic.embedding_net_x, DualBranchEmbedding)
+    assert isinstance(critic.embedding_net_x.branch_a, GRU)
+
+
+def test_build_critic_unknown_embedding_model_lists_options():
+    with pytest.raises(ValueError, match="lru"):
+        build_critic('separable', {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'not_a_real_model'})
+
+
 # --- build_optimizer_and_scheduler (shared by task.py and precision.py) ---
 
 class TestBuildOptimizerAndScheduler:

@@ -261,3 +261,58 @@ class TestAccuracyAgainstOracle:
             model=_MODEL, training=_TRAINING, show_progress=False, seed=0,
         )
         assert abs(r.mi_estimate - exact) < 1.0
+
+
+# --------------------------------------------------------------------------
+# show_progress must reach every per-task run(), not just the outer sweep bar
+# --------------------------------------------------------------------------
+class TestSweepShowProgressPropagation:
+    """Regression: dispatch_tasks' own show_progress only ever controlled the
+    outer per-task-loop bar; the four task functions never forwarded the
+    caller's show_progress into their own inner run() call, so
+    show_progress=False silently failed to suppress each sweep entry's own
+    training-loop progress bar. Checked here by capturing what quantities.py's
+    module-level run() actually receives, not by scraping stdout."""
+
+    def test_active_information_storage_sweep_forwards_show_progress(self, monkeypatch):
+        received = []
+        real_run = nmi.quantities.run
+
+        def _spy(*args, **kwargs):
+            received.append(kwargs.get('show_progress'))
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(nmi.quantities, 'run', _spy)
+        x = torch.randn(300, 1)
+        nmi.active_information_storage(x, k=[2, 3], model=_MODEL, training=_TRAINING,
+                                       n_workers=1, show_progress=False)
+        assert received and all(v is False for v in received)
+
+    def test_block_mi_sweep_forwards_show_progress(self, monkeypatch):
+        received = []
+        real_run = nmi.quantities.run
+
+        def _spy(*args, **kwargs):
+            received.append(kwargs.get('show_progress'))
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(nmi.quantities, 'run', _spy)
+        x, y = torch.randn(300, 1), torch.randn(300, 1)
+        nmi.block_mi(x, y, window_size=[2, 3], model=_MODEL, training=_TRAINING,
+                    n_workers=1, show_progress=False)
+        assert received and all(v is False for v in received)
+
+    def test_mi_rate_sweep_forwards_show_progress(self, monkeypatch):
+        received = []
+        real_run = nmi.quantities.run
+
+        def _spy(*args, **kwargs):
+            received.append(kwargs.get('show_progress'))
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(nmi.quantities, 'run', _spy)
+        x, y = torch.randn(300, 1), torch.randn(300, 1)
+        model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16, n_layers=1)
+        nmi.mi_rate(x, y, h=[0, 3], W=5, model=model, training=Training(n_epochs=2, patience=1),
+                   n_workers=1, show_progress=False)
+        assert received and all(v is False for v in received)

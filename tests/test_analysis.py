@@ -51,6 +51,52 @@ def test_run_lag_mode(processor_type):
     assert len(results.dataframe) == len(lag_range)
 
 
+class TestLagShiftWindows:
+    """shift_windows already engages mechanically for mode='lag' with
+    regular-grid data (try_build_shift_windows_dataset is mode-agnostic) --
+    the only thing that was wrong is _warn_if_shift_windows_dead's
+    reachable-modes list not including 'lag', producing a false "has no
+    effect" warning when a user explicitly requests it."""
+
+    def test_no_false_dead_warning_when_explicitly_requested(self):
+        import warnings
+        np.random.seed(0)
+        x = np.random.randn(2000, 2).astype('float32')
+        y = np.random.randn(2000, 2).astype('float32')
+        proc = Processing(x='continuous', x_params={'window_size': 10, 'step_size': 10},
+                          y='continuous', y_params={'window_size': 10, 'step_size': 10})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            nmi.run(x, y, mode='lag', lag=Lag(lag_range=range(-2, 3)), processing=proc,
+                   model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                   training=Training(n_epochs=1, patience=1, shift_windows=True),
+                   n_workers=1, show_progress=False, seed=0)
+        msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
+
+    def test_n_windows_reflects_true_window_count_not_raw_samples(self):
+        """n_windows_this_lag used to be the raw post-lag-truncation sample
+        count (windowing hadn't happened yet at that point) mislabeled as a
+        window count. With window_size > 1 the true window count must be
+        strictly smaller."""
+        np.random.seed(0)
+        T, window_size = 2000, 10
+        x = np.random.randn(T, 2).astype('float32')
+        y = np.random.randn(T, 2).astype('float32')
+        proc = Processing(x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
+                          y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
+        results = nmi.run(x, y, mode='lag', lag=Lag(lag_range=range(0, 1)), processing=proc,
+                          model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                          training=Training(n_epochs=1, patience=1, shift_windows=True),
+                          n_workers=1, show_progress=False, seed=0)
+        n_windows = results.details['raw_results']['n_windows'].iloc[0]
+        raw_sample_count = T  # lag=0 -> no truncation
+        assert n_windows < raw_sample_count, (
+            f"n_windows={n_windows} should be well below the raw sample count "
+            f"({raw_sample_count}) once window_size={window_size} windowing is accounted for"
+        )
+
+
 @pytest.fixture
 def mock_sweep():
     """Fixture to mock the ParameterSweep engine so we only test the orchestrator."""

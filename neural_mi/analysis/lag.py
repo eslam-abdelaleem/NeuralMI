@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional
 from neural_mi.analysis.sweep import ParameterSweep, _product_dict
 from neural_mi.logger import logger
 from neural_mi.utils import _shift_data
+from neural_mi.data.shift_windowing import n_windows_if_deferred, shift_family
 
 
 def run_lag_analysis(
@@ -108,7 +109,20 @@ def run_lag_analysis(
 
     for lag in lag_range:
         x_shifted, y_shifted = shifted_pairs[lag]
-        n_windows_this_lag = _n_items(x_shifted)
+        # _n_items(x_shifted) is the raw post-lag-truncation sample count,
+        # not a real window count -- windowing hasn't happened yet at this
+        # point (x_shifted/y_shifted are still 2-D raw arrays). For the
+        # regular-grid family, n_windows_if_deferred gives the actual,
+        # shift-invariant window count the Trainer will end up training on
+        # (falling back to the same raw count when shift_windows isn't
+        # actually active for this pair, so this is a safe drop-in
+        # replacement either way). Spike's own count (a per-neuron list
+        # length, not a sample or window count) is a separate, pre-existing
+        # inaccuracy, unrelated to shift_windows and out of scope here.
+        if shift_family(proc_type_x, proc_type_y) == 'regular':
+            n_windows_this_lag = n_windows_if_deferred(x_shifted, y_shifted, base_params)
+        else:
+            n_windows_this_lag = _n_items(x_shifted)
 
         for i, other_params in enumerate(param_combinations):
             task_params = {**base_params, **other_params, 'lag': lag,

@@ -31,24 +31,25 @@ def _is_sweep(value: Any) -> bool:
     return isinstance(value, (list, tuple, range, np.ndarray))
 
 
-def _run_prebuilt_task(task: Tuple[torch.Tensor, torch.Tensor, str, Any, Dict[str, Any]]) -> Dict[str, Any]:
+def _run_prebuilt_task(task: Tuple[torch.Tensor, torch.Tensor, str, Any, Dict[str, Any], bool]) -> Dict[str, Any]:
     """Module-level (picklable) dispatch target for a single mode='estimate'
     call on already-offset-constructed arrays."""
-    x_arr, y_arr, param_name, param_value, run_kwargs = task
-    result = run(x_data=x_arr, y_data=y_arr, mode='estimate', n_workers=1, **run_kwargs)
+    x_arr, y_arr, param_name, param_value, run_kwargs, show_progress = task
+    result = run(x_data=x_arr, y_data=y_arr, mode='estimate', n_workers=1,
+                 show_progress=show_progress, **run_kwargs)
     return {param_name: param_value, 'mi_estimate': result.mi_estimate}
 
 
-def _run_block_mi_task(task: Tuple[Any, Any, Any, Dict[str, Any]]) -> Dict[str, Any]:
+def _run_block_mi_task(task: Tuple[Any, Any, Any, Dict[str, Any], bool]) -> Dict[str, Any]:
     """Module-level (picklable) dispatch target for one block_mi window_size."""
-    x_data, y_data, window_size, run_kwargs = task
+    x_data, y_data, window_size, run_kwargs, show_progress = task
     from neural_mi.config import Processing
     result = run(
         x_data=x_data, y_data=y_data, mode='estimate',
         processing=Processing(x='continuous', y='continuous',
                                x_params={'window_size': window_size},
                                y_params={'window_size': window_size}),
-        n_workers=1, **run_kwargs,
+        n_workers=1, show_progress=show_progress, **run_kwargs,
     )
     return {'window_size': window_size, 'mi_estimate': result.mi_estimate}
 
@@ -88,7 +89,7 @@ def active_information_storage(
     """
     if _is_sweep(k):
         tasks = [
-            (*build_past_future(x_data, past_len=kv, future_len=future_k), 'k', kv, run_kwargs)
+            (*build_past_future(x_data, past_len=kv, future_len=future_k), 'k', kv, run_kwargs, show_progress)
             for kv in k
         ]
         rows = dispatch_tasks(tasks, _run_prebuilt_task, n_workers=n_workers,
@@ -128,7 +129,7 @@ def excess_entropy(
     """
     if _is_sweep(k):
         tasks = [
-            (*build_past_future(x_data, past_len=kv, future_len=future_k), 'k', kv, run_kwargs)
+            (*build_past_future(x_data, past_len=kv, future_len=future_k), 'k', kv, run_kwargs, show_progress)
             for kv in k
         ]
         rows = dispatch_tasks(tasks, _run_prebuilt_task, n_workers=n_workers,
@@ -190,7 +191,7 @@ def cross_predictive_information(
     """
     if _is_sweep(past_k):
         tasks = [
-            (*build_cross_offset(x_data, y_data, past_len=pk, future_len=future_k), 'past_k', pk, run_kwargs)
+            (*build_cross_offset(x_data, y_data, past_len=pk, future_len=future_k), 'past_k', pk, run_kwargs, show_progress)
             for pk in past_k
         ]
         rows = dispatch_tasks(tasks, _run_prebuilt_task, n_workers=n_workers,
@@ -231,7 +232,7 @@ def block_mi(
     neural_mi.results.Results or pandas.DataFrame
     """
     if _is_sweep(window_size):
-        tasks = [(x_data, y_data, wv, run_kwargs) for wv in window_size]
+        tasks = [(x_data, y_data, wv, run_kwargs, show_progress) for wv in window_size]
         rows = dispatch_tasks(tasks, _run_block_mi_task, n_workers=n_workers,
                                show_progress=show_progress, desc="block_mi sweep")
         return pd.DataFrame(rows)
@@ -245,13 +246,13 @@ def block_mi(
     )
 
 
-def _run_transfer_task(task: Tuple[Any, Any, Any, int, str, Any, Dict[str, Any]]) -> Dict[str, Any]:
+def _run_transfer_task(task: Tuple[Any, Any, Any, int, str, Any, Dict[str, Any], bool]) -> Dict[str, Any]:
     """Module-level (picklable) dispatch target for one conditional_transfer_entropy history_window."""
-    x_data, y_data, w_data, history_window, param_name, param_value, run_kwargs = task
+    x_data, y_data, w_data, history_window, param_name, param_value, run_kwargs, show_progress = task
     from neural_mi.config import Transfer
     result = run(x_data=x_data, y_data=y_data, mode='transfer',
                  transfer=Transfer(history_window=history_window, w_data=w_data),
-                 n_workers=1, **run_kwargs)
+                 n_workers=1, show_progress=show_progress, **run_kwargs)
     return {param_name: param_value, 'mi_estimate': result.mi_estimate}
 
 
@@ -288,7 +289,7 @@ def conditional_transfer_entropy(
     from neural_mi.config import Transfer
     if _is_sweep(history_window):
         tasks = [
-            (x_data, y_data, w_data, hw, 'history_window', hw, run_kwargs)
+            (x_data, y_data, w_data, hw, 'history_window', hw, run_kwargs, show_progress)
             for hw in history_window
         ]
         rows = dispatch_tasks(tasks, _run_transfer_task, n_workers=n_workers,
@@ -335,8 +336,10 @@ def interaction_information(x_data, y_data, w_data, n_workers: int = 1, show_pro
 # A and C have genuinely different window lengths for all three (not the
 # small mismatch mode='conditional' already tolerates), so each routes
 # through align='dual_branch' -- the caller must supply
-# model=Model(embedding_model=..., custom_embedding_cls=DualBranchEmbedding, ...),
-# checked upfront below rather than left to fail deep inside training.
+# model=Model(embedding_model='dual_branch', ...) (or a custom
+# DualBranchEmbedding subclass via custom_embedding_cls, for a non-default
+# branch architecture -- see the class docstring), checked upfront below
+# rather than left to fail deep inside training.
 
 def _as_tensor(data) -> torch.Tensor:
     if isinstance(data, torch.Tensor):
@@ -347,12 +350,18 @@ def _as_tensor(data) -> torch.Tensor:
 def _require_dual_branch_model(run_kwargs: Dict[str, Any], fn_name: str) -> None:
     from neural_mi.models.embeddings import DualBranchEmbedding
     model = run_kwargs.get('model')
+    embedding_model = getattr(model, 'embedding_model', None) if model is not None else None
     custom_cls = getattr(model, 'custom_embedding_cls', None) if model is not None else None
-    if not (isinstance(custom_cls, type) and issubclass(custom_cls, DualBranchEmbedding)):
+    is_dual_branch = (
+        embedding_model == 'dual_branch'
+        or (isinstance(custom_cls, type) and issubclass(custom_cls, DualBranchEmbedding))
+    )
+    if not is_dual_branch:
         raise ValueError(
             f"{fn_name} needs A and C at different window lengths, which requires "
-            f"model=Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding, ...) "
-            f"(or a DualBranchEmbedding subclass). Got custom_embedding_cls={custom_cls!r}."
+            f"model=Model(embedding_model='dual_branch', ...) (or a DualBranchEmbedding "
+            f"subclass via custom_embedding_cls). Got embedding_model={embedding_model!r}, "
+            f"custom_embedding_cls={custom_cls!r}."
         )
 
 
@@ -429,19 +438,20 @@ def _build_dir_info_rate_arrays(x_data, y_data, k: int):
     return a, y_future, y_past
 
 
-def _run_dual_branch_task(task: Tuple[Any, Any, Any, str, Any, Dict[str, Any]]) -> Dict[str, Any]:
+def _run_dual_branch_task(task: Tuple[Any, Any, Any, str, Any, Dict[str, Any], bool]) -> Dict[str, Any]:
     """Module-level (picklable) dispatch target shared by mi_rate,
     instantaneous_exchange, and directed_information_rate: one
     mode='conditional' (align='dual_branch') call on already-built (A, B, C)
     arrays, or plain mode='estimate' when C is None (the h=0/k=0 boundary)."""
-    a_arr, b_arr, c_arr, param_name, param_value, run_kwargs = task
+    a_arr, b_arr, c_arr, param_name, param_value, run_kwargs, show_progress = task
     if c_arr is None:
-        result = run(x_data=a_arr, y_data=b_arr, mode='estimate', n_workers=1, **run_kwargs)
+        result = run(x_data=a_arr, y_data=b_arr, mode='estimate', n_workers=1,
+                     show_progress=show_progress, **run_kwargs)
     else:
         from neural_mi.config import Conditional
         result = run(x_data=a_arr, y_data=b_arr, mode='conditional',
-                     conditional=Conditional(z_data=c_arr, align='dual_branch'),
-                     n_workers=1, **run_kwargs)
+                     conditional=Conditional(w_data=c_arr, align='dual_branch'),
+                     n_workers=1, show_progress=show_progress, **run_kwargs)
     return {param_name: param_value, 'mi_estimate': result.mi_estimate}
 
 
@@ -473,7 +483,7 @@ def mi_rate(
     n_workers, show_progress : see :func:`active_information_storage`.
     **run_kwargs
         Forwarded to :func:`neural_mi.run`. Must include
-        ``model=Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding, ...)``
+        ``model=Model(embedding_model='dual_branch', ...)``
         for any ``h > 0`` (checked upfront, raises ``ValueError`` if missing
         or mismatched).
 
@@ -485,7 +495,7 @@ def mi_rate(
         _require_dual_branch_model(run_kwargs, 'mi_rate')
     if _is_sweep(h):
         tasks = [
-            (*_build_mi_rate_arrays(x_data, y_data, hv, W), 'h', hv, run_kwargs)
+            (*_build_mi_rate_arrays(x_data, y_data, hv, W), 'h', hv, run_kwargs, show_progress)
             for hv in h
         ]
         rows = dispatch_tasks(tasks, _run_dual_branch_task, n_workers=n_workers,
@@ -497,7 +507,7 @@ def mi_rate(
                    n_workers=n_workers, show_progress=show_progress, **run_kwargs)
     from neural_mi.config import Conditional
     return run(x_data=a, y_data=b, mode='conditional',
-               conditional=Conditional(z_data=c, align='dual_branch'),
+               conditional=Conditional(w_data=c, align='dual_branch'),
                n_workers=n_workers, show_progress=show_progress, **run_kwargs)
 
 
@@ -524,7 +534,7 @@ def instantaneous_exchange(
     n_workers, show_progress : see :func:`active_information_storage`.
     **run_kwargs
         Forwarded to :func:`neural_mi.run`. Must include
-        ``model=Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding, ...)``
+        ``model=Model(embedding_model='dual_branch', ...)``
         for any ``k > 0`` (checked upfront, raises ``ValueError`` if missing
         or mismatched).
 
@@ -536,7 +546,7 @@ def instantaneous_exchange(
         _require_dual_branch_model(run_kwargs, 'instantaneous_exchange')
     if _is_sweep(k):
         tasks = [
-            (*_build_inst_exchange_arrays(x_data, y_data, kv), 'k', kv, run_kwargs)
+            (*_build_inst_exchange_arrays(x_data, y_data, kv), 'k', kv, run_kwargs, show_progress)
             for kv in k
         ]
         rows = dispatch_tasks(tasks, _run_dual_branch_task, n_workers=n_workers,
@@ -548,7 +558,7 @@ def instantaneous_exchange(
                    n_workers=n_workers, show_progress=show_progress, **run_kwargs)
     from neural_mi.config import Conditional
     return run(x_data=a, y_data=b, mode='conditional',
-               conditional=Conditional(z_data=c, align='dual_branch'),
+               conditional=Conditional(w_data=c, align='dual_branch'),
                n_workers=n_workers, show_progress=show_progress, **run_kwargs)
 
 
@@ -580,7 +590,7 @@ def directed_information_rate(
     n_workers, show_progress : see :func:`active_information_storage`.
     **run_kwargs
         Forwarded to :func:`neural_mi.run`. Must include
-        ``model=Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding, ...)``
+        ``model=Model(embedding_model='dual_branch', ...)``
         for any ``k > 0`` (checked upfront, raises ``ValueError`` if missing
         or mismatched).
 
@@ -592,7 +602,7 @@ def directed_information_rate(
         _require_dual_branch_model(run_kwargs, 'directed_information_rate')
     if _is_sweep(k):
         tasks = [
-            (*_build_dir_info_rate_arrays(x_data, y_data, kv), 'k', kv, run_kwargs)
+            (*_build_dir_info_rate_arrays(x_data, y_data, kv), 'k', kv, run_kwargs, show_progress)
             for kv in k
         ]
         rows = dispatch_tasks(tasks, _run_dual_branch_task, n_workers=n_workers,
@@ -604,5 +614,5 @@ def directed_information_rate(
                    n_workers=n_workers, show_progress=show_progress, **run_kwargs)
     from neural_mi.config import Conditional
     return run(x_data=a, y_data=b, mode='conditional',
-               conditional=Conditional(z_data=c, align='dual_branch'),
+               conditional=Conditional(w_data=c, align='dual_branch'),
                n_workers=n_workers, show_progress=show_progress, **run_kwargs)

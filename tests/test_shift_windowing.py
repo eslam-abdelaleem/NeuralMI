@@ -8,7 +8,7 @@ import pytest
 
 from neural_mi.data.shift_windowing import (
     shift_family, mixed_pair_sample_rate_ok, seconds_to_samples,
-    make_categorical_encoder, WindowShifter, PairedWindowShifter,
+    make_categorical_encoder, make_multi_categorical_encoder, WindowShifter, PairedWindowShifter,
 )
 from neural_mi.data.temporal import (
     CategoricalWindowDataset, relabel_categorical_data,
@@ -78,6 +78,73 @@ class TestCategoricalEncoderMatchesCategoricalWindowDataset:
 
         n = min(old.shape[0], new.shape[0])
         assert np.allclose(old[:n], new[:n])
+
+
+class TestMakeMultiCategoricalEncoder:
+    """Phase 3: block-aware encoder for conditional/interaction's categorical
+    X + categorical Z/W, each block keeping its own n_categories rather than
+    one shared value inferred from the combined array's max."""
+
+    @pytest.mark.parametrize("encoding", ["majority_vote", "probability", "full_trajectory"])
+    def test_single_block_folds_category_axis_into_channels(self, encoding):
+        """A single-block spec must reproduce make_categorical_encoder's own
+        per-block content, folded into the channel axis exactly the way
+        run._reshape_categorical_w_for_conditional already folds a single
+        categorical conditioning variable -- the shape convention the whole
+        multi-block design (letting differently-sized blocks concatenate)
+        is built on."""
+        rng = np.random.default_rng(0)
+        n_windows, n_channels, window_size, n_categories = 5, 3, 6, 4
+        raw = torch.as_tensor(rng.integers(0, n_categories, size=(n_windows, n_channels, window_size)),
+                              dtype=torch.long)
+        single = make_categorical_encoder(n_categories, encoding)(raw)
+        multi = make_multi_categorical_encoder([(n_channels, n_categories)], encoding)(raw)
+        if encoding == 'full_trajectory':
+            expected = single.reshape(n_windows, n_channels, window_size, n_categories) \
+                             .permute(0, 1, 3, 2).reshape(n_windows, n_channels * n_categories, window_size)
+        else:
+            expected = single.reshape(n_windows, n_channels * n_categories, 1)
+        torch.testing.assert_close(multi, expected)
+
+    @pytest.mark.parametrize("encoding", ["majority_vote", "probability", "full_trajectory"])
+    def test_two_blocks_with_different_n_categories_are_not_conflated(self, encoding):
+        """The core correctness property: block A (n_categories=3) and block
+        B (n_categories=5) must each be one-hot encoded against their own
+        category count -- not one shared count inferred from the combined
+        array's max value (which would be 4, wrong for both blocks, and
+        would silently corrupt every category index >= 4 in block A's
+        one-hot as well as block B's)."""
+        n_windows, window_size = 2, 4
+        raw = torch.zeros(n_windows, 2, window_size, dtype=torch.long)
+        raw[0, 0, :] = 2  # block A (3 categories): category 2
+        raw[0, 1, :] = 4  # block B (5 categories): category 4 -- out of range for n_categories=3
+        raw[1, 0, :] = 0
+        raw[1, 1, :] = 1
+        block_specs = [(1, 3), (1, 5)]
+        encoded = make_multi_categorical_encoder(block_specs, encoding)(raw)
+
+        # Independently re-derive each block's expected encoding via the
+        # existing, already-proven single-block encoder, applied to that
+        # block's own channel slice with its own n_categories.
+        expected_a = make_categorical_encoder(3, encoding)(raw[:, 0:1, :])
+        expected_b = make_categorical_encoder(5, encoding)(raw[:, 1:2, :])
+        if encoding == 'full_trajectory':
+            expected_a = expected_a.reshape(n_windows, 1, window_size, 3).permute(0, 1, 3, 2) \
+                                    .reshape(n_windows, 3, window_size)
+            expected_b = expected_b.reshape(n_windows, 1, window_size, 5).permute(0, 1, 3, 2) \
+                                    .reshape(n_windows, 5, window_size)
+        else:
+            expected_a = expected_a.reshape(n_windows, 3, 1)
+            expected_b = expected_b.reshape(n_windows, 5, 1)
+        expected = torch.cat([expected_a, expected_b], dim=1)
+
+        assert encoded.shape == expected.shape
+        torch.testing.assert_close(encoded, expected)
+
+    def test_channel_count_mismatch_raises(self):
+        raw = torch.zeros(2, 3, 4, dtype=torch.long)
+        with pytest.raises(ValueError):
+            make_multi_categorical_encoder([(1, 3), (1, 5)], 'majority_vote')(raw)  # sums to 2, raw has 3
 
 
 class TestPairedWindowShifterDifferentSampleRates:

@@ -351,14 +351,14 @@ class TestResults:
             mode='conditional',
             mi_estimate=0.82,
             params={'output_units': 'bits'},
-            details={'cmi_estimate': 0.82, 'mi_xz_y': 1.25, 'mi_z_y': 0.43},
+            details={'cmi_estimate': 0.82, 'mi_xw_y': 1.25, 'mi_w_y': 0.43},
         )
         r.summary()
         captured = capsys.readouterr().out
         assert "conditional" in captured.lower()
         assert "CMI" in captured
-        assert "I(XZ;Y)" in captured
-        assert "I(Z;Y)" in captured
+        assert "I(XW;Y)" in captured
+        assert "I(W;Y)" in captured
 
     def test_summary_transfer_shows_te(self, capsys):
         """summary() for transfer mode shows TE(X→Y) and directionality when present."""

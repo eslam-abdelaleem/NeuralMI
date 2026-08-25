@@ -15,8 +15,21 @@ reused verbatim from ``analysis/sweep.py``/``analysis/conditional.py``.
 import torch
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import ParameterSweep, _joint_marginal_difference
+from neural_mi.analysis.sweep import ParameterSweep, _joint_marginal_difference, _extract_embeddings
+from neural_mi.data.temporal import relabel_categorical_data
 from neural_mi.logger import logger
+
+# Mirrors conditional.py's identical constants exactly -- both modes window
+# W paired with Y via the same create_dataset(x_data=w_data, y_data=y_data,
+# ...) call (see run.py), so both are subject to the same small boundary
+# effects: a window-count difference of up to _SAMPLE_COUNT_TRIM_TOLERANCE
+# windows between X-paired-with-Y and W-paired-with-Y (a coverage-validation
+# difference between two separate create_dataset calls, not a real duration
+# mismatch), and a window-size difference of up to
+# _WINDOW_SIZE_TRIM_TOLERANCE samples (the continuous processor's
+# interpolation-edge buffer, see _compute_max_samples_per_window).
+_WINDOW_SIZE_TRIM_TOLERANCE = 1
+_SAMPLE_COUNT_TRIM_TOLERANCE = 1
 
 
 def _ensure_3d(t: torch.Tensor) -> torch.Tensor:
@@ -52,6 +65,7 @@ def run_interaction_information(
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
     raw_deferred: bool = False,
+    w_processor_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Estimates interaction information II = I(X,W;Y) - I(X;Y) - I(W;Y).
 
@@ -68,8 +82,11 @@ def run_interaction_information(
         Data for population Y, shape ``(n_samples, n_channels_y, window_size)``.
     w_data : torch.Tensor
         Data for the third population W, shape ``(n_samples, n_channels_w, window_size)``.
-        Must share X's window size exactly (concatenated with X along the
-        channel axis to build the joint I(X,W;Y) term).
+        Concatenated with X along the channel axis to build the joint
+        I(X,W;Y) term. Window count and window size must match X's, up to a
+        1-sample edge-case boundary difference (see
+        ``_SAMPLE_COUNT_TRIM_TOLERANCE``/``_WINDOW_SIZE_TRIM_TOLERANCE``)
+        that's trimmed rather than raised.
     base_params : Dict[str, Any]
         Fixed parameters for the MI estimator. Passed to all three sweeps.
     sweep_grid : Dict[str, List], optional
@@ -85,6 +102,10 @@ def run_interaction_information(
         shift-aware windowing every other reachable mode already gets.
         Skips the windowed-shape validation below entirely, since raw 2-D
         arrays don't share a meaningful "window size" to compare yet.
+    w_processor_type : str, optional
+        W's own processor type when ``raw_deferred`` -- needed because W's
+        type may now genuinely differ from X's (a mixed continuous +
+        categorical pair). ``None`` (default) inherits X's own type.
 
     Returns
     -------
@@ -95,13 +116,77 @@ def run_interaction_information(
         - ``'mi_x_y'`` : float — mean I(X;Y).
         - ``'mi_w_y'`` : float — mean I(W;Y).
         - ``'raw_xw_y'``, ``'raw_x_y'``, ``'raw_w_y'`` : list of result dicts.
+        - ``'embeddings_x'``, ``'embeddings_y'`` : present only when
+          ``base_params['return_embeddings']`` is set -- the joint (X,W;Y)
+          leg's learned embeddings (not the standalone X;Y or W;Y legs',
+          which each train a separate model).
     """
+    # joint_bp/marginal_x_bp/marginal_w_bp: separate base_params for each of
+    # the three sweeps below.  Identical to base_params (the marginal_x/w
+    # overrides unused) except for a categorical raw_deferred X/W pair,
+    # where each sweep's raw "X-role" data is a differently-shaped
+    # concatenation (XW: two channel blocks; X alone / W alone: one block
+    # each) and so needs its own processor_params_x['_categorical_block_specs']
+    # -- try_build_shift_windows_dataset builds one encoder per call from
+    # whatever's in processor_params_x, so a single shared dict can't serve
+    # all three.
+    joint_bp, marginal_x_bp, marginal_w_bp = base_params, None, base_params
     if raw_deferred:
         # x_data/y_data/w_data arrive here exactly as the caller passed
         # them in (not yet tensors, possibly numpy arrays) -- torch.cat
         # below needs actual tensors of a matching dtype.
         _to_t = lambda a: a if torch.is_tensor(a) else torch.as_tensor(a, dtype=torch.float32)
-        x_data, y_data, w_data = _to_t(x_data), _to_t(y_data), _to_t(w_data)
+        _x_kind = base_params.get('processor_type_x')
+        _w_kind = w_processor_type if w_processor_type is not None else _x_kind
+        # Y's own type may differ from X's/W's -- "None means inherit X" is
+        # only the fallback when it isn't set explicitly.
+        _y_kind = base_params.get('processor_type_y') or _x_kind
+        y_data = list(y_data) if _y_kind == 'spike' else _to_t(y_data)
+
+        if _x_kind == 'spike':
+            # Spike+spike (the caller's gate only reaches here for a
+            # matching family): concatenation is Python list concat, no
+            # tensor op. No block-specs/type-override needed: X-role, the
+            # marginal X-alone role, and the standalone W-alone role are
+            # all still legitimately 'spike'.
+            xw_data = list(x_data) + list(w_data)
+        elif _x_kind == 'categorical' or _w_kind == 'categorical':
+            # At least one side is categorical (both-categorical, the
+            # original scope, or mixed continuous+categorical). Relabel
+            # each categorical side *separately* (each to its own correct
+            # 0..n-1 range) before concatenating, so each side's true
+            # (possibly different) category count survives -- relabeling
+            # the already-concatenated array would infer one shared
+            # n_categories from the combined max value, silently conflating
+            # the two. A continuous side is marked with n_categories=None
+            # (make_multi_categorical_encoder passes it through unencoded,
+            # broadcasting the categorical side's collapsed window axis up
+            # to match it).
+            def _spec(data, kind):
+                if kind == 'categorical':
+                    relabeled = relabel_categorical_data(data)
+                    n_cat = int(relabeled.max()) + 1 if relabeled.size else 1
+                    return torch.as_tensor(relabeled, dtype=torch.float32), (relabeled.shape[1], n_cat)
+                t = _to_t(data)
+                return t, (t.shape[1], None)
+            x_data, x_spec = _spec(x_data, _x_kind)
+            w_data, w_spec = _spec(w_data, _w_kind)
+            _wp_x = base_params.get('processor_params_x') or {}
+            joint_bp = {**base_params, 'processor_params_x': {
+                **_wp_x, '_categorical_block_specs': [x_spec, w_spec],
+            }}
+            marginal_x_bp = {**base_params, 'processor_params_x': {
+                **_wp_x, '_categorical_block_specs': [x_spec],
+            }}
+            marginal_w_bp = {**base_params, 'processor_params_x': {
+                **_wp_x, '_categorical_block_specs': [w_spec],
+            }}
+            xw_data = torch.cat([x_data, w_data], dim=1)
+        else:
+            # Plain continuous+continuous -- unchanged from before this
+            # dispatch existed, no block-specs machinery involved at all.
+            x_data, w_data = _to_t(x_data), _to_t(w_data)
+            xw_data = torch.cat([x_data, w_data], dim=1)
     else:
         x_data = _ensure_3d(x_data)
         y_data = _ensure_3d(y_data)
@@ -110,30 +195,71 @@ def run_interaction_information(
         y_data = y_data.to(device)
         w_data = w_data.to(device)
 
-        if x_data.shape[0] != y_data.shape[0] or x_data.shape[0] != w_data.shape[0]:
+        if x_data.shape[0] != y_data.shape[0]:
+            # X and Y are windowed together via a single shared WindowManager
+            # (create_dataset), so they should always match exactly. A
+            # mismatch here means something else is wrong -- always a hard
+            # error (mirrors conditional.py's identical reasoning).
             raise ValueError(
                 "x_data, y_data, and w_data must have the same number of samples. "
                 f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(w_data.shape)}."
             )
+        if x_data.shape[0] != w_data.shape[0]:
+            if abs(x_data.shape[0] - w_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
+                min_n = min(x_data.shape[0], w_data.shape[0])
+                logger.warning(
+                    f"x_data/y_data have {x_data.shape[0]} windows but w_data has "
+                    f"{w_data.shape[0]} -- likely a boundary-window coverage-validation "
+                    f"difference between processor types, not a real duration mismatch "
+                    f"(see _SAMPLE_COUNT_TRIM_TOLERANCE). Truncating all three to the "
+                    f"shared first {min_n} windows, the same way create_dataset "
+                    f"truncates X/Y to the shorter of two window counts."
+                )
+                x_data = x_data[:min_n]
+                y_data = y_data[:min_n]
+                w_data = w_data[:min_n]
+            else:
+                raise ValueError(
+                    "x_data, y_data, and w_data must have the same number of samples. "
+                    f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(w_data.shape)}."
+                )
         if x_data.shape[2] != w_data.shape[2]:
-            raise ValueError(
-                "x_data and w_data must have the same window size to be concatenated "
-                f"into XW. Got window sizes {x_data.shape[2]} and {w_data.shape[2]} "
-                f"(full shapes {tuple(x_data.shape)}, {tuple(w_data.shape)})."
-            )
-
-    xw_data = torch.cat([x_data, w_data], dim=1)
+            if w_data.shape[2] == 1:
+                # W has no temporal extent within the window (e.g. a
+                # per-window categorical summary already folded into
+                # channels) -- broadcast it across X's window so the two can
+                # be concatenated along the channel axis.
+                w_data = w_data.expand(-1, -1, x_data.shape[2])
+            elif abs(x_data.shape[2] - w_data.shape[2]) <= _WINDOW_SIZE_TRIM_TOLERANCE:
+                min_w = min(x_data.shape[2], w_data.shape[2])
+                logger.warning(
+                    f"x_data window size ({x_data.shape[2]}) and w_data window size "
+                    f"({w_data.shape[2]}) differ by {abs(x_data.shape[2] - w_data.shape[2])} "
+                    f"sample(s) -- likely the continuous processor's interpolation-edge "
+                    f"buffer (see _compute_max_samples_per_window). Trimming both to the "
+                    f"shared start, length {min_w}, rather than raising."
+                )
+                x_data = x_data[:, :, :min_w]
+                w_data = w_data[:, :, :min_w]
+            else:
+                raise ValueError(
+                    "x_data and w_data must have the same window size to be concatenated "
+                    f"into XW. Got window sizes {x_data.shape[2]} and {w_data.shape[2]} "
+                    f"(full shapes {tuple(x_data.shape)}, {tuple(w_data.shape)})."
+                )
+        xw_data = torch.cat([x_data, w_data], dim=1)
 
     _diff, mi_xw_y, mi_x_y, raw_xw_y, raw_x_y = _joint_marginal_difference(
         xw_data, y_data, x_data, y_data,
-        base_params, sweep_grid, n_workers,
+        joint_bp, sweep_grid, n_workers,
         quantity_name="Interaction information",
         joint_label="X,W;Y", marginal_label="X;Y",
         joint_key="mi_xw_y", marginal_key="mi_x_y",
         is_proc_sweep=raw_deferred,
+        marginal_base_params=marginal_x_bp,
     )
     mi_w_y, raw_w_y = _single_mi_mean(
-        w_data, y_data, base_params, sweep_grid, n_workers,
+        w_data, y_data, marginal_w_bp, sweep_grid, n_workers,
         quantity_name="Interaction information", label="W;Y",
         is_proc_sweep=raw_deferred,
     )
@@ -152,10 +278,12 @@ def run_interaction_information(
         'raw_xw_y': raw_xw_y,
         'raw_x_y': raw_x_y,
         'raw_w_y': raw_w_y,
+        **(_extract_embeddings(raw_xw_y) or {}),
     }
 
 
-def _ii_rigorous_scalar(x_s, y_s, bp, w_data=None, sweep_grid=None) -> float:
+def _ii_rigorous_scalar(x_s, y_s, bp, w_data=None, sweep_grid=None, raw_deferred=False,
+                        w_processor_type=None) -> float:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of
     interaction information.
 
@@ -165,6 +293,14 @@ def _ii_rigorous_scalar(x_s, y_s, bp, w_data=None, sweep_grid=None) -> float:
     with ``n_workers=1`` internally to avoid nested pools, matching
     ``_cmi_rigorous_scalar``'s convention. ``w_data`` arrives here already
     sliced to this gamma-chunk's samples via ``extra_data``.
+
+    ``raw_deferred`` : forwarded straight through to
+    ``run_interaction_information`` -- ``x_s``/``y_s``/``w_data`` are raw,
+    unwindowed 2-D chunks (already translated to a raw sample range by
+    ``run_rigorous_scalar_analysis``'s own ``_is_raw_deferred`` handling)
+    when set, letting this gamma-chunk's own sweep dispatch reach
+    ``shift_windows``.
     """
-    raw = run_interaction_information(x_s, y_s, w_data, bp, sweep_grid=sweep_grid, n_workers=1)
+    raw = run_interaction_information(x_s, y_s, w_data, bp, sweep_grid=sweep_grid, n_workers=1,
+                                      raw_deferred=raw_deferred, w_processor_type=w_processor_type)
     return raw['interaction_info']

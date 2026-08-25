@@ -15,7 +15,7 @@ import torch
 import numpy as np
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import _joint_marginal_difference
+from neural_mi.analysis.sweep import _joint_marginal_difference, _extract_embeddings
 from neural_mi.logger import logger
 
 
@@ -145,6 +145,10 @@ def run_transfer_entropy(
         - ``'raw_ypast_yfuture'`` : list of result dicts.
         - ``'n_samples'`` : int — number of valid sliding-window samples.
         - ``'bidirectional'`` : bool — whether bidirectional TE was computed.
+        - ``'embeddings_x'``, ``'embeddings_y'`` : present only when
+          ``base_params['return_embeddings']`` is set -- the joint
+          (xy_past;y_future) leg's learned embeddings, not the marginal
+          (y_past;y_future) leg's, which trains a separate model.
 
         If ``bidirectional=True``, additionally:
 
@@ -155,6 +159,8 @@ def run_transfer_entropy(
         - ``'raw_xpast_xfuture'`` : list of result dicts.
         - ``'directionality_index'`` : float — (TE_xy - TE_yx) / (|TE_xy| + |TE_yx|).
           +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric.
+        - ``'embeddings_x_yx'``, ``'embeddings_y_yx'`` : the TE(Y→X)
+          direction's joint-leg embeddings, present under the same condition.
     """
     if x_data.ndim != 2 or y_data.ndim != 2:
         raise ValueError(
@@ -227,6 +233,7 @@ def run_transfer_entropy(
     # (or vice versa) that the difference alone wouldn't reveal.
     result['diagnostics_joint'] = _extract_diagnostics(results_joint)
     result['diagnostics_marginal'] = _extract_diagnostics(results_marginal)
+    result.update(_extract_embeddings(results_joint) or {})
 
     if bidirectional:
         logger.info("Transfer Entropy (bidirectional): estimating TE(Y→X)...")
@@ -258,6 +265,7 @@ def run_transfer_entropy(
             f"TE(X→Y)={te:.4f}, TE(Y→X)={te_yx:.4f}, "
             f"directionality_index={directionality_index:.4f}"
         )
+        _emb_yx = _extract_embeddings(results_joint_yx)
         result.update({
             'te_yx': te_yx,
             'i_yxpast_xfuture': mi_joint_yx,
@@ -268,6 +276,9 @@ def run_transfer_entropy(
             'diagnostics_joint_yx': _extract_diagnostics(results_joint_yx),
             'diagnostics_marginal_yx': _extract_diagnostics(results_marginal_yx),
         })
+        if _emb_yx is not None:
+            result['embeddings_x_yx'] = _emb_yx['embeddings_x']
+            result['embeddings_y_yx'] = _emb_yx['embeddings_y']
 
     return result
 
@@ -309,8 +320,8 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
 
     ``w_data`` arrives here already sliced to this gamma-chunk's samples (via
     ``run_rigorous_scalar_analysis``'s ``extra_data`` mechanism, the same one
-    ``z_data`` already uses for ``mode='conditional'``'s rigorous path), not
-    the full signal -- forwarded straight through to ``run_transfer_entropy``.
+    ``mode='conditional'``'s rigorous path also uses for its own ``w_data``),
+    not the full signal -- forwarded straight through to ``run_transfer_entropy``.
     """
     raw = run_transfer_entropy(
         x_s, y_s, bp,

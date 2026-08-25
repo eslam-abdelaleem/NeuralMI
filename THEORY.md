@@ -433,7 +433,7 @@ into an otherwise well-behaved quantity, reintroducing the fragility a
 direct estimate avoids. `directed_information_rate()` always estimates it
 directly, from its own $A$/$B$/$C$ arrays.
 
-All three need `Model(embedding_model='gru', custom_embedding_cls=DualBranchEmbedding, ...)`
+All three need `Model(embedding_model='dual_branch', ...)`
 and `Conditional(align='dual_branch')` (handled automatically by
 `neural_mi.quantities.mi_rate`/`instantaneous_exchange`/`directed_information_rate`,
 which raise a clear error if the model isn't configured this way). See
@@ -442,7 +442,7 @@ full API.
 
 ### DualBranchEmbedding
 
-`mode='conditional'` ordinarily concatenates $X$ and $Z$ into one array
+`mode='conditional'` ordinarily concatenates $X$ and $W$ into one array
 before embedding, which requires them to share a window length (a
 one-sample mismatch is trimmed automatically; anything more raises an
 error). MI rate, instantaneous exchange, and directed information rate all
@@ -455,11 +455,15 @@ handled structurally.
 networks, one per input length, each processing its own array natively (an
 RNN-family branch's weights depend only on channel count, not on sequence
 length, so there's no length-matching constraint between the branches at
-all), fused by a small MLP into one embedding vector. It's used via
-`custom_embedding_cls=DualBranchEmbedding` on the existing
-`custom_embedding_cls` extension point, not a new `embedding_model=` string,
-since a genuinely new embedding-model enum entry would touch several
-unrelated validation paths for no benefit here. `Conditional(align='dual_branch')`
+all), fused by a small MLP into one embedding vector. It ships as
+`embedding_model='dual_branch'`, a real entry in the model-selection
+dispatch (`build_critic`'s `_EMBEDDING_CLASSES` table) rather than only
+reachable via `custom_embedding_cls` -- `branch_model` (default `'gru'`)
+picks each branch's own architecture from that same table. A genuinely
+custom (non-built-in) branch architecture still uses
+`custom_embedding_cls=DualBranchEmbedding`-based subclass instead (see the
+class docstring), which always takes priority when set.
+`Conditional(align='dual_branch')`
 is the corresponding data-side opt-in: it builds the "X-role" data as a
 tuple `(a_data, c_data)` instead of concatenating, which
 `DualBranchEmbedding` (and the rest of the training pipeline: dataset,

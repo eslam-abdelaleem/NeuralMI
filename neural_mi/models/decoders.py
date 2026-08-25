@@ -241,6 +241,44 @@ class LSTMDecoder(BaseDecoder):
         return self._act(out)
 
 
+class LRUDecoder(BaseDecoder):
+    """Sequence decoder for the :class:`~neural_mi.models.embeddings.LRU`
+    encoder. Same shape as :class:`GRUDecoder` (project, repeat, recur,
+    project), with the repeated sequence run through the same
+    :class:`~neural_mi.models.embeddings.LRUBlock` stack the encoder uses,
+    instead of an ``nn.GRU``.
+    """
+    def __init__(
+        self,
+        embed_dim: int,
+        hidden_dim: int,
+        n_channels: int,
+        window_size: int,
+        n_layers: int = 1,
+        output_activation: str = 'linear',
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        from neural_mi.models.embeddings import LRUBlock
+        self.n_channels = n_channels
+        self.window_size = window_size
+        self._act = _get_output_activation(output_activation)
+
+        self.input_proj = nn.Linear(embed_dim, hidden_dim)
+        self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout) for _ in range(max(1, n_layers))])
+        self.output_proj = nn.Linear(hidden_dim, n_channels)
+        self._init_weights()
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        h = self.input_proj(z)                              # (B, hidden)
+        h = h.unsqueeze(1).expand(-1, self.window_size, -1) # (B, W, hidden)
+        for block in self.blocks:
+            h = block(h)                                    # (B, W, hidden)
+        out = self.output_proj(h)                           # (B, W, C)
+        out = out.permute(0, 2, 1)                          # (B, C, W)
+        return self._act(out)
+
+
 class TCNDecoder(BaseDecoder):
     """Approximate inverse of the :class:`~neural_mi.models.embeddings.TCN` encoder.
 
@@ -493,6 +531,8 @@ def build_decoder(
         return GRUDecoder(**common, window_size=window_size)
     elif name == 'lstm':
         return LSTMDecoder(**common, window_size=window_size)
+    elif name == 'lru':
+        return LRUDecoder(**common, window_size=window_size, dropout=kwargs.get('dropout', 0.3))
     elif name == 'tcn':
         return TCNDecoder(**common, window_size=window_size, kernel_size=kwargs.get('kernel_size', 3))
     elif name == 'transformer':

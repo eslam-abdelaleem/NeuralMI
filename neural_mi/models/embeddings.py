@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 import math
+import numpy as np
 from typing import Optional, Tuple
 from torch.nn.utils import spectral_norm as _spectral_norm
 
@@ -42,7 +43,20 @@ class BaseEmbedding(nn.Module):
     All embedding models should inherit from this class and implement the `forward` method.
     The role of an embedding model is to transform an input tensor into a
     lower-dimensional vector representation (an embedding).
+
+    Class attribute ``input_style`` declares the ``input_dim`` convention
+    ``build_critic`` (``neural_mi/utils.py``) should use to construct this
+    class: ``'flattened'`` (the default) means ``input_dim`` is the fully
+    flattened ``n_channels * window_size`` (the MLP convention); ``'channels'``
+    means ``input_dim`` is the raw channel count, with the window/sequence
+    axis handled internally (the GRU/CNN/Transformer convention). A custom
+    ``embedding_model`` class that needs the ``'channels'`` convention sets
+    ``input_style = 'channels'`` on itself -- this is the only thing that
+    determines which convention it receives, instead of an unrelated
+    ``embedding_model=`` string having to be set purely as a shape hint.
     """
+    input_style: str = 'flattened'
+
     def __init__(self):
         super().__init__()
 
@@ -182,6 +196,8 @@ class CNN1D(BaseEmbedding):
     hidden_dim : int
         The number of feature channels after the CNN layers.
     """
+    input_style = 'channels'
+
     def __init__(self, input_dim: int, hidden_dim, embed_dim: int, n_layers: int,
                  activation: str = 'relu', kernel_size: int = 7):
         """
@@ -255,7 +271,9 @@ class CNN1D(BaseEmbedding):
 
 class GRU(BaseEmbedding):
     """A Gated Recurrent Unit (GRU) embedding network for sequential data."""
-    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int, 
+    input_style = 'channels'
+
+    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int,
                  bidirectional: bool = False, **kwargs):
         """
         Parameters
@@ -295,7 +313,9 @@ class GRU(BaseEmbedding):
 
 class LSTM(BaseEmbedding):
     """An LSTM (Long Short-Term Memory) embedding network for sequential data."""
-    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int, 
+    input_style = 'channels'
+
+    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int,
                  bidirectional: bool = False, **kwargs):
         """
         Parameters
@@ -329,8 +349,124 @@ class LSTM(BaseEmbedding):
             
         return self.output_layer(last_hidden)
 
+
+class LockedDropout(nn.Module):
+    """Variational (locked) dropout: samples one mask per sequence and
+    reuses it across every timestep, instead of an independent mask per
+    timestep (``nn.Dropout``'s default) -- the standard regularization for
+    recurrent state-space layers, see Gal & Ghahramani (2016)."""
+    def __init__(self, p: float = 0.3):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training or self.p == 0:
+            return x
+        mask = x.new_empty(x.size(0), 1, x.size(2), requires_grad=False).bernoulli_(1 - self.p) / (1 - self.p)
+        return x * mask.expand_as(x)
+
+
+class LRULayer(nn.Module):
+    """A Linear Recurrent Unit (Orvieto et al., 2023): a complex-valued,
+    diagonal linear state-space recurrence. Diagonal (not full-matrix) state
+    transitions make the per-timestep recurrence a simple elementwise
+    multiply, letting it train stably at depth without the vanishing/
+    exploding gradients a naive RNN faces, while still modeling long-range
+    temporal structure GRU/LSTM's gating handles differently."""
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        u1 = torch.rand(hidden_dim)
+        u2 = torch.rand(hidden_dim)
+        nu_log = torch.log(-0.5 * torch.log(u1 * (1 - 0.999) + 0.999))
+        theta_log = torch.log(u2 * np.pi * 2)
+        self.nu_log = nn.Parameter(nu_log)
+        self.theta_log = nn.Parameter(theta_log)
+        self.gamma_log = nn.Parameter(torch.log(torch.sqrt(1 - torch.exp(-torch.exp(self.nu_log)) ** 2)))
+        self.B_re = nn.Parameter(torch.randn(hidden_dim, hidden_dim) / np.sqrt(hidden_dim))
+        self.B_im = nn.Parameter(torch.randn(hidden_dim, hidden_dim) / np.sqrt(hidden_dim))
+        self.C_re = nn.Parameter(torch.randn(hidden_dim, hidden_dim) / np.sqrt(hidden_dim))
+        self.C_im = nn.Parameter(torch.randn(hidden_dim, hidden_dim) / np.sqrt(hidden_dim))
+        self.D = nn.Parameter(torch.randn(hidden_dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        lam = torch.exp(-torch.exp(self.nu_log) + 1j * torch.exp(self.theta_log))
+        gammas = torch.exp(self.gamma_log).unsqueeze(-1)
+        B_norm = (self.B_re + 1j * self.B_im) * gammas
+        C = self.C_re + 1j * self.C_im
+        h = torch.zeros(x.size(0), self.hidden_dim, dtype=torch.cfloat, device=x.device)
+        outputs = []
+        for t in range(x.size(1)):
+            h = lam * h + x[:, t, :].to(torch.cfloat) @ B_norm.T
+            outputs.append((h @ C.T).real + x[:, t, :] * self.D)
+        return torch.stack(outputs, dim=1)
+
+
+class LRUBlock(nn.Module):
+    """LayerNorm + LRULayer + LockedDropout + a 2-layer GELU MLP, combined
+    as a residual block -- the standard pre-norm transformer-style block
+    shape, with the LRU recurrence standing in for self-attention."""
+    def __init__(self, hidden_dim: int, dropout: float = 0.3):
+        super().__init__()
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.lru = LRULayer(hidden_dim)
+        self.dropout = LockedDropout(dropout)
+        self.out_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
+                                      nn.Linear(hidden_dim, hidden_dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        z = self.norm(x)
+        z = self.lru(z)
+        z = self.dropout(z)
+        return x + self.out_proj(z)
+
+
+class LRUEmbedding(BaseEmbedding):
+    """A Linear Recurrent Unit (LRU) embedding network for sequential data.
+
+    A state-space alternative to GRU/LSTM: a stack of :class:`LRUBlock`s
+    (each a complex-valued diagonal linear recurrence, see :class:`LRULayer`)
+    over a linear input/output projection, temporally mean-pooled to a
+    fixed-size embedding. Reaches the same InfoNCE ceiling as GRU on
+    windowed temporal data in this library's own accuracy benchmarks, at
+    comparable parameter count.
+    """
+    input_style = 'channels'
+
+    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int = 1,
+                 dropout: float = 0.3, **kwargs):
+        """
+        Parameters
+        ----------
+        input_dim : int
+            The number of input channels.
+        hidden_dim : int
+            The width of the LRU recurrence and its surrounding MLP.
+        embed_dim : int
+            The dimensionality of the output embedding.
+        n_layers : int, optional
+            The number of stacked LRUBlocks. Defaults to 1.
+        dropout : float, optional
+            Locked-dropout probability inside each block. Defaults to 0.3.
+        """
+        super().__init__()
+        self.in_proj = nn.Linear(input_dim, hidden_dim)
+        self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout) for _ in range(n_layers)])
+        self.out_proj = nn.Linear(hidden_dim, embed_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.transpose(1, 2)
+        x = self.in_proj(x)
+        for block in self.blocks:
+            x = block(x)
+        x = x.mean(dim=1)
+        return self.out_proj(x)
+
+
 class TCN(BaseEmbedding):
     """A Temporal Convolutional Network (TCN) for sequential data."""
+    input_style = 'channels'
+
     # Inner class for a Chomp layer to remove padding
     class Chomp1d(nn.Module):
         def __init__(self, chomp_size):
@@ -403,6 +539,8 @@ class TCN(BaseEmbedding):
         
 class Transformer(BaseEmbedding):
     """A Transformer Encoder model for sequential data."""
+    input_style = 'channels'
+
     class PositionalEncoding(nn.Module):
         def __init__(self, d_model, max_len=5000):
             super().__init__()
@@ -482,6 +620,8 @@ class CNN2D(BaseEmbedding):
     embed_dim : int
     hidden_dim : int
     """
+    input_style = 'channels'
+
     def __init__(self, input_dim: int, hidden_dim, embed_dim: int, n_layers: int,
                  activation: str = 'relu', kernel_size: int = 3, **kwargs):
         """
@@ -602,6 +742,7 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
     The backbone is always frozen (``requires_grad=False``) regardless of the
     ``pretrained`` flag.  Only the MLP head is trainable.
     """
+    input_style = 'channels'
 
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int,
                  pytorch_predefined: Optional[str] = None,
@@ -914,10 +1055,17 @@ class DualBranchEmbedding(BaseEmbedding):
     Notes
     -----
     ``use_variational=True`` is not supported with this class, see
-    ``VariationalWrapper.forward``'s explicit check. Not compatible with
+    ``VariationalWrapper.forward``'s explicit check. ``use_decoder=True`` is
+    not supported either -- reconstructing a compound ``(A, C)`` input from
+    one fused embedding has no single well-defined decoder architecture; see
+    ``task.py``'s explicit check. Nor is ``shared_encoder=True`` -- X's role
+    needs the dual (tuple-input) branch, Y's role needs the single
+    (plain-tensor) branch, and one encoder instance can't be both; see
+    ``build_critic``'s explicit check. Not compatible with
     ``max_samples_per_task`` (``mode='sweep'``-only, unrelated to the
     quantities this class serves).
     """
+    input_style = 'channels'
 
     def __init__(self, input_dim, hidden_dim, embed_dim, n_layers,
                  branch_cls: Optional[type] = None, fusion_hidden_dim: Optional[int] = None,

@@ -34,11 +34,11 @@ class TestConditionalRigorous:
         N = 400
         x = _make_random_3d(N, 2, 8, seed=1)
         y = _make_random_3d(N, 2, 8, seed=2)
-        z = _make_random_3d(N, 2, 8, seed=3)
+        w = _make_random_3d(N, 2, 8, seed=3)
         result = nmi.run(
             x, y,
             mode='conditional',
-            conditional=Conditional(z_data=z, rigorous=True,
+            conditional=Conditional(w_data=w, rigorous=True,
                                     gamma_range=range(1, 4), min_gamma_points=2),
             model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
@@ -52,11 +52,11 @@ class TestConditionalRigorous:
         N = 400
         x = _make_random_3d(N, 2, 8, seed=4)
         y = _make_random_3d(N, 2, 8, seed=5)
-        z = _make_random_3d(N, 2, 8, seed=6)
+        w = _make_random_3d(N, 2, 8, seed=6)
         result = nmi.run(
             x, y,
             mode='conditional',
-            conditional=Conditional(z_data=z, rigorous=True,
+            conditional=Conditional(w_data=w, rigorous=True,
                                     gamma_range=range(1, 4), min_gamma_points=2),
             model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
@@ -74,11 +74,11 @@ class TestConditionalRigorous:
         N = 300
         x = _make_random_3d(N, 1, 5, seed=7)
         y = _make_random_3d(N, 1, 5, seed=8)
-        z = _make_random_3d(N, 1, 5, seed=9)
+        w = _make_random_3d(N, 1, 5, seed=9)
         result = nmi.run(
             x, y,
             mode='conditional',
-            conditional=Conditional(z_data=z, rigorous=True,
+            conditional=Conditional(w_data=w, rigorous=True,
                                     gamma_range=range(1, 4), min_gamma_points=2),
             model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
@@ -93,11 +93,11 @@ class TestConditionalRigorous:
         N = 300
         x = _make_random_3d(N, 2, 6, seed=10)
         y = _make_random_3d(N, 2, 6, seed=11)
-        z = _make_random_3d(N, 2, 6, seed=12)
+        w = _make_random_3d(N, 2, 6, seed=12)
         result = nmi.run(
             x, y,
             mode='conditional',
-            conditional=Conditional(z_data=z),
+            conditional=Conditional(w_data=w),
             model=_MODEL, training=_TRAINING,
             verbose=False, show_progress=False,
         )
@@ -229,7 +229,7 @@ class TestRigorousConditionalTransferUnitConversion:
         from neural_mi import Model, Split, Training as _Training, Conditional, Output
         x = np.random.default_rng(0).normal(size=(50, 1)).astype(np.float32)
         y = np.random.default_rng(1).normal(size=(50, 1)).astype(np.float32)
-        z = np.random.default_rng(2).normal(size=(50, 1)).astype(np.float32)
+        w = np.random.default_rng(2).normal(size=(50, 1)).astype(np.float32)
         common = dict(model=Model(embedding_dim=4, hidden_dim=8),
                      training=_Training(n_epochs=1, batch_size=32),
                      split=Split(mode='random'), show_progress=False)
@@ -237,7 +237,7 @@ class TestRigorousConditionalTransferUnitConversion:
         with patch('neural_mi.analysis.rigorous.run_rigorous_scalar_analysis',
                   return_value=_fixed_rig_result()):
             r_bits = nmi.run(x, y, mode='conditional', output=Output(units='bits'),
-                             conditional=Conditional(z_data=z, rigorous=True, min_gamma_points=3),
+                             conditional=Conditional(w_data=w, rigorous=True, min_gamma_points=3),
                              n_workers=1, **common)
 
         assert r_bits.mi_estimate == pytest.approx(1.0 * _NATS_TO_BITS)

@@ -83,7 +83,7 @@ def as_config(value: Union[None, "T", Dict[str, Any]], cls: Type[T]) -> Optional
 @dataclass
 class Model:
     """Model architecture: embedding network + critic."""
-    embedding_model: Optional[str] = None          # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'
+    embedding_model: Optional[str] = None          # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'
     embedding_dim: Optional[int] = None
     hidden_dim: Optional[Union[int, List[int]]] = None
     n_layers: Optional[int] = None
@@ -93,6 +93,7 @@ class Model:
     kernel_size: Optional[int] = None              # CNN/TCN
     bidirectional: Optional[bool] = None           # RNN
     nhead: Optional[int] = None                    # Transformer
+    branch_model: Optional[str] = None             # embedding_model='dual_branch' only: each branch's own architecture, defaults to 'gru'
     dropout: Optional[float] = None
     norm_layer: Optional[str] = None               # 'layer'|'batch'|None
     use_spectral_norm: Optional[bool] = None
@@ -349,20 +350,20 @@ class Dimensionality:
 
 @dataclass
 class Conditional:
-    """Parameters for ``mode='conditional'`` conditional MI (the Z variable).
+    """Parameters for ``mode='conditional'`` conditional MI (the W variable).
 
-    ``align='dual_branch'`` is for the case where Z genuinely differs from
+    ``align='dual_branch'`` is for the case where W genuinely differs from
     X in window length (MI rate, instantaneous exchange, directed
     information rate, see ``THEORY.md``), beyond the small trim tolerance
-    the default path applies. It routes Z into a
+    the default path applies. It routes W into a
     ``DualBranchEmbedding``-based ``custom_embedding_cls`` (set separately
-    via ``Model(...)``) instead of concatenating X and Z at the data level.
+    via ``Model(...)``) instead of concatenating X and W at the data level.
     Leave unset (``None``, today's behavior) unless you know you need it.
     """
-    z_data: Optional[Any] = None
-    z_time: Optional[Any] = None
-    z_processor_type: Optional[str] = None
-    z_processor_params: Optional[Dict[str, Any]] = None
+    w_data: Optional[Any] = None
+    w_time: Optional[Any] = None
+    w_processor_type: Optional[str] = None
+    w_processor_params: Optional[Dict[str, Any]] = None
     align: Optional[str] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
@@ -373,15 +374,15 @@ class Conditional:
     r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
-    # z_* are consumed as dedicated run arguments; the rest are analysis kwargs.
-    _Z_FIELDS = ("z_data", "z_time", "z_processor_type", "z_processor_params")
+    # w_* are consumed as dedicated run arguments; the rest are analysis kwargs.
+    _W_FIELDS = ("w_data", "w_time", "w_processor_type", "w_processor_params")
 
-    def to_z_kwargs(self) -> Dict[str, Any]:
-        return {k: getattr(self, k) for k in self._Z_FIELDS if getattr(self, k) is not None}
+    def to_w_kwargs(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         d = _non_none(self)
-        for k in self._Z_FIELDS:
+        for k in self._W_FIELDS:
             d.pop(k, None)
         return d
 

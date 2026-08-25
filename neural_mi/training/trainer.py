@@ -69,6 +69,14 @@ def _index_batch(x, idx):
     return x[idx]
 
 
+def _detach_clone(x):
+    """``.detach().clone()``, mapped over each element if x is a tuple
+    (dual_branch's compound "X-role" data)."""
+    if isinstance(x, tuple):
+        return tuple(t.detach().clone() for t in x)
+    return x.detach().clone()
+
+
 class Trainer:
     """Manages the training loop for a critic model.
 
@@ -348,6 +356,15 @@ class Trainer:
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         is_temporal = isinstance(dataset, PairedTemporalDataset)
 
+        # Prime the time-shift grid once, up front -- before the train/test
+        # split or the frozen eval snapshot below are computed -- so
+        # len(dataset) and every index array derived from it are sized
+        # against the final, margin-reserved window count from the start
+        # (see PairedTemporalDataset._reserve_shift_margin). A recording too
+        # short for a safe shift fails here, not partway through training.
+        if is_temporal and shift_time:
+            dataset.time_shift(offset_x=0.0, offset_y=0.0)
+
         # Move decoders to device and set to training mode
         if self.decoder_x is not None:
             self.decoder_x = self.decoder_x.to(self.device)
@@ -382,6 +399,15 @@ class Trainer:
                 _leak_kwargs = {'window_size': _wm.window_size, 'step': _wm.resolve_step()}
             else:
                 _leak_kwargs = {}
+            if is_temporal and shift_time and 'window_size' in _leak_kwargs:
+                # A training window's real content can now drift by up to a
+                # full window_size under a genuine time_shift (Phase 0 fix),
+                # while the frozen eval window stays at offset 0 -- the
+                # leak-check margin that's correct for static overlapping
+                # windows (window_size) is too small here; the safe margin
+                # is 2*window_size. Warn-only check, so this only tightens
+                # when the warning fires, it doesn't change the split itself.
+                _leak_kwargs = {**_leak_kwargs, 'window_size': 2 * _leak_kwargs['window_size']}
             train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
                                                              gap_fraction=split_gap_fraction, **_leak_kwargs)
         
@@ -509,7 +535,7 @@ class Trainer:
         _window_shifter = getattr(dataset, '_window_shifter', None)
         _shifting_active = (is_temporal and shift_time) or (shift_windows and _window_shifter is not None)
         if _shifting_active:
-            _eval_x_source = dataset.x_dataset.data.detach().clone()
+            _eval_x_source = _detach_clone(dataset.x_dataset.data)
             _eval_y_source = dataset.y_dataset.data.detach().clone()
             _eval_test_idx = torch.as_tensor(test_idx, dtype=torch.long)
             _eval_train_eval_idx = torch.as_tensor(train_eval_idx, dtype=torch.long)
@@ -613,12 +639,12 @@ class Trainer:
             if self.decoder_y is not None:
                 self.decoder_y.eval()
             with torch.no_grad():
-                x_test = _eval_x_source[_eval_test_idx, ...]
+                x_test = _index_batch(_eval_x_source, _eval_test_idx)
                 y_test = _eval_y_source[_eval_test_idx, ...]
                 mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples)
 
                 if _do_epoch_train_eval:
-                    x_etrain = _eval_x_source[_eval_epoch_train_eval_idx, ...]
+                    x_etrain = _index_batch(_eval_x_source, _eval_epoch_train_eval_idx)
                     y_etrain = _eval_y_source[_eval_epoch_train_eval_idx, ...]
                     train_mi_nats = self._safe_eval_mi(x_etrain, y_etrain, max_eval_samples)
                     train_history.append(train_mi_nats)
@@ -626,7 +652,7 @@ class Trainer:
                 # Per-epoch spectral history if requested (can be expensive, so optional)
                 if track_spectral_history:
                     metrics_during = self._extract_spectral_metrics(
-                        _eval_x_source[_eval_train_eval_idx, ...],
+                        _index_batch(_eval_x_source, _eval_train_eval_idx),
                         _eval_y_source[_eval_train_eval_idx, ...],
                     )
                     metrics_tracked.append(metrics_during)
@@ -636,7 +662,7 @@ class Trainer:
                     _zx_list, _zy_list = [], []
                     for _b_start in range(0, embed_track_n, batch_size):
                         _b_idx = embed_track_idx[_b_start:_b_start + batch_size]
-                        _xb = _to_device(_eval_x_source[_b_idx, ...], self.device)
+                        _xb = _to_device(_index_batch(_eval_x_source, _b_idx), self.device)
                         _yb = _eval_y_source[_b_idx, ...].to(self.device)
                         _zx_b, _zy_b = self.model.get_embeddings(_xb, _yb)
                         _zx_list.append(_zx_b.cpu().numpy())
@@ -735,10 +761,10 @@ class Trainer:
             
         with torch.no_grad():
             final_test_mi = self._safe_eval_mi(
-                _eval_x_source[_eval_test_idx, ...],
+                _index_batch(_eval_x_source, _eval_test_idx),
                 _eval_y_source[_eval_test_idx, ...], max_eval_samples)
             final_train_mi = self._safe_eval_mi(
-                _eval_x_source[_eval_train_eval_idx, ...],
+                _index_batch(_eval_x_source, _eval_train_eval_idx),
                 _eval_y_source[_eval_train_eval_idx, ...], max_eval_samples)
         
         from neural_mi.estimators import infonce_lower_bound
@@ -855,7 +881,7 @@ class Trainer:
                 self.model.load_state_dict(_cons_state)
                 with torch.no_grad():
                     _conservative_train_mi = self._safe_eval_mi(
-                        _eval_x_source[_eval_train_eval_idx, ...],
+                        _index_batch(_eval_x_source, _eval_train_eval_idx),
                         _eval_y_source[_eval_train_eval_idx, ...],
                         max_eval_samples,
                     )
@@ -975,7 +1001,7 @@ class Trainer:
         if self.decoder_x is not None or self.decoder_y is not None:
             with torch.no_grad():
                 # Evaluate on train eval subset
-                _tx = _to_device(_eval_x_source[_eval_train_eval_idx, ...], self.device)
+                _tx = _to_device(_index_batch(_eval_x_source, _eval_train_eval_idx), self.device)
                 _ty = _eval_y_source[_eval_train_eval_idx, ...].to(self.device)
                 _zx, _zy = self.model.get_embeddings(_tx, _ty)  # uses existing no_grad method
                 _recon_loss = 0.0
@@ -992,7 +1018,7 @@ class Trainer:
         # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) at the best epoch --
         # always computed, independent of track_spectral_history above.
         metrics_final = self._extract_spectral_metrics(
-            _eval_x_source[_eval_train_eval_idx, ...],
+            _index_batch(_eval_x_source, _eval_train_eval_idx),
             _eval_y_source[_eval_train_eval_idx, ...],
         )
         results.update(metrics_final)

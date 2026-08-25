@@ -15,10 +15,27 @@ import tempfile
 from neural_mi.models.embeddings import (
     MLP, VariationalWrapper,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
-    PretrainedBackboneEmbedding,
+    PretrainedBackboneEmbedding, LRUEmbedding, DualBranchEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
 from neural_mi.logger import logger
+
+# Single source of truth for every built-in embedding_model string -> class,
+# reused both by build_critic's main dispatch and by 'dual_branch's own
+# branch_model lookup (a DualBranchEmbedding's two sub-networks are picked
+# from this same set).
+_EMBEDDING_CLASSES = {
+    'mlp': MLP,
+    'cnn': CNN1D,
+    'cnn2d': CNN2D,
+    'gru': GRU,
+    'lstm': LSTM,
+    'tcn': TCN,
+    'transformer': Transformer,
+    'pretrained_backbone': PretrainedBackboneEmbedding,
+    'lru': LRUEmbedding,
+    'dual_branch': DualBranchEmbedding,
+}
 
 def _ensure_cpu(data):
     """Move *data* to CPU if it is a tensor on a non-CPU device.
@@ -209,24 +226,14 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # applied after construction so all encoder architectures benefit uniformly.
     if custom_embedding_cls:
         EmbeddingModel = custom_embedding_cls
-    elif model_type == 'cnn':
-        EmbeddingModel = CNN1D
-    elif model_type == 'cnn2d':
-        EmbeddingModel = CNN2D
-    elif model_type == 'gru':
-        EmbeddingModel = GRU
-    elif model_type == 'lstm':
-        EmbeddingModel = LSTM
-    elif model_type == 'tcn':
-        EmbeddingModel = TCN
-    elif model_type == 'transformer':
-        EmbeddingModel = Transformer
-    elif model_type == 'mlp':
-        EmbeddingModel = MLP
-    elif model_type == 'pretrained_backbone':
-        EmbeddingModel = PretrainedBackboneEmbedding
+    elif model_type in _EMBEDDING_CLASSES:
+        EmbeddingModel = _EMBEDDING_CLASSES[model_type]
     else:
-        raise ValueError(f"Unknown embedding_model: {model_type}")
+        raise ValueError(
+            f"Unknown embedding_model: {model_type!r}. Built-in options: "
+            f"{sorted(_EMBEDDING_CLASSES)}. Pass a class via custom_embedding_cls "
+            f"for anything else."
+        )
 
     # --- Parameter Preparation ---
     model_kwargs = {
@@ -240,23 +247,37 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         'use_variational': use_variational
     }
 
-    # CNN1D, CNN2D, and all sequence models use n_channels as input_dim
-    # (they operate on the channel dimension, not a flattened feature vector).
-    # pretrained_backbone also uses n_channels as input_dim.
-    # MLP (and custom cls) use the fully-flattened input_dim.
-    _sequential_types = {'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                         'pretrained_backbone'}
-    if model_type in _sequential_types:
+    # A class's own `input_style` (see BaseEmbedding) decides the input_dim
+    # convention it's built with -- 'channels' (raw channel count, the
+    # window/sequence axis handled internally by the class) or 'flattened'
+    # (n_channels * window_size, the default for any class that doesn't
+    # declare otherwise -- including a third-party custom_embedding_cls
+    # written before this attribute existed, preserving its old behavior).
+    if getattr(EmbeddingModel, 'input_style', 'flattened') == 'channels':
         input_dim_x, input_dim_y = embedding_params['n_channels_x'], embedding_params['n_channels_y']
-        if model_type in ['cnn', 'tcn', 'cnn2d']:
+        if model_type in ('cnn', 'tcn', 'cnn2d'):
             model_kwargs['kernel_size'] = embedding_params.get('kernel_size', 7 if model_type == 'cnn' else 3)
-        if model_type in ['gru', 'lstm']:
+        if model_type in ('gru', 'lstm'):
             model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
         if model_type == 'transformer':
             model_kwargs['nhead'] = embedding_params.get('nhead', 4)
         if model_type == 'pretrained_backbone':
             model_kwargs['pytorch_predefined'] = embedding_params.get('pytorch_predefined')
             model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
+        if model_type == 'lru':
+            model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
+        if model_type == 'dual_branch' and not custom_embedding_cls:
+            # custom_embedding_cls (a DualBranchEmbedding subclass hardcoding
+            # its own branch_cls, see the class docstring) always takes
+            # priority -- this only resolves branch_cls for the plain
+            # Model(embedding_model='dual_branch', branch_model=...) form.
+            branch_model = embedding_params.get('branch_model') or 'gru'
+            if branch_model not in _EMBEDDING_CLASSES:
+                raise ValueError(
+                    f"Unknown branch_model: {branch_model!r}. Built-in options: "
+                    f"{sorted(_EMBEDDING_CLASSES)}."
+                )
+            model_kwargs['branch_cls'] = _EMBEDDING_CLASSES[branch_model]
     else:  # MLP or a custom class — both take the fully-flattened input_dim
         input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
         if not custom_embedding_cls:
@@ -273,6 +294,15 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             "shared_encoder=True is incompatible with critic_type='concat'. "
             "ConcatCritic operates on raw concatenated inputs and has no separate "
             "embedding networks to share. Switch to critic_type='separable' or 'hybrid'."
+        )
+    if shared_encoder and isinstance(input_dim_x, tuple):
+        raise ValueError(
+            "shared_encoder=True is incompatible with a compound (tuple) X-role "
+            "input, e.g. DualBranchEmbedding used via mode='conditional'"
+            "(align='dual_branch'). One encoder instance can't simultaneously be "
+            "the dual (tuple-input) branch X needs and the single (plain-tensor) "
+            "branch Y needs -- they're structurally different forward() paths on "
+            "the same class. Set shared_encoder=False for this path."
         )
 
     # Build the base (deterministic) encoders.

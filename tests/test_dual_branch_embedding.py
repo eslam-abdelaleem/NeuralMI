@@ -167,11 +167,11 @@ class TestDualBranchIntegration:
 
     def test_align_dual_branch_runs_and_returns_finite(self):
         a, c, y = self._mismatched_data()
-        r = nmi.run(a, y, mode='conditional', conditional=Conditional(z_data=c, align='dual_branch'),
+        r = nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c, align='dual_branch'),
                     model=_DB_MODEL, training=_TRAINING, show_progress=False, seed=0)
         assert isinstance(r, nmi.Results)
         assert np.isfinite(r.mi_estimate)
-        assert 'mi_xz_y' in r.details and 'mi_z_y' in r.details
+        assert 'mi_xw_y' in r.details and 'mi_w_y' in r.details
 
     def test_align_none_still_raises_on_mismatch_beyond_tolerance(self):
         """Regression: without align='dual_branch', a mismatch this large must
@@ -179,13 +179,13 @@ class TestDualBranchIntegration:
         behavior change to the default path)."""
         a, c, y = self._mismatched_data()
         with pytest.raises(ValueError):
-            nmi.run(a, y, mode='conditional', conditional=Conditional(z_data=c),
+            nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c),
                     model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
                     training=_TRAINING, show_progress=False)
 
     def test_dual_branch_n_workers_2(self):
         a, c, y = self._mismatched_data()
-        r = nmi.run(a, y, mode='conditional', conditional=Conditional(z_data=c, align='dual_branch'),
+        r = nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c, align='dual_branch'),
                     model=_DB_MODEL, training=_TRAINING, n_workers=2, show_progress=False,
                     sweep_grid={'run_id': [0, 1]}, seed=0)
         assert np.isfinite(r.mi_estimate)
@@ -193,7 +193,7 @@ class TestDualBranchIntegration:
     def test_dual_branch_rigorous_end_to_end(self):
         a, c, y = self._mismatched_data()
         r = nmi.run(a, y, mode='conditional',
-                    conditional=Conditional(z_data=c, align='dual_branch', rigorous=True,
+                    conditional=Conditional(w_data=c, align='dual_branch', rigorous=True,
                                             gamma_range=range(1, 4)),
                     model=_DB_MODEL, training=_TRAINING, show_progress=False)
         assert np.isfinite(r.mi_estimate)
@@ -201,8 +201,75 @@ class TestDualBranchIntegration:
     def test_permutation_test_with_dual_branch_raises_clear_error(self):
         a, c, y = self._mismatched_data()
         with pytest.raises(NotImplementedError):
-            nmi.run(a, y, mode='conditional', conditional=Conditional(z_data=c, align='dual_branch'),
+            nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c, align='dual_branch'),
                     model=_DB_MODEL, training=_TRAINING, show_progress=False, permutation_test=True)
+
+
+# --------------------------------------------------------------------------
+# embedding_model='dual_branch' as a first-class option (no custom_embedding_cls
+# needed) -- the native form _DB_MODEL's own custom_embedding_cls= form
+# predates.
+# --------------------------------------------------------------------------
+class TestDualBranchNativeEmbeddingModel:
+    def _mismatched_data(self, N=400):
+        a = np.random.randn(N, 2, 6).astype(np.float32)
+        c = np.random.randn(N, 3, 4).astype(np.float32)
+        y = np.random.randn(N, 2, 1).astype(np.float32)
+        return a, c, y
+
+    def test_runs_and_returns_finite_no_custom_embedding_cls(self):
+        a, c, y = self._mismatched_data()
+        model = Model(embedding_model='dual_branch', branch_model='gru',
+                      embedding_dim=8, hidden_dim=32, n_layers=1)
+        r = nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c, align='dual_branch'),
+                    model=model, training=_TRAINING, show_progress=False, seed=0)
+        assert isinstance(r, nmi.Results)
+        assert np.isfinite(r.mi_estimate)
+        assert 'mi_xw_y' in r.details and 'mi_w_y' in r.details
+
+    def test_default_branch_model_is_gru(self):
+        """branch_model omitted defaults to 'gru', matching DualBranchEmbedding's
+        own branch_cls default."""
+        a, c, y = self._mismatched_data(N=200)
+        model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16, n_layers=1)
+        r = nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c, align='dual_branch'),
+                    model=model, training=Training(n_epochs=2, patience=1, batch_size=32),
+                    show_progress=False, seed=0)
+        assert np.isfinite(r.mi_estimate)
+
+    def test_quantities_require_dual_branch_model_accepts_native_form(self):
+        """_require_dual_branch_model must accept embedding_model='dual_branch'
+        directly, not just the custom_embedding_cls= form."""
+        x, y = torch.randn(300, 1), torch.randn(300, 1)
+        model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16, n_layers=1)
+        r = nmi.mi_rate(x, y, h=3, W=5, model=model, training=_TRAINING, show_progress=False)
+        assert isinstance(r, nmi.Results)
+
+    def test_shared_encoder_raises_clear_error(self):
+        """Regression: shared_encoder=True used to crash deep inside
+        DualBranchEmbedding.forward with a confusing "plain tensor vs 2-tuple
+        input_dim" ValueError once training actually started, instead of a
+        clear, upfront error at model-construction time -- one encoder
+        instance can't be both the dual (X-role) and single (Y-role) branch."""
+        a, c, y = self._mismatched_data(N=200)
+        model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16,
+                      n_layers=1, shared_encoder=True)
+        with pytest.raises(ValueError, match="shared_encoder"):
+            nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c, align='dual_branch'),
+                    model=model, training=Training(n_epochs=2, patience=1), show_progress=False, seed=0)
+
+    def test_use_decoder_raises_clear_error(self):
+        """Regression: use_decoder=True used to crash with an opaque
+        TypeError (task.py's window-size computation dividing a tuple by a
+        tuple) instead of a clear, upfront error -- DualBranchEmbedding's own
+        docstring already documents use_variational=True's equivalent clean
+        guard; use_decoder=True needed the same treatment."""
+        a, c, y = self._mismatched_data(N=200)
+        model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16,
+                      n_layers=1, use_decoder=True)
+        with pytest.raises(NotImplementedError, match="use_decoder"):
+            nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c, align='dual_branch'),
+                    model=model, training=Training(n_epochs=2, patience=1), show_progress=False, seed=0)
 
 
 # --------------------------------------------------------------------------
@@ -214,7 +281,7 @@ class TestPlainPathsUnaffected:
         a = np.random.randn(N, 2, 5).astype(np.float32)
         c = np.random.randn(N, 2, 5).astype(np.float32)
         y = np.random.randn(N, 2, 1).astype(np.float32)
-        r = nmi.run(a, y, mode='conditional', conditional=Conditional(z_data=c),
+        r = nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c),
                     model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
                     training=_TRAINING, show_progress=False, seed=0)
         assert np.isfinite(r.mi_estimate)
@@ -351,3 +418,102 @@ class TestAccuracyAgainstOracle:
         ie_exact = self._oracle.inst_exchange_exact(k)
         dir_exact = self._oracle.dir_info_rate_exact(k)
         assert abs((te_exact + ie_exact) - dir_exact) < 1e-8
+
+
+class TestDualBranchShiftWindows:
+    """shift_windows reachability for align='dual_branch' -- a new
+    DualBranchWindowShifter (X, C, Y all shift in sync, each in its own
+    window units) rather than the concat-based mechanism the plain
+    (non-dual_branch) conditioning-variable case uses, since dual_branch
+    never concatenates X and C in the first place."""
+
+    def test_engages_silently_with_different_window_sizes(self):
+        """No warning, and a finite result: shift_windows must actually
+        reach align='dual_branch' with X and C at genuinely different
+        window sizes (20 vs 8) -- the entire premise of dual_branch."""
+        import warnings
+        np.random.seed(0)
+        T = 3000
+        x = np.random.randn(T, 2).astype('float32')
+        c = np.random.randn(T, 1).astype('float32')
+        y = np.random.randn(T, 2).astype('float32')
+        processing = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                                    y='continuous', y_params={'window_size': 20, 'step_size': 20})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            r = nmi.run(
+                x, y, mode='conditional',
+                conditional=Conditional(w_data=c, w_processor_type='continuous',
+                                       w_processor_params={'window_size': 8, 'step_size': 8},
+                                       align='dual_branch'),
+                processing=processing,
+                model=_DB_MODEL,
+                training=Training(n_epochs=2, patience=1, shift_windows=True),
+                n_workers=1, show_progress=False, seed=0,
+            )
+        msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
+        assert np.isfinite(r.mi_estimate)
+
+    def test_c_equal_to_x_gives_near_zero_cmi_under_shift(self):
+        """Correctness/desync check: C as an exact copy of X (same raw
+        array, same window_size/step_size -- dual_branch permits but
+        doesn't require different window sizes) carries zero information
+        beyond X, so I(X,C;Y) should closely match I(C;Y) and CMI should be
+        near zero -- with shift_windows on. A desync between X's and C's
+        independently-shifted branches would make C look like genuinely
+        new information relative to X, inflating I(X,C;Y) and breaking
+        this expectation."""
+        np.random.seed(0)
+        torch.manual_seed(0)
+        T, window_size = 4000, 20
+        x = np.random.randn(T, 2).astype('float32')
+        y = np.random.randn(T, 2).astype('float32')
+        c = x.copy()  # exact copy of X -- zero information beyond X, if aligned
+        processing = nmi.Processing(x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
+                                    y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
+        results = nmi.run(
+            x, y, mode='conditional',
+            conditional=Conditional(w_data=c, w_processor_type='continuous',
+                                   w_processor_params={'window_size': window_size, 'step_size': window_size},
+                                   align='dual_branch'),
+            processing=processing,
+            model=_DB_MODEL,
+            training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
+            n_workers=1, show_progress=False, seed=0,
+        )
+        details = results.details
+        assert np.isfinite(details['mi_xw_y']) and np.isfinite(details['mi_w_y'])
+        assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
+            f"C=X exactly should make I(X,C;Y)={details['mi_xw_y']:.3f} closely match "
+            f"I(C;Y)={details['mi_w_y']:.3f} -- a large gap suggests X's and C's "
+            f"independently-shifted branches desynchronized under shift_windows."
+        )
+        assert abs(results.mi_estimate) < 0.3, (
+            f"CMI should be near zero when C=X exactly, got {results.mi_estimate:.3f}"
+        )
+
+    def test_rigorous_with_shift_windows_raises_not_implemented(self):
+        """rigorous=True + align='dual_branch' + shift_windows=True must
+        raise a clear error rather than silently misalign C's raw data
+        (run_rigorous_scalar_analysis's chunk translation uses X's own
+        window_size for every extra_data array, which would be wrong for
+        C's genuinely different window geometry)."""
+        np.random.seed(0)
+        T = 2000
+        x = np.random.randn(T, 2).astype('float32')
+        c = np.random.randn(T, 1).astype('float32')
+        y = np.random.randn(T, 2).astype('float32')
+        processing = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
+                                    y='continuous', y_params={'window_size': 20, 'step_size': 20})
+        with pytest.raises(NotImplementedError):
+            nmi.run(
+                x, y, mode='conditional',
+                conditional=Conditional(w_data=c, w_processor_type='continuous',
+                                       w_processor_params={'window_size': 8, 'step_size': 8},
+                                       align='dual_branch', rigorous=True, gamma_range=range(1, 4)),
+                processing=processing,
+                model=_DB_MODEL,
+                training=Training(n_epochs=1, patience=1, shift_windows=True),
+                n_workers=1, show_progress=False, seed=0,
+            )

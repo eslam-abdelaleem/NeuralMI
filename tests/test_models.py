@@ -16,6 +16,7 @@ from neural_mi.models.embeddings import (
     LSTM,
     TCN,
     Transformer,
+    LRUEmbedding,
 )
 
 # --- Fixtures ---
@@ -474,3 +475,14 @@ class TestSequentialEmbeddings:
         model = Transformer(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=2, nhead=4)
         out = model(seq_input)
         assert out.shape == (32, 8)
+
+    def test_lru(self, seq_input):
+        model = LRUEmbedding(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=2, dropout=0.1)
+        out = model(seq_input)
+        assert out.shape == (32, 8)
+
+    def test_lru_gradients_flow(self, seq_input):
+        model = LRUEmbedding(input_dim=5, hidden_dim=16, embed_dim=8, n_layers=1)
+        out = model(seq_input)
+        out.sum().backward()
+        assert all(p.grad is not None for p in model.parameters())

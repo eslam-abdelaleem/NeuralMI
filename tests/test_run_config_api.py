@@ -81,12 +81,12 @@ def test_transfer_bidirectional_is_renamed(capture_engine):
     assert 'bidirectional' not in kw               # the raw name must not leak through
 
 
-def test_conditional_z_split(capture_engine):
-    z = [[0.0]]
+def test_conditional_w_split(capture_engine):
+    w = [[0.0]]
     nmi.run([[1]], [[1]], mode='conditional',
-            conditional=Conditional(z_data=z, rigorous=True))
+            conditional=Conditional(w_data=w, rigorous=True))
     kw = capture_engine['kw']
-    assert kw['z_data'] == z
+    assert kw['w_data'] == w
     assert kw['rigorous'] is True
 
 
