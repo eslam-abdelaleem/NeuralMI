@@ -93,6 +93,33 @@ def set_verbosity(level: Union[int, str]):
         handler.setLevel(log_level)
 
 
+def _worker_log_init(level: int) -> None:
+    """Pool initializer that gives a worker the parent's logging level.
+
+    A ``spawn`` worker imports this module fresh, so the module-level
+    ``setup_logger()`` runs again at its default INFO and the parent's choice
+    does not carry over. Without this, ``run(verbose=False)`` silences the
+    parent and every worker still prints its own informational output, which
+    is both noisy and duplicated across processes.
+
+    Runs once per worker process rather than once per task.
+    """
+    logger.setLevel(level)
+    for handler in logger.handlers:
+        handler.setLevel(level)
+
+
+def worker_init_args():
+    """``(initializer, initargs)`` propagating the current level to a Pool.
+
+    Returns
+    -------
+    tuple
+        Pass straight through to ``Pool(initializer=..., initargs=...)``.
+    """
+    return _worker_log_init, (logger.level,)
+
+
 def set_verbose(verbose: bool):
     """Convenience wrapper: set logger to INFO (verbose=True) or WARNING (verbose=False).
 

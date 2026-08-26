@@ -7,6 +7,225 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed: rigorous mode's linearity test, `delta_threshold` renamed to `curvature_t_threshold`
+
+`_find_linear_region` decided where the linear region ended by comparing
+curvature against the slope, `|a2/a1| < delta_threshold` (default 0.1). That
+divides by a quantity which vanishes on exactly the data the test should
+accept. With little finite-sample bias `a1` approaches zero, so the ratio
+inflates as the relation becomes straighter, and `a1` can change sign between
+repeats.
+
+Measured on synthetic ladders with a genuinely linear trend, the old rule's
+acceptance rate ran 1.00, 1.00, 0.88, 0.85, 0.80 as the bias slope went from
+-0.5 to 0.0: a 20-point swing driven by how steep the trend was rather than by
+how linear it was. It also failed in the other direction, accepting visibly
+curved ladders when a large slope masked the curvature, and on real runs it
+declared three severely curved N=2000 ladders linear.
+
+The test is now `|a2| / SE(a2) < curvature_t_threshold` (default 2.0): is the
+quadratic coefficient large relative to its own uncertainty. This is the
+standard nested-model comparison, scale-free, and needs no knowledge of the MI
+scale. Its acceptance rate is flat at 1.00 across the same slope range and it
+still refuses genuinely curved data. Being a significance test, it rejects
+truly linear ladders at roughly its nominal rate, which is the criterion
+working as intended.
+
+`delta_threshold` is **renamed** to `curvature_t_threshold` with no
+compatibility shim, since the two mean different things and silently
+reinterpreting a 0.1 as a t-statistic would reject nearly everything. Callers
+setting it must update both the name and the value.
+
+The quadratic-fit quantities the verdict was decided on are now reported in
+`details`: `curvature_coefficient` (a2), `curvature_se`, `curvature_t`, and
+`curvature_slope` (a1), so the decision can be audited rather than taken on
+trust.
+
+### Changed: `min_reliable_samples` default is derived, and remains a warning
+
+The chunk-size caution used a hardcoded 1000 samples. It now defaults to
+`ceil(batch_size / (1 - train_fraction))`, the chunk size at which a chunk's
+held-out partition can no longer fill a single evaluation batch, which is a
+line with a reason behind it rather than a round number. It stays a warning and
+deliberately does **not** gate `is_reliable`: a straight line through noisy
+rungs still looks straight, so this is a failure the linearity check cannot
+detect and the user has to weigh. Override with `min_reliable_samples` in
+`base_params`.
+
+
+### Added: `amplification_factor` on every chain-rule quantity
+
+`mode='conditional'`, `'interaction'` and `'transfer'` do not estimate their
+quantity directly. They combine separately-trained MI estimates
+(`I(X;Y|W) = I(X,W;Y) - I(W;Y)`, and similarly for TE and II), and subtracting
+two similar numbers cancels most of the signal and none of the error. The
+resulting fragility was described in `THEORY.md` and in the quantities taxonomy
+but was never computed, so nothing in a returned result told you how much of
+the answer was noise.
+
+`result.details['amplification_factor']` now reports the condition number of
+that combination, `sum(|component|) / |result|`, which for a two-term
+difference is the documented `(t1 + t2) / (t1 - t2)`. A component-wise relative
+error of `eps` becomes roughly `amplification_factor * eps` on the result.
+`mode='transfer'` with `bidirectional=True` also reports
+`amplification_factor_yx` for the reverse direction.
+
+A `UserWarning` is emitted at or above 10x, naming the components and the
+accuracy they would need. The pre-existing negative-value warning now reports
+the factor too: an impossible sign is nearly always an amplification artefact,
+and at high amplification "the true value is near zero" is a better reading
+than "the true value is negative".
+
+The factor grows without bound as the result approaches zero, so it is largest
+precisely when the conclusion is that the conditioning variable explains the
+other away. `neural_mi.analysis.sweep.amplification_factor` is public for
+computing it directly. See `NEURALMI_REFERENCE.md` §6.11.
+
+### Fixed: rigorous mode reported `is_reliable=False` on well-behaved fits
+
+`_find_linear_region` trims high-gamma points until the MI-vs-gamma relation
+looks linear. Its loop tested `len(gammas) >= min_gamma_points` before popping,
+so a search that never converged exited holding exactly `min_gamma_points - 1`
+gammas. `is_reliable` was then computed as
+`len(gammas_used) >= min_gamma_points`, making it False by arithmetic rather
+than by judgement, and the extrapolation ran on a gamma set whose linearity had
+never been tested (the loop exited before evaluating it).
+
+The search now stops *at* `min_gamma_points` instead of stepping past it, and
+reports two separate booleans instead of leaving callers to infer the cause
+from a list length:
+
+- `linear_region_found` — whether the curvature criterion was actually satisfied
+- `enough_gamma_points` — whether `len(gammas_used) >= min_gamma_points`
+
+`is_reliable` requires both, plus the existing `leverage_warning` and
+ceiling-saturation gates. Results that previously reported
+`is_reliable=False` with an undersized `gammas_used` will now fit on one more
+gamma point, so `mi_corrected` can shift slightly.
+
+
+### Added: `drop_empty_windows`, making explicit which quantity a spike estimate answers
+
+A spike window with no spikes was always discarded, which is right for
+windowed MI and makes the estimand narrower than it appears. Writing
+`A = 1{window retained}`, and using the fact that an empty spike window is a
+fixed all-zero vector, the two available quantities are related exactly by
+
+```
+I(X;Y) = I(A;Y) + p · I(X;Y | A=1)
+```
+
+with `p` the retained fraction. The library estimated the middle term without
+saying so. `processor_params_x={'drop_empty_windows': False}` now selects the
+left-hand side instead.
+
+They are different questions rather than one being a corrected version of the
+other, and no single run yields both. Scaling by `p` does not convert between
+them, because `I(A;Y)` is the information carried by whether the population is
+active at all: neurons that fall silent together and fire together, with
+unrelated patterns while active, have near-zero MI on active windows and
+substantial MI overall. Keeping silent windows can therefore raise an estimate
+as easily as lower it.
+
+The flag governs the silence rule on spike data only, and deliberately leaves
+a continuous partner's `min_coverage_fraction` alone. That separation is what
+makes mixed pairings work: no-spikes and not-recorded are indistinguishable
+from spike times alone, but a timestamped continuous variable supplies the
+missing-data mask through its own rule. Measured on a hippocampal recording
+whose position tracking has 103 gaps longer than a second, pairing spikes with
+timestamped position drops 8252 windows to 1133, exactly the genuinely
+observed stretch, while silent spike windows inside it are retained.
+
+Setting `window_size` equal to `bin_size` with the flag off produces a
+contiguous per-bin series, which is what offset-indexed quantities require.
+Dropping silent windows leaves consecutive surviving indices more than one
+step apart, so offsets computed on such a series are not the offsets
+requested.
+
+Retention is now reported per task, as `window_retention` in
+`Results.details` and as a column beside `train_mi` in
+`details['raw_results']` for sweeps, with `n_windows_built` and
+`n_windows_retained` alongside. Per task rather than per run because it
+genuinely varies between tasks, and a warning fires below 50% naming which
+side caused the drops. Retention compounds, since validity is combined with a
+logical AND: three sides at 62% each retain roughly 24% jointly.
+
+That per-task granularity matters most for a `window_size` sweep on spike
+data, where wider windows are likelier to contain a spike and retention climbs
+with the window: measured at 0.155 at 20 ms rising to 1.0 at 1 s on a 3 Hz
+population. Fitting `I_w` across such a sweep otherwise conflates genuine
+extensivity with the subensemble expanding underneath it, since both push the
+same way and nothing in the output said so. `drop_empty_windows=False` pins
+retention flat across the sweep. Continuous data was never affected, retention
+being 1.0 throughout.
+
+### Fixed: `verbose=False` was ignored inside every worker process
+
+A `spawn` worker re-imports the library, so the module-level logger was
+recreated at its default INFO level and the parent's choice did not carry
+over. `run(verbose=False)` therefore silenced the parent while every worker
+kept printing its own informational output, duplicated across processes. All
+seven `Pool` sites now pass an initializer that gives each worker the parent's
+level once at process start.
+
+### Changed: `block_mi` no longer hardcodes a continuous processor
+
+It supplied `Processing(x='continuous', y='continuous')` unconditionally,
+which made block MI on spike trains unreachable and made passing your own
+`processing=` a `TypeError` from the duplicate keyword. The caller's config is
+now honoured, with `window_size` merged into whichever side parameters they
+gave, so `block_mi(spikes, window_size=0.1, processing=Processing(x='spike',
+y='spike'))` works.
+
+### Changed: the `batch_size` cap warns instead of applying silently
+
+`batch_size` is clipped to the training-set size. Raising it is the standard
+response to an estimate that looks bounded, and above that size the response
+does nothing, so the cap now says so and names the real constraint.
+
+### Added: exact ground truth for any temporal information quantity, and a general offset-spec builder
+
+Every quantity in the temporal taxonomy is `I(A; B | C)` under a different
+choice of which processes and time offsets go into each group. Two additions
+make that statement usable rather than merely true.
+
+**`neural_mi.generators.SharedLatentGaussian`** models any number of observed
+processes driven by one shared AR(1) latent, and returns the exact value of
+`I(A; B | C)` for arbitrary `(process, offset)` sets via `exact(A, B, C)`.
+Everything is jointly Gaussian and stationary, so each value is a
+log-determinant of a covariance block, exact up to floating point. `mi_rate()`
+is the one exception, being a spectral integral and therefore exact up to
+quadrature. Also provides `block_mi(w)`, `affine_fit(w_lo, w_hi)` for
+recovering the slope and intercept of `I_w = rate*w + b`, and `sample(T)`
+returning timepoints-first arrays ready for the processors.
+
+This supersedes the pair-only conditional form that could not express active
+information storage (whose target is a second offset of the same process
+rather than another process) or instantaneous exchange (whose conditioning set
+mixes processes). The identities the taxonomy rests on are now covered by
+tests: the block-MI slope matches the spectral rate, the directed information
+rate splits into transfer entropy plus instantaneous exchange, Massey's
+conservation law closes, active information storage stays bounded by excess
+entropy, and interaction information agrees between its direct and chain-rule
+forms. Residuals are at or below 1e-12.
+
+**`neural_mi.utils.build_offset_arrays(data, spec)`** turns an offset
+specification into the aligned arrays `run()` consumes, so a quantity with no
+named wrapper can still be estimated. The dispatch rule is short enough to
+state in full: an empty `C` goes to `mode='estimate'` with A as x and B as y; a
+populated `C` goes to `mode='conditional'` with C as `w_data`, adding
+`align='dual_branch'` when the groups have different window lengths, which they
+usually do.
+
+Equivalence tests confirm the builder reproduces every hand-written builder in
+the library byte for byte, across active information storage, excess entropy,
+cross-predictive information, MI rate, instantaneous exchange and directed
+information rate. That matters for documentation honesty as much as for
+correctness: the offset pattern printed beside a named quantity is verified to
+be the computation that quantity performs, so the ten functions in
+`quantities.py` need no restructuring to be described as presets over one
+primitive.
+
 ### Fixed: `rigorous=True` crashed for a spike+spike conditioning pair whenever `shift_time=False`
 
 A third-pass audit of the uncommitted window-validity-gap/rename/permutation-shuffle

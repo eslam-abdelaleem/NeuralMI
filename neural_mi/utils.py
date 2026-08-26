@@ -4,6 +4,7 @@ import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as _lr_sched
 import torch.nn as nn
+from collections import OrderedDict
 from typing import Dict, Any, Optional, Union, Tuple
 import numpy as np
 
@@ -91,6 +92,139 @@ def _configure_multiprocessing() -> None:
         os.environ["TMPDIR"] = custom_temp
         logger.debug(f"macOS: set TMPDIR={custom_temp} for spawn workers.")
     _mp_configured = True
+
+
+def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
+                        dtype: torch.dtype = torch.float32) -> Tuple[Any, Any, Any, int]:
+    """Turn an offset specification into aligned, trainable arrays.
+
+    Every quantity in the temporal taxonomy is ``I(A; B | C)`` under a
+    different choice of which processes and time offsets go into each group.
+    This turns such a choice into the three arrays :func:`neural_mi.run`
+    consumes, so a quantity that has no named wrapper in
+    :mod:`neural_mi.quantities` can still be estimated directly.
+
+    Offsets are in time bins relative to a common reference: negative is past,
+    zero is present, positive is future. All three groups are cut to the same
+    valid range, which is the widest window over which every requested offset
+    exists.
+
+    Parameters
+    ----------
+    data : dict of str to array-like
+        One entry per process, each of shape ``(n_timepoints, n_channels)``,
+        the timepoints-first convention used throughout the library. All
+        processes must share the same number of timepoints.
+    spec : dict
+        Keys ``'A'`` and ``'B'`` are required, ``'C'`` is optional. Each maps
+        to a sequence of ``(process_name, offset)`` pairs.
+    dtype : torch.dtype, optional
+        Element type of the returned tensors. Defaults to ``torch.float32``.
+
+    Returns
+    -------
+    tuple of (Tensor, Tensor, Tensor or None, int)
+        Arrays for A, B and C, each of shape
+        ``(n_valid, n_channels, n_offsets)``, plus ``n_valid``. C is ``None``
+        when the group is empty or absent.
+
+    Raises
+    ------
+    ValueError
+        If a group mixes processes whose offset counts differ, since the
+        result would have no single window length. Give each process in that
+        group the same number of offsets, or estimate it as a dual-branch
+        conditional instead.
+
+    Examples
+    --------
+    Active information storage, ``I(X_past; X_0)``:
+
+    >>> from neural_mi.utils import build_offset_arrays
+    >>> spec = {'A': [('x', s) for s in range(-10, 0)], 'B': [('x', 0)]}
+    >>> a, b, c, n = build_offset_arrays({'x': signal}, spec)   # doctest: +SKIP
+
+    Transfer entropy from x to y, ``I(X_past; Y_0 | Y_past)``:
+
+    >>> spec = {'A': [('x', s) for s in range(-10, 0)],
+    ...         'B': [('y', 0)],
+    ...         'C': [('y', s) for s in range(-10, 0)]}
+
+    With ``C`` empty the pair goes to ``run(mode='estimate')``. With ``C``
+    populated it goes to ``run(mode='conditional', conditional=Conditional(
+    w_data=c, align='dual_branch'))``, the dual branch being needed because A,
+    B and C generally have different window lengths.
+    """
+    if 'A' not in spec or 'B' not in spec:
+        raise ValueError(f"spec needs both 'A' and 'B' keys, got {sorted(spec)}.")
+
+    groups = {g: list(spec.get(g) or []) for g in ('A', 'B', 'C')}
+    if not groups['A'] or not groups['B']:
+        raise ValueError("Groups 'A' and 'B' must each list at least one (process, offset) pair.")
+
+    tensors = {}
+    lengths = set()
+    for name, arr in data.items():
+        t = arr if torch.is_tensor(arr) else torch.as_tensor(np.asarray(arr))
+        if t.ndim == 1:
+            t = t.unsqueeze(-1)
+        if t.ndim != 2:
+            raise ValueError(
+                f"Process {name!r} has shape {tuple(t.shape)}; expected "
+                f"(n_timepoints, n_channels)."
+            )
+        tensors[name] = t.to(dtype)
+        lengths.add(t.shape[0])
+    if len(lengths) > 1:
+        raise ValueError(
+            f"All processes must share a timepoint count; got {sorted(lengths)}. "
+            f"Truncate them to a common length before building offsets."
+        )
+
+    requested = {v for g in groups.values() for (v, _) in g}
+    unknown = requested - set(tensors)
+    if unknown:
+        raise ValueError(
+            f"spec references {sorted(unknown)}, which data does not provide "
+            f"(available: {sorted(tensors)})."
+        )
+
+    offsets = [o for g in groups.values() for (_, o) in g]
+    lo, hi = min(offsets), max(offsets)
+    total = lengths.pop()
+    start = -lo
+    n_valid = total - hi - start
+    if n_valid <= 0:
+        raise ValueError(
+            f"Offsets span {lo} to {hi}, which leaves no valid samples in a series "
+            f"of {total} timepoints. Shorten the offset range or use a longer recording."
+        )
+
+    out = {}
+    for group_name, entries in groups.items():
+        if not entries:
+            out[group_name] = None
+            continue
+        by_process = OrderedDict()
+        for (v, o) in entries:
+            by_process.setdefault(v, []).append(o)
+        blocks = []
+        for v, offs in by_process.items():
+            cols = [tensors[v][start + o: start + o + n_valid] for o in offs]
+            blocks.append(torch.stack(cols, dim=-1))
+        widths = {b.shape[-1] for b in blocks}
+        if len(widths) > 1:
+            counts = {v: len(o) for v, o in by_process.items()}
+            raise ValueError(
+                f"Group {group_name!r} gives different offset counts per process "
+                f"({counts}), so the group has no single window length. Give each "
+                f"process the same number of offsets, or split the group across the "
+                f"dual-branch conditional path."
+            )
+        out[group_name] = torch.cat(blocks, dim=1)
+
+    return out['A'], out['B'], out['C'], n_valid
+
 
 def _shift_data(x_data: Any, y_data: Any, lag: int,
                 x_processor_type: Optional[str], y_processor_type: str,

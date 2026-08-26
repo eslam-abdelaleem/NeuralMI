@@ -475,6 +475,28 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     return_params.pop('_seed_key', None)
     final_result = {**return_params, **results}
 
+    # Window retention belongs with the per-task numbers rather than on the run
+    # as a whole: it varies per task, systematically so across a window_size
+    # sweep on spike data, where the retained subensemble can go from a small
+    # fraction of the recording to all of it. Reported here it lands beside
+    # train_mi in the results frame, and it reaches the caller whether the
+    # windowing happened here or in run() itself.
+    # Windowing happens either here or in run(), so read this task's own
+    # dataset first and fall back to the value run() handed down when it did
+    # the windowing itself. The shift_windows reslice path drops nothing by
+    # construction, so 1.0 is the truthful value when neither is present.
+    _retention = getattr(dataset, 'window_retention', None)
+    if _retention is not None:
+        final_result['window_retention'] = _retention
+        final_result['n_windows_built'] = getattr(dataset, 'n_windows_built', None)
+        final_result['n_windows_retained'] = getattr(dataset, 'n_windows_retained', None)
+    else:
+        final_result['window_retention'] = params.get('_window_retention', 1.0)
+        final_result['n_windows_built'] = params.get('_n_windows_built')
+        final_result['n_windows_retained'] = params.get('_n_windows_retained')
+    for _k in ('_window_retention', '_n_windows_built', '_n_windows_retained'):
+        final_result.pop(_k, None)
+
     # ------------------------------------------------------------------
     # Release device-bound objects so the backend allocator can reclaim
     # memory.  Model + optimizer are always on the compute device; dataset

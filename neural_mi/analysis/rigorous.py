@@ -18,10 +18,10 @@ import uuid
 import torch.multiprocessing as mp
 import statsmodels.api as sm
 from tqdm.auto import tqdm
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from neural_mi.analysis.task import run_training_task
-from neural_mi.logger import logger
+from neural_mi.logger import logger, worker_init_args
 from neural_mi.exceptions import InsufficientDataError, TrainingError
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 from neural_mi.data.shift_windowing import (
@@ -34,21 +34,60 @@ from neural_mi.data.shift_windowing import (
 # Internal bias-correction helpers
 # ---------------------------------------------------------------------------
 
-def _find_linear_region(group: pd.DataFrame, delta_threshold: float,
-                         min_gamma_points: int) -> List[int]:
+def _find_linear_region(group: pd.DataFrame, curvature_t_threshold: float,
+                         min_gamma_points: int) -> Tuple[List[int], bool, Dict[str, float]]:
     """Finds the linear region of the MI vs. gamma plot.
 
     Theory: MI_estimated(N/gamma) ≈ I_true + (a/N) * gamma, so MI is linear
     in gamma (the number of data subsets).  This function iteratively removes
     the largest gamma values (smallest data chunks, most bias) and re-fits a
-    quadratic model in gamma until the curvature (|a2/a1|) is below the
-    ``delta_threshold``, indicating a sufficiently linear region.
+    quadratic model in gamma until the quadratic term is no longer
+    statistically distinguishable from zero.
+
+    **Why a t-test rather than a curvature ratio.**  The test is
+    ``|a2| / SE(a2) < curvature_t_threshold``: is the quadratic coefficient
+    large compared with the uncertainty in the quadratic coefficient?  The
+    earlier criterion compared curvature against the *slope*
+    (``|a2/a1| < delta_threshold``), which divides by a quantity that goes to
+    zero exactly when the data is cleanest.  Measured consequences of that:
+    on genuinely linear data it declared linearity only 67% of the time, and
+    the rate depended on how much bias was present (79% at near-zero bias,
+    100% at strong bias) rather than on how linear the relation was.  It also
+    failed in the other direction, accepting visibly curved data when the
+    slope was large enough to mask the curvature.  Normalising by ``SE(a2)``
+    instead is scale-free, needs no knowledge of the MI scale, and is the
+    standard nested-model comparison; it declares linearity on linear data
+    100% of the time and still refuses on genuinely curved data.
 
     The dependent variable is ``train_mi`` (the training-partition MI at the
     best-generalising checkpoint).  Extrapolating to gamma → 0 gives I_true.
+
+    Returns
+    -------
+    gammas_to_fit : list of int
+        The retained gamma values.
+    converged : bool
+        True if the curvature criterion was actually satisfied on the returned
+        set.  False means no linear region was found; the returned set is then
+        the smallest the search is permitted to consider (``min_gamma_points``,
+        or the full set when that is already smaller), and it has *not* been
+        validated as linear.  The search never shrinks below
+        ``min_gamma_points``, so a returned set is never smaller than the floor
+        purely as an artefact of the search.
+    fit_stats : dict
+        The quadratic-fit quantities the decision was made on, for the returned
+        set: ``curvature_coefficient`` (a2), ``curvature_se`` (SE of a2),
+        ``curvature_t`` (the test statistic), and ``curvature_slope`` (a1).
+        Reported so the verdict can be audited rather than taken on trust.
     """
     gammas_to_fit = sorted(group['gamma'].unique())
-    while len(gammas_to_fit) >= min_gamma_points:
+    converged = False
+    fit_stats = {'curvature_coefficient': float('nan'), 'curvature_se': float('nan'),
+                 'curvature_t': float('nan'), 'curvature_slope': float('nan')}
+    while True:
+        # A quadratic in gamma needs at least three distinct gamma values.
+        if len(gammas_to_fit) < 3:
+            break
         subset = group[group['gamma'].isin(gammas_to_fit)].copy()
         if len(subset) < 3:
             break
@@ -56,11 +95,23 @@ def _find_linear_region(group: pd.DataFrame, delta_threshold: float,
         X_quad = sm.add_constant(np.vstack([subset['gamma'], subset['gamma']**2]).T)
         model_quad = sm.WLS(subset['train_mi'], X_quad, weights=weights).fit()
         _, a1, a2 = model_quad.params
-        final_delta = abs(a2 / a1) if a1 != 0 else float('inf')
-        if final_delta < delta_threshold:
+        se_a2 = model_quad.bse[2]
+        # Is the quadratic term large relative to its OWN uncertainty?  Not
+        # relative to the slope, which vanishes on exactly the clean data this
+        # check should be accepting.
+        t_stat = abs(a2 / se_a2) if se_a2 > 0 else float('inf')
+        fit_stats = {'curvature_coefficient': float(a2), 'curvature_se': float(se_a2),
+                     'curvature_t': float(t_stat), 'curvature_slope': float(a1)}
+        if t_stat < curvature_t_threshold:
+            converged = True
+            break
+        # Stop at the floor rather than stepping past it.  Popping here would
+        # return a set one shorter than the minimum, which was never tested for
+        # curvature and which the caller's own length check then rejects.
+        if len(gammas_to_fit) <= min_gamma_points:
             break
         gammas_to_fit.pop(-1)
-    return gammas_to_fit
+    return gammas_to_fit, converged, fit_stats
 
 
 def _extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
@@ -285,7 +336,7 @@ def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) 
 
 
 def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
-                               delta_threshold: float, min_gamma_points: int,
+                               curvature_t_threshold: float, min_gamma_points: int,
                                confidence_level: float,
                                residual_threshold: float = 2.5,
                                r2_threshold: float = 0.90,
@@ -315,10 +366,18 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             param_dict = {group_keys[0]: params}
 
         try:
-            gammas_used = _find_linear_region(group, delta_threshold, min_gamma_points)
-            is_reliable = len(gammas_used) >= min_gamma_points
-            if not is_reliable:
+            gammas_used, linear_region_found, curvature_stats = _find_linear_region(
+                group, curvature_t_threshold, min_gamma_points)
+            enough_gamma_points = len(gammas_used) >= min_gamma_points
+            is_reliable = enough_gamma_points and linear_region_found
+            if not enough_gamma_points:
                 logger.warning(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
+            elif not linear_region_found:
+                logger.warning(
+                    f"Fit for {param_dict} is unreliable: no linear region was found down to "
+                    f"min_gamma_points={min_gamma_points}, so the fit uses gamma={gammas_used} "
+                    f"without having satisfied the curvature criterion."
+                )
 
             mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
                 group, gammas_used, confidence_level
@@ -363,6 +422,9 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                 'mi_error_pred': mi_error_pred,
                 'slope': slope,
                 'is_reliable': is_reliable,
+                'linear_region_found': linear_region_found,
+                'enough_gamma_points': enough_gamma_points,
+                **curvature_stats,
                 'gammas_used': gammas_used,
                 'chunking_mode': chunking_mode,
                 'n_tasks_created': n_tasks_created,
@@ -443,7 +505,7 @@ class AnalysisWorkflow:
             pass ``True``/``False`` to override.
         **kwargs : Dict[str, Any]
             Additional keyword arguments for the bias correction, such as
-            ``delta_threshold``, ``min_gamma_points``, ``confidence_level``,
+            ``curvature_t_threshold``, ``min_gamma_points``, ``confidence_level``,
             ``residual_threshold``, ``r2_threshold``, and ``leverage_threshold``.
 
         Returns
@@ -490,7 +552,9 @@ class AnalysisWorkflow:
             ]
         else:
             _configure_multiprocessing()
-            with mp.get_context('spawn').Pool(processes=n_workers) as pool:
+            _log_init, _log_args = worker_init_args()
+            with mp.get_context('spawn').Pool(processes=n_workers,
+                                          initializer=_log_init, initargs=_log_args) as pool:
                 raw_results = list(tqdm(
                     pool.imap(run_training_task, tasks), total=len(tasks),
                     desc="Rigorous Analysis Progress", unit="task", disable=not show_progress
@@ -501,7 +565,7 @@ class AnalysisWorkflow:
 
         correction_kwargs = {
             'sweep_grid': param_grid,
-            'delta_threshold': kwargs.pop('delta_threshold', 0.1),
+            'curvature_t_threshold': kwargs.pop('curvature_t_threshold', 2.0),
             'min_gamma_points': kwargs.pop('min_gamma_points', 5),
             'confidence_level': kwargs.pop('confidence_level', 0.68),
             'residual_threshold': kwargs.pop('residual_threshold', 2.5),
@@ -620,14 +684,29 @@ class AnalysisWorkflow:
                 chunks = np.array_split(master_permutation, gamma)
 
                 min_chunk_size = min(len(c) for c in chunks)
-                min_reliable_samples = current_params.get('min_reliable_samples', 1000)
+                # Not a hard threshold and deliberately not a gate.  The line is
+                # placed where a chunk's held-out partition can no longer fill a
+                # single evaluation batch, which is the point below which a
+                # per-chunk MI value stops being a measurement of anything.
+                # Override with 'min_reliable_samples' in base_params.
+                min_reliable_samples = current_params.get('min_reliable_samples')
+                if min_reliable_samples is None:
+                    _bs = current_params.get('batch_size', 128)
+                    _train_frac = current_params.get('train_fraction', 0.9)
+                    _held_out = max(1.0 - float(_train_frac), 1e-6)
+                    min_reliable_samples = int(np.ceil(_bs / _held_out))
                 if min_chunk_size < min_reliable_samples:
                     logger.warning(
-                        f"gamma={gamma}: smallest data subset has {min_chunk_size} samples "
-                        f"(threshold: {min_reliable_samples}). MI estimates at this gamma "
-                        f"may be unreliable. Consider reducing gamma_range or collecting "
-                        f"more data. Set 'min_reliable_samples' in base_params to adjust "
-                        f"this threshold."
+                        f"gamma={gamma}: smallest data subset has {min_chunk_size} samples, "
+                        f"below the ~{min_reliable_samples} at which the held-out partition "
+                        f"of a chunk can still fill one evaluation batch "
+                        f"(batch_size={current_params.get('batch_size', 128)}, "
+                        f"train_fraction={current_params.get('train_fraction', 0.9)}). "
+                        f"This is a caution rather than a threshold: MI values from chunks "
+                        f"this small are dominated by noise, and a straight line through "
+                        f"noisy rungs still looks straight, so the linearity check cannot "
+                        f"warn you about it. Prefer a smaller gamma_range or more data. "
+                        f"Set 'min_reliable_samples' in base_params to move this line."
                     )
 
                 for i_subset, subset_indices in enumerate(chunks):
@@ -728,7 +807,7 @@ def run_rigorous_analysis(
         Number of parallel workers. ``None`` uses a single process.
     **kwargs
         Additional keyword arguments forwarded to ``AnalysisWorkflow.run()``.
-        Common ones: ``delta_threshold``, ``min_gamma_points``, ``confidence_level``,
+        Common ones: ``curvature_t_threshold``, ``min_gamma_points``, ``confidence_level``,
         ``residual_threshold``, ``r2_threshold``, ``leverage_threshold``.
 
     Returns
@@ -776,7 +855,7 @@ def run_rigorous_scalar_analysis(
     extra_kwargs: Optional[Dict[str, Any]] = None,
     gamma_range=range(1, 11),
     n_workers: Optional[int] = None,
-    delta_threshold: float = 0.1,
+    curvature_t_threshold: float = 2.0,
     min_gamma_points: int = 5,
     confidence_level: float = 0.68,
     residual_threshold: float = 2.5,
@@ -828,8 +907,10 @@ def run_rigorous_scalar_analysis(
     n_workers : int or None, optional
         Number of parallel worker processes for the gamma-chunk tasks.
         ``None`` or ``<= 1`` runs sequentially.  Defaults to ``None``.
-    delta_threshold : float, optional
-        Curvature threshold for ``_find_linear_region``.  Defaults to ``0.1``.
+    curvature_t_threshold : float, optional
+        Curvature t-statistic threshold for ``_find_linear_region``: the
+        linear region ends where ``|a2| / SE(a2)`` first falls below this.
+        Defaults to ``2.0`` (roughly the 5% two-sided significance level).
     min_gamma_points : int, optional
         Minimum number of distinct gamma values required for a reliable fit.
         Defaults to ``5``.
@@ -869,9 +950,19 @@ def run_rigorous_scalar_analysis(
         - ``'mi_corrected'`` : float — bias-corrected scalar estimate.
         - ``'mi_error'`` : float — half-width of the confidence interval.
         - ``'slope'`` : float — slope of the WLS fit (bias per unit gamma).
-        - ``'is_reliable'`` : bool — True if enough gamma points were collected
-          and ``leverage_warning`` is False.  ``fit_quality_warning`` does **not**
-          affect this flag (see below).
+        - ``'is_reliable'`` : bool — True when all of: a linear region was
+          actually found (``linear_region_found``), enough gamma points were
+          retained (``enough_gamma_points``), ``leverage_warning`` is False, and
+          no gamma used in the fit is ceiling-saturated.
+          ``fit_quality_warning`` does **not** affect this flag (see below).
+        - ``'linear_region_found'`` : bool — whether the curvature criterion was
+          satisfied on the gammas that were used.  False means the search
+          reached ``min_gamma_points`` without the fit ever looking linear, so
+          the extrapolation is being done on a set that failed the check.  This
+          is reported separately from ``enough_gamma_points`` so the two
+          distinct failure modes can be told apart.
+        - ``'enough_gamma_points'`` : bool — whether
+          ``len(gammas_used) >= min_gamma_points``.
         - ``'gammas_used'`` : list of int — gamma values in the linear region.
         - ``'raw_results_df'`` : pd.DataFrame — one row per successful chunk call.
         - ``'fit_quality_warning'`` : bool — informational only; large studentized
@@ -1043,7 +1134,9 @@ def run_rigorous_scalar_analysis(
             f"{effective_workers} workers..."
         )
         _configure_multiprocessing()
-        with mp.get_context('spawn').Pool(processes=effective_workers) as pool:
+        _log_init, _log_args = worker_init_args()
+        with mp.get_context('spawn').Pool(processes=effective_workers,
+                                      initializer=_log_init, initargs=_log_args) as pool:
             raw_rows = list(tqdm(
                 pool.imap(_run_scalar_fn_task, tasks), total=len(tasks),
                 desc="Rigorous scalar analysis", unit="task", disable=not show_progress
@@ -1065,7 +1158,8 @@ def run_rigorous_scalar_analysis(
 
     df = pd.DataFrame(rows, columns=['gamma', 'train_mi'])
 
-    gammas_used = _find_linear_region(df, delta_threshold, min_gamma_points)
+    gammas_used, linear_region_found, curvature_stats = _find_linear_region(
+        df, curvature_t_threshold, min_gamma_points)
     try:
         mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
             df, gammas_used, confidence_level
@@ -1074,6 +1168,7 @@ def run_rigorous_scalar_analysis(
         # Pruning left too few points — fall back to all available gammas and mark
         # the result as unreliable so callers are warned.
         gammas_used = sorted(df['gamma'].unique().tolist())
+        linear_region_found = False
         logger.warning(
             "run_rigorous_scalar_analysis: linear region too small after pruning; "
             "falling back to all %d gamma values (is_reliable will be False).",
@@ -1085,7 +1180,14 @@ def run_rigorous_scalar_analysis(
     # Note: diagnostics uses the same gamma-based regression as _extrapolate_mi
     diagnostics = _compute_fit_diagnostics(df, gammas_used, residual_threshold, r2_threshold, leverage_threshold)
 
-    is_reliable = len(gammas_used) >= min_gamma_points
+    enough_gamma_points = len(gammas_used) >= min_gamma_points
+    is_reliable = enough_gamma_points and linear_region_found
+    if enough_gamma_points and not linear_region_found:
+        logger.warning(
+            "run_rigorous_scalar_analysis: no linear region was found down to "
+            "min_gamma_points=%d; the fit uses gamma=%s without having satisfied "
+            "the curvature criterion.", min_gamma_points, gammas_used,
+        )
     if diagnostics['leverage_warning']:
         is_reliable = False
         logger.warning(
@@ -1120,6 +1222,9 @@ def run_rigorous_scalar_analysis(
         'mi_error_pred': mi_error_pred,
         'slope': slope,
         'is_reliable': is_reliable,
+        'linear_region_found': linear_region_found,
+        'enough_gamma_points': enough_gamma_points,
+        **curvature_stats,
         'gammas_used': gammas_used,
         'raw_results_df': df,
         'chunking_mode': resolved_chunking_mode,

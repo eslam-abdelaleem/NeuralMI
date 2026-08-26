@@ -15,7 +15,8 @@ import torch
 import numpy as np
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import _joint_marginal_difference, _extract_embeddings
+from neural_mi.analysis.sweep import (_joint_marginal_difference, _extract_embeddings,
+                                      amplification_factor)
 from neural_mi.logger import logger
 
 
@@ -141,6 +142,13 @@ def run_transfer_entropy(
         - ``'te_estimate'`` : float — alias for ``te_xy``.
         - ``'i_xypast_yfuture'`` : float — mean I(x_past, y_past ; y_future).
         - ``'i_ypast_yfuture'`` : float — mean I(y_past ; y_future).
+        - ``'amplification_factor'`` : float — error-amplification factor for
+          TE(X→Y), ``(|I(xy_past;y_future)| + |I(y_past;y_future)|) / |TE|``.
+          Transfer entropy is the most fragile quantity in the taxonomy on this
+          measure; a value >= 10 means the estimate is a small residual of two
+          much larger numbers.  ``'amplification_factor_yx'`` is the same for
+          TE(Y→X) when ``bidirectional=True``.  See
+          :func:`neural_mi.analysis.sweep.amplification_factor`.
         - ``'raw_xypast_yfuture'`` : list of result dicts.
         - ``'raw_ypast_yfuture'`` : list of result dicts.
         - ``'n_samples'`` : int — number of valid sliding-window samples.
@@ -222,6 +230,7 @@ def run_transfer_entropy(
         'te_estimate': te,
         'i_xypast_yfuture': mi_joint,
         'i_ypast_yfuture': mi_marginal,
+        'amplification_factor': amplification_factor([mi_joint, mi_marginal], te),
         'raw_xypast_yfuture': results_joint,
         'raw_ypast_yfuture': results_marginal,
         'n_samples': n_samples,
@@ -270,6 +279,8 @@ def run_transfer_entropy(
             'te_yx': te_yx,
             'i_yxpast_xfuture': mi_joint_yx,
             'i_xpast_xfuture': mi_marginal_yx,
+            'amplification_factor_yx': amplification_factor(
+                [mi_joint_yx, mi_marginal_yx], te_yx),
             'raw_yxpast_xfuture': results_joint_yx,
             'raw_xpast_xfuture': results_marginal_yx,
             'directionality_index': directionality_index,

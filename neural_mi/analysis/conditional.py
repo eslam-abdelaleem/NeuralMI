@@ -12,7 +12,8 @@ any windowing or embedding.
 import torch
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import _joint_marginal_difference, _extract_embeddings
+from neural_mi.analysis.sweep import (_joint_marginal_difference, _extract_embeddings,
+                                      amplification_factor)
 from neural_mi.data.temporal import relabel_categorical_data
 from neural_mi.logger import logger
 
@@ -128,6 +129,13 @@ def run_conditional_mi(
         - ``'cmi_estimate'`` : float — point estimate of I(X;Y|W).
         - ``'mi_xw_y'`` : float — mean test MI for I(XW; Y).
         - ``'mi_w_y'`` : float — mean test MI for I(W; Y).
+        - ``'amplification_factor'`` : float — error-amplification factor
+          ``(|I(XW;Y)| + |I(W;Y)|) / |CMI|``.  CMI is a difference of two
+          separately-trained estimates, so a relative error of ``eps`` on each
+          component becomes roughly ``amplification_factor * eps`` on the
+          result.  Values near 1 are safe; values >= 10 mean the point
+          estimate should not be read without its components.  See
+          :func:`neural_mi.analysis.sweep.amplification_factor`.
         - ``'raw_xw_y'`` : list of result dicts from the XW→Y sweep.
         - ``'raw_w_y'`` : list of result dicts from the W→Y sweep.
         - ``'embeddings_x'``, ``'embeddings_y'`` : present only when
@@ -184,6 +192,7 @@ def run_conditional_mi(
                 'cmi_estimate': cmi,
                 'mi_xw_y': mi_xc_y,
                 'mi_w_y': mi_c_y,
+                'amplification_factor': amplification_factor([mi_xc_y, mi_c_y], cmi),
                 'raw_xw_y': results_xc_y,
                 'raw_w_y': results_c_y,
                 **(_extract_embeddings(results_xc_y) or {}),
@@ -213,6 +222,7 @@ def run_conditional_mi(
             'cmi_estimate': cmi,
             'mi_xw_y': mi_xc_y,
             'mi_w_y': mi_c_y,
+            'amplification_factor': amplification_factor([mi_xc_y, mi_c_y], cmi),
             'raw_xw_y': results_xc_y,
             'raw_w_y': results_c_y,
             **(_extract_embeddings(results_xc_y) or {}),
@@ -297,6 +307,7 @@ def run_conditional_mi(
             'cmi_estimate': cmi,
             'mi_xw_y': mi_xw_y,
             'mi_w_y': mi_w_y,
+            'amplification_factor': amplification_factor([mi_xw_y, mi_w_y], cmi),
             'raw_xw_y': results_xw_y,
             'raw_w_y': results_w_y,
             **(_extract_embeddings(results_xw_y) or {}),
@@ -391,6 +402,7 @@ def run_conditional_mi(
         'cmi_estimate': cmi,
         'mi_xw_y': mi_xw_y,
         'mi_w_y': mi_w_y,
+        'amplification_factor': amplification_factor([mi_xw_y, mi_w_y], cmi),
         'raw_xw_y': results_xw_y,
         'raw_w_y': results_w_y,
         **(_extract_embeddings(results_xw_y) or {}),

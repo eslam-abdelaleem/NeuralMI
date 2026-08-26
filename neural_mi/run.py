@@ -27,7 +27,7 @@ from .data.shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .utils import get_device
-from .logger import logger
+from .logger import logger, worker_init_args
 from .defaults import PROCESSOR_PARAMS_SCHEMA
 import inspect as _inspect
 from .config import (
@@ -417,7 +417,7 @@ def _run_flat(
     split_gap_fraction: float = 0.5,
     train_indices: Optional[np.ndarray] = None,
     test_indices: Optional[np.ndarray] = None,
-    delta_threshold: float = 0.1,
+    curvature_t_threshold: float = 2.0,
     min_gamma_points: int = 5,
     confidence_level: float = 0.68,
     max_eval_samples: int = 5000,
@@ -475,6 +475,8 @@ def _run_flat(
     # verbose=True → INFO level (informational messages shown)
     # verbose=False → WARNING level (only warnings and errors shown)
     import logging as _logging
+    from .data.handler import reset_retention_warnings as _reset_retention
+    _reset_retention()  # dedup is per run, not per process lifetime
     _prev_level = logger.level
     _prev_handler_levels = [h.level for h in logger.handlers]
     target_level = _logging.INFO if verbose else _logging.WARNING
@@ -653,7 +655,7 @@ def _run_flat(
         run_params = {"mode": mode, "processor_type_x": processor_type_x, "processor_params_x": processor_params_x,
                       "processor_type_y": processor_type_y, "processor_params_y": processor_params_y,
                       "base_params": base_params, "sweep_grid": sweep_grid, "output_units": output_units,
-                      "estimator": estimator, "random_seed": random_seed, "delta_threshold": delta_threshold,
+                      "estimator": estimator, "random_seed": random_seed, "curvature_t_threshold": curvature_t_threshold,
                       "min_gamma_points": min_gamma_points, "confidence_level": confidence_level,
                       **analysis_kwargs}
         if x_name is not None: run_params['x_name'] = x_name
@@ -887,6 +889,17 @@ def _run_flat(
                 base_params['leak_check_window_size'] = _wm.window_size
                 base_params['leak_check_step'] = _wm.resolve_step()
 
+            # Retention is reported per task (see analysis/task.py), since it
+            # varies between tasks and one run-level scalar would misdescribe
+            # every row but one on a sweep. When windowing happens here the
+            # tasks receive already-windowed tensors and never see this
+            # dataset, so hand the value down through base_params for them to
+            # report. Tasks that window for themselves prefer their own.
+            if getattr(dataset, 'window_retention', None) is not None:
+                base_params['_window_retention'] = dataset.window_retention
+                base_params['_n_windows_built'] = dataset.n_windows_built
+                base_params['_n_windows_retained'] = dataset.n_windows_retained
+
             _warn_small_sample(dataset, base_params)
 
             if mode in ('dimensionality', 'pairwise'):
@@ -1062,7 +1075,7 @@ def _run_flat(
             )
 
         elif mode == 'rigorous':
-            analysis_kwargs.update({'delta_threshold': delta_threshold,
+            analysis_kwargs.update({'curvature_t_threshold': curvature_t_threshold,
                                      'min_gamma_points': min_gamma_points,
                                      'confidence_level': confidence_level})
             results = run_rigorous_analysis(
@@ -1181,7 +1194,7 @@ def _run_flat(
                 _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
                 _rig_kwargs = {
                     'gamma_range': _gamma_range,
-                    'delta_threshold': analysis_kwargs.pop('delta_threshold', delta_threshold),
+                    'curvature_t_threshold': analysis_kwargs.pop('curvature_t_threshold', curvature_t_threshold),
                     'min_gamma_points': analysis_kwargs.pop('min_gamma_points', min_gamma_points),
                     'confidence_level': analysis_kwargs.pop('confidence_level', confidence_level),
                     'residual_threshold': analysis_kwargs.pop('residual_threshold', 2.5),
@@ -1295,7 +1308,7 @@ def _run_flat(
                 _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
                 _rig_kwargs = {
                     'gamma_range': _gamma_range,
-                    'delta_threshold': analysis_kwargs.pop('delta_threshold', delta_threshold),
+                    'curvature_t_threshold': analysis_kwargs.pop('curvature_t_threshold', curvature_t_threshold),
                     'min_gamma_points': analysis_kwargs.pop('min_gamma_points', min_gamma_points),
                     'confidence_level': analysis_kwargs.pop('confidence_level', confidence_level),
                     'residual_threshold': analysis_kwargs.pop('residual_threshold', 2.5),
@@ -1403,7 +1416,7 @@ def _run_flat(
                 _gamma_range = analysis_kwargs.pop('gamma_range', None) or range(1, 11)
                 _rig_kwargs = {
                     'gamma_range': _gamma_range,
-                    'delta_threshold': analysis_kwargs.pop('delta_threshold', delta_threshold),
+                    'curvature_t_threshold': analysis_kwargs.pop('curvature_t_threshold', curvature_t_threshold),
                     'min_gamma_points': analysis_kwargs.pop('min_gamma_points', min_gamma_points),
                     'confidence_level': analysis_kwargs.pop('confidence_level', confidence_level),
                     'residual_threshold': analysis_kwargs.pop('residual_threshold', 2.5),
@@ -2037,7 +2050,9 @@ def _run_permutation_test(x_data, y_data, base_params, mode, sweep_grid,
     ]
 
     if n_workers > 1:
-        with mp.get_context("spawn").Pool(processes=n_workers) as pool:
+        _log_init, _log_args = worker_init_args()
+        with mp.get_context("spawn").Pool(processes=n_workers,
+                                          initializer=_log_init, initargs=_log_args) as pool:
             raw_results = list(tqdm(
                 pool.imap(_run_single_permutation, perm_args),
                 total=n_permutations,

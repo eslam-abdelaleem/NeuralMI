@@ -546,7 +546,8 @@ class SpikeWindowDataset(TemporalWindowDataset):
                  burst_threshold_multiplier: float = 5.0,
                  data_device='cpu',
                  max_spikes_per_window=None,
-                 n_seconds=None):
+                 n_seconds=None,
+                 drop_empty_windows: bool = True):
         """
         Parameters
         ----------
@@ -587,6 +588,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
                     "Sorting automatically."
                 )
                 self.data_orig[i] = np.sort(st)
+        self.drop_empty_windows = drop_empty_windows
         self.no_spike_value = no_spike_value
         self.exclude_bursty_neurons = exclude_bursty_neurons
         self.burst_threshold_multiplier = burst_threshold_multiplier
@@ -737,7 +739,14 @@ class SpikeWindowDataset(TemporalWindowDataset):
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
-        """Check which windows have sufficient data coverage. Assumes window manager attached."""
+        """Which windows contain at least one spike. Assumes window manager attached.
+
+        With ``drop_empty_windows=False`` every window is reported valid, so a
+        silent window survives as data. See the parameter's documentation for
+        why that changes the estimand rather than merely relaxing a filter.
+        """
+        if not getattr(self, 'drop_empty_windows', True):
+            return np.ones(self.window_manager.window_times.shape, dtype=bool)
         windows_with_spikes = np.unique(np.concatenate(self._cached_window_inds)) \
             if any(len(w) > 0 for w in self._cached_window_inds) else np.array([], dtype=np.intp)
         valid = np.full(self.window_manager.window_times.shape, False, bool)
@@ -804,12 +813,25 @@ class BinnedSpikeDataset(TemporalWindowDataset):
     normalize : bool, optional
         If True, divide bin counts by bin_size to express as spikes/second.
         Default True. Set False to keep raw counts.
+    drop_empty_windows : bool, optional
+        Whether a window with no spikes is discarded. Defaults to True, which
+        is the historical behaviour and estimates the quantity restricted to
+        the active subensemble, in bits per *active* window. Set False to keep
+        silent windows, which estimates the unrestricted quantity in bits per
+        window. The two are different estimands rather than one being a
+        corrected version of the other, since correlated silence carries real
+        shared information. Only safe when the recorded extent is genuinely
+        observed throughout, because no-spikes and not-recorded are
+        indistinguishable from spike times alone. A timestamped continuous
+        partner supplies that mask via its own coverage rule, which this flag
+        leaves untouched.
     """
 
     def __init__(self, spike_times, bin_size: float,
                  window_manager=None, device=None, normalize: bool = True,
-                 data_device='cpu'):
+                 data_device='cpu', drop_empty_windows: bool = True):
         super().__init__(window_manager, device, data_device)
+        self.drop_empty_windows = drop_empty_windows
         self.data_orig = [np.array(st) for st in spike_times]
         self.bin_size = bin_size
         self.normalize = normalize
@@ -889,7 +911,14 @@ class BinnedSpikeDataset(TemporalWindowDataset):
         self.data_master = self.data.detach().clone()
 
     def validate_window_coverage(self):
-        """Mark a window valid if at least one neuron fired in it."""
+        """Mark a window valid if at least one neuron fired in it.
+
+        With ``drop_empty_windows=False`` every window is reported valid, so a
+        silent bin survives as data. See the parameter's documentation for why
+        that changes the estimand rather than merely relaxing a filter.
+        """
+        if not getattr(self, 'drop_empty_windows', True):
+            return np.ones(self.data.shape[0], dtype=bool)
         # Use the filled data tensor: any window with a non-zero bin has data.
         # .cpu() first: self.data may live on an accelerator (dataset_device),
         # and .numpy() requires a CPU tensor.

@@ -124,7 +124,7 @@ BASE_PARAMS_SCHEMA = {
     'train_indices': {'type': (object, type(None))}, # numpy array
     'test_indices': {'type': (object, type(None))},
     'gamma': {'type': (int, float)}, # Rigorous
-    'min_reliable_samples': {'type': int, 'min': 1, 'default': 1000},
+    'min_reliable_samples': {'type': int, 'min': 1, 'default': None},
     'lag': {'type': int},  # Result label: injected by run_lag_analysis per task; not a user-settable parameter.
     # Reproducibility — used by run() and task.py workers
     'random_seed': {'type': (int, type(None)), 'default': None},
@@ -189,7 +189,7 @@ MODE_KWARGS_SCHEMA = {
     },
     'rigorous': {
         'n_workers': {'type': int, 'default': 1},
-        'delta_threshold': {'type': float, 'default': 0.1},
+        'curvature_t_threshold': {'type': float, 'default': 2.0},
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
@@ -219,7 +219,7 @@ MODE_KWARGS_SCHEMA = {
         'align': {'type': (str, type(None)), 'default': None},
         'rigorous': {'type': bool, 'default': False},
         'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'delta_threshold': {'type': float, 'default': 0.1},
+        'curvature_t_threshold': {'type': float, 'default': 2.0},
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
@@ -231,7 +231,7 @@ MODE_KWARGS_SCHEMA = {
         'n_workers': {'type': int, 'default': 1},
         'rigorous': {'type': bool, 'default': False},
         'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'delta_threshold': {'type': float, 'default': 0.1},
+        'curvature_t_threshold': {'type': float, 'default': 2.0},
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
@@ -248,7 +248,7 @@ MODE_KWARGS_SCHEMA = {
         'n_workers': {'type': int, 'default': 1},
         'rigorous': {'type': bool, 'default': False},
         'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'delta_threshold': {'type': float, 'default': 0.1},
+        'curvature_t_threshold': {'type': float, 'default': 2.0},
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
@@ -265,6 +265,7 @@ MODE_KWARGS_SCHEMA = {
 PROCESSOR_PARAMS_SCHEMA = {
     'continuous': ['window_size', 'step_size', 'min_coverage_fraction', 'sample_rate'],
     'spike': ['window_size', 'step_size', 'max_spikes_per_window', 'n_seconds', 'sample_rate',
-              'no_spike_value', 'bin_size', 'normalize_bins', 'exclude_bursty_neurons', 'burst_threshold_multiplier'],
+              'no_spike_value', 'bin_size', 'normalize_bins', 'exclude_bursty_neurons',
+              'burst_threshold_multiplier', 'drop_empty_windows'],
     'categorical': ['window_size', 'step_size', 'sample_rate', 'min_coverage_fraction', 'encoding'],
 }

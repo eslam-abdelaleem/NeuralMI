@@ -15,7 +15,8 @@ reused verbatim from ``analysis/sweep.py``/``analysis/conditional.py``.
 import torch
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import ParameterSweep, _joint_marginal_difference, _extract_embeddings
+from neural_mi.analysis.sweep import (ParameterSweep, _joint_marginal_difference,
+                                      _extract_embeddings, amplification_factor)
 from neural_mi.data.temporal import relabel_categorical_data
 from neural_mi.logger import logger
 
@@ -115,6 +116,14 @@ def run_interaction_information(
         - ``'mi_xw_y'`` : float — mean I(X,W;Y).
         - ``'mi_x_y'`` : float — mean I(X;Y).
         - ``'mi_w_y'`` : float — mean I(W;Y).
+        - ``'amplification_factor'`` : float — error-amplification factor
+          ``(|I(XW;Y)| + |I(X;Y)| + |I(W;Y)|) / |II|``.  Interaction information
+          combines *three* separately-trained estimates, so it amplifies
+          component error more readily than a two-term difference; a relative
+          error of ``eps`` on each component becomes roughly
+          ``amplification_factor * eps`` on II.  Values >= 10 mean the sign of
+          II may not be determined by the data.  See
+          :func:`neural_mi.analysis.sweep.amplification_factor`.
         - ``'raw_xw_y'``, ``'raw_x_y'``, ``'raw_w_y'`` : list of result dicts.
         - ``'embeddings_x'``, ``'embeddings_y'`` : present only when
           ``base_params['return_embeddings']`` is set -- the joint (X,W;Y)
@@ -275,6 +284,7 @@ def run_interaction_information(
         'mi_xw_y': mi_xw_y,
         'mi_x_y': mi_x_y,
         'mi_w_y': mi_w_y,
+        'amplification_factor': amplification_factor([mi_xw_y, mi_x_y, mi_w_y], ii),
         'raw_xw_y': raw_xw_y,
         'raw_x_y': raw_x_y,
         'raw_w_y': raw_w_y,

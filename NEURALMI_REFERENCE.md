@@ -370,6 +370,30 @@ result = nmi.run(x, mode='dimensionality', dimensionality=Dimensionality(n_split
 
 ---
 
+### What `mi_estimate` is, and when to prefer `details['test_mi']`
+
+`result.mi_estimate` is the **train-side** MI at the epoch that maximised
+smoothed held-out test MI. The epoch is chosen on held-out data, so it is not a
+naive best-case, but the reported value is still an in-sample evaluation and
+therefore runs optimistic in the ordinary supervised-learning sense.
+
+Measured against a known truth: on active information storage over eight
+independent seeds, `mi_estimate` averaged 1.110 against an exact 1.050 and
+exceeded it in 7 of 8 runs, while `details['test_mi']` averaged 0.984 and fell
+below it in 6 of 8. The held-out value carries the lower-bound behaviour; the
+reported one does not.
+
+The gap widens as data shrinks, since a smaller training set is easier for a
+fixed-capacity critic to fit. It does *not* depend on window overlap or on the
+correlation timescale: removing all overlap between consecutive windows makes
+the gap larger rather than smaller, and varying the correlation time over more
+than an order of magnitude leaves it flat.
+
+Use `mi_estimate` for the default, less noisy figure. Reach for
+`details['test_mi']` when you want the conservative number, or when a claim
+turns on the exact magnitude. `Rigorous` mode (§6.4) addresses the bias
+directly rather than by choosing between these two.
+
 ## 6. Analysis Modes
 
 ### 6.1 `estimate` — Single MI Estimate
@@ -524,9 +548,11 @@ print(result.details['n_stable_total'], result.details['converged'])
 
 **Key parameters:**
 - `gamma_range`: range or list of denominators (default `range(1, 11)`)
-- `delta_threshold=0.1`: quadratic curvature threshold — gamma points whose estimated quadratic coefficient exceeds this value are excluded before the linear regression (see THEORY.md §5)
-- `min_gamma_points=5`: minimum points that must survive the curvature filter for a reliable fit
+- `curvature_t_threshold=2.0`: the linear region ends where the quadratic term stops being statistically distinguishable from zero, tested as `|a2| / SE(a2)`. Gammas are dropped from the top until the statistic falls below this. `2.0` is roughly the 5% two-sided level (see THEORY.md §5)
+- `min_gamma_points=5`: the search never trims below this many gammas; if it reaches the floor without the trend looking linear, `linear_region_found` is False
 - `confidence_level=0.68`: width of the confidence interval (0.68 ≈ 1σ, 0.95 ≈ 2σ)
+
+**The verdict is the product.** `mode='rigorous'` answers "does this data support an MI estimate at all", and the number is what you get when the answer is yes. If `linear_region_found` is False, the trend never became linear over a usable region and the estimate should not be reported, rather than reported with a caveat.
 
 **Key kwargs:** `n_workers=1`
 
@@ -535,9 +561,16 @@ print(result.details['n_stable_total'], result.details['converged'])
 - `result.details`:
   - `mi_corrected` — same as `mi_estimate`
   - `mi_error` — half-width of CI
-  - `slope` — linear fit slope (indicates bias severity)
-  - `is_reliable` — bool; False if fewer than `min_gamma_points` in linear region
+  - `slope` — linear fit slope (bias per unit γ; see the caveat below)
+  - `is_reliable` — bool; requires `linear_region_found` **and** `enough_gamma_points`, plus no `leverage_warning` and no ceiling-saturated γ in the fit
+  - `linear_region_found` — bool; whether the curvature criterion was actually satisfied, as opposed to the search hitting the `min_gamma_points` floor
+  - `enough_gamma_points` — bool; whether `len(gammas_used) >= min_gamma_points`
+  - `curvature_coefficient`, `curvature_se`, `curvature_t`, `curvature_slope` — the quadratic-fit quantities the verdict was decided on, so it can be audited rather than taken on trust
   - `gammas_used` — list of γ values included in the fit
+
+**A flat `slope` means no *N-dependent* bias, not no bias.** The extrapolation removes the part of the bias that varies with subset size. Bias already present at γ=1 with all your data appears identically at every γ, so it sits in the intercept and passes through untouched. `is_reliable=True` with a tight `mi_error` means "the N-dependent part has been removed and the fit is well determined", never "this number is accurate to ±`mi_error`".
+
+**Watch the chunk sizes, which no fit diagnostic can check for you.** At γ=k each chunk holds about `N/k` samples. Below roughly `batch_size / (1 - train_fraction)` the held-out partition of a chunk can no longer fill one evaluation batch, and a warning is emitted. This is a caution rather than a threshold and deliberately does not gate `is_reliable`: a straight line drawn through noisy rungs still looks straight, so the linearity check cannot detect it. Override the line with `min_reliable_samples` in `base_params`.
 - `result.dataframe` — all gamma × sweep combinations
 
 ```python
@@ -671,6 +704,7 @@ mismatch this large is expected. Not supported together with
   - `cmi_estimate` — same as `mi_estimate`
   - `mi_xw_y` — I(XW; Y)
   - `mi_w_y` — I(W; Y)
+  - `amplification_factor` — `(|I(XW;Y)| + |I(W;Y)|) / |CMI|`, the error-amplification factor (§6.11)
   - `raw_xw_y`, `raw_w_y` — per-run results for each term
 
 ```python
@@ -680,6 +714,7 @@ result = nmi.run(x, y, mode='conditional',
                  n_workers=4)
 print(f"I(X;Y|W) = {result.mi_estimate:.3f} bits")
 print(f"I(XW;Y) = {result.details['mi_xw_y']:.3f}, I(W;Y) = {result.details['mi_w_y']:.3f}")
+print(f"amplification = {result.details['amplification_factor']:.1f}x")  # see §6.11
 ```
 
 ---
@@ -703,7 +738,7 @@ where `x_past`, `y_past` are the `history_window` most recent samples and `y_fut
   ```
   TE(X→Y|W) = I(x_past, y_past, w_past ; y_future) − I(y_past, w_past ; y_future)
   ```
-  `w_past` is built the same way as `x_past`/`y_past` (same `history_window`), folded into both the joint and marginal conditioning arrays, and into both directions when `bidirectional=True`. `w_data=None` (the default) is byte-for-byte identical to plain TE. Optional `w_time`/`w_processor_type`/`w_processor_params` mirror `Conditional`'s `z_*` fields if `w_data` needs its own preprocessing before use; the raw, already-numeric case (the common one) needs none of them. Works with `rigorous=True` (see Appendix C); `w_data` is chunked identically to `x_data`/`y_data` for every gamma-chunk.
+  `w_past` is built the same way as `x_past`/`y_past` (same `history_window`), folded into both the joint and marginal conditioning arrays, and into both directions when `bidirectional=True`. `w_data=None` (the default) is byte-for-byte identical to plain TE. Optional `w_time`/`w_processor_type`/`w_processor_params` mirror `Conditional`'s `w_*` fields if `w_data` needs its own preprocessing before use; the raw, already-numeric case (the common one) needs none of them. Works with `rigorous=True` (see Appendix C); `w_data` is chunked identically to `x_data`/`y_data` for every gamma-chunk.
 
 **Returns:** `Results` with:
 - `result.mi_estimate` — float: TE(X→Y) in `output_units`
@@ -763,7 +798,7 @@ print(f"TE(X→Y|W) = {result.mi_estimate:.3f} bits")
 
 **Returns:** `Results` with:
 - `result.dataframe` — columns: `ch_x`, `ch_y`, `mi_mean`, `mi_std`
-- `result.details['mi_matrix']` — 2D numpy array of per-pair means; upper triangle filled for self-pairwise
+- `result.details['mi_matrix']` — 2D numpy array of per-pair means; written symmetrically for self-pairwise (both `[i,j]` and `[j,i]` carry the value, so it needs no mirroring), diagonal 0
 - `result.details['n_channels']` — int (self) or tuple (cross)
 
 ```python
@@ -795,7 +830,7 @@ The one quantity in the taxonomy (`THEORY.md` §12) that isn't a single conditio
 **Required:** `Interaction(w_data=...)`, `w_data` shape `(n_samples, n_channels_w, window_size)` (or `(n_samples, n_channels_w)`, treated as window size 1), same leading dimension as `x_data`/`y_data`.
 
 **Key parameters:**
-- `Interaction(w_time=..., w_processor_type=..., w_processor_params=...)` — optional, mirrors `Conditional`'s `z_*` fields if `w_data` needs its own preprocessing before use.
+- `Interaction(w_time=..., w_processor_type=..., w_processor_params=...)` — optional, mirrors `Conditional`'s `w_*` fields if `w_data` needs its own preprocessing before use.
 - `Interaction(rigorous=True, gamma_range=..., ...)` — bias-corrected extrapolation, same mechanics as `mode='conditional'`/`mode='transfer'`'s rigorous path (Appendix C).
 
 **Returns:** `Results` with:
@@ -805,6 +840,7 @@ The one quantity in the taxonomy (`THEORY.md` §12) that isn't a single conditio
   - `mi_xw_y` — I(X,W;Y)
   - `mi_x_y` — I(X;Y)
   - `mi_w_y` — I(W;Y)
+  - `amplification_factor` — `(|I(X,W;Y)| + |I(X;Y)| + |I(W;Y)|) / |II|` (§6.11); II combines *three* estimates, so it amplifies component error more readily than a two-term difference
   - `raw_xw_y`, `raw_x_y`, `raw_w_y` — per-run lists for the three component sweeps
 
 ```python
@@ -817,6 +853,77 @@ print(f"I(X,W;Y)={result.details['mi_xw_y']:.3f}, "
       f"I(X;Y)={result.details['mi_x_y']:.3f}, "
       f"I(W;Y)={result.details['mi_w_y']:.3f}")
 ```
+
+---
+
+### 6.11 `amplification_factor` — how much component error the answer inherits
+
+Every mode with a conditioning variable (`conditional`, `interaction`,
+`transfer`) is computed by **combining separately-trained MI estimates** rather
+than estimating the quantity directly:
+
+```
+I(X;Y|W) = I(X,W;Y) - I(W;Y)
+TE(X→Y)  = I(x_past,y_past ; y_future) - I(y_past ; y_future)
+II       = I(X,W;Y) - I(X;Y) - I(W;Y)
+```
+
+Subtracting two similar numbers cancels most of the signal and none of the
+error, so the *relative* error on the answer is larger than on either
+component. `result.details['amplification_factor']` is the condition number of
+that combination:
+
+```
+amplification_factor = sum(|component|) / |result|
+```
+
+which for the two-term case is the `(t₁ + t₂) / (t₁ − t₂)` of `THEORY.md`. A
+relative error of `eps` on each component becomes roughly
+`amplification_factor * eps` on the result.
+
+| value | meaning |
+|---|---|
+| `≈ 1` | Almost nothing cancels. The result is essentially one of the components and errors pass through undamaged. |
+| `2` to `10` | Ordinary. Report the components alongside the point estimate. |
+| `≥ 10` | A small residual of large, similar numbers. A 1% component error becomes ≥10%. A warning is emitted. Do not read the point estimate alone. |
+| `inf` | The result is exactly zero. |
+
+**The factor is largest for the conclusion people most want to draw.** As `W`
+explains away more of what `X` said about `Y`, the residual shrinks and the
+factor grows without bound:
+
+```
+I(X,W;Y)=0.767, I(W;Y)=0.200 → CMI=0.567, amplification   1.7x
+I(X,W;Y)=0.767, I(W;Y)=0.600 → CMI=0.167, amplification   8.2x
+I(X,W;Y)=0.767, I(W;Y)=0.700 → CMI=0.067, amplification  21.8x
+I(X,W;Y)=0.767, I(W;Y)=0.760 → CMI=0.007, amplification 206.4x
+```
+
+A near-zero conditional quantity is the hardest value in the taxonomy to
+defend. When the estimate comes out **negative**, which is theoretically
+impossible, the amplification factor is normally the explanation, and the
+warning reports it: at 300x the components would need sub-0.3% accuracy for the
+sign to be determined at all, so "the true value is near zero" is a better
+reading than "the true value is negative".
+
+**Two things modulate it.** The components share data, architecture and
+estimator, so part of their bias is common-mode and cancels; the factor is an
+upper bound on the damage rather than a prediction. Working the other way, the
+joint term is always the largest component and therefore saturates the InfoNCE
+ceiling first, which biases the result *toward zero* — check
+`test_saturation` on the joint leg before believing a small value.
+
+```python
+result = nmi.run(x, y, mode='conditional',
+                 conditional=Conditional(w_data=w), n_workers=4)
+amp = result.details['amplification_factor']
+if amp >= 10:
+    print(f"fragile: {amp:.0f}x — report components, not just the point estimate")
+```
+
+Quantities whose residual is naturally a large fraction of their components
+(instantaneous exchange, synergistic interaction) keep the factor near 1 and do
+not suffer this. Transfer entropy is the most fragile in practice.
 
 ---
 
@@ -1214,6 +1321,102 @@ training = Training(
 
 ## 9. Data Generators
 
+### Silent windows, and which quantity you are estimating
+
+A spike window containing no spikes is discarded by default. That is right for
+windowed MI, where an empty window carries no pattern to learn, and it makes
+the estimand narrower than it looks. Writing `A = 1{window retained}`, and
+using the fact that an empty spike window is a fixed all-zero vector:
+
+```
+I(X;Y)  =  I(A;Y)  +  p · I(X;Y | A=1)
+```
+
+with `p` the retained fraction. The library estimates the middle term, in bits
+per **retained** window. `processor_params_x={'drop_empty_windows': False}`
+estimates the left-hand side instead, in bits per window.
+
+These are different questions rather than one being a corrected version of the
+other. Scaling by `p` does not convert between them, because `I(A;Y)` is the
+information carried by *whether* the population is active at all. Two neurons
+that fall silent together and fire together, with unrelated patterns while
+active, have near-zero MI on active windows and substantial MI overall. So
+keeping silent windows can move an estimate up, not only down.
+
+**When it is safe to keep them.** No-spikes and not-recorded are
+indistinguishable from spike times alone, so the flag is only valid when the
+extent is genuinely observed throughout. Two situations satisfy that:
+
+- The axis has been pre-cleaned, with unobserved stretches already removed.
+- The pairing includes a **timestamped continuous** variable. Its
+  `min_coverage_fraction` rule is a missing-data test and is untouched by this
+  flag, so it keeps masking unobserved stretches while silent spike windows
+  are retained. Passing `x_time`/`y_time` is what puts that rule on the true
+  axis; without real timestamps the gaps are invisible.
+
+**Offsets require it.** Dropping silent windows breaks the time axis, since
+consecutive surviving indices are no longer one step apart. Any offset-indexed
+quantity (§13) computed on such a series measures offsets other than the ones
+requested. To build a per-bin series for offsets, set `window_size` equal to
+`bin_size` and keep silent windows:
+
+```python
+processor_params_x={'bin_size': 0.02, 'window_size': 0.02,
+                    'normalize_bins': False, 'drop_empty_windows': False}
+```
+
+**A window sweep on spike data moves the estimand.** Because wider windows are
+likelier to contain a spike, the retained fraction climbs with `window_size`,
+measured at 0.155 at 20 ms rising to 1.0 at 1 s on a 3 Hz population. Fitting
+`I_w` across such a sweep therefore conflates genuine extensivity with the
+subensemble expanding underneath it, and both push the same way. Setting
+`drop_empty_windows=False` pins retention at 1.0 across the sweep so a single
+estimand is measured throughout. Continuous data is unaffected, retention
+being 1.0 already.
+
+**Retention is reported per task.** It appears as `window_retention` in
+`Results.details`, and as a column beside `train_mi` in `details['raw_results']`
+for sweeps. Per task rather than per run, because it genuinely varies between
+tasks: one run-level number would misdescribe every row but one on the sweep
+above. `n_windows_built` and `n_windows_retained` accompany it. A warning fires
+below 50% naming which side caused the drops. Retention falls quickly as more
+variables must be simultaneously valid, since validity is combined with a
+logical AND: three sides at 62% each retain roughly 24% jointly.
+
+### Exact ground truth for temporal quantities
+
+Most generators below have a known MI for one specific pairing.
+`SharedLatentGaussian` is stronger: it gives the exact value of `I(A; B | C)`
+for *any* choice of processes and time offsets, so every quantity in the
+temporal taxonomy has a number to check an estimate against.
+
+```python
+from neural_mi.generators import SharedLatentGaussian
+
+oracle = SharedLatentGaussian(dims={'x': 8, 'y': 8, 'w': 8}, d=2, phi=0.9)
+data = oracle.sample(T=20000, seed=0)      # {'x': (20000, 8), 'y': ..., 'w': ...}
+
+past = lambda v, k=25: [(v, s) for s in range(-k, 0)]
+oracle.exact(past('x'), [('x', 0)])                    # active information storage
+oracle.exact(past('x'), [('y', 0)], past('y'))         # transfer entropy x -> y
+oracle.exact([('x', 0)], [('y', 0)], past('x') + past('y'))   # instantaneous exchange
+
+oracle.block_mi(30)          # extensive: grows without bound in w
+oracle.mi_rate()             # intensive: bits per bin, via the coherence integral
+oracle.affine_fit(30, 60)    # (slope, intercept) of I_w = rate*w + b
+```
+
+Processes are driven by one shared AR(1) latent, giving a correlation timescale
+`tau = -1/log(phi)`. The shared latent deliberately violates Massey's
+no-feedback condition, so directed quantities converge below the symmetric MI
+rate and only a two-sided window over X recovers the rate. That makes the
+system a genuine test of whether an estimator measures the estimand it claims.
+
+`generate_shared_latent_gaussian(T, ...)` returns `(data, oracle)` together
+when you want both at once.
+
+### Synthetic generators
+
 `neural_mi.generators` (also accessible as `nmi.generators`) provides synthetic data for testing and tutorials:
 
 ```python
@@ -1401,7 +1604,7 @@ The `rigorous` mode trains on subsets of size `N/γ`. The bias correction works 
 
 ### Pairwise Mode — Channel Naming
 The output DataFrame uses columns `ch_x`, `ch_y`, `mi_mean`, `mi_std` (integer channel indices). `mi_mean` holds the mean MI across sweep runs; `mi_std` holds the standard deviation (0 when only one run is performed). The MI matrix in `result.details['mi_matrix']` holds per-pair means:
-- **Self-pairwise**: upper triangle (symmetric; diagonal = 0 by convention)
+- **Self-pairwise**: full symmetric matrix, each pair estimated once and written to both `[i,j]` and `[j,i]` (diagonal = 0 by convention). Do not mirror it yourself; that would double every off-diagonal.
 - **Cross-pairwise**: full `(n_ch_x, n_ch_y)` matrix
 
 ### Transfer Entropy vs. Conditional MI
@@ -1469,17 +1672,112 @@ Or pass `verbose=True` to `run()` for per-call verbosity.
 
 ## 13. Information-Quantities Convenience Functions
 
+### Quantities without a named wrapper
+
+Every quantity below is `I(A; B | C)` under a different choice of which
+processes and time offsets go into each group. `build_offset_arrays` exposes
+that directly, so a quantity with no named function can still be estimated:
+
+```python
+from neural_mi.utils import build_offset_arrays
+from neural_mi import Conditional
+import neural_mi as nmi
+
+spec = {'A': [('x', s) for s in range(-10, 0)],   # X_past
+        'B': [('y', 0)],                          # Y_now
+        'C': [('y', s) for s in range(-10, 0)]}   # given Y_past
+a, b, c, n_valid = build_offset_arrays({'x': x_raw, 'y': y_raw}, spec)
+```
+
+Offsets are in time bins relative to a common reference: negative is past, zero
+is present, positive is future. All groups are cut to the widest range over
+which every requested offset exists. Each returned array has shape
+`(n_valid, n_channels, n_offsets)`.
+
+The dispatch rule is two cases:
+
+```python
+if c is None:
+    r = nmi.run(a, b, mode='estimate', ...)
+else:
+    r = nmi.run(a, b, mode='conditional',
+                conditional=Conditional(w_data=c, align='dual_branch'), ...)
+```
+
+`align='dual_branch'` is needed whenever A, B and C have different window
+lengths, which is usual since B is typically a single time bin while A and C
+span many. A group whose processes carry different offset counts has no single
+window length and raises, naming the counts involved.
+
+The named functions in the table below are verified to produce byte-identical
+arrays to their offset specs, so the spec is a faithful description of what
+each one computes rather than an approximation of it.
+
+Groups are cut at stride 1, so consecutive samples overlap by all but one
+timepoint and every window start position in the recording is already a
+training sample. That is why `Training(shift_windows=True)` reports "has no
+effect" here: there are no window boundaries left for a shift to expose, and
+shifting by `s` would only relabel sample `i` as sample `s+i`. See §12 for the
+full argument. Everything downstream of the arrays behaves normally, including
+`mode='rigorous'`, `permutation_test=True`, and the dual-branch conditional
+path.
+
+
 `neural_mi/quantities.py` provides named functions for the temporal
-information quantities described in `THEORY.md` §11, thin wrappers that
-build the right offset arrays and call `run(mode='estimate', ...)`
-underneath, so they accept the same `model=`/`training=`/etc. keyword
-arguments as `run()` and return the same `Results` object. Most of these
-need no new `mode=` string at all, `mode=` tracks estimation *mechanism*
-(how many sweeps run and how they're combined), and every quantity except
-interaction information is a single sweep under an existing mechanism
-(`mode='estimate'`, `mode='transfer'`). Interaction information is the one
-exception, a genuine three-sweep combination, so it gets its own
-`mode='interaction'` (§6.10) with a matching convenience function.
+information quantities described in `THEORY.md` §11. Each builds the arrays
+for its offset pattern and dispatches to an existing mode, so they accept the
+same `model=`/`training=`/`split=`/`estimator=`/`output=`/`seed=`/
+`permutation_test=` keyword arguments as `run()` and return the same `Results`
+object. No quantity adds estimation logic of its own. `mode=` tracks the
+estimation *mechanism* (how many sweeps run and how they are combined), and
+which mechanism a quantity needs follows from whether its offset pattern has a
+conditioning set:
+
+| Function | Routes to | Arrays from |
+|---|---|---|
+| `active_information_storage` | `mode='estimate'` | `build_past_future` |
+| `excess_entropy` | `mode='estimate'` | `build_past_future` |
+| `instantaneous_mi` | `mode='estimate'` | passed through |
+| `cross_predictive_information` | `mode='estimate'` | `build_cross_offset` |
+| `block_mi` | `mode='estimate'` | a real `Processing(x='continuous', ...)` |
+| `conditional_transfer_entropy` | `mode='transfer'` | `Transfer(history_window=..., w_data=...)` |
+| `mi_rate` | `mode='conditional'` (`align='dual_branch'`), or `'estimate'` when `h=0` | `_build_mi_rate_arrays` |
+| `instantaneous_exchange` | `mode='conditional'` (`align='dual_branch'`) | `_build_inst_exchange_arrays` |
+| `directed_information_rate` | `mode='conditional'` (`align='dual_branch'`) | `_build_dir_info_rate_arrays` |
+| `interaction_information` | `mode='interaction'` | passed through |
+
+Interaction information is the only genuine three-sweep combination, which is
+why it has its own mode (§6.10). The three that route through
+`mode='conditional'` need `align='dual_branch'` because their groups have
+different window lengths, and therefore also need
+`Model(embedding_model='dual_branch', ...)`; they raise a clear error if it is
+absent.
+
+**Input must be regularly sampled.** Every function here takes array-like data
+of shape `(T, n_channels)`. Raw spike-time lists are not accepted by any of
+them, including `block_mi`, which hardcodes `Processing(x='continuous',
+y='continuous')`. Bin spike trains to a count matrix first, then pass that;
+§4 covers the conversion. For the same reason, passing your own `processing=`
+is either rejected (`block_mi` already supplies one) or meaningless (the other
+arrays are already windowed).
+
+**A script using `n_workers > 1` needs a `__main__` guard.** Parallelism uses
+the `spawn` start method, so each worker re-imports the module it was launched
+from. A top-level `nmi.run(..., n_workers=2)` in a plain `.py` file is
+therefore re-executed by every child, which spawns more children and never
+terminates. Wrap it:
+
+```python
+if __name__ == '__main__':
+    result = nmi.run(x, y, n_workers=4, ...)
+```
+
+Notebooks need nothing, since the kernel is not re-imported.
+
+**`n_workers` means two things**, depending on the call. With a scalar
+construction parameter it is forwarded to `run()` and parallelises within the
+single estimate. With an iterable it parallelises *across* the swept values,
+and each inner `run()` gets `n_workers=1` to avoid nested pools.
 
 Each function's construction parameter (`k`, `past_k`, `window_size`) accepts
 either a scalar (one call, one `Results`) or an iterable, which dispatches a

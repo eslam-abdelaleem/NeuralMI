@@ -24,6 +24,20 @@ def _truncate_leading(data, min_len: int):
     return data[:min_len]
 
 
+# Retention warnings are raised where windowing happens, which is once per
+# task. A rigorous run builds 55 gamma-chunks and a sweep one dataset per
+# combination, so an undeduplicated warning repeats until it is ignored.
+# Warned once per run: the advice does not change between tasks, and the
+# per-task numbers are carried in the results frame for anyone who wants
+# them. Per process, so a worker pool reports at most once per worker.
+_RETENTION_WARNED = set()
+
+
+def reset_retention_warnings() -> None:
+    """Clear the retention-warning dedup cache, called once per ``run()``."""
+    _RETENTION_WARNED.clear()
+
+
 class WindowManager:
     """Centralized manager for creating and aligning temporal windows."""
 
@@ -144,6 +158,12 @@ class PairedTemporalDataset(Dataset):
         self.x_dataset = x_dataset
         self.y_dataset = y_dataset
         self.validate_windows = validate_windows
+        # Defined unconditionally so callers can read retention without having
+        # to know whether validation ran; 1.0 is the truthful value when it did
+        # not, since nothing was dropped.
+        self.n_windows_built = 0
+        self.n_windows_retained = 0
+        self.window_retention = 1.0
 
         # Create window manager shared between X and Y
         if window_size is None:
@@ -231,6 +251,35 @@ class PairedTemporalDataset(Dataset):
                 combined_valid = np.logical_and(x_valid, y_valid)
             else:
                 combined_valid = x_valid
+            # Retention is part of the result, not just an internal detail:
+            # it says what fraction of the recording the estimate actually
+            # covers, and therefore whether a per-window number should be read
+            # as per-window or per-active-window.
+            self.n_windows_built = int(combined_valid.size)
+            self.n_windows_retained = int(combined_valid.sum())
+            self.window_retention = (self.n_windows_retained / self.n_windows_built
+                                     if self.n_windows_built else 0.0)
+            if (self.window_retention < 0.5 and self.n_windows_built
+                    and 'low' not in _RETENTION_WARNED):
+                _RETENTION_WARNED.add('low')
+                dropped_by = []
+                if not x_valid.all():
+                    dropped_by.append(f"X ({int((~x_valid).sum())})")
+                if self.y_dataset is not None and not y_valid.all():
+                    dropped_by.append(f"Y ({int((~y_valid).sum())})")
+                logger.warning(
+                    f"Window coverage validation kept {self.n_windows_retained} of "
+                    f"{self.n_windows_built} windows ({self.window_retention:.1%}), "
+                    f"dropped by {' and '.join(dropped_by) or 'coverage rules'}. The "
+                    f"estimate therefore describes the retained subensemble, so a "
+                    f"per-window figure is per *retained* window. For spike data, "
+                    f"processor_params[...]['drop_empty_windows'] = False keeps silent "
+                    f"windows instead, which estimates the unrestricted quantity. "
+                    f"Retention falls quickly as more variables are required to be "
+                    f"simultaneously valid. Reported once per run; per-task values "
+                    f"are in the results frame as 'window_retention'."
+                )
+
             # Step 3: Update WindowManager's tracking
             self.window_manager.valid_windows = combined_valid
             self.window_manager.n_windows = int(combined_valid.sum())
@@ -455,11 +504,17 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
                                        sample_rate=sample_rate)
 
     elif proc_type == 'spike':
+        # Silence is only discarded on the spike side. A continuous partner's
+        # own min_coverage_fraction is untouched by this, which is what lets a
+        # timestamped continuous variable keep masking genuinely unobserved
+        # stretches while silent spike windows are retained as data.
+        drop_empty = (proc_params or {}).get('drop_empty_windows', True)
         bin_size = (proc_params or {}).get('bin_size', None)
         if bin_size is not None:
             normalize = (proc_params or {}).get('normalize_bins', True)
             return BinnedSpikeDataset(data, bin_size=bin_size, device=device,
-                                      normalize=normalize, data_device=data_device)
+                                      normalize=normalize, data_device=data_device,
+                                      drop_empty_windows=drop_empty)
         no_spike_val        = (proc_params or {}).get('no_spike_value', -1.0)
         excl_bursty         = (proc_params or {}).get('exclude_bursty_neurons', False)
         burst_mult          = (proc_params or {}).get('burst_threshold_multiplier', 5.0)
@@ -471,7 +526,8 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
                                   burst_threshold_multiplier=burst_mult,
                                   data_device=data_device,
                                   max_spikes_per_window=max_spikes_per_win,
-                                  n_seconds=n_seconds)
+                                  n_seconds=n_seconds,
+                                  drop_empty_windows=drop_empty)
 
     elif proc_type == 'categorical':
         min_cov     = (proc_params or {}).get('min_coverage_fraction', 0.2)
@@ -552,7 +608,16 @@ def create_dataset(
         # pair, so it's checked here rather than only when a shift is
         # requested (see shift_windowing.mixed_pair_sample_rate_ok, reused
         # here so "which pairs need a shared unit" is defined in one place).
+        # An explicit time vector on the regular-grid side already puts it in
+        # real time, which is what 'sample_rate' would otherwise supply, so a
+        # caller who passed x_time/y_time has done the right thing and must not
+        # be warned. Checked here rather than inside
+        # mixed_pair_sample_rate_ok, which is also consulted by run.py's
+        # shift-reachability gate where the conservative sample_rate-only rule
+        # is deliberate.
+        _regular_time = x_time if proc_type_x != 'spike' else y_time
         if (shift_family(proc_type_x, proc_type_y) == 'mixed'
+                and _regular_time is None
                 and not mixed_pair_sample_rate_ok(proc_type_x, proc_params_x, proc_type_y, proc_params_y)):
             _regular_side, _regular_type = (
                 ('x', proc_type_x) if proc_type_x != 'spike' else ('y', proc_type_y)

@@ -12,10 +12,10 @@ import os
 import torch.multiprocessing as mp
 import numpy as np
 from tqdm.auto import tqdm
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Sequence
 
 from neural_mi.analysis.task import run_training_task
-from neural_mi.logger import logger
+from neural_mi.logger import logger, worker_init_args
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
 
@@ -125,7 +125,9 @@ class ParameterSweep:
             # On macOS and Windows, 'fork' is either unavailable or unsafe with
             # PyTorch's CUDA context. On Linux, 'spawn' is slightly slower than
             # 'fork' but avoids deadlocks in multi-threaded environments.
-            with mp.get_context("spawn").Pool(processes=effective_workers) as pool:
+            _log_init, _log_args = worker_init_args()
+            with mp.get_context("spawn").Pool(processes=effective_workers,
+                                          initializer=_log_init, initargs=_log_args) as pool:
                 all_results = list(tqdm(
                     pool.imap(run_training_task, tasks), total=len(tasks),
                     desc="Parameter Sweep Progress", unit="task", disable=not show_progress
@@ -272,6 +274,65 @@ class ParameterSweep:
         return results
 
 
+#: Amplification factors at or above this are warned about.  A difference
+#: carrying 10x its components' relative error is fragile enough that the point
+#: estimate should not be read on its own.
+AMPLIFICATION_WARN_THRESHOLD = 10.0
+
+
+def amplification_factor(components: Sequence[float], result: float) -> float:
+    """Error-amplification factor for a quantity built by combining MI terms.
+
+    Every quantity with a conditioning variable is computed as a combination of
+    separately-trained MI estimates rather than being estimated directly, so
+    ``I(X;Y|W) = I(X,W;Y) - I(W;Y)`` and
+    ``II = I(X,W;Y) - I(X;Y) - I(W;Y)``.  Subtracting two similar numbers
+    cancels most of the signal and none of the error, so the *relative* error on
+    the answer is larger than the relative error on either component.  This
+    function returns the condition number of that combination,
+
+    .. math:: \\kappa = \\frac{\\sum_i |t_i|}{|\\text{result}|}
+
+    which for the two-term case is the ``(t1 + t2) / (t1 - t2)`` given in
+    ``THEORY.md``.  A component-wise relative error of ``eps`` becomes roughly
+    ``kappa * eps`` on the result.
+
+    Interpreting it:
+
+    * ``kappa ~ 1`` means almost nothing cancels; the result is essentially one
+      of the components and errors pass through undamaged.
+    * ``kappa >= 10`` means a small residual is being extracted from large,
+      similar numbers.  A 1% component error becomes 10% or worse, and the
+      result can change sign.
+
+    The factor grows without bound as the result approaches zero, so it is
+    largest for exactly the conclusion people most want to draw ("W explains
+    away X").  A near-zero conditional quantity is the hardest value in the
+    taxonomy to defend.
+
+    Two caveats.  The components share data, architecture and estimator, so part
+    of their bias is common-mode and cancels; ``kappa`` is therefore an upper
+    bound on the damage rather than a prediction.  Working the other way, the
+    joint term is always the largest of the components and so saturates the
+    InfoNCE ceiling first, which biases the result toward zero.
+
+    Parameters
+    ----------
+    components : sequence of float
+        The component MI estimates being combined.
+    result : float
+        The combined quantity.
+
+    Returns
+    -------
+    float
+        The amplification factor, or ``inf`` when ``result`` is exactly zero.
+    """
+    if result == 0:
+        return float('inf')
+    return float(sum(abs(c) for c in components) / abs(result))
+
+
 def _joint_marginal_difference(
     joint_x, joint_y, marginal_x, marginal_y,
     base_params: Dict[str, Any], sweep_grid: Optional[Dict[str, Any]], n_workers: int,
@@ -347,20 +408,44 @@ def _joint_marginal_difference(
     mi_marginal = float(np.mean(marginal_vals))
     difference = mi_joint - mi_marginal
 
+    amp = amplification_factor([mi_joint, mi_marginal], difference)
     logger.info(
         f"{quantity_name}: I({joint_label})={mi_joint:.4f}, I({marginal_label})={mi_marginal:.4f}, "
-        f"difference={difference:.4f} nats (converted to requested output_units by the caller)."
+        f"difference={difference:.4f} nats (converted to requested output_units by the caller), "
+        f"amplification factor={amp:.1f}x."
     )
 
+    # A negative difference is always a high-amplification case, so the two
+    # conditions are reported as one warning rather than two: the amplification
+    # factor is the mechanism behind the impossible sign, not a separate issue.
     if difference < 0:
         warnings.warn(
             f"{quantity_name} estimate is negative ({difference:.4f} nats). This is "
             f"theoretically impossible and arises from noise in the two independent "
-            f"MI estimates whose difference defines it. Common causes: too few "
+            f"MI estimates whose difference defines it "
+            f"(I({joint_label})={mi_joint:.4f}, I({marginal_label})={mi_marginal:.4f}, "
+            f"error-amplification factor {amp:.0f}x). At that amplification the "
+            f"components would need sub-{100.0 / amp:.2g}% accuracy for the sign of the "
+            f"result to be determined at all, so the most likely reading is that the true "
+            f"value is near zero rather than that it is negative. Common causes: too few "
             f"training runs (increase sweep_grid run_id range), high estimator "
             f"variance (try more epochs or a larger batch_size), or very small true "
             f"value close to zero. The raw component estimates are available in the "
             f"returned dict ('{joint_key}', '{marginal_key}') for manual inspection.",
+            UserWarning, stacklevel=3,
+        )
+    elif amp >= AMPLIFICATION_WARN_THRESHOLD:
+        warnings.warn(
+            f"{quantity_name} has an error-amplification factor of {amp:.1f}x. It is a "
+            f"small residual ({difference:.4f} nats) of two much larger estimates "
+            f"(I({joint_label})={mi_joint:.4f}, I({marginal_label})={mi_marginal:.4f}), so a "
+            f"relative error of eps on each component becomes roughly {amp:.0f}*eps on the "
+            f"result: a 1% component error is about {amp:.0f}% here. Do not read the point "
+            f"estimate on its own. Report the components ('{joint_key}', '{marginal_key}') "
+            f"alongside it, check the joint term for ceiling saturation (it is the larger "
+            f"of the two and saturates first, which biases the result toward zero), and "
+            f"prefer more data or more training before concluding that the true value is "
+            f"small.",
             UserWarning, stacklevel=3,
         )
     return difference, mi_joint, mi_marginal, results_joint, results_marginal

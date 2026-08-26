@@ -235,7 +235,7 @@ class Processing:
 class Rigorous:
     """Parameters for ``mode='rigorous'`` bias-corrected extrapolation."""
     gamma_range: Optional[Any] = None
-    delta_threshold: Optional[float] = None
+    curvature_t_threshold: Optional[float] = None
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
@@ -289,7 +289,7 @@ class Transfer:
     w_processor_params: Optional[Dict[str, Any]] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
-    delta_threshold: Optional[float] = None
+    curvature_t_threshold: Optional[float] = None
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
@@ -297,7 +297,7 @@ class Transfer:
     leverage_threshold: Optional[float] = None
 
     # w_* are consumed as dedicated run arguments; the rest are analysis kwargs
-    # (same split as Conditional's z_* fields, see below).
+    # (same split as Conditional's w_* fields, see below).
     _W_FIELDS = ("w_data", "w_time", "w_processor_type", "w_processor_params")
 
     def to_w_kwargs(self) -> Dict[str, Any]:
@@ -367,7 +367,7 @@ class Conditional:
     align: Optional[str] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
-    delta_threshold: Optional[float] = None
+    curvature_t_threshold: Optional[float] = None
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
@@ -402,7 +402,7 @@ class Interaction:
     w_processor_params: Optional[Dict[str, Any]] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
-    delta_threshold: Optional[float] = None
+    curvature_t_threshold: Optional[float] = None
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
@@ -410,7 +410,7 @@ class Interaction:
     leverage_threshold: Optional[float] = None
 
     # w_* are consumed as dedicated run arguments; the rest are analysis kwargs
-    # (same split as Conditional's z_* fields).
+    # (same split as Conditional's w_* fields).
     _W_FIELDS = ("w_data", "w_time", "w_processor_type", "w_processor_params")
 
     def to_w_kwargs(self) -> Dict[str, Any]:

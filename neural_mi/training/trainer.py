@@ -413,8 +413,23 @@ class Trainer:
         
         n_train = len(train_idx)
         if batch_size > n_train > 0:
+            # Say so rather than capping silently. Batch size sets how many
+            # contrastive samples each estimate is scored against, so raising it
+            # is the standard response to an estimate that looks bounded -- and
+            # above n_train that response does nothing at all. Naming the real
+            # constraint here is what stops a user tuning a knob that cannot
+            # move.
+            warnings.warn(
+                f"batch_size={batch_size} exceeds the {n_train} training samples "
+                f"available, so it has been capped to {n_train}. Batch size bounds "
+                f"how many contrastive samples each estimate is scored against, and "
+                f"raising it beyond the training-set size has no effect. To change "
+                f"that bound, increase the number of training samples: use a longer "
+                f"recording, a smaller window_size, or a smaller step_size.",
+                UserWarning, stacklevel=2,
+            )
             batch_size = n_train
-        if batch_size < 2 and n_train > 1: 
+        if batch_size < 2 and n_train > 1:
             raise ValueError(f"batch_size must be >= 2, got {batch_size}.")
 
         train_view = SubsetView(dataset, indices=train_idx, max_index_reduction=max_index_reduction)

@@ -126,7 +126,11 @@ This procedure effectively subtracts the bias that is dependent on sample size, 
 
 ### Quadratic Curvature Filtering
 
-In practice, the MI-vs-$\gamma$ relationship is only approximately linear; at very large $\gamma$ (very small chunk sizes), finite-sample effects and network under-fitting introduce measurable curvature. `NeuralMI` applies an automatic **quadratic curvature filter**: it fits a quadratic polynomial to the MI-vs-$\gamma$ curve and excludes any $\gamma$ point whose estimated quadratic coefficient exceeds the `delta_threshold` parameter (default 0.1). Only the remaining approximately-linear points are used for the final regression. A minimum of `min_gamma_points` (default 5) such points must survive for the estimate to be considered reliable; if fewer remain the result is flagged as unreliable.
+In practice, the MI-vs-$\gamma$ relationship is only approximately linear; at very large $\gamma$ (very small chunk sizes), finite-sample effects and network under-fitting introduce measurable curvature. `NeuralMI` applies an automatic **quadratic curvature filter**: it fits a quadratic in $\gamma$ and drops the largest $\gamma$ until the quadratic term is no longer statistically distinguishable from zero, tested as $|a_2| / \mathrm{SE}(a_2) <$ `curvature_t_threshold` (default 2.0, roughly the 5% two-sided level). Only the remaining approximately-linear points are used for the final regression. The search never trims below `min_gamma_points` (default 5); reaching that floor without the trend becoming linear sets `linear_region_found` to False, and the result is flagged unreliable.
+
+**Why the test normalises by $\mathrm{SE}(a_2)$ rather than by the slope.** An earlier form of this filter compared curvature against the linear coefficient, $|a_2/a_1| <$ `delta_threshold`. That divides by a quantity which tends to zero on exactly the data the filter should be accepting: when there is little finite-sample bias, $a_1 \to 0$ and the ratio inflates even as the relation becomes straighter. Measured on synthetic ladders with a genuinely linear trend, its acceptance rate fell from 100% at strong bias to 80% at zero bias, a 20-point swing driven by bias magnitude rather than by linearity. It also failed in the opposite direction, accepting visibly curved ladders whenever the slope was large enough to mask the curvature. Normalising by the standard error of $a_2$ is the standard nested-model comparison, is scale-free, requires no knowledge of the MI scale, and gives an acceptance rate flat at 100% across the same range while still refusing genuinely curved data.
+
+**What a flat slope does and does not mean.** The extrapolation removes the component of the bias that depends on subset size. A bias already present at $\gamma = 1$, with the full dataset, appears identically at every $\gamma$ and therefore lands in the intercept untouched. A near-zero slope says the estimate is stable across a range of $N$, which is genuine information about the data; it does not say the estimate is unbiased. Correspondingly, `mi_error` is the confidence interval on the fitted intercept: it describes how well the line is determined, not how far the intercept sits from the truth.
 
 :::{admonition} References
 :class: note
@@ -391,6 +395,23 @@ component estimates (`result.details['i_xypast_yfuture']`, etc.) alongside
 the point estimate rather than trusting the difference in isolation, and
 prefer more training data/epochs here before reading much into a small
 absolute value.
+
+This fragility is quantified and reported. Every mode that combines MI
+estimates returns `result.details['amplification_factor']`, the condition
+number of the combination,
+
+$$\kappa = \frac{\sum_i |t_i|}{|\text{result}|}$$
+
+which for a two-term difference is the $(t_1 + t_2)/(t_1 - t_2)$ above. A
+relative error of $\epsilon$ on each component becomes roughly
+$\kappa\epsilon$ on the answer, so $\kappa \approx 1$ means errors pass
+through undamaged while $\kappa \geq 10$ means a 1% component error becomes
+10% or worse. A warning is emitted above 10, and the negative-value warning
+reports $\kappa$ as the mechanism, since an impossible sign is almost always
+an amplification artefact rather than evidence of a negative quantity. Note
+that $\kappa$ grows without bound as the result approaches zero, so it is
+largest for exactly the conclusion the analysis is usually run to support,
+namely that $W$ explains $X$ away. See `NEURALMI_REFERENCE.md` §6.11.
 
 ### MI rate, instantaneous exchange, and directed information rate
 

@@ -14,6 +14,7 @@ iterable (a parallel sweep across values via :func:`neural_mi.parallel.dispatch_
 aggregated into a plain :class:`pandas.DataFrame`). See ``neural_mi/parallel.py``
 for the dispatch mechanics.
 """
+from dataclasses import replace
 from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
@@ -40,16 +41,42 @@ def _run_prebuilt_task(task: Tuple[torch.Tensor, torch.Tensor, str, Any, Dict[st
     return {param_name: param_value, 'mi_estimate': result.mi_estimate}
 
 
+def _processing_with_window(run_kwargs: Dict[str, Any], window_size) -> Tuple[Any, Dict[str, Any]]:
+    """Merge ``window_size`` into the caller's ``Processing``, or supply one.
+
+    ``block_mi`` is the one quantity that does real windowing rather than
+    offset slicing, so it owns ``window_size`` while the caller owns everything
+    else about how their data is read. A caller passing
+    ``Processing(x='spike', y='spike')`` gets spike windowing at the swept
+    size; passing nothing gets the continuous default.
+
+    Returns the resolved ``Processing`` and a copy of ``run_kwargs`` with the
+    original removed, so it cannot arrive at ``run()`` twice.
+    """
+    from neural_mi.config import Processing
+    rest = dict(run_kwargs)
+    given = rest.pop('processing', None)
+    if given is None:
+        return Processing(x='continuous', y='continuous',
+                          x_params={'window_size': window_size},
+                          y_params={'window_size': window_size}), rest
+    if isinstance(given, dict):
+        given = Processing(**given)
+    merged = replace(given)
+    merged.x = given.x if given.x is not None else 'continuous'
+    merged.y = given.y if given.y is not None else merged.x
+    merged.x_params = {**(given.x_params or {}), 'window_size': window_size}
+    merged.y_params = {**(given.y_params or {}), 'window_size': window_size}
+    return merged, rest
+
+
 def _run_block_mi_task(task: Tuple[Any, Any, Any, Dict[str, Any], bool]) -> Dict[str, Any]:
     """Module-level (picklable) dispatch target for one block_mi window_size."""
     x_data, y_data, window_size, run_kwargs, show_progress = task
-    from neural_mi.config import Processing
+    processing, rest = _processing_with_window(run_kwargs, window_size)
     result = run(
-        x_data=x_data, y_data=y_data, mode='estimate',
-        processing=Processing(x='continuous', y='continuous',
-                               x_params={'window_size': window_size},
-                               y_params={'window_size': window_size}),
-        n_workers=1, show_progress=show_progress, **run_kwargs,
+        x_data=x_data, y_data=y_data, mode='estimate', processing=processing,
+        n_workers=1, show_progress=show_progress, **rest,
     )
     return {'window_size': window_size, 'mi_estimate': result.mi_estimate}
 
@@ -236,13 +263,10 @@ def block_mi(
         rows = dispatch_tasks(tasks, _run_block_mi_task, n_workers=n_workers,
                                show_progress=show_progress, desc="block_mi sweep")
         return pd.DataFrame(rows)
-    from neural_mi.config import Processing
+    processing, rest = _processing_with_window(run_kwargs, window_size)
     return run(
-        x_data=x_data, y_data=y_data, mode='estimate',
-        processing=Processing(x='continuous', y='continuous',
-                               x_params={'window_size': window_size},
-                               y_params={'window_size': window_size}),
-        n_workers=n_workers, show_progress=show_progress, **run_kwargs,
+        x_data=x_data, y_data=y_data, mode='estimate', processing=processing,
+        n_workers=n_workers, show_progress=show_progress, **rest,
     )
 
 
@@ -341,9 +365,33 @@ def interaction_information(x_data, y_data, w_data, n_workers: int = 1, show_pro
 # branch architecture -- see the class docstring), checked upfront below
 # rather than left to fail deep inside training.
 
+def _is_spike_input(data) -> bool:
+    """Raw spike times arrive as a list of one ragged array per neuron."""
+    return isinstance(data, (list, tuple)) and not isinstance(data, torch.Tensor) and (
+        len(data) > 0 and all(np.ndim(np.asarray(d, dtype=object)) <= 1 for d in data)
+        and not np.isscalar(data[0])
+    )
+
+
 def _as_tensor(data) -> torch.Tensor:
     if isinstance(data, torch.Tensor):
         return data
+    if _is_spike_input(data):
+        raise TypeError(
+            "Raw spike times were passed to a quantity that indexes by integer "
+            "time offset, which needs a regularly sampled (n_timepoints, "
+            "n_channels) series. Build one by binning at the window size and "
+            "keeping silent windows, so the time axis stays contiguous:\n"
+            "    ds = create_dataset(x_data=spikes, processor_type_x='spike',\n"
+            "            processor_params_x={'bin_size': b, 'window_size': b,\n"
+            "                                'normalize_bins': False,\n"
+            "                                'drop_empty_windows': False})\n"
+            "    series = ds.x_data.squeeze(-1)   # (n_bins, n_neurons)\n"
+            "Dropping silent windows would leave consecutive indices more than "
+            "one bin apart, so the offsets would not be the ones you asked for. "
+            "block_mi is the exception: it does real windowing, so it takes "
+            "spike times directly via processing=Processing(x='spike', y='spike')."
+        )
     return torch.as_tensor(np.asarray(data), dtype=torch.float32)
 
 

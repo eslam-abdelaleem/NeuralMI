@@ -23,7 +23,7 @@ import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 
 from .sweep import ParameterSweep
-from neural_mi.logger import logger
+from neural_mi.logger import logger, worker_init_args
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu, compute_regime_diagnostic
 
 
@@ -292,7 +292,9 @@ def _dispatch_splits(split_tasks, n_workers, show_progress):
     # Parallel path — splits dispatched to a Pool, inner sweeps sequential.
     logger.info(f"Parallelising {n_tasks} dimensionality splits across {n_workers} workers...")
     _configure_multiprocessing()
-    with mp.get_context('spawn').Pool(processes=n_workers) as pool:
+    _log_init, _log_args = worker_init_args()
+    with mp.get_context('spawn').Pool(processes=n_workers,
+                                      initializer=_log_init, initargs=_log_args) as pool:
         results_per_split = list(tqdm(
             pool.imap(_run_single_split_task, split_tasks),
             total=n_tasks,

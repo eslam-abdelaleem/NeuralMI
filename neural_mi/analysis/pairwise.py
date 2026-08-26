@@ -2,8 +2,11 @@
 """Estimates a pairwise mutual information matrix across channel pairs.
 
 **Self-pairwise** (x_data only): estimates MI between every unique pair of
-channels ``(i, j)`` with ``i < j`` inside *x_data* and returns the upper
-triangle of the symmetric MI matrix.
+channels ``(i, j)`` with ``i < j`` inside *x_data*. Each pair is estimated
+once, and the returned ``mi_matrix`` is written symmetrically, so both
+``[i, j]`` and ``[j, i]`` carry the value and the matrix needs no mirroring
+by the caller. The diagonal is left at zero, since a channel's MI with itself
+is not estimated.
 
 **Cross-pairwise** (x_data + y_data): estimates MI between every channel of
 *x_data* and every channel of *y_data*, producing a full ``(n_ch_x × n_ch_y)``
@@ -28,7 +31,7 @@ from tqdm.auto import tqdm
 from typing import Dict, Any, Optional, List, Tuple
 
 from neural_mi.analysis.sweep import ParameterSweep
-from neural_mi.logger import logger
+from neural_mi.logger import logger, worker_init_args
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 
 
@@ -107,7 +110,9 @@ def _dispatch_pairs(pair_tasks: List[tuple], n_workers: int, show_progress: bool
 
     logger.info(f"Parallelising {n_pairs} channel pairs across {n_workers} workers...")
     _configure_multiprocessing()
-    with mp.get_context('spawn').Pool(processes=n_workers) as pool:
+    _log_init, _log_args = worker_init_args()
+    with mp.get_context('spawn').Pool(processes=n_workers,
+                                      initializer=_log_init, initargs=_log_args) as pool:
         records = list(tqdm(
             pool.imap(_run_pair_task_for_pool, pair_tasks), total=n_pairs,
             desc="Pairwise MI", disable=not show_progress

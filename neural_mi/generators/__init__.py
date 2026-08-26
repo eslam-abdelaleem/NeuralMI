@@ -22,6 +22,7 @@ from .synthetic import (
     generate_windowed_oscillatory,
     generate_windowed_multichannel,
 )
+from .oracle import SharedLatentGaussian, generate_shared_latent_gaussian
 
 __all__ = [
     'mi_to_rho',
@@ -40,4 +41,7 @@ __all__ = [
     # Windowed generators with analytically known MI
     'generate_windowed_oscillatory',
     'generate_windowed_multichannel',
+    # Exact ground truth for any I(A;B|C) over time offsets
+    'SharedLatentGaussian',
+    'generate_shared_latent_gaussian',
 ]

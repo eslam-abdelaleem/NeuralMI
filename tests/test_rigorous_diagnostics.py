@@ -125,7 +125,7 @@ class TestDiagnosticsInCorrectedResults:
         df = pd.DataFrame(rows)
         results = _post_process_and_correct(
             df, sweep_grid=None,
-            delta_threshold=0.1, min_gamma_points=5,
+            curvature_t_threshold=2.0, min_gamma_points=5,
             confidence_level=0.68,
         )
         assert len(results) > 0
@@ -146,7 +146,7 @@ class TestDiagnosticsInCorrectedResults:
         df = pd.DataFrame(rows)
         results = _post_process_and_correct(
             df, sweep_grid=None,
-            delta_threshold=0.1, min_gamma_points=4,
+            curvature_t_threshold=2.0, min_gamma_points=4,
             confidence_level=0.68,
             leverage_threshold=0.05,  # tight threshold
         )

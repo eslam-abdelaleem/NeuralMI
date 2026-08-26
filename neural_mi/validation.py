@@ -17,13 +17,24 @@ from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR
 def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
     """Raise TypeError unless `value` matches `expected_type`.
 
-    `bool` is a subclass of `int` in Python, so a plain `isinstance` check lets
+    Two deliberate departures from a plain `isinstance` check.
+
+    `bool` is a subclass of `int` in Python, so a plain check lets
     `n_epochs=True` silently validate as an int. Reject `bool` values unless the
     schema explicitly lists `bool` among the expected types.
+
+    An `int` is accepted wherever a `float` is expected, following Python's own
+    numeric tower. Without this, `gap_fraction=1` fails while `gap_fraction=1.0`
+    succeeds, which is a distinction no caller expects to have to make, and it
+    applies to every float-typed parameter in the schema (`learning_rate=1`,
+    `dropout=0`, `beta=1024` and so on). `bool` is still excluded, so
+    `dropout=True` does not quietly become 1.0.
     """
     allowed = expected_type if isinstance(expected_type, tuple) else (expected_type,)
     if isinstance(value, bool) and bool not in allowed:
         raise TypeError(f"{context} '{key}' must be of type {expected_type}, got bool ({value!r}).")
+    if float in allowed and isinstance(value, int):
+        return
     if not isinstance(value, expected_type):
         raise TypeError(f"{context} '{key}' must be of type {expected_type}, got {type(value)}.")
 
@@ -253,7 +264,7 @@ class ParameterValidator:
 
     def _mode_kwarg(self, key: str):
         """Look up a mode kwarg from either the named top-level params (e.g.
-        `lag_range`, `delta_threshold`) or from inside `analysis_kwargs`, where
+        `lag_range`, `curvature_t_threshold`) or from inside `analysis_kwargs`, where
         mode kwargs without a dedicated named parameter live (e.g. `n_splits`,
         `gamma_range`, `equalize_n`, `max_samples_per_task`, `pairs`).
 
@@ -318,12 +329,12 @@ class ParameterValidator:
                             f"(or a list of such floats), got {r!r}."
                         )
 
-        # Rigorous mode: validate delta_threshold and confidence_level
+        # Rigorous mode: validate curvature_t_threshold and confidence_level
         if self.mode == 'rigorous':
-            dt = self.params.get('delta_threshold')
+            dt = self.params.get('curvature_t_threshold')
             if dt is not None and (not isinstance(dt, (int, float)) or dt <= 0):
                 raise ValueError(
-                    f"delta_threshold must be a positive float, got {dt!r}."
+                    f"curvature_t_threshold must be a positive float, got {dt!r}."
                 )
             cl = self.params.get('confidence_level')
             if cl is not None and (not isinstance(cl, (int, float)) or not (0 < cl < 1)):
