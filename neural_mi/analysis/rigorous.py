@@ -95,7 +95,11 @@ def _find_linear_region(group: pd.DataFrame, curvature_t_threshold: float,
         X_quad = sm.add_constant(np.vstack([subset['gamma'], subset['gamma']**2]).T)
         model_quad = sm.WLS(subset['train_mi'], X_quad, weights=weights).fit()
         _, a1, a2 = model_quad.params
-        se_a2 = model_quad.bse[2]
+        # bse is a pandas Series labelled ['const', 'x1', 'x2'] when endog is a
+        # Series, so bse[2] is a *label* lookup that only worked on pandas < 2.0
+        # via the positional fallback.  Go through numpy to index by position on
+        # every pandas version.
+        se_a2 = float(np.asarray(model_quad.bse)[2])
         # Is the quadratic term large relative to its OWN uncertainty?  Not
         # relative to the slope, which vanishes on exactly the clean data this
         # check should be accepting.
