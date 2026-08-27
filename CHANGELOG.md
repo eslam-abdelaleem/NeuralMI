@@ -40,6 +40,34 @@ circular maze is added as `hippocampus_circular.pkl`. Neither `.pkl` had been
 tracked before, so the notebooks that use them could not be run from a fresh
 clone.
 
+`hippocampus_achilles.npz`, the pre-binned version of the linear session, is
+removed. Binning discards spike times, so anything asking about timing
+(`mode='precision'`) is unanswerable from it.
+
+### Changed: the tutorial series is rebuilt as twelve notebooks
+
+The series now runs `00` through `11` with no gaps, organised so that each part
+answers a different kind of question: what an estimate is, getting data in,
+choosing the quantity that matches the question, defending a number, real
+recordings, and the machinery underneath.
+
+Five notebooks are removed, their material redistributed:
+
+| removed | where it went |
+| --- | --- |
+| `04_Sweeps.ipynb` | `07_Making_It_Rigorous` |
+| `05_Rigorous_Estimation.ipynb` | `07_Making_It_Rigorous` |
+| `06_Temporal_Questions.ipynb` | `05_Storage_and_Rate`, `06_Direction_and_Delay` |
+| `07_Population_Questions.ipynb` | `09_What_A_Population_Encodes` |
+| `08_Models_Estimators_and_Validation.ipynb` | `11_Models_and_Machinery` |
+
+Real recordings are now confined to `09` and `10`. Everything before them uses
+synthetic data with a known answer, on the grounds that an estimator cannot be
+checked without something to check it against; the two real-data notebooks are
+where the controls, rather than a ground truth, carry the argument.
+
+Any link to a removed notebook needs updating. `docs/source/tutorials.rst`,
+`docs/source/getting_started.md`, `README.md` and `paper.md` are updated here.
 
 ### Changed: rigorous mode's linearity test, `delta_threshold` renamed to `curvature_t_threshold`
 
