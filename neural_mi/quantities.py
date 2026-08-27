@@ -32,6 +32,30 @@ def _is_sweep(value: Any) -> bool:
     return isinstance(value, (list, tuple, range, np.ndarray))
 
 
+def _estimate_or_sweep(**kwargs):
+    """Dispatch a single-MI quantity to ``mode='estimate'``, or to
+    ``mode='sweep'`` when the caller supplied a ``sweep_grid``.
+
+    Every quantity in this module that is one training run with no subtraction
+    ends by calling ``run(..., mode='estimate')``.  Passing ``sweep_grid`` to
+    that would run the whole grid and then hand back only the first result,
+    which is never what the caller meant.  Routing to ``mode='sweep'`` instead
+    gives the grid the parallel execution and the aggregated
+    ``mi_mean``/``mi_std`` dataframe that ``mode='sweep'`` exists to provide,
+    so model hyperparameters can be swept for a quantity the same way they are
+    for a plain estimate::
+
+        active_information_storage(x, k=4,
+                                   sweep_grid={'hidden_dim': [128, 256],
+                                               'run_id': [0, 1, 2]})
+
+    Note that a grid of only ``run_id`` has no grouping variable, so
+    ``mode='sweep'`` returns the raw per-run rows rather than an aggregate.
+    """
+    mode = 'sweep' if kwargs.get('sweep_grid') else 'estimate'
+    return run(mode=mode, **kwargs)
+
+
 def _run_prebuilt_task(task: Tuple[torch.Tensor, torch.Tensor, str, Any, Dict[str, Any], bool]) -> Dict[str, Any]:
     """Module-level (picklable) dispatch target for a single mode='estimate'
     call on already-offset-constructed arrays."""
@@ -123,8 +147,9 @@ def active_information_storage(
                                show_progress=show_progress, desc="active_information_storage sweep")
         return pd.DataFrame(rows)
     x_past, x_future = build_past_future(x_data, past_len=k, future_len=future_k)
-    return run(x_data=x_past, y_data=x_future, mode='estimate',
-               n_workers=n_workers, show_progress=show_progress, **run_kwargs)
+    return _estimate_or_sweep(x_data=x_past, y_data=x_future,
+                              n_workers=n_workers, show_progress=show_progress,
+                              **run_kwargs)
 
 
 def excess_entropy(
@@ -163,8 +188,9 @@ def excess_entropy(
                                show_progress=show_progress, desc="excess_entropy sweep")
         return pd.DataFrame(rows)
     x_past, x_future = build_past_future(x_data, past_len=k, future_len=future_k)
-    return run(x_data=x_past, y_data=x_future, mode='estimate',
-               n_workers=n_workers, show_progress=show_progress, **run_kwargs)
+    return _estimate_or_sweep(x_data=x_past, y_data=x_future,
+                              n_workers=n_workers, show_progress=show_progress,
+                              **run_kwargs)
 
 
 def instantaneous_mi(x_data, y_data, n_workers: int = 1, show_progress: bool = True, **run_kwargs):
@@ -186,8 +212,9 @@ def instantaneous_mi(x_data, y_data, n_workers: int = 1, show_progress: bool = T
     -------
     neural_mi.results.Results
     """
-    return run(x_data=x_data, y_data=y_data, mode='estimate',
-               n_workers=n_workers, show_progress=show_progress, **run_kwargs)
+    return _estimate_or_sweep(x_data=x_data, y_data=y_data,
+                              n_workers=n_workers, show_progress=show_progress,
+                              **run_kwargs)
 
 
 def cross_predictive_information(
@@ -225,8 +252,9 @@ def cross_predictive_information(
                                show_progress=show_progress, desc="cross_predictive_information sweep")
         return pd.DataFrame(rows)
     x_past, y_future = build_cross_offset(x_data, y_data, past_len=past_k, future_len=future_k)
-    return run(x_data=x_past, y_data=y_future, mode='estimate',
-               n_workers=n_workers, show_progress=show_progress, **run_kwargs)
+    return _estimate_or_sweep(x_data=x_past, y_data=y_future,
+                              n_workers=n_workers, show_progress=show_progress,
+                              **run_kwargs)
 
 
 def block_mi(
@@ -264,8 +292,8 @@ def block_mi(
                                show_progress=show_progress, desc="block_mi sweep")
         return pd.DataFrame(rows)
     processing, rest = _processing_with_window(run_kwargs, window_size)
-    return run(
-        x_data=x_data, y_data=y_data, mode='estimate', processing=processing,
+    return _estimate_or_sweep(
+        x_data=x_data, y_data=y_data, processing=processing,
         n_workers=n_workers, show_progress=show_progress, **rest,
     )
 

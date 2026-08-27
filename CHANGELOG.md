@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added: model-hyperparameter sweeps for the single-MI quantities
+
+`active_information_storage`, `excess_entropy`, `cross_predictive_information`,
+`instantaneous_mi` and `block_mi` each end in one `mode='estimate'` run.
+Forwarding a `sweep_grid` to them previously reached `mode='estimate'`, which
+runs the whole grid and then returns only the first result: the sweep happened,
+the caller never saw it.
+
+They now route through `_estimate_or_sweep`, which dispatches to `mode='sweep'`
+whenever a `sweep_grid` is present, so a quantity's model parameters can be
+swept the same way a plain estimate's can, with the same parallel execution and
+the same aggregated dataframe:
+
+```python
+active_information_storage(x, k=4,
+                           sweep_grid={'hidden_dim': [128, 256],
+                                       'run_id': [0, 1, 2]})
+```
+
+Behaviour without a grid is unchanged, and sweeping the quantity's own
+parameter (passing an iterable `k`) is unchanged. Note that a grid of only
+`run_id` has no grouping variable, so `mode='sweep'` returns the raw per-run
+rows rather than an aggregate; add any second variable to get
+`mi_mean`/`mi_std`.
+
+### Changed: tutorial datasets renamed, and the hippocampal recordings tracked
+
+`tutorials/data/processed_hippocampus_data_raw.pkl` becomes
+`hippocampus_linear.pkl`, and a second session from the same animal on a
+circular maze is added as `hippocampus_circular.pkl`. Neither `.pkl` had been
+tracked before, so the notebooks that use them could not be run from a fresh
+clone.
+
+
 ### Changed: rigorous mode's linearity test, `delta_threshold` renamed to `curvature_t_threshold`
 
 `_find_linear_region` decided where the linear region ended by comparing
