@@ -1,36 +1,34 @@
 Tutorials
 =========
 
-This series of tutorials provides a guided tour through the features of `NeuralMI`,
-from basic usage to advanced, scientifically rigorous analyses. We recommend
-following them in order to build a comprehensive understanding of the library.
+A guided path through `NeuralMI`, from what an estimate means to defending one
+on a real recording. Each part answers a different kind of question, and they
+build on each other, so reading in order is worth it.
 
-Part 0: Understanding MI Estimation
------------------------------------
+Part 0: What an estimate is
+---------------------------
 
-A conceptual on-ramp: what mutual information captures, how a neural estimator computes it,
-and which number the library reports. Optional, but it makes the later choices intuitive.
-
-- **00_Why_and_How_MI_Estimation_Works**: A conceptual on-ramp — why mutual
-  information (not correlation), how a neural estimator turns dependence into
-  a number, and which value the library reports.
+- **00_Why_and_How_MI_Estimation_Works**: Why mutual information rather than
+  correlation, how a neural estimator turns dependence into a number, and which
+  value the library reports.
 
 .. toctree::
    :maxdepth: 1
 
    tutorials/00_Why_and_How_MI_Estimation_Works
 
-Part 1: The Fundamentals
-------------------------
+Part 1: Getting your data in
+----------------------------
 
-These tutorials cover the essential mechanics of the library.
-
-- **01_A_First_Estimate**: Learn the basics of ``nmi.run()`` and the
-  ``Results`` object on a simple dataset.
-- **02_Neural_Data_Formats**: Understand how to use the ``Continuous``,
-  ``Spike``, and ``Categorical`` data processors.
-- **03_Temporal_Correlations_and_Splits**: Learn how to handle temporal data
-  and avoid leakage with blocked splitting.
+- **01_A_First_Estimate**: One ``nmi.run()`` call on data with a known answer.
+  What ``mi_estimate`` is versus ``details['test_mi']``, how the answer moves
+  with sample size, and a KSG comparison showing when a neural estimator is
+  worth its cost.
+- **02_Neural_Data_Formats**: Spike times, binned counts and categorical
+  labels, what windowing does to each, and which quantity
+  ``drop_empty_windows`` selects.
+- **03_Temporal_Correlations_and_Splits**: Why ``Split(mode='blocked')`` is the
+  default, and what random splitting costs on autocorrelated data.
 
 .. toctree::
    :maxdepth: 1
@@ -39,40 +37,78 @@ These tutorials cover the essential mechanics of the library.
    tutorials/02_Neural_Data_Formats
    tutorials/03_Temporal_Correlations_and_Splits
 
-Part 2: Core Concepts for Scientific Rigor
-------------------------------------------
+Part 2: Choosing the quantity that matches your question
+--------------------------------------------------------
 
-Learn how to go beyond a single estimate to perform robust analyses.
+The library computes many named quantities. They are one primitive under
+different offset patterns, and picking the right one matters more than tuning
+the estimator.
 
-- **04_Sweeps**: Use ``mode='sweep'`` to explore and optimize hyperparameters.
-- **05_Rigorous_Estimation**: A deep dive into ``mode='rigorous'`` for
-  debiased, accurate MI estimates with a confidence interval.
-
-.. toctree::
-   :maxdepth: 1
-
-   tutorials/04_Sweeps
-   tutorials/05_Rigorous_Estimation
-
-Part 3: Advanced Analysis and Applications
-------------------------------------------
-
-Explore the library's most powerful features and learn how to extend it.
-
-- **06_Temporal_Questions**: Directed, time-resolved analyses —
-  ``mode='lag'``, ``mode='precision'``, and transfer entropy.
-- **07_Population_Questions**: Population geometry and connectivity —
-  ``mode='dimensionality'``, conditional MI, and the ``mode='pairwise'`` MI
-  matrix. Uses real hippocampal and Allen Brain Observatory recordings.
-- **08_Models_Estimators_and_Validation**: Understand the trade-offs between
-  different critic architectures, estimators, and custom models.
+- **04_Which_Quantity**: The taxonomy as a single ``I(A;B|C)`` call under
+  different offsets. Also why windowed MI is extensive, so no window size
+  reveals a plateau.
+- **05_Storage_and_Rate**: How much a process predicts about its own future,
+  and the per-step rate that survives as the window grows.
+- **06_Direction_and_Delay**: ``mode='lag'``, ``mode='precision'``, transfer
+  entropy and Massey's conservation law. Includes a measured demonstration of
+  why transfer entropy is fragile: 25 to 40 times error amplification, with its
+  reported direction reversing when the history window changes.
 
 .. toctree::
    :maxdepth: 1
 
-   tutorials/06_Temporal_Questions
-   tutorials/07_Population_Questions
-   tutorials/08_Models_Estimators_and_Validation
+   tutorials/04_Which_Quantity
+   tutorials/05_Storage_and_Rate
+   tutorials/06_Direction_and_Delay
+
+Part 3: Defending a number
+--------------------------
+
+- **07_Making_It_Rigorous**: Seed spread, ``mode='sweep'``, and
+  ``mode='rigorous'`` with its diagnostics read honestly, including what a flat
+  bias slope does and does not mean.
+- **08_Three_Variables**: Conditional MI and interaction information against an
+  oracle with exact values, redundancy versus synergy, and the amplification
+  factor that says how far a difference of estimates can be trusted.
+
+.. toctree::
+   :maxdepth: 1
+
+   tutorials/07_Making_It_Rigorous
+   tutorials/08_Three_Variables
+
+Part 4: Real recordings, where there is no ground truth
+-------------------------------------------------------
+
+Everything before this uses synthetic data, because you cannot check an
+estimator without an answer to check against. These two use real recordings,
+where you cannot ask whether an estimate is correct, only whether a claim is
+defensible. Each section starts from a hypothesis and the controls carry the
+argument.
+
+- **09_What_A_Population_Encodes**: Hippocampal place cells and position,
+  across two sessions from the same animal on different mazes.
+- **10_Comparing_Brain_Areas**: Allen Brain Observatory recordings from VISp,
+  VISpm and CA1 under natural movies and spontaneous activity. Functional
+  coupling, intrinsic timescale, and which comparisons the data supports.
+
+.. toctree::
+   :maxdepth: 1
+
+   tutorials/09_What_A_Population_Encodes
+   tutorials/10_Comparing_Brain_Areas
+
+Part 5: The machinery underneath
+--------------------------------
+
+- **11_Models_and_Machinery**: The two estimators and the InfoNCE ceiling, the
+  ten embedding models, permutation nulls, and how to supply your own
+  architecture.
+
+.. toctree::
+   :maxdepth: 1
+
+   tutorials/11_Models_and_Machinery
 
 Benchmark: NeuralMI vs. Classical Estimators
 ---------------------------------------------

@@ -703,8 +703,7 @@ def analyze_mi_heatmap(
         sweep ``window_size`` (it is a processor parameter, not one
         ``mode='lag'``'s own ``sweep_grid`` forwards). Build this shape by
         calling ``mode='lag'`` once per ``window_size``, tagging each
-        resulting ``result.dataframe`` with that value, and concatenating —
-        see Tutorial 6 for a worked example.
+        resulting ``result.dataframe`` with that value, and concatenating.
     mi_col : str, optional
         Name of the MI column in ``results_df``. Defaults to ``'mi_mean'``,
         the column produced by sweep-style aggregation. Pass ``'mi'`` (or

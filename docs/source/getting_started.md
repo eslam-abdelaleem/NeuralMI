@@ -62,28 +62,37 @@ results.plot()
 
 ## Learning Path
 
-To get the most out of `NeuralMI`, we recommend following our tutorial series in order. Each tutorial builds on the last, taking you from the basics to advanced applications.
+To get the most out of `NeuralMI`, we recommend following the tutorial series in order. Each part answers a different kind of question, and they build on each other.
 
-### Part 0: Understanding MI Estimation
+### Part 0: What an estimate is
 
-* **Tutorial 00:** Why and How MI Estimation Works - A conceptual on-ramp: why mutual information (not correlation), how a neural estimator turns dependence into a number, and which value the library reports.
+* **Tutorial 00:** Why and How MI Estimation Works - Why mutual information rather than correlation, how a neural estimator turns dependence into a number, and which value the library reports.
 
-### Part 1: The Fundamentals
+### Part 1: Getting your data in
 
-* **Tutorial 01:** A First Estimate - Learn the basics of `nmi.run()` and the `Results` object on a simple dataset.
-* **Tutorial 02:** Neural Data Formats - Understand how to use the `Continuous`, `Spike`, and `Categorical` processors.
-* **Tutorial 03:** Temporal Correlations and Splits - Learn how to handle temporal data and avoid leakage with blocked splitting.
+* **Tutorial 01:** A First Estimate - One `nmi.run()` call on data with a known answer, what `mi_estimate` is versus `details['test_mi']`, and a KSG comparison showing when a neural estimator is worth its cost.
+* **Tutorial 02:** Neural Data Formats - Spike times, binned counts and categorical labels, and what windowing does to each.
+* **Tutorial 03:** Temporal Correlations and Splits - Why blocked splitting is the default, and what random splitting costs on autocorrelated data.
 
-### Part 2: Core Concepts for Scientific Rigor
+### Part 2: Choosing the quantity that matches your question
 
-* **Tutorial 04:** Sweeps - Use `mode='sweep'` to explore and optimize hyperparameters.
-* **Tutorial 05:** Rigorous Estimation - A deep dive into `mode='rigorous'` for debiased, accurate MI estimates.
+* **Tutorial 04:** Which Quantity - The taxonomy as one `I(A;B|C)` primitive under different offsets, and why windowed MI is extensive.
+* **Tutorial 05:** Storage and Rate - Self-prediction, and the per-step rate that survives as the window grows.
+* **Tutorial 06:** Direction and Delay - `mode='lag'`, `mode='precision'`, transfer entropy, and a measured demonstration of why transfer entropy is fragile.
 
-### Part 3: Advanced Analysis and Applications
+### Part 3: Defending a number
 
-* **Tutorial 06:** Temporal Questions - Directed, time-resolved analyses: `mode='lag'`, `mode='precision'`, and transfer entropy.
-* **Tutorial 07:** Population Questions - Population geometry and connectivity: `mode='dimensionality'`, conditional MI, and the `mode='pairwise'` MI matrix, on real hippocampal and Allen Brain Observatory recordings.
-* **Tutorial 08:** Models, Estimators, and Validation - Understand the trade-offs between different critic architectures, estimators, and custom models.
+* **Tutorial 07:** Making It Rigorous - Seed spread, `mode='sweep'`, and `mode='rigorous'` with its diagnostics read honestly.
+* **Tutorial 08:** Three Variables - Conditional MI and interaction information against an oracle, and the amplification factor governing differences of estimates.
+
+### Part 4: Real recordings, where there is no ground truth
+
+* **Tutorial 09:** What A Population Encodes - Hippocampal place cells and position, two sessions from the same animal.
+* **Tutorial 10:** Comparing Brain Areas - Allen Brain Observatory recordings under natural movies and spontaneous activity.
+
+### Part 5: The machinery underneath
+
+* **Tutorial 11:** Models and Machinery - The two estimators and the InfoNCE ceiling, the ten embedding models, permutation nulls, and supplying your own architecture.
 
 Separately, `benchmarks/vs_classical_estimators.ipynb` compares `NeuralMI` against classical alternatives (the KSG estimator and geometric intrinsic-dimension estimators) on problems chosen to be hard for them — useful if you're deciding whether a neural estimator is the right tool for your data, rather than learning the library itself.
 

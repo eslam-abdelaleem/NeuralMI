@@ -69,19 +69,24 @@ results.plot()
 ## Learning Path
 To get the most out of `NeuralMI`, we recommend following the tutorial series in order. Each tutorial builds on the last, taking you from the basics to advanced applications.
 
-- **Part 0: Understanding MI Estimation**
-    - **00_Why_and_How_MI_Estimation_Works**: A conceptual on-ramp — why mutual information (not correlation), how a neural estimator turns dependence into a number, and which value the library reports.
-- **Part 1: The Fundamentals**
-    - **01_A_First_Estimate**: Learn the basics of `nmi.run()` and the `Results` object on a simple dataset.
-    - **02_Neural_Data_Formats**: Understand how to use the `Continuous`, `Spike`, and `Categorical` data processors.
-    - **03_Temporal_Correlations_and_Splits**: Learn how to handle temporal data and avoid leakage with blocked splitting.
-- **Part 2: Core Concepts for Scientific Rigor**
-    - **04_Sweeps**: Use `mode='sweep'` to explore and optimize hyperparameters.
-    - **05_Rigorous_Estimation**: A deep dive into `mode='rigorous'` for debiased, accurate MI estimates.
-- **Part 3: Advanced Analysis and Applications**
-    - **06_Temporal_Questions**: Directed, time-resolved analyses — `mode='lag'`, `mode='precision'`, and transfer entropy.
-    - **07_Population_Questions**: Population geometry and connectivity — `mode='dimensionality'`, conditional MI, and the `mode='pairwise'` MI matrix. Uses real hippocampal and Allen Brain Observatory recordings.
-    - **08_Models_Estimators_and_Validation**: Understand the trade-offs between different critic architectures, estimators, and custom models.
+- **Part 0: What an estimate is**
+    - **[00_Why_and_How_MI_Estimation_Works](tutorials/00_Why_and_How_MI_Estimation_Works.ipynb)**: Why mutual information rather than correlation, how a neural estimator turns dependence into a number, and which value the library reports.
+- **Part 1: Getting your data in**
+    - **[01_A_First_Estimate](tutorials/01_A_First_Estimate.ipynb)**: One `nmi.run()` call on data with a known answer. What `mi_estimate` is versus `details['test_mi']`, how the answer moves with sample size, and a KSG comparison showing when a neural estimator is worth its cost.
+    - **[02_Neural_Data_Formats](tutorials/02_Neural_Data_Formats.ipynb)**: Spike times, binned counts and categorical labels, what windowing does to each, and which quantity `drop_empty_windows` selects.
+    - **[03_Temporal_Correlations_and_Splits](tutorials/03_Temporal_Correlations_and_Splits.ipynb)**: Why `Split(mode='blocked')` is the default, and what random splitting costs on autocorrelated data.
+- **Part 2: Choosing the quantity that matches your question**
+    - **[04_Which_Quantity](tutorials/04_Which_Quantity.ipynb)**: The whole taxonomy as one `I(A;B|C)` primitive under different offset patterns. Also why windowed MI is extensive, so no window size reveals a plateau.
+    - **[05_Storage_and_Rate](tutorials/05_Storage_and_Rate.ipynb)**: How much a process predicts about its own future, and the per-step rate that survives as the window grows.
+    - **[06_Direction_and_Delay](tutorials/06_Direction_and_Delay.ipynb)**: `mode='lag'`, `mode='precision'`, transfer entropy and Massey's conservation law. Includes a measured demonstration of why transfer entropy is fragile: 25 to 40 times error amplification, with its reported direction reversing when the history window changes.
+- **Part 3: Defending a number**
+    - **[07_Making_It_Rigorous](tutorials/07_Making_It_Rigorous.ipynb)**: Seed spread, `mode='sweep'`, and `mode='rigorous'` with its diagnostics read honestly, including what a flat bias slope does and does not mean.
+    - **[08_Three_Variables](tutorials/08_Three_Variables.ipynb)**: Conditional MI and interaction information against an oracle with exact values, redundancy versus synergy, and the amplification factor that says how far a difference of estimates can be trusted.
+- **Part 4: Real recordings, where there is no ground truth**
+    - **[09_What_A_Population_Encodes](tutorials/09_What_A_Population_Encodes.ipynb)**: Hippocampal place cells and position, across two sessions from the same animal. Each section starts from a hypothesis, and the controls are what carry the claims.
+    - **[10_Comparing_Brain_Areas](tutorials/10_Comparing_Brain_Areas.ipynb)**: Allen Brain Observatory recordings from VISp, VISpm and CA1 under natural movies and spontaneous activity. Functional coupling, intrinsic timescale, and which comparisons the data actually supports.
+- **Part 5: The machinery underneath**
+    - **[11_Models_and_Machinery](tutorials/11_Models_and_Machinery.ipynb)**: The two estimators and the InfoNCE ceiling, the ten embedding models, permutation nulls, and how to supply your own architecture.
 
 Separately, [`benchmarks/vs_classical_estimators.ipynb`](benchmarks/vs_classical_estimators.ipynb) compares `NeuralMI` against classical alternatives (the KSG estimator and geometric intrinsic-dimension estimators) on problems chosen to be hard for them — useful if you're deciding whether a neural estimator is the right tool for your data, rather than learning the library itself.
 

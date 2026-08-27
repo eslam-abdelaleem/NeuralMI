@@ -114,11 +114,13 @@ $\text{PR}_{\text{singular}} = (\sum_i \sigma_i)^2 / \sum_i \sigma_i^2$.
 This avoids the computational cost and geometric artefacts of sweeping bottleneck
 dimension.
 
-**Tutorials.** Eight Jupyter notebooks cover the complete workflow from basic
-estimation on IID data (Tutorial 1) through neural data formats (2), temporal
-splits (3), hyperparameter sweeps (4), rigorous estimation (5), temporal analyses
-(6), population dimensionality on real hippocampal and Allen Brain Observatory
-recordings (7), and model and estimator selection (8).
+**Tutorials.** Twelve Jupyter notebooks cover the complete workflow: what an
+estimate means (0), a first estimate with a known answer (1), neural data
+formats (2), temporal splits (3), choosing among the named quantities (4-6),
+defending a result through bias correction and three-variable analysis (7-8),
+two notebooks working real hippocampal and Allen Brain Observatory recordings
+end to end where no ground truth exists (9-10), and the estimators,
+architectures and validation machinery underneath (11).
 
 # Acknowledgements
 
