@@ -62,7 +62,14 @@ BASE_PARAMS_SCHEMA = {
     'lr_head_multiplier': {'type': (float, int, type(None)), 'min': 0.0, 'default': None},  # Hybrid only; None → same LR as encoders
     'scheduler': {'type': (str, type, type(None)), 'default': None},
     'scheduler_params': {'type': dict, 'default': {}},
-    'eval_train': {'type': (bool, float, int, type(None)), 'default': False},
+    # Per-epoch train MI tracking, yielding 'train_mi_history'.
+    #   False         — no per-epoch train evaluation.
+    #   True          — the locked-in train eval subset (capped by max_eval_samples).
+    #   int >= 1      — exactly that many training samples.
+    #   float (0, 1)  — that fraction of the training set.
+    #   1.0 / 'full'  — the entire training set, uncapped.
+    # An unrecognised value raises rather than silently disabling tracking.
+    'eval_train': {'type': (bool, float, int, str, type(None)), 'default': False},
 
     # Per-epoch embedding tracking.
     # Controls whether embeddings are extracted and stored at every epoch.

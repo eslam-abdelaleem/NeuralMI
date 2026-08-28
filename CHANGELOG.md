@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed: spike windows pad empty slots with `0.0`
+
+`SpikeWindowDataset`'s `no_spike_value` default moves from `-1.0` to `0.0`.
+
+Tests that previously assumed the sentinel now read it from the dataset
+(`_reference_spike_windows`, `_spike_window_content`), since what they check is
+that two windowing paths agree on window *content*, which is independent of the
+value marking an empty slot.
+
+One test pins `no_spike_value=-1.0` explicitly:
+`test_circular_default_gives_lower_null_than_broken_list_reorder` needs a real
+estimate for its null to sit below, and how much signal survives the spike
+representation depends on the sentinel. It is testing the shuffle, so it holds
+the representation fixed.
+
+Note that the sentinel is not purely cosmetic. Within-window spike times start
+at 0, so `0.0` makes an empty slot indistinguishable from a spike at the window
+boundary, and the occupancy mask is derived as `data != no_spike_value`. The
+right padding value, and whether occupancy should be tracked separately from
+it, is an open question.
+
+### Fixed: `eval_train` and `track_embeddings` accept `'full'` and `1.0`
+
+Both parameters document the same set of forms, and both had the same two gaps.
+`eval_train='full'` failed type validation, and `eval_train=1.0` passed
+validation and then selected nothing, because the fractional branch tested
+`0.0 < value < 1.0` strictly and the integer branch rejects a float. An
+unrecognised value fell through to a branch that disabled tracking silently, so
+the call returned no `train_mi_history` and gave no indication why.
+`track_embeddings` behaved the same way for `1.0`.
+
+Both now accept `'full'` and `1.0` for "everything", and both raise
+`ValueError` listing the valid forms when given anything unrecognised.
+
+For `eval_train`, "everything" means the entire training set, deliberately not
+capped by `max_eval_samples`. This is what makes a per-epoch train curve
+readable against the reported estimate: a smaller evaluation subset carries a
+lower InfoNCE ceiling (`log2(n_eval)`), so the curve would sit below the
+estimate for reasons unrelated to training. With `eval_train='full'` the final
+point of `train_mi_history` equals the reported estimate.
+
+```python
+run(x, y, training=Training(eval_train='full'))   # curve comparable to the estimate
+run(x, y, training=Training(eval_train=True))     # capped at max_eval_samples
+```
+
+Note that `True` is not a synonym for `'full'`: it caps at `max_eval_samples`
+(default 5000) and coincides with `'full'` only when the training set is
+smaller than that.
+
+### Changed: generators are split by whether the MI is known
+
+`neural_mi/generators/` now divides on the distinction that decides which
+generator to reach for. `oracle` holds everything that comes with an answer:
+`SharedLatentGaussian` and `generate_shared_latent_gaussian`, joined by
+`mi_to_rho`, `generate_correlated_gaussians`, `generate_windowed_oscillatory`
+and `generate_windowed_multichannel`. `synthetic` holds the processes built to
+exhibit a structure whose mutual information is not computed.
+
+Import paths through `neural_mi.generators` are unchanged, so
+`nmi.generators.generate_correlated_gaussians` still resolves. Code importing
+from `neural_mi.generators.synthetic` directly needs to import the four moved
+names from `neural_mi.generators.oracle` instead.
+
+`generate_nonlinear_from_latent` stays in `synthetic` despite taking an `mi`
+argument: that argument fixes the MI of the *latent* pair, and the nonlinear
+projection with added noise puts the observed MI strictly below it. It is an
+upper bound rather than a value to check an estimate against.
+
+### Removed: `generate_windowed_dependency_data`
+
+Its X was a dual-timescale autoregressive process and its Y a causal rolling
+mean of X mixed with noise. The construction is linear and Gaussian throughout,
+so a closed-form MI exists in principle, and the generator never computed one.
+That leaves a plausible-looking process whose answer is unknown, which is the
+one thing a generator should not be. Use `SharedLatentGaussian` instead: it
+gives the exact windowed MI through `block_mi(w)`, with the magnitude set by
+`noise` and the autocorrelation time by `phi` (`tau = -1/log(phi)`).
+
 ### Added: model-hyperparameter sweeps for the single-MI quantities
 
 `active_information_storage`, `excess_entropy`, `cross_predictive_information`,

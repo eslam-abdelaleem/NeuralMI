@@ -130,7 +130,7 @@ class Training:
     scheduler_params: Optional[Dict[str, Any]] = None
     gradient_clip_val: Optional[float] = None
     use_amp: Optional[Union[bool, str]] = None
-    eval_train: Optional[Union[bool, float, int]] = None
+    eval_train: Optional[Union[bool, float, int, str]] = None   # True | 'full' | 1.0 | frac | count
     peak_fraction: Optional[float] = None
     smoothing_sigma: Optional[float] = None
     median_window: Optional[int] = None

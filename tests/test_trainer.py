@@ -162,6 +162,120 @@ class TestDecoderLoss:
         assert torch.isfinite(loss)
         assert loss.item() >= 0.0
 
+class TestEvalTrain:
+    """Tests for eval_train's accepted values and the sizes they select."""
+
+    def _dataset(self, n=200):
+        x = torch.randn(n, 4)
+        y = torch.randn(n, 4)
+        return PairedDataset(x, y)
+
+    def _trainer(self):
+        net_x = MLP(input_dim=4, hidden_dim=8, embed_dim=4, n_layers=1)
+        model = SeparableCritic(embedding_net_x=net_x)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+        return Trainer(model, dummy_estimator, optimizer, torch.device('cpu'))
+
+    @pytest.mark.parametrize('value', ['full', 1.0, True, 32, 0.5])
+    def test_recognised_values_produce_history(self, value):
+        """Every documented eval_train value yields a per-epoch train history."""
+        results = self._trainer().train(
+            self._dataset(), n_epochs=4, batch_size=20,
+            eval_train=value, verbose=False,
+        )
+        assert 'train_mi_history' in results, f"eval_train={value!r} produced no history"
+        assert len(results['train_mi_history']) == 4
+
+    @pytest.mark.parametrize('value', ['fulll', 'all', 'true', -1, [1]])
+    def test_unrecognised_values_raise(self, value):
+        """An unrecognised eval_train raises rather than silently disabling tracking."""
+        with pytest.raises(ValueError, match='not a recognised value'):
+            self._trainer().train(
+                self._dataset(), n_epochs=2, batch_size=20,
+                eval_train=value, verbose=False,
+            )
+
+    def test_full_is_uncapped_by_max_eval_samples(self):
+        """'full' evaluates the whole training set even when max_eval_samples is smaller.
+
+        A capped evaluation subset carries a lower InfoNCE ceiling, so the train
+        curve would sit below the reported estimate for reasons unrelated to
+        training. 'full' is what makes the two comparable.
+        """
+        ds = self._dataset(n=200)
+        capped = self._trainer().train(
+            ds, n_epochs=2, batch_size=20, eval_train=True,
+            max_eval_samples=16, verbose=False,
+        )
+        full = self._trainer().train(
+            ds, n_epochs=2, batch_size=20, eval_train='full',
+            max_eval_samples=16, verbose=False,
+        )
+        # Both produce history; they must not be the same evaluation, since one
+        # is capped at 16 samples and the other spans the whole training split.
+        assert len(capped['train_mi_history']) == len(full['train_mi_history']) == 2
+        assert capped['train_mi_history'] != full['train_mi_history']
+
+    @pytest.mark.parametrize('value,expected_frac', [
+        ('full', 1.0), (1.0, 1.0), (0.5, 0.5), (0.25, 0.25),
+    ])
+    def test_selected_evaluation_size(self, monkeypatch, value, expected_frac):
+        """'full' and 1.0 select the whole training split; a fraction selects that share.
+
+        Asserted on the requested subset size rather than on the resulting MI,
+        since two training runs are not bit-identical.
+        """
+        trainer = self._trainer()
+        seen = []
+        original = trainer._select_train_eval_indices
+
+        def spy(train_idx, n, is_temporal):
+            seen.append((len(train_idx), n))
+            return original(train_idx, n, is_temporal)
+
+        monkeypatch.setattr(trainer, '_select_train_eval_indices', spy)
+        trainer.train(self._dataset(), n_epochs=2, batch_size=20,
+                      eval_train=value, verbose=False)
+
+        # The last call is the per-epoch tracking subset.
+        n_train, n_selected = seen[-1]
+        assert n_selected == pytest.approx(n_train * expected_frac, abs=2)
+
+
+class TestTrackEmbeddings:
+    """track_embeddings accepts the same value forms as eval_train."""
+
+    def _dataset(self, n=200):
+        return PairedDataset(torch.randn(n, 4), torch.randn(n, 4))
+
+    def _trainer(self):
+        net_x = MLP(input_dim=4, hidden_dim=8, embed_dim=4, n_layers=1)
+        model = SeparableCritic(embedding_net_x=net_x)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+        return Trainer(model, dummy_estimator, optimizer, torch.device('cpu'))
+
+    @pytest.mark.parametrize('value,expected', [
+        ('full', 200), (1.0, 200), (32, 32), (0.25, 50),
+    ])
+    def test_recognised_values_select_expected_count(self, value, expected):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            results = self._trainer().train(
+                self._dataset(n=200), n_epochs=2, batch_size=20,
+                track_embeddings=value, verbose=False,
+            )
+        history = results['embedding_history_x']
+        assert history[0].shape[0] == expected
+
+    @pytest.mark.parametrize('value', ['fulll', 'all', -1])
+    def test_unrecognised_values_raise(self, value):
+        with pytest.raises(ValueError, match='not a recognised value'):
+            self._trainer().train(
+                self._dataset(), n_epochs=2, batch_size=20,
+                track_embeddings=value, verbose=False,
+            )
+
+
 class TestPeakFraction:
     """Tests for the improvement-checkpoint-based peak_fraction feature."""
 

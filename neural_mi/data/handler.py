@@ -515,7 +515,7 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
             return BinnedSpikeDataset(data, bin_size=bin_size, device=device,
                                       normalize=normalize, data_device=data_device,
                                       drop_empty_windows=drop_empty)
-        no_spike_val        = (proc_params or {}).get('no_spike_value', -1.0)
+        no_spike_val        = (proc_params or {}).get('no_spike_value', 0.0)
         excl_bursty         = (proc_params or {}).get('exclude_bursty_neurons', False)
         burst_mult          = (proc_params or {}).get('burst_threshold_multiplier', 5.0)
         max_spikes_per_win  = (proc_params or {}).get('max_spikes_per_window', None)

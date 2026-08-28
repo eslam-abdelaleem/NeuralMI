@@ -177,7 +177,7 @@ class TestPairedWindowShifterDifferentSampleRates:
 
 
 def _reference_spike_windows(spike_trains, window_times, window_size, max_samples_per_window,
-                             no_spike_value=-1.0):
+                             no_spike_value):
     """Ground-truth reimplementation of the original (pre-vectorization)
     two-pointer loop, kept here (not imported) so this test stays a real
     independent check of the vectorized version in
@@ -258,7 +258,12 @@ class TestVectorizedSpikeWindowingMatchesReference:
                            t_start=0, t_end=n_seconds - window_size)
         ds = SpikeWindowDataset([s.copy() for s in spikes], window_manager=wm)
 
+        # Take the padding sentinel from the dataset rather than assuming one.
+        # What this test checks is that the vectorised windowing agrees with the
+        # two-pointer reference, which is independent of the value chosen to
+        # mark an empty slot.
         expected = _reference_spike_windows(
-            [s.copy() for s in spikes], wm.window_times, window_size, ds.max_samples_per_window
+            [s.copy() for s in spikes], wm.window_times, window_size,
+            ds.max_samples_per_window, no_spike_value=ds.no_spike_value,
         )
         assert np.array_equal(ds.data.numpy(), expected)

@@ -28,9 +28,10 @@ of the system rather than a defect, and it is what makes the system a useful
 test of whether an estimator is measuring the estimand it claims to.
 """
 from collections import OrderedDict
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
+import torch
 
 LOG2 = np.log(2.0)
 
@@ -326,3 +327,285 @@ def generate_shared_latent_gaussian(T: int = 20000, dims: Optional[Dict[str, int
     oracle = SharedLatentGaussian(dims=dims, d=d, phi=phi, noise=noise,
                                   coupling=coupling, seed=seed)
     return oracle.sample(T, seed=seed), oracle
+
+
+# ---------------------------------------------------------------------------
+# Closed-form generators
+#
+# Each of these fixes the mutual information by construction, so a sample
+# comes with the number an estimator is supposed to recover. The windowed
+# pair report the *observed* MI, computed from the SNR, rather than the
+# latent MI they were built from.
+# ---------------------------------------------------------------------------
+
+def mi_to_rho(dim: int, mi: float) -> float:
+    """Calculates the correlation coefficient `rho` for a given MI and dimension.
+
+    This function is used for generating correlated Gaussian variables with a
+    pre-defined mutual information. The formula is derived from the analytical
+    expression for MI between two multivariate Gaussian variables.
+
+    Parameters
+    ----------
+    dim : int
+        The dimension of the Gaussian variables.
+    mi : float
+        The desired mutual information in bits.
+
+    Returns
+    -------
+    float
+        The corresponding correlation coefficient `rho`.
+    """
+    # Convert MI from bits to nats for the formula
+    mi_nats = mi * np.log(2)
+    return np.sqrt(1 - np.exp(-2.0 / dim * mi_nats))
+
+
+def generate_correlated_gaussians(
+    n_samples: int, dim: int, mi: float, use_torch: bool = True
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generates two correlated multivariate Gaussian datasets.
+
+    The ground truth mutual information between these two variables can be
+    calculated analytically.
+
+    Parameters
+    ----------
+    n_samples : int
+        The number of samples to generate.
+    dim : int
+        The number of dimensions for each variable.
+    mi : float
+        The ground truth mutual information in bits.
+    use_torch : bool, optional
+        If True, returns torch.Tensors; otherwise, returns NumPy arrays.
+        Defaults to True.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        A tuple containing:
+        - **x** (*np.ndarray* or *torch.Tensor*): The first dataset, of shape `(n_samples, dim)`.
+        - **y** (*np.ndarray* or *torch.Tensor*): The second dataset, of shape `(n_samples, dim)`.
+    """
+    rho = mi_to_rho(dim, mi)
+    mean = np.zeros(2 * dim)
+    cov = np.eye(2 * dim)
+    cov[dim:, :dim] = np.eye(dim) * rho
+    cov[:dim, dim:] = np.eye(dim) * rho
+    
+    data = np.random.multivariate_normal(mean, cov, size=n_samples)
+    x = data[:, :dim]
+    y = data[:, dim:]
+    
+    if use_torch:
+        return torch.from_numpy(x).float(), torch.from_numpy(y).float()
+    return x, y
+
+
+def generate_windowed_oscillatory(
+    n_windows: int,
+    n_channels: int = 1,
+    window_size: int = 256,
+    f_carrier_hz: float = 10.0,
+    sample_rate: float = 512.0,
+    latent_mi: float = 1.0,
+    snr: float = 3.0,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Generate IID windows of amplitude-modulated oscillations with known MI.
+
+    Each window pair ``(X[i], Y[i])`` shares a scalar latent amplitude drawn
+    from correlated Gaussians.  The observable is:
+
+        X[i, ch, t] = z_x[i] * sin(2π f t / fs) + ε_t
+
+    The MI between X and Y is analytically computable from the SNR:
+
+        ρ_obs = ρ_latent * v² / (v² + σ²/1)
+        I_obs = −½ log₂(1 − ρ_obs²) per channel
+
+    where v is the carrier template norm and σ = amplitude_std / snr.
+
+    Parameters
+    ----------
+    n_windows : int
+        Number of independent windows.
+    n_channels : int, optional
+        Number of channels. Defaults to 1.
+    window_size : int, optional
+        Number of timepoints per window. Defaults to 256.
+    f_carrier_hz : float, optional
+        Carrier frequency in Hz. Defaults to 10.0.
+    sample_rate : float, optional
+        Sampling rate in Hz. Defaults to 512.0.
+    latent_mi : float, optional
+        Desired MI in bits between the scalar latents. Defaults to 1.0.
+    snr : float, optional
+        Signal amplitude relative to noise std. Defaults to 3.0.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, float]
+        ``(X, Y, true_mi)`` where X and Y have shape
+        ``(n_windows, n_channels, window_size)`` and ``true_mi`` is in bits.
+    """
+    rho = mi_to_rho(1, latent_mi)
+    cov = np.array([[1.0, rho], [rho, 1.0]])
+    latents = np.random.multivariate_normal([0.0, 0.0], cov, size=(n_windows, n_channels))
+    z_x = latents[:, :, 0]  # (n_windows, n_channels) — independent per channel
+    z_y = latents[:, :, 1]  # (n_windows, n_channels)
+
+    t = np.arange(window_size) / sample_rate
+    carrier = np.sin(2.0 * np.pi * f_carrier_hz * t)  # (window_size,)
+    v_sq = float(np.dot(carrier, carrier))             # ||v||²
+
+    noise_std = 1.0 / snr
+    X = z_x[:, :, None] * carrier[None, None, :]      # (n_windows, n_channels, window_size)
+    Y = z_y[:, :, None] * carrier[None, None, :]
+    X = X + noise_std * np.random.randn(*X.shape)
+    Y = Y + noise_std * np.random.randn(*Y.shape)
+
+    # Analytical observable MI per channel
+    sigma_sq = noise_std ** 2
+    rho_obs = rho * v_sq / (v_sq + sigma_sq)
+    rho_obs = float(np.clip(rho_obs, -1 + 1e-8, 1 - 1e-8))
+    mi_per_channel = -0.5 * np.log2(1.0 - rho_obs ** 2)
+    true_mi = float(n_channels * mi_per_channel)
+
+    return X.astype(np.float32), Y.astype(np.float32), true_mi
+
+
+def generate_windowed_multichannel(
+    n_windows: int,
+    n_channels: int = 8,
+    window_size: int = 200,
+    f_min_hz: float = 4.0,
+    f_max_hz: float = 40.0,
+    sample_rate: float = 500.0,
+    latent_mi: float = 0.5,
+    snr: float = 3.0,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Generate IID multi-channel windows where each channel has a different carrier.
+
+    Channel ``c`` uses carrier frequency
+    ``f_c = f_min + c * (f_max - f_min) / (n_channels - 1)``.
+    The per-channel latents are independent: ``(z_{x,c}, z_{y,c})`` are drawn
+    independently for each channel from correlated Gaussians with MI ``latent_mi``.
+    Total observable MI = sum of per-channel observable MIs.
+
+    Each channel's MI lives at a different frequency, so this is useful for
+    validating estimator behaviour on multi-channel data where naively mixing
+    channels would create cross-channel interference.
+
+    Parameters
+    ----------
+    n_windows : int
+        Number of independent windows.
+    n_channels : int, optional
+        Number of channels. Defaults to 8.
+    window_size : int, optional
+        Number of timepoints per window. Defaults to 200.
+    f_min_hz : float, optional
+        Carrier frequency for channel 0 in Hz. Defaults to 4.0.
+    f_max_hz : float, optional
+        Carrier frequency for the last channel in Hz. Defaults to 40.0.
+    sample_rate : float, optional
+        Sampling rate in Hz. Defaults to 500.0.
+    latent_mi : float, optional
+        Desired MI per channel in bits. Defaults to 0.5.
+    snr : float, optional
+        Signal amplitude relative to noise std. Defaults to 3.0.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, float]
+        ``(X, Y, true_mi)`` where X and Y have shape
+        ``(n_windows, n_channels, window_size)`` and ``true_mi`` is total bits.
+    """
+    rho = mi_to_rho(1, latent_mi)
+    t = np.arange(window_size) / sample_rate
+    noise_std = 1.0 / snr
+
+    n_ch = max(n_channels, 2)
+    freqs = [f_min_hz + c * (f_max_hz - f_min_hz) / (n_ch - 1) for c in range(n_channels)]
+
+    X = np.zeros((n_windows, n_channels, window_size), dtype=np.float32)
+    Y = np.zeros((n_windows, n_channels, window_size), dtype=np.float32)
+    total_mi = 0.0
+
+    for c, fc in enumerate(freqs):
+        carrier = np.sin(2.0 * np.pi * fc * t)
+        v_sq = float(np.dot(carrier, carrier))
+        cov = np.array([[1.0, rho], [rho, 1.0]])
+        latents = np.random.multivariate_normal([0.0, 0.0], cov, size=n_windows)
+        z_x, z_y = latents[:, 0], latents[:, 1]
+        X[:, c, :] = (z_x[:, None] * carrier[None, :] +
+                      noise_std * np.random.randn(n_windows, window_size))
+        Y[:, c, :] = (z_y[:, None] * carrier[None, :] +
+                      noise_std * np.random.randn(n_windows, window_size))
+        rho_obs = float(np.clip(rho * v_sq / (v_sq + noise_std ** 2), -1 + 1e-8, 1 - 1e-8))
+        total_mi += -0.5 * np.log2(1.0 - rho_obs ** 2)
+
+    return X, Y, float(total_mi)
+
+
+def generate_nonlinear_from_latent(
+    n_samples: int, latent_dim: int, observed_dim: int, mi: float,
+    hidden_dim: int = 64, use_torch: bool = True, return_latents: bool = False
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generates two nonlinearly related datasets from a shared latent variable.
+
+    A low-dimensional latent variable `z` is first generated. Two observed
+    variables, `x` and `y`, are then created as nonlinear projections of `z`
+    with added noise.
+
+    Parameters
+    ----------
+    n_samples : int
+        The number of samples to generate.
+    latent_dim : int
+        The dimensionality of the shared latent variable `z`.
+    observed_dim : int
+        The dimensionality of the observed variables `x` and `y`.
+    mi : float
+        The ground truth MI between the latent variables Z_x and Z_y in bits.
+    hidden_dim : int, optional
+        The hidden dimension of the transforming MLPs. Defaults to 64.
+    use_torch : bool, optional
+        If True, returns torch.Tensors. Defaults to True.
+    return_latents : bool, optional
+        If True, also return the shared latents `(z_x, z_y)` used to
+        construct `x` and `y`. Defaults to False.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray]
+        A tuple containing:
+
+        - **x** (*np.ndarray* or *torch.Tensor*): The first dataset, of shape `(n_samples, observed_dim)`.
+        - **y** (*np.ndarray* or *torch.Tensor*): The second dataset, of shape `(n_samples, observed_dim)`.
+        - **z_x**, **z_y** (*np.ndarray* or *torch.Tensor*, optional): The shared latents,
+          of shape `(n_samples, latent_dim)`, only if `return_latents=True`.
+    """
+    z_x, z_y = generate_correlated_gaussians(n_samples, latent_dim, mi, use_torch=True)
+
+    mlp_x = torch.nn.Sequential(
+        torch.nn.Linear(latent_dim, hidden_dim), torch.nn.Softplus(),
+        torch.nn.Linear(hidden_dim, observed_dim)
+    )
+    mlp_y = torch.nn.Sequential(
+        torch.nn.Linear(latent_dim, hidden_dim), torch.nn.Softplus(),
+        torch.nn.Linear(hidden_dim, observed_dim)
+    )
+
+    with torch.no_grad():
+        x = mlp_x(z_x)
+        y = mlp_y(z_y)
+
+    if not use_torch:
+        x, y = x.numpy(), y.numpy()
+        z_x, z_y = z_x.numpy(), z_y.numpy()
+    if return_latents:
+        return x, y, z_x, z_y
+    return x, y

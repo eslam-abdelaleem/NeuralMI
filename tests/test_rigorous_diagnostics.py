@@ -435,7 +435,7 @@ class TestRigorousShiftWindowsEndToEnd:
         assert np.all(np.isfinite(raw_df['train_mi'].values))
 
 
-def _spike_window_content(tensor: torch.Tensor, no_spike_value: float = -1.0):
+def _spike_window_content(tensor: torch.Tensor, no_spike_value: float):
     """[n_windows, n_channels, max_spikes] -> per-window/per-channel sorted
     lists of the *real* (non-padding) within-window spike offsets.
 
@@ -445,6 +445,10 @@ def _spike_window_content(tensor: torch.Tensor, no_spike_value: float = -1.0):
     smaller for a smaller chunk) -- comparing padded tensors directly would
     spuriously fail on shape alone. This strips the ``no_spike_value``
     padding first so only the actual spike content is compared.
+
+    ``no_spike_value`` is required rather than defaulted: it must come from the
+    dataset under test, since what this compares is window content, not which
+    value marks an empty slot.
     """
     arr = tensor.numpy()
     return [
@@ -502,8 +506,10 @@ class TestChunkToRawTimeRangeSpike:
                 f"chunk [{lo},{hi}) should produce exactly {hi - lo} windows, "
                 f"got {len(chunk_paired)}"
             )
-            chunk_content = _spike_window_content(chunk_paired.x_data.detach())
-            global_content = _spike_window_content(global_x[lo:hi])
+            chunk_content = _spike_window_content(chunk_paired.x_data.detach(),
+                                                  chunk_x_ds.no_spike_value)
+            global_content = _spike_window_content(global_x[lo:hi],
+                                                   global_x_ds.no_spike_value)
             for w, (c_win, g_win) in enumerate(zip(chunk_content, global_content)):
                 for c, (c_ch, g_ch) in enumerate(zip(c_win, g_win)):
                     assert c_ch == pytest.approx(g_ch, abs=1e-4), (

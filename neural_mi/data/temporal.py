@@ -541,7 +541,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
     
     def __init__(self, spike_times,
                  window_manager=None,
-                 no_spike_value=-1.0, device=None,
+                 no_spike_value=0.0, device=None,
                  exclude_bursty_neurons: bool = False,
                  burst_threshold_multiplier: float = 5.0,
                  data_device='cpu',
@@ -556,7 +556,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
         window_manager : WindowManager, optional
             External window manager for temporal alignment.
         no_spike_value : float, optional
-            Placeholder value for empty spike-time slots.  Defaults to -1.0.
+            Placeholder value for empty spike-time slots.  Defaults to 0.0.
         device : str, optional
             Compute device (kept for reference; not used for data storage).
         exclude_bursty_neurons : bool, optional

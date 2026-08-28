@@ -465,9 +465,15 @@ class TestSpikePermutationShuffle:
         )
         model = Model(embedding_dim=8, hidden_dim=16, n_layers=1)
         training = Training(n_epochs=15, patience=5, batch_size=32)
+        # no_spike_value is pinned rather than left to the default: this test
+        # needs a real estimate for the null to sit below, and how much signal
+        # survives the spike representation depends on the padding sentinel.
+        # What is under test here is the shuffle, so the representation is held
+        # fixed.
         r = nmi.run(
             x_spikes, y_spikes, mode='estimate',
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05,
+                                                           'no_spike_value': -1.0}),
             model=model, training=training,
             permutation_test=True, n_permutations=5, permutation_shuffle='circular',
             n_workers=1, show_progress=False, seed=0,

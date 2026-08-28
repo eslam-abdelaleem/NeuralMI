@@ -310,9 +310,17 @@ class Trainer:
             - ``False`` (default) — no per-epoch train evaluation.
             - ``True`` — evaluate on the same locked-in training evaluation subset
               used for the final ``train_mi`` (size capped by ``max_eval_samples``).
+            - ``'full'`` or ``1.0`` — evaluate on the entire training set, not
+              capped by ``max_eval_samples``. Use this when the train curve needs
+              to be read against the reported estimate: a smaller evaluation
+              subset carries a lower InfoNCE ceiling (``log2(n_eval)``) and so
+              sits below the estimate for reasons that have nothing to do with
+              training.
             - ``float`` in ``(0, 1)`` — use that fraction of training samples.
             - ``int >= 1`` — use exactly that many training samples (capped at
               the available training set size).
+
+            An unrecognised value raises ``ValueError``.
         peak_fraction : float, optional
             Controls how the best epoch is selected for reporting train MI.
 
@@ -340,7 +348,10 @@ class Trainer:
             - ``True`` — track the first 512 samples.
             - ``int >= 1`` — track exactly that many samples (first N in dataset).
             - ``float`` in ``(0, 1)`` — track that fraction of the total dataset.
-            - ``'full'`` — track all samples (emits a ``UserWarning`` about cost).
+            - ``'full'`` or ``1.0`` — track all samples (emits a ``UserWarning``
+              about cost).
+
+            An unrecognised value raises ``ValueError``.
 
             The tracked subset is always the **first** N samples so that
             user-supplied labels align with the original data ordering.
@@ -458,15 +469,28 @@ class Trainer:
         # Determine the subset for per-epoch train MI tracking (eval_train parameter)
         _do_epoch_train_eval = bool(eval_train is not False and eval_train is not None and eval_train != 0)
         if _do_epoch_train_eval and len(train_idx) > 0:
+            # `eval_train is True` must be tested before the 1.0 branch: in Python
+            # True == 1.0, so a value check would swallow it.
             if eval_train is True:
                 epoch_train_n = min(len(train_idx), max_eval_samples)
+            elif eval_train == 'full' or (isinstance(eval_train, float) and eval_train == 1.0):
+                # The whole training set, deliberately not capped by max_eval_samples.
+                # This is what makes the per-epoch train curve comparable to the
+                # reported estimate rather than sitting below it on a smaller
+                # evaluation subset (and so under a lower InfoNCE ceiling).
+                epoch_train_n = len(train_idx)
             elif isinstance(eval_train, float) and 0.0 < eval_train < 1.0:
                 epoch_train_n = max(2, min(int(len(train_idx) * eval_train), len(train_idx)))
             elif isinstance(eval_train, int) and eval_train >= 1:
                 epoch_train_n = min(eval_train, len(train_idx))
             else:
-                _do_epoch_train_eval = False
-                epoch_train_n = 0
+                raise ValueError(
+                    f"eval_train={eval_train!r} is not a recognised value. Use False to "
+                    f"disable, True for the locked-in evaluation subset (capped by "
+                    f"max_eval_samples={max_eval_samples}), 'full' or 1.0 for the entire "
+                    f"training set, a float in (0, 1) for a fraction of it, or an int >= 1 "
+                    f"for that many samples."
+                )
             if _do_epoch_train_eval:
                 epoch_train_eval_idx = self._select_train_eval_indices(train_idx, epoch_train_n, is_temporal)
                 # Wrapped in a SubsetView (like train_view/test_view/train_eval_view)
@@ -487,10 +511,15 @@ class Trainer:
             track_embeddings is False or track_embeddings is None or track_embeddings == 0
         )
         if _do_embed_tracking:
-            if track_embeddings == 'full':
+            # `is True` must precede the numeric branches: True == 1.0 in Python,
+            # and isinstance(True, int) is also True.
+            if track_embeddings is True:
+                embed_track_n = min(_DEFAULT_EMBED_N, _N_total)
+            elif track_embeddings == 'full' or (isinstance(track_embeddings, float)
+                                                and track_embeddings == 1.0):
                 warnings.warn(
-                    f"track_embeddings='full': storing embeddings for all {_N_total} samples "
-                    f"at every epoch can be very memory-intensive "
+                    f"track_embeddings={track_embeddings!r}: storing embeddings for all "
+                    f"{_N_total} samples at every epoch can be very memory-intensive "
                     f"({_N_total} × embed_dim × n_epochs × 4 bytes). "
                     f"Pass an integer (e.g. track_embeddings=512) to limit tracking to the "
                     f"first N samples.",
@@ -498,15 +527,17 @@ class Trainer:
                     stacklevel=2,
                 )
                 embed_track_n = _N_total
-            elif track_embeddings is True:
-                embed_track_n = min(_DEFAULT_EMBED_N, _N_total)
             elif isinstance(track_embeddings, int) and track_embeddings >= 1:
                 embed_track_n = min(track_embeddings, _N_total)
             elif isinstance(track_embeddings, float) and 0.0 < track_embeddings < 1.0:
                 embed_track_n = max(2, min(int(_N_total * track_embeddings), _N_total))
             else:
-                _do_embed_tracking = False
-                embed_track_n = 0
+                raise ValueError(
+                    f"track_embeddings={track_embeddings!r} is not a recognised value. Use "
+                    f"False to disable, True for the first {_DEFAULT_EMBED_N} samples, "
+                    f"'full' or 1.0 for every sample, a float in (0, 1) for a fraction of "
+                    f"them, or an int >= 1 for that many."
+                )
             if _do_embed_tracking:
                 # Always the FIRST N samples so user labels align with original data order
                 embed_track_idx = np.arange(embed_track_n)

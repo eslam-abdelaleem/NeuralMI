@@ -11,6 +11,7 @@ from neural_mi.generators import (
     generate_correlated_categorical_series
 )
 from neural_mi.generators import synthetic
+from neural_mi.generators import oracle
 
 class TestDatasetGenerators:
     def test_correlated_gaussians_shape_and_type(self):
@@ -49,12 +50,12 @@ class TestGeneratorsNumpyAndExtended:
     """Tests for numpy output variants and additional synthetic generators."""
 
     def test_nonlinear_from_latent_numpy(self):
-        x, y = synthetic.generate_nonlinear_from_latent(100, 4, 50, 2.0, use_torch=False)
+        x, y = oracle.generate_nonlinear_from_latent(100, 4, 50, 2.0, use_torch=False)
         assert isinstance(x, np.ndarray) and isinstance(y, np.ndarray)
         assert x.shape == (100, 50) and y.shape == (100, 50)
 
     def test_correlated_gaussians_numpy(self):
-        x, y = synthetic.generate_correlated_gaussians(n_samples=100, dim=5, mi=2.0, use_torch=False)
+        x, y = oracle.generate_correlated_gaussians(n_samples=100, dim=5, mi=2.0, use_torch=False)
         assert isinstance(x, np.ndarray) and isinstance(y, np.ndarray)
         assert x.shape == (100, 5) and y.shape == (100, 5)
 
@@ -97,11 +98,10 @@ class TestGeneratorsNumpyAndExtended:
 
 
 class TestWindowedGenerators:
-    """Windowed generators with analytically known MI, and the window-size
-    sweep dependency generator. Previously had zero test coverage."""
+    """Windowed generators that report their own analytically known MI."""
 
     def test_windowed_oscillatory_shape_and_dtype(self):
-        X, Y, true_mi = synthetic.generate_windowed_oscillatory(
+        X, Y, true_mi = oracle.generate_windowed_oscillatory(
             n_windows=20, n_channels=3, window_size=64, latent_mi=1.0,
         )
         assert X.shape == (20, 3, 64) and Y.shape == (20, 3, 64)
@@ -112,16 +112,16 @@ class TestWindowedGenerators:
         """true_mi is a deterministic function of the parameters (it does not
         depend on the random draws), so doubling n_channels must exactly
         double it."""
-        _, _, mi_1ch = synthetic.generate_windowed_oscillatory(
+        _, _, mi_1ch = oracle.generate_windowed_oscillatory(
             n_windows=5, n_channels=1, latent_mi=1.0, snr=2.0,
         )
-        _, _, mi_2ch = synthetic.generate_windowed_oscillatory(
+        _, _, mi_2ch = oracle.generate_windowed_oscillatory(
             n_windows=5, n_channels=2, latent_mi=1.0, snr=2.0,
         )
         assert mi_2ch == pytest.approx(2 * mi_1ch)
 
     def test_windowed_multichannel_shape_and_dtype(self):
-        X, Y, true_mi = synthetic.generate_windowed_multichannel(
+        X, Y, true_mi = oracle.generate_windowed_multichannel(
             n_windows=15, n_channels=4, window_size=50, latent_mi=0.5,
         )
         assert X.shape == (15, 4, 50) and Y.shape == (15, 4, 50)
@@ -133,22 +133,10 @@ class TestWindowedGenerators:
         generate_windowed_oscillatory, so with matching window_size/sample_rate/
         snr and a single channel, the two must agree exactly."""
         common = dict(window_size=200, sample_rate=500.0, latent_mi=0.5, snr=3.0)
-        _, _, multichannel_mi = synthetic.generate_windowed_multichannel(
+        _, _, multichannel_mi = oracle.generate_windowed_multichannel(
             n_windows=10, n_channels=1, f_min_hz=4.0, f_max_hz=4.0, **common,
         )
-        _, _, oscillatory_mi = synthetic.generate_windowed_oscillatory(
+        _, _, oscillatory_mi = oracle.generate_windowed_oscillatory(
             n_windows=10, n_channels=1, f_carrier_hz=4.0, **common,
         )
         assert multichannel_mi == pytest.approx(oscillatory_mi, rel=1e-5)
-
-    def test_windowed_dependency_data_shape(self):
-        x, y = synthetic.generate_windowed_dependency_data(n_timepoints=500, n_channels=3)
-        assert x.shape == (500, 3) and y.shape == (500, 3)
-
-    def test_windowed_dependency_data_rejects_invalid_history_window(self):
-        with pytest.raises(ValueError, match="history_window"):
-            synthetic.generate_windowed_dependency_data(n_timepoints=100, history_window=0)
-
-    def test_windowed_dependency_data_rejects_invalid_noise_level(self):
-        with pytest.raises(ValueError, match="noise_level"):
-            synthetic.generate_windowed_dependency_data(n_timepoints=100, noise_level=1.5)
