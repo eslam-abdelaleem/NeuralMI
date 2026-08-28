@@ -134,8 +134,8 @@ Five notebooks are removed, their material redistributed:
 
 | removed | where it went |
 | --- | --- |
-| `04_Sweeps.ipynb` | `07_Making_It_Rigorous` |
-| `05_Rigorous_Estimation.ipynb` | `07_Making_It_Rigorous` |
+| `04_Sweeps.ipynb` | `08_Making_It_Rigorous` |
+| `05_Rigorous_Estimation.ipynb` | `08_Making_It_Rigorous` |
 | `06_Temporal_Questions.ipynb` | `05_Storage_and_Rate`, `06_Direction_and_Delay` |
 | `07_Population_Questions.ipynb` | `09_What_A_Population_Encodes` |
 | `08_Models_Estimators_and_Validation.ipynb` | `11_Models_and_Machinery` |

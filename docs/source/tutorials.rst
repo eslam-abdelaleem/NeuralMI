@@ -64,18 +64,18 @@ the estimator.
 Part 3: Defending a number
 --------------------------
 
-- **07_Making_It_Rigorous**: Seed spread, ``mode='sweep'``, and
-  ``mode='rigorous'`` with its diagnostics read honestly, including what a flat
-  bias slope does and does not mean.
-- **08_Three_Variables**: Conditional MI and interaction information against an
+- **07_Three_Variables**: Conditional MI and interaction information against an
   oracle with exact values, redundancy versus synergy, and the amplification
   factor that says how far a difference of estimates can be trusted.
+- **08_Making_It_Rigorous**: Seed spread, ``mode='sweep'``, and
+  ``mode='rigorous'`` with its diagnostics read honestly, including what a flat
+  bias slope does and does not mean.
 
 .. toctree::
    :maxdepth: 1
 
-   tutorials/07_Making_It_Rigorous
-   tutorials/08_Three_Variables
+   tutorials/07_Three_Variables
+   tutorials/08_Making_It_Rigorous
 
 Part 4: Real recordings, where there is no ground truth
 -------------------------------------------------------

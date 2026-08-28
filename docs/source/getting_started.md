@@ -82,8 +82,8 @@ To get the most out of `NeuralMI`, we recommend following the tutorial series in
 
 ### Part 3: Defending a number
 
-* **Tutorial 07:** Making It Rigorous - Seed spread, `mode='sweep'`, and `mode='rigorous'` with its diagnostics read honestly.
-* **Tutorial 08:** Three Variables - Conditional MI and interaction information against an oracle, and the amplification factor governing differences of estimates.
+* **Tutorial 07:** Three Variables - Conditional MI and interaction information against an oracle, and the amplification factor governing differences of estimates.
+* **Tutorial 08:** Making It Rigorous - Seed spread, `mode='sweep'`, and `mode='rigorous'` with its diagnostics read honestly.
 
 ### Part 4: Real recordings, where there is no ground truth
 
