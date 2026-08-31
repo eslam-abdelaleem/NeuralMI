@@ -370,29 +370,24 @@ result = nmi.run(x, mode='dimensionality', dimensionality=Dimensionality(n_split
 
 ---
 
-### What `mi_estimate` is, and when to prefer `details['test_mi']`
+### What `mi_estimate` is
 
 `result.mi_estimate` is the **train-side** MI at the epoch that maximised
-smoothed held-out test MI. The epoch is chosen on held-out data, so it is not a
-naive best-case, but the reported value is still an in-sample evaluation and
-therefore runs optimistic in the ordinary supervised-learning sense.
+smoothed held-out test MI. The held-out split's job is to locate that epoch; the
+training data is then evaluated at it to produce the reported number.
 
-Measured against a known truth: on active information storage over eight
-independent seeds, `mi_estimate` averaged 1.110 against an exact 1.050 and
-exceeded it in 7 of 8 runs, while `details['test_mi']` averaged 0.984 and fell
-below it in 6 of 8. The held-out value carries the lower-bound behaviour; the
-reported one does not.
+`result.details['test_mi']` is the held-out MI at the same epoch, evaluated on
+the test split rather than the training one. Both describe the same selected
+model.
 
-The gap widens as data shrinks, since a smaller training set is easier for a
-fixed-capacity critic to fit. It does *not* depend on window overlap or on the
-correlation timescale: removing all overlap between consecutive windows makes
-the gap larger rather than smaller, and varying the correlation time over more
-than an order of magnitude leaves it flat.
+The difference between them widens as data shrinks, since a smaller training set
+is easier for a fixed-capacity critic to fit. It does *not* depend on window
+overlap or on the correlation timescale: removing all overlap between
+consecutive windows makes the gap larger rather than smaller, and varying the
+correlation time over more than an order of magnitude leaves it flat.
 
-Use `mi_estimate` for the default, less noisy figure. Reach for
-`details['test_mi']` when you want the conservative number, or when a claim
-turns on the exact magnitude. `Rigorous` mode (§6.4) addresses the bias
-directly rather than by choosing between these two.
+`Rigorous` mode (§6.4) addresses estimator bias directly, by extrapolating over
+subsample sizes rather than by choosing between these two numbers.
 
 ## 6. Analysis Modes
 
@@ -621,6 +616,10 @@ peak_lag = result.dataframe.loc[result.dataframe['train_mi'].idxmax(), 'lag']
 **Corruption methods:**
 - `'rounding'` — rounds spike times to nearest τ (default; clean and interpretable)
 - `'noise'` — adds uniform noise drawn from U(−τ/2, τ/2)
+
+Either method corrupts only samples that already hold a value; an entry that is
+exactly zero is left untouched. Corruption degrades what was measured and never
+introduces activity where the recording had none.
 
 **Key parameters:**
 - `corrupt_target='x'` — which signal to corrupt: `'x'`, `'y'`, or `'both'`

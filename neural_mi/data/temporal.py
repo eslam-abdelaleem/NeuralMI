@@ -514,6 +514,18 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         self.time_offset = offset
 
     def apply_noise(self, amplitude):
+        """Add Gaussian noise of the given amplitude to the non-zero samples.
+
+        Corruption is confined to entries that already hold a value. A sample
+        that is exactly zero is left alone, so corrupting a signal never
+        introduces activity where the recording had none: the point of
+        ``mode='precision'`` and noise corruption is to degrade what was
+        measured, not to manufacture a signal out of an empty sample.
+
+        Exact zeros in genuinely continuous data are therefore skipped as well.
+        That is a measure-zero case for real-valued recordings, and it is the
+        price of not inventing data.
+        """
         if amplitude == 0.0:
             self.reset()
             return
@@ -527,6 +539,12 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
 
     def apply_precision(self, precision_level):
+        """Round the non-zero samples to a grid of the given spacing.
+
+        Confined to entries that already hold a value, for the reason given on
+        :meth:`apply_noise`: corruption degrades what was measured and never
+        creates a sample where there was none.
+        """
         if precision_level == 0.0:
             self.reset()
             return
