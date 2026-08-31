@@ -537,12 +537,10 @@ class TestInteractionShiftTimeSpike:
     def test_engages_silently_for_matching_spike_pair(self):
         import warnings
         np.random.seed(0)
-        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=5, duration=30.0, firing_rate=10.0, delay=0.01, jitter=0.002
-        )
-        w_spikes, _ = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=4, duration=30.0, firing_rate=8.0, delay=0.01, jitter=0.002
-        )
+        x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=600, window_size=0.05, seed=0)
+        w_spikes, _, _ = nmi.generators.generate_spike_pair(
+            n_neurons=4, n_windows=600, window_size=0.05, seed=0)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             r = nmi.run(
@@ -564,9 +562,8 @@ class TestInteractionShiftTimeSpike:
         I(X;Y) -- with shift_time on."""
         np.random.seed(0)
         torch.manual_seed(0)
-        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=5, duration=40.0, firing_rate=10.0, delay=0.01, jitter=0.002
-        )
+        x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=800, window_size=0.05, seed=0)
         w_spikes = [s.copy() for s in x_spikes]  # exact copy of X
         results = nmi.run(
             x_spikes, y_spikes, mode='interaction',
@@ -594,12 +591,10 @@ class TestInteractionShiftTimeSpike:
         new _is_spike_deferred chunk-to-raw-time-range translation."""
         np.random.seed(0)
         torch.manual_seed(0)
-        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=5, duration=30.0, firing_rate=10.0, delay=0.01, jitter=0.002
-        )
-        w_spikes, _ = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=4, duration=30.0, firing_rate=8.0, delay=0.01, jitter=0.002
-        )
+        x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=600, window_size=0.05, seed=0)
+        w_spikes, _, _ = nmi.generators.generate_spike_pair(
+            n_neurons=4, n_windows=600, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='interaction',
             interaction=Interaction(w_data=w_spikes, w_processor_type='spike',
@@ -622,12 +617,10 @@ class TestInteractionShiftTimeSpike:
         merges X and W before windowing (matching family), regardless of
         shift_time."""
         np.random.seed(0)
-        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=5, duration=40.0, firing_rate=10.0, delay=0.01, jitter=0.002
-        )
-        w_spikes, _ = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=4, duration=40.0, firing_rate=8.0, delay=0.01, jitter=0.002
-        )
+        x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=800, window_size=0.05, seed=0)
+        w_spikes, _, _ = nmi.generators.generate_spike_pair(
+            n_neurons=4, n_windows=800, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='interaction',
             interaction=Interaction(w_data=w_spikes, w_processor_type='spike',
@@ -652,12 +645,10 @@ class TestInteractionShiftTimeSpike:
         Confirmed via direct reproduction before the fix; this asserts it no
         longer crashes and returns a finite estimate."""
         np.random.seed(0)
-        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=5, duration=20.0, firing_rate=10.0, delay=0.01, jitter=0.002
-        )
-        w_spikes, _ = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=4, duration=20.0, firing_rate=8.0, delay=0.01, jitter=0.002
-        )
+        x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=400, window_size=0.05, seed=0)
+        w_spikes, _, _ = nmi.generators.generate_spike_pair(
+            n_neurons=4, n_windows=400, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='interaction',
             interaction=Interaction(w_data=w_spikes, w_processor_type='spike',

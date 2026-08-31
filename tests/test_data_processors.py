@@ -724,7 +724,8 @@ def test_continuous_and_spike_alignment():
     """Aligned windows from a continuous stream and a spike stream have equal sample counts."""
     time_cont = np.arange(1000) / 100.0
     x_cont = np.random.randn(1000, 2)
-    y_spike, _ = nmi.generators.generate_correlated_spike_trains(duration=10.0)
+    y_spike, _, _ = nmi.generators.generate_spike_pair(
+            n_neurons=10, n_windows=100, window_size=0.1, seed=0)
 
     dataset = create_dataset(
         x_data=x_cont, y_data=y_spike,

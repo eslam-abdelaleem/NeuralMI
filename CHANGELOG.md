@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed: every generator now reports a checkable answer, and `synthetic` is retired
+
+`neural_mi/generators/` no longer ships anything whose truth is unknown. An
+estimator cannot be validated against data with no answer, so a generator that
+provides none is a liability rather than a convenience.
+
+**Added**
+
+- `generate_spike_pair` gives two spike populations sharing a discrete latent, with
+  the MI exact from that latent's pmf. Two codings: `'count'` puts the
+  information in the spike rate, `'timing'` puts it in where a burst falls
+  while the spike count is drawn independently and carries nothing. The two
+  make different demands of the spike representation, which is what makes the
+  pair useful. `lag_windows` delays Y by whole windows, giving a known lag
+  without changing the MI.
+- `generate_categorical_pair` gives discrete states with the MI exact from the
+  channel's pmf.
+- `generate_xor_pair` is the synergy case. `I(x1; Y)` and `I(x2; Y)` are exactly
+  zero while the pair determines `Y`. The reported MI is exact to quadrature
+  and approaches 1 bit as the noise vanishes.
+- `generate_lagged_pair` places dependence at a known lag, reporting the MI at that
+  peak, so `mode='lag'` can be checked on both the lag and the value.
+- `symmetric_joint_pmf` and `pmf_mi_bits`, the pmf helpers the discrete
+  generators are built on, exported for constructing others.
+
+**Removed**
+
+`generate_correlated_spike_trains`, `generate_xor_data`,
+`generate_correlated_categorical_series`, `generate_temporally_convolved_data`,
+`generate_event_related_data`, `generate_linear_data`,
+`generate_nonlinear_data`, `generate_history_data` and `generate_full_data`,
+along with the `neural_mi.generators.synthetic` module itself. None computed
+the MI of what it produced.
+
+Replacements: spike trains become `generate_spike_pair`, XOR becomes
+`generate_xor_pair`, categorical becomes `generate_categorical_pair`, and the
+lagged and event-related generators become `generate_lagged_pair`. The
+nonlinear and history generators have no direct replacement; where a known MI
+through a nonlinearity is wanted, `generate_nonlinear_from_latent` provides one,
+and `SharedLatentGaussian` covers history-dependent structure with exact values
+for every temporal quantity.
+
+The three discrete generators return a third value, the exact MI, so
+`x, y = ...` becomes `x, y, exact_mi = ...`.
+
+**Note on windowed use.** `generate_spike_pair` reports the MI between windows
+aligned with its own, so analysis must use the same `window_size` and must not
+re-tile (`shift_time=False, shift_windows=False`). With shifting left on, a
+window spans two independent latent draws and can carry more than the reported
+value.
+
+
 ### Added: `Model(bias=...)`, defaulting off for spike data
 
 Embedding layers can now be built without bias terms. `bias=None`, the default,

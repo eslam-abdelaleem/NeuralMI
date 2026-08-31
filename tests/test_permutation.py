@@ -360,12 +360,10 @@ class TestConditionalInteractionRawDeferredPermutation:
     def test_conditional_spike_conditioning_not_all_nan(self):
         from neural_mi import Conditional
         np.random.seed(0)
-        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=5, duration=40.0, firing_rate=10.0, delay=0.01, jitter=0.002
-        )
-        w_spikes, _ = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=4, duration=40.0, firing_rate=8.0, delay=0.01, jitter=0.002
-        )
+        x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=800, window_size=0.05, seed=0)
+        w_spikes, _, _ = nmi.generators.generate_spike_pair(
+            n_neurons=4, n_windows=800, window_size=0.05, seed=0)
         res = nmi.run(
             x_spikes, y_spikes, mode='conditional',
             conditional=Conditional(w_data=w_spikes, w_processor_type='spike',
@@ -460,9 +458,8 @@ class TestSpikePermutationShuffle:
         identical to the original and so produced null values hugging the
         real estimate instead of reflecting a broken dependency."""
         np.random.seed(0)
-        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=5, duration=40.0, firing_rate=10.0, delay=0.01, jitter=0.002
-        )
+        x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=800, window_size=0.05, seed=0)
         model = Model(embedding_dim=8, hidden_dim=16, n_layers=1)
         training = Training(n_epochs=15, patience=5, batch_size=32)
         # no_spike_value is pinned rather than left to the default: this test
@@ -486,9 +483,8 @@ class TestSpikePermutationShuffle:
 
     def test_block_shuffle_end_to_end(self):
         np.random.seed(0)
-        x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-            n_neurons=5, duration=40.0, firing_rate=10.0, delay=0.01, jitter=0.002
-        )
+        x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=800, window_size=0.05, seed=0)
         r = nmi.run(
             x_spikes, y_spikes, mode='estimate',
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),

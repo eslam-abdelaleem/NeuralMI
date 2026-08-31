@@ -275,9 +275,8 @@ def test_run_sweep_mode_processor_param(raw_gaussian_data):
 
 def test_rigorous_mode_with_spike_data():
     """Full end-to-end pipeline: rigorous analysis on synthetic spike data."""
-    x_spikes, y_spikes = nmi.generators.generate_correlated_spike_trains(
-        n_neurons=5, duration=10.0, firing_rate=10.0, delay=0.01, jitter=0.002
-    )
+    x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
+            n_neurons=5, n_windows=200, window_size=0.05, seed=0)
     results = nmi.run(
         x_spikes, y_spikes, mode='rigorous',
         processing=Processing(x='spike', x_params={'window_size': 0.05}),

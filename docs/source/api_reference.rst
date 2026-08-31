@@ -49,10 +49,16 @@ All calls to ``run()`` return a ``Results`` object. This object acts as a contai
 Data Generation (`generators`)
 ------------------------------
 
-This module provides functions to generate synthetic datasets with known properties. These are useful for testing estimators, validating models, and following the tutorials.
+Synthetic data for testing estimators and validating models. Every generator
+reports the quantity an estimate should be checked against, whether that is a
+mutual information or a lag.
 
 .. automodule:: neural_mi.generators
-   :members: generate_correlated_gaussians, generate_nonlinear_from_latent, generate_linear_data, generate_nonlinear_data, generate_temporally_convolved_data, generate_xor_data, generate_event_related_data, generate_linear_data, generate_nonlinear_data, generate_history_data, generate_full_data
+   :members: SharedLatentGaussian, generate_shared_latent_gaussian,
+             generate_correlated_gaussians, generate_nonlinear_from_latent,
+             generate_windowed_oscillatory, generate_windowed_multichannel,
+             generate_spike_pair, generate_categorical_pair, generate_xor_pair,
+             generate_lagged_pair, symmetric_joint_pmf, pmf_mi_bits, mi_to_rho
    :undoc-members:
 
 Visualization (`visualize`)

@@ -609,3 +609,382 @@ def generate_nonlinear_from_latent(
     if return_latents:
         return x, y, z_x, z_y
     return x, y
+
+
+# ---------------------------------------------------------------------------
+# Discrete-latent generators
+#
+# A shared discrete latent is drawn from a known joint pmf, so the pair's mutual
+# information is that pmf's, computed exactly. The observable is then built so
+# that the latent is recoverable from it and nothing else is shared, which makes
+# the pmf value the mutual information of the observables too.
+# ---------------------------------------------------------------------------
+
+
+def symmetric_joint_pmf(n_levels: int, rho: float) -> np.ndarray:
+    """Joint pmf over ``n_levels`` x ``n_levels`` with ``rho`` on the diagonal.
+
+    Both marginals are uniform, so ``rho`` alone sets how much the two agree:
+    ``rho=1/n_levels`` makes them independent (zero MI) and ``rho -> 1`` makes
+    them identical (``log2(n_levels)`` bits).
+    """
+    if n_levels < 2:
+        raise ValueError(f"n_levels must be at least 2, got {n_levels}.")
+    if not 0.0 < rho < 1.0:
+        raise ValueError(f"rho must lie in (0, 1), got {rho}.")
+    p = np.full((n_levels, n_levels), (1.0 - rho) / (n_levels * n_levels - n_levels))
+    np.fill_diagonal(p, rho / n_levels)
+    return p / p.sum()
+
+
+def pmf_mi_bits(p: np.ndarray) -> float:
+    """Exact mutual information of a joint pmf, in bits."""
+    p = np.asarray(p, dtype=float)
+    px, py = p.sum(1), p.sum(0)
+    nz = p > 0
+    return float((p[nz] * np.log2(p[nz] / np.outer(px, py)[nz])).sum())
+
+
+def generate_spike_pair(n_windows: int = 4000, window_size: float = 1.0,
+                        n_neurons: int = 4, coding: str = 'count',
+                        n_levels: int = 4, rho: float = 0.85,
+                        lag_windows: int = 0,
+                        counts: Optional[Sequence[int]] = None,
+                        count_range: Tuple[int, int] = (2, 9),
+                        burst_sd: float = 0.035,
+                        seed: int = 0):
+    """Two spike populations sharing a discrete latent, with exact MI.
+
+    Each window carries a latent level drawn from
+    :func:`symmetric_joint_pmf`, and the window's spikes are generated so that
+    the level is the only thing the two populations share. The mutual
+    information between a window of X and the matching window of Y is therefore
+    the pmf's, exactly.
+
+    Two codings, differing in what carries the information:
+
+    - ``'count'`` — the level sets how many spikes the window holds, and the
+      times within the window are uniform noise. Information is in the rate.
+    - ``'timing'`` — the level sets *where* in the window a spike burst falls,
+      while the number of spikes is drawn independently for each population and
+      so carries nothing. Information is in the timing.
+
+    The two make different demands of an estimator, and of the spike
+    representation: whether a padded slot is distinguishable from a real spike
+    matters for ``'timing'`` in a way it does not for ``'count'``.
+
+    .. warning::
+       The returned value is the MI **between windows that align with this
+       generator's own windows**. The window origin is handled here (a single
+       spike at ``t=0`` pins the grid, since spike windowing takes its origin
+       from the earliest spike), but the caller still has to match the window
+       size and not re-tile::
+
+           x, y, exact = generate_spike_pair(coding='timing', window_size=1.0)
+           nmi.run(x, y, mode='estimate',
+                   processing=nmi.Processing(x='spike', y='spike',
+                                             x_params={'window_size': 1.0},
+                                             y_params={'window_size': 1.0}),
+                   training=nmi.Training(shift_time=False, shift_windows=False))
+
+       With ``shift_time`` or ``shift_windows`` left on (both default ``True``),
+       or with a different ``window_size``, an analysis window spans two
+       independent latent draws and can carry *more* than the returned value.
+       An estimate above it therefore means the setup is wrong rather than the
+       estimator being wrong. A quick check: the number of windows built should
+       equal ``n_windows``.
+
+    Parameters
+    ----------
+    n_windows : int, optional
+        Number of windows to generate. Defaults to 4000.
+    window_size : float, optional
+        Window duration, in the same units as the returned spike times.
+        Defaults to 1.0.
+    n_neurons : int, optional
+        Neurons per population. Every neuron in a population sees the same
+        latent, so more neurons make it easier to read, not more informative.
+        Defaults to 4.
+    coding : str, optional
+        ``'count'`` or ``'timing'``. Defaults to ``'count'``.
+    n_levels : int, optional
+        Size of the latent alphabet. Caps the MI at ``log2(n_levels)``.
+        Defaults to 4.
+    rho : float, optional
+        Probability the two populations share the same level. Defaults to 0.85.
+    lag_windows : int, optional
+        Whole-window delay of Y relative to X. The exact MI is unchanged and
+        now sits at this lag rather than at zero, which is what ``mode='lag'``
+        should recover. Defaults to 0.
+    counts : sequence of int, optional
+        ``coding='count'`` only: the spike count for each latent level.
+        Defaults to ``[2, 5, 8, 11]`` truncated or extended to ``n_levels``.
+    count_range : tuple of int, optional
+        ``coding='timing'`` only: ``(low, high)`` for the nuisance spike count,
+        drawn independently per population so it carries no information.
+        Defaults to ``(2, 9)``.
+    burst_sd : float, optional
+        ``coding='timing'`` only: burst width as a fraction of the window.
+        Defaults to 0.035.
+    seed : int, optional
+        Defaults to 0.
+
+    Returns
+    -------
+    x_spikes : list of np.ndarray
+        One sorted array of spike times per neuron.
+    y_spikes : list of np.ndarray
+        The same for the second population.
+    exact_mi : float
+        Exact mutual information in bits, per aligned window pair.
+
+    Examples
+    --------
+    >>> x, y, mi = generate_spike_pair(n_windows=500, coding='count')
+    >>> len(x), round(mi, 3)
+    (4, 1.152)
+    """
+    if coding not in ('count', 'timing'):
+        raise ValueError(f"coding must be 'count' or 'timing', got {coding!r}.")
+    if lag_windows < 0:
+        raise ValueError(f"lag_windows must be non-negative, got {lag_windows}.")
+    if lag_windows >= n_windows:
+        raise ValueError(
+            f"lag_windows ({lag_windows}) must be smaller than n_windows "
+            f"({n_windows}), or no overlapping windows remain.")
+
+    rng = np.random.default_rng(seed)
+    pmf = symmetric_joint_pmf(n_levels, rho)
+    exact_mi = pmf_mi_bits(pmf)
+
+    flat = rng.choice(pmf.size, size=n_windows, p=pmf.ravel())
+    level_x, level_y = np.unravel_index(flat, pmf.shape)
+
+    if coding == 'count':
+        if counts is None:
+            base = [2, 5, 8, 11]
+            counts = [base[i] if i < len(base) else base[-1] + 3 * (i - len(base) + 1)
+                      for i in range(n_levels)]
+        counts = np.asarray(counts, dtype=int)
+        if len(counts) != n_levels:
+            raise ValueError(
+                f"counts has {len(counts)} entries but n_levels is {n_levels}.")
+    else:
+        centres = (np.arange(n_levels) + 0.5) / n_levels
+
+    def build(levels, window_offset):
+        population = []
+        for _ in range(n_neurons):
+            times = []
+            for w, lvl in enumerate(levels):
+                if coding == 'count':
+                    within = np.sort(rng.random(counts[lvl])) * 0.98
+                else:
+                    n = rng.integers(*count_range)   # nuisance, independent
+                    within = np.sort(np.clip(
+                        rng.normal(centres[lvl], burst_sd, n), 0.01, 0.99))
+                times.append((w + window_offset) * window_size + within * window_size)
+            population.append(np.concatenate(times) if times else np.array([]))
+        return population
+
+    x_pop = build(level_x, 0)
+    y_pop = build(level_y, lag_windows)
+
+    # Pin the window grid to zero. Spike windowing takes its origin from the
+    # earliest spike in the data (SpikeWindowDataset.get_temporal_extent), which
+    # otherwise lands mid-window and makes every analysis window straddle two of
+    # the windows built here, spanning two independent latent draws. One spike
+    # at t=0 in the first train of each population fixes the origin; against
+    # n_windows * n_neurons windows of content its own contribution is
+    # negligible, and without it the returned MI is not the quantity being
+    # estimated.
+    x_pop[0] = np.concatenate([[0.0], x_pop[0]])
+    y_pop[0] = np.concatenate([[0.0], y_pop[0]])
+
+    # Y is emitted `lag_windows` later, so X's window w pairs with Y's w + lag.
+    return x_pop, y_pop, exact_mi
+
+
+def generate_xor_pair(n_samples: int, noise: float = 0.1, use_torch: bool = True,
+                      seed: Optional[int] = None):
+    """The XOR synergy problem, with exact mutual information.
+
+    ``X = (x1, x2)`` are independent fair bits and ``Y = (x1 XOR x2) + N(0, noise)``.
+    Neither bit alone says anything about ``Y``, so ``I(x1; Y) = I(x2; Y) = 0``
+    exactly, while the pair determines it. That gap is the point: the
+    information is purely synergistic and cannot be found one variable at a
+    time.
+
+    The returned MI is ``H(Y) - H(Y | X)``. The conditional is a plain Gaussian,
+    and the marginal is an equal mixture of ``N(0, noise)`` and ``N(1, noise)``
+    whose entropy is evaluated by quadrature, so the value is exact to
+    quadrature rather than in closed form. As ``noise -> 0`` it approaches
+    exactly 1 bit.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of samples.
+    noise : float, optional
+        Standard deviation of the Gaussian added to Y. Defaults to 0.1. Must be
+        positive: at exactly zero Y is discrete and the differential entropy
+        used here does not apply, though the limit is 1 bit.
+    use_torch : bool, optional
+        Return ``torch.Tensor`` rather than ``np.ndarray``. Defaults to True.
+    seed : int, optional
+        Defaults to None (uses global numpy state, matching the other generators).
+
+    Returns
+    -------
+    x : array of shape (n_samples, 2)
+    y : array of shape (n_samples, 1)
+    exact_mi : float
+        Mutual information ``I(X; Y)`` in bits.
+    """
+    if noise <= 0:
+        raise ValueError(
+            f"noise must be positive, got {noise}. At exactly zero Y is discrete "
+            f"and this differential-entropy calculation does not apply; the "
+            f"limiting value is 1 bit.")
+    rng = np.random.default_rng(seed) if seed is not None else np.random
+    x1 = rng.integers(0, 2, size=n_samples) if seed is not None else np.random.randint(0, 2, size=n_samples)
+    x2 = rng.integers(0, 2, size=n_samples) if seed is not None else np.random.randint(0, 2, size=n_samples)
+    bit = np.bitwise_xor(x1, x2).astype(float)
+    y = bit + (rng.normal(size=n_samples) if seed is not None
+               else np.random.randn(n_samples)) * noise
+
+    # H(Y): equal mixture of N(0, noise) and N(1, noise), by quadrature.
+    grid = np.linspace(-6 * noise, 1 + 6 * noise, 20001)
+    comp = np.exp(-0.5 * ((grid[:, None] - np.array([0.0, 1.0])) / noise) ** 2)
+    comp /= noise * np.sqrt(2 * np.pi)
+    dens = comp.mean(axis=1)
+    nz = dens > 0
+    h_y = -float(_TRAPZ(dens[nz] * np.log2(dens[nz]), grid[nz]))
+    h_y_given_x = 0.5 * np.log2(2 * np.pi * np.e * noise ** 2)
+    exact_mi = float(h_y - h_y_given_x)
+
+    x = np.vstack([x1, x2]).T
+    y = y.reshape(-1, 1)
+    if use_torch:
+        return torch.from_numpy(x).float(), torch.from_numpy(y).float(), exact_mi
+    return x, y, exact_mi
+
+
+def generate_categorical_pair(n_samples: int, n_channels: int = 1,
+                              n_categories: int = 3, agreement: float = 0.9,
+                              stay_probability: float = 0.95,
+                              use_torch: bool = True, seed: Optional[int] = None):
+    """Two correlated categorical series, with exact per-channel MI.
+
+    ``x`` is a Markov chain that holds its state with probability
+    ``stay_probability`` and otherwise redraws uniformly, giving a uniform
+    stationary distribution. ``y_t`` copies ``x_t`` with probability
+    ``agreement`` and is otherwise uniform, so the channel is
+
+        ``P(y=j | x=i) = agreement * [i == j] + (1 - agreement) / n_categories``
+
+    and the joint pmf, hence the mutual information, is known in closed form.
+
+    Parameters
+    ----------
+    n_samples : int
+        Series length.
+    n_channels : int, optional
+        Independent channels, each carrying the same per-channel MI. Defaults to 1.
+    n_categories : int, optional
+        Alphabet size. Defaults to 3.
+    agreement : float, optional
+        Probability that ``y`` copies ``x``. Defaults to 0.9.
+    stay_probability : float, optional
+        Probability the chain holds its state, which sets temporal smoothness
+        without affecting the per-sample MI. Defaults to 0.95.
+    use_torch : bool, optional
+        Defaults to True.
+    seed : int, optional
+        Defaults to None.
+
+    Returns
+    -------
+    x, y : arrays of shape (n_samples, n_channels), dtype int
+    exact_mi : float
+        Per-channel ``I(x_t; y_t)`` in bits. Channels are independent, so the
+        joint MI over all channels is ``n_channels`` times this.
+    """
+    if not 0.0 < agreement <= 1.0:
+        raise ValueError(f"agreement must lie in (0, 1], got {agreement}.")
+    rng = np.random.default_rng(seed)
+    K = n_categories
+
+    joint = np.full((K, K), (1.0 - agreement) / (K * K))
+    np.fill_diagonal(joint, joint[0, 0] + agreement / K)
+    exact_mi = pmf_mi_bits(joint)
+
+    x = np.zeros((n_samples, n_channels), dtype=int)
+    y = np.zeros((n_samples, n_channels), dtype=int)
+    for ch in range(n_channels):
+        x[0, ch] = rng.integers(K)
+        for t in range(1, n_samples):
+            x[t, ch] = x[t - 1, ch] if rng.random() < stay_probability else rng.integers(K)
+        copy = rng.random(n_samples) < agreement
+        x[:, ch] = x[:, ch]
+        y[:, ch] = np.where(copy, x[:, ch], rng.integers(K, size=n_samples))
+
+    if use_torch:
+        return torch.from_numpy(x), torch.from_numpy(y), exact_mi
+    return x, y, exact_mi
+
+
+def generate_lagged_pair(n_samples: int = 5000, lag: int = 30, dim: int = 1,
+                         phi: float = 0.95, noise: float = 0.5,
+                         coupling: float = 3.0, seed: int = 0):
+    """A pair whose dependence sits at a known lag, with exact MI at that lag.
+
+    Built from :class:`SharedLatentGaussian` and then offset, so both the lag
+    and the mutual information at it are known. ``mode='lag'`` should recover
+    ``lag`` as the peak, and the MI it reports there should approach
+    ``exact_mi``.
+
+    Parameters
+    ----------
+    n_samples : int, optional
+        Series length. Defaults to 5000.
+    lag : int, optional
+        Samples by which Y trails X, so the peak sits at ``+lag``. Defaults to 30.
+    dim : int, optional
+        Channels per signal. Defaults to 1.
+    phi : float, optional
+        Latent autocorrelation, which sets how broad the lag peak is. Defaults
+        to 0.95.
+    noise : float, optional
+        Observation-noise standard deviation. Defaults to 0.5.
+    coupling : float, optional
+        Scales the projections, raising the MI at the peak without moving it.
+        Defaults to 3.0. Together with ``noise`` this sets ``exact_mi``, which
+        is returned rather than assumed.
+    seed : int, optional
+        Defaults to 0.
+
+    Returns
+    -------
+    x, y : np.ndarray of shape (n_samples, dim), float32
+    exact_mi : float
+        ``I`` in bits at the peak, i.e. between ``x[t + lag]`` and ``y[t]``.
+
+    Examples
+    --------
+    >>> x, y, mi = generate_lagged_pair(n_samples=4000, lag=20)
+    >>> x.shape, round(mi, 3)
+    ((4000, 1), 0.969)
+    """
+    if lag < 0:
+        raise ValueError(f"lag must be non-negative, got {lag}.")
+    oracle = SharedLatentGaussian(dims={'x': dim, 'y': dim}, d=1, phi=phi,
+                                  noise=noise, coupling=coupling, seed=seed)
+    sample = oracle.sample(n_samples + lag, seed=seed)
+    # Taking X from later in the series makes Y trail it, so the cross-lag peak
+    # sits at +lag. The value there is the aligned (offset-0) MI of the source
+    # processes, since the offset is exactly what the slicing undoes.
+    x = sample['x'][lag:lag + n_samples]
+    y = sample['y'][:n_samples]
+    exact_mi = oracle.exact(A=[('x', 0)], B=[('y', 0)])
+    return x.astype('float32'), y.astype('float32'), exact_mi

@@ -1443,7 +1443,10 @@ when you want both at once.
 
 ### Synthetic generators
 
-`neural_mi.generators` (also accessible as `nmi.generators`) provides synthetic data for testing and tutorials:
+`neural_mi.generators` (also accessible as `nmi.generators`) provides synthetic
+data for testing and tutorials. Every generator reports the quantity an estimate
+should be checked against, whether that is a mutual information or a lag, since
+an estimator cannot be validated against data whose truth nobody knows.
 
 ```python
 from neural_mi import generators
@@ -1454,32 +1457,53 @@ x, y = generators.generate_correlated_gaussians(
     use_torch=True
 )
 
-# Nonlinear data via shared latent variable
+# Nonlinear data via a shared latent variable
 x, y = generators.generate_nonlinear_from_latent(
     n_samples=2000, latent_dim=2, observed_dim=8, mi=1.0
 )
 
-# Time-lagged correlation (for lag analysis)
-x, y = generators.generate_temporally_convolved_data(
-    n_samples=5000, lag=30, noise=0.1
+# Spike populations sharing a discrete latent, with exact MI.
+# coding='count' puts the information in the rate; coding='timing' puts it in
+# where a burst falls, with the spike count drawn independently so it carries
+# nothing. The two make different demands of the spike representation.
+spike_x, spike_y, exact_mi = generators.generate_spike_pair(
+    n_windows=4000, window_size=1.0, n_neurons=4,
+    coding='count',      # or 'timing'
+    n_levels=4, rho=0.85,
+    lag_windows=0,       # whole-window delay of Y, if a known lag is wanted
 )
 
-# XOR: high MI, purely nonlinear
-x, y = generators.generate_xor_data(n_samples=2000, noise=0.05)
-
-# Correlated spike trains (for spike-timing analysis)
-spike_x, spike_y = generators.generate_correlated_spike_trains(
-    n_neurons=10, duration=100.0, firing_rate=5.0,
-    delay=0.02,          # 20 ms delay from x to y
-    jitter=0.005         # 5 ms jitter
+# Discrete states, exact MI from the channel's pmf
+x, y, exact_mi = generators.generate_categorical_pair(
+    n_samples=5000, n_categories=3, agreement=0.9
 )
 
-# Correlated categorical states
-x, y = generators.generate_correlated_categorical_series(...)
+# XOR: purely synergistic. I(x1; Y) and I(x2; Y) are exactly zero while the
+# pair determines Y. exact_mi approaches 1 bit as noise vanishes.
+x, y, exact_mi = generators.generate_xor_pair(n_samples=2000, noise=0.05)
 
-# Event-related data
-x, y = generators.generate_event_related_data(...)
+# Dependence at a known lag, with the MI at that peak
+x, y, exact_mi = generators.generate_lagged_pair(
+    n_samples=5000, lag=30, phi=0.95, noise=0.5, coupling=3.0
+)
 ```
+
+**Windowed generators must be analysed at their own window.**
+`generate_spike_pair` reports the MI between windows that align with the ones it
+built. Analysis has to use the same `window_size` and must not re-tile:
+
+```python
+x, y, exact = generators.generate_spike_pair(coding='timing', window_size=1.0)
+nmi.run(x, y, mode='estimate',
+        processing=Processing(x='spike', y='spike',
+                              x_params={'window_size': 1.0},
+                              y_params={'window_size': 1.0}),
+        training=Training(shift_time=False, shift_windows=False))
+```
+
+With `shift_time` or `shift_windows` left on (both default `True`), a window
+spans two independent latent draws and can carry *more* than `exact`, so an
+estimate above it means the setup is wrong rather than the estimator.
 
 **Utility:**
 ```python
