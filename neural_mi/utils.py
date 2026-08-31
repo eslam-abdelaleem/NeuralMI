@@ -1,5 +1,8 @@
 # neural_mi/utils.py
 
+import inspect
+import warnings
+
 import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as _lr_sched
@@ -325,6 +328,17 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
     return x_data, y_data
 
     
+def _accepts_kwarg(cls: type, name: str) -> bool:
+    """Whether ``cls.__init__`` can receive ``name``, directly or via **kwargs."""
+    try:
+        params = inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(prm.kind is inspect.Parameter.VAR_KEYWORD for prm in params.values())
+
+
 def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                  custom_embedding_cls: Optional[type] = None) -> BaseCritic:
     """Builds and returns a critic model based on the provided parameters.
@@ -441,13 +455,62 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # Build the base (deterministic) encoders.
     model_kwargs_y = model_kwargs.copy()
+
+    # Bias terms, resolved per side. `bias=None` (the default) means "decide
+    # from the data type": spike windows are padded to a fixed width, so a
+    # window holding few spikes is mostly padding. With no bias anywhere, an
+    # all-padding window embeds to exactly zero and contributes nothing, which
+    # is the behaviour wanted for spikes. Continuous data has no padding and
+    # keeps its biases.
+    _bias = embedding_params.get('bias')
+    if _bias is None:
+        bias_x = embedding_params.get('processor_type_x') != 'spike'
+        bias_y = embedding_params.get('processor_type_y') != 'spike'
+    else:
+        bias_x = bias_y = bool(_bias)
+
+    if shared_encoder and bias_x != bias_y:
+        raise ValueError(
+            f"shared_encoder=True needs one encoder for both sides, but bias "
+            f"resolves differently for each (x={bias_x}, y={bias_y}) because the "
+            f"two processor types differ (x={embedding_params.get('processor_type_x')!r}, "
+            f"y={embedding_params.get('processor_type_y')!r}). Set bias explicitly "
+            f"on Model(...) to use one value for both, or set shared_encoder=False."
+        )
+
+    if not (bias_x and bias_y) and not getattr(EmbeddingModel, 'zero_preserving', True):
+        warnings.warn(
+            f"bias=False was requested, but {EmbeddingModel.__name__} carries an "
+            f"input-independent additive term (a positional encoding, or biases "
+            f"baked into pretrained weights), so an all-zero input will not embed "
+            f"to zero. The bias terms it does own are still removed.",
+            UserWarning, stacklevel=2,
+        )
+
+    # Only classes that accept `bias` are given it. A custom embedding class
+    # following the minimal BaseEmbedding contract
+    # (input_dim, hidden_dim, embed_dim, n_layers) must still build, so an
+    # explicit bias request that such a class cannot receive is reported rather
+    # than forced on it.
+    if _accepts_kwarg(EmbeddingModel, 'bias'):
+        model_kwargs['bias'] = bias_x
+        model_kwargs_y['bias'] = bias_y
+    elif not (bias_x and bias_y):
+        warnings.warn(
+            f"bias=False applies to the embedding layers, but "
+            f"{EmbeddingModel.__name__}.__init__ does not accept a `bias` "
+            f"argument, so its layers keep their bias terms. Add `bias=True` to "
+            f"the signature and pass it to the layers to support this.",
+            UserWarning, stacklevel=2,
+        )
+
     net_x_base = EmbeddingModel(input_dim_x, **model_kwargs)
     net_y_base = net_x_base if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs_y)
 
     # Optionally wrap with VariationalWrapper — works for every encoder type
     if use_variational:
-        net_x = VariationalWrapper(net_x_base, embed_dim)
-        net_y = net_x if shared_encoder else VariationalWrapper(net_y_base, embed_dim)
+        net_x = VariationalWrapper(net_x_base, embed_dim, bias=bias_x)
+        net_y = net_x if shared_encoder else VariationalWrapper(net_y_base, embed_dim, bias=bias_y)
     else:
         net_x, net_y = net_x_base, net_y_base
 

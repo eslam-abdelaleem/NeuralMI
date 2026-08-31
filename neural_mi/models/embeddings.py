@@ -23,6 +23,25 @@ _ACTIVATIONS = {
 }
 
 
+def _make_norm(kind: Optional[str], dim: int, bias: bool) -> Optional[nn.Module]:
+    """Build the requested norm layer, or a zero-preserving stand-in.
+
+    ``LayerNorm`` and ``BatchNorm`` subtract the mean, so an input entry that is
+    exactly zero does not stay zero through them. That defeats the point of
+    ``bias=False``, which exists so a padded (zero) slot contributes nothing
+    downstream. When ``bias=False`` is requested, both are replaced by
+    ``RMSNorm`` without an affine shift: it rescales by the root-mean-square and
+    never centres, so zeros survive it.
+    """
+    if kind is None:
+        return None
+    if kind not in ('batch', 'layer'):
+        raise ValueError(f"norm_layer must be 'batch', 'layer' or None, got {kind!r}.")
+    if not bias:
+        return nn.RMSNorm(dim, elementwise_affine=False)
+    return nn.BatchNorm1d(dim) if kind == 'batch' else nn.LayerNorm(dim)
+
+
 def _resolve_activation(name: str) -> type:
     """Look up an activation module class by name.
 
@@ -54,8 +73,18 @@ class BaseEmbedding(nn.Module):
     ``input_style = 'channels'`` on itself -- this is the only thing that
     determines which convention it receives, instead of an unrelated
     ``embedding_model=`` string having to be set purely as a shape hint.
+
+    Class attribute ``zero_preserving`` declares whether the class can honour
+    ``bias=False``. With no additive term anywhere, an all-zero input embeds to
+    exactly zero, so a window consisting entirely of padding contributes
+    nothing. Architectures carrying an input-independent additive term cannot
+    do this: the Transformer adds a positional encoding, and a pretrained
+    backbone has biases baked into its weights. Those set
+    ``zero_preserving = False``, and ``build_critic`` warns when ``bias=False``
+    is asked of them.
     """
     input_style: str = 'flattened'
+    zero_preserving: bool = True
 
     def __init__(self):
         super().__init__()
@@ -106,7 +135,7 @@ class MLP(_BaseMLP):
                  n_layers: int, activation: str = 'relu',
                  use_spectral_norm: bool = True,
                  dropout: float = 0.0,
-                 norm_layer: Optional[str] = None):
+                 norm_layer: Optional[str] = None, bias: bool = True):
         """
         Parameters
         ----------
@@ -153,11 +182,10 @@ class MLP(_BaseMLP):
         _wrap = _spectral_norm if use_spectral_norm else (lambda x: x)
 
         def _make_hidden_block(in_dim: int, out_dim: int) -> list:
-            block = [_wrap(nn.Linear(in_dim, out_dim))]
-            if norm_layer == 'batch':
-                block.append(nn.BatchNorm1d(out_dim))
-            elif norm_layer == 'layer':
-                block.append(nn.LayerNorm(out_dim))
+            block = [_wrap(nn.Linear(in_dim, out_dim, bias=bias))]
+            norm = _make_norm(norm_layer, out_dim, bias)
+            if norm is not None:
+                block.append(norm)
             block.append(act_fn())
             if dropout > 0.0:
                 block.append(nn.Dropout(p=dropout))
@@ -168,7 +196,7 @@ class MLP(_BaseMLP):
         for i in range(1, len(dims)):
             layers.extend(_make_hidden_block(dims[i - 1], dims[i]))
         self.network = nn.Sequential(*layers)
-        self.output_layer = nn.Linear(dims[-1], embed_dim)
+        self.output_layer = nn.Linear(dims[-1], embed_dim, bias=bias)
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -199,7 +227,7 @@ class CNN1D(BaseEmbedding):
     input_style = 'channels'
 
     def __init__(self, input_dim: int, hidden_dim, embed_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = 7):
+                 activation: str = 'relu', kernel_size: int = 7, bias: bool = True):
         """
         Parameters
         ----------
@@ -229,14 +257,14 @@ class CNN1D(BaseEmbedding):
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
         first_block = [
-            nn.Conv1d(in_channels=input_dim, out_channels=ch[0], kernel_size=kernel_size, padding='same'),
+            nn.Conv1d(in_channels=input_dim, out_channels=ch[0], kernel_size=kernel_size, padding='same', bias=bias),
             activation_fn(),
         ]
 
         layers = list(first_block)
         for i in range(1, len(ch)):
             layers.extend([
-                nn.Conv1d(in_channels=ch[i - 1], out_channels=ch[i], kernel_size=kernel_size, padding='same'),
+                nn.Conv1d(in_channels=ch[i - 1], out_channels=ch[i], kernel_size=kernel_size, padding='same', bias=bias),
                 activation_fn()
             ])
         self.conv_layers = nn.Sequential(*layers)
@@ -245,9 +273,9 @@ class CNN1D(BaseEmbedding):
         self.final_layers = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
-            nn.Linear(ch[-1], ch[-1]),
+            nn.Linear(ch[-1], ch[-1], bias=bias),
             nn.ReLU(),
-            nn.Linear(ch[-1], embed_dim)
+            nn.Linear(ch[-1], embed_dim, bias=bias)
         )
         self.embed_dim = embed_dim
         self.hidden_dim = ch[-1]
@@ -274,7 +302,7 @@ class GRU(BaseEmbedding):
     input_style = 'channels'
 
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int,
-                 bidirectional: bool = False, **kwargs):
+                 bidirectional: bool = False, bias: bool = True, **kwargs):
         """
         Parameters
         ----------
@@ -290,11 +318,11 @@ class GRU(BaseEmbedding):
             If True, becomes a bidirectional GRU. Defaults to False.
         """
         super().__init__()
-        self.gru = nn.GRU(input_size=input_dim, hidden_size=hidden_dim, num_layers=n_layers, 
+        self.gru = nn.GRU(input_size=input_dim, hidden_size=hidden_dim, num_layers=n_layers, bias=bias, 
                           batch_first=True, bidirectional=bidirectional)
         
         num_directions = 2 if bidirectional else 1
-        self.output_layer = nn.Linear(hidden_dim * num_directions, embed_dim)
+        self.output_layer = nn.Linear(hidden_dim * num_directions, embed_dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # GRU expects (batch, seq, features), but our data is (batch, features, seq)
@@ -316,7 +344,7 @@ class LSTM(BaseEmbedding):
     input_style = 'channels'
 
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int,
-                 bidirectional: bool = False, **kwargs):
+                 bidirectional: bool = False, bias: bool = True, **kwargs):
         """
         Parameters
         ----------
@@ -332,11 +360,11 @@ class LSTM(BaseEmbedding):
             If True, becomes a bidirectional LSTM. Defaults to False.
         """
         super().__init__()
-        self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=n_layers,
+        self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=n_layers, bias=bias,
                             batch_first=True, bidirectional=bidirectional)
         
         num_directions = 2 if bidirectional else 1
-        self.output_layer = nn.Linear(hidden_dim * num_directions, embed_dim)
+        self.output_layer = nn.Linear(hidden_dim * num_directions, embed_dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.permute(0, 2, 1)
@@ -406,13 +434,14 @@ class LRUBlock(nn.Module):
     """LayerNorm + LRULayer + LockedDropout + a 2-layer GELU MLP, combined
     as a residual block -- the standard pre-norm transformer-style block
     shape, with the LRU recurrence standing in for self-attention."""
-    def __init__(self, hidden_dim: int, dropout: float = 0.3):
+    def __init__(self, hidden_dim: int, dropout: float = 0.3, bias: bool = True):
         super().__init__()
-        self.norm = nn.LayerNorm(hidden_dim)
+        self.norm = (nn.LayerNorm(hidden_dim) if bias
+                     else nn.RMSNorm(hidden_dim, elementwise_affine=False))
         self.lru = LRULayer(hidden_dim)
         self.dropout = LockedDropout(dropout)
-        self.out_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
-                                      nn.Linear(hidden_dim, hidden_dim))
+        self.out_proj = nn.Sequential(nn.Linear(hidden_dim, hidden_dim, bias=bias), nn.GELU(),
+                                      nn.Linear(hidden_dim, hidden_dim, bias=bias))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         z = self.norm(x)
@@ -434,7 +463,7 @@ class LRUEmbedding(BaseEmbedding):
     input_style = 'channels'
 
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int = 1,
-                 dropout: float = 0.3, **kwargs):
+                 dropout: float = 0.3, bias: bool = True, **kwargs):
         """
         Parameters
         ----------
@@ -450,9 +479,9 @@ class LRUEmbedding(BaseEmbedding):
             Locked-dropout probability inside each block. Defaults to 0.3.
         """
         super().__init__()
-        self.in_proj = nn.Linear(input_dim, hidden_dim)
-        self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout) for _ in range(n_layers)])
-        self.out_proj = nn.Linear(hidden_dim, embed_dim)
+        self.in_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
+        self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout, bias=bias) for _ in range(n_layers)])
+        self.out_proj = nn.Linear(hidden_dim, embed_dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.transpose(1, 2)
@@ -478,21 +507,21 @@ class TCN(BaseEmbedding):
 
     # Inner class for a TCN block
     class TemporalBlock(nn.Module):
-        def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2):
+        def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2, bias=True):
             super().__init__()
-            self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation)
+            self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp1 = TCN.Chomp1d(padding)
             self.relu1 = nn.ReLU()
             self.dropout1 = nn.Dropout(dropout)
 
-            self.conv2 = nn.Conv1d(n_outputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation)
+            self.conv2 = nn.Conv1d(n_outputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp2 = TCN.Chomp1d(padding)
             self.relu2 = nn.ReLU()
             self.dropout2 = nn.Dropout(dropout)
 
             self.net = nn.Sequential(self.conv1, self.chomp1, self.relu1, self.dropout1,
                                      self.conv2, self.chomp2, self.relu2, self.dropout2)
-            self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
+            self.downsample = nn.Conv1d(n_inputs, n_outputs, 1, bias=bias) if n_inputs != n_outputs else None
             self.relu = nn.ReLU()
 
         def forward(self, x):
@@ -501,7 +530,7 @@ class TCN(BaseEmbedding):
             return self.relu(out + res)
 
     def __init__(self, input_dim: int, hidden_dim, embed_dim: int, n_layers: int,
-                 kernel_size: int = 3, **kwargs):
+                 kernel_size: int = 3, bias: bool = True, **kwargs):
         """
         Parameters
         ----------
@@ -527,9 +556,9 @@ class TCN(BaseEmbedding):
             in_channels = input_dim if i == 0 else num_channels[i-1]
             out_channels = num_channels[i]
             layers.append(TCN.TemporalBlock(in_channels, out_channels, kernel_size, stride=1, dilation=dilation_size,
-                                            padding=(kernel_size-1) * dilation_size))
+                                            padding=(kernel_size-1) * dilation_size, bias=bias))
         self.network = nn.Sequential(*layers)
-        self.output_layer = nn.Linear(num_channels[-1], embed_dim)
+        self.output_layer = nn.Linear(num_channels[-1], embed_dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.network(x)
@@ -539,6 +568,7 @@ class TCN(BaseEmbedding):
         
 class Transformer(BaseEmbedding):
     """A Transformer Encoder model for sequential data."""
+    zero_preserving = False   # the positional encoding is an additive, input-independent term
     input_style = 'channels'
 
     class PositionalEncoding(nn.Module):
@@ -561,7 +591,7 @@ class Transformer(BaseEmbedding):
             return x + self.pe[:seq_len]
 
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int, 
-                 nhead: int = 4, **kwargs):
+                 nhead: int = 4, bias: bool = True, **kwargs):
         """
         Parameters
         ----------
@@ -582,10 +612,13 @@ class Transformer(BaseEmbedding):
         
         self.model_dim = hidden_dim
         self.pos_encoder = Transformer.PositionalEncoding(hidden_dim)
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
-        encoder_layers = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers=n_layers)
-        self.output_layer = nn.Linear(hidden_dim, embed_dim)
+        self.input_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
+        encoder_layers = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, batch_first=True, bias=bias)
+        # nested-tensor fast path requires biased attention; without it torch
+        # warns on every construction, so it is disabled explicitly.
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layers, num_layers=n_layers, enable_nested_tensor=bias)
+        self.output_layer = nn.Linear(hidden_dim, embed_dim, bias=bias)
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -623,7 +656,7 @@ class CNN2D(BaseEmbedding):
     input_style = 'channels'
 
     def __init__(self, input_dim: int, hidden_dim, embed_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = 3, **kwargs):
+                 activation: str = 'relu', kernel_size: int = 3, bias: bool = True, **kwargs):
         """
         Parameters
         ----------
@@ -652,12 +685,12 @@ class CNN2D(BaseEmbedding):
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
         layers = [
-            nn.Conv2d(input_dim, ch[0], kernel_size=kernel_size, padding=padding),
+            nn.Conv2d(input_dim, ch[0], kernel_size=kernel_size, padding=padding, bias=bias),
             activation_fn(),
         ]
         for i in range(1, len(ch)):
             layers.extend([
-                nn.Conv2d(ch[i - 1], ch[i], kernel_size=kernel_size, padding=padding),
+                nn.Conv2d(ch[i - 1], ch[i], kernel_size=kernel_size, padding=padding, bias=bias),
                 activation_fn(),
             ])
         self.conv_layers = nn.Sequential(*layers)
@@ -666,9 +699,9 @@ class CNN2D(BaseEmbedding):
         self.final_layers = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(ch[-1], ch[-1]),
+            nn.Linear(ch[-1], ch[-1], bias=bias),
             nn.ReLU(),
-            nn.Linear(ch[-1], embed_dim),
+            nn.Linear(ch[-1], embed_dim, bias=bias),
         )
         self.embed_dim = embed_dim
         self.hidden_dim = ch[-1]
@@ -742,11 +775,12 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
     The backbone is always frozen (``requires_grad=False``) regardless of the
     ``pretrained`` flag.  Only the MLP head is trainable.
     """
+    zero_preserving = False   # a frozen pretrained backbone has biases baked into its weights
     input_style = 'channels'
 
     def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, n_layers: int,
                  pytorch_predefined: Optional[str] = None,
-                 pretrained: bool = False, **kwargs):
+                 pretrained: bool = False, bias: bool = True, **kwargs):
         super().__init__()
         try:
             import torchvision.models as _tv_models
@@ -938,15 +972,16 @@ class VariationalWrapper(nn.Module):
         stability.
     """
 
-    def __init__(self, base_encoder: nn.Module, embed_dim: int):
+    def __init__(self, base_encoder: nn.Module, embed_dim: int, bias: bool = True):
         super().__init__()
         self.base_encoder = base_encoder
-        self.mu_head = nn.Linear(embed_dim, embed_dim)
-        self.log_var_head = nn.Linear(embed_dim, embed_dim)
+        self.mu_head = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.log_var_head = nn.Linear(embed_dim, embed_dim, bias=bias)
         # Xavier uniform + zero-bias for both projection heads
         for head in (self.mu_head, self.log_var_head):
             nn.init.xavier_uniform_(head.weight)
-            nn.init.zeros_(head.bias)
+            if head.bias is not None:
+                nn.init.zeros_(head.bias)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode ``x`` through the base encoder and sample from the posterior.
@@ -1069,6 +1104,7 @@ class DualBranchEmbedding(BaseEmbedding):
 
     def __init__(self, input_dim, hidden_dim, embed_dim, n_layers,
                  branch_cls: Optional[type] = None, fusion_hidden_dim: Optional[int] = None,
+                 bias: bool = True,
                  **branch_kwargs):
         super().__init__()
         branch_cls = branch_cls or GRU
@@ -1080,18 +1116,18 @@ class DualBranchEmbedding(BaseEmbedding):
                     f"or a plain int, got a {len(input_dim)}-element sequence: {input_dim!r}."
                 )
             dim_a, dim_c = input_dim
-            self.branch_a = branch_cls(dim_a, hidden_dim, embed_dim, n_layers, **branch_kwargs)
-            self.branch_c = branch_cls(dim_c, hidden_dim, embed_dim, n_layers, **branch_kwargs)
+            self.branch_a = branch_cls(dim_a, hidden_dim, embed_dim, n_layers, bias=bias, **branch_kwargs)
+            self.branch_c = branch_cls(dim_c, hidden_dim, embed_dim, n_layers, bias=bias, **branch_kwargs)
             _fusion_hidden = fusion_hidden_dim or embed_dim
             self.fusion = nn.Sequential(
-                nn.Linear(embed_dim * 2, _fusion_hidden),
+                nn.Linear(embed_dim * 2, _fusion_hidden, bias=bias),
                 nn.ReLU(),
-                nn.Linear(_fusion_hidden, embed_dim),
+                nn.Linear(_fusion_hidden, embed_dim, bias=bias),
             )
         else:
             # Plain int input_dim: build_critic's Y-role call site (see class
             # docstring). Behave as a single ordinary branch_cls embedding.
-            self.branch_single = branch_cls(input_dim, hidden_dim, embed_dim, n_layers, **branch_kwargs)
+            self.branch_single = branch_cls(input_dim, hidden_dim, embed_dim, n_layers, bias=bias, **branch_kwargs)
 
     def forward(self, x) -> torch.Tensor:
         """Embed either a 2-tuple ``(a_batch, c_batch)`` (compound X-role) or

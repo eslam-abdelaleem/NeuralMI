@@ -97,6 +97,7 @@ class Model:
     dropout: Optional[float] = None
     norm_layer: Optional[str] = None               # 'layer'|'batch'|None
     use_spectral_norm: Optional[bool] = None
+    bias: Optional[bool] = None                    # None -> False for spike data, True otherwise
     shared_encoder: Optional[bool] = None
     max_n_batches: Optional[int] = None            # critic chunking
     custom_critic: Optional[Any] = None            # torch.nn.Module

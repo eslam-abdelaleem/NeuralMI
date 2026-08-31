@@ -381,3 +381,93 @@ class TestShiftDataMixedModality:
             _shift_data(x_spikes, y, 2.0, 'spike', 'continuous')
         assert any('Mixed-modality lag' in r.message for r in caplog.records)
         assert len(recwarn) == 0
+
+# --- bias / zero-preservation -------------------------------------------
+
+def _n_bias(module, prefix=''):
+    return sum(1 for k, _ in module.named_parameters()
+               if 'bias' in k and k.startswith(prefix))
+
+
+class TestBias:
+    """`bias` controls whether embedding layers carry bias terms.
+
+    With none, an all-zero input embeds to exactly zero, so a spike window
+    consisting entirely of padding contributes nothing.
+    """
+
+    @pytest.mark.parametrize('x_type,y_type,want_x,want_y', [
+        ('continuous', 'continuous', True, True),
+        ('spike', 'spike', False, False),
+        ('spike', 'continuous', False, True),      # resolved per side
+        ('continuous', 'spike', True, False),
+    ])
+    def test_default_resolves_per_side_from_processor_type(self, x_type, y_type, want_x, want_y):
+        params = dict(DUMMY_EMBEDDING_PARAMS, bias=None,
+                      processor_type_x=x_type, processor_type_y=y_type)
+        critic = build_critic('separable', params)
+        assert (_n_bias(critic, 'embedding_net_x') > 0) is want_x
+        assert (_n_bias(critic, 'embedding_net_y') > 0) is want_y
+
+    @pytest.mark.parametrize('explicit', [True, False])
+    def test_explicit_value_overrides_the_data_type(self, explicit):
+        params = dict(DUMMY_EMBEDDING_PARAMS, bias=explicit,
+                      processor_type_x='spike', processor_type_y='spike')
+        critic = build_critic('separable', params)
+        assert (_n_bias(critic) > 0) is explicit
+
+    @pytest.mark.parametrize('model,kw', [
+        ('mlp', {}), ('cnn', {}), ('gru', {}), ('lstm', {}), ('tcn', {}), ('lru', {}),
+    ])
+    def test_zero_input_embeds_to_zero(self, model, kw):
+        """The property that makes bias=False worth having.
+
+        Every parameter is randomised first, so this cannot pass merely because
+        biases initialise to zero.
+        """
+        params = dict(DUMMY_EMBEDDING_PARAMS, bias=False, embedding_model=model,
+                      processor_type_x='spike', processor_type_y='spike', **kw)
+        critic = build_critic('separable', params)
+        net = critic.embedding_net_x
+        torch.manual_seed(0)
+        with torch.no_grad():
+            for prm in net.parameters():
+                prm.normal_(0, 0.5)
+        net.eval()
+        style = getattr(type(net), 'input_style', 'flattened')
+        x = (torch.zeros(1, 2, 5) if style == 'channels'
+             else torch.zeros(1, DUMMY_EMBEDDING_PARAMS['input_dim_x']))
+        assert net(x).abs().max().item() == 0.0
+
+    def test_custom_class_without_bias_still_builds(self):
+        """A custom class on the minimal contract must not be handed `bias`."""
+        import torch.nn as nn
+        from neural_mi.models.embeddings import BaseEmbedding
+
+        class Minimal(BaseEmbedding):
+            def __init__(self, input_dim, hidden_dim, embed_dim, n_layers):
+                super().__init__()
+                self.net = nn.Linear(input_dim, embed_dim)
+
+            def forward(self, x):
+                return self.net(x.view(x.shape[0], -1))
+
+        params = dict(DUMMY_EMBEDDING_PARAMS, bias=False,
+                      processor_type_x='spike', processor_type_y='spike')
+        with pytest.warns(UserWarning, match='does not accept a `bias` argument'):
+            critic = build_critic('separable', params, custom_embedding_cls=Minimal)
+        assert isinstance(critic, SeparableCritic)
+
+    def test_architecture_that_cannot_preserve_zero_warns(self):
+        """Transformer adds a positional encoding, so it cannot honour bias=False."""
+        params = dict(DUMMY_EMBEDDING_PARAMS, bias=False, embedding_model='transformer',
+                      processor_type_x='spike', processor_type_y='spike')
+        with pytest.warns(UserWarning, match='input-independent additive term'):
+            build_critic('separable', params)
+
+    def test_shared_encoder_rejects_a_split_decision(self):
+        """One encoder cannot be both bias-free and biased."""
+        params = dict(DUMMY_EMBEDDING_PARAMS, bias=None, shared_encoder=True,
+                      processor_type_x='spike', processor_type_y='continuous')
+        with pytest.raises(ValueError, match='resolves differently'):
+            build_critic('separable', params)

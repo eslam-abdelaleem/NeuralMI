@@ -265,8 +265,35 @@ Example: `Processing(x='continuous', x_params={'window_size': 0.05})`.
 `embedding_dim`, `hidden_dim`, `n_layers`, `critic_type` (`'separable'|'concat'|'hybrid'`),
 `kernel_size`, `bidirectional`, `nhead`, `branch_model` (`embedding_model='dual_branch'` only),
 `dropout`, `norm_layer` (`'layer'|'batch'`),
-`use_spectral_norm`, `shared_encoder`, `custom_critic`, `custom_embedding_cls`,
+`use_spectral_norm`, `bias`, `shared_encoder`, `custom_critic`, `custom_embedding_cls`,
 `use_variational`, `beta`, `use_decoder`, `decoder_weight`, `pytorch_predefined`, `pretrained`.
+
+#### `bias` — bias terms in the embedding layers
+
+`None` (the default) resolves per side from the processor type: `False` for
+`'spike'`, `True` otherwise. Pass `True` or `False` to use one value for both
+sides.
+
+Spike windows are padded to a fixed width, so a window holding few spikes is
+mostly padding. Without bias terms an all-zero input embeds to exactly zero, so
+a window that is entirely padding contributes nothing downstream. Continuous
+data has no padding and keeps its biases.
+
+Two things interact with this:
+
+- `norm_layer` is served by an affine-free `RMSNorm` whenever bias is off.
+  `LayerNorm` and `BatchNorm` subtract the mean, so a zero entry does not stay
+  zero through them, which would defeat the point. `use_spectral_norm` is
+  unaffected: it rescales the weight matrix and adds nothing.
+- `embedding_model='transformer'` and `'pretrained_backbone'` cannot honour it.
+  A positional encoding, and biases baked into frozen pretrained weights, are
+  additive terms independent of the input. Their own bias terms are still
+  removed and a warning is emitted.
+
+A `custom_embedding_cls` receives `bias` only if its `__init__` accepts it,
+directly or via `**kwargs`; classes on the minimal contract
+(`input_dim, hidden_dim, embed_dim, n_layers`) keep building unchanged, with a
+warning if an explicit `bias=False` cannot be delivered.
 
 **`Training`** — optimization loop:
 `n_epochs`, `learning_rate`, `batch_size`, `patience`,

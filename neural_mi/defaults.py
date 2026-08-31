@@ -113,6 +113,15 @@ BASE_PARAMS_SCHEMA = {
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
     'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
     'norm_layer': {'type': (str, type(None)), 'default': None},
+    # Whether embedding layers carry bias terms.
+    #   None (default) — resolved per side from the processor type: False for
+    #                    'spike', True otherwise.
+    #   True / False   — used for both sides as given.
+    # With no bias anywhere, an all-zero input embeds to exactly zero, so a
+    # spike window that is entirely padding contributes nothing. Mean-centring
+    # norm layers would undo that, so `norm_layer` is served by an affine-free
+    # RMSNorm whenever bias is off.
+    'bias': {'type': (bool, type(None)), 'default': None},
     # PretrainedBackboneEmbedding: torchvision model name and pretrained flag.
     'pytorch_predefined': {'type': (str, type(None)), 'default': None},
     'pretrained': {'type': bool, 'default': False},

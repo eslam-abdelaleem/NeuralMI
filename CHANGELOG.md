@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added: `Model(bias=...)`, defaulting off for spike data
+
+Embedding layers can now be built without bias terms. `bias=None`, the default,
+resolves per side from the processor type: `False` for `'spike'`, `True`
+otherwise. An explicit `True`/`False` applies to both sides.
+
+Spike windows are padded to a fixed width, so a window holding few spikes is
+mostly padding. With no bias anywhere an all-zero input embeds to exactly zero,
+so a window that is entirely padding contributes nothing downstream. Verified
+across `mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn` and `lru`: with every
+parameter randomised, a zero input gives an embedding of exactly 0.0, against
+0.7 to 63 with biases present.
+
+Resolution is per side, so `x='spike', y='continuous'` gives a bias-free
+X-encoder and a biased Y-encoder. `shared_encoder=True` raises when the two
+sides resolve differently, since one encoder cannot be both.
+
+Interactions worth knowing:
+
+- `norm_layer` is served by an affine-free `RMSNorm` when bias is off.
+  `LayerNorm` and `BatchNorm` subtract the mean, so a zero entry does not
+  survive them even with the affine shift disabled. `use_spectral_norm` is
+  unaffected, being a reparameterisation of the weight matrix.
+- `embedding_model='transformer'` and `'pretrained_backbone'` cannot deliver
+  the guarantee. A positional encoding, and biases baked into frozen pretrained
+  weights, are additive and independent of the input. They declare
+  `zero_preserving = False`, still drop the bias terms they own, and warn.
+- A `custom_embedding_cls` is handed `bias` only if its `__init__` accepts it.
+  Classes on the minimal contract keep building unchanged, warning if an
+  explicit `bias=False` cannot be delivered.
+
+Decoders are unchanged: they reconstruct the input from an embedding, so their
+bias terms cannot affect whether a zero input propagates through the encoder.
+
+
 ### Changed: spike windows pad empty slots with `0.0`
 
 `SpikeWindowDataset`'s `no_spike_value` default moves from `-1.0` to `0.0`.
