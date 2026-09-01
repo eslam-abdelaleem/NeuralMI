@@ -83,7 +83,7 @@ def as_config(value: Union[None, "T", Dict[str, Any]], cls: Type[T]) -> Optional
 @dataclass
 class Model:
     """Model architecture: embedding network + critic."""
-    embedding_model: Optional[str] = None          # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'
+    embedding_model: Optional[str] = None          # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'|'deepsets'
     embedding_dim: Optional[int] = None
     hidden_dim: Optional[Union[int, List[int]]] = None
     n_layers: Optional[int] = None

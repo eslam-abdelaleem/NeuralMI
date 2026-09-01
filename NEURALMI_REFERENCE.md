@@ -122,6 +122,7 @@ Before computing critic scores, each input passes through an **embedding model**
 | Gated Recurrent Unit | `'gru'` | For sequences; `bidirectional` option |
 | Long Short-Term Memory | `'lstm'` | For sequences; `bidirectional` option |
 | Linear Recurrent Unit | `'lru'` | Complex-valued diagonal state-space recurrence; for sequences; `dropout` option (locked/variational dropout inside each block) |
+| DeepSets | `'deepsets'` | Permutation-invariant over a window's spikes: a shared network per spike time, summed over the slots holding a spike via an occupancy mask. For raw spike times, where the last axis is spike rank rather than time |
 | Temporal Convolutional Net | `'tcn'` | Dilated 1D conv; good for long windows |
 | Transformer | `'transformer'` | Self-attention; needs `nhead` param |
 | Pretrained Backbone | `'pretrained_backbone'` | Frozen torchvision backbone + trainable MLP head; for image data (`(N,C,H,W)`) |
@@ -261,7 +262,7 @@ result = nmi.run(
 Example: `Processing(x='continuous', x_params={'window_size': 0.05})`.
 
 **`Model`** — architecture:
-`embedding_model` (`'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'lru'|'tcn'|'transformer'|'pretrained_backbone'|'dual_branch'`),
+`embedding_model` (`'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'lru'|'tcn'|'transformer'|'pretrained_backbone'|'dual_branch'|'deepsets'`),
 `embedding_dim`, `hidden_dim`, `n_layers`, `critic_type` (`'separable'|'concat'|'hybrid'`),
 `kernel_size`, `bidirectional`, `nhead`, `branch_model` (`embedding_model='dual_branch'` only),
 `dropout`, `norm_layer` (`'layer'|'batch'`),
@@ -1517,7 +1518,7 @@ Most embedding models take tensors of shape `(batch, n_channels, window_size)` a
 ```python
 from neural_mi.models import (
     MLP, CNN1D, CNN2D, GRU, LSTM, LRUEmbedding, TCN, Transformer,
-    PretrainedBackboneEmbedding, DualBranchEmbedding,
+    PretrainedBackboneEmbedding, DualBranchEmbedding, DeepSets,
 )
 ```
 
@@ -1529,6 +1530,7 @@ from neural_mi.models import (
 | `GRU` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, n_layers, bidirectional` |
 | `LSTM` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, n_layers, bidirectional` |
 | `LRUEmbedding` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, n_layers, dropout` |
+| `DeepSets` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, n_layers, no_spike_value` |
 | `TCN` | `(N, C, W)` | `input_dim, embedding_dim, hidden_dim, kernel_size` |
 | `Transformer` | `(N, C, W)` | `input_dim, embedding_dim, nhead, n_layers` |
 | `PretrainedBackboneEmbedding` | `(N, C, H, W)` ← **4-D** | `input_dim, embedding_dim, pytorch_predefined, pretrained` |

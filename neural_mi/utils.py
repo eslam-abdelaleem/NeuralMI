@@ -17,6 +17,7 @@ import platform
 import tempfile
 
 from neural_mi.models.embeddings import (
+    DeepSets,
     MLP, VariationalWrapper,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
     PretrainedBackboneEmbedding, LRUEmbedding, DualBranchEmbedding,
@@ -38,6 +39,7 @@ _EMBEDDING_CLASSES = {
     'transformer': Transformer,
     'pretrained_backbone': PretrainedBackboneEmbedding,
     'lru': LRUEmbedding,
+    'deepsets': DeepSets,
     'dual_branch': DualBranchEmbedding,
 }
 
@@ -478,6 +480,14 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     if _accepts_kwarg(EmbeddingModel, 'bias'):
         model_kwargs['bias'] = bias_x
         model_kwargs_y['bias'] = bias_y
+
+    # DeepSets masks padded slots, so it needs the sentinel the processor used.
+    # Taken per side, since X and Y can be processed differently.
+    if _accepts_kwarg(EmbeddingModel, 'no_spike_value'):
+        for kwargs, key in ((model_kwargs, 'processor_params_x'),
+                            (model_kwargs_y, 'processor_params_y')):
+            params = embedding_params.get(key) or {}
+            kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
     elif not (bias_x and bias_y):
         warnings.warn(
             f"bias=False applies to the embedding layers, but "

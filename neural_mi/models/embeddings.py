@@ -635,6 +635,81 @@ class Transformer(BaseEmbedding):
                 nn.init.xavier_uniform_(p)
 
 
+class DeepSets(BaseEmbedding):
+    """Permutation-invariant encoder for spike windows.
+
+    A spike window is a *set* of times, not an ordered vector. The flattened
+    encoders give slot ``j`` its own weight column, which makes "the third
+    spike" a feature and leaves padded slots inert only because zero times any
+    weight is zero. This encoder instead applies a shared ``phi`` to each spike
+    time, sums over the slots that actually hold a spike using an explicit
+    occupancy mask, and maps the sum through ``rho``:
+
+        ``embedding = rho( sum_j mask_j * phi(t_j) )``
+
+    Padding is excluded by the mask rather than by relying on the sentinel
+    being zero, and the result does not depend on the order spikes appear in.
+    Aggregation is a sum rather than a mean, so a window's spike count still
+    reaches the embedding.
+
+    Where it may suit. The aggregation treats a window as an unordered
+    collection of times, which is what a window of raw spike times is: the last
+    axis of that tensor is spike rank, not time, so nothing is discarded by
+    ignoring its order. That makes it a reasonable choice when what matters is
+    *where* spikes fall within a window. It is less suited to binned spike data,
+    where the last axis is time and its ordering carries the structure, and to
+    signals whose information is in the spike count, since permutation
+    invariance drops the slot-occupancy pattern that expresses a count most
+    directly.
+
+    Which encoder actually performs best is a property of the data, so it is
+    worth comparing against the alternatives on a case with a known answer
+    (see :mod:`neural_mi.generators`) rather than choosing on architecture
+    alone.
+
+    Parameters
+    ----------
+    input_dim : int
+        Number of neurons (channels).
+    hidden_dim : int
+        Width of both ``phi`` and ``rho``.
+    embed_dim : int
+        Output embedding dimensionality.
+    n_layers : int, optional
+        Hidden layers in ``phi``. Defaults to 2.
+    bias : bool, optional
+        Defaults to True. Note that ``phi`` maps a scalar spike time, so
+        without a bias it is positively homogeneous in that time and cannot
+        localise a value; this encoder depends on the bias more than the
+        flattened ones do.
+    no_spike_value : float, optional
+        The padding sentinel to mask out, matching the value the spike
+        processor used. Defaults to 0.0.
+    """
+    input_style = 'channels'
+
+    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int,
+                 n_layers: int = 2, bias: bool = True,
+                 no_spike_value: float = 0.0, **kwargs):
+        super().__init__()
+        self.no_spike_value = float(no_spike_value)
+        width = hidden_dim if isinstance(hidden_dim, int) else hidden_dim[0]
+        phi = [nn.Linear(1, width, bias=bias), nn.ReLU()]
+        for _ in range(max(0, n_layers - 1)):
+            phi += [nn.Linear(width, width, bias=bias), nn.ReLU()]
+        self.phi = nn.Sequential(*phi)
+        self.rho = nn.Sequential(
+            nn.Linear(width * input_dim, width, bias=bias), nn.ReLU(),
+            nn.Linear(width, embed_dim, bias=bias))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (batch, n_neurons, max_slots)
+        mask = (x != self.no_spike_value).to(x.dtype).unsqueeze(-1)
+        h = self.phi(x.unsqueeze(-1))          # (batch, neurons, slots, width)
+        h = (h * mask).sum(dim=2)              # masked sum over slots
+        return self.rho(h.flatten(1))
+
+
 class CNN2D(BaseEmbedding):
     """A 2D CNN embedding network for image-like data with shape (N, C, H, W).
 

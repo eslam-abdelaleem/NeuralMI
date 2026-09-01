@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added: `embedding_model='deepsets'`
+
+A permutation-invariant encoder for spike windows. A shared network is applied
+to each spike time, summed over the slots that hold a spike using an explicit
+occupancy mask, and mapped through a second network:
+
+    embedding = rho( sum_j mask_j * phi(t_j) )
+
+Padding is excluded by the mask rather than by relying on the sentinel being
+zero, and the result does not depend on the order spikes appear in. The
+aggregation is a sum, so a window's spike count still reaches the embedding.
+The sentinel is read from `processor_params_x`/`_y` per side, so it matches
+whatever `no_spike_value` the processor used.
+
+Where it may suit: a window of raw spike times is an unordered collection, since
+the last axis of that tensor is spike rank rather than time, so ignoring its
+order discards nothing. It is less suited to binned spike data, where that axis
+is time and its ordering carries the structure, and to signals whose information
+lies in the spike count, since permutation invariance drops the slot-occupancy
+pattern that expresses a count most directly.
+
+Which encoder performs best is a property of the data. `neural_mi.generators`
+provides spike pairs with an exact MI in both a rate coding and a timing coding,
+which is the way to settle it for a given dataset rather than choosing on
+architecture alone.
+
+
 ### Changed: every generator now reports a checkable answer, and `synthetic` is retired
 
 `neural_mi/generators/` no longer ships anything whose truth is unknown. An

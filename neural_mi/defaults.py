@@ -105,7 +105,7 @@ BASE_PARAMS_SCHEMA = {
     'n_layers_head': {'type': (int, type(None)), 'min': 1, 'default': None},  # Hybrid critic head; None → max(1, n_layers-1)
     'hidden_dim_head': {'type': (int, list, type(None)), 'default': None},  # Hybrid critic head; None → min(64, hidden_dim)
     'critic_type': {'type': str, 'default': 'separable'},
-    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'
+    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'|'deepsets'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer

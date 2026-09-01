@@ -459,3 +459,61 @@ class TestBias:
         with pytest.warns(UserWarning, match='input-independent additive term'):
             build_critic('separable', params)
 
+
+
+class TestDeepSets:
+    """`embedding_model='deepsets'` aggregates over spikes, not slots."""
+
+    def _net(self, **overrides):
+        params = dict(DUMMY_EMBEDDING_PARAMS, embedding_model='deepsets',
+                      n_channels_x=3, n_channels_y=3,
+                      processor_type_x='spike', processor_type_y='spike',
+                      processor_params_x={'window_size': 1.0},
+                      processor_params_y={'window_size': 1.0})
+        params.update(overrides)
+        return build_critic('separable', params).embedding_net_x
+
+    def test_builds_and_forwards(self):
+        net = self._net()
+        out = net(torch.rand(4, 3, 16))
+        assert out.shape == (4, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
+
+    def test_is_invariant_to_spike_order(self):
+        """A window is a set of times, so permuting the slots must not matter."""
+        net = self._net()
+        x = torch.rand(2, 3, 16)
+        permuted = x[:, :, torch.randperm(16)]
+        assert torch.allclose(net(x), net(permuted), atol=1e-5)
+
+    def test_padded_slots_are_masked_out(self):
+        """Changing how many slots are padding must not move the embedding,
+        because padded slots are excluded by the mask rather than by relying on
+        the sentinel being zero."""
+        net = self._net()
+        with torch.no_grad():
+            for p in net.parameters():
+                p.normal_(0, 0.5)          # biases non-zero, so masking is doing the work
+        net.eval()
+        a = torch.zeros(1, 3, 16); a[:, :, :4] = torch.tensor([0.2, 0.4, 0.6, 0.8])
+        b = a.clone(); b[:, :, 4:] = 0.0    # identical real spikes, all else padding
+        assert torch.allclose(net(a), net(b), atol=1e-6)
+
+    def test_sentinel_comes_from_the_processor_params(self):
+        net = self._net(processor_params_x={'window_size': 1.0, 'no_spike_value': -1.0})
+        assert net.no_spike_value == -1.0
+
+    def test_sentinel_defaults_to_zero(self):
+        assert self._net().no_spike_value == 0.0
+
+    def test_a_nonzero_sentinel_is_actually_excluded(self):
+        """With no_spike_value=-1.0 the padding is not zero, so only an explicit
+        mask can keep it out of the sum."""
+        net = self._net(processor_params_x={'window_size': 1.0, 'no_spike_value': -1.0})
+        with torch.no_grad():
+            for p in net.parameters():
+                p.normal_(0, 0.5)
+        net.eval()
+        a = torch.full((1, 3, 16), -1.0); a[:, :, :3] = torch.tensor([0.2, 0.5, 0.9])
+        b = a.clone()                      # same 3 spikes; the rest is sentinel either way
+        b[:, :, 3:] = -1.0
+        assert torch.allclose(net(a), net(b), atol=1e-6)
