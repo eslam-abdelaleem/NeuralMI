@@ -45,6 +45,17 @@ _SPATIAL_KEYS = frozenset({
     'random_crop', 'random_erase', 'time_mask', 'freq_mask', 'gaussian_blur',
 })
 
+# Everything else this module knows how to apply.
+_NON_SPATIAL_KEYS = frozenset({
+    'gaussian_noise', 'intensity_scale', 'channel_dropout', 'custom',
+})
+
+# The full vocabulary. An unrecognised key used to be skipped in silence, so a
+# typo disabled the augmentation you asked for while training carried on looking
+# normal. Checked against this set below and warned about, matching how the
+# module already reports a spatial augmentation it cannot apply.
+_VALID_KEYS = _SPATIAL_KEYS | _NON_SPATIAL_KEYS
+
 
 def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Tensor:
     """Apply augmentations defined in *aug_params* to batch tensor *x*.
@@ -55,6 +66,9 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
         Batch of shape ``(N, C, ...)`` — typically ``(N, C, W)`` or ``(N, C, H, W)``.
     aug_params : dict
         Augmentation specification.  See module docstring for valid keys.
+        An unrecognised key is ignored with a ``UserWarning`` rather than in
+        silence, since a typo would otherwise disable the augmentation without
+        any sign of it.
 
     Returns
     -------
@@ -63,6 +77,15 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
     """
     if not aug_params:
         return x
+
+    unknown = sorted(set(aug_params) - _VALID_KEYS)
+    if unknown:
+        warnings.warn(
+            f"Unrecognised augmentation key(s) {unknown}; they will be ignored, "
+            f"so the augmentation you asked for is not being applied. Valid keys "
+            f"are {sorted(_VALID_KEYS)}.",
+            UserWarning, stacklevel=3,
+        )
 
     is_4d = (x.ndim == 4)
 

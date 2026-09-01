@@ -217,7 +217,8 @@ def run_precision_analysis(
                 x_c = apply_corruption(x_train_raw, tau, 'rounding') if corrupt_target in ['x', 'both'] else x_train_raw
                 y_c = apply_corruption(y_train_raw, tau, 'rounding') if corrupt_target in ['y', 'both'] else y_train_raw
                 mi = trainer._safe_eval_mi(x_c.to(device), y_c.to(device), max_eval)
-                results_list.append({'tau': tau, 'train_mi': mi, 'train_mi_std': 0.0})
+                results_list.append({'tau': tau, 'train_mi': mi, 'train_mi_std': 0.0,
+                                     'eval_size': max_eval})
 
             elif corruption_method == 'noise':
                 # Average over multiple forward passes to stabilize stochastic noise bounds
@@ -226,7 +227,9 @@ def run_precision_analysis(
                     x_c = apply_corruption(x_train_raw, tau, 'noise') if corrupt_target in ['x', 'both'] else x_train_raw
                     y_c = apply_corruption(y_train_raw, tau, 'noise') if corrupt_target in ['y', 'both'] else y_train_raw
                     mis.append(trainer._safe_eval_mi(x_c.to(device), y_c.to(device), max_eval))
-                results_list.append({'tau': tau, 'train_mi': np.mean(mis), 'train_mi_std': np.std(mis)})
+                results_list.append({'tau': tau, 'train_mi': float(np.mean(mis)),
+                                     'train_mi_std': float(np.std(mis)),
+                                     'eval_size': max_eval})
 
     df = pd.DataFrame(results_list)
     

@@ -41,9 +41,9 @@ class TestQuantitySweep:
 
     def test_parameter_sweep_over_k_is_unchanged(self):
         x = _ar1()
-        df = q.active_information_storage(x, k=[1, 2], **_FAST)
-        assert isinstance(df, pd.DataFrame)
-        assert sorted(df['k']) == [1, 2]
+        r = q.active_information_storage(x, k=[1, 2], **_FAST)
+        assert isinstance(r, nmi.Results)
+        assert sorted(r.dataframe['k']) == [1, 2]
 
     @pytest.mark.parametrize('fn,kwargs', [
         (q.excess_entropy, dict(k=2, future_k=2)),

@@ -69,14 +69,24 @@ def _run_pair_task(args: tuple) -> Dict[str, Any]:
     # instead of treating it as already pre-processed.
     _is_raw = not (hasattr(xi, 'ndim') and xi.ndim == 3)
     results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=_is_raw)
-    vals = [r['train_mi'] for r in results if 'train_mi' in r]
-    if not vals:
+    def _agg(field):
+        """mean/std over this pair's runs, NaN when the field is never present."""
+        v = [r[field] for r in results if r.get(field) is not None]
+        if not v:
+            return float('nan'), float('nan')
+        return float(np.mean(v)), (float(np.std(v)) if len(v) > 1 else 0.0)
+
+    if not [r for r in results if 'train_mi' in r]:
         logger.warning(f"  Pair (ch_x={i}, ch_y={j}): all runs failed, recording NaN.")
-        mi_mean, mi_std = float('nan'), float('nan')
-    else:
-        mi_mean = float(np.mean(vals))
-        mi_std = float(np.std(vals)) if len(vals) > 1 else 0.0
-    return {'ch_x': i, 'ch_y': j, 'mi_mean': mi_mean, 'mi_std': mi_std}
+    mi_mean, mi_std = _agg('train_mi')
+    # test_mi and eval_size are already in `results`; they used to be dropped
+    # here, which left mode='pairwise' unable to check the InfoNCE ceiling at
+    # all. eval_size is a property of the split, so it is constant across runs.
+    test_mi_mean, test_mi_std = _agg('test_mi')
+    eval_size = next((r['eval_size'] for r in results if r.get('eval_size') is not None), None)
+    return {'ch_x': i, 'ch_y': j, 'mi_mean': mi_mean, 'mi_std': mi_std,
+            'test_mi_mean': test_mi_mean, 'test_mi_std': test_mi_std,
+            'eval_size': eval_size}
 
 
 def _run_pair_task_for_pool(args: tuple) -> Dict[str, Any]:

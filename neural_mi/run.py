@@ -74,25 +74,60 @@ _SHIFT_WINDOWS_SAFE_MODES = _SHIFT_SAFE_MODES + ('rigorous', 'lag')
 _SHIFT_TIME_RIGOROUS_SAFE_MODES = _SHIFT_SAFE_MODES + ('rigorous',)
 
 
+# Per-epoch MI curves. These are list-valued, so a column-wise multiply cannot
+# reach them; they need an elementwise map. Handled inside _convert_mi_units so
+# every path gets it, rather than at one call site (which is how the sweep-family
+# modes ended up reporting history in nats beside scalars in bits).
+_MI_HISTORY_KEYS = ('test_mi_history', 'train_mi_history')
+
+
+def _scale_history(seq, factor: float):
+    """Apply `factor` elementwise to a per-epoch MI curve, preserving NaNs."""
+    if seq is None:
+        return seq
+    try:
+        return [v if (v is None or (isinstance(v, float) and np.isnan(v)))
+                else v * factor for v in seq]
+    except TypeError:
+        return seq
+
+
 def _convert_mi_units(results: Any, to_bits: bool) -> Any:
-    """Recursively converts MI values in results from nats to bits."""
+    """Recursively converts MI values in results from nats to bits.
+
+    Every MI-valued field the library returns carries the unit set by
+    `output_units`, whether it is a scalar, a DataFrame column, or a per-epoch
+    history list, and whether it sits in `dataframe` or in `details`.
+    """
     if not to_bits: return results
     NATS_TO_BITS = 1 / np.log(2)
     if isinstance(results, float): return results * NATS_TO_BITS
+    elif isinstance(results, np.ndarray):
+        # e.g. mode='pairwise''s mi_matrix. Handled here so callers do not
+        # re-implement the nats->bits factor locally.
+        return results * NATS_TO_BITS
     elif isinstance(results, pd.DataFrame):
         df = results.copy()
         cols = [
             'test_mi', 'train_mi', 'raw_train_mi', 'train_mi_at_peak',
             'test_mi_std', 'train_mi_std',          # precision-mode std columns
+            'test_mi_mean',                         # pairwise-mode held-out aggregate
             'mi_mean', 'mi_std', 'mi_corrected', 'mi_error', 'mi_error_pred', 'slope',
         ]
         for col in cols:
             if col in df.columns: df[col] *= NATS_TO_BITS
+        for col in _MI_HISTORY_KEYS:
+            if col in df.columns:
+                df[col] = df[col].map(lambda v: _scale_history(v, NATS_TO_BITS))
         return df
     elif isinstance(results, list) and all(isinstance(r, dict) for r in results):
         keys = ['test_mi', 'train_mi', 'raw_train_mi', 'train_mi_at_peak',
                 'mi_corrected', 'mi_error', 'mi_error_pred', 'slope']
-        return [{**r, **{k: r.get(k, 0) * NATS_TO_BITS for k in keys if r.get(k) is not None}} for r in results]
+        return [{**r,
+                 **{k: r.get(k, 0) * NATS_TO_BITS for k in keys if r.get(k) is not None},
+                 **{k: _scale_history(r[k], NATS_TO_BITS)
+                    for k in _MI_HISTORY_KEYS if isinstance(r.get(k), list)}}
+                for r in results]
     elif isinstance(results, dict):
         new_results = results.copy()
         # Scalar MI values stored by analysis modules (transfer entropy, CMI, etc.)
@@ -113,6 +148,9 @@ def _convert_mi_units(results: Any, to_bits: bool) -> Any:
         for k in _MI_SCALAR_KEYS:
             if k in new_results and isinstance(new_results[k], (int, float)):
                 new_results[k] = new_results[k] * NATS_TO_BITS
+        for k in _MI_HISTORY_KEYS:
+            if isinstance(new_results.get(k), list):
+                new_results[k] = _scale_history(new_results[k], NATS_TO_BITS)
         if 'corrected_results' in new_results:
             new_results['corrected_results'] = _convert_mi_units(new_results['corrected_results'], to_bits)
         if 'raw_results_df' in new_results:
@@ -984,13 +1022,9 @@ def _run_flat(
                 if _key in res_dict and isinstance(res_dict[_key], (int, float)):
                     res_dict[_key] = res_dict[_key] * NATS_TO_BITS if to_bits else res_dict[_key]
 
-            # Convert MI history lists to the requested units
-            for _key in ('test_mi_history', 'train_mi_history'):
-                if _key in res_dict and isinstance(res_dict[_key], list):
-                    res_dict[_key] = [
-                        v * NATS_TO_BITS if (to_bits and not np.isnan(v)) else v
-                        for v in res_dict[_key]
-                    ]
+            # History lists: one shared implementation, so the estimate path
+            # and the sweep-family paths cannot drift apart on units again.
+            res_dict = _convert_mi_units(res_dict, to_bits)
 
             result = Results(mode=mode,
                              mi_estimate=mi,
@@ -1101,6 +1135,11 @@ def _run_flat(
                                             lag_range=lag_range_val, sweep_grid=sweep_grid,
                                             **analysis_kwargs)
             df = pd.DataFrame(results_list)
+            # Convert before aggregating, exactly as mode='sweep' does, so that
+            # `dataframe` and `details['raw_results']` are in the same units.
+            # Converting only the aggregate left raw_results in nats while the
+            # dataframe was in bits -- the same numbers 1.443x apart.
+            df = _convert_mi_units(df, output_units == 'bits')
             group_vars = ['lag']
             if sweep_grid:
                 group_vars.extend([key for key in sweep_grid.keys() if key != 'run_id'])
@@ -1110,9 +1149,11 @@ def _run_flat(
                     ['mean', 'std']).reset_index().rename(
                     columns={'mean': 'mi_mean', 'std': 'mi_std'}).fillna(0)
             else:
-                agg_df = df
+                # copy() so `dataframe` and details['raw_results'] cannot alias
+                # the same object and have a caller's edit to one show up in the other.
+                agg_df = df.copy()
             result = Results(mode=mode,
-                             dataframe=_convert_mi_units(agg_df, output_units == 'bits'),
+                             dataframe=agg_df,
                              params={**run_params, 'sweep_var': 'lag',
                                      'sweep_group_vars': valid_group_vars or group_vars},
                              details={'raw_results': df})
@@ -1504,12 +1545,10 @@ def _run_flat(
                 )
             raw = run_pairwise_mi(x_run_data, base_params, y_data=pairwise_y,
                                   sweep_grid=sweep_grid, n_workers=n_workers, pairs=pairs)
-            _scale = 1 / np.log(2) if output_units == 'bits' else 1.0
-            raw['mi_matrix'] = raw['mi_matrix'] * _scale
-            df = raw['dataframe'].copy()
-            for _col in ('mi_mean', 'mi_std', 'mi_estimate'):
-                if _col in df.columns:
-                    df[_col] = df[_col] * _scale
+            _to_bits = output_units == 'bits'
+            raw['mi_matrix'] = _convert_mi_units(raw['mi_matrix'], _to_bits)
+            # `df` stays bound: the Results construction further down uses it.
+            df = _convert_mi_units(raw['dataframe'].copy(), _to_bits)
             raw['dataframe'] = df
             # Inject channel names for heatmap axis labels when provided.
             n_ch = raw.get('n_channels')

@@ -350,27 +350,27 @@ class TestQuantitiesShapesAndSweep:
         assert isinstance(r, nmi.Results)
         assert np.isfinite(r.mi_estimate)
 
-    def test_mi_rate_sweep_returns_dataframe(self):
+    def test_mi_rate_sweep_returns_results(self):
         x, y = torch.randn(500, 1), torch.randn(500, 1)
-        df = nmi.mi_rate(x, y, h=[0, 2, 4], W=5, model=_DB_MODEL, training=_TRAINING,
+        r = nmi.mi_rate(x, y, h=[0, 2, 4], W=5, model=_DB_MODEL, training=_TRAINING,
                           n_workers=2, show_progress=False)
-        assert isinstance(df, pd.DataFrame)
-        assert list(df['h']) == [0, 2, 4]
-        assert df['mi_estimate'].notna().all()
+        assert isinstance(r, nmi.Results)
+        assert list(r.dataframe['h']) == [0, 2, 4]
+        assert r.dataframe['mi_mean'].notna().all()
 
-    def test_instantaneous_exchange_sweep_returns_dataframe(self):
+    def test_instantaneous_exchange_sweep_returns_results(self):
         x, y = torch.randn(500, 1), torch.randn(500, 1)
-        df = nmi.instantaneous_exchange(x, y, k=[0, 2, 4], model=_DB_MODEL, training=_TRAINING,
+        r = nmi.instantaneous_exchange(x, y, k=[0, 2, 4], model=_DB_MODEL, training=_TRAINING,
                                         n_workers=2, show_progress=False)
-        assert isinstance(df, pd.DataFrame)
-        assert list(df['k']) == [0, 2, 4]
+        assert isinstance(r, nmi.Results)
+        assert list(r.dataframe['k']) == [0, 2, 4]
 
-    def test_directed_information_rate_sweep_returns_dataframe(self):
+    def test_directed_information_rate_sweep_returns_results(self):
         x, y = torch.randn(500, 1), torch.randn(500, 1)
-        df = nmi.directed_information_rate(x, y, k=[1, 2, 3], model=_DB_MODEL, training=_TRAINING,
+        r = nmi.directed_information_rate(x, y, k=[1, 2, 3], model=_DB_MODEL, training=_TRAINING,
                                            n_workers=2, show_progress=False)
-        assert isinstance(df, pd.DataFrame)
-        assert list(df['k']) == [1, 2, 3]
+        assert isinstance(r, nmi.Results)
+        assert list(r.dataframe['k']) == [1, 2, 3]
 
 
 # --------------------------------------------------------------------------

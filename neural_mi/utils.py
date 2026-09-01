@@ -249,7 +249,18 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
     lag : int or float
         The lag value. For 'spike' data, always seconds. For 'continuous'/
         'categorical' data, seconds if `sample_rate` is given, otherwise a raw
-        sample-index offset.
+        sample-index offset. For pre-processed data (``y_processor_type`` is
+        ``None``) always an index offset along axis 0, whose unit follows the
+        array's shape: timepoints for 1-D/2-D input, **windows** for 3-D
+        pre-windowed input. The 3-D case warns, since ``lag`` there means
+        ``lag * step_size`` timepoints.
+
+        Any lag assumes axis 0 is in time order. ``None`` means "already
+        prepared, do not window", not "IID", so that assumption usually holds
+        for a pre-processed recording and is the reason lagging static data is
+        meaningful at all. It cannot be verified here; on genuinely unordered
+        rows a shift simply breaks the pairing, giving full MI at lag 0 and
+        roughly zero elsewhere.
     x_processor_type : str, optional
         X's processor type: one of 'continuous', 'categorical', 'spike', or
         None. Only consulted to detect the mixed-modality case (spike paired
@@ -257,8 +268,16 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
         `y_processor_type` determines how the shift is applied (both arrays
         get the same array-index treatment regardless of which specific
         non-spike type each one is).
-    y_processor_type : str
-        Y's processor type: one of 'continuous', 'categorical', or 'spike'.
+    y_processor_type : str or None
+        Y's processor type: one of 'continuous', 'categorical', 'spike', or
+        ``None`` for pre-processed static data. Any other value raises, rather
+        than returning the data unshifted: a lag analysis that silently applied
+        no lag reports a flat profile that looks like a real negative result.
+
+    Raises
+    ------
+    ValueError
+        If ``y_processor_type`` is not one of the recognised values.
     sample_rate : float, optional
         Samples per second for continuous/categorical data. If provided, lag is
         interpreted as seconds and converted to samples. If None, lag is treated
@@ -292,7 +311,11 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
         y_shifted = [spikes - lag for spikes in y_data]
         return x_data, y_shifted
 
-    if y_processor_type in ('continuous', 'categorical'):
+    if y_processor_type in ('continuous', 'categorical') or y_processor_type is None:
+        # `None` means pre-processed static data (create_single_dataset's
+        # convention). It shifts along the same axis as the windowed types,
+        # but the *unit* of that axis depends on what the caller supplied,
+        # so it is resolved from ndim below rather than assumed.
         # Convert to numpy if needed
         if torch.is_tensor(x_data):
             x_data = x_data.detach().cpu().numpy()
@@ -304,7 +327,28 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
         elif not isinstance(y_data, np.ndarray):
             y_data = np.array(y_data)
 
-        if sample_rate is not None:
+        if y_processor_type is None:
+            # Static (pre-processed) data. There is no sample_rate to convert
+            # with, so the lag is an index offset by construction. What that
+            # index *means* depends on the array's shape, and the two cases
+            # carry different units -- so name the unit rather than guess
+            # silently. This mirrors how the sample_rate ambiguity above is
+            # handled: pick the documented reading and say so.
+            if x_data.ndim >= 3:
+                logger.warning(
+                    f"Lag on pre-processed data with shape {x_data.shape}: axis 0 is "
+                    f"windows, not timepoints, so lag={lag} shifts by {lag} WINDOWS "
+                    f"({lag} x step_size timepoints), not {lag} samples. Pass unwindowed "
+                    f"data with processing=Processing(x='continuous', ...) if you want "
+                    f"the lag in timepoints."
+                )
+            else:
+                logger.info(
+                    f"Lag on pre-processed data with shape {x_data.shape}: axis 0 is "
+                    f"timepoints, so lag={lag} shifts by {lag} samples."
+                )
+            lag_samples = int(lag)
+        elif sample_rate is not None:
             # Lag provided in seconds — convert to samples
             lag_samples = int(round(lag * sample_rate))
         else:
@@ -318,16 +362,24 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
             )
             lag_samples = int(lag)
 
+        # Slice axis 0 only. Written without a trailing `, :` so it holds for
+        # 1-D (which StaticDataset accepts and which the old 2-D-only slice
+        # raised IndexError on), 2-D and 3-D alike.
         if lag_samples == 0:
             return x_data, y_data
         elif lag_samples > 0:
             # y is in the future of x
-            return x_data[:-lag_samples, :], y_data[lag_samples:, :]
+            return x_data[:-lag_samples], y_data[lag_samples:]
         else:
             # y is in the past of x
-            return x_data[-lag_samples:, :], y_data[:lag_samples, :]
+            return x_data[-lag_samples:], y_data[:lag_samples]
 
-    return x_data, y_data
+    raise ValueError(
+        f"_shift_data cannot apply a lag to y_processor_type={y_processor_type!r}. "
+        f"Expected 'spike', 'continuous', 'categorical', or None (pre-processed). "
+        f"Returning the data unshifted would report a lag analysis that never "
+        f"applied a lag, so this raises instead."
+    )
 
     
 def _accepts_kwarg(cls: type, name: str) -> bool:

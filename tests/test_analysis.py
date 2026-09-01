@@ -3,7 +3,7 @@ import pytest
 import numpy as np
 import pandas as pd
 import neural_mi as nmi
-from neural_mi import Model, Training, Processing, Lag
+from neural_mi import Model, Training, Processing, Lag, Split
 import torch
 from unittest.mock import patch
 from neural_mi.analysis.dimensionality import run_dimensionality_analysis
@@ -53,6 +53,58 @@ def test_run_lag_mode(processor_type):
     assert len(results.dataframe) == len(lag_range)
 
 
+class TestLagRecoversKnownLag:
+    """mode='lag' must find the lag it was given, both with and without an
+    explicit processing= argument.
+
+    The suite previously exercised mode='lag' only through
+    test_run_lag_mode, which asserts shape and column names and never checks
+    the recovered peak, and which always passes processing=. A bug that made
+    _shift_data return the data UNSHIFTED whenever processor_type was None
+    (raw arrays, no processing=) therefore went unnoticed: every lag reported
+    roughly the unshifted estimate and the profile was flat. Both halves of
+    that gap are covered here -- the value is checked, and the no-processing
+    call is exercised.
+
+    Needs a real training budget, so it is deliberately separate from the fast
+    smoke test rather than folded into it.
+    """
+
+    TRUE_LAG = 20
+
+    def _profile(self, **run_kwargs):
+        x, y, exact = nmi.generators.generate_lagged_pair(
+            n_samples=4000, lag=self.TRUE_LAG, dim=1, seed=0)
+        results = nmi.run(
+            np.asarray(x, dtype='float32'), np.asarray(y, dtype='float32'),
+            mode='lag', lag=Lag(lag_range=range(0, 41, 10)),
+            model=Model(embedding_dim=16, hidden_dim=64),
+            training=Training(n_epochs=60, batch_size=128, patience=20,
+                              learning_rate=1e-3),
+            split=Split(mode='blocked'), n_workers=1, show_progress=False,
+            seed=0, **run_kwargs)
+        df = results.dataframe
+        return {int(a): float(b) for a, b in zip(df['lag'], df['mi_mean'])}, exact
+
+    def test_recovers_known_lag_without_processing(self):
+        """The regression for the unshifted-data bug: raw arrays, no processing=."""
+        prof, _ = self._profile()
+        peak = max(prof, key=prof.get)
+        assert peak == self.TRUE_LAG, f"peak at {peak}, expected {self.TRUE_LAG}: {prof}"
+        off_peak = [v for k, v in prof.items() if k != self.TRUE_LAG]
+        assert prof[peak] > 2 * max(off_peak), (
+            f"profile is nearly flat, which is what the unshifted-data bug looked "
+            f"like: {prof}")
+
+    def test_recovers_known_lag_with_processing(self):
+        prof, _ = self._profile(
+            processing=Processing(x='continuous', y='continuous',
+                                  x_params={'window_size': 1, 'step_size': 1},
+                                  y_params={'window_size': 1, 'step_size': 1}))
+        peak = max(prof, key=prof.get)
+        assert peak == self.TRUE_LAG, f"peak at {peak}, expected {self.TRUE_LAG}: {prof}"
+
+
 class TestLagShiftWindows:
     """shift_windows already engages mechanically for mode='lag' with
     regular-grid data (try_build_shift_windows_dataset is mode-agnostic) --
@@ -91,7 +143,8 @@ class TestLagShiftWindows:
                           model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
                           training=Training(n_epochs=1, patience=1, shift_windows=True),
                           n_workers=1, show_progress=False, seed=0)
-        n_windows = results.details['raw_results']['n_windows'].iloc[0]
+        # Canonical column name, shared with every other mode (task.py's).
+        n_windows = results.details['raw_results']['n_windows_built'].iloc[0]
         raw_sample_count = T  # lag=0 -> no truncation
         assert n_windows < raw_sample_count, (
             f"n_windows={n_windows} should be well below the raw sample count "

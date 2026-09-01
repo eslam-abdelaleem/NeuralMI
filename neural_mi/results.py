@@ -22,7 +22,8 @@ from neural_mi.logger import logger
 _RESULT_COLS: frozenset = frozenset({
     'mi_mean', 'mi_std', 'test_mi', 'train_mi', 'mi_corrected',
     'mi_error', 'mi_error_pred', 'slope', 'run_id', 'is_reliable', 'gammas_used',
-    'n_windows', 'lag',
+    'n_windows', 'n_windows_built', 'n_windows_retained', 'lag',
+    'raw_train_mi', 'train_mi_std', 'test_mi_std', 'test_mi_mean', 'eval_size',
     # Dimensionality-specific columns
     'pr_eig', 'pr_eig_mean', 'pr_eig_std',
     'pr_singular', 'pr_singular_mean', 'pr_singular_std', 'split_id',
@@ -60,17 +61,43 @@ class Results:
     params : Dict[str, Any]
         A dictionary of the parameters used for the analysis run.
     mi_estimate : float, optional
-        The final point estimate of mutual information. Populated in 'estimate'
-        and 'rigorous' modes.
+        A single point estimate, where the mode produces one. `None` where it
+        does not: a sweep is a curve, a lag analysis a profile, a dimensionality
+        run a set of directions, a pairwise run a matrix. That is a property of
+        the question, not an omission, so those modes leave this `None` rather
+        than reporting an arbitrary summary of a curve. Always in the units set
+        by `output_units` (bits by default).
     dataframe : pd.DataFrame, optional
-        A DataFrame containing detailed results. Populated in 'sweep',
-        'dimensionality', 'rigorous', 'lag', 'precision', and 'pairwise' modes.
+        Per-point results, where the mode produces more than one point. `None`
+        for the single-estimate modes.
     details : Dict[str, Any]
-        A dictionary containing additional metadata or detailed results, such
-        as raw run data or estimated latent dimensions.
+        Mode-specific metadata. Read it with :meth:`get`, not by indexing, since
+        which keys exist varies by mode.
+
+    Which modes populate what
+    -------------------------
+    ============== ============= ============ ==========================
+    mode           mi_estimate   dataframe    headline lives in
+    ============== ============= ============ ==========================
+    estimate       yes           no           `mi_estimate`
+    rigorous       yes           yes          `mi_estimate`
+    precision      yes           yes          `mi_estimate` (baseline MI)
+    conditional    yes           if rigorous  `mi_estimate`
+    interaction    yes           if rigorous  `mi_estimate`
+    transfer       yes           if rigorous  `mi_estimate`
+    sweep          no            yes          `dataframe['mi_mean']`
+    lag            no            yes          `dataframe['mi_mean']`
+    dimensionality no            yes          `dataframe`, plus `details`
+    pairwise       no            yes          `details['mi_matrix']`
+    ============== ============= ============ ==========================
+
+    All MI-valued fields, in every mode and in both `dataframe` and `details`,
+    are in the units set by `output_units`.
 
     Methods
     -------
+    get(key, default=None)
+        Read a `details` entry that this mode may or may not set.
     summary()
         Print a human-readable summary to stdout.
     plot(ax=None, **kwargs)
@@ -97,6 +124,41 @@ class Results:
         if self.dataframe is not None: rep += f", dataframe_shape={self.dataframe.shape}"
         if self.details: rep += f", details_keys={list(self.details.keys())}"
         return rep + ")"
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Read a `details` entry without having to know whether this mode sets it.
+
+        `details` is populated differently by every mode: `test_mi` and
+        `eval_size` are top-level only for ``mode='estimate'``,
+        `amplification_factor` exists only for the conditional/interaction/
+        transfer family, `raw_results` is absent wherever the per-run rows live
+        somewhere else. Indexing `details` directly therefore raises `KeyError`
+        on most modes, which forces every caller that handles more than one mode
+        to guard each read.
+
+        This is the same contract as `dict.get`, so a caller can write one line
+        that works for every mode::
+
+            eval_size = result.get('eval_size')      # None where not recorded
+            amp       = result.get('amplification_factor')
+
+        Parameters
+        ----------
+        key : str
+            The `details` key to read.
+        default : Any, optional
+            Returned when `key` is absent. Defaults to ``None``.
+
+        Returns
+        -------
+        Any
+            ``self.details[key]`` when present, otherwise `default`.
+
+        See Also
+        --------
+        Results.summary : mode-appropriate printed summary.
+        """
+        return self.details.get(key, default)
 
     def summary(self) -> None:
         """Print a human-readable summary of the analysis results to stdout.

@@ -136,7 +136,11 @@ def run_lag_analysis(
     # Propagate n_windows into each result dict so it appears in the dataframe
     for result, task in zip(results_list, all_tasks):
         if isinstance(result, dict):
-            result['n_windows'] = task[2].get('_n_windows_lag', None)
+            # Use the canonical name (task.py's, everywhere else in the
+            # library) rather than a lag-only 'n_windows'. On this path
+            # windowing is deferred per lag, so task.py leaves its own
+            # n_windows_built as None and this is the only populated count.
+            result['n_windows_built'] = task[2].get('_n_windows_lag', None)
             # The task dict's own copy of base_params flows through into the
             # result (see run_training_task's return_params); pop the
             # internal bookkeeping key so it doesn't leak into result.dataframe.

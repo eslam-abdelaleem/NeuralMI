@@ -158,38 +158,91 @@ class TestConvenienceFunctionsReturnResults:
         assert isinstance(r, nmi.Results)
 
 
+class TestConditionalTransferEntropy:
+    """`conditional_transfer_entropy` is exported from the package top level and
+    had zero test references anywhere in the suite.
+
+    Deliberately a contract test, not an accuracy test. Measured against
+    SharedLatentGaussian (verification V5) this quantity carries an
+    error-amplification factor near 100 and a seed-to-seed spread larger than
+    its own value, so it is not distinguishable from zero at any sample size a
+    test can afford. Asserting a value would be asserting noise. What is worth
+    pinning is that it runs, returns the documented shape, and reports the
+    amplification factor a caller needs in order to know not to trust it.
+    """
+
+    def test_returns_results_with_amplification(self):
+        rng = np.random.default_rng(0)
+        T = 800
+        w = rng.standard_normal((T, 1)).astype('float32')
+        x = (0.7 * w + 0.7 * rng.standard_normal((T, 1))).astype('float32')
+        y = np.empty_like(x)
+        y[0] = rng.standard_normal(1)
+        for t in range(1, T):                      # y follows x and w with a lag
+            y[t] = 0.5 * y[t - 1] + 0.4 * x[t - 1] + 0.3 * w[t - 1] \
+                   + 0.3 * rng.standard_normal(1)
+        r = nmi.conditional_transfer_entropy(
+            x, y, w, history_window=2, model=_MODEL, training=_TRAINING,
+            n_workers=1, show_progress=False, seed=0)
+
+        assert isinstance(r, nmi.Results)
+        assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
+        amp = r.get('amplification_factor')
+        assert amp is not None, "callers need the amplification factor to read this at all"
+        assert np.isfinite(amp) and amp > 0
+
+    def test_history_window_sweep_returns_results(self):
+        """The iterable path, which shares the Results shape with mode='sweep'."""
+        rng = np.random.default_rng(1)
+        T = 600
+        w = rng.standard_normal((T, 1)).astype('float32')
+        x = rng.standard_normal((T, 1)).astype('float32')
+        y = rng.standard_normal((T, 1)).astype('float32')
+        r = nmi.conditional_transfer_entropy(
+            x, y, w, history_window=[1, 2], model=_MODEL, training=_TRAINING,
+            n_workers=1, show_progress=False, seed=0)
+        assert isinstance(r, nmi.Results)
+        assert list(r.dataframe['history_window']) == [1, 2]
+        assert 'mi_mean' in r.dataframe.columns
+
+
 class TestConvenienceFunctionsSweep:
-    """An iterable construction parameter must dispatch a sweep and return a DataFrame."""
+    """An iterable construction parameter must dispatch a sweep and return a
+    Results shaped like mode='sweep''s, so every entry point reads the same way."""
 
-    def test_active_information_storage_sweep_returns_dataframe(self):
+    def test_active_information_storage_sweep_returns_results(self):
         x = torch.randn(300, 1)
-        df = nmi.active_information_storage(x, k=[2, 3, 4], model=_MODEL, training=_TRAINING,
+        r = nmi.active_information_storage(x, k=[2, 3, 4], model=_MODEL, training=_TRAINING,
                                              n_workers=2, show_progress=False)
-        assert isinstance(df, pd.DataFrame)
+        assert isinstance(r, nmi.Results)
+        assert r.mode == 'sweep'
+        assert r.mi_estimate is None          # a sweep is a curve, not one number
+        df = r.dataframe
         assert list(df['k']) == [2, 3, 4]
-        assert 'mi_estimate' in df.columns
-        assert df['mi_estimate'].notna().all()
+        assert 'mi_mean' in df.columns
+        assert df['mi_mean'].notna().all()
+        assert r.get('raw_results') is not None
 
-    def test_block_mi_sweep_returns_dataframe(self):
+    def test_block_mi_sweep_returns_results(self):
         x, y = torch.randn(300, 1), torch.randn(300, 1)
-        df = nmi.block_mi(x, y, window_size=[2, 4], model=_MODEL, training=_TRAINING,
+        r = nmi.block_mi(x, y, window_size=[2, 4], model=_MODEL, training=_TRAINING,
                            n_workers=2, show_progress=False)
-        assert isinstance(df, pd.DataFrame)
-        assert list(df['window_size']) == [2, 4]
+        assert isinstance(r, nmi.Results)
+        assert list(r.dataframe['window_size']) == [2, 4]
 
     def test_sweep_matches_individual_scalar_calls(self):
         """The sweep path must not silently compute something different from
         calling the scalar path once per value (same seed, same architecture)."""
         x = torch.randn(300, 1)
         seed = 123
-        df = nmi.active_information_storage(x, k=[3, 5], model=_MODEL, training=_TRAINING,
+        r = nmi.active_information_storage(x, k=[3, 5], model=_MODEL, training=_TRAINING,
                                              n_workers=1, show_progress=False, seed=seed)
         individual = [
             nmi.active_information_storage(x, k=kv, model=_MODEL, training=_TRAINING,
                                             show_progress=False, seed=seed).mi_estimate
             for kv in [3, 5]
         ]
-        np.testing.assert_allclose(df['mi_estimate'].values, individual, rtol=1e-5)
+        np.testing.assert_allclose(r.dataframe['mi_mean'].values, individual, rtol=1e-5)
 
 
 # --------------------------------------------------------------------------

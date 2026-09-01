@@ -22,6 +22,7 @@ import pandas as pd
 import torch
 
 from neural_mi.run import run
+from neural_mi.results import Results
 from neural_mi.parallel import dispatch_tasks
 from neural_mi.analysis.offsets import build_past_future, build_cross_offset
 from neural_mi.analysis.transfer import _build_te_arrays
@@ -56,13 +57,40 @@ def _estimate_or_sweep(**kwargs):
     return run(mode=mode, **kwargs)
 
 
+def _as_sweep_results(rows, sweep_var: str) -> Results:
+    """Wrap per-point rows in the same shape ``mode='sweep'`` returns.
+
+    These helpers used to hand back a bare ``DataFrame``, so their output had to
+    be read differently from every other entry point in the library. Wrapping
+    them in :class:`~neural_mi.results.Results` means one way to read any
+    result, and it lets ``Results.plot()`` work on them.
+
+    The headline column is named ``mi_mean``, matching ``mode='sweep'``. The
+    name matters beyond taste: ``results._RESULT_COLS`` lists ``mi_mean`` but
+    not ``mi_estimate``, so a column called ``mi_estimate`` would be mistaken
+    for a swept variable and plotted on the x-axis.
+
+    No unit conversion happens here. Every row came from a ``run()`` call that
+    already converted to the caller's ``output_units``; converting again would
+    double-apply the factor.
+    """
+    df = pd.DataFrame(rows)
+    if 'mi_std' not in df.columns:
+        # One run per sweep point, so there is no spread to report. mode='sweep'
+        # fills the same case with 0.
+        df['mi_std'] = 0.0
+    return Results(mode='sweep', dataframe=df,
+                   params={'sweep_var': sweep_var},
+                   details={'raw_results': df})
+
+
 def _run_prebuilt_task(task: Tuple[torch.Tensor, torch.Tensor, str, Any, Dict[str, Any], bool]) -> Dict[str, Any]:
     """Module-level (picklable) dispatch target for a single mode='estimate'
     call on already-offset-constructed arrays."""
     x_arr, y_arr, param_name, param_value, run_kwargs, show_progress = task
     result = run(x_data=x_arr, y_data=y_arr, mode='estimate', n_workers=1,
                  show_progress=show_progress, **run_kwargs)
-    return {param_name: param_value, 'mi_estimate': result.mi_estimate}
+    return {param_name: param_value, 'mi_mean': result.mi_estimate}
 
 
 def _processing_with_window(run_kwargs: Dict[str, Any], window_size) -> Tuple[Any, Dict[str, Any]]:
@@ -102,7 +130,7 @@ def _run_block_mi_task(task: Tuple[Any, Any, Any, Dict[str, Any], bool]) -> Dict
         x_data=x_data, y_data=y_data, mode='estimate', processing=processing,
         n_workers=1, show_progress=show_progress, **rest,
     )
-    return {'window_size': window_size, 'mi_estimate': result.mi_estimate}
+    return {'window_size': window_size, 'mi_mean': result.mi_estimate}
 
 
 def active_information_storage(
@@ -123,7 +151,7 @@ def active_information_storage(
     k : int or iterable of int
         History length. An iterable sweeps every value in parallel
         (``n_workers``-dispatched) and returns a DataFrame with columns
-        ``k``, ``mi_estimate``, instead of a single ``Results``.
+        ``k``, ``mi_mean``, instead of a single-estimate ``Results``.
     future_k : int, default=1
         Future window length (1 = the instantaneous present; use
         :func:`excess_entropy` for a longer future window).
@@ -145,7 +173,7 @@ def active_information_storage(
         ]
         rows = dispatch_tasks(tasks, _run_prebuilt_task, n_workers=n_workers,
                                show_progress=show_progress, desc="active_information_storage sweep")
-        return pd.DataFrame(rows)
+        return _as_sweep_results(rows, 'k')
     x_past, x_future = build_past_future(x_data, past_len=k, future_len=future_k)
     return _estimate_or_sweep(x_data=x_past, y_data=x_future,
                               n_workers=n_workers, show_progress=show_progress,
@@ -169,7 +197,7 @@ def excess_entropy(
         Raw time series.
     k : int or iterable of int
         History length. An iterable sweeps every value in parallel and
-        returns a DataFrame with columns ``k``, ``mi_estimate``.
+        returns a ``Results`` whose ``dataframe`` has columns ``k``, ``mi_mean``.
     future_k : int
         Future window length (kept fixed across a ``k``-sweep).
     n_workers, show_progress, **run_kwargs
@@ -186,7 +214,7 @@ def excess_entropy(
         ]
         rows = dispatch_tasks(tasks, _run_prebuilt_task, n_workers=n_workers,
                                show_progress=show_progress, desc="excess_entropy sweep")
-        return pd.DataFrame(rows)
+        return _as_sweep_results(rows, 'k')
     x_past, x_future = build_past_future(x_data, past_len=k, future_len=future_k)
     return _estimate_or_sweep(x_data=x_past, y_data=x_future,
                               n_workers=n_workers, show_progress=show_progress,
@@ -233,7 +261,7 @@ def cross_predictive_information(
         Raw time series, same leading dimension.
     past_k : int or iterable of int
         X's history length. An iterable sweeps every value in parallel and
-        returns a DataFrame with columns ``past_k``, ``mi_estimate``.
+        returns a ``Results`` whose ``dataframe`` has columns ``past_k``, ``mi_mean``.
     future_k : int, default=1
         Y's future window length (kept fixed across a ``past_k``-sweep).
     n_workers, show_progress, **run_kwargs
@@ -250,7 +278,7 @@ def cross_predictive_information(
         ]
         rows = dispatch_tasks(tasks, _run_prebuilt_task, n_workers=n_workers,
                                show_progress=show_progress, desc="cross_predictive_information sweep")
-        return pd.DataFrame(rows)
+        return _as_sweep_results(rows, 'past_k')
     x_past, y_future = build_cross_offset(x_data, y_data, past_len=past_k, future_len=future_k)
     return _estimate_or_sweep(x_data=x_past, y_data=y_future,
                               n_workers=n_workers, show_progress=show_progress,
@@ -278,7 +306,7 @@ def block_mi(
         Raw time series, same leading dimension.
     window_size : int or iterable of int
         An iterable sweeps every value in parallel and returns a DataFrame
-        with columns ``window_size``, ``mi_estimate``.
+        whose ``dataframe`` has columns ``window_size``, ``mi_mean``.
     n_workers, show_progress, **run_kwargs
         See :func:`active_information_storage`.
 
@@ -290,7 +318,7 @@ def block_mi(
         tasks = [(x_data, y_data, wv, run_kwargs, show_progress) for wv in window_size]
         rows = dispatch_tasks(tasks, _run_block_mi_task, n_workers=n_workers,
                                show_progress=show_progress, desc="block_mi sweep")
-        return pd.DataFrame(rows)
+        return _as_sweep_results(rows, 'window_size')
     processing, rest = _processing_with_window(run_kwargs, window_size)
     return _estimate_or_sweep(
         x_data=x_data, y_data=y_data, processing=processing,
@@ -305,7 +333,7 @@ def _run_transfer_task(task: Tuple[Any, Any, Any, int, str, Any, Dict[str, Any],
     result = run(x_data=x_data, y_data=y_data, mode='transfer',
                  transfer=Transfer(history_window=history_window, w_data=w_data),
                  n_workers=1, show_progress=show_progress, **run_kwargs)
-    return {param_name: param_value, 'mi_estimate': result.mi_estimate}
+    return {param_name: param_value, 'mi_mean': result.mi_estimate}
 
 
 def conditional_transfer_entropy(
@@ -326,8 +354,8 @@ def conditional_transfer_entropy(
         Raw time series, same leading dimension.
     history_window : int or iterable of int
         History length for X_past/Y_past/W_past (all three share it). An
-        iterable sweeps every value in parallel and returns a DataFrame with
-        columns ``history_window``, ``mi_estimate``.
+        iterable sweeps every value in parallel and returns a ``Results`` whose
+        ``dataframe`` has columns ``history_window``, ``mi_mean``.
     n_workers, show_progress, **run_kwargs
         Forwarded to :func:`neural_mi.run` (``model=``, ``training=``, etc.).
         ``run_kwargs`` may also include ``bidirectional=True`` (applies W to
@@ -346,7 +374,7 @@ def conditional_transfer_entropy(
         ]
         rows = dispatch_tasks(tasks, _run_transfer_task, n_workers=n_workers,
                                show_progress=show_progress, desc="conditional_transfer_entropy sweep")
-        return pd.DataFrame(rows)
+        return _as_sweep_results(rows, 'history_window')
     return run(x_data=x_data, y_data=y_data, mode='transfer',
                transfer=Transfer(history_window=history_window, w_data=w_data),
                n_workers=n_workers, show_progress=show_progress, **run_kwargs)
@@ -528,7 +556,7 @@ def _run_dual_branch_task(task: Tuple[Any, Any, Any, str, Any, Dict[str, Any], b
         result = run(x_data=a_arr, y_data=b_arr, mode='conditional',
                      conditional=Conditional(w_data=c_arr, align='dual_branch'),
                      n_workers=1, show_progress=show_progress, **run_kwargs)
-    return {param_name: param_value, 'mi_estimate': result.mi_estimate}
+    return {param_name: param_value, 'mi_mean': result.mi_estimate}
 
 
 def mi_rate(
@@ -552,7 +580,7 @@ def mi_rate(
         Raw time series, same leading dimension.
     h : int or iterable of int
         Y's conditioning history length. An iterable sweeps every value in
-        parallel and returns a DataFrame with columns ``h``, ``mi_estimate``.
+        parallel and returns a ``Results`` whose ``dataframe`` has columns ``h``, ``mi_mean``.
     W : int, default=20
         X_all's half-width (kept fixed across an ``h``-sweep); the full
         window spans ``2W+1`` time steps.
@@ -576,7 +604,7 @@ def mi_rate(
         ]
         rows = dispatch_tasks(tasks, _run_dual_branch_task, n_workers=n_workers,
                                show_progress=show_progress, desc="mi_rate sweep")
-        return pd.DataFrame(rows)
+        return _as_sweep_results(rows, 'h')
     a, b, c = _build_mi_rate_arrays(x_data, y_data, h, W)
     if c is None:
         return run(x_data=a, y_data=b, mode='estimate',
@@ -605,8 +633,8 @@ def instantaneous_exchange(
         Raw time series, same leading dimension.
     k : int or iterable of int
         Shared conditioning history length for both X_past and Y_past. An
-        iterable sweeps every value in parallel and returns a DataFrame with
-        columns ``k``, ``mi_estimate``.
+        iterable sweeps every value in parallel and returns a ``Results`` whose
+        ``dataframe`` has columns ``k``, ``mi_mean``.
     n_workers, show_progress : see :func:`active_information_storage`.
     **run_kwargs
         Forwarded to :func:`neural_mi.run`. Must include
@@ -627,7 +655,7 @@ def instantaneous_exchange(
         ]
         rows = dispatch_tasks(tasks, _run_dual_branch_task, n_workers=n_workers,
                                show_progress=show_progress, desc="instantaneous_exchange sweep")
-        return pd.DataFrame(rows)
+        return _as_sweep_results(rows, 'k')
     a, b, c = _build_inst_exchange_arrays(x_data, y_data, k)
     if c is None:
         return run(x_data=a, y_data=b, mode='estimate',
@@ -661,8 +689,8 @@ def directed_information_rate(
         Raw time series, same leading dimension.
     k : int or iterable of int
         Shared history length for both X_past and Y_past. An iterable
-        sweeps every value in parallel and returns a DataFrame with columns
-        ``k``, ``mi_estimate``.
+        sweeps every value in parallel and returns a ``Results`` whose
+        ``dataframe`` has columns ``k``, ``mi_mean``.
     n_workers, show_progress : see :func:`active_information_storage`.
     **run_kwargs
         Forwarded to :func:`neural_mi.run`. Must include
@@ -683,7 +711,7 @@ def directed_information_rate(
         ]
         rows = dispatch_tasks(tasks, _run_dual_branch_task, n_workers=n_workers,
                                show_progress=show_progress, desc="directed_information_rate sweep")
-        return pd.DataFrame(rows)
+        return _as_sweep_results(rows, 'k')
     a, b, c = _build_dir_info_rate_arrays(x_data, y_data, k)
     if c is None:
         return run(x_data=a, y_data=b, mode='estimate',
