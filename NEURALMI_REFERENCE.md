@@ -270,16 +270,11 @@ Example: `Processing(x='continuous', x_params={'window_size': 0.05})`.
 
 #### `bias` — bias terms in the embedding layers
 
-`None` (the default) resolves per side from the processor type: `False` for
-`'spike'`, `True` otherwise. Pass `True` or `False` to use one value for both
-sides.
+Defaults to `True`. Set `False` to build the embedding networks without bias
+terms, which makes them positively homogeneous, so an all-zero input embeds to
+exactly zero.
 
-Spike windows are padded to a fixed width, so a window holding few spikes is
-mostly padding. Without bias terms an all-zero input embeds to exactly zero, so
-a window that is entirely padding contributes nothing downstream. Continuous
-data has no padding and keeps its biases.
-
-Two things interact with this:
+Two things interact with it:
 
 - `norm_layer` is served by an affine-free `RMSNorm` whenever bias is off.
   `LayerNorm` and `BatchNorm` subtract the mean, so a zero entry does not stay

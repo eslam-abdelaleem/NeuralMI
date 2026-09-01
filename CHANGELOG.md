@@ -59,22 +59,13 @@ window spans two independent latent draws and can carry more than the reported
 value.
 
 
-### Added: `Model(bias=...)`, defaulting off for spike data
+### Added: `Model(bias=...)`
 
-Embedding layers can now be built without bias terms. `bias=None`, the default,
-resolves per side from the processor type: `False` for `'spike'`, `True`
-otherwise. An explicit `True`/`False` applies to both sides.
-
-Spike windows are padded to a fixed width, so a window holding few spikes is
-mostly padding. With no bias anywhere an all-zero input embeds to exactly zero,
-so a window that is entirely padding contributes nothing downstream. Verified
-across `mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn` and `lru`: with every
-parameter randomised, a zero input gives an embedding of exactly 0.0, against
-0.7 to 63 with biases present.
-
-Resolution is per side, so `x='spike', y='continuous'` gives a bias-free
-X-encoder and a biased Y-encoder. `shared_encoder=True` raises when the two
-sides resolve differently, since one encoder cannot be both.
+Embedding layers can be built without bias terms. Defaults to `True`; `False`
+makes the embedding networks positively homogeneous, so an all-zero input embeds
+to exactly zero. Verified across `mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn` and
+`lru`: with every parameter randomised, a zero input gives an embedding of
+exactly 0.0, against 0.7 to 63 with biases present.
 
 Interactions worth knowing:
 
@@ -87,12 +78,9 @@ Interactions worth knowing:
   weights, are additive and independent of the input. They declare
   `zero_preserving = False`, still drop the bias terms they own, and warn.
 - A `custom_embedding_cls` is handed `bias` only if its `__init__` accepts it.
-  Classes on the minimal contract keep building unchanged, warning if an
-  explicit `bias=False` cannot be delivered.
 
 Decoders are unchanged: they reconstruct the input from an embedding, so their
 bias terms cannot affect whether a zero input propagates through the encoder.
-
 
 ### Changed: spike windows pad empty slots with `0.0`
 

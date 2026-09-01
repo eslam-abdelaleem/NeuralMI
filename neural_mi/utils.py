@@ -456,27 +456,10 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # Build the base (deterministic) encoders.
     model_kwargs_y = model_kwargs.copy()
 
-    # Bias terms, resolved per side. `bias=None` (the default) means "decide
-    # from the data type": spike windows are padded to a fixed width, so a
-    # window holding few spikes is mostly padding. With no bias anywhere, an
-    # all-padding window embeds to exactly zero and contributes nothing, which
-    # is the behaviour wanted for spikes. Continuous data has no padding and
-    # keeps its biases.
+    # Bias terms in the embedding layers. Both encoders get the same value.
+    # An explicit None means unset, not off, so it falls back to the default.
     _bias = embedding_params.get('bias')
-    if _bias is None:
-        bias_x = embedding_params.get('processor_type_x') != 'spike'
-        bias_y = embedding_params.get('processor_type_y') != 'spike'
-    else:
-        bias_x = bias_y = bool(_bias)
-
-    if shared_encoder and bias_x != bias_y:
-        raise ValueError(
-            f"shared_encoder=True needs one encoder for both sides, but bias "
-            f"resolves differently for each (x={bias_x}, y={bias_y}) because the "
-            f"two processor types differ (x={embedding_params.get('processor_type_x')!r}, "
-            f"y={embedding_params.get('processor_type_y')!r}). Set bias explicitly "
-            f"on Model(...) to use one value for both, or set shared_encoder=False."
-        )
+    bias_x = bias_y = True if _bias is None else bool(_bias)
 
     if not (bias_x and bias_y) and not getattr(EmbeddingModel, 'zero_preserving', True):
         warnings.warn(

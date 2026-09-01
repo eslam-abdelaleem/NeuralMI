@@ -396,18 +396,12 @@ class TestBias:
     consisting entirely of padding contributes nothing.
     """
 
-    @pytest.mark.parametrize('x_type,y_type,want_x,want_y', [
-        ('continuous', 'continuous', True, True),
-        ('spike', 'spike', False, False),
-        ('spike', 'continuous', False, True),      # resolved per side
-        ('continuous', 'spike', True, False),
-    ])
-    def test_default_resolves_per_side_from_processor_type(self, x_type, y_type, want_x, want_y):
+    @pytest.mark.parametrize('proc_type', ['continuous', 'spike'])
+    def test_default_is_biased_for_every_data_type(self, proc_type):
         params = dict(DUMMY_EMBEDDING_PARAMS, bias=None,
-                      processor_type_x=x_type, processor_type_y=y_type)
+                      processor_type_x=proc_type, processor_type_y=proc_type)
         critic = build_critic('separable', params)
-        assert (_n_bias(critic, 'embedding_net_x') > 0) is want_x
-        assert (_n_bias(critic, 'embedding_net_y') > 0) is want_y
+        assert _n_bias(critic) > 0
 
     @pytest.mark.parametrize('explicit', [True, False])
     def test_explicit_value_overrides_the_data_type(self, explicit):
@@ -465,9 +459,3 @@ class TestBias:
         with pytest.warns(UserWarning, match='input-independent additive term'):
             build_critic('separable', params)
 
-    def test_shared_encoder_rejects_a_split_decision(self):
-        """One encoder cannot be both bias-free and biased."""
-        params = dict(DUMMY_EMBEDDING_PARAMS, bias=None, shared_encoder=True,
-                      processor_type_x='spike', processor_type_y='continuous')
-        with pytest.raises(ValueError, match='resolves differently'):
-            build_critic('separable', params)
