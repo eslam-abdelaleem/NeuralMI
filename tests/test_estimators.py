@@ -1,5 +1,6 @@
 # tests/test_estimators.py
 import pytest
+import numpy as np
 import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Estimator, Processing
@@ -32,64 +33,38 @@ class TestEstimators:
 
     @pytest.mark.parametrize("estimator_name", ['infonce', 'smile'])
     def test_estimator_accuracy_on_known_data(self, estimator_name):
-        """
-        Tests if the estimators can recover a known ground-truth MI.
-        """
-        # Fix both torch and numpy seeds for full reproducibility — InfoNCE and
-        # SMILE can diverge with unlucky weight initialisation or data splits,
-        # so deterministic seeds prevent flaky failures across test orderings.
-        import numpy as np
-        np.random.seed(42)
-        torch.manual_seed(42)
+        """Each estimator recovers a known ground-truth MI through the real API.
 
+        This goes through `nmi.run()` rather than assembling a Trainer by hand.
+        The hand-rolled version tested a configuration the library never
+        produces, and SMILE diverges to NaN there on every data draw tried
+        (10 of 10), while InfoNCE tolerates it. That test passed only because
+        the one legacy-global-RNG draw it happened to use was on the good side
+        of the knife edge; giving the generator a real `seed` removed the luck
+        and exposed it. Through `nmi.run()` SMILE is stable across 8 draws.
+
+        Tolerance measured, not guessed: at this budget InfoNCE lands in
+        1.97-2.04 and SMILE in 1.81-1.88 against a truth of 2.0, so the worst
+        observed error is ~0.19. 0.6 is ~3x that: comfortable against seed
+        noise, and failing an estimator that learned nothing. The previous
+        value of 2.0 admitted anything in (0, 4), including 0.
+        """
         ground_truth_mi = 2.0
-        n_samples = 2000
-        dim = 5
         x_raw, y_raw = nmi.generators.generate_correlated_gaussians(
-            n_samples=n_samples, dim=dim, mi=ground_truth_mi, use_torch=True
+            n_samples=2000, dim=5, mi=ground_truth_mi, seed=0
         )
-        # Shape: (observations, timepoints, channels)
-        x_data = x_raw.reshape(n_samples, 1, dim)
-        y_data = y_raw.reshape(n_samples, 1, dim)
-
-        # Create dataset manually
-        dataset = create_dataset(
-            x_data=x_data, y_data=y_data,
-            processor_type_x=None, processor_params_x={},
-            processor_type_y=None, processor_params_y={},
-            device=torch.device('cpu')
+        result = nmi.run(
+            np.asarray(x_raw, dtype='float32'), np.asarray(y_raw, dtype='float32'),
+            mode='estimate',
+            model=nmi.Model(hidden_dim=64, embedding_dim=16),
+            training=nmi.Training(**TRAINER_PARAMS_MINIMAL),
+            split=nmi.Split(mode='random'),
+            estimator=nmi.Estimator(name=estimator_name),
+            n_workers=1, show_progress=False, seed=0,
         )
-
-        embedding_params = {
-            'input_dim_x': dim, 'input_dim_y': dim, 'embedding_dim': 16,
-            'hidden_dim': 64, 'n_layers': 2, 'use_variational': False,
-            'embedding_model': 'mlp', 'max_n_batches': 512,
-            'kernel_size': 3, 'bidirectional': False, 'nhead': 4
-        }
-        critic = build_critic('separable', embedding_params)
-        optimizer = optim.Adam(critic.parameters(), lr=TRAINER_PARAMS_MINIMAL['learning_rate'])
-        estimator_fn = nmi.estimators.ESTIMATORS[estimator_name]
-
-        trainer = Trainer(
-            model=critic, estimator_fn=estimator_fn, optimizer=optimizer,
-            device=torch.device('cpu')
-        )
-        # Pass the dataset object instead of raw x_data, y_data
-        results = trainer.train(
-            dataset=dataset, n_epochs=TRAINER_PARAMS_MINIMAL['n_epochs'],
-            batch_size=TRAINER_PARAMS_MINIMAL['batch_size'],
-            patience=TRAINER_PARAMS_MINIMAL['patience'], verbose=False, output_units='bits'
-        )
-        estimated_mi = results['test_mi'] / torch.log(torch.tensor(2.0))
-        # Tolerance measured at this exact budget rather than guessed: over
-        # seeds 42/0/1 InfoNCE lands in 1.97-2.00 and SMILE in 1.83-1.86
-        # against a truth of 2.0, so the worst observed error is ~0.17. A
-        # tolerance of 0.6 is ~3.5x that, comfortable against seed noise while
-        # still failing an estimator that learned nothing. The previous value
-        # was 2.0, which admitted anything in (0, 4) -- including 0 -- in a
-        # test named for accuracy on known data.
+        estimated_mi = result.mi_estimate
         assert abs(estimated_mi - ground_truth_mi) < 0.6, (
-            f"{estimator_name} estimated {float(estimated_mi):.3f} against a "
+            f"{estimator_name} estimated {estimated_mi:.3f} against a "
             f"ground truth of {ground_truth_mi}")
 
     def test_smile_estimator_with_clip_param_full_pipeline(self):

@@ -30,6 +30,8 @@ test of whether an estimator is measuring the estimand it claims to.
 from collections import OrderedDict
 from typing import Dict, Iterable, Optional, Sequence, Tuple, Union
 
+from contextlib import contextmanager
+
 import numpy as np
 import torch
 
@@ -39,6 +41,23 @@ LOG2 = np.log(2.0)
 _TRAPZ = getattr(np, "trapezoid", None) or np.trapz
 
 Spec = Sequence[Tuple[str, int]]
+
+
+@contextmanager
+def _torch_seed(seed: int):
+    """Seed torch's global RNG for the duration of the block, then restore it.
+
+    ``torch.nn.Linear`` draws its initial weights from the global generator and
+    takes no ``generator=`` argument, so a generator that builds a network has
+    no way to seed it locally. Saving and restoring the state keeps that from
+    leaking into the caller's stream.
+    """
+    state = torch.random.get_rng_state()
+    torch.manual_seed(seed)
+    try:
+        yield
+    finally:
+        torch.random.set_rng_state(state)
 
 
 def _slogdet(matrix: np.ndarray) -> float:
@@ -363,7 +382,7 @@ def mi_to_rho(dim: int, mi: float) -> float:
 
 
 def generate_correlated_gaussians(
-    n_samples: int, dim: int, mi: float, use_torch: bool = True
+    n_samples: int, dim: int, mi: float, use_torch: bool = True, seed: int = 0
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Generates two correlated multivariate Gaussian datasets.
 
@@ -395,7 +414,7 @@ def generate_correlated_gaussians(
     cov[dim:, :dim] = np.eye(dim) * rho
     cov[:dim, dim:] = np.eye(dim) * rho
     
-    data = np.random.multivariate_normal(mean, cov, size=n_samples)
+    data = np.random.default_rng(seed).multivariate_normal(mean, cov, size=n_samples)
     x = data[:, :dim]
     y = data[:, dim:]
     
@@ -412,6 +431,7 @@ def generate_windowed_oscillatory(
     sample_rate: float = 512.0,
     latent_mi: float = 1.0,
     snr: float = 3.0,
+    seed: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """Generate IID windows of amplitude-modulated oscillations with known MI.
 
@@ -452,7 +472,8 @@ def generate_windowed_oscillatory(
     """
     rho = mi_to_rho(1, latent_mi)
     cov = np.array([[1.0, rho], [rho, 1.0]])
-    latents = np.random.multivariate_normal([0.0, 0.0], cov, size=(n_windows, n_channels))
+    _rng = np.random.default_rng(seed)
+    latents = _rng.multivariate_normal([0.0, 0.0], cov, size=(n_windows, n_channels))
     z_x = latents[:, :, 0]  # (n_windows, n_channels) — independent per channel
     z_y = latents[:, :, 1]  # (n_windows, n_channels)
 
@@ -463,8 +484,8 @@ def generate_windowed_oscillatory(
     noise_std = 1.0 / snr
     X = z_x[:, :, None] * carrier[None, None, :]      # (n_windows, n_channels, window_size)
     Y = z_y[:, :, None] * carrier[None, None, :]
-    X = X + noise_std * np.random.randn(*X.shape)
-    Y = Y + noise_std * np.random.randn(*Y.shape)
+    X = X + noise_std * _rng.standard_normal(X.shape)
+    Y = Y + noise_std * _rng.standard_normal(Y.shape)
 
     # Analytical observable MI per channel
     sigma_sq = noise_std ** 2
@@ -485,6 +506,7 @@ def generate_windowed_multichannel(
     sample_rate: float = 500.0,
     latent_mi: float = 0.5,
     snr: float = 3.0,
+    seed: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """Generate IID multi-channel windows where each channel has a different carrier.
 
@@ -528,6 +550,7 @@ def generate_windowed_multichannel(
     noise_std = 1.0 / snr
 
     n_ch = max(n_channels, 2)
+    _rng = np.random.default_rng(seed)
     freqs = [f_min_hz + c * (f_max_hz - f_min_hz) / (n_ch - 1) for c in range(n_channels)]
 
     X = np.zeros((n_windows, n_channels, window_size), dtype=np.float32)
@@ -538,12 +561,12 @@ def generate_windowed_multichannel(
         carrier = np.sin(2.0 * np.pi * fc * t)
         v_sq = float(np.dot(carrier, carrier))
         cov = np.array([[1.0, rho], [rho, 1.0]])
-        latents = np.random.multivariate_normal([0.0, 0.0], cov, size=n_windows)
+        latents = _rng.multivariate_normal([0.0, 0.0], cov, size=n_windows)
         z_x, z_y = latents[:, 0], latents[:, 1]
         X[:, c, :] = (z_x[:, None] * carrier[None, :] +
-                      noise_std * np.random.randn(n_windows, window_size))
+                      noise_std * _rng.standard_normal((n_windows, window_size)))
         Y[:, c, :] = (z_y[:, None] * carrier[None, :] +
-                      noise_std * np.random.randn(n_windows, window_size))
+                      noise_std * _rng.standard_normal((n_windows, window_size)))
         rho_obs = float(np.clip(rho * v_sq / (v_sq + noise_std ** 2), -1 + 1e-8, 1 - 1e-8))
         total_mi += -0.5 * np.log2(1.0 - rho_obs ** 2)
 
@@ -552,7 +575,8 @@ def generate_windowed_multichannel(
 
 def generate_nonlinear_from_latent(
     n_samples: int, latent_dim: int, observed_dim: int, mi: float,
-    hidden_dim: int = 64, use_torch: bool = True, return_latents: bool = False
+    hidden_dim: int = 64, use_torch: bool = True, return_latents: bool = False,
+    seed: int = 0
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Generates two nonlinearly related datasets from a shared latent variable.
 
@@ -588,16 +612,20 @@ def generate_nonlinear_from_latent(
         - **z_x**, **z_y** (*np.ndarray* or *torch.Tensor*, optional): The shared latents,
           of shape `(n_samples, latent_dim)`, only if `return_latents=True`.
     """
-    z_x, z_y = generate_correlated_gaussians(n_samples, latent_dim, mi, use_torch=True)
+    z_x, z_y = generate_correlated_gaussians(n_samples, latent_dim, mi,
+                                             use_torch=True, seed=seed)
 
-    mlp_x = torch.nn.Sequential(
-        torch.nn.Linear(latent_dim, hidden_dim), torch.nn.Softplus(),
-        torch.nn.Linear(hidden_dim, observed_dim)
-    )
-    mlp_y = torch.nn.Sequential(
-        torch.nn.Linear(latent_dim, hidden_dim), torch.nn.Softplus(),
-        torch.nn.Linear(hidden_dim, observed_dim)
-    )
+    # The two projections are part of the construction, so they are seeded too:
+    # without this the "same" call returns different observables every time.
+    with _torch_seed(seed):
+        mlp_x = torch.nn.Sequential(
+            torch.nn.Linear(latent_dim, hidden_dim), torch.nn.Softplus(),
+            torch.nn.Linear(hidden_dim, observed_dim)
+        )
+        mlp_y = torch.nn.Sequential(
+            torch.nn.Linear(latent_dim, hidden_dim), torch.nn.Softplus(),
+            torch.nn.Linear(hidden_dim, observed_dim)
+        )
 
     with torch.no_grad():
         x = mlp_x(z_x)
@@ -806,7 +834,7 @@ def generate_spike_pair(n_windows: int = 4000, window_size: float = 1.0,
 
 
 def generate_xor_pair(n_samples: int, noise: float = 0.1, use_torch: bool = True,
-                      seed: Optional[int] = None):
+                      seed: int = 0):
     """The XOR synergy problem, with exact mutual information.
 
     ``X = (x1, x2)`` are independent fair bits and ``Y = (x1 XOR x2) + N(0, noise)``.
@@ -846,7 +874,7 @@ def generate_xor_pair(n_samples: int, noise: float = 0.1, use_torch: bool = True
             f"noise must be positive, got {noise}. At exactly zero Y is discrete "
             f"and this differential-entropy calculation does not apply; the "
             f"limiting value is 1 bit.")
-    rng = np.random.default_rng(seed) if seed is not None else np.random
+    rng = np.random.default_rng(seed)
     x1 = rng.integers(0, 2, size=n_samples) if seed is not None else np.random.randint(0, 2, size=n_samples)
     x2 = rng.integers(0, 2, size=n_samples) if seed is not None else np.random.randint(0, 2, size=n_samples)
     bit = np.bitwise_xor(x1, x2).astype(float)
@@ -873,7 +901,7 @@ def generate_xor_pair(n_samples: int, noise: float = 0.1, use_torch: bool = True
 def generate_categorical_pair(n_samples: int, n_channels: int = 1,
                               n_categories: int = 3, agreement: float = 0.9,
                               stay_probability: float = 0.95,
-                              use_torch: bool = True, seed: Optional[int] = None):
+                              use_torch: bool = True, seed: int = 0):
     """Two correlated categorical series, with exact per-channel MI.
 
     ``x`` is a Markov chain that holds its state with probability
