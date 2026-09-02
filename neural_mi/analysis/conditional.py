@@ -344,11 +344,17 @@ def run_conditional_mi(
             min_n = min(x_data.shape[0], w_data.shape[0])
             logger.warning(
                 f"x_data/y_data have {x_data.shape[0]} windows but w_data has "
-                f"{w_data.shape[0]} -- likely a boundary-window coverage-validation "
-                f"difference between processor types, not a real duration mismatch "
-                f"(see _SAMPLE_COUNT_TRIM_TOLERANCE). Truncating all three to the "
-                f"shared first {min_n} windows, the same way create_dataset "
-                f"truncates X/Y to the shorter of two window counts."
+                f"{w_data.shape[0]}; truncating all three to the shared first "
+                f"{min_n} (see _SAMPLE_COUNT_TRIM_TOLERANCE). **This is only "
+                f"correct if the extra window is at an edge.** If it falls in "
+                f"the middle, every window after it is paired with its "
+                f"neighbour instead: measured once at index 2730 of 3332, that "
+                f"misaligned 18% of the windows with no further warning. "
+                f"Callers who reach this through nmi.run() are aligned by "
+                f"window time beforehand and never see this; reaching it means "
+                f"raw tensors were passed to the engine directly, where no "
+                f"window times exist to align on. Pass arrays that already "
+                f"agree in length if the ordering matters."
             )
             x_data = x_data[:min_n]
             y_data = y_data[:min_n]

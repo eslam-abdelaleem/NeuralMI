@@ -4,6 +4,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+import contextlib
+
 import numpy as np
 import pytest
 import torch
@@ -661,3 +663,223 @@ class TestInteractionShiftTimeSpike:
         )
         assert results.mi_estimate is not None
         assert np.isfinite(results.mi_estimate)
+
+
+class TestWProcessorInheritance:
+    """Regression for E22: W was never windowed when it declared no processor
+    type of its own.
+
+    `nmi.interaction_information(x, y, w, processing=Processing(x='continuous',
+    x_params={'window_size': ...}))` is the natural three-population call and it
+    used to die with a shape error -- X and Y went through the processor and W
+    did not. There was no workaround through the wrapper either, since it builds
+    `Interaction(w_data=...)` itself, so passing `interaction=` alongside is a
+    duplicate-keyword TypeError.
+
+    The fix resolves W's processor from X's when W declares none, which is what
+    `run_interaction_information`'s own docstring already promised. These assert
+    the *value*, not merely that nothing raises: an inherited W must give the
+    same answer as an explicitly-declared one, or the inheritance is windowing
+    it differently from X.
+    """
+
+    WP = {'window_size': 5, 'step_size': 5}
+
+    @staticmethod
+    def _triple(T=1200, seed=0):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal((T, 3)).astype('float32')
+        w = rng.standard_normal((T, 3)).astype('float32')
+        y = (0.8 * x + 0.4 * w + 0.5 * rng.standard_normal((T, 3))).astype('float32')
+        return x, y, w
+
+    def _common(self):
+        return dict(model=_MODEL, training=_TRAINING, n_workers=1,
+                    show_progress=False, seed=0)
+
+    def test_interaction_inherits_x_processor_for_w(self):
+        x, y, w = self._triple()
+        proc = nmi.Processing(x='continuous', x_params=self.WP,
+                              y='continuous', y_params=self.WP)
+        inherited = nmi.interaction_information(x, y, w, processing=proc, **self._common())
+        explicit = nmi.run(
+            x, y, mode='interaction', processing=proc,
+            interaction=Interaction(w_data=w, w_processor_type='continuous',
+                                    w_processor_params=self.WP),
+            **self._common())
+        assert inherited.mi_estimate == explicit.mi_estimate
+
+    def test_conditional_inherits_x_processor_for_w(self):
+        from neural_mi import Conditional
+        x, y, w = self._triple()
+        proc = nmi.Processing(x='continuous', x_params=self.WP,
+                              y='continuous', y_params=self.WP)
+        inherited = nmi.run(x, y, mode='conditional', processing=proc,
+                            conditional=Conditional(w_data=w), **self._common())
+        explicit = nmi.run(
+            x, y, mode='conditional', processing=proc,
+            conditional=Conditional(w_data=w, w_processor_type='continuous',
+                                    w_processor_params=self.WP),
+            **self._common())
+        assert inherited.mi_estimate == explicit.mi_estimate
+
+    def test_preprocessed_3d_w_is_left_alone(self):
+        """The inheritance must not reach a W the caller already windowed.
+        No processing= here, so processor_type_x is None and nothing is
+        inherited; a 3-D W would also be excluded on its own."""
+        x, y, w = self._triple(T=1000)
+        xw = torch.from_numpy(x.reshape(200, 3, 5))
+        yw = torch.from_numpy(y.reshape(200, 3, 5))
+        ww = torch.from_numpy(w.reshape(200, 3, 5))
+        r = nmi.run(xw, yw, mode='interaction',
+                    interaction=Interaction(w_data=ww), **self._common())
+        assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
+
+
+
+class TestThreeWayWindowAlignment:
+    """Regression for E28/E29: W's windows were built by a different validity
+    rule than X's, and the two were reconciled by truncation.
+
+    Window validity is decided per pair. X's windows are where X and Y are both
+    valid; W is built paired with Y, so its windows are where W and Y are both
+    valid. Those coincide only when X and W impose comparable constraints. A
+    continuous X carrying `min_coverage_fraction` against a categorical W with
+    no such rule diverged by 1501 windows out of 3331 on a real recording.
+
+    Truncating all three to the shared first `min_n` is correct only when the
+    extra window sits at an edge. Measured with it at index 2730 of 3332, 18% of
+    pairs referred to different times, silently. `run()` now intersects the
+    retained window times, so the three arrays refer to the same windows by
+    construction and can also shrink together when W is the binding constraint.
+
+    The fixture reproduces the divergence at 1/10th scale: a gap in the shared
+    time base that only X's `min_coverage_fraction` reacts to.
+    """
+
+    WIN, STEP, DT, T = 2.0, 1.0, 0.1, 1200
+    X_PARAMS = {'window_size': WIN, 'step_size': STEP, 'min_coverage_fraction': 0.9}
+    Y_PARAMS = {'window_size': WIN, 'step_size': STEP}
+    W_PARAMS = {'window_size': WIN, 'step_size': STEP}
+
+    @classmethod
+    def _series(cls, gap, seed=0):
+        rng = np.random.default_rng(seed)
+        t = np.arange(cls.T, dtype='float64') * cls.DT
+        t[cls.T // 2:] += gap
+        x = rng.standard_normal((cls.T, 1)).astype('float32')
+        w = (rng.random((cls.T, 1)) < 0.5).astype('int64')
+        y = (0.8 * x + 0.4 * w + 0.5 * rng.standard_normal((cls.T, 1))).astype('float32')
+        return t, x, y, w
+
+    @classmethod
+    def _proc(cls, t):
+        return nmi.Processing(x='continuous', x_params=cls.X_PARAMS, x_time=t,
+                              y='continuous', y_params=cls.Y_PARAMS, y_time=t)
+
+    @staticmethod
+    def _training():
+        return Training(n_epochs=3, learning_rate=1e-3, batch_size=64,
+                        patience=2, shift_windows=False)
+
+    def test_the_two_pairings_really_do_disagree(self):
+        """The premise. Without this the other tests would pass vacuously."""
+        from neural_mi.data.handler import create_dataset
+        t, x, y, w = self._series(gap=3.0)
+        xy = create_dataset(x_data=x, x_time=t, y_data=y, y_time=t,
+                            processor_type_x='continuous', processor_params_x=self.X_PARAMS,
+                            processor_type_y='continuous', processor_params_y=self.Y_PARAMS)
+        wy = create_dataset(x_data=w, x_time=t, y_data=y, y_time=t,
+                            processor_type_x='categorical', processor_params_x=self.W_PARAMS,
+                            processor_type_y='continuous', processor_params_y=self.Y_PARAMS)
+        tx = np.asarray(xy.window_manager.window_times)
+        tw = np.asarray(wy.window_manager.window_times)
+        assert len(tx) != len(tw), "fixture no longer produces a divergence"
+        assert abs(len(tx) - len(tw)) > 1, "divergence must exceed the trim tolerance"
+        common, i_xy, i_w = np.intersect1d(tx, tw, return_indices=True)
+        assert len(common) > 0
+        # What run() now uses: every retained window maps to the same time.
+        assert np.array_equal(tx[i_xy], tw[i_w])
+
+    def test_interaction_runs_when_validity_rules_differ(self):
+        t, x, y, w = self._series(gap=3.0)
+        r = nmi.run(x, y, mode='interaction', processing=self._proc(t),
+                    interaction=Interaction(w_data=w, w_processor_type='categorical',
+                                            w_processor_params=self.W_PARAMS, w_time=t),
+                    model=_MODEL, training=self._training(),
+                    n_workers=1, show_progress=False, seed=0)
+        assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
+
+    def test_conditional_runs_when_validity_rules_differ(self):
+        from neural_mi import Conditional
+        t, x, y, w = self._series(gap=3.0)
+        r = nmi.run(x, y, mode='conditional', processing=self._proc(t),
+                    conditional=Conditional(w_data=w, w_processor_type='categorical',
+                                            w_processor_params=self.W_PARAMS, w_time=t),
+                    model=_MODEL, training=self._training(),
+                    n_workers=1, show_progress=False, seed=0)
+        assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
+
+    def test_one_window_difference_is_aligned_not_truncated(self):
+        """E29 proper: a one-window difference used to fall into the trim, which
+        silently misaligns whenever the odd window is not at an edge. It must now
+        be resolved by intersection instead, so the run succeeds and the engine's
+        truncation warning never fires."""
+        from neural_mi import Conditional
+        from neural_mi.data.handler import create_dataset
+        t, x, y, w = self._series(gap=0.0)
+        xy = create_dataset(x_data=x, x_time=t, y_data=y, y_time=t,
+                            processor_type_x='continuous', processor_params_x=self.X_PARAMS,
+                            processor_type_y='continuous', processor_params_y=self.Y_PARAMS)
+        wy = create_dataset(x_data=w, x_time=t, y_data=y, y_time=t,
+                            processor_type_x='categorical', processor_params_x=self.W_PARAMS,
+                            processor_type_y='continuous', processor_params_y=self.Y_PARAMS)
+        assert abs(xy.x_data.shape[0] - wy.x_data.shape[0]) == 1, "fixture drifted"
+
+        import logging
+        with _capture_warnings() as seen:
+            r = nmi.run(x, y, mode='conditional', processing=self._proc(t),
+                        conditional=Conditional(w_data=w, w_processor_type='categorical',
+                                                w_processor_params=self.W_PARAMS, w_time=t),
+                        model=_MODEL, training=self._training(),
+                        n_workers=1, show_progress=False, seed=0)
+        assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
+        assert not any('Truncating all three' in m for m in seen), (
+            "the engine trim fired; run() should have aligned by window time first")
+
+    def test_matching_windows_are_a_no_op(self):
+        """When both pairings already agree the alignment must change nothing,
+        so two identical runs stay bit-identical."""
+        from neural_mi import Conditional
+        t, x, y, w = self._series(gap=0.0)
+        proc = nmi.Processing(x='continuous', x_params=self.Y_PARAMS, x_time=t,
+                              y='continuous', y_params=self.Y_PARAMS, y_time=t)
+        kw = dict(model=_MODEL, training=self._training(), n_workers=1,
+                  show_progress=False, seed=0)
+        cond = lambda: Conditional(w_data=w, w_processor_type='categorical',
+                                   w_processor_params=self.W_PARAMS, w_time=t)
+        a = nmi.run(x, y, mode='conditional', processing=proc, conditional=cond(), **kw)
+        b = nmi.run(x, y, mode='conditional', processing=proc, conditional=cond(), **kw)
+        assert a.mi_estimate == b.mi_estimate
+
+
+@contextlib.contextmanager
+def _capture_warnings():
+    """Collect neural_mi logger warnings emitted inside the block."""
+    import logging
+    seen = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    lg = logging.getLogger('neural_mi')
+    h = _H()
+    lg.addHandler(h)
+    old = lg.level
+    lg.setLevel(logging.WARNING)
+    try:
+        yield seen
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(old)

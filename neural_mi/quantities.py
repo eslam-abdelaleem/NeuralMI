@@ -1,18 +1,40 @@
 # neural_mi/quantities.py
 """Named convenience functions for the information-quantities taxonomy.
 
-Every quantity here is an unconditioned :math:`I(A;B)` on offset slices of
-one or two raw time series, exactly what ``mode='estimate'`` already
-computes -- these are thin wrappers that build the right arrays (via
-``analysis/offsets.py``, or the library's own windowed ``Processing`` for
-``block_mi``) and call :func:`neural_mi.run`, returning the same
-:class:`~neural_mi.results.Results` object unchanged.
+Every quantity here is a thin wrapper: it builds the arrays its offset pattern
+needs (via ``analysis/offsets.py``, or the library's own windowed ``Processing``
+for ``block_mi``) and calls :func:`neural_mi.run`, returning the same
+:class:`~neural_mi.results.Results` object unchanged. None adds estimation
+logic of its own.
+
+They split by whether the pattern has a conditioning set, which is what decides
+the mode each one routes to:
+
+* **Unconditioned** :math:`I(A;B)`, routing to ``mode='estimate'`` --
+  :func:`active_information_storage`, :func:`excess_entropy`,
+  :func:`instantaneous_mi`, :func:`cross_predictive_information`,
+  :func:`block_mi`.
+* **Conditioned** :math:`I(A;B \mid C)`, a chain-rule difference of two larger
+  estimates -- :func:`transfer_entropy` and
+  :func:`conditional_transfer_entropy` (``mode='transfer'``), and
+  :func:`mi_rate`, :func:`instantaneous_exchange`,
+  :func:`directed_information_rate` (``mode='conditional'`` with
+  ``align='dual_branch'``, since their groups have different window lengths).
+* **A three-estimate combination** -- :func:`interaction_information`
+  (``mode='interaction'``).
+
+Everything in the second and third groups reports an
+``amplification_factor`` in ``details``, because a small difference of two
+large estimates inherits their error magnified. Amplification says how fragile
+the arithmetic is; it does not say whether the result is distinguishable from
+zero, which only repeated estimates can settle. Read both.
 
 Each function's natural construction parameter (``k``, ``past_k``,
-``window_size``) accepts either a scalar (one call, one ``Results``) or an
-iterable (a parallel sweep across values via :func:`neural_mi.parallel.dispatch_tasks`,
-aggregated into a plain :class:`pandas.DataFrame`). See ``neural_mi/parallel.py``
-for the dispatch mechanics.
+``history_window``, ``window_size``) accepts either a scalar (one call, one
+``Results``) or an iterable, which sweeps the values in parallel via
+:func:`neural_mi.parallel.dispatch_tasks` and returns a ``Results`` shaped like
+``mode='sweep'`` -- same object, same ``dataframe``, same ``plot()`` as a swept
+``run()``. See ``neural_mi/parallel.py`` for the dispatch mechanics.
 """
 from dataclasses import replace
 from typing import Any, Dict, Optional, Tuple, Union
@@ -150,8 +172,9 @@ def active_information_storage(
         Raw time series.
     k : int or iterable of int
         History length. An iterable sweeps every value in parallel
-        (``n_workers``-dispatched) and returns a DataFrame with columns
-        ``k``, ``mi_mean``, instead of a single-estimate ``Results``.
+        (``n_workers``-dispatched) and returns a ``Results`` shaped like
+        ``mode='sweep'``, whose ``dataframe`` has columns ``k``, ``mi_mean``,
+        instead of a single-estimate ``Results``.
     future_k : int, default=1
         Future window length (1 = the instantaneous present; use
         :func:`excess_entropy` for a longer future window).
@@ -164,7 +187,7 @@ def active_information_storage(
 
     Returns
     -------
-    neural_mi.results.Results or pandas.DataFrame
+    neural_mi.results.Results
     """
     if _is_sweep(k):
         tasks = [
@@ -205,7 +228,7 @@ def excess_entropy(
 
     Returns
     -------
-    neural_mi.results.Results or pandas.DataFrame
+    neural_mi.results.Results
     """
     if _is_sweep(k):
         tasks = [
@@ -269,7 +292,7 @@ def cross_predictive_information(
 
     Returns
     -------
-    neural_mi.results.Results or pandas.DataFrame
+    neural_mi.results.Results
     """
     if _is_sweep(past_k):
         tasks = [
@@ -305,14 +328,15 @@ def block_mi(
     x_data, y_data : array-like, shape (T, n_channels)
         Raw time series, same leading dimension.
     window_size : int or iterable of int
-        An iterable sweeps every value in parallel and returns a DataFrame
-        whose ``dataframe`` has columns ``window_size``, ``mi_mean``.
+        An iterable sweeps every value in parallel and returns a ``Results``
+        shaped like ``mode='sweep'``, whose ``dataframe`` has columns
+        ``window_size``, ``mi_mean``.
     n_workers, show_progress, **run_kwargs
         See :func:`active_information_storage`.
 
     Returns
     -------
-    neural_mi.results.Results or pandas.DataFrame
+    neural_mi.results.Results
     """
     if _is_sweep(window_size):
         tasks = [(x_data, y_data, wv, run_kwargs, show_progress) for wv in window_size]
@@ -327,13 +351,77 @@ def block_mi(
 
 
 def _run_transfer_task(task: Tuple[Any, Any, Any, int, str, Any, Dict[str, Any], bool]) -> Dict[str, Any]:
-    """Module-level (picklable) dispatch target for one conditional_transfer_entropy history_window."""
+    """Module-level (picklable) dispatch target for one transfer-entropy history_window.
+
+    Shared by :func:`transfer_entropy` and
+    :func:`conditional_transfer_entropy`: ``w_data=None`` is the plain
+    quantity and a supplied ``w_data`` is the conditioned one, which is
+    exactly the distinction ``Transfer`` already encodes.
+    """
     x_data, y_data, w_data, history_window, param_name, param_value, run_kwargs, show_progress = task
     from neural_mi.config import Transfer
     result = run(x_data=x_data, y_data=y_data, mode='transfer',
                  transfer=Transfer(history_window=history_window, w_data=w_data),
                  n_workers=1, show_progress=show_progress, **run_kwargs)
     return {param_name: param_value, 'mi_mean': result.mi_estimate}
+
+
+def transfer_entropy(
+    x_data, y_data, history_window: Union[int, list],
+    n_workers: int = 1, show_progress: bool = True, **run_kwargs
+):
+    r"""Transfer entropy :math:`\text{TE}_{X\to Y} = I(Y_0; X_{past} \mid Y_{past})`.
+
+    How much of $Y$'s present is predicted by $X$'s past beyond what $Y$'s own
+    past already predicts. Thin wrapper around ``mode='transfer'``; no new
+    estimation mechanism.
+
+    **Read the components, not the point estimate alone.** TE is a difference
+    of two separately-trained MI estimates, and on real recordings the
+    difference is often small relative to both. ``details``' ``amplification_factor``
+    reports :math:`(|I(XY_{past};Y_0)| + |I(Y_{past};Y_0)|)\,/\,|\text{TE}|`, and
+    the library warns when it is large. Amplification is a property of the
+    decomposition; whether the answer is *measurable* is a separate question
+    that only repeats can settle, so estimate across several seeds and compare
+    the mean with the spread before reporting a value.
+
+    Parameters
+    ----------
+    x_data, y_data : array-like, shape (T, n_channels)
+        Raw time series, same leading dimension. ``mode='transfer'`` builds its
+        own history and prediction arrays, so do **not** window these first.
+    history_window : int or iterable of int
+        History length for X_past and Y_past (both share it). An iterable
+        sweeps every value in parallel and returns a
+        :class:`~neural_mi.results.Results` shaped like ``mode='sweep'``, with
+        columns ``history_window`` and ``mi_mean``.
+    n_workers, show_progress, **run_kwargs
+        Forwarded to :func:`neural_mi.run` (``model=``, ``training=``, etc.).
+        ``run_kwargs`` may also include ``bidirectional=True`` or
+        ``rigorous=True``, both forwarded through ``transfer=Transfer(...)`` by
+        ``mode='transfer'`` itself.
+
+    Returns
+    -------
+    neural_mi.results.Results
+
+    See Also
+    --------
+    conditional_transfer_entropy : the same quantity with a third signal's
+        history folded into the conditioning side.
+    """
+    from neural_mi.config import Transfer
+    if _is_sweep(history_window):
+        tasks = [
+            (x_data, y_data, None, hw, 'history_window', hw, run_kwargs, show_progress)
+            for hw in history_window
+        ]
+        rows = dispatch_tasks(tasks, _run_transfer_task, n_workers=n_workers,
+                              show_progress=show_progress, desc="transfer_entropy sweep")
+        return _as_sweep_results(rows, 'history_window')
+    return run(x_data=x_data, y_data=y_data, mode='transfer',
+               transfer=Transfer(history_window=history_window),
+               n_workers=n_workers, show_progress=show_progress, **run_kwargs)
 
 
 def conditional_transfer_entropy(
@@ -364,7 +452,7 @@ def conditional_transfer_entropy(
 
     Returns
     -------
-    neural_mi.results.Results or pandas.DataFrame
+    neural_mi.results.Results
     """
     from neural_mi.config import Transfer
     if _is_sweep(history_window):
@@ -593,7 +681,7 @@ def mi_rate(
 
     Returns
     -------
-    neural_mi.results.Results or pandas.DataFrame
+    neural_mi.results.Results
     """
     if any((hv > 0) for hv in (h if _is_sweep(h) else [h])):
         _require_dual_branch_model(run_kwargs, 'mi_rate')
@@ -644,7 +732,7 @@ def instantaneous_exchange(
 
     Returns
     -------
-    neural_mi.results.Results or pandas.DataFrame
+    neural_mi.results.Results
     """
     if any((kv > 0) for kv in (k if _is_sweep(k) else [k])):
         _require_dual_branch_model(run_kwargs, 'instantaneous_exchange')
@@ -700,7 +788,7 @@ def directed_information_rate(
 
     Returns
     -------
-    neural_mi.results.Results or pandas.DataFrame
+    neural_mi.results.Results
     """
     if any((kv > 0) for kv in (k if _is_sweep(k) else [k])):
         _require_dual_branch_model(run_kwargs, 'directed_information_rate')

@@ -174,6 +174,102 @@ def _hashable_group_vars(df: pd.DataFrame, group_vars: List[str]) -> pd.DataFram
     return df
 
 
+def _align_conditioning_windows(mode, x_run_data, y_run_data, w_run_data,
+                                xy_window_times, w_dataset, base_params):
+    """Subset X, Y and W to the windows all three retained.
+
+    Window validity is decided per *pair*. X's windows are the ones where X and
+    Y are both valid. W is built paired with Y, so its windows are the ones
+    where W and Y are both valid. Those two sets coincide only when X and W
+    impose comparable constraints, and diverge when they do not: a continuous X
+    carrying ``min_coverage_fraction=0.9`` against a categorical W carrying no
+    such rule differed by 1501 windows out of 3331 on a real recording.
+
+    ``mode='conditional'`` (non-dual_branch) and ``mode='interaction'``
+    concatenate the windowed X and W along the channel axis downstream, so the
+    two must line up window for window. Neither two-way criterion delivers that.
+    The three-way intersection does, and it is the only formulation that can
+    also *shrink* X and Y, which is what is required whenever W is the binding
+    constraint.
+
+    Aligning here matters beyond the crash it prevents. The engine-level trim in
+    conditional.py/interaction.py absorbs a one-window difference by truncating
+    all three to the shared first ``min_n``, on the assumption that the odd
+    window sits at a boundary. When it sits in the middle instead, every window
+    after it shifts by one: measured on the spike-X/categorical-W/continuous-Y
+    combination, a single extra window at index 2730 of 3332 left 601 of 3331
+    pairs (18%) referring to different times, silently.
+
+    Returns ``(x, y, w)``, subset when both sides expose window times and
+    unchanged when they do not, in which case the existing trim and shape checks
+    still apply.
+    """
+    w_times = getattr(getattr(w_dataset, 'window_manager', None), 'window_times', None)
+    if xy_window_times is None or w_times is None:
+        return x_run_data, y_run_data, w_run_data
+    xy_times = np.asarray(xy_window_times)
+    w_times = np.asarray(w_times)
+    # intersect1d's returned indices are only meaningful for unique inputs, and
+    # window start times are unique by construction; bail out rather than
+    # mis-index if some processor ever breaks that.
+    if (len(np.unique(xy_times)) != len(xy_times)
+            or len(np.unique(w_times)) != len(w_times)):
+        return x_run_data, y_run_data, w_run_data
+
+    common, i_xy, i_w = np.intersect1d(xy_times, w_times, return_indices=True)
+    if len(common) == len(xy_times) == len(w_times):
+        return x_run_data, y_run_data, w_run_data      # already aligned
+
+    if len(common) == 0:
+        raise ValueError(
+            f"mode='{mode}': X and the conditioning variable W have no windows in "
+            f"common, so there is nothing to condition on. X paired with Y retained "
+            f"{len(xy_times)} windows and W paired with Y retained {len(w_times)}, "
+            f"with no overlapping window times. Window validity is decided per pair, "
+            f"so this means X and W are being judged by different rules -- most often "
+            f"a `min_coverage_fraction` on one side that the other has no equivalent "
+            f"of, or window_size/step_size that differ between processing.x_params "
+            f"and w_processor_params. This is not a data-coverage problem."
+        )
+
+    _min_common = 2
+    if len(common) < _min_common:
+        raise ValueError(
+            f"mode='{mode}': only {len(common)} window(s) are valid for X, Y and W "
+            f"simultaneously ({len(xy_times)} for X with Y, {len(w_times)} for W with "
+            f"Y), which is too few to estimate anything. See the note above about "
+            f"differing validity rules between X and W."
+        )
+
+    logger.info(
+        f"mode='{mode}': aligning X/Y ({len(xy_times)} windows) and W "
+        f"({len(w_times)}) to the {len(common)} windows valid for all three."
+    )
+    if len(common) < len(xy_times):
+        # X and Y lose windows here, which changes what the estimate covers, so
+        # say so rather than shrinking the sample silently.
+        logger.warning(
+            f"mode='{mode}': the conditioning variable W is valid on fewer windows "
+            f"than X, so X and Y have been reduced from {len(xy_times)} to "
+            f"{len(common)} windows ({len(common)/len(xy_times):.1%}) to match. The "
+            f"estimate describes that shared subset. W's own coverage rules "
+            f"(w_processor_params) decide this, so widen them if the reduction is "
+            f"larger than you intend."
+        )
+        if base_params.get('_n_windows_retained'):
+            base_params['_n_windows_retained'] = int(len(common))
+            _built = base_params.get('_n_windows_built')
+            if _built:
+                base_params['_window_retention'] = len(common) / _built
+
+    i_xy_t = torch.from_numpy(np.ascontiguousarray(i_xy))
+    i_w_t = torch.from_numpy(np.ascontiguousarray(i_w))
+    x_out = x_run_data[i_xy_t] if x_run_data is not None else None
+    y_out = y_run_data[i_xy_t] if y_run_data is not None else None
+    w_out = w_run_data[i_w_t] if w_run_data is not None else None
+    return x_out, y_out, w_out
+
+
 def _reshape_categorical_w_for_conditional(w_run_data, cat_dataset):
     """Re-lay-out a categorical-processor W tensor for ``mode='conditional'``.
 
@@ -295,8 +391,14 @@ def run(
     n_workers : int, default=1
         Worker processes for parallelizable modes.
     seed : int, optional
-        Random seed (``random``/``numpy``/``torch``). Full reproducibility only
-        with ``n_workers=1``.
+        Random seed (``random``/``numpy``/``torch``). **Reproducible at any
+        ``n_workers``.** Each parallel task re-seeds inside its own worker from
+        ``seed`` plus a deterministic per-task key
+        (``analysis/task.py::run_training_task``), so which worker runs which
+        task, and in what order, does not affect the result. Verified
+        bit-identical between ``n_workers=1`` and ``n_workers=3`` for the shared
+        task path, ``mode='dimensionality'``'s per-split dispatch and
+        ``mode='pairwise'``'s per-pair dispatch.
     verbose, show_progress : bool
         Logging verbosity and progress bars.
     device : str, optional
@@ -530,8 +632,16 @@ def _run_flat(
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
     
-        if random_seed is not None and analysis_kwargs.get('n_workers', 1) is not None and analysis_kwargs.get('n_workers', 1) > 1:
-            logger.warning("Reproducibility with random_seed is not guaranteed with n_workers > 1.")
+        # No "reproducibility is not guaranteed with n_workers > 1" warning
+        # here any more: it was false. run_training_task re-seeds random/numpy/
+        # torch inside each worker from random_seed plus a deterministic
+        # per-task key, which makes worker count and scheduling order
+        # irrelevant. Measured bit-identical at n_workers=1 and 3 across the
+        # shared task path, _dispatch_splits and _dispatch_pairs. The warning
+        # was worse than noise: it pushed callers onto n_workers=1 to protect a
+        # property they already had, which is a straight multiple on wall clock
+        # for exactly the repeat-heavy runs (sweep_grid={'run_id': ...}) that
+        # the amplification warning tells them to do.
 
         if base_params is None: base_params = {}
         # Copy so we never mutate the caller's dict across multiple calls
@@ -777,6 +887,40 @@ def _run_flat(
         # chunk-boundary translation (see its _is_raw_deferred/
         # _is_spike_deferred handling) mirrors AnalysisWorkflow._prepare_tasks's,
         # so the raw-concat scenario is now covered there as well.
+        # W inherits X's processor when it declares none of its own.
+        #
+        # Both modes treat a w_processor_type of None as "W is already
+        # processed" and hand it through untouched. That is right when the
+        # caller really did pass a 3-D windowed W, and wrong whenever X is
+        # being processed here: W is then a raw 2-D array that needs exactly
+        # the treatment X is getting, and leaving it alone produces
+        # (n_windows, C, w) against (T, C, 1) -- a shape error at best, and at
+        # window_size=1 a pair of mismatches small enough for
+        # interaction.py's trim tolerances to absorb, so the call returns a
+        # number built from an unwindowed W.
+        #
+        # Inheriting is what the library already documents:
+        # run_interaction_information's `w_processor_type` parameter says
+        # "None (default) inherits X's own type", a promise its raw_deferred
+        # branch keeps and this one did not. Resolving here rather than at
+        # each use site also means _cond_var_type below sees the inherited
+        # type, so the natural call lands on the same deferred, already-tested
+        # route an explicit w_processor_type would have reached.
+        #
+        # Narrow by construction: only when W exists, declares nothing, X
+        # declares something, and W is not already windowed. A pre-processed
+        # 3-D W and the no-processor fast path are both untouched.
+        if (mode in ('conditional', 'interaction') and w_data is not None
+                and w_processor_type is None and processor_type_x is not None
+                and getattr(w_data, 'ndim', None) != 3):
+            w_processor_type = processor_type_x
+            if w_processor_params is None:
+                w_processor_params = processor_params_x
+            logger.info(
+                f"mode='{mode}': w_data has no processor type of its own, "
+                f"inheriting X's ('{processor_type_x}') so W is windowed on the "
+                f"same grid. Pass w_processor_type explicitly to override."
+            )
         _cond_var_type = w_processor_type if mode in ('conditional', 'interaction') else None
         _regular_types = ('continuous', 'categorical')
         _not_dual_branch = (mode != 'conditional' or analysis_kwargs.get('align') != 'dual_branch')
@@ -861,6 +1005,10 @@ def _run_flat(
             # no-op) if only X and C, not Y, were checked here.
             and _effective_processor_type_y in _regular_types
         )
+        # Set only on the windowing branch below; None everywhere else (the
+        # pre-processed fast path and every deferred path, none of which build a
+        # window grid here).
+        _xy_window_times = None
         if (is_proc_sweep or mode == 'lag' or _defer_for_shift_windows or _defer_for_shift_time
                 or _defer_for_conditional_interaction or _defer_for_dual_branch_shift_windows):
             logger.info("Detected sweep over processor or lag parameters. Deferring data processing to workers.")
@@ -924,6 +1072,11 @@ def _run_flat(
             # leakage check has something to validate against.
             _wm = getattr(dataset, 'window_manager', None)
             if _wm is not None:
+                # Kept for mode='conditional'/'interaction', which build W in a
+                # separate create_dataset call and must line its windows up with
+                # these before the two are concatenated channel-wise. See
+                # _align_conditioning_windows.
+                _xy_window_times = getattr(_wm, 'window_times', None)
                 base_params['leak_check_window_size'] = _wm.window_size
                 base_params['leak_check_step'] = _wm.resolve_step()
 
@@ -1123,13 +1276,15 @@ def _run_flat(
                            params=run_params)
 
         elif mode == 'lag':
-            # Accept lag_range as a top-level argument or from **analysis_kwargs
+            # `lag_range` reaches _run_flat already unpacked from Lag(...) by
+            # run(); the analysis_kwargs fallback covers direct _run_flat callers.
             lag_range_val = lag_range if lag_range is not None else analysis_kwargs.pop('lag_range', None)
             if lag_range_val is None:
                 raise ValueError(
                     "`lag_range` must be provided for mode='lag'. "
-                    "Pass it as a top-level argument: "
-                    "nmi.run(..., mode='lag', lag_range=range(-10, 11))."
+                    "Pass it in the per-mode config: "
+                    "nmi.run(..., mode='lag', lag=Lag(lag_range=range(-10, 11))). "
+                    "A bare lag_range=... keyword is rejected by run()."
                 )
             results_list = run_lag_analysis(x_run_data, y_run_data, base_params,
                                             lag_range=lag_range_val, sweep_grid=sweep_grid,
@@ -1212,6 +1367,9 @@ def _run_flat(
                     w_run_data = _reshape_categorical_w_for_conditional(
                         w_run_data, w_dataset.x_dataset
                     )
+                x_run_data, y_run_data, w_run_data = _align_conditioning_windows(
+                    mode, x_run_data, y_run_data, w_run_data,
+                    _xy_window_times, w_dataset, base_params)
             else:
                 w_run_data = w_data if torch.is_tensor(w_data) else torch.from_numpy(np.array(w_data)).float()
             n_workers = analysis_kwargs.get('n_workers', 1)
@@ -1339,6 +1497,19 @@ def _run_flat(
                     processor_params_y=processor_params_y or {},
                 )
                 w_run_data = w_dataset.x_data
+                if w_processor_type == 'categorical':
+                    # The same re-layout mode='conditional' applies above. Both
+                    # modes concatenate W onto X along the channel axis, so both
+                    # need W on X's window-size axis. interaction handled only
+                    # the collapsed size-1 case, by broadcasting; a
+                    # 'full_trajectory' categorical W (window axis 2 against X's
+                    # 21) reached the concat and raised.
+                    w_run_data = _reshape_categorical_w_for_conditional(
+                        w_run_data, w_dataset.x_dataset
+                    )
+                x_run_data, y_run_data, w_run_data = _align_conditioning_windows(
+                    mode, x_run_data, y_run_data, w_run_data,
+                    _xy_window_times, w_dataset, base_params)
             else:
                 w_run_data = w_data if torch.is_tensor(w_data) else torch.from_numpy(np.array(w_data)).float()
             n_workers = analysis_kwargs.get('n_workers', 1)

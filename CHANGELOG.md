@@ -7,6 +7,234 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed: three-way quantities aligned X and W by truncation, which could misalign them
+
+`mode='conditional'` and `mode='interaction'` concatenate the windowed X and the
+conditioning variable W along the channel axis, so the two must line up window
+for window. They were built by different criteria and reconciled afterwards by
+length.
+
+**Window validity is decided per pair.** X's windows are the ones where X and Y
+are both valid. W was built paired with Y, so its windows were the ones where W
+and Y are both valid. Those two sets coincide only when X and W impose
+comparable constraints, and diverge when they do not: a continuous X carrying
+`min_coverage_fraction=0.9` against a categorical W carrying no such rule
+differed by **1501 windows out of 3331** on a hippocampal recording, which
+raised.
+
+**Worse, a small divergence was absorbed silently.** A difference of one window
+was resolved by truncating all three to the shared first `min_n`, on the stated
+assumption that the odd window sits at a boundary. Measured on a spike X with a
+categorical W, the extra window sat at index **2730 of 3332**, 82% through the
+recording, so every window after it shifted by one and **601 of 3331 pairs (18%)
+referred to different times**. The estimate was computed on partly scrambled
+data and reported without qualification.
+
+`run()` now intersects the two pairings' retained **window times** and subsets X,
+Y and W to the windows all three share. Being the three-way criterion rather than
+a two-way approximation, it is also the only formulation that can *shrink X and
+Y*, which is what is required whenever W is the binding constraint. That case
+warns, since it changes what the estimate covers.
+
+Unaffected: everything on the raw-deferred path, which concatenates X and W
+before windowing and so makes one validity decision for both. That is the
+default for regular-grid X with regular-grid W, and for spike X with spike W.
+
+The engine-level trim in `conditional.py`/`interaction.py` remains for callers
+who pass raw tensors to those functions directly, where no window times exist to
+align on, but its warning no longer claims the difference is a boundary artifact.
+
+
+### Fixed: `mode='interaction'` did not re-lay-out a categorical W
+
+`mode='conditional'` folds a categorical conditioning variable onto X's
+window-size axis before concatenating; `mode='interaction'` handled only the
+collapsed size-1 case, by broadcasting. A `'full_trajectory'` categorical W
+therefore reached the concatenation with a window axis of 2 against X's 21 and
+raised `x_data and w_data must have the same window size`. Both modes now share
+the same re-layout.
+
+
+### Added: `transfer_entropy`
+
+`conditional_transfer_entropy` had a named wrapper and the quantity it
+conditions did not, so plain transfer entropy was the one item in the taxonomy
+reachable only as `nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=k))`.
+A notebook showing "here is TE, now here is TE controlling for W" had to change
+API level between the two lines.
+
+```python
+te = nmi.transfer_entropy(x, y, history_window=8)
+sweep = nmi.transfer_entropy(x, y, history_window=[2, 4, 8, 16], n_workers=4)
+```
+
+Same shape as every other quantity wrapper: an iterable length parameter sweeps
+in parallel and returns a `Results` shaped like `mode='sweep'`. It reuses
+`conditional_transfer_entropy`'s dispatch target unchanged, passing `w_data=None`,
+since the plain and conditioned quantities are the same call with and without W.
+
+**Read the components.** TE is a difference of two separately-trained estimates,
+and `details['amplification_factor']` reports how much larger they are than the
+result. Amplification is a property of the decomposition; whether the answer is
+*measurable* is a separate question that only repeats settle. Measured on Allen
+Brain Observatory recordings, TE between two visual areas gave +0.098, +0.093,
++0.103 and -0.051 across four seeds: a mean smaller than its own spread, at an
+amplification of 17. Estimate across seeds and compare the mean with the spread
+before reporting a value.
+
+
+### Fixed: `mode='interaction'` and `mode='conditional'` never windowed `w_data`
+
+The natural three-population call raised a shape error:
+
+```python
+nmi.interaction_information(x, y, w, processing=nmi.Processing(
+    x='continuous', x_params={'window_size': 10, 'step_size': 10}, ...))
+# ValueError: x_data, y_data, and w_data must have the same number of samples.
+# Got shapes (600, 8, 11), (600, 8, 11), (6000, 8, 1)
+```
+
+X and Y went through the processor and W did not. Both modes treated a
+`w_processor_type` of `None` as "W is already processed", which is right when
+the caller passed a windowed 3-D W and wrong whenever X is being processed, W
+then being a raw 2-D array needing exactly the treatment X is getting.
+
+There was no workaround through the wrapper: `interaction_information` builds
+`Interaction(w_data=...)` itself, so passing `interaction=` alongside it is a
+duplicate-keyword `TypeError`. Only the `nmi.run()` form could state
+`w_processor_type` explicitly.
+
+At `window_size=1` it was worse than an error. X becomes `(T, C, 2)` and W stays
+`(T, C, 1)`, mismatched by one sample and one window slot, both inside
+`interaction.py`'s trim tolerances. The call returned a number, with warnings
+attributing the mismatch to a boundary-coverage difference between processor
+types rather than to W having skipped the processor.
+
+**W now inherits X's processor when it declares none of its own**, which is what
+`run_interaction_information`'s own docstring already promised for
+`w_processor_type=None`, a promise its deferred path kept and the other did not.
+The resolution happens once, before the `_defer_*` predicates are computed, so
+the natural call now lands on the same already-tested deferred route an explicit
+`w_processor_type` would have reached. A pre-processed 3-D W and the
+no-processor fast path are untouched. Pass `w_processor_type` to override.
+
+`mode='transfer'` was never affected: it requires raw 2-D for all three inputs
+and raises a specific error otherwise.
+
+
+### Fixed: the `n_workers > 1` reproducibility warning was false
+
+`run()` warned on every parallel call with a seed:
+
+> Reproducibility with random_seed is not guaranteed with n_workers > 1.
+
+`analysis/task.py::run_training_task` re-seeds `random`, `numpy` and `torch`
+inside each worker from `random_seed` plus a deterministic per-task key, so
+worker count and scheduling order cannot affect the result. Measured
+bit-identical at `n_workers=1` and `n_workers=3` for the shared task path
+(0.5238701614 either way), for `mode='dimensionality'`'s per-split dispatch
+(spectrum and `n_stable_total` both identical) and for `mode='pairwise'`'s
+per-pair dispatch (4.137781503972969 either way).
+
+The warning survived because every test in `test_reproducibility.py` pinned
+`n_workers=1`, so the suite only ever checked the case the warning declared
+safe. Its cost was concrete: it fires hardest on the repeat-heavy
+`sweep_grid={'run_id': range(n)}` runs that the amplification warning recommends
+for reducing component noise, pushing callers onto serial execution to protect a
+property they already had.
+
+Removed, with the guarantee stated on `run()`'s `seed` parameter instead, and
+covered by tests across all three dispatch paths.
+
+
+### Fixed: `mode='lag'` silently returned unshifted data
+
+`nmi.run(x, y, mode='lag', lag=Lag(...))` on raw arrays, with no `processing=`,
+reported a flat lag profile. `utils._shift_data` dispatched on
+`y_processor_type` and fell through to `return data` unchanged when it was
+`None`, which is exactly the case for pre-processed input. Every lag in the grid
+therefore evaluated the same unshifted pair. On a generator with a known lag the
+profile sat flat at ~0.10 where a manual shift peaked at 1.042.
+
+`_shift_data` now resolves the unit of shift from the array's own
+dimensionality when no processor type is given, slices along axis 0 so 1-D input
+no longer raises, and **raises instead of falling through** on an unrecognised
+type. Returning data unshifted reports a lag analysis that never applied a lag,
+which is worse than an error.
+
+The test that should have caught it asserted only the shape of the returned
+DataFrame. It now asserts the recovered lag, with and without `processing=`.
+
+
+### Fixed: `apply_augmentations` silently ignored unrecognised keys
+
+A misspelled or unsupported augmentation key was dropped without comment, so a
+run configured with an augmentation that never applied looked exactly like one
+where it did. Unrecognised keys now warn and name themselves.
+
+
+### Changed: every MI value in a result is in `output_units`
+
+`result.dataframe['mi_mean']` was converted to bits while
+`result.details['raw_results'][...]['train_mi']` stayed in nats, so two numbers
+describing the same run differed by a factor of 1.4427 depending on which the
+caller happened to read. The same applied to `test_mi_history` and
+`train_mi_history`, which stayed in nats inside `raw_results` for every mode.
+
+`_convert_mi_units` now handles ndarray values and list-valued history keys, and
+is applied to `raw_results` on all three branches and to `mode='pairwise'`,
+which previously converted its matrix by hand. One conversion helper, applied
+everywhere, so any MI a caller reads is in the units they asked for.
+
+
+### Changed: `Results` reads the same way across modes
+
+Whichever mode was run, the result should be readable the same way, while
+accepting that not every mode yields a single scalar.
+
+- **`Results.get(key, default=None)`** for reading `details` without a
+  `KeyError` on modes that do not populate a key.
+- **A per-mode contract table** in the `Results` docstring: what `mi_estimate`
+  means for each mode, whether a `dataframe` is populated, and which `details`
+  keys to expect.
+- **Canonical column names.** `mode='lag'` wrote `n_windows` where every other
+  mode wrote `n_windows_built`. `mode='pairwise'` and `mode='precision'`
+  discarded `test_mi`, `test_mi_std` and `eval_size` entirely, so a caller could
+  not check saturation on either. `_RESULT_COLS` gained `n_windows_built`,
+  `n_windows_retained`, `raw_train_mi`, `train_mi_std`, `test_mi_std`,
+  `test_mi_mean` and `eval_size`, so `plot()` does not mistake any of them for a
+  sweep axis.
+- **`quantities.py`'s sweep path returns a `Results`**, shaped like
+  `mode='sweep'`, instead of a bare DataFrame, so a swept quantity and a swept
+  `run()` are read and plotted identically. Its headline column is `mi_mean`,
+  matching `mode='sweep'`.
+
+
+### Changed: every generator takes `seed: int = 0`
+
+Four generators had no `seed` at all (`generate_correlated_gaussians`,
+`generate_nonlinear_from_latent`, `generate_windowed_oscillatory`,
+`generate_windowed_multichannel`) and the six that did split between two
+conventions, `seed=0` in four and `Optional[int] = None` in two. All ten now
+take `seed: int = 0`. Reproducible by default is the right default for fixtures
+whose purpose is a checkable answer.
+
+`generate_nonlinear_from_latent` needed more than a parameter: it draws from
+numpy and from torch, since it builds two randomly-initialised MLPs and
+`nn.Linear` reads the global torch RNG. A context manager seeds that
+construction and restores the previous state, so seeding a generator does not
+perturb the caller's own stream.
+
+Along the way this surfaced that `test_estimator_accuracy_on_known_data[smile]`
+had been passing on a single lucky draw. SMILE returns NaN on every draw tried
+through the test's hand-built `Trainer` scaffolding, while remaining stable
+through `nmi.run()` (8 of 8 draws, 1.81 to 1.88 against a truth of 2.0). The
+test now runs through `nmi.run()`, since it is named for accuracy and should
+measure accuracy through the path the library uses. SMILE is the less
+numerically robust of the two estimators: InfoNCE's softmax is bounded by
+construction and SMILE's clipped density ratio is not.
+
+
 ### Added: `embedding_model='deepsets'`
 
 A permutation-invariant encoder for spike windows. A shared network is applied
@@ -2048,10 +2276,6 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
   embedding labels, missing embedding history warning, 3-D embeddings, `reduction='none'`,
   and the `result.animate()` delegate.
 
----
-
-## [Unreleased]
-
 ### Added
 
 #### Generic Variational Wrapper (`use_variational=True` for all encoders)
@@ -2186,8 +2410,6 @@ Anywhere a config is accepted, a plain `dict` with the same field names also wor
   `run_rigorous_scalar_analysis`.
 - `tests/test_conditional_transfer_rigorous.py` — end-to-end tests for
   `rigorous=True` in conditional and transfer modes.
-
-## [Unreleased]
 
 ### Added
 

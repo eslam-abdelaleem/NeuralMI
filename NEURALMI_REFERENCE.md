@@ -1787,6 +1787,7 @@ conditioning set:
 | `instantaneous_mi` | `mode='estimate'` | passed through |
 | `cross_predictive_information` | `mode='estimate'` | `build_cross_offset` |
 | `block_mi` | `mode='estimate'` | a real `Processing(x='continuous', ...)` |
+| `transfer_entropy` | `mode='transfer'` | `Transfer(history_window=...)` |
 | `conditional_transfer_entropy` | `mode='transfer'` | `Transfer(history_window=..., w_data=...)` |
 | `mi_rate` | `mode='conditional'` (`align='dual_branch'`), or `'estimate'` when `h=0` | `_build_mi_rate_arrays` |
 | `instantaneous_exchange` | `mode='conditional'` (`align='dual_branch'`) | `_build_inst_exchange_arrays` |
@@ -1837,7 +1838,8 @@ import neural_mi as nmi
 # Single value -> Results, same as mode='estimate'
 r = nmi.active_information_storage(x_data, k=10)
 
-# Iterable -> DataFrame with columns 'k', 'mi_estimate', dispatched in parallel
+# Iterable -> Results shaped like mode='sweep', columns 'k' and 'mi_mean',
+# dispatched in parallel
 df = nmi.active_information_storage(x_data, k=[5, 10, 20], n_workers=4)
 ```
 
@@ -1848,6 +1850,7 @@ df = nmi.active_information_storage(x_data, k=[5, 10, 20], n_workers=4)
 | `instantaneous_mi(x_data, y_data, ...)` | $I(X_0; Y_0)$ | direct pass-through to `mode='estimate'`, no construction |
 | `cross_predictive_information(x_data, y_data, past_k, future_k=1, ...)` | $I(X_{past}; Y_{fut})$ | `offsets.build_cross_offset(x_data, y_data, past_len=past_k, future_len=future_k)` |
 | `block_mi(x_data, y_data, window_size, ...)` | $I(X_{1:w}; Y_{1:w})$ | `Processing(x='continuous', y='continuous', x_params={'window_size': ...}, ...)` |
+| `transfer_entropy(x_data, y_data, history_window, ...)` | $I(Y_0; X_{past} \mid Y_{past})$ | `mode='transfer'`, see §6.8 |
 | `conditional_transfer_entropy(x_data, y_data, w_data, history_window, ...)` | $I(Y_0; X_{past} \mid Y_{past}, W_{past})$ | `mode='transfer'` with `Transfer(w_data=...)`, see §6.8 |
 | `interaction_information(x_data, y_data, w_data, ...)` | $I(X,W;Y) - I(X;Y) - I(W;Y)$ | `mode='interaction'`, see §6.10 |
 | `mi_rate(x_data, y_data, h, W=20, ...)` | $I(X_{all}; Y_0 \mid Y_{past}(h))$ | `mode='conditional'` with `align='dual_branch'`, see below |

@@ -1,6 +1,6 @@
 # tests/test_reproducibility.py
 """Tests that random_seed actually reproduces results across separate run()
-calls with n_workers=1, as documented in run()'s own docstring.
+calls, at any n_workers, as documented in run()'s own docstring.
 
 Found via a broad correctness audit: ParameterSweep._prepare_tasks (sweep.py)
 and AnalysisWorkflow._prepare_tasks (rigorous.py) built each task's run_id
@@ -103,3 +103,64 @@ class TestRigorousModeReproducibility:
                          split=_SPLIT, rigorous={'gamma_range': range(1, 4), 'min_gamma_points': 2},
                          seed=11, n_workers=1, show_progress=False)
         assert '_seed_key' not in result.dataframe.columns
+
+
+class TestReproducibilityUnderParallelism:
+    """`run()` used to warn "Reproducibility with random_seed is not guaranteed
+    with n_workers > 1" on every parallel call. It was false, and it survived
+    because every test in this file pinned n_workers=1 -- the suite only ever
+    checked the case the warning declared safe.
+
+    The guarantee is real and comes from `run_training_task` re-seeding
+    random/numpy/torch inside each worker from `random_seed` plus a
+    deterministic per-task key, which makes worker count and scheduling order
+    irrelevant. These pin it for the shared task path and for the two modes
+    that dispatch differently, so the claim cannot silently regress.
+
+    The cost of the false warning was concrete: it pushes callers onto
+    n_workers=1 to protect a property they already have, which is a straight
+    multiple on wall clock for the repeat-heavy `sweep_grid={'run_id': ...}`
+    runs that the amplification warning tells them to do.
+    """
+
+    def test_estimate_matches_between_serial_and_parallel(self):
+        x, y = _make_data()
+        kw = dict(mode='estimate', model=_MODEL, training=_TRAINING,
+                  split=_SPLIT, seed=42, show_progress=False,
+                  sweep_grid={'run_id': [0, 1]})
+        serial = nmi.run(x, y, n_workers=1, **kw).mi_estimate
+        parallel = nmi.run(x, y, n_workers=2, **kw).mi_estimate
+        assert serial == parallel
+
+    def test_no_reproducibility_warning_is_emitted(self, caplog):
+        x, y = _make_data()
+        with caplog.at_level('WARNING', logger='neural_mi'):
+            nmi.run(x, y, mode='estimate', model=_MODEL, training=_TRAINING,
+                    split=_SPLIT, seed=42, n_workers=2, show_progress=False)
+        assert not any('eproducibility' in r.message for r in caplog.records)
+
+    def test_dimensionality_matches_between_serial_and_parallel(self):
+        from neural_mi import Dimensionality
+        rng = np.random.default_rng(0)
+        x = rng.normal(size=(400, 4)).astype(np.float32)
+        y = (x @ rng.normal(size=(4, 4)) + 0.2 * rng.normal(size=(400, 4))).astype(np.float32)
+        kw = dict(mode='dimensionality', model=Model(embedding_dim=4, hidden_dim=16),
+                  training=_TRAINING, split=_SPLIT, seed=5, show_progress=False,
+                  dimensionality=Dimensionality(n_splits=2))
+        # mode='dimensionality' has no mi_estimate; its result is the spectrum
+        # and the stability verdict read off it, so compare those.
+        r1, r2 = nmi.run(x, y, n_workers=1, **kw), nmi.run(x, y, n_workers=2, **kw)
+        for col in ('pr_eig_mean', 'pr_singular_mean', 'mi_mean'):
+            assert np.array_equal(r1.dataframe[col].to_numpy(),
+                                  r2.dataframe[col].to_numpy()), col
+        assert r1.details['n_stable_total'] == r2.details['n_stable_total']
+        assert r1.details['stable_directions'] == r2.details['stable_directions']
+
+    def test_pairwise_matches_between_serial_and_parallel(self):
+        rng = np.random.default_rng(0)
+        d = rng.normal(size=(300, 4)).astype(np.float32)
+        kw = dict(mode='pairwise', model=Model(embedding_dim=4, hidden_dim=16),
+                  training=_TRAINING, split=_SPLIT, seed=3, show_progress=False)
+        m1 = np.asarray(nmi.run(d, n_workers=1, **kw).details['mi_matrix'])
+        m2 = np.asarray(nmi.run(d, n_workers=2, **kw).details['mi_matrix'])
+        assert np.array_equal(np.nan_to_num(m1), np.nan_to_num(m2))

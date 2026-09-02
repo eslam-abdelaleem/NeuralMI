@@ -19,7 +19,8 @@ from .exceptions import NeuralMIError, DataShapeError, InsufficientDataError, Tr
 from .embeddings_io import extract_embeddings
 from .quantities import (
     active_information_storage, excess_entropy, instantaneous_mi,
-    cross_predictive_information, block_mi, conditional_transfer_entropy,
+    cross_predictive_information, block_mi, transfer_entropy,
+    conditional_transfer_entropy,
     interaction_information, mi_rate, instantaneous_exchange,
     directed_information_rate,
 )
@@ -47,7 +48,8 @@ __all__ = [
     'TrainingError',
     'extract_embeddings',
     'active_information_storage', 'excess_entropy', 'instantaneous_mi',
-    'cross_predictive_information', 'block_mi', 'conditional_transfer_entropy',
+    'cross_predictive_information', 'block_mi', 'transfer_entropy',
+    'conditional_transfer_entropy',
     'interaction_information', 'mi_rate', 'instantaneous_exchange',
     'directed_information_rate',
     'data',

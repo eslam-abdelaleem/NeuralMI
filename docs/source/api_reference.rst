@@ -35,6 +35,33 @@ Per-mode configs:
 .. autoclass:: neural_mi.Transfer
 .. autoclass:: neural_mi.Dimensionality
 .. autoclass:: neural_mi.Conditional
+.. autoclass:: neural_mi.Interaction
+
+Named Quantities (`quantities`)
+-------------------------------
+
+Thin wrappers over ``run()`` for the standard information-theoretic quantities.
+Each one builds the arrays its offset pattern needs and dispatches to an
+existing mode, so all of them take the same ``model=``/``training=``/``split=``/
+``estimator=``/``output=``/``seed=`` arguments as ``run()`` and return the same
+``Results`` object. None adds estimation logic of its own. Every one is
+importable directly from ``neural_mi`` (e.g. ``from neural_mi import
+transfer_entropy``).
+
+Where a quantity takes a length parameter (``k``, ``history_window``,
+``window_size``), passing an iterable instead of an int sweeps it in parallel
+and returns a ``Results`` shaped like ``mode='sweep'``.
+
+The conditional quantities are chain-rule differences of larger estimates and
+report an ``amplification_factor`` in ``details``; see the *Reading a
+conditional quantity* section of ``NEURALMI_REFERENCE.md`` before quoting one.
+
+.. automodule:: neural_mi.quantities
+   :members: active_information_storage, excess_entropy, instantaneous_mi,
+             cross_predictive_information, block_mi, transfer_entropy,
+             conditional_transfer_entropy, interaction_information,
+             mi_rate, instantaneous_exchange, directed_information_rate
+   :undoc-members:
 
 The Results Object
 ------------------

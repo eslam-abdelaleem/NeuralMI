@@ -158,6 +158,47 @@ class TestConvenienceFunctionsReturnResults:
         assert isinstance(r, nmi.Results)
 
 
+class TestTransferEntropy:
+    """`transfer_entropy` (E23): the plain quantity had no wrapper while its
+    conditional variant did, so a notebook showing "here is TE, now here is TE
+    controlling for W" had to switch API level between the two lines.
+
+    Contract tests, for the same reason the conditional class below gives:
+    measured on real recordings (verification V14) TE carries a seed-to-seed
+    spread larger than its own mean, so asserting a value would assert noise.
+    What is pinned is that the wrapper is exactly the `mode='transfer'` call it
+    claims to be, and that its sweep path returns the documented shape.
+    """
+
+    @staticmethod
+    def _lagged_pair(T=800, seed=0):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal((T, 2)).astype('float32')
+        y = np.zeros_like(x)
+        y[1:] = 0.6 * x[:-1] + 0.4 * rng.standard_normal((T - 1, 2))
+        return x, y.astype('float32')
+
+    def test_matches_run_mode_transfer_exactly(self):
+        from neural_mi import Transfer
+        x, y = self._lagged_pair()
+        kw = dict(model=_MODEL, training=_TRAINING, n_workers=1,
+                  show_progress=False, seed=0)
+        via_wrapper = nmi.transfer_entropy(x, y, history_window=3, **kw)
+        via_run = nmi.run(x, y, mode='transfer',
+                          transfer=Transfer(history_window=3), **kw)
+        assert via_wrapper.mi_estimate == via_run.mi_estimate
+        assert via_wrapper.get('amplification_factor') is not None
+
+    def test_history_window_sweep_returns_sweep_shaped_results(self):
+        x, y = self._lagged_pair()
+        r = nmi.transfer_entropy(x, y, history_window=[2, 3], model=_MODEL,
+                                 training=_TRAINING, n_workers=1,
+                                 show_progress=False, seed=0)
+        assert isinstance(r, nmi.Results)
+        assert list(r.dataframe['history_window']) == [2, 3]
+        assert 'mi_mean' in r.dataframe.columns
+
+
 class TestConditionalTransferEntropy:
     """`conditional_transfer_entropy` is exported from the package top level and
     had zero test references anywhere in the suite.
