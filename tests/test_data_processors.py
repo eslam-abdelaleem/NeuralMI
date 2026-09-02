@@ -2,7 +2,8 @@
 import pytest
 import numpy as np
 import torch
-from neural_mi.data.handler import WindowManager, PairedTemporalDataset, PairedDataset
+from neural_mi.data.handler import (WindowManager, PairedTemporalDataset, PairedDataset,
+                                    create_dataset)
 from neural_mi.data.temporal import ContinuousWindowDataset, SpikeWindowDataset, CategoricalWindowDataset
 from neural_mi.data.static import StaticDataset
 
@@ -1080,3 +1081,70 @@ class TestBugFixes:
         valid = ds.validate_window_coverage()
         assert isinstance(valid, np.ndarray)
         assert valid.dtype == bool
+
+class TestCreateDatasetDiagnostics:
+    """create_dataset's positional trap (E4) and the built window width (E5)."""
+
+    @staticmethod
+    def _continuous_pair(window_size=5):
+        return create_dataset(
+            np.random.randn(200, 3), np.random.randn(200, 3),
+            processor_type_x='continuous',
+            processor_params_x={'window_size': window_size, 'step_size': window_size},
+            processor_type_y='continuous',
+            processor_params_y={'window_size': window_size, 'step_size': window_size})
+
+    @staticmethod
+    def _mixed_pair():
+        spikes = [np.sort(np.random.uniform(0, 50, 40)) for _ in range(4)]
+        return create_dataset(
+            spikes, np.random.randn(50, 2),
+            processor_type_x='spike',
+            processor_params_x={'window_size': 1.0, 'step_size': 1.0, 'n_seconds': 50},
+            processor_type_y='continuous',
+            processor_params_y={'window_size': 1.0, 'step_size': 1.0, 'sample_rate': 1.0})
+
+    def test_processor_type_passed_positionally_names_the_parameter(self):
+        # create_dataset(x, 'continuous', {...}) lands the processor type in
+        # y_data. The message must name y_data and give the keyword form,
+        # rather than reporting an anonymous bad type from deeper down.
+        with pytest.raises(ValueError) as exc:
+            create_dataset(np.random.randn(100, 2), 'continuous', {'window_size': 1})
+        msg = str(exc.value)
+        assert 'y_data' in msg
+        assert 'processor_type_x' in msg
+
+    def test_string_x_data_is_caught_too(self):
+        with pytest.raises(ValueError, match='x_data'):
+            create_dataset('continuous', np.random.randn(100, 2))
+
+    def test_legitimate_calls_are_unaffected(self):
+        # A list is valid data (spike times arrive as one), so the guard must
+        # reject strings only.
+        assert self._continuous_pair().x_data.shape[0] > 0
+        assert self._mixed_pair().x_data.shape[0] > 0
+
+    def test_continuous_window_width_is_window_size_plus_one(self):
+        ds = self._continuous_pair(window_size=5)
+        assert ds.x_window_width == 6
+        assert ds.y_window_width == 6
+        assert ds.x_window_width == ds.x_data.shape[-1]
+
+    def test_the_two_sides_can_differ_in_a_mixed_pair(self):
+        # A spike side counts spike slots and a continuous side counts time
+        # slots, so one number for the pair would be wrong here. This is the
+        # case the per-side properties exist for.
+        ds = self._mixed_pair()
+        assert ds.x_window_width != ds.y_window_width
+        assert ds.y_window_width == 2  # window_size=1.0 -> 1 + 1 interpolation slot
+
+    def test_width_on_a_preprocessed_pair(self):
+        ds = create_dataset(np.random.randn(100, 2, 7), np.random.randn(100, 2, 7))
+        assert isinstance(ds, PairedDataset)
+        assert ds.x_window_width == 7
+        assert ds.y_window_width == 7
+
+    def test_width_is_none_when_y_is_absent(self):
+        ds = create_dataset(np.random.randn(100, 2, 7))
+        assert ds.x_window_width == 7
+        assert ds.y_window_width is None

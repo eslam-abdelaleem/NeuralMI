@@ -996,7 +996,9 @@ def generate_lagged_pair(n_samples: int = 5000, lag: int = 30, dim: int = 1,
     -------
     x, y : np.ndarray of shape (n_samples, dim), float32
     exact_mi : float
-        ``I`` in bits at the peak, i.e. between ``x[t + lag]`` and ``y[t]``.
+        ``I`` in bits at the peak, i.e. between ``x[t]`` and ``y[t + lag]``.
+        Y trails X by ``lag`` samples, so the dependence sits at ``x[t - lag]``
+        for a given ``y[t]``, and ``mode='lag'`` reports the peak at ``+lag``.
 
     Examples
     --------

@@ -124,6 +124,20 @@ class WindowManager:
         return self.n_windows
 
 
+def _trailing_width(data):
+    """Size of a built dataset tensor's trailing axis.
+
+    Returns a tuple of widths for the compound ``(a_data, c_data)`` path, and
+    ``None`` when the side is absent. Used by the ``*_window_width`` properties
+    on both paired dataset classes, so the two report the width the same way.
+    """
+    if data is None:
+        return None
+    if isinstance(data, tuple):
+        return tuple(d.shape[-1] for d in data)
+    return data.shape[-1]
+
+
 class PairedTemporalDataset(Dataset):
     """Wrapper for paired X and Y datasets with temporal alignment."""
     
@@ -188,7 +202,37 @@ class PairedTemporalDataset(Dataset):
     @property
     def y_data(self):
         return self.y_dataset.data
-    
+
+    @property
+    def x_window_width(self):
+        """Width of X's built window, read off the trailing axis.
+
+        What that axis counts depends on the processor, so read it against the
+        processor type rather than on its own. A continuous processor builds
+        ``w + 1`` time slots for ``window_size=w``, carrying one interpolation
+        slot; a categorical one builds ``w``, which is why ``conditional.py``
+        reconciles the two with a tolerance of one; a spike processor builds
+        ``max_spikes_per_window`` spike slots, which is not a time axis at all.
+        The two sides therefore differ legitimately in a mixed-type pair, and
+        indexing the tensor is otherwise the only way to see what was built.
+        """
+        return _trailing_width(self.x_dataset.data)
+
+    @property
+    def y_window_width(self):
+        """Width of Y's built window, read off the trailing axis.
+
+        What that axis counts depends on the processor, so read it against the
+        processor type rather than on its own. A continuous processor builds
+        ``w + 1`` time slots for ``window_size=w``, carrying one interpolation
+        slot; a categorical one builds ``w``, which is why ``conditional.py``
+        reconciles the two with a tolerance of one; a spike processor builds
+        ``max_spikes_per_window`` spike slots, which is not a time axis at all.
+        The two sides therefore differ legitimately in a mixed-type pair, and
+        indexing the tensor is otherwise the only way to see what was built.
+        """
+        return _trailing_width(self.y_dataset.data if self.y_dataset is not None else None)
+
     def _initialize_windows(self, t_start, t_end):
         """Create windows based on data extent."""
         # Get temporal extent from both datasets
@@ -421,7 +465,37 @@ class PairedDataset(Dataset):
     @property
     def y_data(self):
         return self.y_dataset.data
-    
+
+    @property
+    def x_window_width(self):
+        """Width of X's built window, read off the trailing axis.
+
+        What that axis counts depends on the processor, so read it against the
+        processor type rather than on its own. A continuous processor builds
+        ``w + 1`` time slots for ``window_size=w``, carrying one interpolation
+        slot; a categorical one builds ``w``, which is why ``conditional.py``
+        reconciles the two with a tolerance of one; a spike processor builds
+        ``max_spikes_per_window`` spike slots, which is not a time axis at all.
+        The two sides therefore differ legitimately in a mixed-type pair, and
+        indexing the tensor is otherwise the only way to see what was built.
+        """
+        return _trailing_width(self.x_dataset.data)
+
+    @property
+    def y_window_width(self):
+        """Width of Y's built window, read off the trailing axis.
+
+        What that axis counts depends on the processor, so read it against the
+        processor type rather than on its own. A continuous processor builds
+        ``w + 1`` time slots for ``window_size=w``, carrying one interpolation
+        slot; a categorical one builds ``w``, which is why ``conditional.py``
+        reconciles the two with a tolerance of one; a spike processor builds
+        ``max_spikes_per_window`` spike slots, which is not a time axis at all.
+        The two sides therefore differ legitimately in a mixed-type pair, and
+        indexing the tensor is otherwise the only way to see what was built.
+        """
+        return _trailing_width(self.y_dataset.data if self.y_dataset is not None else None)
+
     def _align_datasets(self):
         """Ensure X and Y have matching number of samples.
 
@@ -559,6 +633,23 @@ def create_dataset(
         large arrays in pageable system RAM; ``'auto'`` co-locates data with the
         compute device.  See :func:`create_single_dataset` for details.
     """
+    # A string is never valid data on either side, and there is one way it
+    # reliably gets there: create_dataset's second positional argument is
+    # y_data, so the natural-looking create_dataset(x, 'continuous', {...})
+    # passes the processor type as data. Caught here, where the parameter names
+    # are known, rather than in StaticDataset._prepare_one, which sees only an
+    # anonymous array and can name neither the argument nor the mistake.
+    for _param, _value in (('x_data', x_data), ('y_data', y_data)):
+        if isinstance(_value, str):
+            raise ValueError(
+                f"{_param} must be array-like (list, numpy array, or torch.Tensor), "
+                f"got the string {_value!r}. create_dataset's second positional "
+                f"argument is y_data, so create_dataset(x, 'continuous', ...) puts "
+                f"the processor type there. Pass it by keyword: "
+                f"create_dataset(x, processor_type_x='continuous', "
+                f"processor_params_x={{...}})."
+            )
+
     proc_type_x = processor_type_x
     proc_params_x = (processor_params_x or {}).copy()
     proc_type_y = processor_type_y if processor_type_y is not None else processor_type_x

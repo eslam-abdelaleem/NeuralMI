@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added: `x_window_width` / `y_window_width` on the paired datasets
+
+`window_size=w` does not always build `w` slots, and nothing exposed what was
+actually built. A continuous processor builds `w + 1` time slots, carrying one
+interpolation slot; a categorical processor builds `w`, which is why
+`conditional.py` reconciles the two with a tolerance of one; a spike processor
+builds `max_spikes_per_window` spike slots, which is not a time axis at all.
+Answering "how wide is a window here" meant indexing the dataset and inspecting a
+tensor.
+
+`PairedTemporalDataset` and `PairedDataset` now both carry `x_window_width` and
+`y_window_width`, alongside the `x_data` / `y_data` properties they already had,
+so a caller reads the width the same way whichever class they were handed. The
+two sides are reported separately because they legitimately differ: a spike and
+continuous pair at `window_size=1.0` gives 6 and 2. `y_window_width` is `None`
+when there is no Y.
+
+### Changed: `create_dataset` names the parameter when it is handed a string
+
+`create_dataset`'s second positional argument is `y_data`, so the
+natural-looking `create_dataset(x, 'continuous', {...})` passed the processor
+type as data and raised `Data must be a list, numpy array, or torch.Tensor, got
+<class 'str'>` from inside `StaticDataset`, naming neither the argument nor the
+mistake. A string is never valid data on either side, so it is now caught where
+the parameter names are known, and the message says which parameter received it
+and gives the keyword form that works.
+
+### Fixed: `generate_lagged_pair` documented its sign convention backwards
+
+The Returns block said the MI at the peak is "between `x[t + lag]` and `y[t]`",
+which is the opposite of what the generator builds and of what its own `lag`
+parameter says. Y trails X, so the dependence sits at `x[t - lag]` for a given
+`y[t]`, equivalently between `x[t]` and `y[t + lag]`, and `mode='lag'` reports
+the peak at `+lag`. Documentation only: the generator was always correct and
+`test_cross_correlation_peaks_at_the_requested_lag` already pinned it.
+
 ### Fixed: three-way quantities aligned X and W by truncation, which could misalign them
 
 `mode='conditional'` and `mode='interaction'` concatenate the windowed X and the
