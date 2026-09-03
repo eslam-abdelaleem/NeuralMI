@@ -232,7 +232,34 @@ def run_precision_analysis(
                                      'eval_size': max_eval})
 
     df = pd.DataFrame(results_list)
-    
+
+    # A negative swept value means the estimator has left the region where its
+    # output is interpretable, not that information went below zero. The critic
+    # is frozen on clean data and then scored on corrupted inputs, and InfoNCE's
+    # bound is unbounded below, so the magnitude reports how badly the bound has
+    # broken rather than how much information the corruption destroyed. Warn on
+    # the first one, because the threshold crossing above it is still readable
+    # and a reader plotting the tail otherwise has nothing telling them so.
+    _neg = df[(df['tau'] > 0) & (df['train_mi'] < 0)]
+    if not _neg.empty:
+        _first = _neg.iloc[0]
+        _worst = df['train_mi'].min()
+        # Reported as a multiple of baseline rather than as an absolute value:
+        # this runs in nats while the returned frame is converted to the caller's
+        # output_units, so an absolute figure here would not match the curve the
+        # caller prints.
+        _depth = abs(_worst) / baseline_mi if baseline_mi else float('inf')
+        logger.warning(
+            f"mode='precision': MI goes negative from tau={_first['tau']:g} onward, "
+            f"reaching roughly {_depth:.0f}x the baseline in the opposite "
+            f"direction. Past this point the frozen critic is being evaluated on "
+            f"inputs it was never trained for, and the estimator's lower bound is "
+            f"unbounded below, so the depth of the fall measures how badly the "
+            f"bound has broken rather than how much information the corruption "
+            f"destroyed. The threshold crossing remains readable; do not quote or "
+            f"plot the tail as an amount of information."
+        )
+
     # 4. Find Precision Threshold(s)
     # Normalise threshold_ratio to a list for uniform handling
     if isinstance(threshold_ratio, (int, float)):

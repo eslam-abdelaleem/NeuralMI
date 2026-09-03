@@ -660,6 +660,14 @@ def _run_flat(
             bp[key] = val
 
         # Populate base_params with explicit arguments to ensure they are validated
+        # Time vectors travel with the params so that windowing deferred to the
+        # task layer (shift_windows on conditional/interaction, where X and W are
+        # merged and windowed later) sees the same real-time grid the eager path
+        # gets via create_dataset(x_time=...). Without them a continuous X is
+        # windowed in sample-index units while a spike Y is in seconds, and no
+        # window can satisfy coverage: measured as 0 of 33080 windows retained.
+        _inject(base_params, 'x_time', x_time)
+        _inject(base_params, 'y_time', y_time)
         _inject(base_params, 'output_units', output_units)
         _inject(base_params, 'verbose', verbose)
         _inject(base_params, 'show_progress', show_progress)
@@ -981,6 +989,23 @@ def _run_flat(
                     f"use the same step_size. Remove step_size from {_cond_var_label} to "
                     f"inherit X's, or set them equal explicitly."
                 )
+            # Same class of silent-ignore as the two above: the concatenated
+            # array is windowed on X's time vector, so a distinct w_time would
+            # be dropped and W would be read on X's grid, giving a wrong answer
+            # with nothing said. Equal vectors are the ordinary case (both
+            # variables sampled together) and stay silent.
+            if w_time is not None and x_time is not None:
+                _wt, _xt = np.asarray(w_time), np.asarray(x_time)
+                if _wt.shape != _xt.shape or not np.allclose(_wt, _xt):
+                    raise ValueError(
+                        f"shift_windows=True with mode='{mode}': w_time differs from "
+                        f"x_time. The conditioning variable is concatenated onto X "
+                        f"*before* windowing and is read on X's time grid exactly, so a "
+                        f"separate w_time cannot be honoured here and would be silently "
+                        f"ignored. Either resample W onto X's grid and drop w_time, or "
+                        f"set shift_windows=False, which windows W separately and does "
+                        f"honour w_time."
+                    )
         # align='dual_branch': shift_windows reachable via a genuinely
         # different mechanism than the concat-based one above -- X and the
         # conditioning variable (C, still configured via

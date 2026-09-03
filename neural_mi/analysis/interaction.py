@@ -19,6 +19,7 @@ from neural_mi.analysis.sweep import (ParameterSweep, _joint_marginal_difference
                                       _extract_embeddings, amplification_factor)
 from neural_mi.data.temporal import relabel_categorical_data
 from neural_mi.logger import logger
+from neural_mi.utils import mi_report_units
 
 # Mirrors conditional.py's identical constants exactly -- both modes window
 # W paired with Y via the same create_dataset(x_data=w_data, y_data=y_data,
@@ -217,7 +218,7 @@ def run_interaction_information(
             if abs(x_data.shape[0] - w_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
                 min_n = min(x_data.shape[0], w_data.shape[0])
                 logger.warning(
-                    f"x_data/y_data have {x_data.shape[0]} windows but w_data has "
+                    f"mode='interaction': x_data/y_data have {x_data.shape[0]} windows but w_data has "
                     f"{w_data.shape[0]}; truncating all three to the shared first "
                     f"{min_n} (see _SAMPLE_COUNT_TRIM_TOLERANCE). **This is only "
                     f"correct if the extra window is at an edge.** If it falls in "
@@ -248,7 +249,7 @@ def run_interaction_information(
             elif abs(x_data.shape[2] - w_data.shape[2]) <= _WINDOW_SIZE_TRIM_TOLERANCE:
                 min_w = min(x_data.shape[2], w_data.shape[2])
                 logger.warning(
-                    f"x_data window size ({x_data.shape[2]}) and w_data window size "
+                    f"mode='interaction': x_data window size ({x_data.shape[2]}) and w_data window size "
                     f"({w_data.shape[2]}) differ by {abs(x_data.shape[2] - w_data.shape[2])} "
                     f"sample(s) -- likely the continuous processor's interpolation-edge "
                     f"buffer (see _compute_max_samples_per_window). Trimming both to the "
@@ -280,9 +281,11 @@ def run_interaction_information(
     )
 
     ii = mi_xw_y - mi_x_y - mi_w_y
+    _scale, _units = mi_report_units(base_params)
     logger.info(
-        f"Interaction information: I(X,W;Y)={mi_xw_y:.4f}, I(X;Y)={mi_x_y:.4f}, "
-        f"I(W;Y)={mi_w_y:.4f}, II={ii:.4f} nats (converted to requested output_units by the caller)."
+        f"Interaction information: I(X,W;Y)={mi_xw_y * _scale:.4f}, "
+        f"I(X;Y)={mi_x_y * _scale:.4f}, I(W;Y)={mi_w_y * _scale:.4f}, "
+        f"II={ii * _scale:.4f} {_units}."
     )
 
     return {

@@ -24,6 +24,7 @@ from tqdm.auto import tqdm
 
 from .sweep import ParameterSweep
 from neural_mi.logger import logger, worker_init_args
+from neural_mi.utils import mi_report_units
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu, compute_regime_diagnostic
 
 
@@ -47,7 +48,8 @@ def _classify_regime(mi_value: float, ceiling: float, margin: float, floor: floa
     return 'detached', True
 
 
-def _warn_if_near_ceiling(df: pd.DataFrame, ceiling_mi_fraction: float = 0.85) -> None:
+def _warn_if_near_ceiling(df: pd.DataFrame, ceiling_mi_fraction: float = 0.85,
+                          base_params: Optional[Dict[str, Any]] = None) -> None:
     """Lightweight, standalone warning: is the underlying MI estimate close
     enough to its evaluation ceiling (log(eval_size)) that any reading built
     on it deserves extra caution? Not a remediation -- see _classify_regime.
@@ -64,9 +66,10 @@ def _warn_if_near_ceiling(df: pd.DataFrame, ceiling_mi_fraction: float = 0.85) -
     ceiling = float(np.log(mean_eval_size))
     regime, _ = _classify_regime(mean_test_mi, ceiling, (1 - ceiling_mi_fraction) * ceiling, 0.0)
     if regime == 'pinned':
+        _scale, _units = mi_report_units(base_params)
         warnings.warn(
-            f"Dimensionality: the underlying MI estimate ({mean_test_mi:.3f} nats) is "
-            f"near its evaluation ceiling (log(eval_size)={ceiling:.3f} nats). Stable "
+            f"Dimensionality: the underlying MI estimate ({mean_test_mi * _scale:.3f} {_units}) is "
+            f"near its evaluation ceiling (log(eval_size)={ceiling * _scale:.3f} {_units}). Stable "
             f"directions found under this condition are still trustworthy (this was "
             f"tested directly -- ceiling proximity was found to degrade the "
             f"stable-direction count conservatively, not misleadingly), but the count "
@@ -578,7 +581,7 @@ def run_dimensionality_analysis(
     embed_history = _extract_embedding_history(all_results)
     _strip_embeddings(all_results)
     df = pd.DataFrame(all_results)
-    _warn_if_near_ceiling(df, ceiling_mi_fraction)
+    _warn_if_near_ceiling(df, ceiling_mi_fraction, base_params)
     logger.info("--- Dimensionality Analysis Complete ---")
 
     embeddings = embeddings or {}

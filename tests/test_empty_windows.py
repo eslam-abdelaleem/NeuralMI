@@ -163,6 +163,11 @@ class TestRetentionReporting:
 
     def test_low_retention_warns_and_names_the_side(self, caplog):
         """Sparse firing against a fixed grid should trip the warning."""
+        # The warning is deduped per process, so any earlier test that tripped
+        # it would consume this one's. Reset first, or this passes or fails
+        # depending on test order.
+        from neural_mi.data.handler import reset_retention_warnings
+        reset_retention_warnings()
         spikes = _sparse_spikes(n_neurons=1, duration=60.0, rate=0.2, seed=3)
         with caplog.at_level('WARNING'):
             create_dataset(x_data=spikes, processor_type_x='spike',

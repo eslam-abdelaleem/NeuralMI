@@ -207,12 +207,20 @@ class PairedTemporalDataset(Dataset):
     def x_window_width(self):
         """Width of X's built window, read off the trailing axis.
 
-        What that axis counts depends on the processor, so read it against the
-        processor type rather than on its own. A continuous processor builds
-        ``w + 1`` time slots for ``window_size=w``, carrying one interpolation
-        slot; a categorical one builds ``w``, which is why ``conditional.py``
-        reconciles the two with a tolerance of one; a spike processor builds
-        ``max_spikes_per_window`` spike slots, which is not a time axis at all.
+        What that axis counts depends on the processor, and only one of the
+        three counts time, so read it against the processor type rather than on
+        its own.
+
+        * continuous: ``w + 1`` time slots for ``window_size=w``, carrying one
+          interpolation slot at the edge.
+        * categorical: one slot per category under the default
+          ``encoding='majority_vote'`` (and under ``'probability'``), and
+          ``n_categories`` times the window's sample count under
+          ``'full_trajectory'``. Never ``w``: the window size sets how many
+          windows are built, not how wide this axis is.
+        * spike: ``max_spikes_per_window`` spike slots, capped by the busiest
+          window actually present, which is not a time axis either.
+
         The two sides therefore differ legitimately in a mixed-type pair, and
         indexing the tensor is otherwise the only way to see what was built.
         """
@@ -222,12 +230,20 @@ class PairedTemporalDataset(Dataset):
     def y_window_width(self):
         """Width of Y's built window, read off the trailing axis.
 
-        What that axis counts depends on the processor, so read it against the
-        processor type rather than on its own. A continuous processor builds
-        ``w + 1`` time slots for ``window_size=w``, carrying one interpolation
-        slot; a categorical one builds ``w``, which is why ``conditional.py``
-        reconciles the two with a tolerance of one; a spike processor builds
-        ``max_spikes_per_window`` spike slots, which is not a time axis at all.
+        What that axis counts depends on the processor, and only one of the
+        three counts time, so read it against the processor type rather than on
+        its own.
+
+        * continuous: ``w + 1`` time slots for ``window_size=w``, carrying one
+          interpolation slot at the edge.
+        * categorical: one slot per category under the default
+          ``encoding='majority_vote'`` (and under ``'probability'``), and
+          ``n_categories`` times the window's sample count under
+          ``'full_trajectory'``. Never ``w``: the window size sets how many
+          windows are built, not how wide this axis is.
+        * spike: ``max_spikes_per_window`` spike slots, capped by the busiest
+          window actually present, which is not a time axis either.
+
         The two sides therefore differ legitimately in a mixed-type pair, and
         indexing the tensor is otherwise the only way to see what was built.
         """
@@ -470,12 +486,20 @@ class PairedDataset(Dataset):
     def x_window_width(self):
         """Width of X's built window, read off the trailing axis.
 
-        What that axis counts depends on the processor, so read it against the
-        processor type rather than on its own. A continuous processor builds
-        ``w + 1`` time slots for ``window_size=w``, carrying one interpolation
-        slot; a categorical one builds ``w``, which is why ``conditional.py``
-        reconciles the two with a tolerance of one; a spike processor builds
-        ``max_spikes_per_window`` spike slots, which is not a time axis at all.
+        What that axis counts depends on the processor, and only one of the
+        three counts time, so read it against the processor type rather than on
+        its own.
+
+        * continuous: ``w + 1`` time slots for ``window_size=w``, carrying one
+          interpolation slot at the edge.
+        * categorical: one slot per category under the default
+          ``encoding='majority_vote'`` (and under ``'probability'``), and
+          ``n_categories`` times the window's sample count under
+          ``'full_trajectory'``. Never ``w``: the window size sets how many
+          windows are built, not how wide this axis is.
+        * spike: ``max_spikes_per_window`` spike slots, capped by the busiest
+          window actually present, which is not a time axis either.
+
         The two sides therefore differ legitimately in a mixed-type pair, and
         indexing the tensor is otherwise the only way to see what was built.
         """
@@ -485,12 +509,20 @@ class PairedDataset(Dataset):
     def y_window_width(self):
         """Width of Y's built window, read off the trailing axis.
 
-        What that axis counts depends on the processor, so read it against the
-        processor type rather than on its own. A continuous processor builds
-        ``w + 1`` time slots for ``window_size=w``, carrying one interpolation
-        slot; a categorical one builds ``w``, which is why ``conditional.py``
-        reconciles the two with a tolerance of one; a spike processor builds
-        ``max_spikes_per_window`` spike slots, which is not a time axis at all.
+        What that axis counts depends on the processor, and only one of the
+        three counts time, so read it against the processor type rather than on
+        its own.
+
+        * continuous: ``w + 1`` time slots for ``window_size=w``, carrying one
+          interpolation slot at the edge.
+        * categorical: one slot per category under the default
+          ``encoding='majority_vote'`` (and under ``'probability'``), and
+          ``n_categories`` times the window's sample count under
+          ``'full_trajectory'``. Never ``w``: the window size sets how many
+          windows are built, not how wide this axis is.
+        * spike: ``max_spikes_per_window`` spike slots, capped by the busiest
+          window actually present, which is not a time axis either.
+
         The two sides therefore differ legitimately in a mixed-type pair, and
         indexing the tensor is otherwise the only way to see what was built.
         """

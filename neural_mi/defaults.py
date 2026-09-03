@@ -17,6 +17,10 @@ BASE_PARAMS_SCHEMA = {
     # (e.g. patience=20 with n_epochs=200).
     'patience': {'type': int, 'min': 0, 'default': 1000},
     'output_units': {'type': str, 'default': 'bits'},
+    # Real-time grids for X and Y, carried so that windowing deferred to the
+    # task layer sees the same grid the eager path gets via create_dataset.
+    'x_time': {'type': (object, type(None))},
+    'y_time': {'type': (object, type(None))},
     'verbose': {'type': bool, 'default': True},
     'show_progress': {'type': bool, 'default': True},
     'device': {'type': (str, type(None), torch.device), 'default': None},

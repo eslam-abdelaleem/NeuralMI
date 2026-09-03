@@ -692,3 +692,61 @@ class TestConditionalShiftTimeSpike:
         )
         assert results.mi_estimate is not None
         assert np.isfinite(results.mi_estimate)
+
+
+def _gappy_timeline(duty_on=8.0, period=40.0, span=400.0, dt=0.02):
+    """A timeline sampled densely during scattered epochs, with gaps between.
+
+    Mirrors a tracked recording: position exists only while the animal is in
+    view, so real time and sample index diverge badly across the gaps.
+    """
+    dense = np.arange(0, span, dt)
+    keep = np.zeros(dense.size, dtype=bool)
+    for start in np.arange(0, span, period):
+        keep[(dense >= start) & (dense < start + duty_on)] = True
+    return dense[keep]
+
+
+@pytest.mark.parametrize("shift_windows", [True, False])
+@pytest.mark.parametrize("mode", ['conditional', 'interaction'])
+def test_three_way_with_spike_y_windows_on_the_real_time_grid(mode, shift_windows):
+    """A regular-grid X and W against a spike Y runs on both dispatch paths.
+
+    Regression test for E28. Windowing for ``shift_windows=True`` is deferred to
+    the task layer, which used to build its dataset without the caller's time
+    vectors. A continuous X was then windowed in sample-index units while the
+    spike Y stayed in seconds. On a gappy timeline, where index and real time
+    diverge, no window could satisfy coverage and the run died with "No valid
+    windows after checking data coverage" -- blaming the recording for what was
+    a units mismatch. The gaps and the coverage floor are both load-bearing
+    here: without them the two interpretations stay close enough to survive.
+    """
+    rng = np.random.default_rng(0)
+    t = _gappy_timeline()
+    pos = np.sin(2 * np.pi * t / 8.0).astype('float32')[:, None]
+    direction = (np.gradient(pos[:, 0]) > 0).astype('int64')[:, None]
+    spikes = [np.sort(rng.uniform(t[0], t[-1], rng.poisson(8.0 * (t[-1] - t[0]))))
+              for _ in range(6)]
+
+    win = {'window_size': 1.0, 'step_size': 0.5}
+    cont = dict(win, min_coverage_fraction=0.9)
+
+    kwargs = dict(
+        processing=nmi.Processing(x='continuous', x_params=cont, x_time=t,
+                                  y='spike', y_params=win),
+        model=_MODEL,
+        training=Training(n_epochs=2, learning_rate=1e-3, batch_size=32,
+                          patience=1, shift_windows=shift_windows),
+        n_workers=1, seed=0, show_progress=False,
+    )
+    w_cfg = dict(w_data=direction, w_processor_type='categorical',
+                 w_processor_params=win, w_time=t)
+    if mode == 'conditional':
+        kwargs['conditional'] = Conditional(**w_cfg)
+    else:
+        kwargs['interaction'] = nmi.Interaction(**w_cfg)
+
+    result = nmi.run(pos, spikes, mode=mode, **kwargs)
+
+    assert result.mi_estimate is not None
+    assert np.isfinite(result.mi_estimate)

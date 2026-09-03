@@ -393,6 +393,40 @@ def _accepts_kwarg(cls: type, name: str) -> bool:
     return any(prm.kind is inspect.Parameter.VAR_KEYWORD for prm in params.values())
 
 
+def mi_report_units(base_params: Optional[Dict[str, Any]] = None,
+                    output_units: Optional[str] = None) -> Tuple[float, str]:
+    """Scale factor and label for reporting an internal MI value to the caller.
+
+    Every MI in this library is computed in nats and converted to the caller's
+    ``output_units`` at the boundary. Anything that prints a value before that
+    boundary, a warning or a log line, has to apply the same conversion, or the
+    number it shows will not match the number the caller reads back.
+
+    Parameters
+    ----------
+    base_params : dict, optional
+        The run's ``base_params``, which carries ``output_units``.
+    output_units : str, optional
+        Used directly when the caller has the value but not the dict.
+
+    Returns
+    -------
+    scale : float
+        Multiply a nats value by this before displaying it.
+    label : str
+        ``'bits'`` or ``'nats'``, for the message.
+
+    Examples
+    --------
+    >>> scale, units = mi_report_units({'output_units': 'bits'})
+    >>> f"{0.6931 * scale:.3f} {units}"
+    '1.000 bits'
+    """
+    units = output_units or (base_params or {}).get('output_units', 'bits')
+    to_bits = units == 'bits'
+    return (1.0 / np.log(2) if to_bits else 1.0), ('bits' if to_bits else 'nats')
+
+
 def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                  custom_embedding_cls: Optional[type] = None) -> BaseCritic:
     """Builds and returns a critic model based on the provided parameters.
@@ -532,6 +566,17 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     if _accepts_kwarg(EmbeddingModel, 'bias'):
         model_kwargs['bias'] = bias_x
         model_kwargs_y['bias'] = bias_y
+    elif not (bias_x and bias_y):
+        # Only reachable when bias was actually turned off AND the class cannot
+        # receive it. Gating this on any other capability would report a bias
+        # problem the class does not have.
+        warnings.warn(
+            f"bias=False applies to the embedding layers, but "
+            f"{EmbeddingModel.__name__}.__init__ does not accept a `bias` "
+            f"argument, so its layers keep their bias terms. Add `bias=True` to "
+            f"the signature and pass it to the layers to support this.",
+            UserWarning, stacklevel=2,
+        )
 
     # DeepSets masks padded slots, so it needs the sentinel the processor used.
     # Taken per side, since X and Y can be processed differently.
@@ -540,14 +585,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                             (model_kwargs_y, 'processor_params_y')):
             params = embedding_params.get(key) or {}
             kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
-    elif not (bias_x and bias_y):
-        warnings.warn(
-            f"bias=False applies to the embedding layers, but "
-            f"{EmbeddingModel.__name__}.__init__ does not accept a `bias` "
-            f"argument, so its layers keep their bias terms. Add `bias=True` to "
-            f"the signature and pass it to the layers to support this.",
-            UserWarning, stacklevel=2,
-        )
 
     net_x_base = EmbeddingModel(input_dim_x, **model_kwargs)
     net_y_base = net_x_base if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs_y)

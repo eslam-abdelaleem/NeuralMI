@@ -362,12 +362,16 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
         valid_df = valid_df.copy()
         valid_df['dummy_group'] = 0
 
-    for params, group in valid_df.groupby(group_keys):
-        # Ensure param_dict is correctly formed for single or multiple keys
-        if isinstance(params, tuple):
-            param_dict = dict(zip(group_keys, params))
-        else:
-            param_dict = {group_keys[0]: params}
+    # Group on a scalar when there is exactly one key. Passing a length-1 list
+    # yields a scalar key today and a length-1 tuple in a future pandas, and
+    # warns about the change on every call; the scalar form is stable across
+    # both. The key is normalised to a tuple either way, so param_dict is
+    # formed identically for single and multiple keys.
+    grouper = group_keys[0] if len(group_keys) == 1 else group_keys
+
+    for params, group in valid_df.groupby(grouper):
+        param_values = params if isinstance(params, tuple) else (params,)
+        param_dict = dict(zip(group_keys, param_values))
 
         try:
             gammas_used, linear_region_found, curvature_stats = _find_linear_region(

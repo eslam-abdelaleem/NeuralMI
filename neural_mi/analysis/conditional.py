@@ -22,7 +22,11 @@ from neural_mi.logger import logger
 # per_window); categorical windowing does not, since it never interpolates.
 # X and a full-resolution categorical W windowed with the same nominal
 # window_size therefore differ by exactly this buffer, not by a real content
-# mismatch -- trim to the shorter length rather than raising. Kept at exactly
+# mismatch -- trim to the shorter length rather than raising. "Full-resolution"
+# is load-bearing: only encoding='full_trajectory' gives W a per-timestep
+# width at all. The default 'majority_vote' and 'probability' encodings give
+# one slot per category regardless of window_size, and those reach the
+# broadcast path below instead of this tolerance. Kept at exactly
 # 1 (not a larger tolerance) so a genuinely different window_size between X
 # and W -- a real configuration error -- still raises.
 _WINDOW_SIZE_TRIM_TOLERANCE = 1
@@ -343,7 +347,7 @@ def run_conditional_mi(
         if abs(x_data.shape[0] - w_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
             min_n = min(x_data.shape[0], w_data.shape[0])
             logger.warning(
-                f"x_data/y_data have {x_data.shape[0]} windows but w_data has "
+                f"mode='conditional': x_data/y_data have {x_data.shape[0]} windows but w_data has "
                 f"{w_data.shape[0]}; truncating all three to the shared first "
                 f"{min_n} (see _SAMPLE_COUNT_TRIM_TOLERANCE). **This is only "
                 f"correct if the extra window is at an edge.** If it falls in "
@@ -375,7 +379,7 @@ def run_conditional_mi(
         elif abs(x_data.shape[2] - w_data.shape[2]) <= _WINDOW_SIZE_TRIM_TOLERANCE:
             min_w = min(x_data.shape[2], w_data.shape[2])
             logger.warning(
-                f"x_data window size ({x_data.shape[2]}) and w_data window size "
+                f"mode='conditional': x_data window size ({x_data.shape[2]}) and w_data window size "
                 f"({w_data.shape[2]}) differ by {abs(x_data.shape[2] - w_data.shape[2])} "
                 f"sample(s) -- likely the continuous processor's interpolation-edge "
                 f"buffer (see _compute_max_samples_per_window). Trimming both to the "

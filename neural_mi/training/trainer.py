@@ -550,8 +550,9 @@ class Trainer:
         if return_rotated_embeddings:
             if not _has_embed_nets:
                 warnings.warn(
-                    "return_rotated_embeddings=True has no effect for ConcatCritic, which "
-                    "has no separate embedding networks. Skipping rotation.",
+                    "return_rotated_embeddings=True was requested, but this trainer's model "
+                    "exposes no embedding_net_x, so there are no separate embedding "
+                    "networks to rotate. Skipping rotation.",
                     UserWarning, stacklevel=2,
                 )
             elif not _do_embed_tracking:
@@ -946,11 +947,11 @@ class Trainer:
         if _all_mi_negative:
             warnings.warn(
                 f"All test MI values in the training history are non-positive "
-                f"(max test MI = {max(valid_history):.4f} nats at epoch {best_ep}). "
+                f"(max test MI = {max(valid_history) * _scale:.4f} {_units} at epoch {best_ep}). "
                 f"The model failed to learn a generalising representation — this typically "
                 f"indicates too few epochs, too high a learning rate, or degenerate data. "
-                f"Reporting train MI = 0 nats. The raw train MI was "
-                f"{_raw_train_mi:.4f} nats (likely reflecting overfitting, not true MI). "
+                f"Reporting train MI = 0 {_units}. The raw train MI was "
+                f"{_raw_train_mi * _scale:.4f} {_units} (likely reflecting overfitting, not true MI). "
                 f"Consider increasing n_epochs, reducing learning_rate, or inspecting data quality.",
                 UserWarning,
                 stacklevel=2,
@@ -1211,7 +1212,7 @@ class Trainer:
         if n_test < k:
             k = n_test
         block, rem = divmod(n_test, k) if k > 0 else (0, 0)
-        if n - block < k or block + 1 <= 0:
+        if n - block < k:
             logger.warning(
                 "Blocked split parameters produced an invalid configuration. "
                 "Falling back to random split. Consider reducing n_test_blocks or "

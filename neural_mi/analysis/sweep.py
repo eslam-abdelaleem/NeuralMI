@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional, Sequence
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger, worker_init_args
+from neural_mi.utils import mi_report_units
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
 
@@ -409,9 +410,14 @@ def _joint_marginal_difference(
     difference = mi_joint - mi_marginal
 
     amp = amplification_factor([mi_joint, mi_marginal], difference)
+    # Report in the units the caller asked for. These values are nats internally
+    # and the frame is converted downstream, so a message quoting the raw value
+    # would not match the number the caller ends up reading.
+    _scale, _units = mi_report_units(base_params)
     logger.info(
-        f"{quantity_name}: I({joint_label})={mi_joint:.4f}, I({marginal_label})={mi_marginal:.4f}, "
-        f"difference={difference:.4f} nats (converted to requested output_units by the caller), "
+        f"{quantity_name}: I({joint_label})={mi_joint * _scale:.4f}, "
+        f"I({marginal_label})={mi_marginal * _scale:.4f}, "
+        f"difference={difference * _scale:.4f} {_units}, "
         f"amplification factor={amp:.1f}x."
     )
 
@@ -420,10 +426,10 @@ def _joint_marginal_difference(
     # factor is the mechanism behind the impossible sign, not a separate issue.
     if difference < 0:
         warnings.warn(
-            f"{quantity_name} estimate is negative ({difference:.4f} nats). This is "
+            f"{quantity_name} estimate is negative ({difference * _scale:.4f} {_units}). This is "
             f"theoretically impossible and arises from noise in the two independent "
             f"MI estimates whose difference defines it "
-            f"(I({joint_label})={mi_joint:.4f}, I({marginal_label})={mi_marginal:.4f}, "
+            f"(I({joint_label})={mi_joint * _scale:.4f}, I({marginal_label})={mi_marginal * _scale:.4f}, "
             f"error-amplification factor {amp:.0f}x). At that amplification the "
             f"components would need sub-{100.0 / amp:.2g}% accuracy for the sign of the "
             f"result to be determined at all, so the most likely reading is that the true "
@@ -437,8 +443,8 @@ def _joint_marginal_difference(
     elif amp >= AMPLIFICATION_WARN_THRESHOLD:
         warnings.warn(
             f"{quantity_name} has an error-amplification factor of {amp:.1f}x. It is a "
-            f"small residual ({difference:.4f} nats) of two much larger estimates "
-            f"(I({joint_label})={mi_joint:.4f}, I({marginal_label})={mi_marginal:.4f}), so a "
+            f"small residual ({difference * _scale:.4f} {_units}) of two much larger estimates "
+            f"(I({joint_label})={mi_joint * _scale:.4f}, I({marginal_label})={mi_marginal * _scale:.4f}), so a "
             f"relative error of eps on each component becomes roughly {amp:.0f}*eps on the "
             f"result: a 1% component error is about {amp:.0f}% here. Do not read the point "
             f"estimate on its own. Report the components ('{joint_key}', '{marginal_key}') "

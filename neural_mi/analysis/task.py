@@ -172,6 +172,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         if dataset is None:
             dataset = create_dataset(
                 x_data, y_data,
+                x_time=params.get('x_time'),
+                y_time=params.get('y_time'),
                 processor_type_x=params.get('processor_type_x'),
                 processor_type_y=params.get('processor_type_y'),
                 processor_params_x=params.get('processor_params_x'),
@@ -448,8 +450,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             if params.get('return_rotated_embeddings', False):
                 if params.get('critic_type', 'separable') == 'concat':
                     warnings.warn(
-                        "return_rotated_embeddings=True has no effect for ConcatCritic, "
-                        "which has no separate embedding networks. Skipping rotation.",
+                        "return_rotated_embeddings=True has no effect for critic_type='concat', "
+                        "which has no separate embedding networks to rotate. Skipping "
+                        "rotation for this analysis task.",
                         UserWarning, stacklevel=2,
                     )
                 else:

@@ -100,8 +100,6 @@ class Results:
         Read a `details` entry that this mode may or may not set.
     summary()
         Print a human-readable summary to stdout.
-    plot(ax=None, **kwargs)
-        Generate a mode-appropriate figure.
     animate(**kwargs)
         Animate the training history as a GIF or MP4.
     compare(results_list, labels=None, ax=None, **kwargs)
