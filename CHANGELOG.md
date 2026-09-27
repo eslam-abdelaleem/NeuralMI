@@ -5,7 +5,908 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0]
+
+First public release. NeuralMI estimates mutual information from neural
+recordings through a single `nmi.run()` entry point.
+
+### The API
+
+One function, `nmi.run()`, takes typed config objects (`Model`, `Training`,
+`Split`, `Processing`, and one per mode) and returns a `Results` object carrying
+the estimate, its metadata, and `plot()`.
+
+Ten analysis modes cover one number (`estimate`), a parallelised hyperparameter
+grid (`sweep`), finite-sample bias correction by extrapolation (`rigorous`),
+temporal offsets (`lag`), spike-timing precision (`precision`), conditional MI
+(`conditional`), transfer entropy (`transfer`), interaction information
+(`interaction`), all-to-all matrices (`pairwise`), and directions of shared
+structure that reproduce across retrainings (`dimensionality`).
+
+Eleven named quantities (`active_information_storage`, `predictive_information`,
+`cross_predictive_information`, `instantaneous_mi`, `block_mi`, `mi_rate`,
+`instantaneous_exchange`, `directed_information_rate`, `transfer_entropy`,
+`conditional_transfer_entropy` and `interaction_information`) each build the
+offset pattern they need, so a quantity is requested by name.
+
+### Data
+
+Continuous, spike and categorical processors take LFP, EEG, calcium,
+kinematics, raw spike times and behavioural or stimulus labels onto one
+`(n_samples, n_channels, window_size)` grid. `create_dataset` accepts a pair or
+a mapping of any number of named streams and aligns them on real time, honouring
+per-stream sample rates and time vectors.
+
+Splitting is `blocked` by default, with a configurable gap between the blocks.
+Overlapping windows are near copies of one another, and a random split that
+places copies on both sides inflates the estimate. `random` is there for
+independent samples.
+
+### Estimators and models
+
+The estimator is InfoNCE or SMILE, selectable per run. The library builds
+eleven embedding architectures (`mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn`,
+`transformer`, `lru`, `deepsets`, `dual_branch` and `pretrained_backbone`) and
+three critics (`separable`, `concat` and `hybrid`). Custom critics and embedding
+classes are supported, and the two sides of a critic can carry different
+encoders through the `_y` settings.
+
+### Reading a number honestly
+
+The estimators are variational lower bounds, so the library reports what bounds
+its own answer. Every estimate carries the ceiling of the partition it was
+evaluated on. Difference quantities carry an `amplification_factor` saying how
+much component error the answer inherits. `mode='rigorous'` reports
+`is_reliable` and `mi_error` alongside the corrected estimate. Optional
+permutation testing gives a null distribution where the mode supports one.
+
+Every message the library can emit is documented by its text in
+`reference/MESSAGES.md`.
+
+### Documentation
+
+Five tutorial notebooks meant to be read in order, a generated API reference,
+and seven reference documents covering usage, every parameter, theory,
+messages, the anatomy of an estimator, the internals, and the test suite.
+
+---
+
+# Development record
+
+Everything below is the detailed change record kept on the development branch.
+It is not part of the release notes.
+
 ## [Unreleased]
+
+### Changed: one place for dependencies, and docs that include their originals
+
+`pyproject.toml` now declares every dependency. `docs/requirements-docs.txt`
+moved into a `docs` option, and `uv.lock` is removed: it described a project
+named `neuralmi` at version 0.1.0 with an older dependency list, and no
+workflow read it. Each option adds one capability: `viz` for the embedding
+projections, `vision` for pretrained image encoders, `tutorials` for JupyterLab
+and `benchmark-mi` (the KSG comparison in notebook 01), `docs` for the Sphinx
+toolchain, and `test` for the suite together with the optional packages its
+tests exercise. `dev` combines them all. The test workflow installs `.[test]`,
+which also brings torchvision, so the pretrained-backbone tests now run in CI
+where they used to be skipped, and the docs workflow installs `.[docs]` in one
+step. The docs site gains a copy button on every code block.
+
+The docs site keeps no copies of its own. The getting-started page includes
+the README's install steps and quickstart between markers, the API reference
+takes each module's member list from the module, the home page opens with the
+README's wording, and a License page includes the root `LICENSE`. The README
+figures come from `docs/figures/readme_figures.ipynb`, moved out of the local
+archive. It also runs the README quickstart and fails if the output differs
+from the one the README prints, and runs the code in `reference/ANATOMY.md`.
+Its taxonomy figure drew the MI rate's X window from -L to L-1, and it now
+draws the symmetric window from -L to L that the library builds.
+
+### Changed: every mode returns the same `Results` shape
+
+Each mode used to assemble its own result, so a field meant different things in
+different modes and several combinations of settings were dropped without a
+word. One pipeline now serves every mode. It expands a call into
+configurations (one per combination of `sweep_grid` values other than
+`run_id`), the mode's axis values (`lag`, `tau`, or a channel pair) and repeats.
+It trains every network once and combines the networks of each repeat: the
+identity for one network, a signed sum for a difference quantity, and one WLS
+extrapolation per repeat for rigorous. Last, it aggregates the repeats. Units
+are converted once, after training, and every task goes through one
+dispatcher, permutation trials included. `analysis/modes.py` holds what each
+mode trains and how it combines, and `analysis/assemble.py` builds the tables.
+
+Every result carries the same fields.
+
+- `runs` has one row per repeat, with the grid and axis keys, `run_id`
+  (`split_id` for dimensionality), the repeat's value as `mi`, the component
+  values of a difference quantity, and the network's diagnostics or the
+  rigorous fit.
+- `dataframe` is always populated, one row per configuration and axis value,
+  with `config_id`, `mi_mean`, `mi_std` and `n_runs`. `mi_std` is NaN below two
+  repeats, where it used to read 0.
+- `mi_estimate` is set exactly when `dataframe` has one row.
+- `details[config_id]` holds the structured diagnostics, with `trainings`
+  listing one row per network where a repeat trains several.
+- `params` holds the full resolved configuration, including `config_keys` and
+  `axis_keys`.
+
+`result.get(key)` reads a value from whichever table holds it and raises,
+naming the table to read, when the answer is ambiguous.
+
+What each mode can combine is now stated and enforced. Repeats and a
+configuration grid work in every mode except `estimate` and `precision`, which
+warn, run once and point to `mode='sweep'`. `mode='rigorous'` runs one full
+extrapolation per repeat, and its `mi_mean` and `mi_std` are the mean and
+spread of those extrapolations. `mi_error` is set only for a single repeat,
+since repeats share their data and their intervals cannot be combined.
+`rigorous=True` works on conditional, transfer and interaction and on every
+named quantity. It raises on lag and pairwise, which are collections, and on
+dimensionality and precision, whose outputs are not an MI value. A processor
+parameter in the grid is honoured in every mode, by windowing inside the task
+or by preparing the data once per setting and merging the parts, and a
+processor key that no stream reads raises. `n_workers > 1` warns when the call
+trains one network.
+
+The old per-mode assembly got these wrong, and the refactor fixes them:
+
+- `mode='estimate'` trained every grid combination and returned the first.
+- `mode='precision'` ignored `sweep_grid`.
+- `mode='rigorous'` reported the first configuration and the first repeat's
+  extrapolation alone. With a processor parameter in the grid it windowed once
+  at the base value and labelled the rows with the grid values, so rows marked
+  `window_size=6` had trained on windows of 2.
+- conditional, transfer, interaction and pairwise averaged different
+  configurations into one number.
+- dimensionality crashed on a grid over `embedding_dim`, and
+  `Dimensionality(split_method='spatial')` ran one fit whatever `n_splits`
+  said, so its stability check had nothing to compare.
+- sweep kept the embeddings of its last configuration, and lag kept those of
+  its last lag. Embeddings now sit under `details[config_id]['embeddings']` per
+  repeat, keyed by `(lag, run_id)` or `(ch_x, ch_y, run_id)` where the mode has
+  an axis.
+- pairwise recorded `history_window` in `params`.
+- mode='lag' on spike data reported the number of neurons as
+  `n_windows_built`, and with a processor parameter in the grid it counted
+  windows at the base setting.
+
+`tests/test_contract.py` runs every mode with repeats, a grid and rigorous, and
+checks that each returns this shape or fails with a message.
+
+### Changed: permutation nulls move X in time
+
+A permutation test now builds one null per `dataframe` row, stored under
+`details[config_id]['null_distribution']` and `_raw`. The null is a list for a
+configuration without an axis and a dict keyed by axis value otherwise, and
+`dataframe` gains `p_value = (1 + #{null >= observed}) / (1 + n)`. A trial
+reruns the mode with X, the source, moved in time. Y and W stay in place, so
+Y's own history in transfer entropy and the link between Y and W in the
+conditional quantities survive into the null.
+`permutation_shuffle='circular'`, the default, shifts X by one random offset
+with wrap-around and excludes offsets within 10% of the recording's length of
+zero. `'block'` reorders contiguous blocks one window long. Both work on
+windowed rows, raw series and spike times alike. Self-pairwise has no null,
+since moving X moves both channels of every pair.
+
+Fixed with it:
+
+- The null was always in nats while the estimate was in the caller's units.
+- `n_permutations` defaulted to 1 while the warning asked for at least 100.
+  The default is now 10, and every run states the smallest p-value it can
+  report and what the test costs.
+- `permutation_test=True` with `rigorous=True` on conditional, transfer and
+  interaction was skipped silently. It now raises, as `mode='rigorous'` does.
+- The conditional transfer entropy null was built without `w_data`.
+- dimensionality warned that no null was computed and then computed one when
+  given `y_data`.
+
+### Changed: a third stream is processed like the other two
+
+`Processing` gains `w`, `w_params` and `w_time`, and `w` takes X's processor
+when unset. `Conditional`, `Interaction` and `Transfer` keep only `w_data`, and
+conditional keeps `align`. Every call with a third stream builds all the streams
+on one grid, each with its own processor, parameters and clock, and
+`mode='transfer'` accepts `processing=` and builds its histories over the grid's
+rows. Before, `mode='transfer'` windowed W on a grid of its own and only worked
+when that grid had a window of 1, and the named quantities forced W onto X's
+processor and clock.
+
+A Y or W with a processor and no parameters reads X's parameters, kept to the
+keys its processor takes. `run()`'s eager windowing used to hand such a Y the
+processor defaults while every other path handed it X's, and a Y with a
+processor and no parameters was a validation error in some calls.
+
+### Changed: one whitening setting, and `mi_rate(half_width=...)`
+
+`Output(whitening='std')`, with `'zca'` and `None` as the alternatives, replaces
+`spectral_whitening` and `rotated_embeddings_whitening`. The spectrum and the
+rotation come from one cross-covariance SVD in float64,
+`utils.cross_covariance_svd`. The spectrum used to be computed in float32.
+
+`mi_rate`'s `W` is renamed `half_width`, since `W` names the third process
+everywhere else. THEORY.md writes the half-width as $L$.
+
+### Fixed: `mode='precision'` created and deleted spikes
+
+Four implementations degraded the timing: the mode's own and each dataset's
+`apply_noise` and `apply_precision`, with Gaussian or uniform noise and with or
+without a mask. All of them now call one function,
+`neural_mi/data/corruption.py::corrupt`. It leaves alone every entry that holds
+no measurement (unused spike-time slots at `no_spike_value`, empty bins,
+zero-padded gaps), and rounding moves a value to the centre of its bin of width
+$\tau$, so neither method creates or deletes a spike.
+
+Measured on a timing-coded spike pair, 3000 windows in which 69% of the entries
+were unused slots: `'noise'` jittered those slots into spikes and took the MI
+from 1.17 to -6.3 bits at $\tau = 5$ ms. After the fix it falls smoothly, to
+1.13 bits at $\tau = 0.4$ s. Rounding to the nearest multiple of $\tau$ moved
+spikes onto the empty value and deleted 5.7% of them at $\tau = 0.2$ s and 25%
+at 0.4 s.
+
+Fixed on the way:
+
+- `Precision(threshold_ratio=[...])`, documented as accepting a list, was
+  refused by validation.
+- `mode='precision'` ignored `Split(train_indices=..., test_indices=...)`.
+- The "Custom train_indices and test_indices were provided" warning fired
+  whenever the library supplied a split of its own, on every precision call and
+  on dimensionality's shared split. It now fires in `run()`, where the caller's
+  indices arrive.
+
+### Fixed: `use_variational=True` with the concat critic did nothing
+
+The flag was accepted and ignored. The concat network is now wrapped, so each
+pair's score is variational. Measured on correlated Gaussians at 2.00 bits: 1.87
+without the layer, 1.94 with it at `beta=1024`, and 1.51 at `beta=1`.
+
+Observed on the way and left unchanged: the hybrid critic with
+`use_variational=True` learns slowly, reaching 0.66 bits after 40 epochs and
+1.56 after 150, still rising, where separable with the same layer reaches 1.94.
+
+### Changed: `save_best_model_path` saves every network a call trains
+
+Networks overwrote each other everywhere except across one `ParameterSweep`
+grid. Rigorous chunks, difference components, lags, channel pairs, splits,
+processor-grid parts and the values of a named quantity all wrote to one file,
+permutation trials overwrote the saved model with networks trained on moved
+data, and `mode='precision'` never saved.
+
+Every network is now saved under a name built from its labels: grid values,
+`run_id`, `gamma` and `chunk`, `component`, `lag`, the channel pair, the split,
+the processor setting, and a named quantity's own parameter. Each path is
+recorded as `model_path` in `runs`, or in `details[config_id]['trainings']`
+where a repeat trains several networks. A call that saves several warns before
+it starts that this can take a lot of disk space and says how to keep one
+model, and it logs the number of files and their size when it ends. A directory
+as the path gets a generated file name, and a path without an extension gets
+`.pt`. Permutation trials never save.
+
+### Fixed: `sweep_grid` accepted keys that change nothing
+
+A key no setting reads, such as a typo or a config field under its config name
+(`mode` for `Split(mode=...)`), and a mode's own setting (`history_window` in
+`mode='transfer'`, `n_splits` in `mode='dimensionality'`) ran every
+configuration identically and labelled them as different. `run()` now refuses
+both, and `output_units` too, and names the schema key for a renamed field
+(`split_mode`, `split_gap_fraction`, `estimator_name`, `estimator_params`).
+
+### Fixed: warnings pointed at the wrong line
+
+Every `warnings.warn` hardcoded its `stacklevel`, so a warning reached through a
+different call depth named the wrong frame. The trainer's warnings named a line
+in `analysis/task.py`, a warning raised from a helper named the line that called
+the helper, and in a notebook one pointed into IPython. Every warning now passes
+`stacklevel=user_stacklevel()`, a helper in `neural_mi/logger.py` that names the
+first frame outside the package. A worker process has no caller's code above the
+library, so there the warning names the library's entry point for the task.
+`tests/test_run.py` checks both cases and fails on a hardcoded level.
+
+### Fixed: smaller errors found in the same pass
+
+- The named transfer quantities documented `rigorous=True` and
+  `bidirectional=True` as forwarded. `rigorous` reached `run()` as the
+  `mode='rigorous'` config and was ignored with a warning, and `bidirectional`
+  raised a `TypeError`. Every named quantity now takes `rigorous=` (a bool or a
+  `Rigorous`), and transfer entropy takes `bidirectional=`. An iterable
+  parameter and `sweep_grid` compose.
+- With `Training(train_subset_size=...)` above `max_eval_samples`, the
+  train-side estimate was evaluated on `max_eval_samples` rows while
+  `train_eval_size` and its ceiling reported the larger number. The trainer's
+  docstring also described it wrongly, as a per-epoch training subset.
+- `Results.summary()` and the rigorous plot gave `fit_quality_warning` as a
+  reason a fit was unreliable, although it never sets `is_reliable=False`, and
+  left out two of the checks that do. The reasons shown are now exactly the four
+  checks that decide it.
+- `run()`'s unknown-keyword error listed six of the nine mode configs, and a
+  validation error named processors `'continuous_window'` and
+  `'spike_window'` that do not exist. Messages no longer mention internal names
+  such as `base_params` and `processor_params_x`.
+- The "defined in base_params but overridden" warning could not fire through
+  `run()`. It is removed.
+- Grid values given as lists come back as tuples in `runs` and `dataframe`.
+- `Results.compare()` refuses a result with several repeats for the
+  training-curve and extrapolation overlays, and `plot()` draws every repeat.
+
+### Changed: the documentation and the tutorials are rebuilt
+
+`reference/` holds seven documents, each included into the docs site through a
+stub in `docs/source/`. USING.md is a task guide, PARAMETERS.md lists every
+setting with its default, THEORY.md is reorganised into six parts with every
+citation checked against its source, MESSAGES.md documents every warning by its
+text, INTERNALS.md maps the code and says how to extend it, TESTING.md maps the
+test files, and ANATOMY.md builds an estimator from scratch. They replace
+CONCEPTS.md, DEVELOPERS_GUIDE.md, NEURALMI_REFERENCE.md, THEORY.md, TESTING.md
+and further_reading.md at their old locations. `tests/test_docs_drift.py`
+checks PARAMETERS.md against every config field, default and processor
+parameter, and MESSAGES.md against every message the package emits, in both
+directions.
+
+Five tutorial notebooks, meant to be read in order, replace the twelve numbered
+00 to 11 and the classical-estimator benchmark. Their markdown was checked
+against their executed outputs, and their outputs carry no local paths.
+
+The front-facing text follows one style throughout: British spelling, maths in
+LaTeX, and citations as linked author-year in the text with full entries in
+the reference lists. Tracking codes and descriptions of earlier behaviour are
+gone from `neural_mi/` and `tests/`.
+
+### Changed: beta now multiplies the whole relevance side of the bottleneck objective
+
+The decoder-augmented loss read `KL - beta * MI + w_x * rec_x + w_y * rec_y`,
+which puts beta on the MI term alone. The information bottleneck it implements
+trades compression against everything on the relevance side at once, so the
+reconstruction terms belong inside beta's bracket:
+
+    L = KL - beta * [MI - lambda_x * rec_x - lambda_y * rec_y]
+
+The practical difference shows up when beta moves. Under the old grouping,
+raising beta to weight MI against compression also demoted reconstruction
+against MI, since only one of the two terms grew. The bracket now holds its own
+internal balance and beta sets one thing, how hard the objective pushes back
+against the KL penalty.
+
+That reading gives the reconstruction coefficients a scale to be read on. Each
+one is measured against the MI term, so `decoder_weight`, `decoder_weight_x` and
+`decoder_weight_y` become `decoder_lambda`, `decoder_lambda_x` and
+`decoder_lambda_y`, and the default drops from 1.0 to 0.001. The effective
+weight a reconstruction carries is `beta * lambda` when a variational encoder
+supplies a KL term and `lambda` on its own otherwise, which at the default
+`beta=1024` puts a lambda of 0.001 close to the old weight of 1.0. A lambda at
+or above 1 warns, since it weighs reconstruction at least as heavily as the
+information it is there to regularise, and that almost always means a number
+carried over from the absolute scale. Negative lambdas are rejected in
+validation, and enabling the decoders logs the resulting arithmetic so the
+weights in play are visible in the run output.
+
+A third constant multiplying the MI term itself would be redundant: scaling all
+three by `c` and beta by `1/c` leaves the objective unchanged, so that
+coefficient is pinned to 1.
+
+`result.details['decoder_recon_loss']` carries the same coefficients the term
+contributes with, so it still reads as reconstruction's share of the loss.
+
+Also fixed on the way through: the shared weight never reached the trainer.
+Both per-axis keys are present with an explicit `None` once defaults have been
+applied, so the `params.get('decoder_weight_x', params.get('decoder_weight',
+1.0))` fallback returned that `None` and each axis quietly took the built-in
+default. Setting the shared weight alone therefore did nothing through `run()`.
+Both levels are now checked for `None` by hand, and `test_decoders.py` pins the
+beta, lambda and per-axis scaling against a frozen model.
+
+### Added: the two sides of the critic can carry different encoders
+
+One `embedding_model` and one `custom_embedding_cls` served both sides, so
+spikes on X and a continuous behavioural variable on Y had to share an
+architecture. The only way out was a single class that branched internally on
+the channel count it was handed, which is what `DualBranchEmbedding` does today
+and what any custom class had to do.
+
+`embedding_model` still sets both sides. `embedding_model_y`,
+`custom_embedding_cls_y`, `hidden_dim_y`, `n_layers_y` and `embedding_dim_y`
+override it for Y alone, and leaving one unset means Y follows X, the convention
+`processor_type_y` already uses. Naming a built-in for Y drops a custom class on
+that side, since the two settings are alternatives.
+
+`build_critic` resolves each side through one helper, so the `input_style`
+convention, the architecture-specific kwargs (`kernel_size`, `bidirectional`,
+`nhead`, `branch_cls`) and the MLP-only regularisation kwargs are all decided per
+side from that side's model. Each kwarg reads the one value the caller supplied,
+so two CNNs share a `kernel_size` while a CNN paired with a GRU takes the kernel
+size on one side and the bidirectional flag on the other.
+
+`embedding_dim_y` carries a condition. `critic_type='hybrid'` concatenates the
+two embeddings before scoring, so its decision head now takes their combined
+width and any pair of widths works. `'separable'` takes their dot product and
+refuses a mismatch. `'concat'` has no separate encoders and refuses every `_y`
+setting. `shared_encoder=True` with any asymmetry raises, as does
+`embedding_model_y='dual_branch'`, which names an architecture for a compound
+X-role input the Y role never has. `mode='dimensionality'` warns instead, since
+its two sides are halves of one recording.
+
+The check that a sequential encoder needs a windowed processor now runs per side
+and names the parameter it is talking about, so `embedding_model_y='gru'` against
+a static Y is caught the same way X's has always been.
+
+Also fixed on the way through: `build_critic` reads `custom_embedding_cls` from
+`embedding_params` when the argument is not passed, so rebuilding a saved run
+through `embeddings_io` recovers the class instead of silently falling back to
+the default.
+
+### Added: `mi_rate` sweeps either of its two windows
+
+`h` was sweepable and `W` was not, which is the wrong way round if you can only
+have one. Both windows change the answer, and measured exactly on a
+shared-latent Gaussian they bias it in opposite directions: at `h=1`, sweeping
+`W` flattens from `W=10` onward and sits 7.9% above the true rate, while at
+`W=1`, sweeping `h` flattens from `h=5` and sits 7.2% below it. Each curve looks
+converged. Only the joint limit is right, so checking both is the work, and the
+axis that could not sweep was the one that had to be checked by hand.
+
+Either may now be an iterable and the sweep runs over that one while the other
+stays fixed and is recorded. Both as iterables raises, naming the workflow:
+sweep one, fix it past its knee, then sweep the other. A grid over both costs
+`len(h) * len(W)` training runs for the same conclusion.
+
+### Changed: `THEORY.md` sections 6 to 8 rewritten, with citations
+
+The sections covering what a reported number is per, the temporal quantities,
+and interaction information are rewritten, and each now carries a reference
+block. Substantive additions: monotonicity and extensivity separated as claims
+that license different things, with extensivity stated as the asymptotic one;
+the block-MI offset identified as the subextensive part and distinguished from
+the excess entropy it resembles; the dependence timescale read off an `h` sweep
+instead of imported from an autocorrelation or a Fraser-Swinney minimum; the
+growth law of predictive information given as the finding Bialek, Nemenman and
+Tishby were after; the directed-information decomposition written out as the
+chain rule it is, with Amblard and Michel's result that it stops holding once a
+third process enters the conditioning set; and interaction information's net
+character, the sign convention that differs between McGill and Bell, and why
+the underdetermination of PID keeps it out of the library.
+
+Three corrections. Instantaneous exchange inherits the amplification fragility
+whenever it is small relative to its components, measured at amplification 25
+returning an impossible negative on a purely lagged system, so the section no
+longer exempts it. The amplification factor's two-term form takes the absolute
+value of the difference, matching the implementation. And the unconditioned
+quantities are five, not four.
+
+Massey's conservation law is marked as the limit it is. The other two identities
+hold at any finite history length, verified to about 1e-14 on the oracle, while
+Massey's is off 15% at `W=h=1` and reaches machine precision by `W=h=20`.
+
+### Changed: `excess_entropy` is `predictive_information`, with one window length
+
+$I(X_{past}; X_{fut})$ at a finite history is predictive information. Excess
+entropy is its $k \to \infty$ limit, a property of the process rather than of a
+window length, so a function returning one number at one $k$ cannot be it.
+
+`predictive_information(x_data, k, ...)` takes a single `k` that sets both
+windows, since the two are equal by definition. Excess entropy is read off a
+`k`-sweep: a plateau is the limit, and a curve that keeps climbing says the
+process has no finite excess entropy and that its growth law is the result. No
+function estimates the limit directly. It would have to decide whether the curve
+has converged and what to return when it never does, and both are judgments
+about the data that belong to the person reading the sweep.
+
+`cross_predictive_information(x_data, y_data, k, ...)` follows the same shape,
+one process's past against the other's future at matching lengths. The name is
+descriptive; the literature calls the cross-process form predictive information
+too.
+
+`active_information_storage` keeps `future_k=1`, which is its definition.
+
+### Added: every quantity records what it was built from
+
+The `quantities.py` wrappers build their offset arrays and hand `run()` the
+finished tensors, so `k`, `W`, `h` and `stride` ended at that boundary. A
+returned `Results` from `mi_rate(h=3, W=7)` carried no `W`, no `h` and no
+`stride`, and a saved result said nothing about what had been estimated.
+
+Both funnels these wrappers return through now carry the construction: a swept
+axis is already a dataframe column, and `_record` stamps `params` with the
+parameters held fixed. `mi_rate(h=[1,2], W=5)` comes back with `sweep_var='h'`
+alongside `W=5` and `stride=1`. `mode='transfer'` records `history_window` the
+way `mode='precision'` already records `tau_grid`.
+
+### Fixed: `permutation_test` on `mode='dimensionality'`, `n_splits` below 1, and a second warning that could not fire
+
+Auditing `MESSAGES.md` against the code turned up a pattern: a setting that a
+mode cannot honour was sometimes accepted, dropped, and never mentioned.
+
+`permutation_test=True` with `mode='dimensionality'` built no null distribution
+and said nothing. That mode reports a count of cross-run-stable directions
+instead of one MI value, so there is no statistic for a null to sit under; its
+own control is the stability threshold, which a direction has to survive
+independent fits to pass. It warns now. The refusal raised for
+`mode='rigorous'`/`'precision'` made it worse by listing `'dimensionality'`
+among the modes that do support permutation testing, sending callers out of a
+clear error and into the silent no-op. That name is gone from the list.
+Measured coverage: `estimate`, `sweep`, `lag`, `conditional`, `transfer`,
+`interaction` and cross-pairwise all produce a null; `rigorous` and `precision`
+raise; `dimensionality` and self-pairwise warn.
+
+`Dimensionality(n_splits=0)` (or any value below 1) ran to completion. No split
+trained, `mi_estimate` came back `None`, and the only trace was two downstream
+warnings, one of which blamed a missing `y_data` that this mode does not take.
+`n_splits` is now validated where it is passed.
+
+With that validated, `dimensionality.py`'s `return_embeddings=True but no
+embeddings were found in the split results` became unreachable, which is what
+its wording had been hiding. The mode sets `return_embeddings=True` on every
+split itself, extraction inside a split always succeeds (even a concat critic
+returns flattened inputs from `get_embeddings`), and `all_results` is now never
+empty. It is an internal invariant error instead of a warning, and its
+`MESSAGES.md` entry is gone. `mode='dimensionality'` returns
+`embeddings_x`/`embeddings_y` with no `y_data` at all, measured, which is why
+the old "check that `y_data` was provided" advice never applied.
+
+### Fixed: `return_embeddings` was silently ignored by `mode='pairwise'`, and a warning that could not fire
+
+`Output(return_embeddings=True)` is honoured by `estimate`, `dimensionality`,
+`conditional`, `transfer` and `interaction`. `pairwise` accepted it, returned no
+embedding keys, and said nothing. It was worse than inert: the flag reached
+every channel pair's own training task, which extracted embeddings with a full
+forward pass over all samples, on every pair of every run, and then dropped them
+when the pair's summary row was built.
+
+`run_pairwise_mi` now reports the flag and drops it before the pairs run, so the
+work is never done. The message says why there is nothing to return (one model
+per pair, and the rows that come back are summaries) and points at
+`mode='estimate'` on the pair you care about. `return_rotated_embeddings`,
+`return_rotation_matrices` and `track_embeddings` are handled the same way.
+
+Separately, `task.py` carried `return_embeddings=True but y_data is None.
+Skipping embedding extraction.`, which cannot fire: `run()` accepts
+`y_data=None` only for `dimensionality` and `pairwise`, both of which build
+their own second side before training, and a model that scores pairs cannot have
+trained without one. Its advice had also been copied into `MESSAGES.md` against
+a *different* message, `no embeddings were found in the split results`, which
+sent readers after a parameter that `mode='dimensionality'` does not take: that
+mode makes its two sides from X's own channels and returns embeddings with no
+`y_data` at all, measured. The dead branch is now an internal invariant error
+instead of a warning, and both `MESSAGES.md` entries are corrected.
+
+### Note: the windowing and alignment work, in the order it happened
+
+This block of entries is one connected effort, and reading it newest-first
+hides the order, so here it is forwards. It began with a question about
+`block_mi`: `step_size` is a documented parameter, so why did passing it to a
+quantity wrapper change nothing. The answer was that the offset-built
+quantities never had a step at all, and that the step convention itself had two
+implementations that disagreed.
+
+Pulling on that gave, in order: a fix to the step convention so both windowing
+routes read it the same way; `processing=` accepted on the offset family, which
+until then rejected it; a `stride` argument, which is the step those quantities
+were missing; an experiment to find out whether overlap is worth anything,
+since `stride` and `step_size` both control it; the window-width correction
+that the experiment's window counts exposed; then the alignment rebuild, which
+replaced three windowing implementations with two and made one, two or three
+streams the same code path; and finally the merge of `create_bundle` into
+`create_dataset`, whose audit turned up two time-vector bugs.
+
+The documentation rebuild (ten notebooks in `tutorials_new/`, the reference
+split into four documents) ran alongside it and is the last entry in the block.
+
+### Fixed: the reslice route ignored time vectors, and `mode='precision'` dropped them
+
+Two paths build windows. The eager route reads a stream's timestamps, so
+`window_size=1.0` is one second. The reslice route (`shift_windows`, the cheap
+`unfold` mechanism) took its period from `sample_rate` alone, so a stream given
+`x_time` and no `sample_rate` was windowed in raw sample units instead. Through
+the public API, X at 100 Hz and Y at 25 Hz, both timestamped, with
+`window_size=1.0`, produced `(1500, 1, 1)`: windows one sample wide, and both
+streams truncated to a common raw sample count instead of a common duration.
+The eager route on the same input gives widths of 100 and 25 over 60 windows.
+Since `shift_windows` defaults to `True` for a regular-grid pair, the reslice
+route is the one that ran.
+
+`stream_period()` now derives the period from a time vector when the clock is
+regular, and the route declines when it cannot serve the stream honestly: an
+irregular clock has no single period to convert a window size with, and clocks
+that start at different times cannot be lined up by sample number. Declining
+routes the pairing to the eager path, which checks each window's coverage
+against the timestamps and starts the grid at the latest start among the
+streams. Both cases log why.
+
+Separately, `run_precision_analysis`'s eager fallback never passed
+`x_time`/`y_time` on to `create_dataset`, so a timestamped 25 Hz pair built
+1999 windows one sample wide under `mode='precision'` and 80 windows 25 samples
+wide under every other mode.
+
+Both are pinned by tests that were confirmed to fail with the fix reverted:
+`TestTheTwoRoutesReadTheSameClock` in `tests/test_shift_windowing.py` and
+`test_precision_windows_on_the_timestamps_like_every_other_mode` in
+`tests/test_precision.py`.
+
+### Changed: `create_dataset` builds any number of streams, and `create_bundle` is retired
+
+`create_bundle` was added to put three streams on one grid, and it left the
+library with two factories whose jobs overlapped. Measured against each other,
+`create_bundle` was missing three of `create_dataset`'s checks: the guard that
+catches a string passed as data, the warning when a spike stream meets a
+regular-grid stream with no shared time unit, and the convention that a stream
+with no processor type of its own follows the first stream's.
+
+There is one factory now. `create_dataset` accepts either the two-argument form
+(`x_data`, `y_data`, `processor_type_x`, and the rest) or a mapping of named
+streams, and both normalise into one ordered mapping and one build path. Two
+streams named x and y return `PairedTemporalDataset`/`PairedDataset` exactly as
+before; three or more return `StreamBundle`/`AlignedStaticStreams`. The three
+checks now run for every shape, and a `step_size` conflict between streams is
+reported the way a `window_size` conflict already was.
+
+`run()` builds x, y and w through one call with no branch,
+`quantities.py::_grid_rows` uses the same call, and `create_bundle` is gone as a
+name. Verified on the circular hippocampal session: the three-stream build
+still gives 1754 windows for spikes `(1754, 92, 10)`, position `(1754, 1, 40)`
+and direction `(1754, 1, 2)`, 66% retention, grid starting at 23.3 s.
+
+### Changed: the embedding width is `embedding_dim` everywhere
+
+`embedding_dim` was the public name in `Model(...)` and `embed_dim` the
+constructor name inside every embedding, critic and decoder, so a custom class
+written against the documented name failed at construction and the two names
+appeared side by side in the same call chain. There are no users to break, so
+the internal name follows the public one: 134 occurrences in the library and
+126 in the tests. No alias is kept, since keeping one would preserve exactly
+the ambiguity this removes.
+
+### Added: every leg of a difference quantity draws the same shift
+
+A quantity defined as a subtraction trains one run per term, and those runs
+carry different task seeds by design. Per-epoch shifts were drawn from the
+global random stream, so each leg looked at a different stretch of the
+recording at every epoch, and subtracting estimates taken on different data
+added between-chunk variance to a residual that is already a small difference
+of large numbers.
+
+`Trainer.train` now takes `shift_seed` and draws every shift from a generator
+seeded with it, derived from the run's base seed instead of the per-task one.
+Every leg lands on the same shift at the same epoch. No coordination between
+runs is needed, since each one rebuilds the same generator.
+
+`shift_time` also reaches `mode='conditional'` and `mode='interaction'`
+generally now, through `_SHIFT_TIME_SAFE_MODES`, instead of the spike-pair
+sub-case it was limited to.
+
+### Changed: one alignment layer, for one, two or three streams
+
+Alignment was written pairwise and extended to three streams by bolting a third
+on. `create_dataset` aligned X against Y; a conditioning variable W was built in
+its own call, deriving its own grid whose origin is the latest start among
+*that call's* streams, so it could sit a fraction of a window away from the pair
+it conditions and share no window times with it at all. `run.py` then carried
+`_align_conditioning_windows`, 96 lines that reconciled the two grids after the
+fact by length. Three separate windowing implementations existed: the eager
+`WindowManager` grid, the reslice route, and that reconciliation.
+
+The alignment is now written over a collection. `AlignedStreams` holds any
+number of named streams on one grid and performs two folds: the grid starts at
+`max(start)` over every stream's extent, and a window survives where
+`logical_and.reduce` over every stream's validity mask says all of them have
+data. `StreamBundle` adds the pair accessors, `AlignedStaticStreams` is the
+pre-processed counterpart, and `_NamedStreams` carries `stream(name)` and
+`stream_names` for all of them. `PairedTemporalDataset` and `PairedDataset`
+survive as two-stream constructors over those classes, so every existing caller
+and every `isinstance` check keeps working, and the reconciliation is deleted.
+
+The shift side got the same treatment. `BundleShifter` re-tiles any number of
+named streams together in real time, truncating them to a common duration
+before it starts, and `PairedWindowShifter` and `DualBranchWindowShifter` are
+now constructors over it with no logic of their own. `stream_spec` describes one
+stream, `_build_shifted_dataset` is the shared tail every builder ends in, and
+`SHIFT_PACK_CONCAT`/`SHIFT_PACK_SECOND`/`SHIFT_PACK_FIRST`/`SHIFT_PACK_DUAL_BRANCH`
+name how windowed streams become the estimator's two roles. Where a categorical
+stream meets a continuous one, `categorical_to_channel_layout` lays it back onto
+a channel axis, and the eager route calls the same function, so the two cannot
+drift apart.
+
+Two windowing implementations remain, on purpose. The eager grid and the
+reslice route are not redundant: re-tiling 200k samples at `window_size=100`
+costs 24 ms eagerly and 0.002 ms by reslice, since `unfold` returns a view.
+That is the per-epoch cost when shifting is on, which is why both routes exist.
+Parity tests hold them to the same output, and checking that parity is how the
+time-vector bug above was found.
+
+`run.py` loses 201 lines and gains 98 across this work.
+
+### Verified: overlapping windows do not buy accuracy
+
+`stride` and `step_size` both control how much neighbouring rows overlap, and
+the library had no measured answer for what overlap is worth. More rows look
+like more data and are mostly near-duplicates, and the InfoNCE ceiling
+`log2(K)` counts rows without knowing how many are near copies.
+
+Measured on the shared-latent Gaussian with the evaluation group size held
+fixed across arms, so the ceiling does not move with the row count. At
+`window_size=10` (exact 2.9604 bits, ceiling 9.64), disjoint windows give
+3.1437 ± 0.3075, half-overlap 3.2256 ± 0.4354, dense 3.2873 ± 0.1584. At
+`window_size=20` (exact 5.5360, ceiling 8.64): 4.7472 ± 0.5017, 4.8493 ± 0.5024,
+4.8112 ± 0.3721. Overlap moves the estimate up, away from the exact value where
+the estimate already sits high and no closer where it sits low, so it buys no
+accuracy. It does cut the spread, and `shift_windows` cuts it about as much
+while adding rows to neither side: with shifting on, the three arms at
+`window_size=10` come back at 2.8232 ± 0.2040, 3.0417 ± 0.2625, 3.0979 ± 0.1976.
+
+The practical reading is that overlap is a variance tool whose benefit is
+largely redundant with shifting, and that it inflates an estimate that is
+already biased high. `MATCHED_CEILING_FINDINGS.md` holds the full grid.
+
+### Added: `stride` on the eight offset-built quantities
+
+`block_mi` tiles a recording and slides the tiles with `step_size`. Every
+offset-built quantity does the opposite and could not be changed: `unfold(0,
+size, 1)`, stride 1, so every valid time position becomes a row. Active
+information storage at `k=5` on `T=1200` returns 1195 rows, and adjacent rows
+share four of their five lags. Stride 1 is the densest possible sampling and the
+worst case for near-duplicate adjacency, which is what inflates a random split
+and what overstates the `log2(K)` ceiling.
+
+`stride: int = 1` is now on all eight (`active_information_storage`,
+`excess_entropy`, `cross_predictive_information`, `transfer_entropy`,
+`conditional_transfer_entropy`, `mi_rate`, `instantaneous_exchange`,
+`directed_information_rate`), on `build_offset_arrays`, and on `Transfer`.
+`leak_check_step` carries the real stride instead of a hardcoded 1, so the
+blocked-split leakage check sees the geometry that was actually built.
+
+It is deliberately a separate name from `step_size`. `step_size` reads any value
+below 1 as a fraction of `window_size`, and these quantities have no single
+window length for a fraction to refer to: `cross_predictive_information` has
+`past_k` and `future_k`, `mi_rate` has `h` and `W`. `validate_stride` therefore
+takes whole samples only and refuses a fractional value with a message saying
+why. Every quantity is bit-identical at `stride=1` to the values recorded before
+the change.
+
+### Added: the offset-built quantities accept `processing=`
+
+These quantities build their offset arrays first and call `run()` afterwards,
+so a `processing=` argument arrived after the rows already existed and
+described a windowing of the rows themselves instead of the recording they came
+from. There was no way to say "window this at 1 s, then build lags over the
+windows", which is the only route raw timestamped data has into the family.
+
+`_grid_rows` now builds the streams into rows first, through `create_dataset`
+with `validate_windows=False`, and hands those rows to the offset builder.
+Validation is off on purpose. Dropping windows compacts the row axis and
+destroys the uniform spacing offsets depend on: a 40 s gap in a 1 s grid turns
+the steps into `{1.0, 41.0}`, and an offset of five rows then means five seconds
+in one place and forty-five in another. Keeping every row leaves the gap visible
+to the coverage warnings instead of silently corrupting a lag. All three streams
+of `conditional_transfer_entropy` go onto one grid in one call.
+
+`offsets.py` gained `as_rows` and `slice_lags`, and its builders work on
+`(N, C, w)` rows instead of flat `(T, C)` arrays.
+
+### Fixed: a fractional `step_size` never reached the reslice route
+
+`step_size` below 1 means a fraction of `window_size`, at or above 1 it is
+absolute, and `None` means one whole window. That rule lived in the eager
+`WindowManager` only. The reslice route read the raw number, so
+`step_size=0.25` asked for 75% overlap on one route and for a quarter-sample
+step on the other, and which one you got depended on whether `shift_windows`
+was on.
+
+`resolve_step_size(window_size, step_size)` is now the single definition, called
+by both, so the convention is stated once. The ambiguity warning that
+`WindowManager` already emitted when `window_size` is below 1 and `step_size`
+falls in `(0, 1)` is unchanged and still the right guard: seconds make both
+readings ordinary, and only naming the applied step tells the caller which one
+they got.
+
+### Changed: a continuous window is `window_size` slots wide, and a measured clock rounds to whole slots
+
+A continuous processor built `window_size + 1` time slots, carrying one extra
+interpolation slot. The consequence was that touching windows shared a sample:
+windows at 0 and 100 with `window_size=100` both held sample 100. That put a
+duplicate sample on either side of a random split, and it made
+`min_coverage_fraction >= 0.95` unsatisfiable on clean, gapless data, which
+raised `ValueError: No valid windows` on a recording with nothing wrong with it.
+
+The `+1` is gone. A window of 100 samples is 100 slots, window 0 ends at sample
+99 and window 1 starts at 100, and `min_coverage_fraction=0.95` on a clean 30 Hz
+recording now keeps 100 of 100 windows. Widths move by one for continuous data,
+so numbers recorded against the old behaviour do not carry over. This
+supersedes the description in "Added: `x_window_width` / `y_window_width` on the
+paired datasets" above, which documented the `w + 1` behaviour as current.
+
+Slot counting was separately wrong on a measured clock. The count was computed
+by ceiling, so a 30 Hz recording whose period comes back as 0.03333... gave 31
+slots for a one-second window. `slots_in_window(window_size, unit)` now rounds
+to the nearest whole count when the ratio is within a relative tolerance of an
+integer and ceilings otherwise, and is used at all three sites: continuous,
+categorical, and binned spike. A 1 s window on a 30 Hz clock is 30 slots.
+
+### Changed: the tutorials and the reference documentation are rebuilt
+
+The tutorial series is rebuilt as ten notebooks in `tutorials_new/`, numbered
+01 to 10: 01 to 07 are a course read in order, 08 to 10 are reference. The
+organising idea is that a number is a claim, and a claim needs a quantity with
+units, a validation against a known value, a control that could have refuted it,
+and a spread. Spread is three separate things: variance across seeds, the bias
+`mode='rigorous'` extrapolates, and `amplification_factor`, which is a warning
+about difference quantities and not an error estimate. Each notebook's committed
+default is the scientifically correct configuration, as light as correctness
+allows, with a comment saying what to reduce for a quick pass and what the
+reduced run stops being able to show.
+
+The single reference document is split into four in `reference/`: `THEORY.md`
+for why the estimator behaves as it does, `USING.md` for the API and the
+parameters, `MESSAGES.md` keyed by the text of each warning the library emits,
+and `INTERNALS.md` for the mechanisms a contributor needs. `INTERNALS.md` had
+eight claims that no longer matched the code and they are corrected.
+
+The library's own comments were audited in the same pass: no prior-API
+narrative, no task-tracking codes left in shipped code, and the house style
+applied throughout.
+
+### Added: difference quantities report their own spread
+
+A quantity defined as a subtraction ran each component once per `run_id`,
+averaged the components, and subtracted the averages. That gave a better point
+estimate and no variance, so the one number that says whether a difference is
+resolved was unavailable through the library: you had to loop by hand and
+recombine.
+
+The components are now paired run by run and the quantity formed from each
+pair. No existing number moves, because `mean(a) - mean(b)` and `mean(a - b)`
+are the same for equal-length lists, and `mi_estimate_std` is now reported
+alongside the estimate. It is `None` below two runs, which distinguishes "no
+spread measured" from "a spread of zero". `combined_spread` in
+`analysis/sweep.py` composes it, and the three-term case (interaction
+information) pairs all three components.
+
+Measured on the shared-latent Gaussian: conditional transfer entropy comes back
+at 0.061 with a spread of 0.058, so neither its size nor its sign survives that
+measurement. That reading was not available from one call before.
+
+### Fixed: `sweep_grid` is no longer silently dropped on a quantity that sweeps its own parameter
+
+`block_mi(x, y, window_size=[2, 5], sweep_grid={'run_id': [0, 1, 2]})` built its
+own task list for the window values and discarded the grid. One run per point,
+and because a missing spread is filled with zero, it reported `mi_std = 0.0` —
+indistinguishable from three runs that agreed exactly. The same shape affected
+all nine wrappers that accept an iterable for their own parameter.
+
+Those now raise, and the message names both working routes: a scalar parameter
+with `sweep_grid={'run_id': range(n)}` for repeats, or `run(mode='sweep')` with
+both axes in one grid to sweep and repeat together.
+
+### Added: a warning when `step_size` could mean a fraction or a duration
+
+`step_size` below 1 has always meant a fraction of `window_size`, which keeps
+`step_size=0.25` at 75% overlap whatever the window is. That rule is
+unambiguous while windows are counted in samples, since a sample step is never
+below 1. Windows measured in seconds break the assumption, because sub-second
+windows and sub-second steps are both ordinary there, and the same number then
+reads either way. `window_size=0.5, step_size=0.5` looks like a request for
+touching windows and silently produces a 0.25 s step at 50% overlap, which
+inflates the window count and puts near-duplicate windows on both sides of a
+random split.
+
+`WindowManager` now warns when `window_size` is below 1 and `step_size` falls
+in `(0, 1)`, naming the step that was applied, the resulting overlap, and how
+to ask for the absolute step instead. It also says when the absolute step is
+unreachable, which happens whenever it is wider than the window and still below
+1. The warning fires once per `(window_size, step_size)` pair per process, and
+behaviour is unchanged. `NEURALMI_REFERENCE.md` gains the full table and
+`WARNINGS.md` the message entry.
+
+### Added: the shared latent and the per-channel SNR on `SharedLatentGaussian`
+
+The oracle built its data as a projection of one AR(1) latent plus observation
+noise, then returned only the sum, so nothing downstream could separate the two
+or say how much latent any given channel carried. Plotting a channel meant
+picking one blind, and the projections are random enough that channels of one
+process differ by two orders of magnitude in signal variance.
+
+`sample(..., return_latents=True)` now returns `(data, latent)` with the latent
+of shape `(T, d)`, and `snr(name)` returns the ratio of latent-driven variance
+to observation-noise variance for every channel of a process. The noise-free
+part of a process is `latent @ oracle.proj[name].T`, so the decomposition is
+recoverable from what is already public. `generate_shared_latent_gaussian`
+takes the same keyword and appends the latent as a third element. Both defaults
+are unchanged, so no existing call is affected.
 
 ### Added: `x_window_width` / `y_window_width` on the paired datasets
 
