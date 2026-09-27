@@ -1,129 +1,131 @@
-# NeuralMI: A Toolbox for Rigorous Mutual Information Estimation in Neuroscience
+# NeuralMI: mutual information estimation for neural data
 
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen)](https://eslam-abdelaleem.github.io/NeuralMI/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://github.com/eslam-abdelaleem/NeuralMI/actions/workflows/tests.yml/badge.svg)](https://github.com/eslam-abdelaleem/NeuralMI/actions/workflows/tests.yml)
 
-**NeuralMI** is a Python library designed to provide neuroscientists with a complete, end-to-end workflow for robustly and quickly estimating mutual information from complex neural data.
-
-In modern neuroscience, MI estimation is usually not possible and using black-box methods is rarely enough. Estimates can be plagued by finite-sampling bias and estimator variance, leading to results that aren't scientifically rigorous. `NeuralMI` solves this by moving beyond simple point estimates to incorporate essential techniques for scientific rigor, including automated bias correction, hyperparameter exploration, and cross-run-validated analysis of shared latent structure. It is built for researchers who need to analyze complex relationships in continuous time-series (like LFP or EEG), discrete spike trains, and categorical state data.
-
-**A note on what every estimate means:** `NeuralMI`'s estimators are variational **lower bounds** on the true mutual information, not the exact value. This is what makes them tractable on high-dimensional neural data, but it has two direct consequences worth knowing before you interpret a number: a reported estimate can under-report the true MI but never over-report it, and each estimator has a ceiling set by its evaluation batch size (`log(batch_size)` for the default InfoNCE estimator). See [Tutorial 0](tutorials/00_Why_and_How_MI_Estimation_Works.ipynb) for the full mechanics behind this.
-
-## Key Features
-
-* **Unified & Simple API:** Access all analysis modes through a single `run()` function.
-* **Bias Correction:** The `rigorous` mode performs automated finite-sampling bias correction via subsampling and extrapolation, providing a debiased MI estimate with a confidence interval.
-* **Multiple Analysis Modes:**
-    * **`estimate`**: Get a quick, single MI estimate for initial exploration.
-    * **`sweep`**: Perform parallelized sweeps over any model or data processing hyperparameter.
-    * **`lag`**: Find the precise temporal offset between two time-series through a specialized sweep.
-    * **`dimensionality`**: Find directions of shared structure within a neural population, or between two, that reproduce reliably across independent retrainings.
-    * **`precision`**: Find the precise threshold at which spike-timing resolution matters.
-    * **`conditional`**: Compute Conditional Mutual Information (CMI) to isolate direct relationships.
-    * **`transfer`**: Estimate Transfer Entropy to understand directed information flow over time, optionally controlling for a third signal (conditional transfer entropy).
-    * **`interaction`**: Compute Interaction Information to see how a third population changes what two others share, redundancy or synergy.
-    * **`pairwise`**: Rapidly build all-to-all functional connectivity matrices.
-* **Neuroscience-Ready Data Processors:**
-    * `ContinuousProcessor`: Seamlessly handle windowing of LFP, EEG, or calcium imaging data.
-    * `SpikeProcessor`: Convert raw spike times into an analyzable format.
-    * `CategoricalProcessor`: Process discrete behavioral or stimulus state data.
-* **Smart Data Splitting**: Automatically handles train/test splits for both **temporal** data (default `'blocked'` split) and **IID** data (`split_mode='random'`) to ensure valid, reliable estimates.
-* **Built-in Visualizations:** Generate plots for stable-direction charts and bias-correction fits with a single command.
-* **Flexible & Extensible:** Choose from multiple MI estimators (`InfoNCE`, `SMILE`, etc.) and provide your own pre-initialized PyTorch models for advanced use cases.
-
-## Quickstart: An Accurate Estimate
-Here's how to perform a rigorous, bias-corrected MI estimation between two independent (IID) variables.
-
-```python
-import neural_mi as nmi
-from neural_mi import Processing, Split
-
-# 1. Generate raw data (e.g., 100 channels with 10 latent dims over 2500 timepoints)
-x_raw, y_raw = nmi.generators.generate_nonlinear_from_latent(
-    n_samples=2500, latent_dim=10, observed_dim=100, mi=3.0
-)
-
-# 2. Run the rigorous, bias-corrected estimation
-# This performs multiple runs on data subsets and extrapolates to an infinite-data estimate.
-results = nmi.run(
-    x_raw, y_raw,
-    mode='rigorous',
-    processing=Processing(x='continuous', x_params={'window_size': 1}),
-    split=Split(mode='random'),  # random splitting for IID data
-    n_workers=4,                 # use multiple cores for speed
-    seed=42,
-)
-
-# 3. Access and print the final, scientifically robust result
-mi_est = results.mi_estimate
-mi_err = results.details.get('mi_error', 0.0)
-print(f"\nCorrected MI: {mi_est:.3f} ± {mi_err:.3f} bits")
-
-# 4. Visualize the bias-correction procedure
-# This plot shows the extrapolation to an infinite dataset size (1/N -> 0).
-results.plot()
-```
+**NeuralMI brings information-theoretic analysis to the scale of modern neuroscience using neural-network-based information estimators.**
 
 
-## Learning Path
-To get the most out of `NeuralMI`, we recommend following the tutorial series in order. Each tutorial builds on the last, taking you from the basics to advanced applications.
+<img src="docs/source/_static/correlation_blind.png" alt="A folded Gaussian: correlation +0.001, information 1.554 bits" style="float: left; max-width: 50%; margin-right: 15px; margin-bottom: 10px;">
 
-- **Part 0: What an estimate is**
-    - **[00_Why_and_How_MI_Estimation_Works](tutorials/00_Why_and_How_MI_Estimation_Works.ipynb)**: Why mutual information rather than correlation, how a neural estimator turns dependence into a number, and which value the library reports.
-- **Part 1: Getting your data in**
-    - **[01_A_First_Estimate](tutorials/01_A_First_Estimate.ipynb)**: One `nmi.run()` call on data with a known answer. What `mi_estimate` is versus `details['test_mi']`, how the answer moves with sample size, and a KSG comparison showing when a neural estimator is worth its cost.
-    - **[02_Neural_Data_Formats](tutorials/02_Neural_Data_Formats.ipynb)**: Spike times, binned counts and categorical labels, what windowing does to each, and which quantity `drop_empty_windows` selects.
-    - **[03_Temporal_Correlations_and_Splits](tutorials/03_Temporal_Correlations_and_Splits.ipynb)**: Why `Split(mode='blocked')` is the default, and what random splitting costs on autocorrelated data.
-- **Part 2: Choosing the quantity that matches your question**
-    - **[04_Which_Quantity](tutorials/04_Which_Quantity.ipynb)**: The whole taxonomy as one `I(A;B|C)` primitive under different offset patterns. Also why windowed MI is extensive, so no window size reveals a plateau.
-    - **[05_Storage_and_Rate](tutorials/05_Storage_and_Rate.ipynb)**: How much a process predicts about its own future, and the per-step rate that survives as the window grows.
-    - **[06_Direction_and_Delay](tutorials/06_Direction_and_Delay.ipynb)**: `mode='lag'`, `mode='precision'`, transfer entropy and Massey's conservation law. Includes a measured demonstration of why transfer entropy is fragile: 25 to 40 times error amplification, with its reported direction reversing when the history window changes.
-- **Part 3: Defending a number**
-    - **[07_Three_Variables](tutorials/07_Three_Variables.ipynb)**: Conditional MI and interaction information against an oracle with exact values, redundancy versus synergy, and the amplification factor that says how far a difference of estimates can be trusted.
-    - **[08_Making_It_Rigorous](tutorials/08_Making_It_Rigorous.ipynb)**: Seed spread, `mode='sweep'`, and `mode='rigorous'` with its diagnostics read honestly, including what a flat bias slope does and does not mean.
-- **Part 4: Real recordings, where there is no ground truth**
-    - **[09_What_A_Population_Encodes](tutorials/09_What_A_Population_Encodes.ipynb)**: Hippocampal place cells and position, across two sessions from the same animal. Each section starts from a hypothesis, and the controls are what carry the claims.
-    - **[10_Comparing_Brain_Areas](tutorials/10_Comparing_Brain_Areas.ipynb)**: Allen Brain Observatory recordings from VISp, VISpm and CA1 under natural movies and spontaneous activity. Functional coupling, intrinsic timescale, and which comparisons the data actually supports.
-- **Part 5: The machinery underneath**
-    - **[11_Models_and_Machinery](tutorials/11_Models_and_Machinery.ipynb)**: The two estimators and the InfoNCE ceiling, the ten embedding models, permutation nulls, and how to supply your own architecture.
+Correlation is the usual way to ask whether two signals are related, but it is
+blind to any nonlinear relationship. For example, a Gaussian folded about zero has a perfect relationship between $x$ and $y$, yet the correlation is zero because the two halves of the linear trend cancel exactly.
 
-Separately, [`benchmarks/vs_classical_estimators.ipynb`](benchmarks/vs_classical_estimators.ipynb) compares `NeuralMI` against classical alternatives (the KSG estimator and geometric intrinsic-dimension estimators) on problems chosen to be hard for them — useful if you're deciding whether a neural estimator is the right tool for your data, rather than learning the library itself.
+
+Mutual information sees that relationship because it captures linear and nonlinear dependencies alike. It also answers questions a
+correlation has no form for, such as how much a population's past says about its own future, what one area adds about another beyond what that area already predicts of itself, or what a pair of signals carries that neither carries alone.
+
+<img src="docs/source/_static/sample_sweep.png" alt="Estimate against sample count at 1000 channels per side: NeuralMI reaches the true 4 bits by 1000 samples, KSG stays under 2" style="float: right; max-width: 60%; margin-right: 15px; margin-bottom: 10px;">
+
+
+The obstacle to applying information-theoretic measures to large, multimodal neuroscience datasets is the curse of dimensionality. Classical estimators need samples in proportion to the dimensions they are handed, so past ~10 dimensions they outrun any recording of realistic size. Information-theoretic analysis has mostly been limited to a handful of channels for that reason.
+
+Neural-network-based estimators overcome this by learning a map into a low-dimensional embedding while estimating the information in it. The samples needed then follow the latent structure of the data and not the channel count it arrived on.
+
+
+Giving each modality its own encoder also lets spike times, tracked trajectories and trial labels be analysed
+together on one timeline, each in its own subspace and through an encoder with its own inductive bias.
+
+![Three streams on their own clocks, cut into aligned windows](docs/source/_static/alignment.png)
+
+
+Once estimation is possible at that scale, the whole family of information
+quantities can be estimated from a single primitive. Every quantity here is
+the same conditional mutual information $I(A;B \mid C)$ under a different choice
+of inputs and time offsets.
+
+![Twelve quantities as offset patterns over one primitive](docs/source/_static/taxonomy.png)
 
 ## Installation
 
-> **Jupyter / Colab users:** prefix each shell command below with `!` (e.g. `!git clone ...`).
+<!-- install-start -->
+> **Jupyter / Colab users:** prefix each shell command with `!`.
 
 ```bash
-# 1. Clone the repository from GitHub
 git clone https://github.com/eslam-abdelaleem/NeuralMI.git
-
-# 2. Navigate into the project directory
 cd NeuralMI
 
-# 3. Install the library
-# For standard use:
 pip install .
 
-# Optional extras:
-#   pip install ".[viz]"     # UMAP / t-SNE / PCA embedding plots
-#   pip install ".[vision]"  # pretrained-backbone embeddings (torchvision)
+# Optional parts, which combine, as in ".[viz,tutorials]":
+#   pip install ".[viz]"        # PCA, t-SNE and UMAP plots of the embeddings
+#   pip install ".[vision]"     # pretrained image networks as encoders
+#   pip install ".[tutorials]"  # JupyterLab and benchmark-mi, to run the tutorials
+#   pip install ".[docs]"       # the docs toolchain (building also needs pandoc)
+#   pip install ".[test]"       # the test suite
 
-# 4. For developers (editable install + tests, docs, and viz extras)
+# Developers (editable install with all of the above):
 pip install -e ".[dev]"
 ```
+<!-- install-end -->
 
-## Further Reading
-Check out the fully updated documentation site: [https://eslam-abdelaleem.github.io/NeuralMI/](https://eslam-abdelaleem.github.io/NeuralMI/)
 
-If you prefer exploring the repository directly, we also include several detailed guides:
-- `NEURALMI_REFERENCE.md`: The complete technical reference covering the entire public API and parameter configurations.
-- `THEORY.md`: A concise theoretical background for the core methods used in the library.
-- `CONCEPTS.md`: A practical, code-based walkthrough of how a neural MI estimator is built and trained from scratch.
-- `DEVELOPERS_GUIDE.md`: A guide to the codebase for contributors and advanced users.
+## Quickstart
+
+<!-- quickstart-start -->
+```python
+import neural_mi as nmi
+from neural_mi import Model, Split, Training
+
+x, y = nmi.generators.generate_correlated_gaussians(
+    n_samples=1000, dim=5, mi=2.0, seed=0)
+
+result = nmi.run(
+    x, y,
+    mode='estimate',
+    model=Model(embedding_dim=16, hidden_dim=128),
+    training=Training(n_epochs=100, batch_size=128, patience=20),
+    split=Split(mode='random'),   # for independent samples
+    seed=0,
+)
+
+print(f"estimate : {result.mi_estimate:.3f} bits")
+print(f"exact    : 2.000 bits")
+```
+
+```
+estimate : 2.077 bits
+exact    : 2.000 bits
+```
+<!-- quickstart-end -->
+
+## Tutorials
+
+| notebook | what it covers |
+|---|---|
+| [01 Why information](tutorials/01_Why_Information.ipynb) | What MI sees that correlation does not and where classical estimators stop working |
+| [02 Your first number](tutorials/02_Your_First_Number.ipynb) | What an estimate is and what governs its accuracy |
+| [03 Which quantity](tutorials/03_Which_Quantity.ipynb) | Twelve quantities as one $I(A;B \mid C)$ primitive under different offset patterns |
+| [04 Preparing your data](tutorials/04_Preparing_Your_Data.ipynb) | What the processors do to your data |
+| [05 Choosing the estimator and the architecture](tutorials/05_Estimator_And_Architecture.ipynb) | How to supply an encoder of your own |
+
+## Further reading
+
+| document | answers |
+|---|---|
+| [`USING.md`](reference/USING.md) | how to call each analysis and read what comes back |
+| [`PARAMETERS.md`](reference/PARAMETERS.md) | every setting, with its default |
+| [`THEORY.md`](reference/THEORY.md) | what the numbers mean and why the estimators behave as they do |
+| [`MESSAGES.md`](reference/MESSAGES.md) | what a warning the library printed means |
+| [`ANATOMY.md`](reference/ANATOMY.md) | what an estimator is, built from scratch in PyTorch |
+| [`INTERNALS.md`](reference/INTERNALS.md) | where the code lives and how to extend it |
+| [`TESTING.md`](reference/TESTING.md) | what the test suite covers |
+
+## Citing
+
+If you use NeuralMI, please cite
+[Abdelaleem et al., 2025](https://arxiv.org/abs/2506.00330). GitHub's "Cite this
+repository" button gives the entry, from [`CITATION.cff`](CITATION.cff).
+
+## Questions and problems
+
+See the [issue tracker](https://github.com/eslam-abdelaleem/NeuralMI/issues).
 
 ## Contributing
-Contributions are welcome! Please see ```CONTRIBUTING.md``` for details on how to set up a development environment, run tests, and submit pull requests.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
-This project is licensed under the MIT License - see the ```LICENSE``` file for details.
+
+See [`LICENSE`](LICENSE).

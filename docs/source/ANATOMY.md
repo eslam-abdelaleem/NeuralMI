@@ -1,0 +1,2 @@
+```{include} ../../reference/ANATOMY.md
+```

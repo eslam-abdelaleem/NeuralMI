@@ -1,0 +1,2 @@
+```{include} ../../reference/INTERNALS.md
+```

@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use NeuralMI, please cite the paper that describes its estimator."
+title: "NeuralMI"
+abstract: "A Python toolbox for rigorous mutual information estimation in neuroscience."
+type: software
+authors:
+  - family-names: Abdelaleem
+    given-names: Eslam
+    orcid: "https://orcid.org/0009-0006-9429-3589"
+    affiliation: "Georgia Institute of Technology"
+version: 1.0.0
+license: MIT
+repository-code: "https://github.com/eslam-abdelaleem/NeuralMI"
+url: "https://eslam-abdelaleem.github.io/NeuralMI/"
+keywords:
+  - mutual information
+  - information theory
+  - neuroscience
+  - neural data analysis
+preferred-citation:
+  type: article
+  title: "Accurate estimation of mutual information in high dimensional data"
+  authors:
+    - family-names: Abdelaleem
+      given-names: Eslam
+    - family-names: Martini
+      given-names: K. Michael
+    - family-names: Nemenman
+      given-names: Ilya
+  journal: "arXiv preprint arXiv:2506.00330"
+  year: 2025
+  url: "https://arxiv.org/abs/2506.00330"
