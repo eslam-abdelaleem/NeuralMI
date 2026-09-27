@@ -38,12 +38,14 @@ BASE_PARAMS_SCHEMA = {
     'split_gap_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
     'track_spectral_history': {'type': bool, 'default': False},
     'return_embeddings': {'type': bool, 'default': False},
-    'spectral_whitening': {'type': (str, type(None)), 'default': 'std'},
+    # Normalization applied to the embeddings before the cross-covariance SVD
+    # behind both the participation ratios and the rotated embeddings.
+    'whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},
     'use_decoder': {'type': bool, 'default': False},
-    'decoder_weight': {'type': float, 'min': 0.0, 'default': 1.0},
-    'decoder_weight_x': {'type': (float, type(None)), 'default': None},
-    'decoder_weight_y': {'type': (float, type(None)), 'default': None},
+    'decoder_lambda': {'type': float, 'min': 0.0, 'default': 0.001},
+    'decoder_lambda_x': {'type': (float, type(None)), 'min': 0.0, 'default': None},
+    'decoder_lambda_y': {'type': (float, type(None)), 'min': 0.0, 'default': None},
     'decoder_output_activation_x': {'type': str, 'default': 'linear'},
     'decoder_output_activation_y': {'type': str, 'default': 'linear'},
     'gradient_clip_val': {'type': (float, type(None)), 'default': None},
@@ -67,30 +69,26 @@ BASE_PARAMS_SCHEMA = {
     'scheduler': {'type': (str, type, type(None)), 'default': None},
     'scheduler_params': {'type': dict, 'default': {}},
     # Per-epoch train MI tracking, yielding 'train_mi_history'.
-    #   False         — no per-epoch train evaluation.
-    #   True          — the locked-in train eval subset (capped by max_eval_samples).
-    #   int >= 1      — exactly that many training samples.
-    #   float (0, 1)  — that fraction of the training set.
-    #   1.0 / 'full'  — the entire training set, uncapped.
-    # An unrecognised value raises rather than silently disabling tracking.
+    #   False, no per-epoch train evaluation.
+    #   True, the locked-in train eval subset (capped by max_eval_samples).
+    #   int >= 1, exactly that many training samples.
+    #   float (0, 1), that fraction of the training set.
+    #   1.0 / 'full', the entire training set, uncapped.
+    # An unrecognised value raises instead of silently disabling tracking.
     'eval_train': {'type': (bool, float, int, str, type(None)), 'default': False},
 
     # Per-epoch embedding tracking.
     # Controls whether embeddings are extracted and stored at every epoch.
     # Mirroring eval_train style:
-    #   False         — no tracking (global default; dimensionality mode defaults to 512).
-    #   True          — track first 512 samples.
-    #   int >= 1      — track exactly that many samples (first N in the dataset).
-    #   float (0, 1)  — track that fraction of the dataset.
-    #   'full'        — track all samples (emits a UserWarning about memory cost).
+    #   False, no tracking (global default; dimensionality mode defaults to 512).
+    #   True, track first 512 samples.
+    #   int >= 1, track exactly that many samples (first N in the dataset).
+    #   float (0, 1), track that fraction of the dataset.
+    #   'full', track all samples (emits a UserWarning about memory cost).
     # The tracked subset is always the *first* N samples so that user-supplied
     # labels (passed to result.animate()) align with the original data ordering.
     'track_embeddings': {'type': (bool, float, int, str, type(None)), 'default': False},
     'return_rotated_embeddings': {'type': bool, 'default': False},
-    # Whitening applied to the cross-covariance before SVD to derive the rotation axes.
-    # Does NOT affect the scale of the returned embeddings (which are always in the
-    # original embedding space, just re-projected).  Matches the default used by PR.
-    'rotated_embeddings_whitening': {'type': (str, type(None)), 'default': 'std'},
     # False (default): one global rotation derived from the best epoch, applied to all
     # tracked epochs uniformly (consistent coordinate system across epochs).
     # True: each tracked epoch gets its own SVD-based rotation (shows structure emerging).
@@ -113,6 +111,12 @@ BASE_PARAMS_SCHEMA = {
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
+    # Per-side encoder overrides. None means "same as X" throughout.
+    'embedding_model_y': {'type': str, 'default': None},
+    'embedding_dim_y': {'type': int, 'default': None},
+    'hidden_dim_y': {'type': (int, list), 'default': None},
+    'n_layers_y': {'type': int, 'default': None},
+    'custom_embedding_cls_y': {'type': type, 'default': None},
     'branch_model': {'type': str, 'default': 'gru'}, # embedding_model='dual_branch' only: each branch's architecture
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
     'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
@@ -142,7 +146,7 @@ BASE_PARAMS_SCHEMA = {
     'gamma': {'type': (int, float)}, # Rigorous
     'min_reliable_samples': {'type': int, 'min': 1, 'default': None},
     'lag': {'type': int},  # Result label: injected by run_lag_analysis per task; not a user-settable parameter.
-    # Reproducibility — used by run() and task.py workers
+    # Reproducibility, used by run() and task.py workers
     'random_seed': {'type': (int, type(None)), 'default': None},
 
     # Conservative epoch selection:
@@ -154,14 +158,14 @@ BASE_PARAMS_SCHEMA = {
     'peak_fraction': {'type': float, 'min': 0.0, 'default': 1.0},
 
     # Mixed-precision (AMP) training.
-    # 'auto' — enable on CUDA, no-op on CPU/MPS (safe default).
-    # True   — explicitly enable (CUDA only; silently no-ops on other devices).
-    # False  — explicitly disable.
+    # 'auto', enable on CUDA, no-op on CPU/MPS (safe default).
+    # True, explicitly enable (CUDA only; silently no-ops on other devices).
+    # False, explicitly disable.
     'use_amp': {'type': (bool, str), 'default': 'auto'},
 
     # Memory / device layout
-    # 'cpu'  — store dataset tensors on CPU (default; safe for long sweeps).
-    # 'auto' — store on the compute device (faster repeated evaluation, e.g. precision mode).
+    # 'cpu', store dataset tensors on CPU (default; safe for long sweeps).
+    # 'auto', store on the compute device (faster repeated evaluation, e.g. precision mode).
     # Any explicit device string is also accepted.
     # Precision mode overrides this to 'auto' unless the user sets it explicitly.
     'dataset_device': {'type': (str, type(None)), 'default': 'cpu'},
@@ -195,12 +199,11 @@ MODE_KWARGS_SCHEMA = {
         'stability_threshold': {'type': float, 'min': 0.0, 'default': 0.7},
         'degeneracy_ratio_threshold': {'type': float, 'min': 1.0, 'default': 1.3},
         'min_strength_fraction': {'type': float, 'min': 0.0, 'default': 0.05},
-        # Lightweight, standalone warning: is the underlying MI estimate close
-        # enough to its evaluation ceiling (log(eval_size)) that any reading
-        # built on it deserves extra caution? Not a remediation mechanism (see
-        # SOURCE_OF_TRUTH.md Stage 0 -- ceiling proximity was found to degrade
-        # existing guardrails gracefully rather than mislead them, so no
-        # noise-injection remedy is applied automatically).
+        # A standalone warning: is the MI estimate close enough to its
+        # evaluation ceiling (log(eval_size)) that any reading built on it
+        # deserves extra caution? It warns and changes nothing, since ceiling
+        # proximity degrades the stability checks gracefully and does not
+        # mislead them.
         'ceiling_mi_fraction': {'type': float, 'default': 0.85},
     },
     'rigorous': {
@@ -228,7 +231,7 @@ MODE_KWARGS_SCHEMA = {
         'corrupt_target': {'type': str, 'default': 'x'},
         'corruption_method': {'type': str, 'default': 'rounding'},
         'n_noise_samples': {'type': int, 'default': 50},
-        'threshold_ratio': {'type': float, 'default': 0.9},
+        'threshold_ratio': {'type': (float, list, tuple), 'default': 0.9},
     },
     'conditional': {
         'n_workers': {'type': int, 'default': 1},

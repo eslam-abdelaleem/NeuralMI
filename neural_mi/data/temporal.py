@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 from abc import ABC, abstractmethod
 from neural_mi.utils import get_device
 from neural_mi.logger import logger
+from neural_mi.data.corruption import corrupt
 
 
 def relabel_categorical_data(data) -> np.ndarray:
@@ -59,6 +60,26 @@ def relabel_categorical_data(data) -> np.ndarray:
             f"to [0, n_categories) first."
         )
     return np.asarray(arr, dtype=np.int32)
+
+
+def slots_in_window(window_size: float, unit: float) -> int:
+    """How many units of length ``unit`` fit in a window of ``window_size``.
+
+    A ceiling with a tolerance, because ``unit`` is usually a *measured*
+    period. The median gap of a real 30 Hz time vector comes back as
+    0.03333333333333144, so ``window_size / unit`` is 30.000000000001705 and a
+    bare ``ceil`` asks for a 31st slot the window does not contain. That extra slot reaches past the window's end, so the boundary sample lands in two windows at ``step_size = window_size`` and undoes the half-open tiling
+    the processors otherwise agree on.
+
+    A ratio within a relative 1e-9 of a whole number is taken as that number.
+    Anything genuinely fractional still rounds up, so a 0.5 s window at 25 Hz
+    keeps the 13th slot that its 12.5 samples need.
+    """
+    ratio = window_size / unit
+    nearest = round(ratio)
+    if nearest >= 1 and abs(ratio - nearest) <= 1e-9 * nearest:
+        return int(nearest)
+    return int(np.ceil(ratio))
 
 
 def max_events_in_window(event_times: np.ndarray, window_size: float) -> int:
@@ -213,7 +234,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     -----
     **What ``min_coverage_fraction`` actually gates.** Coverage is measured purely
     by counting how many *source timestamps* (``self.time_vector`` entries) fall
-    inside a window (see :meth:`validate_window_coverage`) — it does not inspect
+    inside a window (see :meth:`validate_window_coverage`), it does not inspect
     whether the corresponding data *values* are finite. A window whose timestamps
     are all present but whose values are ``NaN`` is **not** flagged invalid by this
     check; ``np.interp`` has no NaN-awareness and will happily interpolate through
@@ -222,7 +243,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
 
     **What gets zero-padded vs. interpolated.** Within a window, every target time
     is filled by linear interpolation (:func:`numpy.interp`) against the *entire*
-    ``time_vector``, regardless of how large any internal gap is — the coverage
+    ``time_vector``, regardless of how large any internal gap is, the coverage
     fraction only decides whether the resulting window is later flagged valid or
     invalid; it does not bound how much of the window content is
     interpolation-bridged. Only target times that fall entirely before the first
@@ -264,7 +285,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             Device for storing ``self.data``.  Defaults to ``'cpu'``.
         sample_rate : float, optional
             Explicit sample rate in Hz.  When provided, this overrides the
-            inter-sample period inferred from ``time_vector``, which is useful
+            inter-sample period inferred from ``time_vector``, useful
             when the time vector has floating-point rounding noise or when no
             time vector is supplied.
         """
@@ -323,10 +344,19 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             self.window_manager = None
 
     def _compute_max_samples_per_window(self):
-        """Compute maximum samples that fit in a window."""
-        # Assuming fixed sample rate (outside of large jumps) for efficiency.
-        # Adding a +1 buffer to avoid index out of bounds during interpolation at edges.
-        self.max_samples_per_window = np.ceil(self.window_manager.window_size / self.period).astype(int) + 1
+        """How many sample slots a window of ``window_size`` holds.
+
+        A window covers the half-open interval ``[t, t + window_size)``, so it
+        holds ``window_size / period`` slots and consecutive windows at
+        ``step_size = window_size`` tile the recording without sharing a
+        sample. This matches the spike and categorical processors beside it and
+        the shift-based builder in ``data/shift_windowing.py``, which windows
+        via ``unfold`` and has always been half-open.
+
+        Assumes a fixed sample rate outside large jumps, for efficiency.
+        """
+        self.max_samples_per_window = slots_in_window(
+            self.window_manager.window_size, self.period)
     
     def move_data_to_windows(self):
         """
@@ -339,7 +369,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         Notes
         -----
         Every target sample time within a window is filled via
-        :func:`numpy.interp` against the full ``time_vector`` — interior gaps
+        :func:`numpy.interp` against the full ``time_vector``: interior gaps
         (target times that fall between two real timestamps, however far
         apart) are linearly interpolated across regardless of gap size. Only
         target times that fall entirely *before the first* or *after the
@@ -439,7 +469,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         ``self.time_vector`` that fall within each window's
         ``[window_start, window_end)`` span (via :func:`numpy.searchsorted`),
         compared against ``min_coverage_fraction * max_samples_per_window``.
-        It does *not* inspect the corresponding data values — a window whose
+        It does *not* inspect the corresponding data values, a window whose
         timestamps are all present but whose values are ``NaN`` passes this
         check. It also does not measure how much of the window's
         *interpolated* content (see :meth:`move_data_to_windows`) spans an
@@ -477,7 +507,7 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         """Trim to valid windows, then warn if any *retained* window is mostly
         interpolated across an internal time_vector gap (see the gap-fraction
         computed in move_data_to_windows). min_coverage_fraction alone can't
-        catch this -- it only counts raw timestamps per window, not how far
+        catch this. It only counts raw timestamps per window, not how far
         those timestamps are from the target sample times."""
         _gap_frac = getattr(self, '_interp_gap_fraction', None)
         _valid_mask = self.window_manager.valid_windows if self.window_manager is not None else None
@@ -505,52 +535,27 @@ class ContinuousWindowDataset(TemporalWindowDataset):
     
     def reset(self):
         self.data = self.data_master.detach().clone()
-        # Invalidate mask cache so apply_noise/apply_precision recompute after reset
-        self.__dict__.pop('_data_mask', None)
-        self.__dict__.pop('_noise_buffer', None)
 
     def time_shift(self, offset):
         self.time_vector = self.time_vector + offset - self.time_offset
         self.time_offset = offset
 
     def apply_noise(self, amplitude):
-        """Add Gaussian noise of the given amplitude to the non-zero samples.
+        """Add uniform jitter of width `amplitude` to every sample that holds a value.
 
-        Corruption is confined to entries that already hold a value. A sample
-        that is exactly zero is left alone, so corrupting a signal never
-        introduces activity where the recording had none: the point of
-        ``mode='precision'`` and noise corruption is to degrade what was
-        measured, not to manufacture a signal out of an empty sample.
-
-        Exact zeros in genuinely continuous data are therefore skipped as well.
-        That is a measure-zero case for real-valued recordings, and it is the
-        price of not inventing data.
+        Zero samples, including the zeros that pad a gap in the recording, are
+        left as they are, so corruption never creates a signal where none was
+        recorded (see :func:`neural_mi.data.corruption.corrupt`). Always starts
+        from the uncorrupted data, and ``amplitude=0`` restores it.
         """
-        if amplitude == 0.0:
-            self.reset()
-            return
-        # Derive the mask from the master copy so repeated noise applications
-        # at different amplitudes always start from the original non-zero positions.
-        if not hasattr(self, '_data_mask'):
-            self._data_mask = torch.nonzero(self.data_master, as_tuple=True)
-        if not hasattr(self, '_noise_buffer') or len(self._noise_buffer) != len(self._data_mask[0]):
-            self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.data.device, dtype=self.data.dtype)
-        self._noise_buffer.normal_(mean=0, std=amplitude)
-        self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
+        self.data = corrupt(self.data_master, amplitude, 'noise').clone()
 
     def apply_precision(self, precision_level):
-        """Round the non-zero samples to a grid of the given spacing.
+        """Move every sample that holds a value to the centre of its bin of width `precision_level`.
 
-        Confined to entries that already hold a value, for the reason given on
-        :meth:`apply_noise`: corruption degrades what was measured and never
-        creates a sample where there was none.
+        Zero samples are left as they are, as in :meth:`apply_noise`.
         """
-        if precision_level == 0.0:
-            self.reset()
-            return
-        if not hasattr(self, '_data_mask'):
-            self._data_mask = torch.nonzero(self.data, as_tuple=True)
-        self.data[self._data_mask] = torch.round(self.data_master[self._data_mask] / precision_level) * precision_level
+        self.data = corrupt(self.data_master, precision_level, 'rounding').clone()
 
 
 
@@ -761,7 +766,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
 
         With ``drop_empty_windows=False`` every window is reported valid, so a
         silent window survives as data. See the parameter's documentation for
-        why that changes the estimand rather than merely relaxing a filter.
+        why that changes the estimand instead of merely relaxing a filter.
         """
         if not getattr(self, 'drop_empty_windows', True):
             return np.ones(self.window_manager.window_times.shape, dtype=bool)
@@ -776,9 +781,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
     
     def reset(self):
         self.data = self.data_master.detach().clone()
-        # Invalidate mask cache — data shape may have changed or noise was cleared
-        self.__dict__.pop('_data_mask', None)
-        self.__dict__.pop('_noise_buffer', None)
 
     def time_shift(self, offset):
         """Shift spike times by offset."""
@@ -789,31 +791,21 @@ class SpikeWindowDataset(TemporalWindowDataset):
         # Moving data to windows will be orchestrated by paired dataset class
 
     def apply_noise(self, amplitude):
-        """Add uniform temporal jitter to spike times."""
-        if amplitude == 0.0:
-            self.reset()
-            return
-        # Derive the mask from the master copy so that repeated calls at different
-        # amplitudes always start from the original (un-jittered) spike positions.
-        if not hasattr(self, '_data_mask'):
-            self._data_mask = torch.nonzero(self.data_master != self.no_spike_value, as_tuple=True)
-        if not hasattr(self, '_noise_buffer') or len(self._noise_buffer) != len(self._data_mask[0]):
-            self._noise_buffer = torch.empty(len(self._data_mask[0]), device=self.data.device, dtype=self.data.dtype)
-        self._noise_buffer.uniform_(-amplitude / 2, amplitude / 2)
-        self.data[self._data_mask] = self.data_master[self._data_mask] + self._noise_buffer
+        """Jitter every spike time by a uniform draw of width `amplitude`.
+
+        Unused slots (``no_spike_value``) are left as they are, so no spike is
+        created (see :func:`neural_mi.data.corruption.corrupt`). Always starts
+        from the uncorrupted spike times, and ``amplitude=0`` restores them.
+        """
+        self.data = corrupt(self.data_master, amplitude, 'noise', self.no_spike_value).clone()
 
     def apply_precision(self, precision_level):
-        """Round spike times to a specific resolution/precision level."""
-        # Reset to master copy if zero. Avoids divide by zero, useful as interface to undo changes
-        if precision_level == 0.0:
-            self.reset()
-            return
-        # If data mask hasn't been created, compute that now
-        if not hasattr(self, '_data_mask'):
-            self._data_mask = torch.nonzero(self.data != self.no_spike_value, as_tuple=True)
-        # Always round from data_master so repeated calls at different precision
-        # levels each start from the original spike times (not re-rounded values).
-        self.data[self._data_mask] = torch.round(self.data_master[self._data_mask] / precision_level) * precision_level
+        """Move every spike time to the centre of its bin of width `precision_level`.
+
+        Unused slots are left as they are, and no spike lands on
+        ``no_spike_value``, so the spike count is unchanged.
+        """
+        self.data = corrupt(self.data_master, precision_level, 'rounding', self.no_spike_value).clone()
 
 
 class BinnedSpikeDataset(TemporalWindowDataset):
@@ -832,13 +824,12 @@ class BinnedSpikeDataset(TemporalWindowDataset):
         If True, divide bin counts by bin_size to express as spikes/second.
         Default True. Set False to keep raw counts.
     drop_empty_windows : bool, optional
-        Whether a window with no spikes is discarded. Defaults to True, which
-        is the historical behaviour and estimates the quantity restricted to
-        the active subensemble, in bits per *active* window. Set False to keep
-        silent windows, which estimates the unrestricted quantity in bits per
-        window. The two are different estimands rather than one being a
-        corrected version of the other, since correlated silence carries real
-        shared information. Only safe when the recorded extent is genuinely
+        Whether a window with no spikes is discarded. Defaults to True, estimating
+        the quantity restricted to the active subensemble in bits per *active*
+        window. Set False to keep silent windows, which estimates the
+        unrestricted quantity in bits per window. The two are different
+        estimands, and neither is a corrected version of the other, since
+        correlated silence carries real shared information. Only safe when the recorded extent is genuinely
         observed throughout, because no-spikes and not-recorded are
         indistinguishable from spike times alone. A timestamped continuous
         partner supplies that mask via its own coverage rule, which this flag
@@ -862,9 +853,8 @@ class BinnedSpikeDataset(TemporalWindowDataset):
 
     def _compute_max_samples_per_window(self):
         """Number of bins per window = ceil(window_size / bin_size)."""
-        self.max_samples_per_window = int(
-            np.ceil(self.window_manager.window_size / self.bin_size)
-        )
+        self.max_samples_per_window = slots_in_window(
+            self.window_manager.window_size, self.bin_size)
 
     def get_temporal_extent(self):
         valid = [st for st in self.data_orig if len(st) > 0]
@@ -933,7 +923,7 @@ class BinnedSpikeDataset(TemporalWindowDataset):
 
         With ``drop_empty_windows=False`` every window is reported valid, so a
         silent bin survives as data. See the parameter's documentation for why
-        that changes the estimand rather than merely relaxing a filter.
+        that changes the estimand instead of merely relaxing a filter.
         """
         if not getattr(self, 'drop_empty_windows', True):
             return np.ones(self.data.shape[0], dtype=bool)
@@ -953,22 +943,18 @@ class BinnedSpikeDataset(TemporalWindowDataset):
         self.time_offset = offset
 
     def apply_noise(self, amplitude):
-        """Add Uniform noise to non-zero bins (active bins only)."""
-        if amplitude == 0.0:
-            self.reset()
-            return
-        noise = torch.empty_like(self.data).uniform_(-amplitude / 2, amplitude / 2)
-        # Only perturb bins that actually had spikes
-        active = self.data_master > 0
-        self.data = self.data_master.clone()
-        self.data[active] = (self.data_master[active] + noise[active]).clamp(min=0)
-  
+        """Add uniform noise of width `amplitude` to every bin that holds spikes.
+
+        Empty bins are left as they are (see
+        :func:`neural_mi.data.corruption.corrupt`). This degrades the counts
+        and leaves the spike times alone; timing precision is measured on the
+        spike-time representation, without ``bin_size``.
+        """
+        self.data = corrupt(self.data_master, amplitude, 'noise').clone()
+
     def apply_precision(self, precision_level):
-        """Round bin values to the nearest multiple of precision_level."""
-        if precision_level == 0.0:
-            self.reset()
-            return
-        self.data = torch.round(self.data_master / precision_level) * precision_level
+        """Move every nonzero bin value to the centre of its bin of width `precision_level`."""
+        self.data = corrupt(self.data_master, precision_level, 'rounding').clone()
 
 
 class CategoricalWindowDataset(TemporalWindowDataset):
@@ -1055,7 +1041,8 @@ class CategoricalWindowDataset(TemporalWindowDataset):
     
     def _compute_max_samples_per_window(self):
         """Compute maximum samples that fit in a window."""
-        self.max_samples_per_window = np.ceil(self.window_manager.window_size / self.period).astype(int)
+        self.max_samples_per_window = slots_in_window(
+            self.window_manager.window_size, self.period)
     
     def move_data_to_windows(self):
         """

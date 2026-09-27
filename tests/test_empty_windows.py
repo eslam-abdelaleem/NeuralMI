@@ -86,12 +86,9 @@ class TestDropEmptyWindows:
 
 
 class TestReachableThroughRun:
-    """The flag has to survive parameter validation, not just reach the dataset.
-
-    Regression: ``drop_empty_windows`` was wired into the spike datasets and the
-    dataset factory but omitted from ``PROCESSOR_PARAMS_SCHEMA``, so it worked
-    when ``create_dataset`` was called directly and was rejected by ``run()``,
-    which is the only path a user takes.
+    """The flag survives parameter validation, not just the dataset factory:
+        ``drop_empty_windows`` is in ``PROCESSOR_PARAMS_SCHEMA``, so ``run()``
+        accepts it.
     """
 
     def test_run_accepts_the_flag(self):
@@ -107,7 +104,7 @@ class TestReachableThroughRun:
             training=nmi.Training(n_epochs=1, patience=1),
             n_workers=1, seed=0, show_progress=False)
         assert np.isfinite(r.mi_estimate)
-        assert r.details['window_retention'] == pytest.approx(1.0)
+        assert r.get('window_retention') == pytest.approx(1.0)
 
     def test_unknown_spike_param_still_rejected(self):
         import neural_mi as nmi
@@ -199,7 +196,7 @@ class TestRetentionReporting:
         receives already-windowed tensors and never sees that dataset.
         """
         r = self._estimate() if deferred else self._estimate(shift_windows=False)
-        assert r.details.get('window_retention') == pytest.approx(1.0)
+        assert r.get('window_retention') == pytest.approx(1.0)
 
     def test_retention_is_per_task_not_per_run(self):
         """A sweep gets one retention per row, since it genuinely varies.
@@ -217,7 +214,7 @@ class TestRetentionReporting:
                     model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
                     training=nmi.Training(n_epochs=1, patience=1),
                     n_workers=1, seed=0, show_progress=False)
-        raw = r.details['raw_results']
+        raw = r.runs
         assert 'window_retention' in raw.columns
         by_size = raw.groupby('window_size')['window_retention'].first()
         assert by_size.loc[0.05] < by_size.loc[0.5], (
@@ -227,13 +224,10 @@ class TestRetentionReporting:
 
 
 class TestMixedUnitWarning:
-    """The spike-plus-regular-grid unit warning must not fire on correct usage.
+    """The spike-plus-regular-grid unit warning stays silent on correct usage.
 
-    Regression: the check consulted only `sample_rate`, so a caller who
-    supplied an explicit time vector, which already puts the regular-grid side
-    into real seconds, still received a warning telling them their window
-    alignment might be meaningless. That is the one case where the pairing is
-    unambiguously correct.
+        An explicit time vector already puts the regular-grid side into real
+        seconds, so it counts as a shared unit, the same as `sample_rate`.
     """
 
     def _warns(self, y_time=None, y_params=None):

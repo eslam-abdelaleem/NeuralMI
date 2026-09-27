@@ -10,7 +10,6 @@ Covers:
   - rigorous plot is_reliable=False annotation
   - plot_cross_correlation composability (ax, show, xlim, return value)
   - analyze_mi_heatmap composability (show, return value)
-  - _RESULT_COLS contains pr_eig / pr_singular columns
 """
 import pytest
 import pandas as pd
@@ -20,7 +19,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from unittest.mock import patch
 
-from neural_mi.results import Results, _RESULT_COLS
+from neural_mi.results import Results
+from tests import results_factory as rf
 from neural_mi.visualize.plot import (
     plot_bias_correction_fit,
     plot_dimensionality_curve,
@@ -52,6 +52,13 @@ def rigorous_details():
     }
 
 
+def _rigorous_result(fit=None, n_repeats=1):
+    """A rigorous result with one ladder and fit per repeat."""
+    base = {'mi': 0.52, 'slope': -0.4, 'mi_error': 0.04, 'gammas_used': [1, 2, 3, 4]}
+    return rf.rigorous(fits=[{**base, **(fit or {})} for _ in range(n_repeats)],
+                       gammas=range(1, 5))
+
+
 @pytest.fixture
 def dim_details():
     """result.details from a mode='dimensionality' run: 2 individually-stable
@@ -76,63 +83,34 @@ def dim_details():
 
 class TestEstimatePlotConservativeEpoch:
 
+    @staticmethod
+    def _vline_xs(ax):
+        return [line.get_xdata()[0] for line in ax.lines
+                if len(line.get_xdata()) == 2 and line.get_xdata()[0] == line.get_xdata()[1]]
+
     @patch('matplotlib.pyplot.show')
     def test_conservative_epoch_line_present(self, mock_show):
-        """When conservative_epoch is in details, a green dotted axvline must appear."""
-        history = [0.1, 0.3, 0.5, 0.48, 0.52, 0.50]
-        r = Results(
-            mode='estimate',
-            mi_estimate=0.48,
-            details={
-                'test_mi_history': history,
-                'best_epoch': 4,
-                'conservative_epoch': 2,
-            },
-        )
+        """When the repeat records a conservative_epoch, a vertical line marks it."""
+        r = rf.estimate(mi=0.48, history=(0.1, 0.3, 0.5, 0.48, 0.52, 0.50), best_epoch=4,
+                        conservative_epoch=2)
         ax = r.plot(show=False)
-        # Collect all axvline x positions from vertical lines
-        vline_xs = []
-        for line in ax.lines:
-            xdata = line.get_xdata()
-            if len(xdata) == 2 and xdata[0] == xdata[1]:
-                vline_xs.append(xdata[0])
-        assert 2 in vline_xs, (
-            "conservative_epoch=2 should produce a vertical line at x=2; "
-            f"found axvline x-positions: {vline_xs}"
-        )
+        assert 2 in self._vline_xs(ax), self._vline_xs(ax)
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
     def test_conservative_epoch_not_present_no_extra_line(self, mock_show):
         """Without conservative_epoch, only the best_epoch line appears."""
-        history = [0.1, 0.3, 0.5, 0.48]
-        r = Results(
-            mode='estimate',
-            mi_estimate=0.5,
-            details={'test_mi_history': history, 'best_epoch': 2},  # no conservative_epoch
-        )
-        ax = r.plot(show=False)
-        vline_xs = []
-        for line in ax.lines:
-            xdata = line.get_xdata()
-            if len(xdata) == 2 and xdata[0] == xdata[1]:
-                vline_xs.append(xdata[0])
-        # best_epoch=2 present; conservative_epoch absent — only one vertical line
-        assert len(vline_xs) == 1
-        assert vline_xs[0] == 2
+        ax = rf.estimate(mi=0.5, history=(0.1, 0.3, 0.5, 0.48), best_epoch=2).plot(show=False)
+        assert self._vline_xs(ax) == [2]
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_conservative_epoch_scatter_point_added(self, mock_show):
-        """Conservative epoch should also add a diamond scatter marker."""
-        history = [0.1, 0.3, 0.5, 0.45, 0.52]
-        r = Results(
-            mode='estimate',
-            mi_estimate=0.45,
-            details={'test_mi_history': history, 'best_epoch': 4, 'conservative_epoch': 2},
-        )
-        ax = r.plot(show=False)
-        assert ax is not None
+    def test_several_repeats_draw_one_curve_each(self, mock_show):
+        rows = [{'config_id': 0, 'run_id': rid, 'mi': 0.4, 'test_mi_history': [0.1, 0.3, 0.4]}
+                for rid in range(3)]
+        ax = rf.make_results('sweep', rows).plot(show=False)
+        labels = {t.get_text() for t in ax.get_legend().get_texts()}
+        assert {'run 0', 'run 1', 'run 2'} <= labels
         plt.close('all')
 
 
@@ -145,10 +123,10 @@ class TestDimensionalityPlot:
 
     @patch('matplotlib.pyplot.show')
     def test_dispatch_via_results_plot(self, mock_show, dim_details):
-        """Results.plot() for mode='dimensionality' dispatches to the new
-        per-rank chart using result.details, not result.dataframe."""
-        r = Results(mode='dimensionality', dataframe=pd.DataFrame({'pr_eig': [1.0]}),
-                   params={}, details=dim_details)
+        """Results.plot() for mode='dimensionality' draws the per-rank chart
+        from the configuration's details."""
+        rows = [{'config_id': 0, 'split_id': s, 'mi': 0.3, 'pr_eig': 1.0} for s in range(2)]
+        r = rf.make_results('dimensionality', rows, details={0: dim_details})
         ax = r.plot(show=False)
         assert ax is not None
         plt.close('all')
@@ -206,9 +184,9 @@ class TestBiasCorrectionFitReturn:
     def test_default_appearance_unchanged_without_label_or_color(
         self, mock_show, rigorous_df, rigorous_details
     ):
-        """label=None, color=None must reproduce the original single-result
-        look exactly: black mean line, red fit/marker, three descriptive
-        legend entries. Regression guard for the label/color fix below."""
+        """label=None, color=None give the single-result look: black mean line,
+                red fit and marker, three descriptive legend entries.
+        """
         ax = plot_bias_correction_fit(rigorous_df, rigorous_details)
         colors = {l.get_color() for l in ax.lines}
         assert colors == {'black', 'red'}
@@ -218,8 +196,7 @@ class TestBiasCorrectionFitReturn:
 
     @patch('matplotlib.pyplot.show')
     def test_color_kwarg_applied_to_all_elements(self, mock_show, rigorous_df, rigorous_details):
-        """Previously color= was silently swallowed by **kwargs and never
-        used -- every element stayed hardcoded gray/black/red regardless."""
+        """color= reaches every drawn element: the points, the mean line and the fit."""
         ax = plot_bias_correction_fit(rigorous_df, rigorous_details, color='blue')
         colors = {l.get_color() for l in ax.lines}
         assert colors == {'blue'}, f"Expected all elements in 'blue', got {colors}"
@@ -227,9 +204,8 @@ class TestBiasCorrectionFitReturn:
 
     @patch('matplotlib.pyplot.show')
     def test_label_kwarg_collapses_to_one_legend_entry(self, mock_show, rigorous_df, rigorous_details):
-        """Previously label= was silently swallowed by **kwargs -- overlaid
-        results in Results.compare() all showed the same generic legend
-        entries ('Mean MI per Gamma' x N) instead of the caller's labels."""
+        """label= gives one legend entry per result, so the overlays in
+        Results.compare() carry the caller's labels."""
         ax = plot_bias_correction_fit(rigorous_df, rigorous_details, label='Condition A')
         legend_labels = [l.get_label() for l in ax.lines if not l.get_label().startswith('_')]
         assert legend_labels == ['Condition A'], f"Expected one clean entry, got {legend_labels}"
@@ -257,99 +233,64 @@ class TestBiasCorrectionFitReturn:
 
 class TestConditionalPlot:
 
+    @staticmethod
+    def _result():
+        return rf.difference('conditional', {'mi_xw_y': 1.25, 'mi_w_y': 0.43}, 0.82)
+
     @patch('matplotlib.pyplot.show')
     def test_conditional_plot_returns_axes(self, mock_show):
-        r = Results(
-            mode='conditional',
-            mi_estimate=0.82,
-            details={'cmi_estimate': 0.82, 'mi_xw_y': 1.25, 'mi_w_y': 0.43},
-        )
-        ax = r.plot(show=False)
+        ax = self._result().plot(show=False)
         assert isinstance(ax, plt.Axes)
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
     def test_conditional_plot_has_three_bars(self, mock_show):
-        """All three component bars should be present when all details available."""
-        r = Results(
-            mode='conditional',
-            mi_estimate=0.82,
-            details={'cmi_estimate': 0.82, 'mi_xw_y': 1.25, 'mi_w_y': 0.43},
-        )
-        ax = r.plot(show=False)
-        bar_patches = [p for p in ax.patches if hasattr(p, 'get_height')]
-        assert len(bar_patches) == 3
+        """Both components and their difference are drawn."""
+        ax = self._result().plot(show=False)
+        assert len(ax.patches) == 3
+        assert [t.get_text() for t in ax.get_xticklabels()] == ['I(X,W;Y)', 'I(W;Y)', 'I(X;Y|W)']
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_conditional_partial_details_plots_available(self, mock_show):
-        """When mi_w_y is absent, only two bars should be rendered."""
-        r = Results(
-            mode='conditional',
-            mi_estimate=0.82,
-            details={'cmi_estimate': 0.82, 'mi_xw_y': 1.25},  # mi_w_y missing
-        )
+    def test_interaction_plot_has_four_bars(self, mock_show):
+        r = rf.difference('interaction', {'mi_xw_y': 1.0, 'mi_x_y': 0.5, 'mi_w_y': 0.4}, 0.1)
         ax = r.plot(show=False)
-        bar_patches = [p for p in ax.patches if hasattr(p, 'get_height')]
-        assert len(bar_patches) == 2
+        assert len(ax.patches) == 4
         plt.close('all')
-
-    @patch('matplotlib.pyplot.show')
-    def test_conditional_missing_all_raises(self, mock_show):
-        r = Results(mode='conditional', details={})
-        with pytest.raises(ValueError, match="cmi_estimate"):
-            r.plot()
 
 
 class TestTransferPlot:
 
+    @staticmethod
+    def _result(bidirectional=True):
+        comps = {'i_xypast_yfuture': 0.9, 'i_ypast_yfuture': 0.34}
+        if bidirectional:
+            comps.update(te_yx=0.12, directionality_index=0.65)
+        return rf.difference('transfer', comps, 0.56)
+
     @patch('matplotlib.pyplot.show')
     def test_transfer_plot_returns_axes(self, mock_show):
-        r = Results(
-            mode='transfer',
-            mi_estimate=0.56,
-            details={'te_xy': 0.56, 'te_yx': 0.12, 'directionality_index': 0.65},
-        )
-        ax = r.plot(show=False)
+        ax = self._result().plot(show=False)
         assert isinstance(ax, plt.Axes)
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
     def test_transfer_two_bars_when_bidirectional(self, mock_show):
-        r = Results(
-            mode='transfer',
-            details={'te_xy': 0.56, 'te_yx': 0.12, 'directionality_index': 0.65},
-        )
-        ax = r.plot(show=False)
-        bar_patches = [p for p in ax.patches if hasattr(p, 'get_height')]
-        assert len(bar_patches) == 2
+        ax = self._result().plot(show=False)
+        assert len(ax.patches) == 2
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
     def test_transfer_one_bar_when_unidirectional(self, mock_show):
-        """Only te_xy in details → single bar."""
-        r = Results(mode='transfer', details={'te_xy': 0.56})
-        ax = r.plot(show=False)
-        bar_patches = [p for p in ax.patches if hasattr(p, 'get_height')]
-        assert len(bar_patches) == 1
+        ax = self._result(bidirectional=False).plot(show=False)
+        assert len(ax.patches) == 1
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
     def test_transfer_di_in_title(self, mock_show):
-        """Directionality index should appear in the plot title."""
-        r = Results(
-            mode='transfer',
-            details={'te_xy': 0.56, 'te_yx': 0.12, 'directionality_index': 0.65},
-        )
-        ax = r.plot(show=False)
+        ax = self._result().plot(show=False)
         assert '0.65' in ax.get_title() or 'Directionality' in ax.get_title()
         plt.close('all')
-
-    @patch('matplotlib.pyplot.show')
-    def test_transfer_missing_te_xy_raises(self, mock_show):
-        r = Results(mode='transfer', details={'te_yx': 0.1})
-        with pytest.raises(ValueError, match="te_xy"):
-            r.plot()
 
 
 # ---------------------------------------------------------------------------
@@ -360,43 +301,42 @@ class TestCompareEstimateMode:
 
     @patch('matplotlib.pyplot.show')
     def test_compare_estimate_returns_axes(self, mock_show):
-        h1 = [0.1, 0.3, 0.5, 0.48]
-        h2 = [0.05, 0.25, 0.45, 0.50]
-        r1 = Results(mode='estimate', details={'test_mi_history': h1, 'best_epoch': 2})
-        r2 = Results(mode='estimate', details={'test_mi_history': h2, 'best_epoch': 3})
+        r1 = rf.estimate(history=(0.1, 0.3, 0.5, 0.48), best_epoch=2)
+        r2 = rf.estimate(history=(0.05, 0.25, 0.45, 0.50), best_epoch=3)
         ax = Results.compare([r1, r2], labels=['Run A', 'Run B'], show=False)
         assert isinstance(ax, plt.Axes)
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
     def test_compare_estimate_overlays_two_curves(self, mock_show):
-        """Two estimate results → two data lines in the returned axes."""
-        h1 = [0.1, 0.3, 0.5, 0.48]
-        h2 = [0.05, 0.25, 0.45, 0.50]
-        r1 = Results(mode='estimate', details={'test_mi_history': h1})
-        r2 = Results(mode='estimate', details={'test_mi_history': h2})
+        """Two estimate results give two history curves."""
+        r1 = rf.estimate(history=(0.1, 0.3, 0.5, 0.48), best_epoch=None)
+        r2 = rf.estimate(history=(0.05, 0.25, 0.45, 0.50), best_epoch=None)
         ax = Results.compare([r1, r2], show=False)
-        # Each history produces one data line; best_epoch lines may or may not be present
-        # All lines with 4-length x-data are the history curves
-        history_lines = [
-            l for l in ax.lines if len(l.get_xdata()) == 4
-        ]
-        assert len(history_lines) == 2
+        assert len([l for l in ax.lines if len(l.get_xdata()) == 4]) == 2
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
     def test_compare_estimate_missing_history_raises(self, mock_show):
-        r1 = Results(mode='estimate', details={'test_mi_history': [0.1, 0.3]})
-        r2 = Results(mode='estimate', details={})  # no test_mi_history
+        r1 = rf.estimate(history=(0.1, 0.3))
+        r2 = rf.estimate(history=None)
         with pytest.raises(ValueError, match="test_mi_history"):
             Results.compare([r1, r2], show=False)
 
     @patch('matplotlib.pyplot.show')
-    def test_compare_unsupported_mode_mentions_estimate(self, mock_show):
-        """The NotImplementedError message must list 'estimate' as a supported mode."""
-        r1 = Results(mode='precision', details={})
-        r2 = Results(mode='precision', details={})
-        with pytest.raises(NotImplementedError, match="estimate"):
+    def test_compare_refuses_a_result_with_several_repeats(self, mock_show):
+        """compare() overlays one curve per result; drawing only the first repeat
+        of a result would drop the others without saying so."""
+        rows = [{'config_id': 0, 'run_id': rid, 'mi': 0.4, 'test_mi_history': [0.1, 0.4]}
+                for rid in range(2)]
+        repeated = rf.make_results('estimate', rows)
+        with pytest.raises(ValueError, match="holds 2 repeats"):
+            Results.compare([rf.estimate(), repeated], show=False)
+
+    @patch('matplotlib.pyplot.show')
+    def test_compare_needs_one_swept_key_for_other_modes(self, mock_show):
+        r1, r2 = rf.precision(), rf.precision()
+        with pytest.raises(ValueError, match="exactly one swept key"):
             Results.compare([r1, r2], show=False)
 
 
@@ -407,135 +347,111 @@ class TestCompareEstimateMode:
 class TestRigorousReliabilityAnnotation:
 
     @patch('matplotlib.pyplot.show')
-    def test_unreliable_annotation_appears(self, mock_show, rigorous_df, rigorous_details):
-        """is_reliable=False must add a text annotation to the plot."""
-        details = {**rigorous_details, 'is_reliable': False, 'leverage_warning': True}
-        r = Results(mode='rigorous', dataframe=rigorous_df, details=details)
-        ax = r.plot(show=False)
+    def test_unreliable_annotation_appears(self, mock_show):
+        ax = _rigorous_result({'is_reliable': False, 'leverage_warning': True}).plot(show=False)
         texts = [t.get_text() for t in ax.texts]
-        assert any('unreliable' in t.lower() or '⚠' in t for t in texts), (
-            f"Expected unreliable warning text, found: {texts}"
-        )
+        assert any('unreliable' in t.lower() or '⚠' in t for t in texts), texts
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_reliable_annotation_appears(self, mock_show, rigorous_df, rigorous_details):
-        """is_reliable=True must add a positive annotation, symmetric with summary()."""
-        details = {**rigorous_details, 'is_reliable': True}
-        r = Results(mode='rigorous', dataframe=rigorous_df, details=details)
-        ax = r.plot(show=False)
+    def test_reliable_annotation_appears(self, mock_show):
+        ax = _rigorous_result({'is_reliable': True}).plot(show=False)
         texts = [t.get_text() for t in ax.texts]
-        assert any('reliable' in t.lower() and 'unreliable' not in t.lower() for t in texts), (
-            f"Expected a positive reliability annotation, found: {texts}"
-        )
+        assert any('reliable' in t.lower() and 'unreliable' not in t.lower() for t in texts), texts
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_no_is_reliable_key_no_annotation(self, mock_show, rigorous_df, rigorous_details):
-        """When is_reliable is absent, no annotation is added."""
-        r = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
-        ax = r.plot(show=False)
-        texts = [t.get_text() for t in ax.texts]
-        assert not any('reliable' in t.lower() for t in texts)
+    def test_no_is_reliable_key_no_annotation(self, mock_show):
+        ax = _rigorous_result().plot(show=False)
+        assert not any('reliable' in t.get_text().lower() for t in ax.texts)
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_unreliable_reason_reflects_actual_flags(self, mock_show, rigorous_df, rigorous_details):
-        """The reason shown must come from whichever flag(s) are actually set,
-        not be hardcoded to 'leverage_warning' regardless of the real cause."""
-        details = {
-            **rigorous_details, 'is_reliable': False,
-            'fit_quality_warning': True, 'leverage_warning': False,
-        }
-        r = Results(mode='rigorous', dataframe=rigorous_df, details=details)
-        ax = r.plot(show=False)
+    def test_unreliable_reason_reflects_actual_flags(self, mock_show):
+        """The reason shown is the check that decided it, and only that one."""
+        ax = _rigorous_result({'is_reliable': False, 'fit_quality_warning': True,
+                               'leverage_warning': True}).plot(show=False)
         texts = [t.get_text() for t in ax.texts]
-        assert any('fit_quality_warning' in t for t in texts), texts
-        assert not any('leverage_warning' in t for t in texts), (
-            f"leverage_warning=False but it was still named as a reason: {texts}"
-        )
+        assert any('gamma=1 leverage' in t for t in texts), texts
+        assert not any('fit_quality' in t for t in texts), texts
         plt.close('all')
 
     @patch('matplotlib.pyplot.show')
-    def test_unreliable_no_false_reason_when_neither_flag_set(self, mock_show, rigorous_df, rigorous_details):
-        """is_reliable can be False purely from too few surviving gamma points,
-        with both diagnostic flags False -- must not invent a reason in that case."""
-        details = {
-            **rigorous_details, 'is_reliable': False,
-            'fit_quality_warning': False, 'leverage_warning': False,
-        }
-        r = Results(mode='rigorous', dataframe=rigorous_df, details=details)
-        ax = r.plot(show=False)
+    def test_unreliable_no_false_reason_when_neither_flag_set(self, mock_show):
+        """is_reliable can be False from too few surviving gamma points alone."""
+        ax = _rigorous_result({'is_reliable': False, 'fit_quality_warning': False,
+                               'leverage_warning': False}).plot(show=False)
         texts = [t.get_text() for t in ax.texts]
         assert any('unreliable' in t.lower() for t in texts)
         assert not any('warning=True' in t for t in texts), texts
         plt.close('all')
 
-    def test_show_false_forwarded_to_bias_correction_plotter(self, rigorous_df, rigorous_details):
-        """r.plot(show=False) must suppress plot_bias_correction_fit's own
-        plt.show() too -- previously it wasn't forwarded, so the figure was
-        shown (and, in Jupyter's inline backend, closed) despite show=False,
-        making any further edits to the returned ax invisible."""
-        r = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+    @patch('matplotlib.pyplot.show')
+    def test_every_repeat_gets_its_own_annotation(self, mock_show):
+        r = rf.rigorous(fits=[{'mi': 0.5, 'is_reliable': True},
+                              {'mi': 0.6, 'is_reliable': False, 'leverage_warning': True}],
+                        gammas=range(1, 5))
+        ax = r.plot(show=False)
+        joined = '\n'.join(t.get_text() for t in ax.texts)
+        assert 'run 0: extrapolation reliable' in joined
+        assert 'run 1: extrapolation unreliable' in joined
+        plt.close('all')
+
+    def test_show_false_is_forwarded_to_the_bias_correction_plotter(self):
+        """Every per-repeat call draws with show=False, so the figure is shown at
+        most once, at the end, and only when the caller asked for it."""
+        r = _rigorous_result()
         with patch('neural_mi.visualize.plot.plot_bias_correction_fit') as mock_fn:
             mock_fn.return_value = plt.subplots()[1]
             r.plot(show=False)
             assert mock_fn.call_args.kwargs.get('show') is False
         plt.close('all')
 
-    def test_show_true_forwarded_to_bias_correction_plotter(self, rigorous_df, rigorous_details):
-        r = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+    def test_show_true_shows_once_at_the_end(self):
+        r = _rigorous_result()
         with patch('neural_mi.visualize.plot.plot_bias_correction_fit') as mock_fn:
             mock_fn.return_value = plt.subplots()[1]
-            with patch('matplotlib.pyplot.show'):
+            with patch('matplotlib.pyplot.show') as mock_show:
                 r.plot(show=True)
-            assert mock_fn.call_args.kwargs.get('show') is True
+            assert mock_fn.call_args.kwargs.get('show') is False
+            mock_show.assert_called_once()
         plt.close('all')
 
 
 class TestRigorousCompareReliability:
 
-    def test_per_result_reliability_lines(self, rigorous_df, rigorous_details):
-        """compare() must label each overlaid result's reliability, not just
-        the single-result plot()."""
-        r1 = Results(mode='rigorous', dataframe=rigorous_df,
-                     details={**rigorous_details, 'is_reliable': True})
-        r2 = Results(mode='rigorous', dataframe=rigorous_df,
-                     details={**rigorous_details, 'is_reliable': False, 'leverage_warning': True})
-        ax = Results.compare([r1, r2], labels=['Cond A', 'Cond B'], mode='rigorous', show=False)
-        texts = [t.get_text() for t in ax.texts]
-        joined = '\n'.join(texts)
+    def test_per_result_reliability_lines(self):
+        """compare() labels each overlaid result's reliability."""
+        r1 = _rigorous_result({'is_reliable': True})
+        r2 = _rigorous_result({'is_reliable': False, 'leverage_warning': True})
+        ax = Results.compare([r1, r2], labels=['Cond A', 'Cond B'], show=False)
+        joined = '\n'.join(t.get_text() for t in ax.texts)
         assert 'Cond A' in joined and 'reliable' in joined.lower()
         assert 'Cond B' in joined and 'unreliable' in joined.lower()
         plt.close('all')
 
-    def test_loop_calls_never_show_even_when_outer_show_true(self, rigorous_df, rigorous_details):
-        """Each per-result plot_bias_correction_fit call inside the loop must
-        always be show=False -- showing mid-loop (which can close the shared
-        ax's figure) would truncate the overlay to only the first result."""
-        r1 = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
-        r2 = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
+    def test_loop_calls_never_show_even_when_outer_show_true(self):
+        """Each per-result call inside the loop is show=False, so showing mid-loop
+        cannot truncate the overlay."""
+        r1, r2 = _rigorous_result(), _rigorous_result()
         with patch('neural_mi.visualize.plot.plot_bias_correction_fit') as mock_fn:
             mock_fn.return_value = plt.subplots()[1]
             with patch('matplotlib.pyplot.show'):
-                Results.compare([r1, r2], mode='rigorous', show=True)
-            assert all(c.kwargs.get('show') is False for c in mock_fn.call_args_list), (
-                f"Expected every loop call to force show=False, got: "
-                f"{[c.kwargs.get('show') for c in mock_fn.call_args_list]}"
-            )
+                Results.compare([r1, r2], show=True)
+            assert all(c.kwargs.get('show') is False for c in mock_fn.call_args_list)
         plt.close('all')
 
-    def test_overlay_includes_all_results_not_just_first(self, rigorous_df, rigorous_details):
-        """Regression guard for the truncated-overlay failure mode: with the
-        real (unmocked) plotter, both results' series must land on the ax."""
-        r1 = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
-        r2 = Results(mode='rigorous', dataframe=rigorous_df, details=rigorous_details)
-        ax = Results.compare([r1, r2], labels=['A', 'B'], mode='rigorous', show=False)
-        # Each plot_bias_correction_fit call draws 6 Line2D artists when a
-        # label is passed (mean-MI line, fit line, 3 errorbar-cap/stem lines,
-        # plus the single-legend-entry proxy artist); two results -> 12.
+    def test_overlay_includes_all_results_not_just_first(self):
+        """With the real plotter, both results' series land on the axes."""
+        ax = Results.compare([_rigorous_result(), _rigorous_result()], labels=['A', 'B'],
+                             show=False)
+        # Each call draws 6 Line2D artists when a label is passed; two results give 12.
         assert len(ax.lines) == 12, f"Expected lines from both results, got {len(ax.lines)}"
         plt.close('all')
+
+    def test_compare_refuses_several_repeats(self):
+        with pytest.raises(ValueError, match="holds 2 repeats"):
+            Results.compare([_rigorous_result(), _rigorous_result(n_repeats=2)], show=False)
 
 
 # ---------------------------------------------------------------------------
@@ -601,12 +517,8 @@ class TestPlotCrossCorrelation:
 
     @patch('matplotlib.pyplot.show')
     def test_true_lag_line_position_matches_its_label(self, mock_show):
-        """The red 'True Lag' reference line must be drawn at true_lag itself.
-
-        Previously it was drawn at true_lag + 1 while its own legend label
-        still read f'True Lag ({true_lag})' -- the line and its label
-        disagreed regardless of which convention is "correct".
-        """
+        """The red 'True Lag' reference line is drawn at true_lag itself,
+        where its legend label says it is."""
         x, y = self._make_signals()
         true_lag = 5
         ax = plot_cross_correlation(x, y, true_lag=true_lag, show=False)
@@ -711,10 +623,10 @@ class TestAnalyzeMiHeatmap:
     @patch('matplotlib.pyplot.show')
     def test_degenerate_contour_does_not_crash(self, mock_show, heatmap_df):
         """An absurdly high threshold can make matplotlib's contour() return a
-        non-empty allsegs[0] list containing only degenerate (empty or
-        single-point) segments -- the list-level `not cs.allsegs[0]` check
-        alone doesn't catch this, and the downstream cdist/argmin used to
-        crash with 'attempt to get argmin of an empty sequence'."""
+                non-empty allsegs[0] containing only degenerate (empty or single-point)
+                segments. The heatmap skips them instead of taking the argmin of an
+                empty sequence.
+        """
         ax = analyze_mi_heatmap(heatmap_df, absolute_mi_threshold=1e6, show=False)
         assert isinstance(ax, plt.Axes)
         plt.close('all')
@@ -734,9 +646,7 @@ class TestPairwisePlotFigsize:
     def _make_pairwise_result(self, n_channels):
         mi_matrix = np.random.rand(n_channels, n_channels)
         np.fill_diagonal(mi_matrix, 0)
-        df = pd.DataFrame({'ch_x': [0], 'ch_y': [1], 'mi_mean': [0.5], 'mi_std': [0.1]})
-        return Results(mode='pairwise', details={'mi_matrix': mi_matrix, 'n_channels': n_channels},
-                      dataframe=df)
+        return rf.pairwise(mi_matrix)
 
     def test_large_matrix_uses_channel_count_sizing_not_generic_default(self):
         result = self._make_pairwise_result(20)
@@ -757,24 +667,6 @@ class TestPairwisePlotFigsize:
         result.plot(ax=ax, show=False)
         assert tuple(fig.get_size_inches()) == pytest.approx((3.0, 3.0))
         plt.close('all')
-
-
-# ---------------------------------------------------------------------------
-# _RESULT_COLS contains pr_eig / pr_singular columns
-# ---------------------------------------------------------------------------
-
-class TestResultCols:
-
-    def test_pr_columns_in_result_cols(self):
-        assert 'pr_eig' in _RESULT_COLS
-        assert 'pr_eig_mean' in _RESULT_COLS
-        assert 'pr_eig_std' in _RESULT_COLS
-        assert 'pr_singular' in _RESULT_COLS
-        assert 'pr_singular_mean' in _RESULT_COLS
-        assert 'pr_singular_std' in _RESULT_COLS
-
-    def test_split_id_in_result_cols(self):
-        assert 'split_id' in _RESULT_COLS
 
 
 # ---------------------------------------------------------------------------
@@ -845,56 +737,46 @@ class TestPlotSweepBar:
 
 
 class TestResultsPlotSweepKindDispatch:
-    """Results.plot() for mode='sweep' auto-selects line/heatmap/bar based on
-    how many parameters were swept (result.params['sweep_group_vars'])."""
+    """Results.plot() on several configurations picks line, heatmap or bar from
+    how many keys vary (result.params['config_keys'])."""
+
+    @staticmethod
+    def _result(frame, keys):
+        rows = [{'config_id': i, **{k: rec[k] for k in keys}, 'run_id': 0, 'mi': rec['mi_mean']}
+                for i, rec in enumerate(frame.to_dict(orient='records'))]
+        return rf.make_results('sweep', rows, config_keys=keys)
 
     def test_single_param_defaults_to_line(self, sweep_df_2param):
-        df = sweep_df_2param[sweep_df_2param['hidden_dim'] == 16][['embedding_dim', 'mi_mean', 'mi_std']]
-        result = Results(mode='sweep', dataframe=df,
-                         params={'sweep_var': 'embedding_dim', 'sweep_group_vars': ['embedding_dim']})
-        ax = result.plot(show=False)
+        df = sweep_df_2param[sweep_df_2param['hidden_dim'] == 16]
+        ax = self._result(df, ['embedding_dim']).plot(show=False)
         assert len(ax.lines) > 0
         plt.close('all')
 
     def test_two_params_defaults_to_heatmap(self, sweep_df_2param):
-        result = Results(mode='sweep', dataframe=sweep_df_2param,
-                         params={'sweep_var': 'embedding_dim',
-                                 'sweep_group_vars': ['embedding_dim', 'hidden_dim']})
-        ax = result.plot(show=False)
+        ax = self._result(sweep_df_2param, ['embedding_dim', 'hidden_dim']).plot(show=False)
         assert len(ax.collections) > 0
         plt.close('all')
 
     def test_three_params_defaults_to_bar(self, sweep_df_3param):
-        result = Results(mode='sweep', dataframe=sweep_df_3param,
-                         params={'sweep_var': 'embedding_dim',
-                                 'sweep_group_vars': ['embedding_dim', 'hidden_dim', 'dropout']})
+        result = self._result(sweep_df_3param, ['embedding_dim', 'hidden_dim', 'dropout'])
         ax = result.plot(show=False)
         assert len(ax.patches) == len(sweep_df_3param)
         plt.close('all')
 
     def test_kind_override_forces_bar_for_two_params(self, sweep_df_2param):
-        result = Results(mode='sweep', dataframe=sweep_df_2param,
-                         params={'sweep_var': 'embedding_dim',
-                                 'sweep_group_vars': ['embedding_dim', 'hidden_dim']})
-        ax = result.plot(show=False, kind='bar')
+        ax = self._result(sweep_df_2param, ['embedding_dim', 'hidden_dim']).plot(show=False, kind='bar')
         assert len(ax.patches) == len(sweep_df_2param)
         plt.close('all')
 
     def test_heatmap_kind_rejects_three_params(self, sweep_df_3param):
-        result = Results(mode='sweep', dataframe=sweep_df_3param,
-                         params={'sweep_var': 'embedding_dim',
-                                 'sweep_group_vars': ['embedding_dim', 'hidden_dim', 'dropout']})
-        with pytest.raises(ValueError, match="requires exactly 2"):
+        result = self._result(sweep_df_3param, ['embedding_dim', 'hidden_dim', 'dropout'])
+        with pytest.raises(ValueError, match="needs exactly 2 swept keys"):
             result.plot(show=False, kind='heatmap')
         plt.close('all')
 
     def test_compare_rejects_multi_param_sweep_results(self, sweep_df_2param):
-        result_a = Results(mode='sweep', dataframe=sweep_df_2param,
-                           params={'sweep_var': 'embedding_dim',
-                                   'sweep_group_vars': ['embedding_dim', 'hidden_dim']})
-        result_b = Results(mode='sweep', dataframe=sweep_df_2param,
-                           params={'sweep_var': 'embedding_dim',
-                                   'sweep_group_vars': ['embedding_dim', 'hidden_dim']})
-        with pytest.raises(ValueError, match="only overlays single-parameter"):
-            Results.compare([result_a, result_b], show=False)
+        a = self._result(sweep_df_2param, ['embedding_dim', 'hidden_dim'])
+        b = self._result(sweep_df_2param, ['embedding_dim', 'hidden_dim'])
+        with pytest.raises(ValueError, match="exactly one swept key"):
+            Results.compare([a, b], show=False)
         plt.close('all')

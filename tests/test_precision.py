@@ -1,37 +1,147 @@
 # tests/test_precision.py
 import numpy as np
+import pytest
 import torch
 import pandas as pd
 
 import neural_mi.analysis.precision as precision_module
-from neural_mi.analysis.precision import apply_corruption, run_precision_analysis
+from neural_mi.analysis.precision import run_precision_analysis
+from neural_mi.data.corruption import corrupt
 from neural_mi.data.shift_windowing import WindowShifter, PairedWindowShifter
 from neural_mi.training.trainer import Trainer
 
-def test_apply_corruption_rounding():
-    """Tests the deterministic rounding mathematical logic."""
-    # We use unambiguous floats to avoid round-to-even edge cases in the test
-    data = torch.tensor([0.2, 0.8, 1.2, 1.8, 2.1])
-    tau = 1.0
-    
-    corrupted = apply_corruption(data, tau, 'rounding')
-    
-    # Expected: [0.0, 1.0, 1.0, 2.0, 2.0]
-    expected = torch.tensor([0.0, 1.0, 1.0, 2.0, 2.0])
-    assert torch.allclose(corrupted, expected)
 
-def test_apply_corruption_noise():
-    """Tests that additive uniform noise is bounded correctly."""
-    data = torch.zeros(1000) # Baseline of all zeros
-    tau = 2.0
-    
-    corrupted = apply_corruption(data, tau, 'noise')
-    
-    # Noise should be uniformly distributed between [-tau/2, tau/2], which is [-1.0, 1.0]
-    assert torch.all(corrupted >= -1.0)
-    assert torch.all(corrupted <= 1.0)
-    # Mean should be very close to 0
-    assert torch.abs(torch.mean(corrupted)) < 0.1
+def test_rounding_moves_values_to_bin_centres():
+    data = torch.tensor([0.2, 0.8, 1.2, 1.8, 2.1, -0.3])
+    corrupted = corrupt(data, 1.0, 'rounding')
+    assert torch.allclose(corrupted, torch.tensor([0.5, 0.5, 1.5, 1.5, 2.5, -0.5]))
+
+
+def test_rounding_is_idempotent():
+    data = torch.rand(500) * 3
+    once = corrupt(data, 0.25, 'rounding')
+    assert torch.allclose(corrupt(once, 0.25, 'rounding'), once)
+
+
+def test_noise_is_bounded_by_half_tau():
+    data = torch.full((1000,), 5.0)
+    corrupted = corrupt(data, 2.0, 'noise')
+    assert torch.all((corrupted >= 4.0) & (corrupted <= 6.0))
+    assert torch.abs(torch.mean(corrupted) - 5.0) < 0.1
+
+
+@pytest.mark.parametrize('method', ['rounding', 'noise'])
+@pytest.mark.parametrize('empty', [0.0, -1.0])
+def test_entries_without_a_measurement_are_never_corrupted(method, empty):
+    """No method creates a spike in an unused slot or moves a spike onto one."""
+    data = torch.full((200, 3, 8), empty)
+    data[:, :, :3] = torch.rand(200, 3, 3) * 0.2      # spikes early in the window
+    corrupted = corrupt(data, 0.3, method, empty)
+    held = data != empty
+    assert torch.all(corrupted[~held] == empty)
+    assert torch.all(corrupted[held] != empty)
+
+
+def test_tau_zero_leaves_the_data_unchanged():
+    data = torch.rand(10)
+    for method in ('rounding', 'noise'):
+        assert torch.equal(corrupt(data, 0.0, method), data)
+
+
+def test_unknown_method_raises():
+    with pytest.raises(ValueError, match="rounding"):
+        corrupt(torch.rand(3), 0.1, 'jitter')
+
+
+def test_empty_value_follows_each_sides_processor():
+    empty = precision_module._empty_value
+    spikes = {'processor_type_x': 'spike', 'processor_params_x': {'window_size': 1.0}}
+    assert empty(spikes, 'x') == 0.0
+    assert empty({**spikes, 'processor_params_x': {'no_spike_value': -1.0}}, 'x') == -1.0
+    # Binned spikes mark an empty bin with zero, whatever no_spike_value says.
+    assert empty({**spikes, 'processor_params_x': {'bin_size': 0.1, 'no_spike_value': -1.0}}, 'x') == 0.0
+    # Y reads with X's processor and parameters when it names none.
+    assert empty({**spikes, 'processor_params_x': {'no_spike_value': -1.0}}, 'y') == -1.0
+    assert empty({'processor_type_x': 'continuous'}, 'x') == 0.0
+
+
+def test_precision_mode_never_corrupts_unused_spike_slots(monkeypatch):
+    """Every tensor the frozen critic is scored on keeps the unused slots empty."""
+    import neural_mi as nmi
+    from neural_mi import generators
+    x, y, _ = generators.generate_spike_pair(n_windows=300, window_size=1.0, coding='timing', seed=0)
+    seen = []
+    original = Trainer._safe_eval_mi
+
+    def spy(self, x_eval, y_eval, max_eval):
+        seen.append(x_eval.detach().cpu())
+        return original(self, x_eval, y_eval, max_eval)
+
+    monkeypatch.setattr(Trainer, '_safe_eval_mi', spy)
+    nmi.run(x, y, mode='precision',
+            processing=nmi.Processing(x='spike', x_params={'window_size': 1.0}, y='spike'),
+            model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+            training=nmi.Training(n_epochs=1, batch_size=64, shift_time=False),
+            precision=nmi.Precision(tau_grid=[0.05, 0.3], corruption_method='noise', n_noise_samples=2),
+            show_progress=False, seed=0, device='cpu')
+    # The sweep scores the training partition, clean data first; the other calls are
+    # the held-out evaluations made during training.
+    sweep = [t for t in seen if t.shape == seen[-1].shape]
+    clean = sweep[0]
+    empty = clean == 0.0
+    assert empty.any() and len(sweep) >= 5   # tau=0, then 2 draws at each of 2 taus
+    for corrupted in sweep[1:]:
+        assert torch.all(corrupted[empty] == 0.0)
+        assert torch.all(corrupted[~empty] != 0.0)
+
+
+def test_threshold_ratio_accepts_a_list():
+    import neural_mi as nmi
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((300, 2))
+    result = nmi.run(x, x + 0.5 * rng.standard_normal((300, 2)), mode='precision',
+                     model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                     training=nmi.Training(n_epochs=1, batch_size=64),
+                     precision=nmi.Precision(tau_grid=[0.5, 1.0], threshold_ratio=[0.9, 0.5]),
+                     show_progress=False, seed=0, device='cpu')
+    assert set(result.get('precision_thresholds')) == {0.9, 0.5}
+
+
+def test_precision_mode_uses_the_callers_split(monkeypatch):
+    import neural_mi as nmi
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((300, 2))
+    train, test = np.arange(0, 240), np.arange(240, 300)
+    received = {}
+    original = Trainer.train
+
+    def spy(self, dataset, *args, **kwargs):
+        received['train'], received['test'] = kwargs.get('train_indices'), kwargs.get('test_indices')
+        return original(self, dataset, *args, **kwargs)
+
+    monkeypatch.setattr(Trainer, 'train', spy)
+    nmi.run(x, x + 0.5 * rng.standard_normal((300, 2)), mode='precision',
+            model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+            training=nmi.Training(n_epochs=1, batch_size=64),
+            split=nmi.Split(train_indices=train, test_indices=test),
+            precision=nmi.Precision(tau_grid=[0.5]),
+            show_progress=False, seed=0, device='cpu')
+    assert np.array_equal(received['train'], train) and np.array_equal(received['test'], test)
+
+
+def test_a_split_the_library_chooses_raises_no_custom_split_warning(caplog):
+    import logging
+    import neural_mi as nmi
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((300, 2))
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        nmi.run(x, x + 0.5 * rng.standard_normal((300, 2)), mode='precision',
+                model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                training=nmi.Training(n_epochs=1, batch_size=64),
+                precision=nmi.Precision(tau_grid=[0.5]),
+                show_progress=False, seed=0, device='cpu')
+    assert 'Custom train_indices' not in caplog.text
+
 
 def test_run_precision_analysis_end_to_end():
     """Tests that the precision sweep trains a model and evaluates the tau grid."""
@@ -173,13 +283,13 @@ def test_run_precision_analysis_corruption_sweep_uses_frozen_snapshot_not_live_s
     monkeypatch.setattr(Trainer, '_create_blocked_split', _capture_split)
 
     _captured_tau0 = []
-    _real_apply_corruption = precision_module.apply_corruption
+    _real_corrupt = precision_module.corrupt
 
-    def _capture_corruption(data, tau, method):
+    def _capture_corruption(data, tau, method, empty_value=0.0):
         if tau == 0.0:
             _captured_tau0.append(data.clone())
-        return _real_apply_corruption(data, tau, method)
-    monkeypatch.setattr(precision_module, 'apply_corruption', _capture_corruption)
+        return _real_corrupt(data, tau, method, empty_value)
+    monkeypatch.setattr(precision_module, 'corrupt', _capture_corruption)
 
     base_params = {
         'critic_type': 'separable', 'n_epochs': 3, 'batch_size': 16,
@@ -196,7 +306,7 @@ def test_run_precision_analysis_corruption_sweep_uses_frozen_snapshot_not_live_s
         corruption_method='rounding', threshold_ratio=0.9,
     )
 
-    assert len(_captured_tau0) == 2, "Expected one tau=0.0 apply_corruption call each for x and y"
+    assert len(_captured_tau0) == 2, "Expected one tau=0.0 corruption call each for x and y"
     train_idx = _captured_split['train_idx']
 
     # Independently reconstruct the canonical (shift=0) view from the same
@@ -209,3 +319,47 @@ def test_run_precision_analysis_corruption_sweep_uses_frozen_snapshot_not_live_s
 
     torch.testing.assert_close(_captured_tau0[0], x0[train_idx])
     torch.testing.assert_close(_captured_tau0[1], y0[train_idx])
+
+def test_precision_windows_on_the_timestamps_like_every_other_mode(monkeypatch):
+    """mode='precision' builds its own dataset, and it windows on the
+        caller's timestamps as every other mode does: a 25 Hz recording with
+        window_size=1.0 gives 80 windows 25 samples wide. The spy stops the run
+        at the build, which is the only part under test.
+    """
+
+    class Built(Exception):
+        pass
+
+    seen = {}
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        raise Built
+
+    monkeypatch.setattr(precision_module, 'create_dataset', spy)
+
+    t = np.arange(0, 80, 1 / 25.0)
+    x = np.sin(2 * np.pi * 0.3 * t)[:, None]
+    y = np.cos(2 * np.pi * 0.3 * t)[:, None]
+    base_params = {
+        'x_time': t, 'y_time': t,
+        'shift_windows': False,
+        'processor_type_x': 'continuous', 'processor_type_y': 'continuous',
+        'processor_params_x': {'window_size': 1.0, 'step_size': 1.0},
+        'processor_params_y': {'window_size': 1.0, 'step_size': 1.0},
+    }
+    with pytest.raises(Built):
+        precision_module.run_precision_analysis(x, y, base_params, tau_grid=[0.1])
+
+    assert seen.get('x_time') is not None
+    assert seen.get('y_time') is not None
+
+    # And the grid that reaches training is the one the timestamps describe.
+    from neural_mi.data.handler import create_dataset
+    dataset = create_dataset(x, y, x_time=t, y_time=t,
+                             processor_type_x='continuous',
+                             processor_params_x={'window_size': 1.0, 'step_size': 1.0},
+                             processor_type_y='continuous',
+                             processor_params_y={'window_size': 1.0, 'step_size': 1.0})
+    assert dataset.x_data.shape[2] == 25
+    assert len(dataset) == 80

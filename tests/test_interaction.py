@@ -1,5 +1,6 @@
 # tests/test_interaction.py
 """Tests for mode='interaction' (interaction information)."""
+import dataclasses
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -20,6 +21,13 @@ _TRAINING = Training(n_epochs=3, learning_rate=1e-3, batch_size=64, patience=2)
 # that actually train a model, unlike the error-path-only tests elsewhere in this
 # file, which never reach build_critic and so can get away with a handful of keys).
 from neural_mi.defaults import BASE_PARAMS_SCHEMA as _SCHEMA
+
+
+def _components(result):
+    """The component means of a one-configuration difference quantity, by name."""
+    row = result.dataframe.iloc[0]
+    return {c[:-len('_mean')]: row[c] for c in row.index if c.endswith('_mean')}
+
 _PARAMS = {k: v['default'] for k, v in _SCHEMA.items() if 'default' in v}
 _PARAMS.update({
     'n_epochs': 3, 'learning_rate': 1e-3, 'batch_size': 64,
@@ -90,31 +98,29 @@ class TestInteractionInformationPlumbing:
         assert np.isfinite(r.mi_estimate)
 
     def test_details_keys(self):
+        """The components are dataframe columns and each network is a row of trainings."""
         x, y, w = np.random.randn(N, 1), np.random.randn(N, 1), np.random.randn(N, 1)
         r = nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
                     model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
-        for key in ('interaction_info', 'mi_xw_y', 'mi_x_y', 'mi_w_y'):
-            assert key in r.details
+        for key in ('mi_mean', 'mi_xw_y_mean', 'mi_x_y_mean', 'mi_w_y_mean', 'amplification_factor'):
+            assert key in r.dataframe.columns
+        trainings = r.details[0]['trainings']
+        assert sorted(trainings['component']) == ['mi_w_y', 'mi_x_y', 'mi_xw_y']
 
     def test_ii_equals_combination(self):
         x, y, w = np.random.randn(N, 1), np.random.randn(N, 1), np.random.randn(N, 1)
         r = nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
                     model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
-        expected = r.details['mi_xw_y'] - r.details['mi_x_y'] - r.details['mi_w_y']
+        expected = _components(r)['mi_xw_y'] - _components(r)['mi_x_y'] - _components(r)['mi_w_y']
         assert abs(r.mi_estimate - expected) < 1e-6
 
-    def test_return_embeddings_surfaces_at_top_level(self):
-        """Regression: return_embeddings=True used to silently produce no
-        embeddings_x/embeddings_y for mode='interaction'. The joint (X,W;Y)
-        leg's embeddings are now pulled to the top level."""
+    def test_return_embeddings_is_refused(self):
+        """No single network of the three describes the interaction information."""
         x, y, w = np.random.randn(N, 1), np.random.randn(N, 1), np.random.randn(N, 1)
-        r = nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
+        with pytest.raises(ValueError, match="not available for mode='interaction'"):
+            nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
                     model=_MODEL, training=_TRAINING, output=Output(return_embeddings=True),
                     n_workers=1, show_progress=False)
-        assert 'embeddings_x' in r.details
-        assert 'embeddings_y' in r.details
-        assert r.details['embeddings_x'].shape[0] == N
-        assert 'embeddings_x' not in r.details['raw_xw_y'][0]
 
     def test_missing_w_data_raises(self):
         x, y = np.random.randn(N, 1), np.random.randn(N, 1)
@@ -130,13 +136,11 @@ class TestInteractionInformationPlumbing:
                    model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
 
     def test_sample_count_trim_tolerance_matches_conditional(self):
-        """Regression: interaction.py's non-raw_deferred (eager) path used
-        to hard-raise on any x/w window-count mismatch, unlike
-        conditional.py's identical W-paired-with-Y construction (see
-        run.py), which tolerates a 1-window boundary difference between two
-        separately-built create_dataset calls. Calls run_interaction_information
-        directly (bypassing nmi.run's orchestration) to construct the exact
-        boundary condition: W with one fewer window than X/Y."""
+        """interaction.py's eager path tolerates a one-window difference
+                between X and W, as conditional.py does. Calls
+                run_interaction_information directly to construct the exact boundary
+                condition: W with one fewer window than X and Y.
+        """
         from neural_mi.analysis.interaction import run_interaction_information
         x = torch.randn(50, 1, 4)
         y = torch.randn(50, 1, 4)
@@ -147,10 +151,10 @@ class TestInteractionInformationPlumbing:
         assert raw['raw_xw_y'][0]['train_mi'] is not None
 
     def test_window_size_broadcast_matches_conditional(self):
-        """Regression: a W with a collapsed (size-1) window axis -- e.g. a
-        per-window categorical summary -- used to hard-raise in
-        interaction.py's eager path instead of broadcasting across X's
-        window like conditional.py already does."""
+        """A W with a collapsed (size-1) window axis, such as a per-window
+                categorical summary, is broadcast across X's window, as in
+                conditional.py.
+        """
         from neural_mi.analysis.interaction import run_interaction_information
         x = torch.randn(50, 1, 4)
         y = torch.randn(50, 1, 4)
@@ -160,9 +164,9 @@ class TestInteractionInformationPlumbing:
         assert np.isfinite(raw['interaction_info'])
 
     def test_window_size_gap_beyond_tolerance_still_raises(self):
-        """The trim tolerance must stay narrow: a gap bigger than
-        _WINDOW_SIZE_TRIM_TOLERANCE (and not a size-1 broadcast case) is
-        still a hard error, unchanged from before this fix."""
+        """The trim tolerance stays narrow: a gap bigger than
+                _WINDOW_SIZE_TRIM_TOLERANCE, and not a size-1 broadcast, raises.
+        """
         from neural_mi.analysis.interaction import run_interaction_information
         x = torch.randn(50, 1, 4)
         y = torch.randn(50, 1, 4)
@@ -199,8 +203,8 @@ class TestInteractionInformationPlumbing:
         r = nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
                     model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False,
                     permutation_test=True, n_permutations=3)
-        assert 'null_distribution' in r.details
-        assert len(r.details['null_distribution']) == 3
+        assert len(r.get('null_distribution')) == 3
+        assert 0 < r.get('p_value') <= 1
 
 
 class TestInteractionInformationAccuracy:
@@ -208,6 +212,7 @@ class TestInteractionInformationAccuracy:
     negative II is the expected direction, checked both exactly and,
     loosely, at the estimated level)."""
 
+    @pytest.mark.slow
     def test_redundancy_gives_negative_ii(self):
         oracle = _StaticTripleOracle()
         ii_exact, mi_xw_y_exact, mi_x_y_exact, mi_w_y_exact = oracle.ii_exact()
@@ -245,9 +250,8 @@ class TestInteractionShiftWindows:
             warnings.simplefilter('always')
             nmi.run(
                 x, y, mode='interaction',
-                interaction=Interaction(w_data=w, w_processor_type='continuous',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
-                processing=processing,
+                interaction=Interaction(w_data=w),
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -272,14 +276,13 @@ class TestInteractionShiftWindows:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='interaction',
-            interaction=Interaction(w_data=w, w_processor_type='continuous',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size}),
-            processing=processing,
+            interaction=Interaction(w_data=w),
+            processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        details = results.details
+        details = _components(results)
         for a, b, name_a, name_b in [
             (details['mi_xw_y'], details['mi_x_y'], 'I(X,W;Y)', 'I(X;Y)'),
             (details['mi_w_y'], details['mi_x_y'], 'I(W;Y)', 'I(X;Y)'),
@@ -293,10 +296,11 @@ class TestInteractionShiftWindows:
 
 
 class TestInteractionShiftWindowsRigorous:
-    """Phase 2: shift_windows reachability for interaction's rigorous=True
-    sub-path -- mirrors TestInteractionShiftWindows, but exercises
-    run_rigorous_scalar_analysis's own _is_raw_deferred chunk-to-raw-range
-    translation instead of the plain (non-rigorous) sweep dispatch."""
+    """shift_windows for interaction's rigorous=True path.
+
+        Mirrors TestInteractionShiftWindows through run_rigorous_scalar_analysis,
+        which cuts each gamma chunk as a raw sample range before windowing.
+    """
 
     def test_engages_silently_for_matching_continuous_pair_rigorous(self):
         """No warning: shift_windows must actually reach the rigorous=True
@@ -313,10 +317,9 @@ class TestInteractionShiftWindowsRigorous:
             warnings.simplefilter('always')
             nmi.run(
                 x, y, mode='interaction',
-                interaction=Interaction(w_data=w, w_processor_type='continuous',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size},
+                interaction=Interaction(w_data=w,
                                        rigorous=True, gamma_range=range(1, 4)),
-                processing=processing,
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -337,10 +340,9 @@ class TestInteractionShiftWindowsRigorous:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='interaction',
-            interaction=Interaction(w_data=w, w_processor_type='continuous',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size},
+            interaction=Interaction(w_data=w,
                                    rigorous=True, gamma_range=range(1, 4)),
-            processing=processing,
+            processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=10, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
@@ -353,10 +355,11 @@ class TestInteractionShiftWindowsRigorous:
 
 
 class TestInteractionShiftWindowsCategorical:
-    """Phase 3: shift_windows reachability for a categorical X + categorical
-    W pair, with independently-tracked (and possibly different) category
-    counts -- mirrors TestInteractionShiftWindows, adapted for categorical
-    encoding via shift_windowing.make_multi_categorical_encoder."""
+    """shift_windows for a categorical X with a categorical W.
+
+        Each side keeps its own category count, encoded through
+        shift_windowing.make_multi_categorical_encoder.
+    """
 
     def test_engages_silently_with_different_category_counts(self):
         """No warning, and a finite result: shift_windows must actually
@@ -374,9 +377,8 @@ class TestInteractionShiftWindowsCategorical:
             warnings.simplefilter('always')
             r = nmi.run(
                 x, y, mode='interaction',
-                interaction=Interaction(w_data=w, w_processor_type='categorical',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
-                processing=processing,
+                interaction=Interaction(w_data=w),
+                processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -398,14 +400,13 @@ class TestInteractionShiftWindowsCategorical:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='interaction',
-            interaction=Interaction(w_data=w, w_processor_type='categorical',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size}),
-            processing=processing,
+            interaction=Interaction(w_data=w),
+            processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        details = results.details
+        details = _components(results)
         for a, b, name_a, name_b in [
             (details['mi_xw_y'], details['mi_x_y'], 'I(X,W;Y)', 'I(X;Y)'),
             (details['mi_w_y'], details['mi_x_y'], 'I(W;Y)', 'I(X;Y)'),
@@ -417,9 +418,9 @@ class TestInteractionShiftWindowsCategorical:
             )
 
     def test_mismatched_window_size_raises_clear_error(self):
-        """Companion correctness fix: w_processor_params's window_size, if
-        explicitly set to a value different from X's, must raise rather
-        than be silently ignored."""
+        """A W whose window_size differs from X's raises: the concatenated
+                array is windowed with X's geometry alone.
+        """
         np.random.seed(0)
         x = np.random.randint(0, 3, size=(2000, 1)).astype('int64')
         y = np.random.randn(2000, 2).astype('float32')
@@ -429,9 +430,8 @@ class TestInteractionShiftWindowsCategorical:
         with pytest.raises(ValueError, match="window_size"):
             nmi.run(
                 x, y, mode='interaction',
-                interaction=Interaction(w_data=w, w_processor_type='categorical',
-                                       w_processor_params={'window_size': 10, 'step_size': 10}),
-                processing=processing,
+                interaction=Interaction(w_data=w),
+                processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': 10, 'step_size': 10}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -457,9 +457,8 @@ class TestInteractionShiftWindowsMixedTypes:
             warnings.simplefilter('always')
             r = nmi.run(
                 x, y, mode='interaction',
-                interaction=Interaction(w_data=w, w_processor_type='categorical',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
-                processing=processing,
+                interaction=Interaction(w_data=w),
+                processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -481,9 +480,8 @@ class TestInteractionShiftWindowsMixedTypes:
             warnings.simplefilter('always')
             r = nmi.run(
                 x, y, mode='interaction',
-                interaction=Interaction(w_data=w, w_processor_type='continuous',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
-                processing=processing,
+                interaction=Interaction(w_data=w),
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -510,15 +508,14 @@ class TestInteractionShiftWindowsMixedTypes:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='interaction',
-            interaction=Interaction(w_data=w, w_processor_type='categorical',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size,
+            interaction=Interaction(w_data=w),
+            processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size,
                                                         'encoding': 'full_trajectory'}),
-            processing=processing,
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        details = results.details
+        details = _components(results)
         for a, b, name_a, name_b in [
             (details['mi_xw_y'], details['mi_x_y'], 'I(X,W;Y)', 'I(X;Y)'),
             (details['mi_w_y'], details['mi_x_y'], 'I(W;Y)', 'I(X;Y)'),
@@ -547,9 +544,8 @@ class TestInteractionShiftTimeSpike:
             warnings.simplefilter('always')
             r = nmi.run(
                 x_spikes, y_spikes, mode='interaction',
-                interaction=Interaction(w_data=w_spikes, w_processor_type='spike',
-                                       w_processor_params={'window_size': 0.05}),
-                processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+                interaction=Interaction(w_data=w_spikes),
+                processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
                 model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
                 training=Training(n_epochs=1, patience=1, shift_time=True),
                 n_workers=1, show_progress=False, seed=0,
@@ -569,14 +565,13 @@ class TestInteractionShiftTimeSpike:
         w_spikes = [s.copy() for s in x_spikes]  # exact copy of X
         results = nmi.run(
             x_spikes, y_spikes, mode='interaction',
-            interaction=Interaction(w_data=w_spikes, w_processor_type='spike',
-                                   w_processor_params={'window_size': 0.05}),
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            interaction=Interaction(w_data=w_spikes),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_time=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        details = results.details
+        details = _components(results)
         for a, b, name_a, name_b in [
             (details['mi_xw_y'], details['mi_x_y'], 'I(X,W;Y)', 'I(X;Y)'),
             (details['mi_w_y'], details['mi_x_y'], 'I(W;Y)', 'I(X;Y)'),
@@ -599,10 +594,9 @@ class TestInteractionShiftTimeSpike:
             n_neurons=4, n_windows=600, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='interaction',
-            interaction=Interaction(w_data=w_spikes, w_processor_type='spike',
-                                   w_processor_params={'window_size': 0.05},
+            interaction=Interaction(w_data=w_spikes,
                                    rigorous=True, gamma_range=range(1, 4)),
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=1, patience=1, shift_time=True),
             n_workers=1, show_progress=False, seed=0,
@@ -611,13 +605,9 @@ class TestInteractionShiftTimeSpike:
         assert np.isfinite(results.mi_estimate)
 
     def test_no_crash_with_shift_time_false(self):
-        """Regression: mirrors test_conditional.py's identical fix -- spike+
-        spike interaction's W used to be windowed standalone (paired only
-        with itself), requiring only "W has data" instead of X's own
-        "X has data AND Y has data", producing a sample-count mismatch large
-        enough to raise whenever shift_time was NOT active. Now always
-        merges X and W before windowing (matching family), regardless of
-        shift_time."""
+        """A spike X and spike W are merged before windowing whether or not
+                shift_time is active, so the call succeeds with shift_time=False.
+        """
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=800, window_size=0.05, seed=0)
@@ -625,9 +615,8 @@ class TestInteractionShiftTimeSpike:
             n_neurons=4, n_windows=800, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='interaction',
-            interaction=Interaction(w_data=w_spikes, w_processor_type='spike',
-                                   w_processor_params={'window_size': 0.05}),
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            interaction=Interaction(w_data=w_spikes),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=2, patience=1, shift_time=False),
             n_workers=1, show_progress=False, seed=0,
@@ -635,17 +624,10 @@ class TestInteractionShiftTimeSpike:
         assert np.isfinite(results.mi_estimate)
 
     def test_rigorous_no_crash_with_shift_time_false(self):
-        """Regression: run_rigorous_scalar_analysis's own _is_spike_deferred
-        gate used to additionally require base_params['shift_time'] to be
-        truthy, even though run.py's _defer_spike_conditional_interaction
-        (the only caller that sets raw_deferred=True for a spike+spike pair)
-        is unconditional on shift_time -- merging X and W before windowing
-        is a correctness requirement for spike coverage, not a shift-
-        reachability nicety. With shift_time=False, raw_deferred=True still
-        arrived with a raw (list) x_data, but _is_spike_deferred evaluated
-        False, so N = x_data.shape[0] raised 'list has no attribute shape'.
-        Confirmed via direct reproduction before the fix; this asserts it no
-        longer crashes and returns a finite estimate."""
+        """The rigorous path cuts a spike+spike pair as time ranges whether or
+                not shift_time is active, and returns a finite estimate with
+                shift_time=False.
+        """
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=400, window_size=0.05, seed=0)
@@ -653,10 +635,9 @@ class TestInteractionShiftTimeSpike:
             n_neurons=4, n_windows=400, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='interaction',
-            interaction=Interaction(w_data=w_spikes, w_processor_type='spike',
-                                   w_processor_params={'window_size': 0.05},
+            interaction=Interaction(w_data=w_spikes,
                                    rigorous=True, gamma_range=range(1, 4), min_gamma_points=2),
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
             training=Training(n_epochs=2, patience=1, shift_time=False, batch_size=16),
             n_workers=1, show_progress=False, seed=0,
@@ -666,21 +647,13 @@ class TestInteractionShiftTimeSpike:
 
 
 class TestWProcessorInheritance:
-    """Regression for E22: W was never windowed when it declared no processor
-    type of its own.
+    """A W without a processor of its own reads with X's.
 
-    `nmi.interaction_information(x, y, w, processing=Processing(x='continuous',
-    x_params={'window_size': ...}))` is the natural three-population call and it
-    used to die with a shape error -- X and Y went through the processor and W
-    did not. There was no workaround through the wrapper either, since it builds
-    `Interaction(w_data=...)` itself, so passing `interaction=` alongside is a
-    duplicate-keyword TypeError.
-
-    The fix resolves W's processor from X's when W declares none, which is what
-    `run_interaction_information`'s own docstring already promised. These assert
-    the *value*, not merely that nothing raises: an inherited W must give the
-    same answer as an explicitly-declared one, or the inheritance is windowing
-    it differently from X.
+        `nmi.interaction_information(x, y, w, processing=Processing(x='continuous',
+        x_params={'window_size': ...}))` is the natural three-population call, and
+        W must be windowed exactly as X is. These assert the value, not merely
+        that nothing raises: an inherited W must give the same answer as an
+        explicitly declared one.
     """
 
     WP = {'window_size': 5, 'step_size': 5}
@@ -703,9 +676,8 @@ class TestWProcessorInheritance:
                               y='continuous', y_params=self.WP)
         inherited = nmi.interaction_information(x, y, w, processing=proc, **self._common())
         explicit = nmi.run(
-            x, y, mode='interaction', processing=proc,
-            interaction=Interaction(w_data=w, w_processor_type='continuous',
-                                    w_processor_params=self.WP),
+            x, y, mode='interaction', processing=dataclasses.replace(proc, w='continuous', w_params=self.WP),
+            interaction=Interaction(w_data=w),
             **self._common())
         assert inherited.mi_estimate == explicit.mi_estimate
 
@@ -717,9 +689,8 @@ class TestWProcessorInheritance:
         inherited = nmi.run(x, y, mode='conditional', processing=proc,
                             conditional=Conditional(w_data=w), **self._common())
         explicit = nmi.run(
-            x, y, mode='conditional', processing=proc,
-            conditional=Conditional(w_data=w, w_processor_type='continuous',
-                                    w_processor_params=self.WP),
+            x, y, mode='conditional', processing=dataclasses.replace(proc, w='continuous', w_params=self.WP),
+            conditional=Conditional(w_data=w),
             **self._common())
         assert inherited.mi_estimate == explicit.mi_estimate
 
@@ -738,23 +709,17 @@ class TestWProcessorInheritance:
 
 
 class TestThreeWayWindowAlignment:
-    """Regression for E28/E29: W's windows were built by a different validity
-    rule than X's, and the two were reconciled by truncation.
+    """X, Y and W refer to the same windows by construction.
 
-    Window validity is decided per pair. X's windows are where X and Y are both
-    valid; W is built paired with Y, so its windows are where W and Y are both
-    valid. Those coincide only when X and W impose comparable constraints. A
-    continuous X carrying `min_coverage_fraction` against a categorical W with
-    no such rule diverged by 1501 windows out of 3331 on a real recording.
+        Window validity differs by stream: a continuous X carrying
+        `min_coverage_fraction` against a categorical W with no such rule keeps
+        different windows. Truncating the three to a shared length would pair
+        windows from different times whenever the extra window is not at an edge
+        (measured on a real recording: 18% of pairs misaligned). `run()` builds
+        all three streams on one grid and keeps the windows valid for all of them.
 
-    Truncating all three to the shared first `min_n` is correct only when the
-    extra window sits at an edge. Measured with it at index 2730 of 3332, 18% of
-    pairs referred to different times, silently. `run()` now intersects the
-    retained window times, so the three arrays refer to the same windows by
-    construction and can also shrink together when W is the binding constraint.
-
-    The fixture reproduces the divergence at 1/10th scale: a gap in the shared
-    time base that only X's `min_coverage_fraction` reacts to.
+        The fixture reproduces the divergence at a tenth of that scale: a gap in
+        the shared time base that only X's `min_coverage_fraction` reacts to.
     """
 
     WIN, STEP, DT, T = 2.0, 1.0, 0.1, 1200
@@ -773,9 +738,9 @@ class TestThreeWayWindowAlignment:
         return t, x, y, w
 
     @classmethod
-    def _proc(cls, t):
+    def _proc(cls, t, **w):
         return nmi.Processing(x='continuous', x_params=cls.X_PARAMS, x_time=t,
-                              y='continuous', y_params=cls.Y_PARAMS, y_time=t)
+                              y='continuous', y_params=cls.Y_PARAMS, y_time=t, **w)
 
     @staticmethod
     def _training():
@@ -803,9 +768,8 @@ class TestThreeWayWindowAlignment:
 
     def test_interaction_runs_when_validity_rules_differ(self):
         t, x, y, w = self._series(gap=3.0)
-        r = nmi.run(x, y, mode='interaction', processing=self._proc(t),
-                    interaction=Interaction(w_data=w, w_processor_type='categorical',
-                                            w_processor_params=self.W_PARAMS, w_time=t),
+        r = nmi.run(x, y, mode='interaction', processing=self._proc(t, w='categorical', w_params=self.W_PARAMS, w_time=t),
+                    interaction=Interaction(w_data=w),
                     model=_MODEL, training=self._training(),
                     n_workers=1, show_progress=False, seed=0)
         assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
@@ -813,18 +777,17 @@ class TestThreeWayWindowAlignment:
     def test_conditional_runs_when_validity_rules_differ(self):
         from neural_mi import Conditional
         t, x, y, w = self._series(gap=3.0)
-        r = nmi.run(x, y, mode='conditional', processing=self._proc(t),
-                    conditional=Conditional(w_data=w, w_processor_type='categorical',
-                                            w_processor_params=self.W_PARAMS, w_time=t),
+        r = nmi.run(x, y, mode='conditional', processing=self._proc(t, w='categorical', w_params=self.W_PARAMS, w_time=t),
+                    conditional=Conditional(w_data=w),
                     model=_MODEL, training=self._training(),
                     n_workers=1, show_progress=False, seed=0)
         assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
 
     def test_one_window_difference_is_aligned_not_truncated(self):
-        """E29 proper: a one-window difference used to fall into the trim, which
-        silently misaligns whenever the odd window is not at an edge. It must now
-        be resolved by intersection instead, so the run succeeds and the engine's
-        truncation warning never fires."""
+        """A one-window difference is resolved by window time, not by
+                truncation, so the run succeeds and the truncation warning never
+                fires.
+        """
         from neural_mi import Conditional
         from neural_mi.data.handler import create_dataset
         t, x, y, w = self._series(gap=0.0)
@@ -836,11 +799,9 @@ class TestThreeWayWindowAlignment:
                             processor_type_y='continuous', processor_params_y=self.Y_PARAMS)
         assert abs(xy.x_data.shape[0] - wy.x_data.shape[0]) == 1, "fixture drifted"
 
-        import logging
         with _capture_warnings() as seen:
-            r = nmi.run(x, y, mode='conditional', processing=self._proc(t),
-                        conditional=Conditional(w_data=w, w_processor_type='categorical',
-                                                w_processor_params=self.W_PARAMS, w_time=t),
+            r = nmi.run(x, y, mode='conditional', processing=self._proc(t, w='categorical', w_params=self.W_PARAMS, w_time=t),
+                        conditional=Conditional(w_data=w),
                         model=_MODEL, training=self._training(),
                         n_workers=1, show_progress=False, seed=0)
         assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
@@ -853,11 +814,11 @@ class TestThreeWayWindowAlignment:
         from neural_mi import Conditional
         t, x, y, w = self._series(gap=0.0)
         proc = nmi.Processing(x='continuous', x_params=self.Y_PARAMS, x_time=t,
-                              y='continuous', y_params=self.Y_PARAMS, y_time=t)
+                              y='continuous', y_params=self.Y_PARAMS, y_time=t,
+                              w='categorical', w_params=self.W_PARAMS, w_time=t)
         kw = dict(model=_MODEL, training=self._training(), n_workers=1,
                   show_progress=False, seed=0)
-        cond = lambda: Conditional(w_data=w, w_processor_type='categorical',
-                                   w_processor_params=self.W_PARAMS, w_time=t)
+        cond = lambda: Conditional(w_data=w)
         a = nmi.run(x, y, mode='conditional', processing=proc, conditional=cond(), **kw)
         b = nmi.run(x, y, mode='conditional', processing=proc, conditional=cond(), **kw)
         assert a.mi_estimate == b.mi_estimate
@@ -883,3 +844,60 @@ def _capture_warnings():
     finally:
         lg.removeHandler(h)
         lg.setLevel(old)
+
+
+class TestEarlyMergeFallback:
+    """A side outside the regular-grid family still merges X and W early.
+
+    The shifted tuple builder takes only continuous/categorical streams, and
+    the eager builder behind it cannot window a tuple at all, so a spike Y
+    sends X and W back through the raw channel-concat. That branch was
+    unreachable by any test when it was written and called a helper with the
+    wrong arity, which is why it is pinned here.
+    """
+
+    @staticmethod
+    def _spike_y_data(seed=0):
+        rng = np.random.default_rng(seed)
+        T = 1200
+        t = np.arange(T, dtype=float) / 10.
+        x = rng.standard_normal((T, 2)).astype(np.float32)
+        w = rng.standard_normal((T, 2)).astype(np.float32)
+        spikes = [np.sort(rng.uniform(0, T / 10., 800)) for _ in range(4)]
+        return t, x, w, spikes
+
+    def _run(self, mode, mode_cfg):
+        t, x, w, spikes = self._spike_y_data()
+        return nmi.run(
+            x, spikes, mode=mode, **mode_cfg(w, t),
+            processing=nmi.Processing(
+                x='continuous', y='spike', w='continuous', x_time=t,
+                x_params={'window_size': 1.0, 'step_size': 1.0, 'sample_rate': 10},
+                y_params={'window_size': 1.0, 'step_size': 1.0, 'bin_size': 0.1},
+                w_params={'window_size': 1.0, 'step_size': 1.0, 'sample_rate': 10}),
+            model=_MODEL, training=Training(n_epochs=2, batch_size=64, shift_windows=True),
+            show_progress=False, seed=0, n_workers=1,
+        )
+
+    def test_interaction_with_a_spike_y(self):
+        from neural_mi.config import Interaction
+        result = self._run('interaction', lambda w, t: {'interaction': Interaction(w_data=w)})
+        assert np.isfinite(result.mi_estimate)
+
+    def test_conditional_with_a_spike_y(self):
+        from neural_mi.config import Conditional
+        result = self._run('conditional', lambda w, t: {'conditional': Conditional(w_data=w)})
+        assert np.isfinite(result.mi_estimate)
+
+    def test_the_helper_returns_all_three_marginals(self):
+        """Conditional uses two of them, interaction all three."""
+        from neural_mi.analysis.conditional import _merge_raw_blocks
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((200, 2)).astype(np.float32)
+        w = rng.integers(0, 3, size=(200, 1))
+        to_t = lambda a: a if torch.is_tensor(a) else torch.as_tensor(a, dtype=torch.float32)
+        xw, joint, marg_x, marg_w = _merge_raw_blocks(
+            x, w, 'continuous', 'categorical', {'processor_params_x': {}}, to_t)
+        assert xw.shape[1] == 3
+        specs = lambda bp: bp['processor_params_x']['_categorical_block_specs']
+        assert len(specs(joint)) == 2 and len(specs(marg_x)) == 1 and len(specs(marg_w)) == 1

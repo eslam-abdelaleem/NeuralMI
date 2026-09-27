@@ -23,7 +23,7 @@ from neural_mi.models.embeddings import (
     PretrainedBackboneEmbedding, LRUEmbedding, DualBranchEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
-from neural_mi.logger import logger
+from neural_mi.logger import logger, user_stacklevel
 
 # Single source of truth for every built-in embedding_model string -> class,
 # reused both by build_critic's main dispatch and by 'dual_branch's own
@@ -46,9 +46,7 @@ _EMBEDDING_CLASSES = {
 def _ensure_cpu(data):
     """Move *data* to CPU if it is a tensor on a non-CPU device.
 
-    Multiprocessing workers receive data via pickle (spawn context), which
-    requires all tensors to reside on CPU — CUDA and MPS shared-memory
-    mechanisms are not available across process boundaries.  Call this on
+    Multiprocessing workers receive data via pickle (spawn context), so all tensors must reside on CPU. CUDA and MPS shared-memory mechanisms are not available across process boundaries.  Call this on
     every tensor before adding it to a Pool task tuple.
 
     Non-tensor inputs (numpy arrays, None, etc.) are returned unchanged.
@@ -88,7 +86,7 @@ def _configure_multiprocessing() -> None:
     try:
         mp.set_start_method("spawn", force=True)
     except RuntimeError:
-        # Already set — e.g. user called set_start_method themselves; respect it.
+        # Already set, e.g. user called set_start_method themselves; respect it.
         logger.debug("Multiprocessing start method already set; skipping.")
     if platform.system() == "Darwin":
         # macOS spawn workers inherit the parent's TMPDIR which may point to an
@@ -99,8 +97,63 @@ def _configure_multiprocessing() -> None:
     _mp_configured = True
 
 
+def _is_spike_input(data) -> bool:
+    """Raw spike times arrive as a list of one ragged array per neuron."""
+    return isinstance(data, (list, tuple)) and not isinstance(data, torch.Tensor) and (
+        len(data) > 0 and all(np.ndim(np.asarray(d, dtype=object)) <= 1 for d in data)
+        and not np.isscalar(data[0])
+    )
+
+
+def _as_tensor(data) -> torch.Tensor:
+    if isinstance(data, torch.Tensor):
+        return data
+    if _is_spike_input(data):
+        raise TypeError(
+            "Raw spike times were passed to a quantity that indexes by integer "
+            "time offset, which needs a regularly sampled (n_timepoints, "
+            "n_channels) series. Build one by binning at the window size and "
+            "keeping silent windows, so the time axis stays contiguous:\n"
+            "    ds = create_dataset(x_data=spikes, processor_type_x='spike',\n"
+            "            processor_params_x={'bin_size': b, 'window_size': b,\n"
+            "                                'normalize_bins': False,\n"
+            "                                'drop_empty_windows': False})\n"
+            "    series = ds.x_data.squeeze(-1)   # (n_bins, n_neurons)\n"
+            "Dropping silent windows would leave consecutive indices more than "
+            "one bin apart, so the offsets would not be the ones you asked for. "
+            "block_mi is the exception: it does real windowing, so it takes "
+            "spike times directly via processing=Processing(x='spike', y='spike')."
+        )
+    return torch.as_tensor(np.asarray(data), dtype=torch.float32)
+
+
+def validate_stride(stride: Any, quantity: str = "this quantity") -> int:
+    """Check a ``stride`` argument and return it as an int.
+
+    ``stride`` is the offset family's analogue of a processor's ``step_size``:
+    the distance in samples between the start of one row and the start of the
+    next. It is deliberately a separate parameter with a separate name, because
+    ``step_size`` reads any value below 1 as a fraction of ``window_size``, and
+    these quantities have no single window length for a fraction to refer to
+    (``cross_predictive_information`` has its own ``k``,
+    ``mi_rate`` has ``h`` and ``W``). Whole samples only, therefore, with no
+    fractional reading.
+    """
+    if isinstance(stride, bool) or not isinstance(stride, (int, np.integer)):
+        raise ValueError(
+            f"stride must be a whole number of samples, got {stride!r}. Unlike a "
+            f"processor's step_size, stride has no fractional reading: {quantity} "
+            f"has no single window length for a fraction to be taken of. For a "
+            f"fractional step over a raw series, use block_mi's step_size."
+        )
+    if stride < 1:
+        raise ValueError(f"stride must be >= 1, got {stride}.")
+    return int(stride)
+
+
 def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
-                        dtype: torch.dtype = torch.float32) -> Tuple[Any, Any, Any, int]:
+                        dtype: torch.dtype = torch.float32,
+                        stride: int = 1) -> Tuple[Any, Any, Any, int]:
     """Turn an offset specification into aligned, trainable arrays.
 
     Every quantity in the temporal taxonomy is ``I(A; B | C)`` under a
@@ -111,8 +164,12 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
 
     Offsets are in time bins relative to a common reference: negative is past,
     zero is present, positive is future. All three groups are cut to the same
-    valid range, which is the widest window over which every requested offset
+    valid range, the widest window over which every requested offset
     exists.
+
+    ``stride`` thins that range, keeping every ``stride``-th reference position
+    instead of all of them. It applies to the shared reference, never to the
+    offsets themselves, so every group stays aligned on the same time points.
 
     Parameters
     ----------
@@ -194,16 +251,20 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
             f"(available: {sorted(tensors)})."
         )
 
+    stride = validate_stride(stride, 'build_offset_arrays')
     offsets = [o for g in groups.values() for (_, o) in g]
     lo, hi = min(offsets), max(offsets)
     total = lengths.pop()
     start = -lo
-    n_valid = total - hi - start
-    if n_valid <= 0:
+    n_positions = total - hi - start
+    if n_positions <= 0:
         raise ValueError(
             f"Offsets span {lo} to {hi}, which leaves no valid samples in a series "
             f"of {total} timepoints. Shorten the offset range or use a longer recording."
         )
+    # Reference positions are start, start+stride, ... within n_positions, so
+    # the count is the number of strided steps that still fit.
+    n_valid = (n_positions - 1) // stride + 1
 
     out = {}
     for group_name, entries in groups.items():
@@ -215,7 +276,9 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
             by_process.setdefault(v, []).append(o)
         blocks = []
         for v, offs in by_process.items():
-            cols = [tensors[v][start + o: start + o + n_valid] for o in offs]
+            # Stride the shared reference, not each offset: every column is
+            # the same n_valid reference positions, read at its own offset.
+            cols = [tensors[v][start + o::stride][:n_valid] for o in offs]
             blocks.append(torch.stack(cols, dim=-1))
         widths = {b.shape[-1] for b in blocks}
         if len(widths) > 1:
@@ -270,9 +333,9 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
         non-spike type each one is).
     y_processor_type : str or None
         Y's processor type: one of 'continuous', 'categorical', 'spike', or
-        ``None`` for pre-processed static data. Any other value raises, rather
-        than returning the data unshifted: a lag analysis that silently applied
-        no lag reports a flat profile that looks like a real negative result.
+        ``None`` for pre-processed static data. Any other value raises instead of
+        returning the data unshifted. A lag analysis that silently applied no
+        lag would report a flat profile that looks like a real negative result.
 
     Raises
     ------
@@ -289,7 +352,7 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
 
     if x_is_spike and not y_is_spike:
         # Mixed modality: spike-X, non-spike-Y. Shift X's spike times forward
-        # by `lag` (rather than shifting Y, which isn't spike data and has no
+        # by `lag` (instead of shifting Y, which isn't spike data and has no
         # per-event timestamps to offset) -- this keeps the lag>0="Y is in
         # the future" convention: advancing X's clock by `lag` is equivalent
         # to comparing X's past against Y's present.
@@ -315,7 +378,7 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
         # `None` means pre-processed static data (create_single_dataset's
         # convention). It shifts along the same axis as the windowed types,
         # but the *unit* of that axis depends on what the caller supplied,
-        # so it is resolved from ndim below rather than assumed.
+        # so it is resolved from ndim below instead of assumed.
         # Convert to numpy if needed
         if torch.is_tensor(x_data):
             x_data = x_data.detach().cpu().numpy()
@@ -331,7 +394,7 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
             # Static (pre-processed) data. There is no sample_rate to convert
             # with, so the lag is an index offset by construction. What that
             # index *means* depends on the array's shape, and the two cases
-            # carry different units -- so name the unit rather than guess
+            # carry different units -- so name the unit instead of guess
             # silently. This mirrors how the sample_rate ambiguity above is
             # handled: pick the documented reading and say so.
             if x_data.ndim >= 3:
@@ -349,22 +412,21 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
                 )
             lag_samples = int(lag)
         elif sample_rate is not None:
-            # Lag provided in seconds — convert to samples
+            # Lag provided in seconds, convert to samples
             lag_samples = int(round(lag * sample_rate))
         else:
             # No sample_rate given: treat lag as a raw sample-index offset, but warn
             logger.warning(
                 f"Lag units for '{y_processor_type}' data are ambiguous without a sample_rate. "
                 f"Treating lag={lag} as samples (index offset). "
-                f"To specify lag in seconds, pass 'sample_rate' in processor_params_x. "
+                f"To specify lag in seconds, set 'sample_rate' in Processing(x_params=...). "
                 f"Note: spike data always uses seconds, so mixing processor types without "
                 f"sample_rate will produce inconsistent lag scales."
             )
             lag_samples = int(lag)
 
-        # Slice axis 0 only. Written without a trailing `, :` so it holds for
-        # 1-D (which StaticDataset accepts and which the old 2-D-only slice
-        # raised IndexError on), 2-D and 3-D alike.
+        # Slice axis 0 only, so 1-D (which StaticDataset accepts), 2-D and 3-D
+        # data are all handled.
         if lag_samples == 0:
             return x_data, y_data
         elif lag_samples > 0:
@@ -451,80 +513,143 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     
     # Access parameters strictly to ensure defaults were applied
     use_variational = embedding_params['use_variational']
-    model_type = embedding_params['embedding_model'].lower()
-    hidden_dim = embedding_params['hidden_dim']
-    n_layers = embedding_params['n_layers']
-    embed_dim = embedding_params['embedding_dim']
     max_n_batches = embedding_params['max_n_batches']
+    # The class also travels in embedding_params, so a caller that only has the
+    # dict (embeddings_io rebuilding a saved run) still gets it.
+    custom_embedding_cls = custom_embedding_cls or embedding_params.get('custom_embedding_cls')
 
-    # --- Model Selection Logic ---
-    # Select the deterministic base encoder class first; variational wrapping is
-    # applied after construction so all encoder architectures benefit uniformly.
-    if custom_embedding_cls:
-        EmbeddingModel = custom_embedding_cls
-    elif model_type in _EMBEDDING_CLASSES:
-        EmbeddingModel = _EMBEDDING_CLASSES[model_type]
-    else:
-        raise ValueError(
-            f"Unknown embedding_model: {model_type!r}. Built-in options: "
-            f"{sorted(_EMBEDDING_CLASSES)}. Pass a class via custom_embedding_cls "
-            f"for anything else."
-        )
-
-    # --- Parameter Preparation ---
-    model_kwargs = {
-        'hidden_dim': hidden_dim,
-        'embed_dim': embed_dim,
-        'n_layers': n_layers,
+    # X sets the architecture and Y follows it unless given its own, the same
+    # "unset means same as X" convention processor_type_y already uses. Naming
+    # a built-in for Y drops X's custom class on that side, since the two
+    # settings are alternatives and the explicit one wins.
+    _y_model = embedding_params.get('embedding_model_y')
+    _y_custom = embedding_params.get('custom_embedding_cls_y')
+    spec_x = {
+        'model_type': embedding_params['embedding_model'].lower(),
+        'custom_cls': custom_embedding_cls,
+        'hidden_dim': embedding_params['hidden_dim'],
+        'n_layers': embedding_params['n_layers'],
+        'embedding_dim': embedding_params['embedding_dim'],
     }
-    critic_kwargs = {
-        'embed_dim': embed_dim,
-        'max_n_batches': max_n_batches,
-        'use_variational': use_variational
+    spec_y = {
+        'model_type': _y_model.lower() if _y_model else spec_x['model_type'],
+        'custom_cls': _y_custom or (None if _y_model else spec_x['custom_cls']),
+        'hidden_dim': embedding_params.get('hidden_dim_y') or spec_x['hidden_dim'],
+        'n_layers': embedding_params.get('n_layers_y') or spec_x['n_layers'],
+        'embedding_dim': embedding_params.get('embedding_dim_y') or spec_x['embedding_dim'],
     }
-
-    # A class's own `input_style` (see BaseEmbedding) decides the input_dim
-    # convention it's built with -- 'channels' (raw channel count, the
-    # window/sequence axis handled internally by the class) or 'flattened'
-    # (n_channels * window_size, the default for any class that doesn't
-    # declare otherwise -- including a third-party custom_embedding_cls
-    # written before this attribute existed, preserving its old behavior).
-    if getattr(EmbeddingModel, 'input_style', 'flattened') == 'channels':
-        input_dim_x, input_dim_y = embedding_params['n_channels_x'], embedding_params['n_channels_y']
-        if model_type in ('cnn', 'tcn', 'cnn2d'):
-            model_kwargs['kernel_size'] = embedding_params.get('kernel_size', 7 if model_type == 'cnn' else 3)
-        if model_type in ('gru', 'lstm'):
-            model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
-        if model_type == 'transformer':
-            model_kwargs['nhead'] = embedding_params.get('nhead', 4)
-        if model_type == 'pretrained_backbone':
-            model_kwargs['pytorch_predefined'] = embedding_params.get('pytorch_predefined')
-            model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
-        if model_type == 'lru':
-            model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-        if model_type == 'dual_branch' and not custom_embedding_cls:
-            # custom_embedding_cls (a DualBranchEmbedding subclass hardcoding
-            # its own branch_cls, see the class docstring) always takes
-            # priority -- this only resolves branch_cls for the plain
-            # Model(embedding_model='dual_branch', branch_model=...) form.
-            branch_model = embedding_params.get('branch_model') or 'gru'
-            if branch_model not in _EMBEDDING_CLASSES:
-                raise ValueError(
-                    f"Unknown branch_model: {branch_model!r}. Built-in options: "
-                    f"{sorted(_EMBEDDING_CLASSES)}."
-                )
-            model_kwargs['branch_cls'] = _EMBEDDING_CLASSES[branch_model]
-    else:  # MLP or a custom class — both take the fully-flattened input_dim
-        input_dim_x, input_dim_y = embedding_params['input_dim_x'], embedding_params['input_dim_y']
-        if not custom_embedding_cls:
-            # These are specific to the built-in MLP. A custom class only receives
-            # the universal (hidden_dim, embed_dim, n_layers) contract, so it need
-            # not accept regularisation kwargs it may know nothing about.
-            model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
-            model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-            model_kwargs['norm_layer'] = embedding_params.get('norm_layer', None)
+    _Y_KEYS = ('embedding_model_y', 'custom_embedding_cls_y', 'hidden_dim_y',
+               'n_layers_y', 'embedding_dim_y')
+    _given_y = [k for k in _Y_KEYS if embedding_params.get(k) is not None]
 
     shared_encoder = embedding_params.get('shared_encoder', False)
+    if _given_y:
+        if critic_type == 'concat':
+            raise ValueError(
+                f"{_given_y[0]} was set with critic_type='concat'. ConcatCritic "
+                f"scores the raw concatenated pair and has no separate embedding "
+                f"networks, so there is no Y-side encoder to configure. Switch to "
+                f"critic_type='separable' or 'hybrid'."
+            )
+        if shared_encoder:
+            raise ValueError(
+                f"{_given_y[0]} was set with shared_encoder=True. One encoder "
+                f"instance cannot also be a second, different one. Set "
+                f"shared_encoder=False to give the two sides their own encoders."
+            )
+        if spec_y['model_type'] == 'dual_branch' and not _y_custom:
+            raise ValueError(
+                "embedding_model_y='dual_branch' is not a usable combination. "
+                "DualBranchEmbedding exists for a compound (tuple) X-role input, "
+                "and the Y role is always a single plain population."
+            )
+    if (embedding_params.get('embedding_dim_y') is not None
+            and spec_y['embedding_dim'] != spec_x['embedding_dim']
+            and critic_type == 'separable'):
+        raise ValueError(
+            f"embedding_dim_y={spec_y['embedding_dim']} differs from "
+            f"embedding_dim={spec_x['embedding_dim']} under "
+            f"critic_type='separable', which scores a pair by taking the dot "
+            f"product of the two embeddings and therefore needs one width. "
+            f"critic_type='hybrid' concatenates them instead and accepts "
+            f"different widths."
+        )
+
+    def _resolve_side(spec, side):
+        """The class, the ``input_dim`` it expects, and its kwargs, for one side."""
+        if spec['custom_cls']:
+            EmbeddingModel = spec['custom_cls']
+        elif spec['model_type'] in _EMBEDDING_CLASSES:
+            EmbeddingModel = _EMBEDDING_CLASSES[spec['model_type']]
+        else:
+            raise ValueError(
+                f"Unknown embedding_model: {spec['model_type']!r}. Built-in options: "
+                f"{sorted(_EMBEDDING_CLASSES)}. Pass a class via custom_embedding_cls "
+                f"for anything else."
+            )
+        model_type = spec['model_type']
+        model_kwargs = {
+            'hidden_dim': spec['hidden_dim'],
+            'embedding_dim': spec['embedding_dim'],
+            'n_layers': spec['n_layers'],
+        }
+        # A class's own `input_style` (see BaseEmbedding) decides the input_dim
+        # convention it's built with -- 'channels' (raw channel count, the
+        # window/sequence axis handled internally by the class) or 'flattened'
+        # (n_channels * window_size, the default for any class that doesn't
+        # declare otherwise, including a third-party custom class that never
+        # sets it). Read per side, since the two sides can be different classes.
+        if getattr(EmbeddingModel, 'input_style', 'flattened') == 'channels':
+            input_dim = embedding_params[f'n_channels_{side}']
+            # Each architecture's own kwargs, resolved from this side's model
+            # type and read from the one value the caller supplied. Two cnns
+            # share a kernel_size; a cnn paired with a gru takes the kernel size
+            # on one side and the bidirectional flag on the other.
+            if model_type in ('cnn', 'tcn', 'cnn2d'):
+                model_kwargs['kernel_size'] = embedding_params.get(
+                    'kernel_size', 7 if model_type == 'cnn' else 3)
+            if model_type in ('gru', 'lstm'):
+                model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
+            if model_type == 'transformer':
+                model_kwargs['nhead'] = embedding_params.get('nhead', 4)
+            if model_type == 'pretrained_backbone':
+                model_kwargs['pytorch_predefined'] = embedding_params.get('pytorch_predefined')
+                model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
+            if model_type == 'lru':
+                model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
+            if model_type == 'dual_branch' and not spec['custom_cls']:
+                # custom_embedding_cls (a DualBranchEmbedding subclass hardcoding
+                # its own branch_cls, see the class docstring) always takes
+                # priority -- this only resolves branch_cls for the plain
+                # Model(embedding_model='dual_branch', branch_model=...) form.
+                branch_model = embedding_params.get('branch_model') or 'gru'
+                if branch_model not in _EMBEDDING_CLASSES:
+                    raise ValueError(
+                        f"Unknown branch_model: {branch_model!r}. Built-in options: "
+                        f"{sorted(_EMBEDDING_CLASSES)}."
+                    )
+                model_kwargs['branch_cls'] = _EMBEDDING_CLASSES[branch_model]
+        else:  # MLP or a custom class, both take the fully-flattened input_dim
+            input_dim = embedding_params[f'input_dim_{side}']
+            if not spec['custom_cls']:
+                # These are specific to the built-in MLP. A custom class only receives
+                # the universal (hidden_dim, embedding_dim, n_layers) contract, so it need
+                # not accept regularisation kwargs it may know nothing about.
+                model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
+                model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
+                model_kwargs['norm_layer'] = embedding_params.get('norm_layer', None)
+        return EmbeddingModel, input_dim, model_kwargs
+
+    Model_x, input_dim_x, model_kwargs = _resolve_side(spec_x, 'x')
+    Model_y, input_dim_y, model_kwargs_y = _resolve_side(spec_y, 'y')
+    hidden_dim, n_layers = spec_x['hidden_dim'], spec_x['n_layers']
+    embedding_dim = spec_x['embedding_dim']
+    critic_kwargs = {
+        'embedding_dim': embedding_dim,
+        'max_n_batches': max_n_batches,
+        'use_variational': use_variational,
+    }
+
     if shared_encoder and critic_type == 'concat':
         raise ValueError(
             "shared_encoder=True is incompatible with critic_type='concat'. "
@@ -541,65 +666,66 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             "the same class. Set shared_encoder=False for this path."
         )
 
-    # Build the base (deterministic) encoders.
-    model_kwargs_y = model_kwargs.copy()
-
     # Bias terms in the embedding layers. Both encoders get the same value.
     # An explicit None means unset, not off, so it falls back to the default.
     _bias = embedding_params.get('bias')
     bias_x = bias_y = True if _bias is None else bool(_bias)
 
-    if not (bias_x and bias_y) and not getattr(EmbeddingModel, 'zero_preserving', True):
-        warnings.warn(
-            f"bias=False was requested, but {EmbeddingModel.__name__} carries an "
-            f"input-independent additive term (a positional encoding, or biases "
-            f"baked into pretrained weights), so an all-zero input will not embed "
-            f"to zero. The bias terms it does own are still removed.",
-            UserWarning, stacklevel=2,
-        )
+    for Model_, unused in ((Model_x, None), (Model_y, None)):
+        if not (bias_x and bias_y) and not getattr(Model_, 'zero_preserving', True):
+            warnings.warn(
+                f"bias=False was requested, but {Model_.__name__} carries an "
+                f"input-independent additive term (a positional encoding, or biases "
+                f"baked into pretrained weights), so an all-zero input will not embed "
+                f"to zero. The bias terms it does own are still removed.",
+                UserWarning, stacklevel=user_stacklevel(),
+            )
+            break
 
     # Only classes that accept `bias` are given it. A custom embedding class
     # following the minimal BaseEmbedding contract
-    # (input_dim, hidden_dim, embed_dim, n_layers) must still build, so an
+    # (input_dim, hidden_dim, embedding_dim, n_layers) must still build, so an
     # explicit bias request that such a class cannot receive is reported rather
     # than forced on it.
-    if _accepts_kwarg(EmbeddingModel, 'bias'):
-        model_kwargs['bias'] = bias_x
-        model_kwargs_y['bias'] = bias_y
-    elif not (bias_x and bias_y):
-        # Only reachable when bias was actually turned off AND the class cannot
-        # receive it. Gating this on any other capability would report a bias
-        # problem the class does not have.
-        warnings.warn(
-            f"bias=False applies to the embedding layers, but "
-            f"{EmbeddingModel.__name__}.__init__ does not accept a `bias` "
-            f"argument, so its layers keep their bias terms. Add `bias=True` to "
-            f"the signature and pass it to the layers to support this.",
-            UserWarning, stacklevel=2,
-        )
+    for Model_, kwargs, value in ((Model_x, model_kwargs, bias_x),
+                                  (Model_y, model_kwargs_y, bias_y)):
+        if _accepts_kwarg(Model_, 'bias'):
+            kwargs['bias'] = value
+        elif not (bias_x and bias_y):
+            # Only reachable when bias was actually turned off AND the class cannot
+            # receive it. Gating this on any other capability would report a bias
+            # problem the class does not have.
+            warnings.warn(
+                f"bias=False applies to the embedding layers, but "
+                f"{Model_.__name__}.__init__ does not accept a `bias` "
+                f"argument, so its layers keep their bias terms. Add `bias=True` to "
+                f"the signature and pass it to the layers to support this.",
+                UserWarning, stacklevel=user_stacklevel(),
+            )
 
     # DeepSets masks padded slots, so it needs the sentinel the processor used.
     # Taken per side, since X and Y can be processed differently.
-    if _accepts_kwarg(EmbeddingModel, 'no_spike_value'):
-        for kwargs, key in ((model_kwargs, 'processor_params_x'),
-                            (model_kwargs_y, 'processor_params_y')):
+    for Model_, kwargs, key in ((Model_x, model_kwargs, 'processor_params_x'),
+                                (Model_y, model_kwargs_y, 'processor_params_y')):
+        if _accepts_kwarg(Model_, 'no_spike_value'):
             params = embedding_params.get(key) or {}
             kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
 
-    net_x_base = EmbeddingModel(input_dim_x, **model_kwargs)
-    net_y_base = net_x_base if shared_encoder else EmbeddingModel(input_dim_y, **model_kwargs_y)
+    net_x_base = Model_x(input_dim_x, **model_kwargs)
+    net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
 
-    # Optionally wrap with VariationalWrapper — works for every encoder type
+    # Optionally wrap with VariationalWrapper, works for every encoder type
     if use_variational:
-        net_x = VariationalWrapper(net_x_base, embed_dim, bias=bias_x)
-        net_y = net_x if shared_encoder else VariationalWrapper(net_y_base, embed_dim, bias=bias_y)
+        net_x = VariationalWrapper(net_x_base, spec_x['embedding_dim'], bias=bias_x)
+        net_y = net_x if shared_encoder else VariationalWrapper(
+            net_y_base, spec_y['embedding_dim'], bias=bias_y)
     else:
         net_x, net_y = net_x_base, net_y_base
 
     # Warn when the first embedding layer is severely overparameterized.
     # Large first layers (input_dim * hidden_dim) are the most common cause of
     # overfitting in neuroscience datasets where windows are high-dimensional but
-    # sample counts are modest. 500k is a practical threshold — not a hard limit.
+    # sample counts are modest. 500k is a practical threshold, not a hard limit.
     _first_hidden = hidden_dim[0] if isinstance(hidden_dim, list) else hidden_dim
     _last_hidden  = hidden_dim[-1] if isinstance(hidden_dim, list) else hidden_dim
     # input_dim_x is a 2-tuple (dim_a, dim_c) for DualBranchEmbedding's compound
@@ -620,14 +746,22 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     if critic_type == 'separable':
         return SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y, **critic_kwargs)
     elif critic_type == 'hybrid':
-        decision_head_input_dim = embed_dim * 2
+        # Hybrid concatenates the two embeddings before scoring, so the head's
+        # input is their combined width and the two may differ.
+        decision_head_input_dim = spec_x['embedding_dim'] + spec_y['embedding_dim']
         _head_hidden_dim = embedding_params.get('hidden_dim_head') or min(64, _last_hidden)
         _head_n_layers = embedding_params.get('n_layers_head') or max(1, n_layers - 1)
-        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=_head_hidden_dim, embed_dim=1, n_layers=_head_n_layers)
+        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=_head_hidden_dim, embedding_dim=1, n_layers=_head_n_layers)
         return HybridCritic(embedding_net_x=net_x, embedding_net_y=net_y, decision_head=decision_head, **critic_kwargs)
     elif critic_type == 'concat':
         concat_input_dim = input_dim_x + input_dim_y
-        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=hidden_dim, embed_dim=1, n_layers=n_layers)
+        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=hidden_dim, embedding_dim=1, n_layers=n_layers)
+        if use_variational:
+            # The concat network's one output is the score of a pair, so the
+            # variational layer makes each score a Gaussian draw and its KL term
+            # regularises the scores. There is no per-variable embedding here
+            # for it to compress.
+            concat_net = VariationalWrapper(concat_net, 1)
         return ConcatCritic(embedding_net=concat_net, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
@@ -657,7 +791,7 @@ def build_optimizer_and_scheduler(
     expects ``params`` to be fully populated (e.g. via
     ``ParameterValidator.apply_defaults``): it accesses ``learning_rate`` and
     ``n_epochs`` strictly and will raise a ``KeyError`` if either is missing,
-    rather than silently substituting a different default than
+    instead of silently substituting a different default than
     ``BASE_PARAMS_SCHEMA``'s.
 
     Parameters
@@ -742,158 +876,98 @@ def build_optimizer_and_scheduler(
     return optimizer, scheduler
 
 
-def compute_cross_covariance_spectrum(
-    zx: torch.Tensor,
-    zy: torch.Tensor,
-    whitening: Optional[str] = 'std'
-) -> np.ndarray:
-    """Computes the singular values of the cross-covariance matrix of embeddings.
-
-    Parameters
-    ----------
-    zx, zy : torch.Tensor
-        Embeddings of shape (n_samples, embedding_dim).
-    whitening : {'std', 'zca', None}, optional
-        Normalization applied before SVD.
-        - 'std': divide each dimension by its standard deviation (default).
-          Makes PR reflect the number of dimensions with non-trivial shared
-          variance, independent of embedding output scale.
-        - 'zca': full ZCA whitening (sphering). More aggressive; requires
-          n_samples >> embedding_dim to be stable.
-        - None: no whitening. PR will reflect raw embedding scale.
-    """
-    zx_np = zx.detach().cpu().float().numpy()
-    zy_np = zy.detach().cpu().float().numpy()
-
-    # Center
-    zx_np = zx_np - zx_np.mean(axis=0, keepdims=True)
-    zy_np = zy_np - zy_np.mean(axis=0, keepdims=True)
-
-    N = zx_np.shape[0]
-    if N <= 1:
-        return np.array([])
-
+def _whiten(z: np.ndarray, whitening: Optional[str]) -> np.ndarray:
+    """Normalize centred embeddings before their cross-covariance is taken."""
     if whitening == 'std':
-        std_x = zx_np.std(axis=0, keepdims=True)
-        std_y = zy_np.std(axis=0, keepdims=True)
-        # Avoid division by zero for dead dimensions
-        zx_np = zx_np / np.where(std_x > 1e-8, std_x, 1.0)
-        zy_np = zy_np / np.where(std_y > 1e-8, std_y, 1.0)
-    elif whitening == 'zca':
-        def _zca_whiten(Z):
-            cov = (Z.T @ Z) / (Z.shape[0] - 1)
-            U, S, _ = np.linalg.svd(cov)
-            S_inv_sqrt = np.diag(1.0 / np.sqrt(np.maximum(S, 1e-8)))
-            W = U @ S_inv_sqrt @ U.T
-            return Z @ W.T
-        zx_np = _zca_whiten(zx_np)
-        zy_np = _zca_whiten(zy_np)
-    elif whitening is not None:
-        raise ValueError(f"Unknown whitening method: '{whitening}'. Expected 'std', 'zca', or None.")
-
-    cov_xy = (zx_np.T @ zy_np) / (N - 1)
-    _, s_xy, _ = np.linalg.svd(cov_xy)
-
-    return s_xy
+        std = z.std(axis=0, keepdims=True)
+        # Dead dimensions keep their (zero) scale instead of dividing by zero.
+        return z / np.where(std > 1e-8, std, 1.0)
+    if whitening == 'zca':
+        cov = (z.T @ z) / (z.shape[0] - 1)
+        u, s, _ = np.linalg.svd(cov)
+        w = u @ np.diag(1.0 / np.sqrt(np.maximum(s, 1e-8))) @ u.T
+        return z @ w.T
+    if whitening is not None:
+        raise ValueError(f"Unknown whitening {whitening!r}. Expected 'std', 'zca' or None.")
+    return z
 
 
-def compute_cross_covariance_rotation(
-    zx: np.ndarray,
-    zy: np.ndarray,
-    whitening: Optional[str] = 'std'
-) -> Dict[str, np.ndarray]:
-    """Computes a rotation that orders embedding dimensions by shared variance.
+def cross_covariance_svd(zx, zy, whitening: Optional[str] = 'std') -> Dict[str, np.ndarray]:
+    """The SVD of the cross-covariance of two embeddings.
 
-    The rotation matrices U and V are derived from the SVD of the (optionally
-    whitened) cross-covariance matrix C = ZX_w.T @ ZY_w / (N-1).  The whitening
-    is applied **only** to compute the rotation axes — it is NOT applied to the
-    returned embeddings.  What is returned is ZX_centered @ U and ZY_centered @ V,
-    i.e. the original-scale embeddings simply re-expressed in the new basis.
-
-    This means dimension 0 of the rotated embeddings captures the most shared
-    variance between the two spaces, dimension 1 the second most, and so on —
-    consistent with how the Participation Ratio (PR) dimensionality estimate
-    orders dimensions.
+    The one computation behind both the spectrum that participation ratios are
+    read from and the rotation that orders embedding dimensions by shared
+    variance. The embeddings are centred, normalized by `whitening` to compute
+    the cross-covariance :math:`C = Z_X^\top Z_Y / (N - 1)`, and :math:`C` is
+    decomposed.
 
     Parameters
     ----------
-    zx, zy : np.ndarray
-        Embeddings, each of shape (N, d).  May also be passed as torch.Tensor;
-        they will be converted automatically.
-    whitening : {'std', 'zca', None}, optional
-        Normalization applied before computing the cross-covariance (default
-        ``'std'``).  Matches the default used by
-        :func:`compute_cross_covariance_spectrum` so that the rotation is
-        consistent with PR-based dimensionality estimates.
-        - ``'std'``: divide each dimension by its standard deviation.
-        - ``'zca'``: full ZCA whitening (sphering); requires N >> d for stability.
-        - ``None``: no whitening; rotation reflects raw shared variance.
+    zx, zy : np.ndarray or torch.Tensor
+        Embeddings of shape ``(N, d_x)`` and ``(N, d_y)``.
+    whitening : {'std', 'zca', None}, default='std'
+        ``'std'`` divides each dimension by its standard deviation, so the
+        spectrum counts dimensions with shared variance regardless of the
+        embedding's output scale. ``'zca'`` spheres each embedding fully and
+        needs ``N`` well above the embedding size. ``None`` leaves the scale as
+        it is.
 
     Returns
     -------
-    dict with keys:
-
-    ``'zx_rotated'`` : np.ndarray, shape (N, d)
-        Centered ZX projected onto the left singular vectors U.
-    ``'zy_rotated'`` : np.ndarray, shape (N, d)
-        Centered ZY projected onto the right singular vectors V.
-    ``'singular_values'`` : np.ndarray, shape (min(d_x, d_y),)
-        Singular values of the (whitened) cross-covariance, largest first.
-    ``'rotation_x'`` : np.ndarray, shape (d_x, min(d_x, d_y))
-        Left singular vectors U.  Apply as ``ZX_new @ U`` to project new data.
-    ``'rotation_y'`` : np.ndarray, shape (d_y, min(d_x, d_y))
-        Right singular vectors V.  Apply as ``ZY_new @ V`` to project new data.
+    dict
+        ``'zx_centered'``, ``'zy_centered'`` (original scale),
+        ``'singular_values'`` (largest first), ``'rotation_x'`` (left singular
+        vectors, ``(d_x, min(d_x, d_y))``) and ``'rotation_y'`` (right singular
+        vectors, ``(d_y, min(d_x, d_y))``).
     """
-    # Accept both torch.Tensor and np.ndarray
     if hasattr(zx, 'detach'):
         zx = zx.detach().cpu().float().numpy()
     if hasattr(zy, 'detach'):
         zy = zy.detach().cpu().float().numpy()
-    zx = np.asarray(zx, dtype=np.float64)
-    zy = np.asarray(zy, dtype=np.float64)
+    zx_c = np.asarray(zx, dtype=np.float64)
+    zy_c = np.asarray(zy, dtype=np.float64)
+    zx_c = zx_c - zx_c.mean(axis=0, keepdims=True)
+    zy_c = zy_c - zy_c.mean(axis=0, keepdims=True)
+    n = zx_c.shape[0]
+    if n <= 1:
+        return {'zx_centered': zx_c, 'zy_centered': zy_c, 'singular_values': np.array([]),
+                'rotation_x': np.eye(zx_c.shape[1]), 'rotation_y': np.eye(zy_c.shape[1])}
+    cov_xy = (_whiten(zx_c, whitening).T @ _whiten(zy_c, whitening)) / (n - 1)
+    u, s, vt = np.linalg.svd(cov_xy, full_matrices=False)
+    return {'zx_centered': zx_c, 'zy_centered': zy_c, 'singular_values': s,
+            'rotation_x': u, 'rotation_y': vt.T}
 
-    # Center (mean-subtract per dimension)
-    zx_c = zx - zx.mean(axis=0, keepdims=True)
-    zy_c = zy - zy.mean(axis=0, keepdims=True)
 
-    N = zx_c.shape[0]
-    d_x, d_y = zx_c.shape[1], zy_c.shape[1]
-    if N <= 1:
-        return {
-            'zx_rotated': zx_c,
-            'zy_rotated': zy_c,
-            'singular_values': np.array([]),
-            'rotation_x': np.eye(d_x),
-            'rotation_y': np.eye(d_y),
-        }
+def compute_cross_covariance_spectrum(zx, zy, whitening: Optional[str] = 'std') -> np.ndarray:
+    """Singular values of the cross-covariance of two embeddings.
 
-    # Whiten copies for computing rotation axes only — zx_c / zy_c are unchanged
-    zx_w, zy_w = zx_c.copy(), zy_c.copy()
-    if whitening == 'std':
-        std_x = zx_w.std(axis=0, keepdims=True)
-        std_y = zy_w.std(axis=0, keepdims=True)
-        zx_w = zx_w / np.where(std_x > 1e-8, std_x, 1.0)
-        zy_w = zy_w / np.where(std_y > 1e-8, std_y, 1.0)
-    elif whitening == 'zca':
-        def _zca(Z):
-            cov = (Z.T @ Z) / (Z.shape[0] - 1)
-            Uz, Sz, _ = np.linalg.svd(cov)
-            W = Uz @ np.diag(1.0 / np.sqrt(np.maximum(Sz, 1e-8))) @ Uz.T
-            return Z @ W.T
-        zx_w, zy_w = _zca(zx_w), _zca(zy_w)
-    elif whitening is not None:
-        raise ValueError(f"Unknown whitening: '{whitening}'. Expected 'std', 'zca', or None.")
+    See :func:`cross_covariance_svd` for `whitening`.
+    """
+    return cross_covariance_svd(zx, zy, whitening)['singular_values']
 
-    cov_xy = (zx_w.T @ zy_w) / (N - 1)
-    U, s, Vt = np.linalg.svd(cov_xy, full_matrices=False)
-    V = Vt.T  # (d_y, min(d_x, d_y))
 
+def compute_cross_covariance_rotation(zx, zy, whitening: Optional[str] = 'std') -> Dict[str, np.ndarray]:
+    """Embeddings re-expressed so that dimension 0 carries the most shared variance.
+
+    The rotation comes from :func:`cross_covariance_svd`. Whitening sets the
+    rotation's axes only: the returned embeddings are the centred originals at
+    their own scale, projected onto those axes, so they order dimensions the
+    same way the participation ratio does.
+
+    Returns
+    -------
+    dict
+        ``'zx_rotated'`` and ``'zy_rotated'`` (``(N, min(d_x, d_y))``),
+        ``'singular_values'``, ``'rotation_x'`` and ``'rotation_y'``. Apply a
+        rotation to new data as ``zx_new @ rotation_x``.
+    """
+    svd = cross_covariance_svd(zx, zy, whitening)
     return {
-        'zx_rotated': zx_c @ U,   # centered, original scale, rotated
-        'zy_rotated': zy_c @ V,
-        'singular_values': s,
-        'rotation_x': U,
-        'rotation_y': V,
+        'zx_rotated': svd['zx_centered'] @ svd['rotation_x'],
+        'zy_rotated': svd['zy_centered'] @ svd['rotation_y'],
+        'singular_values': svd['singular_values'],
+        'rotation_x': svd['rotation_x'],
+        'rotation_y': svd['rotation_y'],
     }
 
 
@@ -929,20 +1003,20 @@ def compute_regime_diagnostic(x: Union[np.ndarray, torch.Tensor],
                               separable_threshold: float = 3.0) -> Dict[str, Any]:
     """Cheap (no training), free-standing diagnostic: does the raw channel data
     of one view look "separable" (each channel driven mostly by a single
-    underlying factor -- a block/grouped correlation structure) or "entangled"
-    (mixed-selectivity -- every channel reflects several factors jointly)?
+    underlying factor, a block/grouped correlation structure) or "entangled"
+    (mixed-selectivity. Every channel reflects several factors jointly)?
 
-    Not a dimensionality count and not wired into any other computation --
+    Not a dimensionality count and not wired into any other computation,
     informational context only. Empirically, an isolated large ratio between
     consecutive eigenvalues of the within-view channel correlation matrix
     marks the separable case; a flat/gradual ratio curve marks the entangled
     case. The default threshold (3.0) is a rough heuristic calibrated on
     exactly two validated example cases (separable ~14-16x, genuine
-    joint/radial entangled ~1.7x) -- treat it as a guide, not a precise
+    joint/radial entangled ~1.7x). Treat it as a guide, not a precise
     cutoff; ``peak_val`` is always returned alongside the label so a caller
     can judge borderline cases directly. A mild nonlinearity (e.g. a
     linear-projection-then-tanh) is not a fair "entangled" case and reads as
-    separable-like -- this diagnostic responds to whether there is a clean
+    separable-like. This diagnostic responds to whether there is a clean
     channel-to-factor grouping, not to nonlinearity as such (even a pure
     rotation of independently-driven channels destroys that grouping and
     reads as entangled-like).
@@ -987,30 +1061,6 @@ def compute_regime_diagnostic(x: Union[np.ndarray, torch.Tensor],
     }
 
 
-def anscombe_transform(counts: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
-    """Canonical Anscombe variance-stabilizing transform for count data: ``2*sqrt(x + 3/8)``.
-
-    Maps heteroscedastic (Poisson-like) counts to an approximately unit-variance
-    scale so that downstream per-channel standard deviations are comparable
-    across channels with different firing rates. This is the single canonical
-    stabilizer for the library; any binned-spike processing that needs
-    variance stabilization should call this rather than reimplementing it.
-
-    Parameters
-    ----------
-    counts : np.ndarray or torch.Tensor
-        Non-negative count data, any shape.
-
-    Returns
-    -------
-    Same type and shape as ``counts``.
-    """
-    if torch.is_tensor(counts):
-        return 2.0 * torch.sqrt(counts.clamp(min=0) + 0.375)
-    arr = np.asarray(counts, dtype=np.float64)
-    return 2.0 * np.sqrt(np.clip(arr, 0, None) + 0.375)
-
-
 def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
                                  window_size: float, gap_fraction: float,
                                  path_label: str = "") -> bool:
@@ -1021,7 +1071,7 @@ def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
     ``gap_size * step``. With overlapping windows (``step < window_size``) that
     buffer can be shorter than a single window, in which case a train window and
     a test window can share raw samples even though their *indices* don't
-    overlap -- a leakage channel distinct from (and not caught by) the index
+    overlap, a leakage channel distinct from (and not caught by) the index
     split itself. Shared with the transfer-entropy path (``step=1``,
     ``window_size=history_window`` there), which builds windows via ``unfold``
     and bypasses ``WindowManager`` entirely.
@@ -1040,7 +1090,7 @@ def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
         f"gap_size={gap_size} windows x step={step} = {buffer:.3g} samples of "
         f"buffer, but window_size={window_size}. Train and test windows can "
         f"share up to {window_size - buffer:.3g} samples. Increase "
-        f"split_gap_fraction to at least {min_gap_fraction:.4f} "
+        f"Split(gap_fraction=...) to at least {min_gap_fraction:.4f} "
         f"(currently {gap_fraction}) to eliminate this."
     )
     return True

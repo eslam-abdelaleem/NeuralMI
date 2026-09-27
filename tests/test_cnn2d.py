@@ -16,31 +16,31 @@ from neural_mi.utils import build_critic
 
 class TestCNN2DModel:
     def test_output_shape(self):
-        """Output must be (batch, embed_dim) regardless of spatial size."""
-        model = CNN2D(input_dim=3, hidden_dim=16, embed_dim=32, n_layers=2)
+        """Output must be (batch, embedding_dim) regardless of spatial size."""
+        model = CNN2D(input_dim=3, hidden_dim=16, embedding_dim=32, n_layers=2)
         x = torch.randn(8, 3, 16, 16)
         out = model(x)
         assert out.shape == (8, 32)
 
     def test_variable_spatial_size(self):
         """Adaptive pooling must handle arbitrary H × W without re-instantiation."""
-        model = CNN2D(input_dim=4, hidden_dim=16, embed_dim=8, n_layers=1)
+        model = CNN2D(input_dim=4, hidden_dim=16, embedding_dim=8, n_layers=1)
         for h, w in [(8, 8), (12, 20), (5, 7), (1, 1)]:
             out = model(torch.randn(4, 4, h, w))
             assert out.shape == (4, 8), f"Failed for H={h}, W={w}"
 
     def test_single_channel(self):
-        model = CNN2D(input_dim=1, hidden_dim=8, embed_dim=16, n_layers=1)
+        model = CNN2D(input_dim=1, hidden_dim=8, embedding_dim=16, n_layers=1)
         out = model(torch.randn(4, 1, 8, 8))
         assert out.shape == (4, 16)
 
     def test_even_kernel_raises(self):
         with pytest.raises(ValueError, match="odd"):
-            CNN2D(input_dim=3, hidden_dim=16, embed_dim=8, n_layers=1, kernel_size=4)
+            CNN2D(input_dim=3, hidden_dim=16, embedding_dim=8, n_layers=1, kernel_size=4)
 
     def test_kernel_size_1(self):
         """kernel_size=1 is the 1×1 conv case — valid."""
-        model = CNN2D(input_dim=3, hidden_dim=8, embed_dim=4, n_layers=1, kernel_size=1)
+        model = CNN2D(input_dim=3, hidden_dim=8, embedding_dim=4, n_layers=1, kernel_size=1)
         out = model(torch.randn(2, 3, 5, 5))
         assert out.shape == (2, 4)
 
@@ -50,7 +50,7 @@ class TestCNN2DModel:
 
     def test_gradients_flow(self):
         """Gradients must reach Conv2d weights."""
-        model = CNN2D(input_dim=2, hidden_dim=8, embed_dim=4, n_layers=2)
+        model = CNN2D(input_dim=2, hidden_dim=8, embedding_dim=4, n_layers=2)
         x = torch.randn(4, 2, 8, 8, requires_grad=False)
         loss = model(x).sum()
         loss.backward()
@@ -59,7 +59,7 @@ class TestCNN2DModel:
 
     def test_eval_deterministic(self):
         """In eval mode the model is deterministic."""
-        model = CNN2D(input_dim=2, hidden_dim=8, embed_dim=4, n_layers=1).eval()
+        model = CNN2D(input_dim=2, hidden_dim=8, embedding_dim=4, n_layers=1).eval()
         x = torch.randn(4, 2, 6, 6)
         out1 = model(x)
         out2 = model(x)
@@ -69,7 +69,7 @@ class TestCNN2DModel:
         """n_layers=0 → empty conv_layers; forward should still work (degenerate case)."""
         # With n_layers=0 there are no Conv2d layers, but the first block (input_dim→hidden_dim)
         # is always added. Check it handles gracefully.
-        model = CNN2D(input_dim=2, hidden_dim=8, embed_dim=4, n_layers=1)
+        model = CNN2D(input_dim=2, hidden_dim=8, embedding_dim=4, n_layers=1)
         out = model(torch.randn(2, 2, 4, 4))
         assert out.shape == (2, 4)
 

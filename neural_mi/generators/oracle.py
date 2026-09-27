@@ -17,18 +17,18 @@ latent::
 
 Everything is jointly Gaussian and jointly stationary, so every quantity is a
 log-determinant of a covariance block and is exact up to floating point. The
-one exception is :meth:`mi_rate`, which is a spectral integral and therefore
+one exception is :meth:`mi_rate`, a spectral integral and therefore
 exact up to quadrature.
 
 A shared latent deliberately violates Massey's no-feedback condition: Y's past
 informs Z's past, which informs Z_t, which informs X_t. The directed quantities
 therefore converge to strictly smaller values than the symmetric MI rate, and
 only a two-sided (acausal) window over X recovers the rate. That is a property
-of the system rather than a defect, and it is what makes the system a useful
+of the system instead of a defect, and it is what makes the system a useful
 test of whether an estimator is measuring the estimand it claims to.
 """
 from collections import OrderedDict
-from typing import Dict, Iterable, Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple
 
 from contextlib import contextmanager
 
@@ -79,7 +79,7 @@ class SharedLatentGaussian:
     dims : dict of str to int, optional
         Observed dimensionality of each process, keyed by name. Defaults to
         ``{'x': 8, 'y': 8}``. Add a third entry (conventionally ``'w'``) for
-        interaction information or conditional transfer entropy, which need a
+        interaction information or conditional transfer entropy. Both need a
         third process to be defined at all.
     d : int, optional
         Dimensionality of the shared latent, so the true number of shared
@@ -92,8 +92,8 @@ class SharedLatentGaussian:
         Observation-noise standard deviation, either one value shared by all
         processes or one per process. Defaults to 1.0.
     coupling : float, optional
-        Scales every projection matrix, which raises mutual information without
-        changing the timescale. Defaults to 1.0.
+        Scales every projection matrix. Larger values raise the mutual
+        information without changing the timescale. Defaults to 1.0.
     seed : int, optional
         Seeds the projection matrices. Defaults to 0.
 
@@ -157,6 +157,29 @@ class SharedLatentGaussian:
                 f"Pass a larger dims dict to the constructor to add one."
             ) from None
 
+    def snr(self, name: str) -> np.ndarray:
+        """Per-channel signal-to-noise ratio of one process.
+
+        Channel ``c`` of process ``V`` has latent-driven variance
+        ``[M_V Sigma_Z M_V^T]_cc`` and observation-noise variance ``s_V^2``,
+        and this returns their ratio for every channel. The projections are
+        random, so channels of the same process can differ by two orders of
+        magnitude in how much of the latent they carry.
+
+        Returns
+        -------
+        ndarray
+            One ratio per channel, of shape ``(n_channels,)``. Infinite where
+            the process was given zero observation noise.
+        """
+        self.dim(name)
+        proj = self.proj[name]
+        signal = np.diag(proj @ self.Sigma_Z @ proj.T)
+        sigma2 = self.noise[name] ** 2
+        if sigma2 == 0.0:
+            return np.full(signal.shape, np.inf)
+        return signal / sigma2
+
     def _latent_cov(self, lag: int) -> np.ndarray:
         return (self.phi ** abs(lag)) * self.Sigma_Z
 
@@ -169,7 +192,7 @@ class SharedLatentGaussian:
 
     def _cov_from_spec(self, spec: Spec) -> np.ndarray:
         # Validate up front so an unknown name reports which processes exist,
-        # rather than surfacing a bare KeyError from the projection lookup.
+        # instead of surfacing a bare KeyError from the projection lookup.
         for (v, _) in spec:
             self.dim(v)
         rows = []
@@ -297,7 +320,8 @@ class SharedLatentGaussian:
     # ------------------------------------------------------------------
     # sampling
     # ------------------------------------------------------------------
-    def sample(self, T: int, seed: int = 0, burn: int = 500) -> Dict[str, np.ndarray]:
+    def sample(self, T: int, seed: int = 0, burn: int = 500,
+               return_latents: bool = False):
         """Draw ``T`` time steps from the model.
 
         Parameters
@@ -310,12 +334,18 @@ class SharedLatentGaussian:
         burn : int, optional
             Latent steps discarded so the returned series starts stationary.
             Defaults to 500.
+        return_latents : bool, optional
+            If True, also return the shared latent that drove the sample.
+            Defaults to False.
 
         Returns
         -------
         dict of str to ndarray
-            One array per process, each of shape ``(T, n_channels)``, which is
-            the timepoints-first convention the library's processors expect.
+            One array per process, each of shape ``(T, n_channels)``, the timepoints-first convention the library's processors expect.
+
+        ndarray, optional
+            The shared latent ``Z``, of shape ``(T, d)``, only if
+            ``return_latents=True``.
         """
         rng = np.random.default_rng(seed)
         latent = np.empty((T + burn, self.d))
@@ -324,27 +354,42 @@ class SharedLatentGaussian:
             z = self.phi * z + rng.normal(size=self.d)
             latent[t] = z
         latent = latent[burn:]
-        return {v: latent @ self.proj[v].T + self.noise[v] * rng.normal(size=(T, n))
-                for v, n in self.dims.items()}
+        observed = {v: latent @ self.proj[v].T + self.noise[v] * rng.normal(size=(T, n))
+                    for v, n in self.dims.items()}
+        if return_latents:
+            return observed, latent
+        return observed
 
 
 def generate_shared_latent_gaussian(T: int = 20000, dims: Optional[Dict[str, int]] = None,
                                     d: int = 2, phi: float = 0.9, noise=1.0,
-                                    coupling: float = 1.0, seed: int = 0):
+                                    coupling: float = 1.0, seed: int = 0,
+                                    return_latents: bool = False):
     """Sample from a :class:`SharedLatentGaussian` and return the oracle with it.
 
     A convenience for the common case of wanting data and its exact values
     together. Equivalent to constructing the oracle and calling
     :meth:`~SharedLatentGaussian.sample`.
 
+    Parameters
+    ----------
+    return_latents : bool, optional
+        If True, append the shared latent to the returned tuple. Defaults to
+        False. Every other parameter is passed straight to the constructor.
+
     Returns
     -------
     tuple of (dict, SharedLatentGaussian)
         The sampled processes keyed by name, and the oracle that generated
-        them, so any exact value can be queried afterwards.
+        them, so any exact value can be queried afterwards. With
+        ``return_latents=True`` the shared latent follows as a third element,
+        of shape ``(T, d)``.
     """
     oracle = SharedLatentGaussian(dims=dims, d=d, phi=phi, noise=noise,
                                   coupling=coupling, seed=seed)
+    if return_latents:
+        data, latent = oracle.sample(T, seed=seed, return_latents=True)
+        return data, oracle, latent
     return oracle.sample(T, seed=seed), oracle
 
 
@@ -353,7 +398,7 @@ def generate_shared_latent_gaussian(T: int = 20000, dims: Optional[Dict[str, int
 #
 # Each of these fixes the mutual information by construction, so a sample
 # comes with the number an estimator is supposed to recover. The windowed
-# pair report the *observed* MI, computed from the SNR, rather than the
+# pair report the *observed* MI, computed from the SNR, instead of the
 # latent MI they were built from.
 # ---------------------------------------------------------------------------
 
@@ -474,7 +519,7 @@ def generate_windowed_oscillatory(
     cov = np.array([[1.0, rho], [rho, 1.0]])
     _rng = np.random.default_rng(seed)
     latents = _rng.multivariate_normal([0.0, 0.0], cov, size=(n_windows, n_channels))
-    z_x = latents[:, :, 0]  # (n_windows, n_channels) — independent per channel
+    z_x = latents[:, :, 0]  # (n_windows, n_channels), independent per channel
     z_y = latents[:, :, 1]  # (n_windows, n_channels)
 
     t = np.arange(window_size) / sample_rate
@@ -512,7 +557,7 @@ def generate_windowed_multichannel(
 
     Channel ``c`` uses carrier frequency
     ``f_c = f_min + c * (f_max - f_min) / (n_channels - 1)``.
-    The per-channel latents are independent: ``(z_{x,c}, z_{y,c})`` are drawn
+    Per-channel latent pairs ``(z_{x,c}, z_{y,c})`` are drawn
     independently for each channel from correlated Gaussians with MI ``latent_mi``.
     Total observable MI = sum of per-channel observable MIs.
 
@@ -691,15 +736,15 @@ def generate_spike_pair(n_windows: int = 4000, window_size: float = 1.0,
 
     Two codings, differing in what carries the information:
 
-    - ``'count'`` — the level sets how many spikes the window holds, and the
+    - ``'count'``: the level sets how many spikes the window holds, and the
       times within the window are uniform noise. Information is in the rate.
-    - ``'timing'`` — the level sets *where* in the window a spike burst falls,
+    - ``'timing'``: the level sets *where* in the window a spike burst falls,
       while the number of spikes is drawn independently for each population and
       so carries nothing. Information is in the timing.
 
-    The two make different demands of an estimator, and of the spike
-    representation: whether a padded slot is distinguishable from a real spike
-    matters for ``'timing'`` in a way it does not for ``'count'``.
+    Whether a padded slot is distinguishable from a real spike
+    matters for ``'timing'`` in a way it does not for ``'count'``, so the two
+    make different demands of an estimator and of the spike representation.
 
     .. warning::
        The returned value is the MI **between windows that align with this
@@ -718,8 +763,7 @@ def generate_spike_pair(n_windows: int = 4000, window_size: float = 1.0,
        With ``shift_time`` or ``shift_windows`` left on (both default ``True``),
        or with a different ``window_size``, an analysis window spans two
        independent latent draws and can carry *more* than the returned value.
-       An estimate above it therefore means the setup is wrong rather than the
-       estimator being wrong. A quick check: the number of windows built should
+       An estimate above it therefore signals an error in the setup. A quick check: the number of windows built should
        equal ``n_windows``.
 
     Parameters
@@ -731,7 +775,7 @@ def generate_spike_pair(n_windows: int = 4000, window_size: float = 1.0,
         Defaults to 1.0.
     n_neurons : int, optional
         Neurons per population. Every neuron in a population sees the same
-        latent, so more neurons make it easier to read, not more informative.
+        latent, so more neurons make it easier to read without adding information.
         Defaults to 4.
     coding : str, optional
         ``'count'`` or ``'timing'``. Defaults to ``'count'``.
@@ -741,9 +785,7 @@ def generate_spike_pair(n_windows: int = 4000, window_size: float = 1.0,
     rho : float, optional
         Probability the two populations share the same level. Defaults to 0.85.
     lag_windows : int, optional
-        Whole-window delay of Y relative to X. The exact MI is unchanged and
-        now sits at this lag rather than at zero, which is what ``mode='lag'``
-        should recover. Defaults to 0.
+        Whole-window delay of Y relative to X. The exact MI is unchanged and sits at this lag instead of at zero, the lag ``mode='lag'`` should recover. Defaults to 0.
     counts : sequence of int, optional
         ``coding='count'`` only: the spike count for each latent level.
         Defaults to ``[2, 5, 8, 11]`` truncated or extended to ``n_levels``.
@@ -839,14 +881,13 @@ def generate_xor_pair(n_samples: int, noise: float = 0.1, use_torch: bool = True
 
     ``X = (x1, x2)`` are independent fair bits and ``Y = (x1 XOR x2) + N(0, noise)``.
     Neither bit alone says anything about ``Y``, so ``I(x1; Y) = I(x2; Y) = 0``
-    exactly, while the pair determines it. That gap is the point: the
-    information is purely synergistic and cannot be found one variable at a
-    time.
+    exactly. The pair determines it together. The information is purely synergistic
+    and cannot be found one variable at a time.
 
     The returned MI is ``H(Y) - H(Y | X)``. The conditional is a plain Gaussian,
     and the marginal is an equal mixture of ``N(0, noise)`` and ``N(1, noise)``
-    whose entropy is evaluated by quadrature, so the value is exact to
-    quadrature rather than in closed form. As ``noise -> 0`` it approaches
+    whose entropy is evaluated by quadrature. The value is therefore exact to
+    quadrature instead of in closed form. As ``noise -> 0`` it approaches
     exactly 1 bit.
 
     Parameters
@@ -855,10 +896,10 @@ def generate_xor_pair(n_samples: int, noise: float = 0.1, use_torch: bool = True
         Number of samples.
     noise : float, optional
         Standard deviation of the Gaussian added to Y. Defaults to 0.1. Must be
-        positive: at exactly zero Y is discrete and the differential entropy
-        used here does not apply, though the limit is 1 bit.
+        positive. At exactly zero, Y is discrete and this differential-entropy
+        calculation does not apply; the limit is still 1 bit.
     use_torch : bool, optional
-        Return ``torch.Tensor`` rather than ``np.ndarray``. Defaults to True.
+        Return ``torch.Tensor`` instead of ``np.ndarray``. Defaults to True.
     seed : int, optional
         Defaults to None (uses global numpy state, matching the other generators).
 
@@ -924,7 +965,7 @@ def generate_categorical_pair(n_samples: int, n_channels: int = 1,
     agreement : float, optional
         Probability that ``y`` copies ``x``. Defaults to 0.9.
     stay_probability : float, optional
-        Probability the chain holds its state, which sets temporal smoothness
+        Probability the chain holds its state. It sets the temporal smoothness
         without affecting the per-sample MI. Defaults to 0.95.
     use_torch : bool, optional
         Defaults to True.
@@ -981,14 +1022,14 @@ def generate_lagged_pair(n_samples: int = 5000, lag: int = 30, dim: int = 1,
     dim : int, optional
         Channels per signal. Defaults to 1.
     phi : float, optional
-        Latent autocorrelation, which sets how broad the lag peak is. Defaults
+        Latent autocorrelation. It sets how broad the lag peak is. Defaults
         to 0.95.
     noise : float, optional
         Observation-noise standard deviation. Defaults to 0.5.
     coupling : float, optional
         Scales the projections, raising the MI at the peak without moving it.
-        Defaults to 3.0. Together with ``noise`` this sets ``exact_mi``, which
-        is returned rather than assumed.
+        Defaults to 3.0. Together with ``noise`` this sets ``exact_mi``, which the function computes and returns.
+
     seed : int, optional
         Defaults to 0.
 
@@ -998,7 +1039,7 @@ def generate_lagged_pair(n_samples: int = 5000, lag: int = 30, dim: int = 1,
     exact_mi : float
         ``I`` in bits at the peak, i.e. between ``x[t]`` and ``y[t + lag]``.
         Y trails X by ``lag`` samples, so the dependence sits at ``x[t - lag]``
-        for a given ``y[t]``, and ``mode='lag'`` reports the peak at ``+lag``.
+        for a given ``y[t]``. ``mode='lag'`` reports the peak at ``+lag``.
 
     Examples
     --------

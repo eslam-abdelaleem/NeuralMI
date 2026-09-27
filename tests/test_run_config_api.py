@@ -77,7 +77,7 @@ def test_transfer_bidirectional_is_renamed(capture_engine):
             transfer=Transfer(history_window=10, bidirectional=True))
     kw = capture_engine['kw']
     assert kw['history_window'] == 10
-    assert kw['bidirectional_te'] is True          # renamed from Transfer.bidirectional
+    assert kw['bidirectional_te'] is True          # Transfer.bidirectional's schema name
     assert 'bidirectional' not in kw               # the raw name must not leak through
 
 

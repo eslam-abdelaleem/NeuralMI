@@ -95,7 +95,8 @@ def test_shared_config_keys_are_valid_schema_keys(cls):
 def test_processing_keys_are_run_processor_keys():
     emitted = set(_fill_all(cfg.Processing).to_kwargs())
     expected = {"processor_type_x", "processor_params_x",
-                "processor_type_y", "processor_params_y", "x_time", "y_time"}
+                "processor_type_y", "processor_params_y", "x_time", "y_time",
+                "w_processor_type", "w_processor_params", "w_time"}
     assert emitted == expected
 
 
@@ -107,11 +108,8 @@ def test_processing_keys_are_run_processor_keys():
 def test_mode_config_keys_are_valid_mode_kwargs(cls, mode):
     # Precision, Lag, and Dimensionality map exactly onto MODE_KWARGS_SCHEMA.
     # (Rigorous/Transfer/Conditional also carry keys consumed directly by their
-    # analysis functions -- e.g. gamma_range -- so they are not asserted against
-    # the schema here; their lowering mechanics are covered above. Dimensionality
-    # used to be in that excluded group too, when sigma_add/stabilize_counts
-    # bypassed the schema entirely -- that inconsistency is gone now that those
-    # fields have been replaced with schema-validated ones.)
+    # analysis functions, such as gamma_range, so they are not asserted against
+    # the schema here; their lowering is covered above.)
     emitted = set(_fill_all(cls).to_analysis_kwargs())
     allowed = set(MODE_KWARGS_SCHEMA[mode])
     unknown = emitted - allowed

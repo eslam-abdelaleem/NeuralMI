@@ -1,5 +1,5 @@
 # neural_mi/visualize/plot.py
-"""Provides plotting functions for visualizing analysis results.
+"""Provides plotting functions for visualising analysis results.
 
 This module contains functions to generate plots for different analysis modes,
 such as hyperparameter sweeps and bias correction fits. These are typically
@@ -45,7 +45,7 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     Parameters
     ----------
     summary_df : pd.DataFrame
-        A DataFrame containing the summarized results of the sweep. Must
+        A DataFrame containing the summarised results of the sweep. Must
         contain columns for the parameter, mean MI, and std dev of MI.
     param_col : str
         The name of the column in `summary_df` that contains the swept
@@ -114,7 +114,7 @@ def plot_sweep_heatmap(summary_df: pd.DataFrame, param_x: str, param_y: str,
     """Plots a 2-parameter sweep as a heatmap (``param_x`` × ``param_y`` → MI).
 
     Use this instead of :func:`plot_sweep_curve` when exactly two parameters
-    were swept together — a 1-D line/scatter would otherwise have to collapse
+    were swept together, a 1-D line/scatter would otherwise have to collapse
     one of the two parameters, hiding its effect on MI.
 
     Parameters
@@ -253,24 +253,23 @@ def plot_dimensionality_curve(
 ) -> plt.Axes:
     """Per-rank chart of which directions of shared structure are trustworthy.
 
-    Visualizes ``result.details['stability_per_rank']`` (plus
+    Visualises ``result.details['stability_per_rank']`` (plus
     ``'stable_directions'`` and ``'stable_but_degenerate_groups'``): one bar
     per embedding rank, height = mean singular-value strength across splits
-    (log scale), colored by status --
+    (log scale), coloured by status:
 
     - **stable** (green): reproducible across every split/rerun, above the
       noise floor, individually trustworthy.
     - **stable, degenerate group** (amber, hatched): reproducible and above
-      the noise floor, but too close in strength to an adjacent rank to
-      individually order -- existence confirmed, identity not claimed. Ranks
+      the noise floor, but too close in strength to an adjacent rank to individually order. Existence is confirmed and identity is not claimed. Ranks
       in the same group share a bracket above their bars.
-    - **not stable / below noise floor** (gray): not reported as trustworthy,
+    - **not stable / below noise floor** (grey): not reported as trustworthy,
       either because it didn't reproduce across splits or its strength is
       indistinguishable from noise.
 
     This does not plot ``pr_eig``/``pr_singular`` (see
     ``result.dataframe`` for those, kept as a secondary, non-headline
-    diagnostic) or an MI-vs-embedding-dim curve -- this mode does not sweep
+    diagnostic) or an MI-vs-embedding-dim curve. This mode does not sweep
     embedding_dim or claim a saturation point.
 
     Parameters
@@ -359,7 +358,7 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
                              color: Optional[str] = None, **kwargs):
     """Plots the results of a rigorous, bias-corrected analysis.
 
-    This function visualizes the extrapolation fit used for bias correction.
+    This function visualises the extrapolation fit used for bias correction.
     It shows the raw MI estimates for each data subset size (gamma), the mean
     MI at each gamma, and the final linear fit extrapolated to an infinite
     dataset size (gamma=0).
@@ -388,9 +387,9 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
         label instead of each carrying its own generic description. Defaults
         to None (single-result appearance: three descriptive legend entries).
     color : str, optional
-        Color for all of this result's plotted elements (raw points, mean
+        Colour for all of this result's plotted elements (raw points, mean
         line, fit line, corrected-MI marker). If None, uses the original
-        single-result scheme (gray points, black mean line, red fit/marker).
+        single-result scheme (grey points, black mean line, red fit/marker).
         Defaults to None.
 
     Returns
@@ -409,7 +408,7 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     agg = raw_results_df.groupby('gamma')['train_mi'].mean().reset_index()
 
     # A single label collapses the three elements below to one legend entry
-    # (via the proxy artist added after them) rather than three near-duplicate
+    # (via the proxy artist added after them) instead of three near-duplicate
     # ones -- readable when compare() overlays several results on one ax.
     element_label = '_nolegend_' if label is not None else 'Mean MI per Gamma'
     ax.plot(agg['gamma'] - 1, agg['train_mi'], 'o-', color=mean_color, label=element_label)
@@ -452,25 +451,25 @@ def plot_embeddings(
     ax: Optional[plt.Axes] = None,
     **kwargs,
 ) -> plt.Axes:
-    """Visualize learned embeddings in 2-D or 3-D.
+    """Visualise learned embeddings in 2-D or 3-D.
 
     Parameters
     ----------
     z : np.ndarray
-        Embedding array of shape ``(n_samples, embed_dim)``.
+        Embedding array of shape ``(n_samples, embedding_dim)``.
     color : np.ndarray, optional
         Length-n array of values used for colouring points.  Continuous arrays
-        produce a colormap; integer / string arrays produce a discrete palette
+        produce a colour map; integer / string arrays produce a discrete palette
         with a legend.  Defaults to None (uniform colour).
     method : {'auto', 'none', 'pca', 'tsne', 'umap'}, default='auto'
         Dimensionality-reduction method applied before plotting:
 
-        - ``'none'`` — use the first ``dim`` dimensions directly (requires
-          ``embed_dim >= dim``).
-        - ``'pca'`` — sklearn PCA (always available).
-        - ``'tsne'`` — sklearn t-SNE.
-        - ``'umap'`` — UMAP (requires the ``umap-learn`` package).
-        - ``'auto'`` — uses ``'none'`` if ``embed_dim <= dim``, else tries
+        - ``'none'``: use the first ``dim`` dimensions directly (requires
+          ``embedding_dim >= dim``).
+        - ``'pca'``: sklearn PCA (always available).
+        - ``'tsne'``: sklearn t-SNE.
+        - ``'umap'``: UMAP (requires the ``umap-learn`` package).
+        - ``'auto'``: uses ``'none'`` if ``embedding_dim <= dim``, else tries
           ``'umap'``, falls back to ``'pca'``.
     dim : {2, 3}, default=2
         Output dimensionality: 2 → 2-D scatter, 3 → 3-D scatter.
@@ -497,15 +496,15 @@ def plot_embeddings(
 
     z = np.asarray(z)
     if z.ndim != 2:
-        raise ValueError(f"z must be 2-D (n_samples, embed_dim), got shape {z.shape}.")
-    n_samples, embed_dim = z.shape
+        raise ValueError(f"z must be 2-D (n_samples, embedding_dim), got shape {z.shape}.")
+    n_samples, embedding_dim = z.shape
 
     if dim not in (2, 3):
         raise ValueError(f"dim must be 2 or 3, got {dim}.")
 
     # --- Resolve method ---
     if method == 'auto':
-        if embed_dim <= dim:
+        if embedding_dim <= dim:
             method = 'none'
         else:
             import importlib.util
@@ -515,9 +514,9 @@ def plot_embeddings(
 
     # --- Apply dimensionality reduction ---
     if method == 'none':
-        if embed_dim < dim:
+        if embedding_dim < dim:
             raise ValueError(
-                f"method='none' requires embed_dim >= dim, but embed_dim={embed_dim} < dim={dim}."
+                f"method='none' requires embedding_dim >= dim, but embedding_dim={embedding_dim} < dim={dim}."
             )
         z_plot = z[:, :dim]
     elif method == 'pca':
@@ -649,7 +648,7 @@ def plot_cross_correlation(
         embedding this plot in a larger figure.  Defaults to ``True``.
     xlim : tuple of (float, float), optional
         X-axis limits ``(left, right)``.  When ``None`` the full lag range is
-        shown (previously hard-coded as ``(-100, 100)``).
+        shown.
 
     Returns
     -------
@@ -716,10 +715,10 @@ def analyze_mi_heatmap(
     radius_multiplier : float, optional
         Scale factor for the Parsimonious Circle radius.  Defaults to 1.2.
     true_lag : float, optional
-        Known true lag — drawn as a reference box when provided together with
+        Known true lag, drawn as a reference box when provided together with
         ``history_duration``.
     history_duration : float, optional
-        Known true history duration — drawn as a reference box when provided
+        Known true history duration, drawn as a reference box when provided
         together with ``true_lag``.
     ax : plt.Axes, optional
         Axes to draw on.  When ``None`` a new figure is created internally.
@@ -754,7 +753,7 @@ def analyze_mi_heatmap(
                 causal_contour_c, causal_contour_c,
             )
     else:
-        _logger.info("Causal Contour Analysis: lag=0 not found — skipping Causal Contour estimation.")
+        _logger.info("Causal Contour Analysis: lag=0 not found, skipping Causal Contour estimation.")
 
     # --- 3. Create the main figure for all analysis ---
     created_fig = ax is None
@@ -781,7 +780,7 @@ def analyze_mi_heatmap(
     )
 
     if significant_contour_points.size == 0:
-        _logger.warning("No significant MI contour found at threshold %.3f — try a lower value.",
+        _logger.warning("No significant MI contour found at threshold %.3f, try a lower value.",
                         absolute_mi_threshold)
         ax.set_title('Parsimony-Informed Topological Analysis (No Significant Contour Found)')
         ax.set_xlabel('Lag (Timepoints)')

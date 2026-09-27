@@ -47,7 +47,10 @@ def test_run_estimate_mode_returns_results_with_float(gaussian_data):
     )
     assert isinstance(result, Results)
     assert isinstance(result.mi_estimate, float)
-    assert result.dataframe is None
+    # One configuration, one repeat: one dataframe row, whose mean is the estimate.
+    assert len(result.dataframe) == 1
+    assert result.mi_estimate == result.dataframe['mi_mean'].iloc[0]
+    assert len(result.runs) == 1
 
 def test_run_sweep_mode_returns_results_with_dataframe(gaussian_data):
     """
@@ -70,8 +73,9 @@ def test_run_sweep_mode_returns_results_with_dataframe(gaussian_data):
 
 
 def test_run_sweep_mode_tolerates_unhashable_swept_values(gaussian_data):
-    """sweep_grid values that are themselves lists (e.g. per-layer hidden_dim)
-    used to crash pandas groupby with 'unhashable type: list'."""
+    """sweep_grid values that are themselves lists (per-layer hidden_dim)
+        group correctly and come back as tuples.
+    """
     x_data, y_data = gaussian_data
     sweep_grid = {'hidden_dim': [[8, 8], [16]]}
     result = nmi.run(
@@ -95,10 +99,11 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
     x_data, y_data = gaussian_data
 
     # Mock run_rigorous_analysis to prevent macOS multiprocessing serialization crashes during routing tests
-    with patch('neural_mi.run.run_rigorous_analysis') as mock_rigorous:
+    with patch('neural_mi.analysis.rigorous.run_rigorous_analysis') as mock_rigorous:
         mock_rigorous.return_value = {
-            'raw_results_df': pd.DataFrame([{'gamma': 1.0, 'train_mi': 2.0}]),
-            'corrected_results': [{'mi_corrected': 2.5, 'mi_error': 0.1, 'slope': -0.05}]
+            'raw_results_df': pd.DataFrame([{'gamma': 1, 'chunk': 0, 'train_mi': 2.0}]),
+            'corrected_results': [{'mi_corrected': 2.5, 'mi_error': 0.1, 'slope': -0.05,
+                                   'is_reliable': True}]
         }
 
         result = nmi.run(
@@ -110,10 +115,12 @@ def test_run_rigorous_mode_returns_results_with_details(gaussian_data):
         )
 
     assert isinstance(result, Results)
-    assert isinstance(result.mi_estimate, float)
+    assert result.mi_estimate == 2.5
     assert isinstance(result.dataframe, pd.DataFrame)
-    assert isinstance(result.details, dict)
-    assert 'mi_error' in result.details
+    # One repeat: the fit's own half-width is reported with the estimate.
+    assert result.get('mi_error') == 0.1
+    assert result.runs['slope'].iloc[0] == -0.05
+    assert 'trainings' in result.details[0]
 
 def test_run_dimensionality_mode_returns_results_with_dataframe(raw_gaussian_data):
     """
@@ -140,14 +147,16 @@ def test_run_dimensionality_mode_returns_results_with_dataframe(raw_gaussian_dat
     assert 'pr_eig_mean' in result.dataframe.columns
     assert 'pr_singular_mean' in result.dataframe.columns
     assert 'mi_mean' in result.dataframe.columns
-    assert result.mi_estimate is None
+    # One configuration: mi_estimate is the mean MI over the splits, like every mode.
+    assert result.mi_estimate == result.dataframe['mi_mean'].iloc[0]
+    assert len(result.runs) == 2
     # The mode's actual headline output.
-    assert 'regime_x' in result.details
-    assert result.details['regime_x']['regime'] in ('separable-like', 'entangled-like')
-    assert 'stable_directions' in result.details
-    assert 'stable_but_degenerate_groups' in result.details
-    assert isinstance(result.details['n_stable_total'], int)
-    assert isinstance(result.details['converged'], bool)
+    details = result.details[0]
+    assert details['regime_x']['regime'] in ('separable-like', 'entangled-like')
+    assert 'stable_directions' in details
+    assert 'stable_but_degenerate_groups' in details
+    assert isinstance(result.get('n_stable_total'), (int, np.integer))
+    assert isinstance(result.get('converged'), (bool, np.bool_))
 
 def test_run_with_continuous_processor_returns_results(raw_gaussian_data):
     """
@@ -205,7 +214,7 @@ def test_run_with_custom_critic(gaussian_data):
     # which calculates to log(N) + 1 - (log(exp(1)*N)) = log(N) + 1 - (1 + log(N)) = 0.
     assert np.isclose(result.mi_estimate, 0.0, atol=1e-6)
 
-@patch('neural_mi.run.run_precision_analysis')
+@patch('neural_mi.analysis.precision.run_precision_analysis')
 def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_precision, gaussian_data):
     """
     Verifies that mode='precision' routes correctly and formats the Results object.
@@ -214,6 +223,7 @@ def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_pre
 
     # Mock the return value of the precision engine
     mock_precision.return_value = {
+        'samples': [{'tau': 0.0, 'mi': 2.0}, {'tau': 1.0, 'mi': 0.5}],
         'dataframe': pd.DataFrame([{'tau': 0.0, 'train_mi': 2.0}, {'tau': 1.0, 'train_mi': 0.5}]),
         'details': {
             'baseline_mi': 2.0,
@@ -243,14 +253,16 @@ def test_run_precision_mode_returns_results_with_dataframe_and_estimate(mock_pre
     assert result.mode == 'precision'
     assert isinstance(result.dataframe, pd.DataFrame)
 
-    # mi_estimate holds baseline_mi (MI at zero corruption), not precision_tau.
-    # precision_tau remains accessible via result.details['precision_tau'].
-    assert result.mi_estimate == result.details['baseline_mi']
-    assert result.details['precision_tau'] == 1.0  # tau is still in details
+    # One row per tau, so there is no single estimate; the baseline and the
+    # threshold tau are read from details.
+    assert result.mi_estimate is None
+    assert list(result.dataframe['tau']) == [0.0, 1.0]
+    assert result.get('baseline_mi') == 2.0
+    assert result.get('precision_tau') == 1.0
 
-    # Ensure the details dictionary has all the metadata
-    assert 'baseline_mi' in result.details
-    assert 'raw_results' in result.details
+    # The configuration's details hold the precision read; each evaluation is a row of runs.
+    assert {'baseline_mi', 'precision_tau', 'corruption_method'} <= set(result.details[0])
+    assert len(result.runs) == 2
 
 
 # --- Processor-level sweep and spike integration ---
@@ -288,5 +300,65 @@ def test_rigorous_mode_with_spike_data():
     assert isinstance(results, nmi.results.Results)
     assert isinstance(results.mi_estimate, float)
     assert results.dataframe is not None and not results.dataframe.empty
-    assert 'mi_corrected' in results.details
-    assert 'mi_error' in results.details
+    assert results.get('mi_error') is not None
+    assert 'trainings' in results.details[0]
+
+
+# --- Where warnings point ---
+
+def _run_from_a_helper(x, y):
+    return nmi.run(x, y, mode='estimate', model=MODEL,
+                   training=Training(n_epochs=1, batch_size=512), show_progress=False)
+
+
+def test_warnings_point_at_the_callers_line(raw_gaussian_data):
+    """A warning names the line in the caller's code, however deep it was raised."""
+    import inspect
+    import warnings
+    x, y = raw_gaussian_data
+    x, y = x[:100], y[:100]
+    call_line = inspect.getsourcelines(_run_from_a_helper)[1] + 1
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        _run_from_a_helper(x, y)
+    ours = [w for w in caught if 'Very few samples' in str(w.message)
+            or 'exceeds the' in str(w.message)]
+    # One raised in run() itself, one raised inside the trainer.
+    assert len(ours) == 2
+    for w in ours:
+        assert (w.filename, w.lineno) == (__file__, call_line), str(w.message)
+
+
+def test_a_warning_in_a_worker_names_the_task_entry_point():
+    """A worker has no caller's code above the library, so its task's entry point is named."""
+    import importlib
+    import multiprocessing
+    import os
+    nmi_logger = importlib.import_module('neural_mi.logger')
+    package_file = os.path.join(os.path.dirname(nmi_logger.__file__), 'worker_entry.py')
+    runner_file = os.path.join(os.path.dirname(multiprocessing.__file__), 'pool.py')
+    entry, runner = {}, {}
+    exec(compile("def entry():\n    return user_stacklevel()\n", package_file, 'exec'),
+         {'user_stacklevel': nmi_logger.user_stacklevel}, entry)
+    exec(compile("def run(fn):\n    return fn()\n", runner_file, 'exec'), {}, runner)
+    # Called from a worker's task runner, the warning stays on the library's entry point.
+    assert runner['run'](entry['entry']) == 1
+    # Called from the caller's own code, it moves out to that code.
+    assert entry['entry']() == 2
+
+
+def test_every_library_warning_uses_user_stacklevel():
+    """A hardcoded stacklevel breaks whenever the call depth changes."""
+    import ast
+    import pathlib
+    package = pathlib.Path(nmi.__file__).parent
+    hardcoded = []
+    for path in package.rglob('*.py'):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == 'warn' and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in ('warnings', '_warnings')):
+                level = {k.arg: ast.unparse(k.value) for k in node.keywords}.get('stacklevel')
+                if level != 'user_stacklevel()':
+                    hardcoded.append(f"{path.relative_to(package)}:{node.lineno} stacklevel={level}")
+    assert not hardcoded, hardcoded

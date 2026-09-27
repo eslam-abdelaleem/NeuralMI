@@ -67,16 +67,16 @@ def test_build_critic_hybrid():
 
 def test_build_critic_custom_embedding_minimal_signature():
     """A custom embedding class following the minimal BaseEmbedding contract
-    (input_dim, hidden_dim, embed_dim, n_layers) must build without receiving
+    (input_dim, hidden_dim, embedding_dim, n_layers) must build without receiving
     MLP-specific kwargs (use_spectral_norm/dropout/norm_layer)."""
     import torch.nn as nn
     from neural_mi.models.embeddings import BaseEmbedding
 
     class MinimalCustom(BaseEmbedding):
-        def __init__(self, input_dim, hidden_dim, embed_dim, n_layers):
+        def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers):
             super().__init__()
             self.net = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU(),
-                                     nn.Linear(hidden_dim, embed_dim))
+                                     nn.Linear(hidden_dim, embedding_dim))
 
         def forward(self, x):
             return self.net(x.view(x.shape[0], -1))
@@ -88,20 +88,21 @@ def test_build_critic_custom_embedding_minimal_signature():
 
 
 def test_build_critic_custom_embedding_input_style_channels():
-    """A custom class declaring input_style='channels' on itself must receive
-    the raw channel count as input_dim, the same as any built-in sequence
-    model -- the mechanism build_critic uses to decide this no longer reads
-    an unrelated embedding_model= string for a custom class."""
+    """A custom class declaring input_style='channels' on itself receives
+        the raw channel count as input_dim, as any built-in sequence model does;
+        build_critic decides this from the class, not from an embedding_model
+        string.
+    """
     import torch.nn as nn
     from neural_mi.models.embeddings import BaseEmbedding
 
     class ChannelsStyleCustom(BaseEmbedding):
         input_style = 'channels'
 
-        def __init__(self, input_dim, hidden_dim, embed_dim, n_layers):
+        def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers):
             super().__init__()
             self.input_dim = input_dim
-            self.net = nn.Linear(input_dim, embed_dim)
+            self.net = nn.Linear(input_dim, embedding_dim)
 
         def forward(self, x):
             return self.net(x.mean(dim=-1))
@@ -158,9 +159,10 @@ def test_build_critic_dual_branch_unknown_branch_model_raises():
 
 
 def test_build_critic_dual_branch_custom_embedding_cls_still_works():
-    """Regression: the pre-existing custom_embedding_cls=DualBranchEmbedding
-    form (with embedding_model set purely as a shape hint) must keep working
-    unchanged -- custom_embedding_cls always takes priority over model_type."""
+    """custom_embedding_cls=DualBranchEmbedding, with embedding_model set
+        purely as a shape hint, works: custom_embedding_cls always takes priority
+        over model_type.
+    """
     from neural_mi.models.embeddings import DualBranchEmbedding, GRU
     params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'gru',
               'n_channels_x': (3, 2)}
@@ -292,9 +294,9 @@ def test_spectral_metrics_uniform_dimensions():
 # --- _shift_data: mixed-modality lag (spike paired with non-spike) ---
 
 class TestShiftDataMixedModality:
-    """Regression tests for _shift_data's sign convention: for lag > 0, Y is
-    compared against its own future relative to X, in every
-    modality-pairing branch."""
+    """_shift_data's sign convention: for lag > 0, Y is compared against its
+        own future relative to X, in every modality-pairing branch.
+    """
 
     def test_both_continuous_unaffected(self):
         """Existing continuous-continuous behavior must be unchanged."""
@@ -324,9 +326,9 @@ class TestShiftDataMixedModality:
         np.testing.assert_allclose(y_sh[0], [0.5, 4.5])
 
     def test_spike_x_continuous_y_does_not_crash(self):
-        """X=spike, Y=continuous: previously crashed (dispatch was keyed off
-        Y's type alone, so X's spike-time list hit the continuous branch's
-        np.array/2-D-slice path)."""
+        """X=spike, Y=continuous: the dispatch reads both sides' types, so X's
+                spike-time list does not take the continuous branch.
+        """
         x_spikes = [np.array([1.0, 5.0])]
         y = np.arange(10.0).reshape(10, 1)
         x_sh, y_sh = _shift_data(x_spikes, y, 2.0, 'spike', 'continuous')
@@ -439,9 +441,9 @@ class TestBias:
         from neural_mi.models.embeddings import BaseEmbedding
 
         class Minimal(BaseEmbedding):
-            def __init__(self, input_dim, hidden_dim, embed_dim, n_layers):
+            def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers):
                 super().__init__()
-                self.net = nn.Linear(input_dim, embed_dim)
+                self.net = nn.Linear(input_dim, embedding_dim)
 
             def forward(self, x):
                 return self.net(x.view(x.shape[0], -1))

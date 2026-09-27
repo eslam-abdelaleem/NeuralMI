@@ -1,6 +1,5 @@
 """Model-hyperparameter sweeps through the quantities API."""
 import numpy as np
-import pandas as pd
 import pytest
 
 import neural_mi as nmi
@@ -46,15 +45,59 @@ class TestQuantitySweep:
         assert sorted(r.dataframe['k']) == [1, 2]
 
     @pytest.mark.parametrize('fn,kwargs', [
-        (q.excess_entropy, dict(k=2, future_k=2)),
-        (q.cross_predictive_information, dict(past_k=2, future_k=1)),
+        (q.predictive_information, dict(k=2)),
+        (q.cross_predictive_information, dict(k=2)),
     ])
     def test_other_single_mi_quantities_accept_a_grid(self, fn, kwargs):
         x = _ar1()
-        args = (x,) if fn is q.excess_entropy else (x, _ar1(seed=1))
+        args = (x,) if fn is q.predictive_information else (x, _ar1(seed=1))
         r = fn(*args, **kwargs,
                sweep_grid={'hidden_dim': [16, 32], 'run_id': [0]},
                **{k: v for k, v in _FAST.items() if k != 'model'},
                model=nmi.Model(embedding_model='mlp', embedding_dim=8))
         assert isinstance(r, Results)
         assert 'mi_mean' in r.dataframe.columns
+
+
+class TestMiRateSweepsEitherWindow:
+    """`mi_rate` carries two windows and both change the answer.
+
+    They bias in opposite directions, so a curve that has flattened along one
+    of them proves nothing on its own: too little conditioning history reads
+    high, too narrow a window on X reads low. Sweeping either one has to be
+    possible for that check to be doable at all.
+    """
+
+    @staticmethod
+    def _cfg():
+        from neural_mi import Model, Training
+        return dict(model=Model(embedding_model='dual_branch', embedding_dim=4,
+                                hidden_dim=16, n_layers=1),
+                    training=Training(n_epochs=1), n_workers=1, show_progress=False)
+
+    @staticmethod
+    def _pair():
+        rng = np.random.default_rng(0)
+        latent = rng.standard_normal((400, 2))
+        mk = lambda: (latent @ rng.standard_normal((2, 2))
+                      + 0.4 * rng.standard_normal((400, 2))).astype(np.float32)
+        return mk(), mk()
+
+    def test_sweeping_h_records_the_fixed_half_width(self):
+        x, y = self._pair()
+        r = q.mi_rate(x, y, h=[1, 2], half_width=5, **self._cfg())
+        assert list(r.dataframe['h']) == [1, 2]
+        assert r.params['config_keys'] == ['h']
+        assert r.params['half_width'] == 5
+
+    def test_sweeping_half_width_records_the_fixed_h(self):
+        x, y = self._pair()
+        r = q.mi_rate(x, y, h=2, half_width=[3, 5], **self._cfg())
+        assert r.dataframe['half_width'].tolist() == [3, 5]
+        assert r.params['config_keys'] == ['half_width']
+        assert r.params['h'] == 2
+
+    def test_both_at_once_is_refused(self):
+        x, y = self._pair()
+        with pytest.raises(ValueError, match="iterable for h or for half_width"):
+            q.mi_rate(x, y, h=[1, 2], half_width=[3, 5], **self._cfg())

@@ -87,6 +87,14 @@ class Model:
     embedding_dim: Optional[int] = None
     hidden_dim: Optional[Union[int, List[int]]] = None
     n_layers: Optional[int] = None
+    # The Y side follows X unless given its own. Unset means "same as X", the
+    # convention processor_type_y already uses. embedding_dim_y needs
+    # critic_type='hybrid', which concatenates the two embeddings; 'separable'
+    # takes their dot product and needs one width.
+    embedding_model_y: Optional[str] = None
+    embedding_dim_y: Optional[int] = None
+    hidden_dim_y: Optional[Union[int, List[int]]] = None
+    n_layers_y: Optional[int] = None
     n_layers_head: Optional[int] = None
     hidden_dim_head: Optional[Union[int, List[int]]] = None
     critic_type: Optional[str] = None              # 'separable'|'concat'|'hybrid'
@@ -102,15 +110,16 @@ class Model:
     max_n_batches: Optional[int] = None            # critic chunking
     custom_critic: Optional[Any] = None            # torch.nn.Module
     custom_embedding_cls: Optional[type] = None
+    custom_embedding_cls_y: Optional[type] = None
     pytorch_predefined: Optional[str] = None       # torchvision backbone name
     pretrained: Optional[bool] = None
     use_variational: Optional[bool] = None
     beta: Optional[float] = None
     # Optional decoder / information-bottleneck head
     use_decoder: Optional[bool] = None
-    decoder_weight: Optional[float] = None
-    decoder_weight_x: Optional[float] = None
-    decoder_weight_y: Optional[float] = None
+    decoder_lambda: Optional[float] = None       # reconstruction weight measured against the MI term; effective weight is beta * lambda when variational
+    decoder_lambda_x: Optional[float] = None
+    decoder_lambda_y: Optional[float] = None
     decoder_output_activation_x: Optional[str] = None
     decoder_output_activation_y: Optional[str] = None
 
@@ -120,7 +129,7 @@ class Model:
 
 @dataclass
 class Training:
-    """Optimization loop: epochs, optimizer, scheduler, evaluation, augmentation."""
+    """Optimisation loop: epochs, optimizer, scheduler, evaluation, augmentation."""
     n_epochs: Optional[int] = None
     learning_rate: Optional[float] = None
     batch_size: Optional[int] = None
@@ -187,7 +196,7 @@ class Output:
     return_embeddings: Optional[bool] = None
     track_embeddings: Optional[Union[bool, float, int, str]] = None
     return_rotated_embeddings: Optional[bool] = None
-    rotated_embeddings_whitening: Optional[str] = None
+    whitening: Optional[str] = None                # 'std'|'zca'|None, for spectra and rotations
     rotated_embeddings_per_epoch: Optional[bool] = None
     return_rotation_matrices: Optional[bool] = None
     # Display-only labels (not part of base_params; carried in result.params)
@@ -213,18 +222,28 @@ class Output:
 
 @dataclass
 class Processing:
-    """Raw-data processors for X and Y (and their time vectors)."""
+    """How each raw stream is read: its processor, parameters and clock.
+
+    ``w`` is the third stream of ``mode='conditional'``, ``'interaction'`` and
+    ``'transfer'`` and of the named quantities that take one. A stream whose
+    processor is unset reads with X's, and one whose parameters are unset reads
+    with X's parameters. Every stream of a call is built on one window grid.
+    """
     x: Optional[str] = None                        # processor_type_x
     x_params: Optional[Dict[str, Any]] = None
     y: Optional[str] = None                        # processor_type_y
     y_params: Optional[Dict[str, Any]] = None
+    w: Optional[str] = None                        # w_processor_type
+    w_params: Optional[Dict[str, Any]] = None
     x_time: Optional[Any] = None
     y_time: Optional[Any] = None
+    w_time: Optional[Any] = None
 
     def to_kwargs(self) -> Dict[str, Any]:
         return _non_none(self, rename={
             "x": "processor_type_x", "x_params": "processor_params_x",
             "y": "processor_type_y", "y_params": "processor_params_y",
+            "w": "w_processor_type", "w_params": "w_processor_params",
         })
 
 
@@ -255,7 +274,7 @@ class Precision:
     corrupt_target: Optional[str] = None           # 'x'|'y'|'both'
     corruption_method: Optional[str] = None        # 'rounding'|'noise'
     n_noise_samples: Optional[int] = None
-    threshold_ratio: Optional[float] = None
+    threshold_ratio: Optional[Union[float, List[float]]] = None
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         return _non_none(self)
@@ -278,16 +297,17 @@ class Transfer:
     ``w_data`` adds a third signal to the conditioning side, computing
     conditional transfer entropy TE(X->Y|W) = I(Y_0; X_past | Y_past, W_past)
     instead of plain TE(X->Y) = I(Y_0; X_past | Y_past). Leave ``w_data=None``
-    (the default) for plain transfer entropy, unchanged from before this field
-    existed.
+    (the default) for plain transfer entropy.
+
+    ``stride`` is the distance in samples between consecutive rows of the
+    history/future arrays this mode builds. It defaults to 1, every valid position, so neighbouring rows share ``history_window - 1`` of
+    their samples.
     """
     history_window: Optional[int] = None
     prediction_horizon: Optional[int] = None
+    stride: Optional[int] = None
     bidirectional: Optional[bool] = None
     w_data: Optional[Any] = None
-    w_time: Optional[Any] = None
-    w_processor_type: Optional[str] = None
-    w_processor_params: Optional[Dict[str, Any]] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
     curvature_t_threshold: Optional[float] = None
@@ -297,9 +317,9 @@ class Transfer:
     r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
-    # w_* are consumed as dedicated run arguments; the rest are analysis kwargs
-    # (same split as Conditional's w_* fields, see below).
-    _W_FIELDS = ("w_data", "w_time", "w_processor_type", "w_processor_params")
+    # w_data is a dedicated run argument; the rest are analysis kwargs. How W
+    # is read (processor, parameters, clock) belongs to Processing.
+    _W_FIELDS = ("w_data",)
 
     def to_w_kwargs(self) -> Dict[str, Any]:
         return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}
@@ -316,7 +336,7 @@ class Dimensionality:
     """Parameters for ``mode='dimensionality'``: cross-seed-stable directions of
     shared structure (interaction: between two views; intrinsic: between
     split-halves of one dataset), plus a cheap separable-vs-entangled regime
-    read. Does not return an exact dimensionality count -- see ``THEORY.md``
+    read. Does not return an exact dimensionality count. See ``THEORY.md``
     for why a nonlinear encoder given more capacity than the true number of
     shared factors can construct combinations of them that are
     indistinguishable from genuine factors by any spectral measure.
@@ -328,9 +348,9 @@ class Dimensionality:
     independent retrainings (``stability_threshold``) and above the noise
     floor (``min_strength_fraction``) to be reported at all, and adjacent
     directions within ``degeneracy_ratio_threshold`` of each other in strength
-    are reported as a group rather than individually ranked. Their defaults
-    (0.7, 1.3, 0.05) are reasonable starting points validated on a battery of
-    synthetic conditions, not derived constants -- treat them as tunable.
+    are reported as a group instead of individually ranked. Their defaults
+    (0.7, 1.3, 0.05) are empirical starting points validated on a battery of
+    synthetic conditions. Treat them as tunable.
     ``ceiling_mi_fraction`` tunes a separate, lightweight warning: whether the
     underlying MI estimate is close enough to its evaluation ceiling
     (``log(eval_size)``) that any reading built on it should be treated with
@@ -359,12 +379,9 @@ class Conditional:
     the default path applies. It routes W into a
     ``DualBranchEmbedding``-based ``custom_embedding_cls`` (set separately
     via ``Model(...)``) instead of concatenating X and W at the data level.
-    Leave unset (``None``, today's behavior) unless you know you need it.
+    Leave unset (``None``) unless you know you need it.
     """
     w_data: Optional[Any] = None
-    w_time: Optional[Any] = None
-    w_processor_type: Optional[str] = None
-    w_processor_params: Optional[Dict[str, Any]] = None
     align: Optional[str] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
@@ -375,8 +392,9 @@ class Conditional:
     r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
-    # w_* are consumed as dedicated run arguments; the rest are analysis kwargs.
-    _W_FIELDS = ("w_data", "w_time", "w_processor_type", "w_processor_params")
+    # w_data is a dedicated run argument; the rest are analysis kwargs. How W
+    # is read (processor, parameters, clock) belongs to Processing.
+    _W_FIELDS = ("w_data",)
 
     def to_w_kwargs(self) -> Dict[str, Any]:
         return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}
@@ -394,13 +412,10 @@ class Interaction:
 
     II = I(X,W;Y) - I(X;Y) - I(W;Y): how much shared information between X
     and Y changes once a third population W is also observed. The one
-    quantity in the taxonomy that isn't a single conditional MI call --
-    three separate MI estimates combined by a formula. See ``THEORY.md``.
+    quantity in the taxonomy built from three separate MI estimates combined
+    by a formula instead of a single conditional MI call. See ``THEORY.md``.
     """
     w_data: Optional[Any] = None
-    w_time: Optional[Any] = None
-    w_processor_type: Optional[str] = None
-    w_processor_params: Optional[Dict[str, Any]] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
     curvature_t_threshold: Optional[float] = None
@@ -410,9 +425,9 @@ class Interaction:
     r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
-    # w_* are consumed as dedicated run arguments; the rest are analysis kwargs
-    # (same split as Conditional's w_* fields).
-    _W_FIELDS = ("w_data", "w_time", "w_processor_type", "w_processor_params")
+    # w_data is a dedicated run argument; the rest are analysis kwargs. How W
+    # is read (processor, parameters, clock) belongs to Processing.
+    _W_FIELDS = ("w_data",)
 
     def to_w_kwargs(self) -> Dict[str, Any]:
         return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}

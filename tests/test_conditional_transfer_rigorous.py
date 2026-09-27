@@ -63,9 +63,8 @@ class TestConditionalRigorous:
         )
         for key in ('is_reliable', 'slope', 'mi_error',
                     'gammas_used', 'fit_quality_warning', 'leverage_warning'):
-            assert key in result.details, (
-                f"Missing key '{key}' in result.details; "
-                f"available: {sorted(result.details.keys())}"
+            assert key in result.runs.columns, (
+                f"Missing key '{key}' in result.runs; available: {sorted(result.runs.columns)}"
             )
 
     def test_conditional_rigorous_params_flag_set(self):
@@ -103,7 +102,7 @@ class TestConditionalRigorous:
         )
         assert result.mi_estimate is not None
         # Standard path should NOT have rigorous keys in details
-        assert 'gammas_used' not in result.details
+        assert 'gammas_used' not in result.runs.columns
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +146,7 @@ class TestTransferRigorous:
             verbose=False, show_progress=False,
         )
         for key in ('is_reliable', 'slope', 'fit_quality_warning', 'leverage_warning'):
-            assert key in result.details, (
-                f"Missing key '{key}' in result.details"
-            )
+            assert key in result.runs.columns, f"Missing key '{key}' in result.runs"
 
     def test_transfer_standard_path_unaffected(self):
         """Ensure rigorous=False (default) still works for transfer mode."""
@@ -167,7 +164,7 @@ class TestTransferRigorous:
         )
         assert result.mi_estimate is not None
         # Standard path should NOT have rigorous keys
-        assert 'gammas_used' not in result.details
+        assert 'gammas_used' not in result.runs.columns
 
     def test_transfer_rigorous_params_flag_set(self):
         """result.params should record rigorous=True for rigorous transfer runs."""
@@ -241,10 +238,10 @@ class TestRigorousConditionalTransferUnitConversion:
                              n_workers=1, **common)
 
         assert r_bits.mi_estimate == pytest.approx(1.0 * _NATS_TO_BITS)
-        assert r_bits.details['mi_error'] == pytest.approx(0.1 * _NATS_TO_BITS)
-        assert r_bits.details['mi_error_pred'] == pytest.approx(0.2 * _NATS_TO_BITS)
-        assert r_bits.details['slope'] == pytest.approx(-0.05 * _NATS_TO_BITS)
-        assert r_bits.dataframe['train_mi'].tolist() == pytest.approx(
+        assert r_bits.get('mi_error') == pytest.approx(0.1 * _NATS_TO_BITS)
+        assert r_bits.get('mi_error_pred') == pytest.approx(0.2 * _NATS_TO_BITS)
+        assert r_bits.runs['slope'].iloc[0] == pytest.approx(-0.05 * _NATS_TO_BITS)
+        assert r_bits.details[0]['trainings']['train_mi'].tolist() == pytest.approx(
             [1.2 * _NATS_TO_BITS, 1.1 * _NATS_TO_BITS, 1.0 * _NATS_TO_BITS]
         )
 
@@ -265,7 +262,7 @@ class TestRigorousConditionalTransferUnitConversion:
                              n_workers=1, **common)
 
         assert r_bits.mi_estimate == pytest.approx(1.0 * _NATS_TO_BITS)
-        assert r_bits.details['mi_error'] == pytest.approx(0.1 * _NATS_TO_BITS)
-        assert r_bits.dataframe['train_mi'].tolist() == pytest.approx(
+        assert r_bits.get('mi_error') == pytest.approx(0.1 * _NATS_TO_BITS)
+        assert r_bits.details[0]['trainings']['train_mi'].tolist() == pytest.approx(
             [1.2 * _NATS_TO_BITS, 1.1 * _NATS_TO_BITS, 1.0 * _NATS_TO_BITS]
         )

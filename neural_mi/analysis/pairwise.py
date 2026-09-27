@@ -32,6 +32,7 @@ from typing import Dict, Any, Optional, List, Tuple
 
 from neural_mi.analysis.sweep import ParameterSweep
 from neural_mi.logger import logger, worker_init_args
+from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 
 
@@ -57,10 +58,11 @@ def _run_pair_task(args: tuple) -> Dict[str, Any]:
     """Run one channel pair's MI sweep and return its summary row.
 
     ``n_workers`` here controls the *inner* sweep (e.g. averaging over a
-    ``run_id`` sweep_grid for one pair) -- kept separate from how many pairs
+    ``run_id`` sweep_grid for one pair), kept separate from how many pairs
     are dispatched concurrently, set by the caller (see ``_dispatch_pairs``).
     """
     i, j, xi, yj, base_params, sweep_grid, n_workers = args
+    base_params = with_model_labels(base_params, ch_x=i, ch_y=j)
     sweep = ParameterSweep(x_data=xi, y_data=yj, base_params=base_params.copy())
     # A raw (not already-windowed-3-D) per-channel slice -- a 2-D continuous/
     # categorical array/tensor, or a length-1 list of raw spike times -- means
@@ -70,27 +72,29 @@ def _run_pair_task(args: tuple) -> Dict[str, Any]:
     _is_raw = not (hasattr(xi, 'ndim') and xi.ndim == 3)
     results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=_is_raw)
     def _agg(field):
-        """mean/std over this pair's runs, NaN when the field is never present."""
+        """mean/std over this pair's runs, NaN when the field is never present
+        and the std NaN when there is only one run."""
         v = [r[field] for r in results if r.get(field) is not None]
         if not v:
             return float('nan'), float('nan')
-        return float(np.mean(v)), (float(np.std(v)) if len(v) > 1 else 0.0)
+        return float(np.mean(v)), (float(np.std(v, ddof=1)) if len(v) > 1 else float('nan'))
 
-    if not [r for r in results if 'train_mi' in r]:
-        logger.warning(f"  Pair (ch_x={i}, ch_y={j}): all runs failed, recording NaN.")
     mi_mean, mi_std = _agg('train_mi')
-    # test_mi and eval_size are already in `results`; they used to be dropped
-    # here, which left mode='pairwise' unable to check the InfoNCE ceiling at
-    # all. eval_size is a property of the split, so it is constant across runs.
+    # test_mi and eval_size are carried through so mode='pairwise' can check
+    # the InfoNCE ceiling. eval_size is a property of the split, so it is
+    # constant across runs.
     test_mi_mean, test_mi_std = _agg('test_mi')
     eval_size = next((r['eval_size'] for r in results if r.get('eval_size') is not None), None)
+    from neural_mi.analysis.assemble import embedding_values, network_values
     return {'ch_x': i, 'ch_y': j, 'mi_mean': mi_mean, 'mi_std': mi_std,
             'test_mi_mean': test_mi_mean, 'test_mi_std': test_mi_std,
-            'eval_size': eval_size}
+            'eval_size': eval_size,
+            'runs': [network_values(r) for r in results],
+            'embeddings': [embedding_values(r) for r in results]}
 
 
 def _run_pair_task_for_pool(args: tuple) -> Dict[str, Any]:
-    """Top-level, picklable wrapper for ``Pool.imap`` -- forces the inner
+    """Top-level, picklable wrapper for ``Pool.imap``, forces the inner
     sweep to ``n_workers=1`` to avoid nested multiprocessing pools, since
     parallelism is spent across pairs instead (see ``_dispatch_pairs``).
     """
@@ -174,12 +178,12 @@ def run_pairwise_mi(
     Dict[str, Any]
         Dictionary with keys:
 
-        - ``'mi_matrix'`` : np.ndarray — MI matrix.
+        - ``'mi_matrix'`` (np.ndarray): MI matrix.
           Shape ``(n_ch_x, n_ch_x)`` for self-pairwise (symmetric, diagonal 0),
           or ``(n_ch_x, n_ch_y)`` for cross-pairwise.
         - ``'dataframe'`` : pd.DataFrame with columns ``ch_x``, ``ch_y``,
           ``mi_mean``, ``mi_std``.
-        - ``'n_channels'`` : int or (int, int) — number of channels.
+        - ``'n_channels'`` (int or (int, int)): number of channels.
     """
     # A list means raw spike data (one spike-time array per neuron), windowing
     # deferred to this call (shift_time reachability). A 2-D array/tensor means
@@ -232,11 +236,12 @@ def run_pairwise_mi(
         for rec in records:
             mi_matrix[rec['ch_x'], rec['ch_y']] = rec['mi_mean']
 
-        df = pd.DataFrame(records)
+        df = pd.DataFrame([{k: v for k, v in r.items() if k not in ('runs', 'embeddings')} for r in records])
         logger.info("Pairwise MI (cross) estimation complete.")
         return {
             'mi_matrix': mi_matrix,
             'dataframe': df,
+            'records': records,
             'n_channels': (n_ch_x, n_ch_y),
         }
 
@@ -267,10 +272,11 @@ def run_pairwise_mi(
             mi_matrix[rec['ch_x'], rec['ch_y']] = rec['mi_mean']
             mi_matrix[rec['ch_y'], rec['ch_x']] = rec['mi_mean']  # symmetric
 
-        df = pd.DataFrame(records)
+        df = pd.DataFrame([{k: v for k, v in r.items() if k not in ('runs', 'embeddings')} for r in records])
         logger.info("Pairwise MI (self) estimation complete.")
         return {
             'mi_matrix': mi_matrix,
             'dataframe': df,
+            'records': records,
             'n_channels': n_channels,
         }

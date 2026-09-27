@@ -3,8 +3,10 @@
 
 This module trains a baseline mutual information estimator, then freezes the
 network and repeatedly evaluates the *train* partition across a grid of precision
-levels (tau). It corrupts the data using deterministic rounding or additive noise
-to find the precision threshold where mutual information degrades.
+levels (tau). It degrades the data by rounding to bins of width tau or by
+uniform jitter of width tau, through :func:`neural_mi.data.corruption.corrupt`,
+to find the precision at which mutual information falls. Entries that hold no
+measurement, such as unused spike-time slots, are never corrupted.
 """
 import torch
 import numpy as np
@@ -15,25 +17,29 @@ from neural_mi.training.trainer import Trainer
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device
 from neural_mi.data.handler import create_dataset
+from neural_mi.data.corruption import corrupt, METHODS
+from neural_mi.embeddings_io import save_network
 from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
 from neural_mi.logger import logger
 from neural_mi.defaults import BASE_PARAMS_SCHEMA
 
 
-def apply_corruption(data: torch.Tensor, tau: float, method: str) -> torch.Tensor:
-    """Applies precision corruption to a tensor."""
-    if tau == 0.0:
-        return data
-        
-    if method == 'rounding':
-        # Deterministic rounding to the nearest integer grid of tau
-        return tau * torch.round(data / tau)
-    elif method == 'noise':
-        # Additive uniform noise centered around 0 (interval [-tau/2, tau/2])
-        noise = (torch.rand_like(data) - 0.5) * tau
-        return data + noise
-    else:
-        raise ValueError(f"Unknown corruption method: {method}")
+def _empty_value(base_params: Dict[str, Any], side: str) -> float:
+    """The value of an entry that holds no measurement on one side.
+
+    Spike times are windowed into fixed slots padded with ``no_spike_value``.
+    Every other representation (binned spikes, continuous samples with
+    zero-padded gaps, unwindowed arrays) marks an empty entry with zero.
+    """
+    proc = base_params.get(f'processor_type_{side}')
+    params = base_params.get(f'processor_params_{side}')
+    if side == 'y' and proc is None:
+        proc = base_params.get('processor_type_x')
+        params = params if params is not None else base_params.get('processor_params_x')
+    params = params or {}
+    if proc == 'spike' and params.get('bin_size') is None:
+        return float(params.get('no_spike_value', 0.0))
+    return 0.0
 
 def run_precision_analysis(
     x_data: Any, y_data: Any, base_params: Dict[str, Any],
@@ -66,9 +72,11 @@ def run_precision_analysis(
         the same corruption level simultaneously to X and Y (e.g. to measure
         shared temporal precision).
     corruption_method : {'rounding', 'noise'}, default='rounding'
-        How corruption is applied.  ``'rounding'`` quantizes values to the nearest
-        multiple of *tau* (deterministic).  ``'noise'`` adds uniform noise drawn
-        from U(-tau/2, tau/2).
+        How corruption is applied. ``'rounding'`` moves every value to the
+        centre of its bin of width *tau* (deterministic). ``'noise'`` adds
+        uniform noise drawn from U(-tau/2, tau/2). Either way, entries that
+        hold no measurement (unused spike-time slots, empty bins, zero-padded
+        gaps) are left as they are, so no spike is created or deleted.
     n_noise_samples : int, default=50
         Number of independent noise realizations to average when
         ``corruption_method='noise'``.  Ignored for ``'rounding'``.
@@ -81,9 +89,9 @@ def run_precision_analysis(
     n_workers : int, default=1
         Unused: precision analysis is inherently single-process. It trains
         one baseline model, then evaluates it repeatedly (inference only)
-        across the tau grid -- there is no independent work to parallelize.
-        Accepted so the top-level ``run(..., n_workers=...)`` argument, which
-        is forwarded uniformly to every mode, doesn't raise a ``TypeError``.
+        across the tau grid. There is no independent work to parallelize.
+        Accepted so the top-level ``run(..., n_workers=...)`` argument, forwarded uniformly to every mode, doesn't raise a ``TypeError``.
+
 
     Returns
     -------
@@ -94,16 +102,16 @@ def run_precision_analysis(
           ``train_mi_std`` (one row per *tau* value).
         - ``'details'`` : dict containing:
 
-          - ``'baseline_mi'`` — MI at zero corruption (float, nats).
-          - ``'precision_tau'`` — the primary estimated precision threshold
+          - ``'baseline_mi'``: MI at zero corruption (float, nats).
+          - ``'precision_tau'``: the primary estimated precision threshold
             (float), or ``None`` if MI never dropped below the threshold
             (check with ``is None``, not ``np.isnan``).
-          - ``'threshold_ratio'`` — the original input (scalar or list).
-          - ``'threshold_value'`` — MI value at the primary threshold (float, nats).
-          - ``'precision_thresholds'`` — dict mapping each ratio to its
+          - ``'threshold_ratio'``: the original input (scalar or list).
+          - ``'threshold_value'``: MI value at the primary threshold (float, nats).
+          - ``'precision_thresholds'``: dict mapping each ratio to its
             ``{'precision_tau', 'threshold_value'}`` result (``precision_tau``
             is ``None`` per-ratio under the same not-found condition).
-          - ``'raw_results'`` — same DataFrame as ``'dataframe'``.
+          - ``'raw_results'``: same DataFrame as ``'dataframe'``.
     """
     logger.info("Initializing Precision Analysis...")
 
@@ -126,6 +134,12 @@ def run_precision_analysis(
     if dataset is None:
         dataset = create_dataset(
             x_data, y_data,
+            # The time vectors travel in base_params and must be passed on.
+            # Without them a timestamped stream is windowed in sample-index
+            # units here while every other mode windows it in seconds, so the
+            # same data gives a different grid under mode='precision'.
+            x_time=base_params.get('x_time'),
+            y_time=base_params.get('y_time'),
             processor_type_x=base_params.get('processor_type_x'),
             processor_type_y=base_params.get('processor_type_y'),
             processor_params_x=base_params.get('processor_params_x'),
@@ -165,7 +179,9 @@ def run_precision_analysis(
     _train_frac_default = BASE_PARAMS_SCHEMA['train_fraction']['default']
     train_frac = base_params.get('train_fraction', _train_frac_default)
     split_mode = base_params.get('split_mode', 'blocked')
-    if split_mode == 'random':
+    if base_params.get('train_indices') is not None and base_params.get('test_indices') is not None:
+        train_idx, test_idx = base_params['train_indices'], base_params['test_indices']
+    elif split_mode == 'random':
         train_idx, test_idx = trainer._create_random_split(n_samples, train_frac)
     else:
         train_idx, test_idx = trainer._create_blocked_split(n_samples, train_frac, base_params.get('n_test_blocks', 5))
@@ -189,6 +205,9 @@ def run_precision_analysis(
     )
     
     baseline_mi = baseline_results['train_mi']
+    # The baseline is the one network this mode trains, saved like any other.
+    from neural_mi.analysis.task import _BUILD_PARAMS_KEYS
+    model_path = save_network(trainer.model, base_params, _BUILD_PARAMS_KEYS)
     logger.info(f"Baseline MI established: {baseline_mi:.3f} nats")
 
     # 3. The Precision Sweep (Inference Only)
@@ -207,29 +226,37 @@ def run_precision_analysis(
     max_eval = base_params.get('max_eval_samples', 5000)
 
     results_list = []
+    # Every individual evaluation, one per tau for rounding and one per noise
+    # draw for noise, so the caller keeps the values the per-tau mean is made of.
+    samples = []
 
     # Force 0.0 into the grid to log the exact baseline
     sorted_tau = sorted(list(set([0.0] + tau_grid)))
 
+    if corruption_method not in METHODS:
+        raise ValueError(f"corruption_method must be one of {list(METHODS)}, got {corruption_method!r}.")
+    # Entries that hold no measurement (unused spike-time slots, empty bins,
+    # zero-padded gaps) are never corrupted, so neither method invents activity.
+    empty_x, empty_y = _empty_value(base_params, 'x'), _empty_value(base_params, 'y')
+    noise = corruption_method == 'noise'
+
     with torch.no_grad():
         for tau in sorted_tau:
-            if corruption_method == 'rounding':
-                x_c = apply_corruption(x_train_raw, tau, 'rounding') if corrupt_target in ['x', 'both'] else x_train_raw
-                y_c = apply_corruption(y_train_raw, tau, 'rounding') if corrupt_target in ['y', 'both'] else y_train_raw
-                mi = trainer._safe_eval_mi(x_c.to(device), y_c.to(device), max_eval)
-                results_list.append({'tau': tau, 'train_mi': mi, 'train_mi_std': 0.0,
-                                     'eval_size': max_eval})
-
-            elif corruption_method == 'noise':
-                # Average over multiple forward passes to stabilize stochastic noise bounds
-                mis = []
-                for _ in range(n_noise_samples if tau > 0 else 1):
-                    x_c = apply_corruption(x_train_raw, tau, 'noise') if corrupt_target in ['x', 'both'] else x_train_raw
-                    y_c = apply_corruption(y_train_raw, tau, 'noise') if corrupt_target in ['y', 'both'] else y_train_raw
-                    mis.append(trainer._safe_eval_mi(x_c.to(device), y_c.to(device), max_eval))
-                results_list.append({'tau': tau, 'train_mi': float(np.mean(mis)),
-                                     'train_mi_std': float(np.std(mis)),
-                                     'eval_size': max_eval})
+            # Noise is averaged over several draws; rounding is deterministic.
+            mis = []
+            for _ in range(n_noise_samples if noise and tau > 0 else 1):
+                x_c = (corrupt(x_train_raw, tau, corruption_method, empty_x)
+                       if corrupt_target in ('x', 'both') else x_train_raw)
+                y_c = (corrupt(y_train_raw, tau, corruption_method, empty_y)
+                       if corrupt_target in ('y', 'both') else y_train_raw)
+                mis.append(trainer._safe_eval_mi(x_c.to(device), y_c.to(device), max_eval))
+                sample = {'tau': tau, 'mi': mis[-1]}
+                if noise:
+                    sample['noise_sample'] = len(mis) - 1
+                samples.append(sample)
+            results_list.append({'tau': tau, 'train_mi': float(np.mean(mis)),
+                                 'train_mi_std': float(np.std(mis)) if noise else float('nan'),
+                                 'eval_size': max_eval})
 
     df = pd.DataFrame(results_list)
 
@@ -237,14 +264,14 @@ def run_precision_analysis(
     # output is interpretable, not that information went below zero. The critic
     # is frozen on clean data and then scored on corrupted inputs, and InfoNCE's
     # bound is unbounded below, so the magnitude reports how badly the bound has
-    # broken rather than how much information the corruption destroyed. Warn on
+    # broken instead of how much information the corruption destroyed. Warn on
     # the first one, because the threshold crossing above it is still readable
     # and a reader plotting the tail otherwise has nothing telling them so.
     _neg = df[(df['tau'] > 0) & (df['train_mi'] < 0)]
     if not _neg.empty:
         _first = _neg.iloc[0]
         _worst = df['train_mi'].min()
-        # Reported as a multiple of baseline rather than as an absolute value:
+        # Reported as a multiple of baseline instead of as an absolute value:
         # this runs in nats while the returned frame is converted to the caller's
         # output_units, so an absolute figure here would not match the curve the
         # caller prints.
@@ -255,7 +282,7 @@ def run_precision_analysis(
             f"direction. Past this point the frozen critic is being evaluated on "
             f"inputs it was never trained for, and the estimator's lower bound is "
             f"unbounded below, so the depth of the fall measures how badly the "
-            f"bound has broken rather than how much information the corruption "
+            f"bound has broken instead of how much information the corruption "
             f"destroyed. The threshold crossing remains readable; do not quote or "
             f"plot the tail as an amount of information."
         )
@@ -285,13 +312,14 @@ def run_precision_analysis(
             'threshold_value': threshold_value_i,
         }
 
-    # Backward-compatible scalar output
+    # The first ratio is the primary one, reported on its own as well.
     primary_ratio = ratio_list[0]
     precision_tau = precision_thresholds[primary_ratio]['precision_tau']
     threshold_value = precision_thresholds[primary_ratio]['threshold_value']
     logger.info(f"Precision Threshold ({primary_ratio*100:.0f}%) estimated at tau = {precision_tau}")
 
     return {
+        'samples': samples,
         'dataframe': df,
         'details': {
             'baseline_mi': baseline_mi,
@@ -301,5 +329,6 @@ def run_precision_analysis(
             'precision_thresholds': precision_thresholds,  # full multi-threshold dict
             'corruption_method': corruption_method,
             'corrupt_target': corrupt_target,
+            **({'model_path': model_path} if model_path else {}),
         }
     }

@@ -2,7 +2,7 @@
 """Defines the critic models for neural mutual information estimation.
 
 This module contains various critic architectures used to compute a score
-function `f(x, y)`, which is the core of many lower-bound estimators of
+function `f(x, y)`, the core of many lower-bound estimators of
 mutual information. The critics are designed to be flexible and can be
 combined with different embedding models.
 """
@@ -13,7 +13,7 @@ from typing import Any, Optional, Tuple
 
 def _batch_size_of(x) -> int:
     """Batch size of x, whether x is a plain tensor or a tuple/list of
-    tensors sharing a leading (sample) dimension -- DualBranchEmbedding's
+    tensors sharing a leading (sample) dimension, DualBranchEmbedding's
     compound ``(a_batch, c_batch)`` input, in particular."""
     return (x[0] if isinstance(x, (tuple, list)) else x).shape[0]
 
@@ -63,14 +63,14 @@ class BaseCritic(nn.Module):
 
         ``VariationalWrapper.forward`` already returns a per-sample-mean KL (raw KL
         summed over the embedding dimensions and batch, then divided by batch size).
-        We accumulate those per-sample means across chunks and average them — no
+        We accumulate those per-sample means across chunks and average them, no
         additional division by the full batch size is applied, as that would
         double-count the normalization already performed inside the wrapper.
         """
         batch_size = _batch_size_of(x)
         n_chunks = 0
 
-        # Fast path for small datasets — wrapper already gives per-sample mean KL.
+        # Fast path for small datasets, wrapper already gives per-sample mean KL.
         if batch_size <= max_n_batches:
             x_out = net_x(x)
             y_out = net_y(y)
@@ -118,7 +118,7 @@ class BaseCritic(nn.Module):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
         else:
             # ConcatCritic: no separate embedding networks, return flat inputs.
-            # This is semantically honest — concat critics have no separable embedding.
+            # This is semantically honest, concat critics have no separable embedding.
             return x.view(x.shape[0], -1), y.view(y.shape[0], -1)
             
         max_n = getattr(self, 'max_n_batches', 512)
@@ -142,7 +142,7 @@ class BaseCritic(nn.Module):
         Returns
         -------
         tuple of (z_x, z_y) : torch.Tensor
-            Embedding tensors, each of shape ``(batch, embed_dim)``.
+            Embedding tensors, each of shape ``(batch, embedding_dim)``.
         """
         if hasattr(self, 'embedding_net_x'):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
@@ -162,14 +162,14 @@ class SeparableCritic(BaseCritic):
     def __init__(self, 
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
-                 embed_dim: int = None, 
+                 embedding_dim: int = None, 
                  max_n_batches: int = 512, 
                  use_variational: bool = False,
                  **kwargs):
         super().__init__()
         self.embedding_net_x = embedding_net_x
         self.embedding_net_y = embedding_net_y or embedding_net_x
-        self.embed_dim = embed_dim
+        self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
 
@@ -191,7 +191,7 @@ class HybridCritic(BaseCritic):
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
                  decision_head: nn.Module,
-                 embed_dim: int = None, 
+                 embedding_dim: int = None, 
                  max_n_batches: int = 512, 
                  use_variational: bool = False,
                  **kwargs):
@@ -199,7 +199,7 @@ class HybridCritic(BaseCritic):
         self.embedding_net_x = embedding_net_x
         self.embedding_net_y = embedding_net_y or embedding_net_x
         self.decision_head = decision_head
-        self.embed_dim = embed_dim
+        self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
 
@@ -215,10 +215,10 @@ class HybridCritic(BaseCritic):
         )
 
         # 2. Score all N² pairs in row-chunks so the full (N², 2d) pair tensor
-        #    is never materialized at once — same pattern as ConcatCritic.forward.
+        #    is never materialized at once, same pattern as ConcatCritic.forward.
         chunk_rows = max(1, self.max_n_batches // batch_size)
         scores = torch.zeros(batch_size, batch_size, device=x_embedded.device)
-        y_exp = y_embedded.unsqueeze(0)  # (1, N, d) — shared view, no copy
+        y_exp = y_embedded.unsqueeze(0)  # (1, N, d), shared view, no copy
 
         for start in range(0, batch_size, chunk_rows):
             end = min(start + chunk_rows, batch_size)
@@ -241,27 +241,23 @@ class ConcatCritic(BaseCritic):
 
     .. note:: **Variational mode with ConcatCritic**
 
-        Setting ``use_variational=True`` together with ``critic_type='concat'`` is
-        supported but has a different theoretical interpretation than with separable
-        or hybrid critics.  Here the variational wrapper is applied to the
-        *concatenated pair* ``[x_i, y_j]``, not to individual samples, so the KL
-        term measures uncertainty over the *pair* representation rather than over
-        each variable's marginal distribution.  This departs from the standard
-        Information Bottleneck formulation described in the docs.  The training will
-        run without error, but the KL regularisation effect is weaker and harder to
-        interpret.  Unless you have a specific reason to use this combination,
-        prefer ``critic_type='separable'`` or ``'hybrid'`` when
-        ``use_variational=True``.
+        With ``use_variational=True`` the variational layer sits on the output of
+        the network, the score of the pair ``[x_i, y_j]``. Each score becomes a
+        draw from a Gaussian whose mean and variance the network produces, and
+        the KL term pulls every score toward the standard normal prior. That
+        regularises the critic, but there is no embedding of X or of Y for it to
+        compress, so it carries no information-bottleneck reading. The separable
+        and hybrid critics give that reading.
     """
     def __init__(self,
                  embedding_net: nn.Module,
-                 embed_dim: int = None,
+                 embedding_dim: int = None,
                  max_n_batches: int = 512,
                  use_variational: bool = False,
                  **kwargs):
         super().__init__()
         self.embedding_net = embedding_net
-        self.embed_dim = embed_dim
+        self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
 
@@ -272,12 +268,12 @@ class ConcatCritic(BaseCritic):
 
         # Row-wise chunking: process chunk_rows rows of x per iteration.
         # Each chunk contains chunk_rows * N pairs, bounding peak memory to
-        # max_n_batches pairs — same budget as the original flat-index loop.
+        # max_n_batches pairs, same budget as the original flat-index loop.
         chunk_rows = max(1, self.max_n_batches // batch_size)
         scores = torch.zeros(batch_size, batch_size, device=x.device)
         total_kl_acc = torch.tensor(0.0, device=x.device)
         n_pair_chunks = 0
-        y_exp = y_flat.unsqueeze(0)  # (1, N, dy) — shared view, no copy
+        y_exp = y_flat.unsqueeze(0)  # (1, N, dy), shared view, no copy
 
         for start in range(0, batch_size, chunk_rows):
             end = min(start + chunk_rows, batch_size)

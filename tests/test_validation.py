@@ -121,7 +121,7 @@ def test_run_detects_invalid_choice_values(small_data):
 
 def test_run_detects_invalid_processor_params(small_data):
     x, y = small_data
-    with pytest.raises(ValueError, match="Unknown parameters for continuous processor"):
+    with pytest.raises(ValueError, match="Unknown parameters for the continuous processor"):
         nmi.run(x, y,
                 processing=Processing(x='continuous',
                                       x_params={'window_size': 1, 'invalid_param': 5}),

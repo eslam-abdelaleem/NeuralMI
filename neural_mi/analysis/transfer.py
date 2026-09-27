@@ -12,12 +12,13 @@ The past/future arrays are built internally from the raw time series using
 sliding windows controlled by ``history_window`` and ``prediction_horizon``.
 """
 import torch
-import numpy as np
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import (_joint_marginal_difference, _extract_embeddings,
+from neural_mi.analysis.sweep import (combined_spread, _joint_marginal_difference,
                                       amplification_factor)
 from neural_mi.logger import logger
+from neural_mi.embeddings_io import saved_paths
+from neural_mi.utils import validate_stride
 
 
 def _build_te_arrays(
@@ -25,19 +26,24 @@ def _build_te_arrays(
     y_data: torch.Tensor,
     history_window: int,
     prediction_horizon: int = 1,
+    stride: int = 1,
 ) -> tuple:
     """Build (x_past, y_past, y_future) sliding-window arrays.
 
     Parameters
     ----------
     x_data : torch.Tensor
-        Shape ``(T, n_channels_x)`` — raw time series for X.
+        Shape ``(T, n_channels_x)``: raw time series for X.
     y_data : torch.Tensor
-        Shape ``(T, n_channels_y)`` — raw time series for Y.
+        Shape ``(T, n_channels_y)``: raw time series for Y.
     history_window : int
         Number of past time steps to include in each past window.
     prediction_horizon : int, optional
         How many steps ahead to predict. Defaults to 1.
+    stride : int, optional
+        Distance in samples between consecutive rows. Defaults to 1, keeping every valid starting position so that consecutive rows share
+        ``history_window - 1`` of their samples. A larger stride thins the rows
+        without changing which quantity is measured.
 
     Returns
     -------
@@ -46,42 +52,51 @@ def _build_te_arrays(
     ``(n_valid, n_channels, prediction_horizon)``.
     """
     # Accept numpy arrays and convert to tensors
-    if not isinstance(x_data, torch.Tensor):
-        x_data = torch.as_tensor(np.asarray(x_data), dtype=torch.float32)
-    if not isinstance(y_data, torch.Tensor):
-        y_data = torch.as_tensor(np.asarray(y_data), dtype=torch.float32)
 
-    T = x_data.shape[0]
-    # n_valid: the number of valid starting positions i such that
+    stride = validate_stride(stride, 'transfer entropy')
+    from neural_mi.analysis.offsets import as_rows, slice_lags
+    x_rows, y_rows = as_rows(x_data), as_rows(y_data)
+    T = x_rows.shape[0]
+    # n_positions: the number of valid starting positions i such that
     #   history window [i, i+H) and future [i+H, i+H+h) both fit within [0, T).
     # Largest valid i = T - H - h  →  count = T - H - h + 1.
-    n_valid = T - history_window - prediction_horizon + 1
-    if n_valid <= 0:
+    n_positions = T - history_window - prediction_horizon + 1
+    if n_positions <= 0:
         raise ValueError(
             f"Not enough time points to build transfer entropy arrays. "
             f"Need > history_window + prediction_horizon = "
             f"{history_window + prediction_horizon}, got T={T}."
         )
+    # Only every stride-th position is kept, so the row count is how many of
+    # those steps fit inside n_positions.
+    n_valid = (n_positions - 1) // stride + 1
 
     # Build sliding windows via unfold (a view, not a copy) instead of a
     # Python list comprehension + torch.stack, which would materialize three
     # large intermediate window arrays. unfold(0, size, 1) on a (T, C) tensor
     # already produces the (n_windows, C, size) layout directly, so no permute
     # is needed either.
-    x_past = x_data.unfold(0, history_window, 1)[:n_valid]        # (n_valid, n_channels_x, history_window)
-    y_past = y_data.unfold(0, history_window, 1)[:n_valid]        # (n_valid, n_channels_y, history_window)
-    y_future = y_data[history_window:].unfold(0, prediction_horizon, 1)  # (n_valid, n_channels_y, prediction_horizon)
+    # All three slice at the same stride from the same reference positions, so
+    # row i of each refers to the same time point. Truncating all three to
+    # n_valid keeps that true when the strided tail lands unevenly.
+    x_past = slice_lags(x_rows, history_window, stride, n_valid)
+    y_past = slice_lags(y_rows, history_window, stride, n_valid)
+    y_future = slice_lags(y_rows[history_window:], prediction_horizon, stride, n_valid)
 
     return x_past, y_past, y_future
 
 
-def _build_w_past(w_data: torch.Tensor, history_window: int, n_valid: int) -> torch.Tensor:
-    """Build W_past, matching X_past/Y_past's construction exactly (same
-    ``history_window``, same stride-1 unfold, truncated to the same
-    ``n_valid`` count so it aligns sample-for-sample with the other arrays)."""
-    if not isinstance(w_data, torch.Tensor):
-        w_data = torch.as_tensor(np.asarray(w_data), dtype=torch.float32)
-    return w_data.unfold(0, history_window, 1)[:n_valid]
+def _build_w_past(w_data: torch.Tensor, history_window: int, n_valid: int,
+                  stride: int = 1) -> torch.Tensor:
+    """Build W_past, matching X_past/Y_past's construction exactly.
+
+    Same ``history_window``, same ``stride``, truncated to the same ``n_valid``
+    count, so it aligns sample-for-sample with the other arrays. The stride has
+    to be passed in instead of inferred, since ``n_valid`` alone does not fix
+    which positions were kept once the rows can be thinned.
+    """
+    from neural_mi.analysis.offsets import as_rows, slice_lags
+    return slice_lags(as_rows(w_data), history_window, stride, n_valid)
 
 
 def run_transfer_entropy(
@@ -94,6 +109,7 @@ def run_transfer_entropy(
     n_workers: int = 1,
     bidirectional: bool = False,
     w_data: Optional[torch.Tensor] = None,
+    stride: int = 1,
 ) -> Dict[str, Any]:
     """Estimates transfer entropy TE(X→Y), and optionally TE(Y→X).
 
@@ -106,7 +122,7 @@ def run_transfer_entropy(
     ----------
     x_data : torch.Tensor
         Raw time-series data for X, shape ``(T, n_channels_x)``.
-        2-D (no windowing dimension yet) — windows are built internally.
+        2-D (no windowing dimension yet), windows are built internally.
     y_data : torch.Tensor
         Raw time-series data for Y, shape ``(T, n_channels_y)``.
     base_params : Dict[str, Any]
@@ -129,8 +145,7 @@ def run_transfer_entropy(
         entropy TE(X→Y|W) = I(y_future; x_past | y_past, w_past) instead of
         plain TE(X→Y). W_past (built the same way as X_past/Y_past, same
         ``history_window``) is folded into both the joint and marginal
-        conditioning arrays. ``None`` (the default) reproduces plain TE
-        exactly, unchanged from before this parameter existed. Applied to
+        conditioning arrays. ``None`` (the default) gives plain TE. Applied to
         both directions when ``bidirectional=True``.
 
     Returns
@@ -138,11 +153,11 @@ def run_transfer_entropy(
     Dict[str, Any]
         Dictionary with keys:
 
-        - ``'te_xy'`` : float — point estimate of TE(X→Y).
-        - ``'te_estimate'`` : float — alias for ``te_xy``.
-        - ``'i_xypast_yfuture'`` : float — mean I(x_past, y_past ; y_future).
-        - ``'i_ypast_yfuture'`` : float — mean I(y_past ; y_future).
-        - ``'amplification_factor'`` : float — error-amplification factor for
+        - ``'te_xy'`` (float): point estimate of TE(X→Y).
+        - ``'te_estimate'`` (float): alias for ``te_xy``.
+        - ``'i_xypast_yfuture'`` (float): mean I(x_past, y_past ; y_future).
+        - ``'i_ypast_yfuture'`` (float): mean I(y_past ; y_future).
+        - ``'amplification_factor'`` (float): error-amplification factor for
           TE(X→Y), ``(|I(xy_past;y_future)| + |I(y_past;y_future)|) / |TE|``.
           Transfer entropy is the most fragile quantity in the taxonomy on this
           measure; a value >= 10 means the estimate is a small residual of two
@@ -151,24 +166,18 @@ def run_transfer_entropy(
           :func:`neural_mi.analysis.sweep.amplification_factor`.
         - ``'raw_xypast_yfuture'`` : list of result dicts.
         - ``'raw_ypast_yfuture'`` : list of result dicts.
-        - ``'n_samples'`` : int — number of valid sliding-window samples.
-        - ``'bidirectional'`` : bool — whether bidirectional TE was computed.
-        - ``'embeddings_x'``, ``'embeddings_y'`` : present only when
-          ``base_params['return_embeddings']`` is set -- the joint
-          (xy_past;y_future) leg's learned embeddings, not the marginal
-          (y_past;y_future) leg's, which trains a separate model.
+        - ``'n_samples'`` (int): number of valid sliding-window samples.
+        - ``'bidirectional'`` (bool): whether bidirectional TE was computed.
 
         If ``bidirectional=True``, additionally:
 
-        - ``'te_yx'`` : float — point estimate of TE(Y→X).
-        - ``'i_yxpast_xfuture'`` : float — mean I(y_past, x_past ; x_future).
-        - ``'i_xpast_xfuture'`` : float — mean I(x_past ; x_future).
+        - ``'te_yx'`` (float): point estimate of TE(Y→X).
+        - ``'i_yxpast_xfuture'`` (float): mean I(y_past, x_past ; x_future).
+        - ``'i_xpast_xfuture'`` (float): mean I(x_past ; x_future).
         - ``'raw_yxpast_xfuture'`` : list of result dicts.
         - ``'raw_xpast_xfuture'`` : list of result dicts.
-        - ``'directionality_index'`` : float — (TE_xy - TE_yx) / (|TE_xy| + |TE_yx|).
+        - ``'directionality_index'`` (float): (TE_xy - TE_yx) / (|TE_xy| + |TE_yx|).
           +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric.
-        - ``'embeddings_x_yx'``, ``'embeddings_y_yx'`` : the TE(Y→X)
-          direction's joint-leg embeddings, present under the same condition.
     """
     if x_data.ndim != 2 or y_data.ndim != 2:
         raise ValueError(
@@ -193,18 +202,20 @@ def run_transfer_entropy(
         f"Transfer Entropy: building windows "
         f"(history_window={history_window}, prediction_horizon={prediction_horizon})..."
     )
-    # _build_te_arrays windows via unfold(0, history_window, 1) -- stride 1,
-    # bypassing WindowManager entirely -- so the blocked-split leakage check
-    # (same mechanism as the WindowManager path; see run.py/trainer.py) needs
-    # its window geometry passed explicitly here instead. Set once; reused by
-    # every _joint_marginal_difference call below (joint/marginal, both
-    # directions if bidirectional), since history_window and the stride-1
-    # construction don't change between them.
+    # _build_te_arrays windows via unfold(0, history_window, stride), bypassing
+    # WindowManager entirely, so the blocked-split leakage check (same mechanism
+    # as the WindowManager path; see run.py/trainer.py) needs its window geometry
+    # passed explicitly here instead. The step has to be the real stride: at
+    # stride 1 a gap of one window index buys one sample of separation, so the
+    # check would otherwise wave through a split that shares almost a whole
+    # window. Set once and reused by every _joint_marginal_difference call below
+    # (joint/marginal, both directions if bidirectional), since neither
+    # history_window nor the stride changes between them.
     base_params = dict(base_params)
     base_params['leak_check_window_size'] = history_window
-    base_params['leak_check_step'] = 1
+    base_params['leak_check_step'] = stride
     x_past, y_past, y_future = _build_te_arrays(
-        x_data, y_data, history_window, prediction_horizon
+        x_data, y_data, history_window, prediction_horizon, stride=stride
     )
     n_samples = x_past.shape[0]
     logger.info(f"Transfer Entropy: {n_samples} valid samples.")
@@ -213,11 +224,11 @@ def run_transfer_entropy(
     xy_past = torch.cat([x_past, y_past], dim=1)
     y_past_cond = y_past
     if w_data is not None:
-        w_past = _build_w_past(w_data, history_window, n_samples)
+        w_past = _build_w_past(w_data, history_window, n_samples, stride=stride)
         xy_past = torch.cat([xy_past, w_past], dim=1)
         y_past_cond = torch.cat([y_past, w_past], dim=1)
 
-    te, mi_joint, mi_marginal, results_joint, results_marginal = _joint_marginal_difference(
+    te, mi_joint, mi_marginal, results_joint, results_marginal, _per_run = _joint_marginal_difference(
         xy_past, y_future, y_past_cond, y_future,
         base_params, sweep_grid, n_workers,
         quantity_name="TE(X→Y)",
@@ -231,24 +242,18 @@ def run_transfer_entropy(
         'i_xypast_yfuture': mi_joint,
         'i_ypast_yfuture': mi_marginal,
         'amplification_factor': amplification_factor([mi_joint, mi_marginal], te),
+        'mi_estimate_std': combined_spread(_per_run, (1, -1)),
         'raw_xypast_yfuture': results_joint,
         'raw_ypast_yfuture': results_marginal,
         'n_samples': n_samples,
         'bidirectional': bidirectional,
     }
-    # TE is a difference of two separately-trained estimates with separate
-    # ceilings -- surface both components' diagnostics (Fix 6), not just one,
-    # since a healthy joint estimate can still hide a saturated marginal one
-    # (or vice versa) that the difference alone wouldn't reveal.
-    result['diagnostics_joint'] = _extract_diagnostics(results_joint)
-    result['diagnostics_marginal'] = _extract_diagnostics(results_marginal)
-    result.update(_extract_embeddings(results_joint) or {})
 
     if bidirectional:
         logger.info("Transfer Entropy (bidirectional): estimating TE(Y→X)...")
         # Swap roles of X and Y to get TE(Y→X)
         y_past_b, x_past_b, x_future = _build_te_arrays(
-            y_data, x_data, history_window, prediction_horizon
+            y_data, x_data, history_window, prediction_horizon, stride=stride
         )
         yx_past = torch.cat([y_past_b, x_past_b], dim=1)
         x_past_cond = x_past_b
@@ -258,7 +263,7 @@ def run_transfer_entropy(
             yx_past = torch.cat([yx_past, w_past], dim=1)
             x_past_cond = torch.cat([x_past_b, w_past], dim=1)
 
-        te_yx, mi_joint_yx, mi_marginal_yx, results_joint_yx, results_marginal_yx = _joint_marginal_difference(
+        te_yx, mi_joint_yx, mi_marginal_yx, results_joint_yx, results_marginal_yx, _per_run_yx = _joint_marginal_difference(
             yx_past, x_future, x_past_cond, x_future,
             base_params, sweep_grid, n_workers,
             quantity_name="TE(Y→X)",
@@ -274,7 +279,6 @@ def run_transfer_entropy(
             f"TE(X→Y)={te:.4f}, TE(Y→X)={te_yx:.4f}, "
             f"directionality_index={directionality_index:.4f}"
         )
-        _emb_yx = _extract_embeddings(results_joint_yx)
         result.update({
             'te_yx': te_yx,
             'i_yxpast_xfuture': mi_joint_yx,
@@ -284,46 +288,18 @@ def run_transfer_entropy(
             'raw_yxpast_xfuture': results_joint_yx,
             'raw_xpast_xfuture': results_marginal_yx,
             'directionality_index': directionality_index,
-            'diagnostics_joint_yx': _extract_diagnostics(results_joint_yx),
-            'diagnostics_marginal_yx': _extract_diagnostics(results_marginal_yx),
         })
-        if _emb_yx is not None:
-            result['embeddings_x_yx'] = _emb_yx['embeddings_x']
-            result['embeddings_y_yx'] = _emb_yx['embeddings_y']
 
     return result
 
 
-_DIAGNOSTIC_KEYS = (
-    'eval_size', 'train_eval_size', 'test_ceiling_mi', 'train_ceiling_mi',
-    'test_saturation', 'train_saturation', 'test_trace_saturated_fraction',
-)
-
-
-def _extract_diagnostics(task_results: list) -> Optional[Dict[str, Any]]:
-    """Pull the ceiling/saturation diagnostics (Fix 6) out of a ParameterSweep
-    task-result list, for the representative (last) task.
-
-    Transfer entropy is a difference of two separately-trained estimates, each
-    with its own eval_size/ceiling -- this surfaces one component's numbers
-    at the top level so a caller doesn't have to dig into raw_*future lists.
-    Uses the last entry (consistent with how the rest of the codebase treats
-    "no natural aggregation, pick one representative result" when a
-    sweep_grid produces more than one row -- see run.py's sweep-embeddings
-    handling); with no sweep_grid (the common case) there is exactly one.
-    """
-    if not task_results:
-        return None
-    last = task_results[-1]
-    return {k: last.get(k) for k in _DIAGNOSTIC_KEYS if k in last}
-
-
 def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
-                        prediction_horizon=1, bidirectional=False, w_data=None) -> float:
+                        prediction_horizon=1, bidirectional=False, w_data=None,
+                        stride=1) -> float:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of TE.
 
     ``run_rigorous_scalar_analysis`` dispatches many of these (one per
-    gamma-chunk) to a multiprocessing pool when ``n_workers > 1`` -- must be
+    gamma-chunk) to a multiprocessing pool when ``n_workers > 1``, must be
     a module-level function (not a closure) to be picklable, and always runs
     with ``n_workers=1`` internally to avoid nested pools, matching the
     outer-loop-gets-workers / inner-loop-sequential convention used for
@@ -332,7 +308,7 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
     ``w_data`` arrives here already sliced to this gamma-chunk's samples (via
     ``run_rigorous_scalar_analysis``'s ``extra_data`` mechanism, the same one
     ``mode='conditional'``'s rigorous path also uses for its own ``w_data``),
-    not the full signal -- forwarded straight through to ``run_transfer_entropy``.
+    not the full signal, forwarded straight through to ``run_transfer_entropy``.
     """
     raw = run_transfer_entropy(
         x_s, y_s, bp,
@@ -342,5 +318,7 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
         n_workers=1,
         bidirectional=bidirectional,
         w_data=w_data,
+        stride=stride,
     )
-    return raw['te_estimate']
+    paths = saved_paths(raw)
+    return (raw['te_estimate'], paths) if paths else raw['te_estimate']

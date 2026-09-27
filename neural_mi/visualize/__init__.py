@@ -1,5 +1,5 @@
 # neural_mi/visualize/__init__.py
-"""This package contains modules for visualizing analysis results."""
+"""This package contains modules for visualising analysis results."""
 from .plot import (
     plot_sweep_curve,
     plot_dimensionality_curve,

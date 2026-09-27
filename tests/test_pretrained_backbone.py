@@ -23,10 +23,7 @@ class TestPretrainedBackboneSpatialMismatch:
         emit a UserWarning and still produce valid MI output.
         Use 3 channels to match ResNet18's expected input channels.
         """
-        try:
-            import torchvision  # noqa: F401
-        except ImportError:
-            pytest.skip("torchvision not installed")
+        pytest.importorskip("torchvision")
 
         X, Y = self._make_image_data(60, 3, 28, 28)
         with warnings.catch_warnings(record=True) as caught:
@@ -53,10 +50,7 @@ class TestPretrainedBackboneSpatialMismatch:
 
     def test_224x224_no_warning(self):
         """Passing 224×224 images should produce no spatial mismatch warning."""
-        try:
-            import torchvision  # noqa: F401
-        except ImportError:
-            pytest.skip("torchvision not installed")
+        pytest.importorskip("torchvision")
 
         X, Y = self._make_image_data(20, 3, 224, 224)
         with warnings.catch_warnings(record=True) as caught:
@@ -81,15 +75,12 @@ class TestPretrainedBackboneSpatialMismatch:
 
     def test_backbone_weights_frozen_after_training(self):
         """Backbone parameters should not change after training (requires_grad=False)."""
-        try:
-            import torchvision  # noqa: F401
-        except ImportError:
-            pytest.skip("torchvision not installed")
+        pytest.importorskip("torchvision")
 
         from neural_mi.models.embeddings import PretrainedBackboneEmbedding
 
         emb = PretrainedBackboneEmbedding(
-            input_dim=3, hidden_dim=16, embed_dim=8, n_layers=1,
+            input_dim=3, hidden_dim=16, embedding_dim=8, n_layers=1,
             pytorch_predefined='resnet18', pretrained=False,
         )
 
@@ -115,25 +106,18 @@ class TestPretrainedBackboneSpatialMismatch:
             )
 
     def test_channel_adapter_gradient_backbone_frozen_bn_eval(self):
-        """Regression test for the dead-channel-adapter / BN-train-mode bugs.
-
-        With ``input_dim != backbone_in_ch`` a trainable 1x1 conv channel
-        adapter is inserted before the backbone. Removing the stray
-        ``torch.no_grad()`` around the backbone forward (which previously
-        severed the adapter's gradient path) must let gradient reach the
-        adapter, while the backbone itself stays frozen and its BatchNorm
-        layers stay in eval mode even when the outer module is in train().
+        """With ``input_dim != backbone_in_ch`` a trainable 1x1 conv channel
+                adapter sits before the backbone. Gradient reaches the adapter, while
+                the backbone stays frozen and its BatchNorm layers stay in eval mode
+                even when the outer module is in train().
         """
-        try:
-            import torchvision  # noqa: F401
-        except ImportError:
-            pytest.skip("torchvision not installed")
+        pytest.importorskip("torchvision")
 
         from neural_mi.models.embeddings import PretrainedBackboneEmbedding
 
         # input_dim=1 != resnet18's expected 3 channels -> forces the adapter.
         emb = PretrainedBackboneEmbedding(
-            input_dim=1, hidden_dim=16, embed_dim=8, n_layers=1,
+            input_dim=1, hidden_dim=16, embedding_dim=8, n_layers=1,
             pytorch_predefined='resnet18', pretrained=False,
         )
         assert emb._channel_adapt is not None, (
@@ -166,7 +150,7 @@ class TestPretrainedBackboneSpatialMismatch:
         # (a) The channel adapter must receive a non-None, non-zero gradient.
         adapter_grad = emb._channel_adapt.weight.grad
         assert adapter_grad is not None, (
-            "Channel adapter received no gradient — the no_grad() regression is back."
+            "Channel adapter received no gradient: something severs its gradient path."
         )
         assert (adapter_grad != 0).any(), (
             "Channel adapter gradient is all-zero — gradient is not flowing through the backbone."

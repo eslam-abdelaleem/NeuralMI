@@ -112,8 +112,8 @@ class TestNamedVariables:
         r = nmi.run(x_3ch, mode='pairwise',
                     model=_MODEL, training=_training(),
                     output=Output(channel_names_x=names), n_workers=1)
-        assert r.details.get('variable_names_x') == names
-        assert r.details.get('variable_names_y') == names
+        assert r.get('variable_names_x') == names
+        assert r.get('variable_names_y') == names
 
     def test_channel_names_fallback_integer_when_omitted(self):
         """Without channel_names, pairwise details contain no variable_names keys."""
@@ -121,8 +121,8 @@ class TestNamedVariables:
         r = nmi.run(x_3ch, mode='pairwise',
                     model=_MODEL, training=_training(), n_workers=1)
         # The details should not have variable_names_x injected
-        assert 'variable_names_x' not in r.details
-        assert 'variable_names_y' not in r.details
+        assert 'variable_names_x' not in r.details[0]
+        assert 'variable_names_y' not in r.details[0]
 
     def test_channel_names_are_output_fields(self):
         """channel_names_x/y are fields on the Output config."""

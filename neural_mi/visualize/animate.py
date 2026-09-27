@@ -22,7 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as manim
 
-from neural_mi.logger import logger
+from neural_mi.logger import logger, user_stacklevel
 
 
 # ---------------------------------------------------------------------------
@@ -38,35 +38,36 @@ def animate_training(
     n_components: int = 2,
     reduction: str = 'pca',
     embedding_labels: Optional[Union[np.ndarray, Dict[str, np.ndarray]]] = None,
+    config_id: Optional[int] = None,
+    run_id=None,
     **kwargs,
 ) -> manim.FuncAnimation:
-    """Animate the training history as a GIF or MP4.
+    """Animate one repeat's training history as a GIF or MP4.
 
-    Creates a frame-by-frame animation of training history stored in
-    ``result.details``.  Panels are auto-detected from the available data or
-    specified explicitly.
+    Creates a frame-by-frame animation of the training history of one repeat.
+    Panels are auto-detected from the available data or specified explicitly.
 
     Parameters
     ----------
     result : Results
-        A ``Results`` object containing training history.  The following keys
-        in ``result.details`` drive the panels:
+        A ``Results`` object containing training history. These values of the
+        chosen repeat drive the panels:
 
-        - ``'test_mi_history'`` — always required (drives the MI panel).
-        - ``'train_mi_history'`` — overlaid on the MI panel when present.
-        - ``'spectral_metrics_history'`` — drives the spectral-metrics panel.
-        - ``'embedding_history_x'`` / ``'embedding_history_y'`` — drive the
+        - ``'test_mi_history'``: always required (drives the MI panel).
+        - ``'train_mi_history'``: overlaid on the MI panel when present.
+        - ``'spectral_metrics_history'``: drives the spectral-metrics panel.
+        - ``'embedding_history_x'`` / ``'embedding_history_y'``: drive the
           embedding panel (populated when ``track_embeddings != False``).
 
     panels : list of str, optional
         Which panels to include. When ``None`` (default) panels are
         auto-detected from available data. Valid values:
 
-        - ``'mi'`` — MI vs epoch line plot (test MI + optional train MI).
-        - ``'spectral_metrics'`` — participation ratio vs epoch.
-        - ``'spectrum'`` — bar chart of singular values at each epoch
+        - ``'mi'``: MI vs epoch line plot (test MI + optional train MI).
+        - ``'spectral_metrics'``: participation ratio vs epoch.
+        - ``'spectrum'``: bar chart of singular values at each epoch
           (requires ``track_spectral_history=True``).
-        - ``'embeddings'`` — 2-D or 3-D scatter of learned embeddings.
+        - ``'embeddings'``: 2-D or 3-D scatter of learned embeddings.
 
     fps : int, optional
         Frames per second.  Defaults to 10.
@@ -86,14 +87,16 @@ def animate_training(
     embedding_labels : array-like or dict, optional
         Labels for colouring embedding scatter points.
 
-        - ``None`` — uniform colour.
-        - 1-D array — single label set; one embedding subplot.
-        - dict mapping name → array — multiple label sets; one subplot
+        - ``None``: uniform colour.
+        - 1-D array: single label set; one embedding subplot.
+        - dict mapping name → array: multiple label sets; one subplot
           per entry.
 
-        Continuous arrays produce a gradient colormap; integer / string
+        Continuous arrays produce a gradient colour map; integer / string
         arrays produce a discrete palette with a legend.
 
+    config_id, run_id : optional
+        The repeat to animate, needed only when the result holds more than one.
     **kwargs
         ``figsize`` : tuple, forwarded to ``plt.figure``.
 
@@ -114,7 +117,7 @@ def animate_training(
     ...     reduction='umap',
     ... )
     """
-    details = result.details
+    details = result._repeat_view(config_id, run_id)
 
     # ---- collect history arrays ----
     test_history = list(details.get('test_mi_history', []))
@@ -127,9 +130,8 @@ def animate_training(
     n_frames = len(test_history)
     if n_frames == 0:
         raise ValueError(
-            "result.details does not contain 'test_mi_history'. "
-            "Cannot create animation. Ensure the result was produced by "
-            "a training run (e.g. mode='estimate' or mode='dimensionality')."
+            "This repeat holds no 'test_mi_history', so there is nothing to "
+            "animate. The history is recorded for every trained network."
         )
 
     # ---- resolve panels ----
@@ -155,12 +157,12 @@ def animate_training(
             _, _reduced_y = _fit_reducer(embed_history_y, n_components, reduction)
         if not _reduced_x and not _reduced_y:
             warnings.warn(
-                "panels includes 'embeddings' but result.details does not contain "
-                "'embedding_history_x' / 'embedding_history_y'. "
-                "Set track_embeddings=512 (or any positive value) in base_params to "
-                "enable per-epoch embedding tracking. Removing 'embeddings' panel.",
+                "panels includes 'embeddings' but this repeat holds no "
+                "'embedding_history_x' / 'embedding_history_y'. Pass "
+                "Output(track_embeddings=512) (or any positive value) to record "
+                "embeddings per epoch. Removing the 'embeddings' panel.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
             panels = [p for p in panels if p != 'embeddings']
 
@@ -178,7 +180,7 @@ def animate_training(
             col_spec.append('embed')
 
     if not col_spec:
-        raise ValueError("No panels could be created. Check panels= and result.details content.")
+        raise ValueError("No panels could be created. Check panels= against what this repeat recorded.")
 
     ncols = len(col_spec)
     units = result.params.get('output_units', 'bits')
@@ -370,7 +372,7 @@ def animate_training(
                     "FFMpeg not found; falling back to PillowWriter (GIF). "
                     "Install ffmpeg to export MP4.",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=user_stacklevel(),
                 )
                 writer = manim.PillowWriter(fps=fps)
         anim.save(output_path, writer=writer)
@@ -420,11 +422,11 @@ def _fit_reducer(
     if not embed_history:
         return None, []
 
-    embed_dim = embed_history[0].shape[1]
-    if embed_dim <= n_components or reduction == 'none':
+    embedding_dim = embed_history[0].shape[1]
+    if embedding_dim <= n_components or reduction == 'none':
         return None, [z[:, :n_components] for z in embed_history]
 
-    all_embeds = np.concatenate(embed_history, axis=0)  # (n_frames * n_tracked, embed_dim)
+    all_embeds = np.concatenate(embed_history, axis=0)  # (n_frames * n_tracked, embedding_dim)
 
     if reduction == 'pca':
         try:

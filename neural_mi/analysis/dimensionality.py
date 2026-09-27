@@ -5,7 +5,7 @@ dimensionality), plus a cheap separable-vs-entangled regime read.
 
 This module deliberately does not return an exact dimensionality count. A
 nonlinear encoder given more capacity than the true number of shared latent
-factors doesn't just find those factors -- it can also construct combinations
+factors doesn't just find those factors. It can also construct combinations
 of them (products, higher-order terms) that are indistinguishable from genuine
 factors by any spectral measure of the trained embedding. Instead, this module
 trains a modest-sized embedding a handful of times from independent random
@@ -23,7 +23,8 @@ import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 
 from .sweep import ParameterSweep
-from neural_mi.logger import logger, worker_init_args
+from neural_mi.logger import logger, user_stacklevel, worker_init_args
+from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import mi_report_units
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu, compute_regime_diagnostic
 
@@ -33,10 +34,10 @@ def _classify_regime(mi_value: float, ceiling: float, margin: float, floor: floa
 
     Returns ``(regime, detached)`` where regime is one of
     ``'pinned'``, ``'collapsed'``, ``'detached'``. Standalone, lightweight
-    diagnostic -- not part of any remediation. An investigation into whether
+    diagnostic, not part of any remediation. An investigation into whether
     ceiling proximity corrupts this mode's stable-direction readout found it
     degrades gracefully (fewer directions found, correctly hedged with
-    near-degeneracy flags) rather than misleadingly, so no noise-injection
+    near-degeneracy flags) instead of misleadingly, so no noise-injection
     remedy is applied automatically; this only warns.
     """
     if not np.isfinite(mi_value):
@@ -52,7 +53,7 @@ def _warn_if_near_ceiling(df: pd.DataFrame, ceiling_mi_fraction: float = 0.85,
                           base_params: Optional[Dict[str, Any]] = None) -> None:
     """Lightweight, standalone warning: is the underlying MI estimate close
     enough to its evaluation ceiling (log(eval_size)) that any reading built
-    on it deserves extra caution? Not a remediation -- see _classify_regime.
+    on it deserves extra caution? Not a remediation. See _classify_regime.
     """
     if 'test_mi' not in df.columns or 'eval_size' not in df.columns:
         return
@@ -70,23 +71,22 @@ def _warn_if_near_ceiling(df: pd.DataFrame, ceiling_mi_fraction: float = 0.85,
         warnings.warn(
             f"Dimensionality: the underlying MI estimate ({mean_test_mi * _scale:.3f} {_units}) is "
             f"near its evaluation ceiling (log(eval_size)={ceiling * _scale:.3f} {_units}). Stable "
-            f"directions found under this condition are still trustworthy (this was "
-            f"tested directly -- ceiling proximity was found to degrade the "
-            f"stable-direction count conservatively, not misleadingly), but the count "
-            f"may be an undercount of what a larger evaluation batch (max_eval_samples) "
-            f"could resolve. Consider raising max_eval_samples if you need a fuller read.",
-            UserWarning, stacklevel=3,
+            f"directions found under this condition are still trustworthy, since ceiling "
+            f"proximity lowers the stable-direction count without inventing directions, "
+            f"but the count may be an undercount of what a larger evaluation set "
+            f"(max_eval_samples) could resolve. Raise max_eval_samples for a fuller read.",
+            UserWarning, stacklevel=user_stacklevel(),
         )
 
 
 def _safe_regime_diagnostic(x: torch.Tensor) -> Optional[Dict[str, Any]]:
     """compute_regime_diagnostic, skipped gracefully (returns None) when not
-    applicable -- 4-D spatial (N, C, H, W) input with few channels (e.g.
+    applicable, 4-D spatial (N, C, H, W) input with few channels (e.g.
     single-channel image/video data for a CNN2D encoder) has no meaningful
     within-view channel correlation to compute; this is a real data shape
     this mode supports (via split_method='horizontal'/'diagonal'/etc.), not
-    an error case. Also skipped -- via the same ValueError catch, since
-    numpy.linalg.LinAlgError subclasses it -- when the correlation matrix is
+    an error case. Also skipped, via the same ValueError catch, since
+    numpy.linalg.LinAlgError subclasses it, when the correlation matrix is
     singular/NaN-poisoned, e.g. a real recording with a silent (zero-variance)
     channel over the analysis window; confirmed directly on real hippocampal
     data (one silent unit in a 10k-timepoint slice).
@@ -105,8 +105,7 @@ def _n_samples_for_shared_split(x_data, y_data, analysis_params: Dict[str, Any])
     For already-windowed data (the common case), this is just
     ``x_data.shape[0]``. When windowing has been deferred (``x_data`` is
     raw, 2-D, and ``shift_windows`` was requested for a regular-grid pair),
-    ``x_data.shape[0]`` is a raw sample count, not a window count -- reusing
-    it directly would compute indices in the wrong space entirely. Delegates
+    ``x_data.shape[0]`` is a raw sample count and not a window count. Reusing it directly would compute indices in the wrong space entirely. Delegates
     to :func:`~neural_mi.data.shift_windowing.n_windows_if_deferred` for the
     shift-invariant window count in that case (intrinsic mode passes
     ``y_data=None`` since every split pairs two channel-groups of the same
@@ -126,9 +125,9 @@ def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int)
     are used unchanged. Otherwise computes ONE split, ONCE, reusing Trainer's
     own splitting logic directly (never reimplemented here, so this can't
     drift from how the rest of the library splits data). Without this, each
-    split/rerun would get a genuinely DIFFERENT random train/test partition --
+    split/rerun would get a genuinely DIFFERENT random train/test partition,
     task-level seeding varies deliberately by run_id so that independent
-    reruns really are independent -- which would make "held-out" mean
+    reruns really are independent, which would make "held-out" mean
     different samples every time and break the cross-run comparison entirely.
     """
     existing_train = analysis_params.get('train_indices')
@@ -160,11 +159,10 @@ def _compute_stability_report(
     A rank is "stable" if the minimum pairwise correlation of its direction
     across every pair of splits clears ``stability_threshold``. A rank is
     "below noise floor" if its mean singular-value strength across splits is
-    under ``min_strength_fraction`` of the top rank's strength -- this check
+    under ``min_strength_fraction`` of the top rank's strength. This check
     is independent of and catches cases the correlation check alone misses: a
     pure noise direction can show a spuriously high cross-run correlation by
-    chance despite carrying no real signal (confirmed directly in testing --
-    see SOURCE_OF_TRUTH.md's hard_entangled_troublezone battery result).
+    chance despite carrying no real signal, confirmed directly in testing.
     Adjacent ranks within ``degeneracy_ratio_threshold`` of each other in
     strength are reported as a group, existence confirmed but individual
     order/identity not claimed.
@@ -248,12 +246,12 @@ def _group_adjacent(ranks: List[int]) -> List[List[int]]:
 
 
 # ---------------------------------------------------------------------------
-# Module-level picklable wrapper — must be defined at module scope so that
+# Module-level picklable wrapper, must be defined at module scope so that
 # multiprocessing can serialise it via its qualified name.
 # ---------------------------------------------------------------------------
 
 def _run_single_split_task(args):
-    """Top-level wrapper for Pool.map — must be module-level for pickling.
+    """Top-level wrapper for Pool.map, must be module-level for pickling.
 
     Each split is executed with ``n_workers=1`` internally to avoid nested
     multiprocessing pools.
@@ -272,7 +270,7 @@ def _dispatch_splits(split_tasks, n_workers, show_progress):
       forward ``n_workers`` into the inner ``ParameterSweep`` so that any
       sweep-grid parallelism still uses the available workers.
     * **Multiple splits, ``n_workers > 1``**: dispatch splits to a
-      ``Pool(n_workers)`` — each split's inner ``ParameterSweep`` gets
+      ``Pool(n_workers)``: each split's inner ``ParameterSweep`` gets
       ``n_workers=1`` to prevent nested pools.
     * **``n_workers <= 1``**: fully sequential.
     """
@@ -292,7 +290,7 @@ def _dispatch_splits(split_tasks, n_workers, show_progress):
             all_results.extend(rows)
         return all_results
 
-    # Parallel path — splits dispatched to a Pool, inner sweeps sequential.
+    # Parallel path, splits dispatched to a Pool, inner sweeps sequential.
     logger.info(f"Parallelising {n_tasks} dimensionality splits across {n_workers} workers...")
     _configure_multiprocessing()
     _log_init, _log_args = worker_init_args()
@@ -319,8 +317,6 @@ def run_dimensionality_analysis(
     split_method: str = 'random',
     n_splits: int = 3,
     n_workers: int = 1,
-    processor_type_x: Optional[str] = None,
-    processor_type_y: Optional[str] = None,
     user_set_keys: Optional[set] = None,
     **kwargs
 ) -> Tuple[pd.DataFrame, Optional[Dict[str, Any]]]:
@@ -343,11 +339,11 @@ def run_dimensionality_analysis(
         base_params reaches this function every BASE_PARAMS_SCHEMA key is
         already present (either the caller's value or the library-wide
         default), so this is the only way to tell "the caller wants
-        embedding_dim=64" apart from "embedding_dim defaulted to 64" -- needed
+        embedding_dim=64" apart from "embedding_dim defaulted to 64", needed
         because this mode's own defaults (a modest embedding_dim; a
         sub-mode-conditional shared_encoder) differ from the library-wide
-        ones. If not provided (e.g. calling this function directly rather than
-        through ``run()``), defaults to every key already in ``base_params`` --
+        ones. If not provided (e.g. calling this function directly instead of
+        through ``run()``), defaults to every key already in ``base_params``,
         i.e. treats a direct ``base_params={'embedding_dim': 64}`` as
         explicitly set, matching direct-call semantics.
     y_data : torch.Tensor, optional
@@ -361,10 +357,11 @@ def run_dimensionality_analysis(
           assignments.
         - ``'spatial'``: splits channels at the midpoint (first vs second half).
           Use when channels have a meaningful spatial ordering (e.g. electrode
-          array).
+          array). ``n_splits`` runs use the same halves with independent weight
+          initialisations.
         - ``'temporal'``: correlates x_data with a lag-shifted copy of itself.
           Pass ``lag=<int>`` (in samples) as a kwarg. Measures autocorrelation
-          structure rather than cross-channel shared information. Only one
+          structure instead of cross-channel shared information. Only one
           split is performed (no cross-run stability check is meaningful here).
         - ``'index'``: user-specified channel assignment. Pass
           ``channel_indices_x=[0, 1, 4, 5, 7]`` as a kwarg; Y is automatically
@@ -372,22 +369,22 @@ def run_dimensionality_analysis(
           data. If X and Y have different channel counts, ``shared_encoder``
           is disabled with a warning. Multiple ``n_splits`` runs are still
           performed (same channel assignment, independent weight initialisations).
-        - ``'horizontal'``: *4-D only.* Splits along the height axis — top half
+        - ``'horizontal'``: *4-D only.* Splits along the height axis, top half
           ``x[:, :, :H//2, :]`` → X, bottom half → Y. ``n_splits`` independent
           weight initialisations are performed with the same spatial assignment.
-        - ``'vertical'``: *4-D only.* Splits along the width axis — left half
+        - ``'vertical'``: *4-D only.* Splits along the width axis, left half
           ``x[:, :, :, :W//2]`` → X, right half → Y.
         - ``'row_interleaved'``: *4-D only.* Even-indexed rows → X, odd-indexed
           rows → Y.  Avoids contiguous spatial bias along height.
         - ``'col_interleaved'``: *4-D only.* Even-indexed columns → X,
           odd-indexed columns → Y.  Column-wise counterpart to ``'row_interleaved'``.
         - ``'diagonal'``: *4-D only; MLP/sequence models only.* True geometric
-          split — upper-left triangle + main diagonal → X, lower-right triangle
+          split, upper-left triangle + main diagonal → X, lower-right triangle
           → Y (pixel mask ``row ≤ col``).  Rectangular input (H ≠ W) is allowed
           with a warning; ``shared_encoder`` is auto-disabled when halves differ.
           Raises ``ValueError`` for ``embedding_model='cnn2d'`` or ``'cnn'``.
         - ``'antidiagonal'``: *4-D only; MLP/sequence models only.* True geometric
-          split — upper-right triangle + anti-diagonal → X, lower-left triangle
+          split, upper-right triangle + anti-diagonal → X, lower-left triangle
           → Y (pixel mask ``row + col ≤ W − 1``).  Same constraints as
           ``'diagonal'``.
 
@@ -398,7 +395,7 @@ def run_dimensionality_analysis(
         channel-split assignments are evaluated.  For interaction
         dimensionality (``y_data`` provided) there is no channel split, so
         ``n_splits`` instead controls how many independent model fits are
-        performed — each starting from a different random weight
+        performed, each starting from a different random weight
         initialisation. Both interpretations feed the same cross-run
         stability check; intrinsic mode's version additionally varies the
         channel split itself, a related but distinct notion of "stability"
@@ -410,10 +407,6 @@ def run_dimensionality_analysis(
         sequentially to avoid nested pools).  When ``n_splits == 1`` the
         workers are forwarded into the inner ``ParameterSweep`` to
         parallelise any sweep-grid combinations.  Defaults to 1.
-    processor_type_x, processor_type_y : str, optional
-        The processor type(s) originally used to build ``x_data``/``y_data``
-        (e.g. ``'continuous'``, ``'spike'``, ``'categorical'``). Currently
-        unused by this mode; accepted for API symmetry with other modes.
 
     Returns
     -------
@@ -428,9 +421,8 @@ def run_dimensionality_analysis(
         ``'n_stable_total'``, ``'converged'``. If ``base_params`` contains
         ``return_embeddings=True``, also includes ``'embeddings_x'`` and
         ``'embeddings_y'`` (numpy arrays, shape ``(n_samples, embedding_dim)``)
-        from the **last** split's model, matching the pre-existing behavior for
-        callers that want the full per-sample embeddings, not just which
-        directions are trustworthy.
+        from the **last** split's model, for callers that want the full
+        per-sample embeddings as well as which directions are trustworthy.
     """
 
     # 1. Force correct configuration for dimensionality
@@ -440,11 +432,26 @@ def run_dimensionality_analysis(
     # everything already in base_params as "user set", matching direct-call
     # semantics before this parameter existed.
     user_set_keys = user_set_keys if user_set_keys is not None else set(base_params.keys())
-    analysis_params['critic_type'] = 'hybrid'
-    logger.info(
-        "Dimensionality mode: using critic_type='hybrid' (required for spectral analysis "
-        "via cross-covariance SVD)."
-    )
+    # The hybrid critic is this mode's default. A separable critic also has an
+    # embedding per side and works, with a warning; a concat critic embeds the
+    # pair jointly and leaves no per-side directions to compare.
+    critic_type = analysis_params.get('critic_type') if 'critic_type' in user_set_keys else None
+    if critic_type == 'concat':
+        raise ValueError(
+            "mode='dimensionality' cannot use critic_type='concat'. A concat critic embeds X "
+            "and Y jointly, so there is no embedding of each side whose directions could be "
+            "compared across runs. Use the default 'hybrid', or 'separable'."
+        )
+    if critic_type == 'separable':
+        warnings.warn(
+            "mode='dimensionality' with critic_type='separable': a dot-product critic ties the "
+            "geometry of the embeddings to the score, which can change which directions come "
+            "out stable. This mode defaults to 'hybrid'.",
+            UserWarning, stacklevel=user_stacklevel(),
+        )
+    else:
+        analysis_params['critic_type'] = 'hybrid'
+        logger.info("Dimensionality mode: using critic_type='hybrid'.")
 
     # shared_encoder default is conditional on sub-mode: True only makes sense
     # when X and Y are split halves of the same data source (intrinsic mode,
@@ -456,15 +463,15 @@ def run_dimensionality_analysis(
             analysis_params['shared_encoder'] = True
             logger.info(
                 "Dimensionality mode (intrinsic): using shared_encoder=True by default, as "
-                "X and Y are split views of the same data source. Set shared_encoder=False "
-                "in base_params if the two halves have structurally different representations."
+                "X and Y are split views of the same data source. Set Model(shared_encoder=False) "
+                "if the two halves have structurally different representations."
             )
         else:
             analysis_params['shared_encoder'] = False
             logger.info(
                 "Dimensionality mode (interaction): shared_encoder defaults to False, as X "
                 "and Y are two different views/populations with no reason to assume identical "
-                "structure. Set shared_encoder=True in base_params to tie their weights."
+                "structure. Set Model(shared_encoder=True) to tie their weights."
             )
 
     if 'embedding_dim' not in user_set_keys and 'embedding_dim' not in (sweep_grid or {}):
@@ -484,7 +491,7 @@ def run_dimensionality_analysis(
     user_wants_full_embeddings = bool(analysis_params.get('return_embeddings', False))
     analysis_params['return_embeddings'] = True
     analysis_params['return_rotated_embeddings'] = True
-    analysis_params.setdefault('rotated_embeddings_whitening', 'std')
+    analysis_params.setdefault('whitening', 'std')
 
     # n_workers=None would crash the pool; default to 1
     if n_workers is None:
@@ -497,7 +504,7 @@ def run_dimensionality_analysis(
     # Not applicable to 4-D spatial (N, C, H, W) data with few channels (e.g.
     # single-channel image/video input for a CNN2D encoder) -- there isn't a
     # meaningful "within-view channel correlation" for that data shape, so
-    # this is skipped gracefully rather than forced to fit or made to error.
+    # this is skipped gracefully instead of forced to fit or made to error.
     regimes = {}
     regime_x = _safe_regime_diagnostic(x_data)
     if regime_x is not None:
@@ -541,7 +548,7 @@ def run_dimensionality_analysis(
         all_results = _dispatch_splits(split_tasks, n_workers, show_progress)
         test_idx_per_split = [analysis_params['test_indices']] * n_splits
 
-    # 3. Intrinsic Dimensionality (only X provided — channel split)
+    # 3. Intrinsic Dimensionality (only X provided, channel split)
     else:
         logger.info(f"Computing Intrinsic Dimensionality using '{split_method}' splits.")
         all_results, test_idx_per_split = _dispatch_intrinsic_splits(
@@ -560,9 +567,9 @@ def run_dimensionality_analysis(
             stability_input, stability_threshold, degeneracy_ratio_threshold, min_strength_fraction)
     else:
         logger.warning(
-            "Dimensionality: fewer than 2 splits produced usable rotated embeddings -- "
-            "cross-run stability cannot be computed (need at least 2 to compare). No "
-            "stable directions can be reported."
+            "Dimensionality: fewer than 2 splits produced usable rotated embeddings, and "
+            "cross-run stability needs at least 2 to compare. No stable directions can "
+            "be reported."
         )
 
     converged_flags = [row.get('best_epoch') is not None and row.get('n_epochs') is not None
@@ -573,9 +580,9 @@ def run_dimensionality_analysis(
         warnings.warn(
             f"Dimensionality: {n_unconverged} of {len(converged_flags)} split(s) did not "
             f"converge (early stopping never triggered within the epoch budget). The "
-            f"stable-direction count below may be an undercount -- increase n_epochs or "
-            f"lower patience to let training finish before trusting this reading fully.",
-            UserWarning, stacklevel=2,
+            f"stable-direction count may be an undercount. Increase n_epochs, or lower "
+            f"patience to let training stop early, before trusting this reading.",
+            UserWarning, stacklevel=user_stacklevel(),
         )
 
     embed_history = _extract_embedding_history(all_results)
@@ -616,7 +623,7 @@ def _dispatch_intrinsic_splits(
     """Builds and dispatches split tasks for intrinsic (channel-split)
     dimensionality. Returns (all_results, test_idx_per_split) where the
     latter has one entry per split (all identical unless split_method is
-    'temporal', which is not tracked for stability -- see caller).
+    'temporal', not tracked for stability. See caller).
     """
     n_channels = x_data.shape[1]
     test_idx = analysis_params.get('test_indices')
@@ -643,7 +650,9 @@ def _dispatch_intrinsic_splits(
                 f"Cannot perform '{split_method}' channel split with fewer than 2 channels. "
                 f"x_data has shape {tuple(x_data.shape)}."
             )
-        loops = n_splits if split_method == 'random' else 1
+        # 'random' draws a new channel assignment per split; 'spatial' keeps the
+        # midpoint split and varies only the initialisation, as 'index' does.
+        loops = n_splits
         half = n_channels // 2
         # An odd n_channels gives unequal halves (half vs n_channels - half),
         # incompatible with shared_encoder=True (a single encoder sized for
@@ -764,7 +773,7 @@ def _dispatch_intrinsic_splits(
             logger.info(f"Col-interleaved split: even cols -> X ({x_a.shape[3]}), "
                        f"odd cols -> Y ({x_b.shape[3]}) (W={W}).")
 
-        else:  # diagonal or antidiagonal — true geometric triangular splits
+        else:  # diagonal or antidiagonal, true geometric triangular splits
             _emb = analysis_params.get('embedding_model', 'mlp')
             if _emb in ('cnn2d', 'cnn'):
                 raise ValueError(
@@ -824,7 +833,7 @@ def _dispatch_intrinsic_splits(
 
 def _extract_per_split_rotated(all_results: list, test_idx_per_split: List[Optional[np.ndarray]]) -> list:
     """Pull each split's rotated embeddings + singular values, sliced to that
-    split's held-out (test) indices only -- never train-exposed data.
+    split's held-out (test) indices only, never train-exposed data.
     Returns a list of dicts with keys 'zx_rotated_test', 'singular_values'.
     """
     out = []
@@ -846,10 +855,9 @@ def _extract_per_split_rotated(all_results: list, test_idx_per_split: List[Optio
 def _extract_embedding_history(all_results: list) -> Optional[Dict[str, Any]]:
     """Return per-epoch embedding history from the last result that has it, or
     an empty dict. Only populated when the caller explicitly set
-    track_embeddings (this mode no longer forces it on by default -- the
-    rotated-embedding extraction the stability check relies on doesn't need
-    per-epoch history at all). Called before ``_strip_embeddings`` so the
-    lists are still present.
+    ``track_embeddings``, since the rotated-embedding extraction the stability
+    check relies on does not need per-epoch history. Called before
+    ``_strip_embeddings`` so the lists are still present.
     """
     for row in reversed(all_results):
         if 'embedding_history_x' in row:
@@ -863,7 +871,7 @@ def _extract_embedding_history(all_results: list) -> Optional[Dict[str, Any]]:
 def _strip_embeddings(results: list) -> None:
     """Remove embedding arrays from result dicts in-place.
 
-    Embedding arrays must not end up as DataFrame columns — they are 2-D numpy
+    Embedding arrays must not end up as DataFrame columns, they are 2-D numpy
     arrays and would be stored as object-dtype cells, making the DataFrame
     unusable for aggregation.  Stripping them here is always safe; callers that
     need the embeddings collect them via ``_extract_last_split_embeddings`` and
@@ -892,7 +900,7 @@ def _extract_last_split_embeddings(
     (this mode always computes embeddings internally for the stability check,
     but only exposes the full per-sample arrays when explicitly requested).
     Also forwards the rotated variants and rotation matrices/singular values
-    when present -- this mode always requests return_rotated_embeddings=True
+    when present. This mode always requests return_rotated_embeddings=True
     internally, but only surfaces the resulting keys to the caller under the
     same conditions as any other mode (return_embeddings=True for the rotated
     embeddings themselves, return_rotation_matrices=True for the matrices).
@@ -926,11 +934,14 @@ def _extract_last_split_embeddings(
                     out[key] = row[key]
             return out
 
-    logger.warning(
-        "return_embeddings=True but no embeddings were found in the split results. "
-        "Check that y_data is provided and the split produced valid results."
+    # Unreachable. This mode sets return_embeddings=True on every split itself,
+    # extraction inside a split always succeeds, and n_splits below 1 is
+    # refused during validation, so all_results is never empty.
+    raise ValueError(
+        "No split carried embeddings. Every split of this mode extracts them, so "
+        "this is an internal invariant that has been broken, not a configuration "
+        "problem."
     )
-    return None
 
 
 def _run_single_split(
@@ -943,16 +954,11 @@ def _run_single_split(
 ) -> list:
     """Run one channel-split and return result dicts with split_id attached.
 
-    Varies random_seed deterministically by split_id. Without this, every
-    split/rerun gets the IDENTICAL effective training seed regardless of
-    split_id: ParameterSweep derives its per-task seed from the sweep
-    combination index (sweep.py's `_seed_key = f"c{i_combo}"`), which is
-    always "c0" for a single-combination sweep like each dimensionality split
-    -- independent of split_id. Confirmed directly: without this fix, n_splits
-    reruns produced bit-identical results (same weights, same everything),
-    defeating both the cross-run stability check this mode is built on and
-    the pre-existing "independent weight initialisations" claim for
-    interaction-mode n_splits repeats.
+    Varies random_seed deterministically by split_id. ParameterSweep derives
+    each task's seed from the configuration index (sweep.py's
+    ``_seed_key = f"c{i_combo}"``), which is "c0" for every split, so without
+    this every split would train from the same initialisation and the
+    cross-run stability check would compare identical fits.
     """
     split_params = analysis_params
     base_seed = analysis_params.get('random_seed')
@@ -960,7 +966,8 @@ def _run_single_split(
         split_params = analysis_params.copy()
         split_params['random_seed'] = (int(base_seed) + (split_id + 1) * 7919) % (2 ** 31)
 
-    sweep = ParameterSweep(x_data=x_a, y_data=x_b, base_params=split_params)
+    sweep = ParameterSweep(x_data=x_a, y_data=x_b,
+                           base_params=with_model_labels(split_params, split_id=split_id))
     results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers,
                         is_proc_sweep=False)
     for res in results:

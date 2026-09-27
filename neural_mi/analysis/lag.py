@@ -7,8 +7,9 @@ a range of specified time lags using the nonlinear cross-correlation method.
 """
 from typing import List, Dict, Any, Optional
 
-from neural_mi.analysis.sweep import ParameterSweep, _product_dict
+from neural_mi.analysis.sweep import ParameterSweep, _product_dict, merge_grid_values
 from neural_mi.logger import logger
+from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import _shift_data
 from neural_mi.data.shift_windowing import n_windows_if_deferred, shift_family
 
@@ -61,7 +62,7 @@ def run_lag_analysis(
     proc_type_y = base_params.get('processor_type_y')
     if proc_type_y is None:
         proc_type_y = proc_type_x
-        logger.info("`processor_type_y` not specified in `base_params`, using the same as for x.")
+        logger.info("Processing(y=...) is not set, so Y is read with X's processor.")
 
     # Infer sample_rate from processor_params to resolve unit ambiguity
     sample_rate = base_params.get('processor_params_x', {}).get('sample_rate', None)
@@ -109,41 +110,29 @@ def run_lag_analysis(
 
     for lag in lag_range:
         x_shifted, y_shifted = shifted_pairs[lag]
-        # _n_items(x_shifted) is the raw post-lag-truncation sample count,
-        # not a real window count -- windowing hasn't happened yet at this
-        # point (x_shifted/y_shifted are still 2-D raw arrays). For the
-        # regular-grid family, n_windows_if_deferred gives the actual,
-        # shift-invariant window count the Trainer will end up training on
-        # (falling back to the same raw count when shift_windows isn't
-        # actually active for this pair, so this is a safe drop-in
-        # replacement either way). Spike's own count (a per-neuron list
-        # length, not a sample or window count) is a separate, pre-existing
-        # inaccuracy, unrelated to shift_windows and out of scope here.
-        if shift_family(proc_type_x, proc_type_y) == 'regular':
-            n_windows_this_lag = n_windows_if_deferred(x_shifted, y_shifted, base_params)
-        else:
-            n_windows_this_lag = _n_items(x_shifted)
-
         for i, other_params in enumerate(param_combinations):
-            task_params = {**base_params, **other_params, 'lag': lag,
-                           '_n_windows_lag': n_windows_this_lag}
+            task_params = merge_grid_values(base_params, other_params)
+            # The window count this lag trains on, for a task that does not
+            # report its own. Counted with the configuration's parameters,
+            # since a grid over window_size or step_size changes it. Only a
+            # regular grid can be counted before windowing.
+            n_windows_this_lag = None
+            if shift_family(proc_type_x, proc_type_y) == 'regular':
+                n_windows_this_lag = n_windows_if_deferred(x_shifted, y_shifted, task_params)
+            task_params.update({'lag': lag, '_n_windows_lag': n_windows_this_lag})
+            task_params = with_model_labels(task_params, **other_params, lag=lag)
             run_id = other_params.get('run_id', f"lag{lag}_combo{i}")
             all_tasks.append((x_shifted, y_shifted, task_params, run_id))
 
     sweep_runner = ParameterSweep(x_data=None, y_data=None, base_params=base_params)
     results_list = sweep_runner._run_parallel(all_tasks, n_workers=n_workers)
 
-    # Propagate n_windows into each result dict so it appears in the dataframe
+    # Every lag reports the windows it trained on: the task's own count when it
+    # windowed the data itself, the count made above otherwise.
     for result, task in zip(results_list, all_tasks):
         if isinstance(result, dict):
-            # Use the canonical name (task.py's, everywhere else in the
-            # library) rather than a lag-only 'n_windows'. On this path
-            # windowing is deferred per lag, so task.py leaves its own
-            # n_windows_built as None and this is the only populated count.
-            result['n_windows_built'] = task[2].get('_n_windows_lag', None)
-            # The task dict's own copy of base_params flows through into the
-            # result (see run_training_task's return_params); pop the
-            # internal bookkeeping key so it doesn't leak into result.dataframe.
+            if result.get('n_windows_built') is None:
+                result['n_windows_built'] = task[2].get('_n_windows_lag')
             result.pop('_n_windows_lag', None)
 
     return results_list

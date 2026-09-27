@@ -8,14 +8,14 @@ import warnings
 import torch
 import itertools
 import uuid
-import os
 import torch.multiprocessing as mp
 import numpy as np
 from tqdm.auto import tqdm
 from typing import List, Dict, Any, Optional, Sequence
 
 from neural_mi.analysis.task import run_training_task
-from neural_mi.logger import logger, worker_init_args
+from neural_mi.logger import logger, user_stacklevel, worker_init_args
+from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import mi_report_units
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
@@ -25,6 +25,31 @@ def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
     keys = kwargs.keys()
     vals = kwargs.values()
     return [dict(zip(keys, instance)) for instance in itertools.product(*vals)]
+
+
+def merge_grid_values(base_params: Dict[str, Any], values: Dict[str, Any],
+                      extra_processor_params: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """One task's parameters: `base_params` with one grid point applied.
+
+    Every grid value lands at the top level. A value whose key is a processor
+    parameter (``window_size``, ``step_size``, ``bin_size``, ...) also lands in
+    ``processor_params_x``/``processor_params_y``, since that is where the
+    processors read it. Only keys the side's processor accepts are copied, so a
+    model setting such as ``embedding_dim`` never reaches a processor. A side
+    with no processor accepts any processor key.
+    """
+    params = {**base_params, **values}
+    proc_type_x = base_params.get('processor_type_x', None)
+    proc_type_y = base_params.get('processor_type_y', proc_type_x)
+    all_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
+    extra = extra_processor_params or {}
+    for side, proc_type in (('x', proc_type_x), ('y', proc_type_y)):
+        accepted = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type, all_keys if proc_type is None else []))
+        merged = dict(base_params.get(f'processor_params_{side}') or {})
+        merged.update(extra.get(f'processor_params_{side}', {}))
+        merged.update({k: v for k, v in values.items() if k in accepted})
+        params[f'processor_params_{side}'] = merged
+    return params
 
 class ParameterSweep:
     """Manages the execution of a hyperparameter sweep.
@@ -113,10 +138,10 @@ class ParameterSweep:
                         f"dataset_device='{_dd}' (dataset ≈ {_ds_bytes / 1e9:.2f} GB). "
                         f"On accelerators, freed tensors may linger in the allocator "
                         f"cache between tasks and exhaust system memory. If you "
-                        f"experience slowdown or a system freeze, add "
-                        f"dataset_device='cpu' to base_params.",
+                        f"experience slowdown or a system freeze, set "
+                        f"Training(dataset_device='cpu').",
                         UserWarning,
-                        stacklevel=3,
+                        stacklevel=user_stacklevel(),
                     )
             all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sequential Sweep Progress", disable=not show_progress or len(tasks) == 1)]
         else:
@@ -148,7 +173,7 @@ class ParameterSweep:
         ----------
         is_proc_sweep : bool or None, optional
             When ``True``, raw (un-processed) data is forwarded to each task
-            so that each worker runs the processor independently — required
+            so that each worker runs the processor independently, required
             when processor parameters are part of the sweep grid.  When
             ``False``, the pre-processed tensors stored in ``self.x_data`` are
             forwarded directly (faster; avoids repeated processing).
@@ -174,7 +199,7 @@ class ParameterSweep:
         param_combinations = _product_dict(**sweep_grid) if sweep_grid else [{}]
 
         # When data has already been pre-processed (processor ran upstream in run()),
-        # the sequential-model check below is not applicable — the tensor is already
+        # the sequential-model check below is not applicable, the tensor is already
         # shaped correctly for GRU/LSTM regardless of what processor_type_x says.
         _already_preprocessed = bool(
             self.base_params.get('processor_params_x', {}) and
@@ -185,56 +210,18 @@ class ParameterSweep:
             _proc = params.get('processor_type_x', self.base_params.get('processor_type_x', None))
             if not _already_preprocessed and _proc is None and str(_emb).lower() in ('gru', 'lstm'):
                 raise ValueError(
-                    f"sweep_grid contains embedding_model='{_emb}' but processor_type_x=None "
-                    f"produces a StaticDataset with no time dimension. Remove 'gru'/'lstm' "
-                    f"from the sweep or set a windowed processor_type_x."
+                    f"sweep_grid contains embedding_model='{_emb}', which needs a time axis, but X "
+                    f"has no processor and so no time axis. Remove 'gru'/'lstm' from the "
+                    f"sweep or set Processing(x=...) to a windowed processor."
                 )
 
-            current_params = {**self.base_params, **params}
+            current_params = merge_grid_values(
+                self.base_params, params,
+                {k: kwargs[k] for k in ('processor_params_x', 'processor_params_y') if k in kwargs})
 
-            # --- SMART MODEL SAVING LOGIC ---
-            base_save_path = current_params.get('save_best_model_path')
-            if base_save_path and params:
-                root, ext = os.path.splitext(base_save_path)
-                # Create a clean suffix from the parameters being swept
-                suffix = "_" + "_".join([f"{str(k)}_{str(v)}" for k, v in params.items()])
-                # Remove spaces or problematic characters if any exist in the values
-                suffix = suffix.replace(" ", "")
-                current_params['save_best_model_path'] = f"{root}{suffix}{ext}"
-            # --------------------------------
-            
-            # Initialize from base_params, then update from kwargs (if any), then sweep params.
-            # Only inject keys that belong to the processor schema — prevents model
-            # architecture params (embedding_dim, n_layers, etc.) from bleeding into
-            # processor_params_x/y when both processor and model params are swept together.
-            proc_type_x = self.base_params.get('processor_type_x', None)
-            proc_type_y = self.base_params.get('processor_type_y', proc_type_x)
-            # When processor_type is None (no processor set), fall back to the
-            # union of ALL schema keys so that any legitimate processor param in
-            # the sweep grid (e.g. window_size) can still reach processor_params_x/y.
-            # This prevents model-arch params (embedding_dim, n_layers, …) from
-            # bleeding in while remaining agnostic about which processor is used.
-            _all_proc_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
-            valid_proc_keys_x = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_x, _all_proc_keys if proc_type_x is None else []))
-            valid_proc_keys_y = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type_y, _all_proc_keys if proc_type_y is None else []))
-            proc_params_from_sweep_x = {k: v for k, v in params.items() if k in valid_proc_keys_x}
-            proc_params_from_sweep_y = {k: v for k, v in params.items() if k in valid_proc_keys_y}
+            # Each network saved from a grid is named by its grid values.
+            current_params = with_model_labels(current_params, **params)
 
-            task_processor_params_x = (self.base_params.get('processor_params_x') or {}).copy()
-            if 'processor_params_x' in kwargs:
-                task_processor_params_x.update(kwargs['processor_params_x'])
-            task_processor_params_x.update(proc_params_from_sweep_x)
-
-            task_processor_params_y = (self.base_params.get('processor_params_y') or {}).copy()
-            if 'processor_params_y' in kwargs:
-                task_processor_params_y.update(kwargs['processor_params_y'])
-            task_processor_params_y.update(proc_params_from_sweep_y)
-
-            current_params.update({
-                'processor_params_x': task_processor_params_x,
-                'processor_params_y': task_processor_params_y,
-            })
-            
             if is_proc_sweep:
                 # Raw data path: processor runs inside the worker, so tensors
                 # must still be on CPU before crossing the process boundary.
@@ -285,7 +272,7 @@ def amplification_factor(components: Sequence[float], result: float) -> float:
     """Error-amplification factor for a quantity built by combining MI terms.
 
     Every quantity with a conditioning variable is computed as a combination of
-    separately-trained MI estimates rather than being estimated directly, so
+    separately-trained MI estimates instead of being estimated directly, so
     ``I(X;Y|W) = I(X,W;Y) - I(W;Y)`` and
     ``II = I(X,W;Y) - I(X;Y) - I(W;Y)``.  Subtracting two similar numbers
     cancels most of the signal and none of the error, so the *relative* error on
@@ -313,7 +300,7 @@ def amplification_factor(components: Sequence[float], result: float) -> float:
 
     Two caveats.  The components share data, architecture and estimator, so part
     of their bias is common-mode and cancels; ``kappa`` is therefore an upper
-    bound on the damage rather than a prediction.  Working the other way, the
+    bound on the damage instead of a prediction.  Working the other way, the
     joint term is always the largest of the components and so saturates the
     InfoNCE ceiling first, which biases the result toward zero.
 
@@ -334,6 +321,37 @@ def amplification_factor(components: Sequence[float], result: float) -> float:
     return float(sum(abs(c) for c in components) / abs(result))
 
 
+def combined_spread(value_lists, signs) -> Optional[float]:
+    """Run-to-run spread of a signed combination of component estimates.
+
+    A quantity built by subtraction reports the difference of the components'
+    means. Taking the same combination run by run instead leaves that number
+    exactly where it was, because for equal-length lists
+
+    .. math:: \\overline{a} - \\overline{b} = \\overline{(a - b)}
+
+    and it makes the spread of the combination available, which the mean of
+    each component separately cannot give. That spread is what says whether a
+    difference is resolved at all: a conditional quantity whose spread exceeds
+    its own value has neither a size nor a sign worth reading.
+
+    The pairing across components is arbitrary and that is correct here. Run
+    *r* of the joint and run *r* of the marginal are independent draws, so the
+    variance of their difference is the sum of their variances, the
+    quantity being asked for.
+
+    Returns ``None`` when there are fewer than two runs, or when a component
+    lost runs to failures and the lists no longer line up. Both cases mean
+    there is no spread to report instead of a spread of zero.
+    """
+    n = len(value_lists[0])
+    if n < 2 or any(len(values) != n for values in value_lists):
+        return None
+    combined = [sum(sign * values[i] for sign, values in zip(signs, value_lists))
+                for i in range(n)]
+    return float(np.std(combined, ddof=1))
+
+
 def _joint_marginal_difference(
     joint_x, joint_y, marginal_x, marginal_y,
     base_params: Dict[str, Any], sweep_grid: Optional[Dict[str, Any]], n_workers: int,
@@ -349,10 +367,10 @@ def _joint_marginal_difference(
 
     Shared by conditional MI (I(X;Y|W) = I(XW;Y) - I(W;Y)) and transfer
     entropy in both directions (TE(X→Y) = I(xy_past;y_future) -
-    I(y_past;y_future), and the same with X/Y swapped for TE(Y→X)) -- all
-    three are the identical joint/marginal/difference/negative-value-warning
-    pattern, differing only in which arrays go in and what the quantity is
-    called in log/error messages.
+    I(y_past;y_future), and the same with X/Y swapped for TE(Y→X)). All
+    three follow the identical joint/marginal/difference/negative-value-warning
+    pattern and differ only in which arrays go in and what the quantity is
+    called in log and error messages.
 
     Parameters
     ----------
@@ -370,7 +388,7 @@ def _joint_marginal_difference(
         named in the negative-value warning so a user knows where to find them.
     is_proc_sweep : bool, optional
         Pass ``True`` when ``joint_x``/``marginal_x`` are raw, unwindowed
-        data (shift_windows/shift_time reachability -- the caller has
+        data (shift_windows/shift_time reachability. The caller has
         already concatenated the conditioning variable onto X at the raw
         level, before windowing, so both sweeps window and shift their own
         copy independently). Default ``False`` matches every other caller's
@@ -380,31 +398,36 @@ def _joint_marginal_difference(
         Needed when the joint and marginal legs are raw, differently-shaped
         categorical concatenations (e.g. joint=XZ with two channel blocks,
         marginal=Z alone with one) that each need their own
-        ``processor_params_x['_categorical_block_specs']`` -- a single
-        shared ``base_params`` can't carry both.  ``None`` (default) reuses
-        ``base_params`` for both sweeps, unchanged from before this
-        parameter existed.
+        ``processor_params_x['_categorical_block_specs']``, and a single
+        shared ``base_params`` cannot carry both. ``None`` (default) reuses
+        ``base_params`` for both sweeps.
 
     Returns
     -------
-    tuple[float, float, float, list, list]
-        ``(difference, mi_joint, mi_marginal, results_joint, results_marginal)``.
+    tuple[float, float, float, list, list, tuple[list, list]]
+        ``(difference, mi_joint, mi_marginal, results_joint, results_marginal,
+        per_run)``, where ``per_run`` is the two components' ``train_mi``
+        values one row per run. :func:`combined_spread` turns those into the
+        spread of the difference.
     """
     logger.info(f"{quantity_name}: estimating I({joint_label})...")
-    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=base_params.copy())
+    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y,
+                                 base_params=with_model_labels(base_params, component=joint_key).copy())
     results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
-                                    base_params=(marginal_base_params or base_params).copy())
+                                    base_params=with_model_labels(marginal_base_params or base_params,
+                                                                  component=marginal_key).copy())
     results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
     marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]
+    per_run = (joint_vals, marginal_vals)
     if not joint_vals:
-        raise RuntimeError(f"{quantity_name}: all I({joint_label}) runs failed — no valid train_mi values.")
+        raise RuntimeError(f"{quantity_name}: all I({joint_label}) runs failed, no valid train_mi values.")
     if not marginal_vals:
-        raise RuntimeError(f"{quantity_name}: all I({marginal_label}) runs failed — no valid train_mi values.")
+        raise RuntimeError(f"{quantity_name}: all I({marginal_label}) runs failed, no valid train_mi values.")
     mi_joint = float(np.mean(joint_vals))
     mi_marginal = float(np.mean(marginal_vals))
     difference = mi_joint - mi_marginal
@@ -422,7 +445,7 @@ def _joint_marginal_difference(
     )
 
     # A negative difference is always a high-amplification case, so the two
-    # conditions are reported as one warning rather than two: the amplification
+    # conditions are reported as one warning instead of two: the amplification
     # factor is the mechanism behind the impossible sign, not a separate issue.
     if difference < 0:
         warnings.warn(
@@ -433,12 +456,12 @@ def _joint_marginal_difference(
             f"error-amplification factor {amp:.0f}x). At that amplification the "
             f"components would need sub-{100.0 / amp:.2g}% accuracy for the sign of the "
             f"result to be determined at all, so the most likely reading is that the true "
-            f"value is near zero rather than that it is negative. Common causes: too few "
+            f"value is near zero instead of that it is negative. Common causes: too few "
             f"training runs (increase sweep_grid run_id range), high estimator "
             f"variance (try more epochs or a larger batch_size), or very small true "
-            f"value close to zero. The raw component estimates are available in the "
-            f"returned dict ('{joint_key}', '{marginal_key}') for manual inspection.",
-            UserWarning, stacklevel=3,
+            f"value close to zero. The component estimates are in result.runs "
+            f"('{joint_key}', '{marginal_key}') for inspection.",
+            UserWarning, stacklevel=user_stacklevel(),
         )
     elif amp >= AMPLIFICATION_WARN_THRESHOLD:
         warnings.warn(
@@ -452,36 +475,6 @@ def _joint_marginal_difference(
             f"of the two and saturates first, which biases the result toward zero), and "
             f"prefer more data or more training before concluding that the true value is "
             f"small.",
-            UserWarning, stacklevel=3,
+            UserWarning, stacklevel=user_stacklevel(),
         )
-    return difference, mi_joint, mi_marginal, results_joint, results_marginal
-
-
-def _extract_embeddings(task_results: list) -> Optional[Dict[str, Any]]:
-    """Pull ``embeddings_x``/``embeddings_y`` out of a ``ParameterSweep``
-    task-result list and strip them from every entry.
-
-    Shared by conditional MI, interaction information, and transfer entropy's
-    joint leg -- all three are a chain-rule difference of two independently-
-    trained models (see ``_joint_marginal_difference``), so ``return_embeddings``
-    threaded into ``base_params`` produces an ``embeddings_x``/``embeddings_y``
-    pair buried inside each task dict in the *joint* leg's result list
-    (``task.py``'s extraction already runs; it was just never surfaced to the
-    caller's top-level result). Uses the last entry with the key present --
-    same "no natural aggregation, pick one representative result" convention
-    as ``transfer.py``'s ``_extract_diagnostics`` and ``run.py``'s
-    ``mode='sweep'`` embeddings handling -- but also strips the key from
-    every entry (not just the ones before the chosen one), since an
-    embedding array is large enough that leaving copies scattered across
-    ``raw_*`` would meaningfully bloat the result, unlike a few scalar
-    diagnostics.
-    """
-    embeddings = None
-    for r in reversed(task_results):
-        if 'embeddings_x' in r:
-            embeddings = {'embeddings_x': r.get('embeddings_x'), 'embeddings_y': r.get('embeddings_y')}
-            break
-    for r in task_results:
-        r.pop('embeddings_x', None)
-        r.pop('embeddings_y', None)
-    return embeddings
+    return difference, mi_joint, mi_marginal, results_joint, results_marginal, per_run

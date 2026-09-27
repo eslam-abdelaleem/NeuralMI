@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import logger, worker_init_args
+from neural_mi.embeddings_io import with_model_labels
 from neural_mi.exceptions import InsufficientDataError, TrainingError
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 from neural_mi.data.shift_windowing import (
@@ -44,20 +45,17 @@ def _find_linear_region(group: pd.DataFrame, curvature_t_threshold: float,
     quadratic model in gamma until the quadratic term is no longer
     statistically distinguishable from zero.
 
-    **Why a t-test rather than a curvature ratio.**  The test is
+    **Why a t-test on the curvature.**  The test is
     ``|a2| / SE(a2) < curvature_t_threshold``: is the quadratic coefficient
-    large compared with the uncertainty in the quadratic coefficient?  The
-    earlier criterion compared curvature against the *slope*
-    (``|a2/a1| < delta_threshold``), which divides by a quantity that goes to
-    zero exactly when the data is cleanest.  Measured consequences of that:
-    on genuinely linear data it declared linearity only 67% of the time, and
-    the rate depended on how much bias was present (79% at near-zero bias,
-    100% at strong bias) rather than on how linear the relation was.  It also
-    failed in the other direction, accepting visibly curved data when the
-    slope was large enough to mask the curvature.  Normalising by ``SE(a2)``
-    instead is scale-free, needs no knowledge of the MI scale, and is the
-    standard nested-model comparison; it declares linearity on linear data
-    100% of the time and still refuses on genuinely curved data.
+    large compared with its own uncertainty?  Comparing the curvature with the
+    slope (``|a2/a1| < delta``) divides by a quantity that goes to zero exactly
+    when the data are cleanest. Measured, that ratio declared linearity on
+    linear data only 67% of the time, at a rate set by the amount of bias (79%
+    near zero bias, 100% at strong bias) and not by how linear the relation
+    was, and it accepted visibly curved data when a large slope masked the
+    curvature.  Normalising by ``SE(a2)`` is scale-free, needs no knowledge of
+    the MI scale, and is the standard nested-model comparison; it declares
+    linearity on linear data 100% of the time and still refuses curved data.
 
     The dependent variable is ``train_mi`` (the training-partition MI at the
     best-generalising checkpoint).  Extrapolating to gamma → 0 gives I_true.
@@ -78,7 +76,7 @@ def _find_linear_region(group: pd.DataFrame, curvature_t_threshold: float,
         The quadratic-fit quantities the decision was made on, for the returned
         set: ``curvature_coefficient`` (a2), ``curvature_se`` (SE of a2),
         ``curvature_t`` (the test statistic), and ``curvature_slope`` (a1).
-        Reported so the verdict can be audited rather than taken on trust.
+        Reported so the verdict can be audited instead of taken on trust.
     """
     gammas_to_fit = sorted(group['gamma'].unique())
     converged = False
@@ -109,7 +107,7 @@ def _find_linear_region(group: pd.DataFrame, curvature_t_threshold: float,
         if t_stat < curvature_t_threshold:
             converged = True
             break
-        # Stop at the floor rather than stepping past it.  Popping here would
+        # Stop at the floor instead of stepping past it.  Popping here would
         # return a set one shorter than the minimum, which was never tested for
         # curvature and which the caller's own length check then rejects.
         if len(gammas_to_fit) <= min_gamma_points:
@@ -179,18 +177,18 @@ def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
 
     Performs two checks:
 
-    Check A — Residual quality: fits the WLS line on the final subset and
+    Check A, Residual quality: fits the WLS line on the final subset and
     examines externally studentized residuals.  Flags if
     ``max(|r_i|) > residual_threshold``.  R² is computed and returned for
     transparency but does **not** affect ``fit_quality_warning``: with large N
     the bias across gamma is inherently small (near-flat line) so R² collapses
     toward zero even for a sound fit, making it an unreliable gate here.
-    ``fit_quality_warning`` itself is also informational only — it does **not**
+    ``fit_quality_warning`` itself is also informational only, it does **not**
     affect ``is_reliable`` upstream, because the heteroscedastic WLS structure
     (low-gamma rows dominating MSE, high-gamma rows having natural noise)
     routinely produces large studentized residuals for valid fits.
 
-    Check B — LOO γ=1 stability: refits WLS excluding all rows where
+    Check B, LOO γ=1 stability: refits WLS excluding all rows where
     ``gamma == 1`` and measures the relative shift in the intercept.  Flags
     if ``|I_full - I_loo| / (|I_full| + 1e-8) > leverage_threshold``.
 
@@ -267,7 +265,7 @@ def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
             delta_loo = abs(I_full - I_loo) / (abs(I_full) + 1e-8)
             loo_intercept_shift = float(delta_loo)
             leverage_warning = delta_loo > leverage_threshold
-        # else: fewer than 2 points after removing γ=1 — skip silently
+        # else: fewer than 2 points after removing γ=1, skip silently
 
     return {
         'fit_quality_warning': bool(fit_quality_warning),
@@ -286,16 +284,15 @@ def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) 
 
     Both are blind spots for the same underlying reason: ``_find_linear_region``
     only looks at curvature (|a2/a1|) in gamma, and both non-stationarity and
-    ceiling saturation are approximately *smooth* in gamma -- they inflate or
+    ceiling saturation are approximately *smooth* in gamma. They inflate or
     suppress every rung's train_mi by a similar amount without bending the
     fitted line, so a real problem can sail through that check untouched.
 
     Spread : the std of train_mi across the ``gamma`` independently-trained
-        chunks at each gamma level. With contiguous (temporal) chunking this
-        is directly informative: large spread at high gamma means different
-        segments of the recording give different answers -- non-stationarity
-        showing up for free, something the library has no other diagnostic
-        for. gamma=1 has a single chunk, so its spread is always 0.0/NaN
+        chunks at each gamma level. With contiguous (temporal) chunking,
+        large spread at high gamma means different segments of the recording
+        give different answers. That is non-stationarity showing up for free, and
+        the only diagnostic the library has for it. gamma=1 has a single chunk, so its spread is always 0.0/NaN
         (not a real signal, just nothing to compare).
 
     Ceiling / saturation : each chunk has its own train_eval_size and
@@ -329,7 +326,7 @@ def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) 
             f"Rigorous fit uses gamma={sorted(saturated_gammas)}, which are "
             f"saturated (mean train_saturation > {SATURATION_WARNING_THRESHOLD:.0%} "
             f"of their own ceiling). An extrapolation anchored on saturated "
-            f"rungs cannot be trusted -- the fitted slope reflects the ceiling "
+            f"rungs cannot be trusted, since the fitted slope reflects the ceiling "
             f"as much as the true bias. Consider increasing max_eval_samples "
             f"or narrowing gamma_range to exclude these."
         )
@@ -406,7 +403,7 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             if diagnostics['fit_quality_warning']:
                 logger.debug(
                     f"fit_quality_warning=True for {param_dict} "
-                    f"(large studentized residuals from heteroscedastic WLS noise — "
+                    f"(large studentized residuals from heteroscedastic WLS noise, "
                     f"informational only)."
                 )
             # Saturation is smooth in gamma -- the same blind spot
@@ -414,7 +411,7 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             # have, confirmed empirically (w=50 acceptance run: 8/10 gammas
             # saturated, curvature and leverage checks both passed anyway).
             # Gate is_reliable the same way leverage_warning already does,
-            # rather than leaving this purely informational -- a fit anchored
+            # instead of leaving this purely informational -- a fit anchored
             # on saturated rungs is exactly the kind of unreliable this flag
             # exists to catch.
             if per_gamma_diagnostics['saturated_gammas']:
@@ -471,13 +468,9 @@ class AnalysisWorkflow:
         # Copy so callers of run_rigorous_analysis() (or AnalysisWorkflow
         # directly) never see their base_params dict mutated in place.
         self.base_params = dict(base_params)
-        # Raw (2-D), unwindowed data (shift_windows reachability) has no
-        # per-window shape to infer dims from yet -- defer to task.py's own
-        # per-task dimension inference once each chunk is actually windowed.
-        # hasattr guards against spike data (a ragged per-neuron spike-time
-        # list, no .shape) reaching here directly -- never actually deferred
-        # today (shift_time is not yet extended to 'rigorous'), but safer
-        # than assuming a tensor.
+        # Raw (2-D) data windowed inside each task has no per-window shape
+        # yet, so task.py infers the dimensions once a chunk is windowed. A
+        # spike list has no .shape at all and is left to the task as well.
         if hasattr(x_data, 'shape') and x_data.ndim != 2:
             self.base_params.update({
                 'input_dim_x': int(np.prod(x_data.shape[1:])),
@@ -526,7 +519,7 @@ class AnalysisWorkflow:
               ``'permuted'``, the resolved choice above),
               ``'n_tasks_created'``, ``'per_gamma_train_mi_spread'``,
               ``'per_gamma_ceiling_mi'``, and ``'per_gamma_saturation'``.
-            - ``'raw_results_df'`` : pd.DataFrame — raw sweep results with one
+            - ``'raw_results_df'`` (pd.DataFrame): raw sweep results with one
               row per training run.  Key columns: ``gamma``, ``train_mi``.
         """
         n_workers = n_workers if n_workers is not None else 1
@@ -536,9 +529,9 @@ class AnalysisWorkflow:
         if not tasks:
             return {"corrected_results": [], "raw_results_df": pd.DataFrame()}
 
-        # Fix 3: gamma_range=range(1,11) should create sum(1..10)=55 tasks per
-        # param combination -- verify rather than assume, since a silently
-        # truncated ladder would invalidate every rigorous result.
+        # gamma_range=range(1, 11) makes sum(1..10) = 55 tasks per
+        # configuration. Checked, since a truncated ladder would invalidate
+        # every extrapolation.
         expected_per_combo = sum(gamma_range)
         n_combos = max(1, len(param_grid or {}) and len(list(itertools.product(
             *(param_grid or {}).values()))) or 1)
@@ -547,7 +540,7 @@ class AnalysisWorkflow:
             logger.warning(
                 f"Rigorous analysis: expected {expected_total} tasks "
                 f"({n_combos} combo(s) x sum(gamma_range)={expected_per_combo}) "
-                f"but created {len(tasks)}. The gamma ladder may be truncated -- "
+                f"but created {len(tasks)}. The gamma ladder may be truncated; "
                 f"investigate before trusting the extrapolation."
             )
 
@@ -603,25 +596,25 @@ class AnalysisWorkflow:
 
         - ``None`` (default): auto-detect from ``leak_check_window_size`` in
           ``base_params`` (set exactly when a windowed processor built the
-          data -- see ``run.py`` / Phase 1 Fix 2). Present -> contiguous.
-          Absent -> permuted (unchanged behaviour for i.i.d. data).
+          data, see ``run.py``). Present -> contiguous. Absent -> permuted,
+          correct for i.i.d. data.
         - ``True`` / ``False``: explicit override.
 
-        **Why this matters.** A random permutation is the right choice for
-        i.i.d. data -- it doesn't matter what order rows appear in, and it
+        **Why the default depends on the processor.** A random permutation is the
+        right choice for i.i.d. data. It doesn't matter what order rows appear in, and it
         keeps each gamma-chunk representative of the whole dataset. But for
         temporal data, ``Trainer._create_blocked_split`` takes *contiguous
         index blocks* of whatever ordering it receives to form the train/test
         split. A shuffled ordering makes those blocks random in time on
-        autocorrelated data -- exactly the leakage ``split_mode='blocked'``
+        autocorrelated data, exactly the leakage ``split_mode='blocked'``
         exists to prevent, reintroduced inside every rung of the bias-
         correction ladder. Contiguous chunks keep each chunk's rows in time
         order, so the blocked split within a chunk means what it's supposed
         to.
 
-        **Trade-off, not a strict improvement.** Random chunks each spanned
+        **A trade-off and not a strict improvement.** Random chunks each spanned
         the whole recording, averaging over any non-stationarity. Contiguous
-        chunks do not -- at high gamma, each chunk is a short segment, and if
+        chunks do not, at high gamma, each chunk is a short segment, and if
         the underlying process drifts, different chunks sample different
         regimes. Watch ``per_gamma_train_mi_spread`` in the result details:
         large spread at high gamma is exactly this showing up.
@@ -647,9 +640,8 @@ class AnalysisWorkflow:
         _is_raw_deferred = (hasattr(self.x_data, 'ndim') and self.x_data.ndim == 2
                             and self.base_params.get('shift_windows')
                             and shift_family(_proc_x, _proc_y) == 'regular')
-        # Raw spike data (shift_time reachability, Phase 1): a ragged
-        # per-neuron spike-time list rather than a 2-D tensor -- x_data has
-        # no .ndim at all in this case.
+        # Raw spike data under shift_time: a ragged per-neuron list of spike
+        # times, with no .ndim.
         _is_spike_deferred = (isinstance(self.x_data, list) and self.base_params.get('shift_time')
                               and shift_family(_proc_x, _proc_y) == 'spike')
         if _is_spike_deferred:
@@ -664,10 +656,9 @@ class AnalysisWorkflow:
         self.resolved_chunking_mode = 'contiguous' if is_temporal else 'permuted'
 
         if _is_raw_deferred:
-            # Per-side window_size/step_size in raw-sample units, computed
-            # once (rigorous doesn't route param_grid combos into
-            # processor_params_x/y -- see sweep.py's own routing for
-            # contrast -- so these can't vary per combo here).
+            # Per-side window_size and step_size in raw samples, fixed for
+            # the whole call: a processor parameter in the grid runs one
+            # setting per call (run._run_processor_grid).
             _wp_x = self.base_params.get('processor_params_x') or {}
             _wp_y = self.base_params.get('processor_params_y') or _wp_x
             _window_size = _wp_x.get('window_size')
@@ -696,7 +687,7 @@ class AnalysisWorkflow:
                 # placed where a chunk's held-out partition can no longer fill a
                 # single evaluation batch, which is the point below which a
                 # per-chunk MI value stops being a measurement of anything.
-                # Override with 'min_reliable_samples' in base_params.
+                # Move it with Training(min_reliable_samples=...).
                 min_reliable_samples = current_params.get('min_reliable_samples')
                 if min_reliable_samples is None:
                     _bs = current_params.get('batch_size', 128)
@@ -710,11 +701,11 @@ class AnalysisWorkflow:
                         f"of a chunk can still fill one evaluation batch "
                         f"(batch_size={current_params.get('batch_size', 128)}, "
                         f"train_fraction={current_params.get('train_fraction', 0.9)}). "
-                        f"This is a caution rather than a threshold: MI values from chunks "
+                        f"This is a caution instead of a threshold: MI values from chunks "
                         f"this small are dominated by noise, and a straight line through "
                         f"noisy rungs still looks straight, so the linearity check cannot "
                         f"warn you about it. Prefer a smaller gamma_range or more data. "
-                        f"Set 'min_reliable_samples' in base_params to move this line."
+                        f"Set Training(min_reliable_samples=...) to move this line."
                     )
 
                 for i_subset, subset_indices in enumerate(chunks):
@@ -730,16 +721,11 @@ class AnalysisWorkflow:
                         x_subset = _ensure_cpu(self.x_data[rx0:rx1])
                         y_subset = _ensure_cpu(self.y_data[ry0:ry1])
                     elif _is_spike_deferred:
-                        # Same idea as _is_raw_deferred, but the chunk-index
-                        # -> raw-range translation lands in a raw *time*
-                        # range (chunk_window_range_to_time -- Phase 0's
-                        # 2*window_size margin, not chunk_window_range_to_raw's
-                        # window_size-1 one) rather than a raw sample range,
-                        # and the "raw" data is a ragged per-neuron
-                        # spike-time list sliced+re-zeroed rather than
-                        # tensor-sliced. X and Y share one window grid here
-                        # (spike/spike, no per-side sample-rate conversion),
-                        # so both sides use the same time range.
+                        # The chunk's window range becomes a time range
+                        # (chunk_window_range_to_time, which keeps a margin
+                        # of 2 * window_size for the shifts), and each spike
+                        # list is sliced to it and re-zeroed. X and Y share
+                        # one grid, so both use the same range.
                         lo, hi = int(subset_indices[0]), int(subset_indices[-1]) + 1
                         t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, _spike_window_size, _spike_step_size)
                         chunk_span = t1_rel - t0_rel
@@ -747,13 +733,9 @@ class AnalysisWorkflow:
                         t1_abs = _spike_base_t_start + t1_rel
                         x_subset = slice_spike_data_to_time_range(self.x_data, t0_abs, t1_abs)
                         y_subset = slice_spike_data_to_time_range(self.y_data, t0_abs, t1_abs)
-                        # Force this chunk's own PairedTemporalDataset to treat
-                        # [0, chunk_span) as its full base span (exactly what
-                        # chunk_window_range_to_time assumed), instead of
-                        # deriving a shorter, data-dependent extent from
-                        # wherever this slice's actual spikes happen to fall
-                        # -- create_dataset forwards 't_start'/'t_end'
-                        # straight through to PairedTemporalDataset.
+                        # The chunk's dataset spans [0, chunk_span), the span
+                        # chunk_window_range_to_time assumed, and not the
+                        # narrower extent of wherever its spikes fall.
                         current_params['processor_params_x'] = {
                             **(current_params.get('processor_params_x') or {}),
                             't_start': 0.0, 't_end': chunk_span,
@@ -767,7 +749,9 @@ class AnalysisWorkflow:
                     # run_id_base prefix so a fixed random_seed reproduces the same
                     # task_seed (and result) on every call.
                     current_params['_seed_key'] = f"c{i_combo}_g{gamma}_s{i_subset}"
-                    tasks.append((x_subset, y_subset, current_params.copy(), task_run_id))
+                    current_params['chunk'] = i_subset
+                    task_params = with_model_labels(current_params, **params, gamma=gamma, chunk=i_subset)
+                    tasks.append((x_subset, y_subset, task_params.copy(), task_run_id))
 
         self.n_tasks_created = len(tasks)
         logger.info(
@@ -824,7 +808,7 @@ def run_rigorous_analysis(
         Same dictionary returned by ``AnalysisWorkflow.run()``.  Key entries:
 
         - ``'corrected_results'`` : list of per-group correction dicts.
-        - ``'raw_results_df'`` : pd.DataFrame — raw sweep results.
+        - ``'raw_results_df'`` (pd.DataFrame): raw sweep results.
     """
     workflow = AnalysisWorkflow(x_data, y_data, base_params)
     return workflow.run(
@@ -838,19 +822,23 @@ def run_rigorous_analysis(
 def _run_scalar_fn_task(args: tuple) -> Dict[str, Any]:
     """Top-level, picklable wrapper for one gamma-chunk ``scalar_fn`` call.
 
-    Must be module-level (not a closure) so it — and the ``scalar_fn`` it
-    carries — can be pickled for a ``multiprocessing`` 'spawn' pool.  Catches
-    its own exceptions rather than letting them propagate through
+    Must be module-level (not a closure) so it, and the ``scalar_fn`` it
+    carries, can be pickled for a ``multiprocessing`` 'spawn' pool.  Catches
+    its own exceptions instead of letting them propagate through
     ``pool.imap``, which would otherwise abort every remaining task instead
     of just skipping the failed gamma-chunk (matching the sequential path's
     per-task try/except behaviour).
     """
-    scalar_fn, x_sub, y_sub, params, extra_sub, extra_kwargs, gamma, chunk_size = args
+    scalar_fn, x_sub, y_sub, params, extra_sub, extra_kwargs, gamma, chunk, chunk_size = args
+    params = with_model_labels(params, gamma=gamma, chunk=chunk)
     try:
         value = scalar_fn(x_sub, y_sub, params, **extra_sub, **(extra_kwargs or {}))
-        return {'gamma': gamma, 'train_mi': value, '_error': None}
+        # A scalar_fn may also return the paths of the networks it saved.
+        value, paths = value if isinstance(value, tuple) else (value, None)
+        return {'gamma': gamma, 'chunk': chunk, 'train_mi': value, '_error': None,
+                'model_path': tuple(paths) if paths else None}
     except Exception as exc:
-        return {'gamma': gamma, 'train_mi': None,
+        return {'gamma': gamma, 'chunk': chunk, 'train_mi': None,
                 '_error': f"gamma={gamma} (chunk size={chunk_size}): {exc}"}
 
 
@@ -942,8 +930,8 @@ def run_rigorous_scalar_analysis(
         ``shift_windows``-reachability chunk-to-raw-sample-range
         translation (mirrored here as its own ``_is_raw_deferred`` check).
         Set explicitly by the caller (``run.py``'s
-        ``_defer_for_conditional_interaction``) rather than inferred from
-        ``base_params`` alone -- this helper is shared with
+        ``_defer_for_conditional_interaction``) instead of inferred from
+        ``base_params`` alone. This helper is shared with
         ``mode='transfer'``'s rigorous dispatch, whose own 2-D
         ``x_data``/``y_data`` are raw for an unrelated reason (built via a
         stride-1 ``unfold`` internally, deliberately excluded from both
@@ -955,25 +943,25 @@ def run_rigorous_scalar_analysis(
     Dict[str, Any]
         A dictionary with the following keys:
 
-        - ``'mi_corrected'`` : float — bias-corrected scalar estimate.
-        - ``'mi_error'`` : float — half-width of the confidence interval.
-        - ``'slope'`` : float — slope of the WLS fit (bias per unit gamma).
-        - ``'is_reliable'`` : bool — True when all of: a linear region was
+        - ``'mi_corrected'`` (float): bias-corrected scalar estimate.
+        - ``'mi_error'`` (float): half-width of the confidence interval.
+        - ``'slope'`` (float): slope of the WLS fit (bias per unit gamma).
+        - ``'is_reliable'`` (bool): True when all of: a linear region was
           actually found (``linear_region_found``), enough gamma points were
           retained (``enough_gamma_points``), ``leverage_warning`` is False, and
           no gamma used in the fit is ceiling-saturated.
           ``fit_quality_warning`` does **not** affect this flag (see below).
-        - ``'linear_region_found'`` : bool — whether the curvature criterion was
+        - ``'linear_region_found'`` (bool): whether the curvature criterion was
           satisfied on the gammas that were used.  False means the search
           reached ``min_gamma_points`` without the fit ever looking linear, so
           the extrapolation is being done on a set that failed the check.  This
           is reported separately from ``enough_gamma_points`` so the two
           distinct failure modes can be told apart.
-        - ``'enough_gamma_points'`` : bool — whether
+        - ``'enough_gamma_points'`` (bool): whether
           ``len(gammas_used) >= min_gamma_points``.
-        - ``'gammas_used'`` : list of int — gamma values in the linear region.
-        - ``'raw_results_df'`` : pd.DataFrame — one row per successful chunk call.
-        - ``'fit_quality_warning'`` : bool — informational only; large studentized
+        - ``'gammas_used'`` (list of int): gamma values in the linear region.
+        - ``'raw_results_df'`` (pd.DataFrame): one row per successful chunk call.
+        - ``'fit_quality_warning'`` (bool): informational only; large studentized
           residuals arising from heteroscedastic WLS noise.  Does **not** affect
           ``is_reliable``.
         - ``'leverage_warning'`` : bool
@@ -987,34 +975,18 @@ def run_rigorous_scalar_analysis(
         If fewer than ``min_gamma_points`` rows are collected across all gamma
         values (i.e. almost every ``scalar_fn`` call failed).
     """
-    # Raw (2-D), unwindowed X/Y (shift_windows reachability for
-    # conditional/interaction's rigorous=True sub-path, mirroring
-    # AnalysisWorkflow._prepare_tasks's _is_raw_deferred for plain
-    # mode='rigorous'): windowing hasn't happened yet, so N must be the
-    # shift-invariant window count, not x_data's raw sample count. Gated on
-    # the explicit raw_deferred flag (not inferred from base_params alone --
-    # see its docstring entry) since mode='transfer' also reaches this
-    # function with genuinely raw 2-D x_data/y_data, for an unrelated reason.
+    # Raw (2-D) X and Y windowed inside each task, as in
+    # AnalysisWorkflow._prepare_tasks: N is the window count, not the sample
+    # count. Gated on the explicit raw_deferred flag because mode='transfer'
+    # also passes raw 2-D series here, which are histories and not for
+    # windowing.
     _proc_x = base_params.get('processor_type_x')
     _proc_y = base_params.get('processor_type_y') or _proc_x
     _is_raw_deferred = (raw_deferred and hasattr(x_data, 'ndim') and x_data.ndim == 2
                         and base_params.get('shift_windows') and shift_family(_proc_x, _proc_y) == 'regular')
-    # Spike analogue of _is_raw_deferred above (conditional/interaction's
-    # rigorous=True sub-path for a spike+spike X/conditioning-variable
-    # pair): x_data is a ragged per-neuron spike-time list, no .ndim at
-    # all. Gated the same explicit way -- raw_deferred plus a family check
-    # -- since mode='transfer' also reaches this function with unrelated
-    # raw data that must never be misinterpreted. Deliberately NOT also
-    # gated on base_params.get('shift_time'), unlike _is_raw_deferred's
-    # shift_windows check above: run.py's _defer_spike_conditional_interaction
-    # (the only caller that ever sets raw_deferred=True for a spike+spike
-    # pair) is itself unconditional on shift_time -- merging X and the
-    # conditioning variable before windowing is a correctness requirement
-    # for spike coverage, not an optional shift-reachability path (see its
-    # comment in run.py). Requiring shift_time here too used to mean a
-    # spike+spike conditioning pair with Training(shift_time=False) still
-    # arrived with raw_deferred=True and a list x_data, but fell through to
-    # `else: N = x_data.shape[0]` below and crashed with AttributeError.
+    # The spike case: X is a list of spike times. It is not gated on
+    # shift_time, because run.py windows a spike X and spike W inside the task
+    # whether or not they shift.
     _is_spike_deferred = (raw_deferred and isinstance(x_data, list)
                           and shift_family(_proc_x, _proc_y) == 'spike')
     if _is_spike_deferred:
@@ -1024,17 +996,10 @@ def run_rigorous_scalar_analysis(
         N = n_windows_if_deferred(x_data, y_data, base_params)
     else:
         N = x_data.shape[0]
-    # Same reasoning as AnalysisWorkflow._prepare_tasks: a random ordering is
-    # fine for i.i.d. scalar quantities, but this helper also backs
-    # mode='transfer' (rigorous=True), which is unconditionally temporal (TE
-    # is built from time-ordered history windows) -- run.py passes
-    # temporal_chunking=True explicitly there, since base_params at this call
-    # site predates run_transfer_entropy's own leak_check_window_size
-    # injection (it's set per-gamma-chunk, inside _te_rigorous_scalar, after
-    # chunking has already happened) and so isn't available to auto-detect
-    # from here. Falls back to the same base_params signal as the main
-    # workflow for other callers (e.g. conditional MI), where it is
-    # available in time.
+    # As in AnalysisWorkflow._prepare_tasks, i.i.d. samples are chunked in a
+    # random order and a time series contiguously. Transfer entropy is always
+    # a time series, and run.py says so with temporal_chunking=True, since its
+    # window geometry is only set inside each chunk's call.
     is_temporal = (temporal_chunking if temporal_chunking is not None
                    else (base_params.get('leak_check_window_size') is not None
                          or _is_raw_deferred or _is_spike_deferred))
@@ -1042,14 +1007,11 @@ def run_rigorous_scalar_analysis(
     master_perm = np.arange(N) if is_temporal else np.random.permutation(N)
 
     if _is_raw_deferred:
-        # Per-side window_size/step_size in raw-sample units, computed once
-        # (mirrors AnalysisWorkflow._prepare_tasks exactly). extra_data
-        # arrays (w_data/c_data) are translated using X's own
-        # window_size/step_size too, the same convention the non-rigorous
-        # raw_deferred path already uses (conditional.py/interaction.py
-        # concatenate W onto X before windowing, so they share one grid) --
-        # a genuinely independent per-array window_size is a separate,
-        # not-yet-fixed gap (see NEURALMI_REFERENCE.md).
+        # Per-side window_size and step_size in raw samples, as in
+        # AnalysisWorkflow._prepare_tasks. The extra arrays (W) are cut with
+        # X's, since conditional.py and interaction.py concatenate W onto X
+        # before windowing and run.py refuses a W with a window of its own on
+        # this path.
         _wp_x = base_params.get('processor_params_x') or {}
         _wp_y = base_params.get('processor_params_y') or _wp_x
         _window_size = _wp_x.get('window_size')
@@ -1064,15 +1026,15 @@ def run_rigorous_scalar_analysis(
     tasks = []
     for gamma in gamma_range:
         chunks = np.array_split(master_perm, gamma)
-        for chunk_idx in chunks:
+        for chunk, chunk_idx in enumerate(chunks):
             if _is_spike_deferred:
                 # Same idea as _is_raw_deferred, but the chunk-index ->
                 # raw-range translation lands in a raw *time* range
                 # (chunk_window_range_to_time -- the 2*window_size margin
                 # matching PairedTemporalDataset._reserve_shift_margin, not
-                # chunk_window_range_to_raw's window_size-1 one) rather than
+                # chunk_window_range_to_raw's window_size-1 one) instead of
                 # a raw sample range, and the "raw" data is a ragged
-                # per-neuron spike-time list sliced+re-zeroed rather than
+                # per-neuron spike-time list sliced+re-zeroed instead of
                 # tensor-sliced. X and the conditioning variable share one
                 # window grid here (spike/spike, no per-side sample-rate
                 # conversion), so both use the same time range -- extra_data
@@ -1125,7 +1087,7 @@ def run_rigorous_scalar_analysis(
                 _task_base_params = base_params
 
             tasks.append((scalar_fn, x_sub, y_sub, _task_base_params.copy(),
-                         extra_sub, extra_kwargs, gamma, len(chunk_idx)))
+                         extra_sub, extra_kwargs, gamma, chunk, len(chunk_idx)))
 
     show_progress = base_params.get('show_progress', True)
     effective_workers = n_workers if n_workers is not None else 1
@@ -1153,18 +1115,22 @@ def run_rigorous_scalar_analysis(
     rows = []
     for r in raw_rows:
         if r['_error'] is not None:
-            logger.warning(f"run_rigorous_scalar_analysis: scalar_fn call failed for {r['_error']}")
+            logger.warning(f"Rigorous fit (rigorous=True): the estimate for one chunk failed: {r['_error']}")
         else:
-            rows.append({'gamma': r['gamma'], 'train_mi': r['train_mi']})
+            row = {'gamma': r['gamma'], 'chunk': r['chunk'], 'train_mi': r['train_mi']}
+            if r.get('model_path'):
+                row['model_path'] = r['model_path']
+            rows.append(row)
 
     if len(rows) < min_gamma_points:
         raise InsufficientDataError(
-            f"run_rigorous_scalar_analysis collected only {len(rows)} successful "
-            f"scalar_fn calls, which is fewer than min_gamma_points={min_gamma_points}. "
-            f"Cannot perform reliable extrapolation."
+            f"The rigorous fit collected only {len(rows)} successful chunk "
+            f"estimates, fewer than min_gamma_points={min_gamma_points}, so it "
+            f"cannot extrapolate."
         )
 
-    df = pd.DataFrame(rows, columns=['gamma', 'train_mi'])
+    df = pd.DataFrame(rows, columns=['gamma', 'chunk', 'train_mi']
+                      + (['model_path'] if any('model_path' in r for r in rows) else []))
 
     gammas_used, linear_region_found, curvature_stats = _find_linear_region(
         df, curvature_t_threshold, min_gamma_points)
@@ -1173,12 +1139,12 @@ def run_rigorous_scalar_analysis(
             df, gammas_used, confidence_level
         )
     except InsufficientDataError:
-        # Pruning left too few points — fall back to all available gammas and mark
+        # Pruning left too few points, fall back to all available gammas and mark
         # the result as unreliable so callers are warned.
         gammas_used = sorted(df['gamma'].unique().tolist())
         linear_region_found = False
         logger.warning(
-            "run_rigorous_scalar_analysis: linear region too small after pruning; "
+            "Rigorous fit (rigorous=True): linear region too small after pruning; "
             "falling back to all %d gamma values (is_reliable will be False).",
             len(gammas_used),
         )
@@ -1192,33 +1158,27 @@ def run_rigorous_scalar_analysis(
     is_reliable = enough_gamma_points and linear_region_found
     if enough_gamma_points and not linear_region_found:
         logger.warning(
-            "run_rigorous_scalar_analysis: no linear region was found down to "
+            "Rigorous fit (rigorous=True): no linear region was found down to "
             "min_gamma_points=%d; the fit uses gamma=%s without having satisfied "
             "the curvature criterion.", min_gamma_points, gammas_used,
         )
     if diagnostics['leverage_warning']:
         is_reliable = False
         logger.warning(
-            f"run_rigorous_scalar_analysis: fit diagnostics triggered: "
+            f"Rigorous fit (rigorous=True): fit diagnostics triggered: "
             f"leverage_warning={diagnostics['leverage_warning']}."
         )
     # fit_quality_warning is informational only; does not affect is_reliable
     if diagnostics['fit_quality_warning']:
         logger.debug(
             "run_rigorous_scalar_analysis: fit_quality_warning=True "
-            "(large studentized residuals from heteroscedastic WLS noise — "
+            "(large studentized residuals from heteroscedastic WLS noise, "
             "informational only)."
         )
 
-    # Spread-across-chunks diagnostic (Fix 2a) applies here the same way as
-    # the main workflow -- train_mi is available per chunk. The per-gamma
-    # ceiling/saturation half (Fix 2b) does not: scalar_fn (e.g.
-    # _te_rigorous_scalar) returns a bare float, not the richer per-run dict
-    # AnalysisWorkflow's tasks produce, so train_ceiling_mi/train_saturation
-    # were never propagated through _run_scalar_fn_task. Extending that would
-    # mean changing the scalar_fn contract for every caller of this generic
-    # helper (conditional MI's rigorous path too) -- a larger change than
-    # this fix, flagged for a later phase rather than done here.
+    # The spread across chunks is reported as in the main workflow. The
+    # per-gamma ceiling and saturation are not: scalar_fn returns one float
+    # per chunk, without the per-network diagnostics they are computed from.
     per_gamma_spread = {
         int(gamma): (float(sub['train_mi'].std()) if len(sub) > 1 else 0.0)
         for gamma, sub in df.groupby('gamma')

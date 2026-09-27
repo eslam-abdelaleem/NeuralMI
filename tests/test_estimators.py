@@ -5,10 +5,6 @@ import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Estimator, Processing
 from neural_mi.estimators import infonce_lower_bound, smile_lower_bound
-from neural_mi.training.trainer import Trainer
-from neural_mi.utils import build_critic
-from neural_mi.data.handler import create_dataset
-import torch.optim as optim
 
 # A minimal set of parameters for running a quick training session
 TRAINER_PARAMS_MINIMAL = {
@@ -35,13 +31,10 @@ class TestEstimators:
     def test_estimator_accuracy_on_known_data(self, estimator_name):
         """Each estimator recovers a known ground-truth MI through the real API.
 
-        This goes through `nmi.run()` rather than assembling a Trainer by hand.
-        The hand-rolled version tested a configuration the library never
-        produces, and SMILE diverges to NaN there on every data draw tried
-        (10 of 10), while InfoNCE tolerates it. That test passed only because
-        the one legacy-global-RNG draw it happened to use was on the good side
-        of the knife edge; giving the generator a real `seed` removed the luck
-        and exposed it. Through `nmi.run()` SMILE is stable across 8 draws.
+        This goes through `nmi.run()`, the configuration the library produces.
+        A Trainer assembled by hand with other settings makes SMILE diverge to
+        NaN on every data draw tried (10 of 10), while InfoNCE tolerates it.
+        Through `nmi.run()` SMILE is stable across 8 draws.
 
         Tolerance measured, not guessed: at this budget InfoNCE lands in
         1.97-2.04 and SMILE in 1.81-1.88 against a truth of 2.0, so the worst

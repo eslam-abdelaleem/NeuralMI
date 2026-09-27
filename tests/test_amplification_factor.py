@@ -60,22 +60,22 @@ class TestAmplificationFactorReported:
         _orc, s = _oracle_sample(w_noise=1.0)
         r = nmi.run(s['x'], s['y'], mode='conditional',
                     conditional=nmi.Conditional(w_data=s['w']), **_RUN)
-        d = r.details
-        assert 'amplification_factor' in d
-        # it must be consistent with the components it is derived from
+        d = r.dataframe.iloc[0]
+        # it must be consistent with the component means it is derived from
         assert d['amplification_factor'] == pytest.approx(
-            (abs(d['mi_xw_y']) + abs(d['mi_w_y'])) / abs(d['cmi_estimate']))
+            (abs(d['mi_xw_y_mean']) + abs(d['mi_w_y_mean'])) / abs(d['mi_mean']))
 
+    @pytest.mark.slow
     def test_interaction_reports_the_three_term_factor(self):
         _orc, s = _oracle_sample(w_noise=1.0)
         r = nmi.run(s['x'], s['y'], mode='interaction',
                     interaction=nmi.Interaction(w_data=s['w']), **_RUN)
-        d = r.details
-        assert 'amplification_factor' in d
+        d = r.dataframe.iloc[0]
         assert d['amplification_factor'] == pytest.approx(
-            (abs(d['mi_xw_y']) + abs(d['mi_x_y']) + abs(d['mi_w_y']))
-            / abs(d['interaction_info']))
+            (abs(d['mi_xw_y_mean']) + abs(d['mi_x_y_mean']) + abs(d['mi_w_y_mean']))
+            / abs(d['mi_mean']))
 
+    @pytest.mark.slow
     def test_warns_when_w_explains_x_away(self):
         # W is a near-noiseless readout of the shared latent, so the true
         # I(X;Y|W) is 0 and the estimate is a tiny residual of two large terms.
@@ -87,7 +87,7 @@ class TestAmplificationFactorReported:
             warnings.simplefilter('always')
             r = nmi.run(s['x'], s['y'], mode='conditional',
                         conditional=nmi.Conditional(w_data=s['w']), **_RUN)
-        assert r.details['amplification_factor'] > AMPLIFICATION_WARN_THRESHOLD
+        assert r.get('amplification_factor') > AMPLIFICATION_WARN_THRESHOLD
         text = ' '.join(str(c.message) for c in caught)
         assert 'amplification' in text, "high amplification must be surfaced to the user"
 
@@ -103,6 +103,6 @@ class TestAmplificationFactorReported:
             r = nmi.run(enc(xb), enc(yb), mode='conditional',
                         conditional=nmi.Conditional(w_data=enc(wb)),
                         model=nmi.Model(hidden_dim=64, n_layers=2), **_RUN)
-        assert r.details['amplification_factor'] < 2.0
+        assert r.get('amplification_factor') < 2.0
         text = ' '.join(str(c.message) for c in caught)
         assert 'amplification' not in text

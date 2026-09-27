@@ -65,7 +65,8 @@ class TestSweepExtended:
 
         tasks = sweep._prepare_tasks(sweep_grid={'dim': [4]}, is_proc_sweep=False, max_samples_per_task=None)
         _, _, params, _ = tasks[0]
-        assert params['save_best_model_path'] == 'model_dim_4.pth'
+        from neural_mi.embeddings_io import model_file
+        assert model_file(params) == 'model_dim-4.pth'
 
     # ------------------------------------------------------------------
     # dataset_device tests
@@ -170,9 +171,9 @@ class TestSweepExtended:
 
 
 class TestJointMarginalDifference:
-    """Regression tests for the shared joint/marginal/difference helper
-    (C-something: extracted from conditional.py and transfer.py x2, which had
-    the identical pattern duplicated three times)."""
+    """The shared joint/marginal/difference helper used by conditional MI,
+        transfer entropy and interaction information.
+    """
 
     def _patch_sweep(self, monkeypatch, joint_vals, marginal_vals):
         """Make ParameterSweep.run() return canned train_mi values in
@@ -191,7 +192,7 @@ class TestJointMarginalDifference:
     def test_computes_correct_difference(self, monkeypatch):
         from neural_mi.analysis.sweep import _joint_marginal_difference
         self._patch_sweep(monkeypatch, joint_vals=[2.0, 2.2], marginal_vals=[0.5, 0.7])
-        diff, mi_joint, mi_marginal, res_j, res_m = _joint_marginal_difference(
+        diff, mi_joint, mi_marginal, res_j, res_m, per_run = _joint_marginal_difference(
             None, None, None, None, {}, None, 1,
             quantity_name="Test Quantity", joint_label="J", marginal_label="M",
             joint_key="j_key", marginal_key="m_key",
@@ -200,6 +201,9 @@ class TestJointMarginalDifference:
         assert mi_marginal == pytest.approx(0.6)
         assert diff == pytest.approx(1.5)
         assert len(res_j) == 2 and len(res_m) == 2
+        # The per-run values come back so callers can take the spread of the
+        # difference, which averaging each component separately cannot give.
+        assert per_run == ([2.0, 2.2], [0.5, 0.7])
 
     def test_raises_when_joint_runs_all_fail(self, monkeypatch):
         from neural_mi.analysis.sweep import _joint_marginal_difference

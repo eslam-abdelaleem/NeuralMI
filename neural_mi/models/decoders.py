@@ -3,7 +3,7 @@
 
 Each decoder is the approximate inverse of the corresponding encoder in
 ``embeddings.py``.  A decoder takes a low-dimensional embedding
-``z`` (shape ``(batch, embed_dim)``) and reconstructs the original input
+``z`` (shape ``(batch, embedding_dim)``) and reconstructs the original input
 (shape ``(batch, n_channels, window_size)``).
 
 Decoders are used when ``use_decoder=True`` in ``base_params``.  The
@@ -13,11 +13,16 @@ input while maximising mutual information with the other variable (Deep
 Symmetric IB).
 
 Deterministic training objective (``use_variational=False``):
-    L = -MI(Z_X; Z_Y) + w_x * MSE(X, X̂) + w_y * MSE(Y, Ŷ)
+    L = -[MI(Z_X; Z_Y) - λ_x * MSE(X, X̂) - λ_y * MSE(Y, Ŷ)]
 
 Variational training objective (``use_variational=True``):
-    L = KL_X + KL_Y - β * MI(Z_X; Z_Y)
-        + w_x * MSE(X, X̂) + w_y * MSE(Y, Ŷ)
+    L = KL_X + KL_Y
+        - β * [MI(Z_X; Z_Y) - λ_x * MSE(X, X̂) - λ_y * MSE(Y, Ŷ)]
+
+β scales every term the objective is asked to preserve, so each λ
+(``decoder_lambda_x`` / ``decoder_lambda_y``) is measured against the MI term
+and the effective weight on a reconstruction is β * λ when variational and λ
+on its own otherwise.
 
 Output activations (controlled by ``output_activation`` parameter):
     - ``'linear'``  : no activation (float / continuous data).
@@ -61,7 +66,7 @@ class BaseDecoder(nn.Module):
         Parameters
         ----------
         z : torch.Tensor
-            Embedding tensor of shape ``(batch, embed_dim)``.
+            Embedding tensor of shape ``(batch, embedding_dim)``.
 
         Returns
         -------
@@ -81,12 +86,12 @@ class BaseDecoder(nn.Module):
 class MLPDecoder(BaseDecoder):
     """Mirror MLP decoder for the :class:`~neural_mi.models.embeddings.MLP` encoder.
 
-    Maps ``embed_dim → hidden_dim → ... → n_channels * window_size``,
+    Maps ``embedding_dim → hidden_dim → ... → n_channels * window_size``,
     then reshapes to ``(batch, n_channels, window_size)``.
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -99,7 +104,7 @@ class MLPDecoder(BaseDecoder):
         self._act = _get_output_activation(output_activation)
         output_dim = n_channels * window_size
 
-        layers = [nn.Linear(embed_dim, hidden_dim), nn.ReLU()]
+        layers = [nn.Linear(embedding_dim, hidden_dim), nn.ReLU()]
         for _ in range(max(0, n_layers - 1)):
             layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
         layers.append(nn.Linear(hidden_dim, output_dim))
@@ -121,7 +126,7 @@ class CNN1DDecoder(BaseDecoder):
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -139,7 +144,7 @@ class CNN1DDecoder(BaseDecoder):
         # Start from a small spatial dimension; expand in two stages.
         self._base_len = max(4, window_size // (2 ** max(1, n_layers - 1)))
         self.expand_linear = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
+            nn.Linear(embedding_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim * self._base_len),
             nn.ReLU(),
@@ -175,7 +180,7 @@ class GRUDecoder(BaseDecoder):
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -187,7 +192,7 @@ class GRUDecoder(BaseDecoder):
         self.window_size = window_size
         self._act = _get_output_activation(output_activation)
 
-        self.input_proj = nn.Linear(embed_dim, hidden_dim)
+        self.input_proj = nn.Linear(embedding_dim, hidden_dim)
         self.gru = nn.GRU(
             input_size=hidden_dim,
             hidden_size=hidden_dim,
@@ -210,7 +215,7 @@ class LSTMDecoder(BaseDecoder):
     """Sequence decoder for the :class:`~neural_mi.models.embeddings.LSTM` encoder."""
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -222,7 +227,7 @@ class LSTMDecoder(BaseDecoder):
         self.window_size = window_size
         self._act = _get_output_activation(output_activation)
 
-        self.input_proj = nn.Linear(embed_dim, hidden_dim)
+        self.input_proj = nn.Linear(embedding_dim, hidden_dim)
         self.lstm = nn.LSTM(
             input_size=hidden_dim,
             hidden_size=hidden_dim,
@@ -250,7 +255,7 @@ class LRUDecoder(BaseDecoder):
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -264,7 +269,7 @@ class LRUDecoder(BaseDecoder):
         self.window_size = window_size
         self._act = _get_output_activation(output_activation)
 
-        self.input_proj = nn.Linear(embed_dim, hidden_dim)
+        self.input_proj = nn.Linear(embedding_dim, hidden_dim)
         self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout) for _ in range(max(1, n_layers))])
         self.output_proj = nn.Linear(hidden_dim, n_channels)
         self._init_weights()
@@ -283,13 +288,13 @@ class TCNDecoder(BaseDecoder):
     """Approximate inverse of the :class:`~neural_mi.models.embeddings.TCN` encoder.
 
     Projects the embedding to a feature map (same shape as TCN output), then
-    uses a sequence of dilated ``Conv1d`` blocks — mirroring the TCN encoder
-    structure — to reconstruct the input.  Upsampling is handled by
+    uses a sequence of dilated ``Conv1d`` blocks, mirroring the TCN encoder
+    structure, to reconstruct the input.  Upsampling is handled by
     ``nn.Upsample`` before the first convolutional block.
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -304,7 +309,7 @@ class TCNDecoder(BaseDecoder):
 
         self._base_len = max(4, window_size // (2 ** max(1, n_layers - 1)))
         self.expand_linear = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
+            nn.Linear(embedding_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim * self._base_len),
             nn.ReLU(),
@@ -362,7 +367,7 @@ class TransformerDecoder(BaseDecoder):
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -381,7 +386,7 @@ class TransformerDecoder(BaseDecoder):
             if hidden_dim == 0:
                 hidden_dim = nhead
 
-        self.memory_proj = nn.Linear(embed_dim, hidden_dim)
+        self.memory_proj = nn.Linear(embedding_dim, hidden_dim)
         # Learned position queries (one per time step)
         self.pos_queries = nn.Parameter(torch.randn(1, window_size, hidden_dim) * 0.02)
         decoder_layer = nn.TransformerDecoderLayer(
@@ -415,7 +420,7 @@ class CNN2DDecoder(BaseDecoder):
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         height: int,
@@ -436,7 +441,7 @@ class CNN2DDecoder(BaseDecoder):
         self._base_h = max(2, height // (2 ** max(1, n_layers - 1)))
         self._base_w = max(2, width // (2 ** max(1, n_layers - 1)))
         self.expand_linear = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
+            nn.Linear(embedding_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim * self._base_h * self._base_w),
             nn.ReLU(),
@@ -469,7 +474,7 @@ class CNN2DDecoder(BaseDecoder):
 
 def build_decoder(
     embedding_model: str,
-    embed_dim: int,
+    embedding_dim: int,
     hidden_dim: int,
     n_channels: int,
     window_size: int,
@@ -483,7 +488,7 @@ def build_decoder(
     ----------
     embedding_model : str
         Name of the encoder (e.g. ``'mlp'``, ``'cnn'``, ``'gru'``, …).
-    embed_dim : int
+    embedding_dim : int
         Embedding dimensionality (output size of the encoder).
     hidden_dim : int
         Hidden dimension to use in the decoder.
@@ -507,7 +512,7 @@ def build_decoder(
         The constructed decoder module.
     """
     common = dict(
-        embed_dim=embed_dim,
+        embedding_dim=embedding_dim,
         hidden_dim=hidden_dim,
         n_channels=n_channels,
         n_layers=n_layers,

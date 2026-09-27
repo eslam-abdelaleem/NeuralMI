@@ -1,23 +1,27 @@
 # tests/test_dual_branch_embedding.py
-"""Tests for Stage 4: DualBranchEmbedding and the three quantities that need
-it (mi_rate, instantaneous_exchange, directed_information_rate), where A and
-C genuinely differ in window length beyond mode='conditional''s small trim
-tolerance.
+"""Tests for DualBranchEmbedding and the three quantities that need it
+(mi_rate, instantaneous_exchange, directed_information_rate), where A and C
+differ in window length beyond mode='conditional''s small trim tolerance.
 
-Ground truth reuses the exact Gaussian log-det conditional-MI formula (the
-same construction validated throughout this session's oracle work), extended
-here to a conditional form so it also covers the C != [] case these three
-quantities need, not just the unconditioned I(A;B) Stage 1 covers.
+Ground truth is the exact Gaussian log-det formula in its conditional form,
+which covers the C != [] case these three quantities need.
 """
+import dataclasses
 import numpy as np
-import pandas as pd
 import pytest
 import torch
 
 import neural_mi as nmi
 from neural_mi import Model, Training, Conditional
 from neural_mi.config import Transfer
-from neural_mi.models.embeddings import DualBranchEmbedding, GRU
+from neural_mi.models.embeddings import DualBranchEmbedding
+
+
+def _components(result):
+    """The component means of a one-configuration difference quantity, by name."""
+    row = result.dataframe.iloc[0]
+    return {c[:-len('_mean')]: row[c] for c in row.index if c.endswith('_mean')}
+
 
 
 # --------------------------------------------------------------------------
@@ -104,20 +108,20 @@ _TRAINING = Training(n_epochs=40, learning_rate=1e-3, batch_size=128, patience=1
 # --------------------------------------------------------------------------
 class TestDualBranchEmbeddingUnit:
     def test_dual_mode_output_shape(self):
-        emb = DualBranchEmbedding(input_dim=(3, 2), hidden_dim=16, embed_dim=8, n_layers=1)
+        emb = DualBranchEmbedding(input_dim=(3, 2), hidden_dim=16, embedding_dim=8, n_layers=1)
         a_batch = torch.randn(5, 3, 7)   # window length 7
         c_batch = torch.randn(5, 2, 4)   # window length 4, DIFFERENT from a_batch's
         out = emb((a_batch, c_batch))
         assert out.shape == (5, 8)
 
     def test_single_mode_output_shape(self):
-        emb = DualBranchEmbedding(input_dim=4, hidden_dim=16, embed_dim=8, n_layers=1)
+        emb = DualBranchEmbedding(input_dim=4, hidden_dim=16, embedding_dim=8, n_layers=1)
         batch = torch.randn(5, 4, 6)
         out = emb(batch)
         assert out.shape == (5, 8)
 
     def test_dual_mode_gradient_flows_to_both_branches(self):
-        emb = DualBranchEmbedding(input_dim=(3, 2), hidden_dim=16, embed_dim=8, n_layers=1)
+        emb = DualBranchEmbedding(input_dim=(3, 2), hidden_dim=16, embedding_dim=8, n_layers=1)
         a_batch = torch.randn(5, 3, 7)
         c_batch = torch.randn(5, 2, 4)
         out = emb((a_batch, c_batch))
@@ -130,12 +134,12 @@ class TestDualBranchEmbeddingUnit:
             assert p.grad is not None
 
     def test_dual_construction_rejects_plain_forward(self):
-        emb = DualBranchEmbedding(input_dim=(3, 2), hidden_dim=16, embed_dim=8, n_layers=1)
+        emb = DualBranchEmbedding(input_dim=(3, 2), hidden_dim=16, embedding_dim=8, n_layers=1)
         with pytest.raises(ValueError):
             emb(torch.randn(5, 3, 7))
 
     def test_single_construction_rejects_tuple_forward(self):
-        emb = DualBranchEmbedding(input_dim=4, hidden_dim=16, embed_dim=8, n_layers=1)
+        emb = DualBranchEmbedding(input_dim=4, hidden_dim=16, embedding_dim=8, n_layers=1)
         with pytest.raises(ValueError):
             emb((torch.randn(5, 4, 6), torch.randn(5, 4, 3)))
 
@@ -146,10 +150,10 @@ class TestDualBranchEmbeddingUnit:
         from neural_mi.models.embeddings import LSTM
 
         class _DualBranchLSTMMock(DualBranchEmbedding):
-            def __init__(self, input_dim, hidden_dim, embed_dim, n_layers, **kwargs):
-                super().__init__(input_dim, hidden_dim, embed_dim, n_layers, branch_cls=LSTM, **kwargs)
+            def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers, **kwargs):
+                super().__init__(input_dim, hidden_dim, embedding_dim, n_layers, branch_cls=LSTM, **kwargs)
 
-        emb = _DualBranchLSTMMock(input_dim=(3, 2), hidden_dim=16, embed_dim=8, n_layers=1)
+        emb = _DualBranchLSTMMock(input_dim=(3, 2), hidden_dim=16, embedding_dim=8, n_layers=1)
         assert isinstance(emb.branch_a, LSTM)
         out = emb((torch.randn(5, 3, 7), torch.randn(5, 2, 4)))
         assert out.shape == (5, 8)
@@ -171,18 +175,17 @@ class TestDualBranchIntegration:
                     model=_DB_MODEL, training=_TRAINING, show_progress=False, seed=0)
         assert isinstance(r, nmi.Results)
         assert np.isfinite(r.mi_estimate)
-        assert 'mi_xw_y' in r.details and 'mi_w_y' in r.details
+        assert 'mi_xw_y' in _components(r) and 'mi_w_y' in _components(r)
 
     def test_align_none_still_raises_on_mismatch_beyond_tolerance(self):
-        """Regression: without align='dual_branch', a mismatch this large must
-        still hard-error exactly as before Stage 4 (additive, not a silent
-        behavior change to the default path)."""
+        """Without align='dual_branch', a window mismatch this large raises."""
         a, c, y = self._mismatched_data()
         with pytest.raises(ValueError):
             nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c),
                     model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
                     training=_TRAINING, show_progress=False)
 
+    @pytest.mark.slow
     def test_dual_branch_n_workers_2(self):
         a, c, y = self._mismatched_data()
         r = nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c, align='dual_branch'),
@@ -225,7 +228,7 @@ class TestDualBranchNativeEmbeddingModel:
                     model=model, training=_TRAINING, show_progress=False, seed=0)
         assert isinstance(r, nmi.Results)
         assert np.isfinite(r.mi_estimate)
-        assert 'mi_xw_y' in r.details and 'mi_w_y' in r.details
+        assert 'mi_xw_y' in _components(r) and 'mi_w_y' in _components(r)
 
     def test_default_branch_model_is_gru(self):
         """branch_model omitted defaults to 'gru', matching DualBranchEmbedding's
@@ -242,15 +245,14 @@ class TestDualBranchNativeEmbeddingModel:
         directly, not just the custom_embedding_cls= form."""
         x, y = torch.randn(300, 1), torch.randn(300, 1)
         model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16, n_layers=1)
-        r = nmi.mi_rate(x, y, h=3, W=5, model=model, training=_TRAINING, show_progress=False)
+        r = nmi.mi_rate(x, y, h=3, half_width=5, model=model, training=_TRAINING, show_progress=False)
         assert isinstance(r, nmi.Results)
 
     def test_shared_encoder_raises_clear_error(self):
-        """Regression: shared_encoder=True used to crash deep inside
-        DualBranchEmbedding.forward with a confusing "plain tensor vs 2-tuple
-        input_dim" ValueError once training actually started, instead of a
-        clear, upfront error at model-construction time -- one encoder
-        instance can't be both the dual (X-role) and single (Y-role) branch."""
+        """shared_encoder=True raises a clear error when the model is built:
+                one encoder instance cannot be both the dual (X-role) and the single
+                (Y-role) branch.
+        """
         a, c, y = self._mismatched_data(N=200)
         model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16,
                       n_layers=1, shared_encoder=True)
@@ -259,11 +261,9 @@ class TestDualBranchNativeEmbeddingModel:
                     model=model, training=Training(n_epochs=2, patience=1), show_progress=False, seed=0)
 
     def test_use_decoder_raises_clear_error(self):
-        """Regression: use_decoder=True used to crash with an opaque
-        TypeError (task.py's window-size computation dividing a tuple by a
-        tuple) instead of a clear, upfront error -- DualBranchEmbedding's own
-        docstring already documents use_variational=True's equivalent clean
-        guard; use_decoder=True needed the same treatment."""
+        """use_decoder=True raises a clear error up front, as
+                use_variational=True does for DualBranchEmbedding.
+        """
         a, c, y = self._mismatched_data(N=200)
         model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16,
                       n_layers=1, use_decoder=True)
@@ -303,7 +303,7 @@ class TestQuantitiesRequireDualBranchModel:
     def test_mi_rate_requires_dual_branch_model(self):
         x, y = torch.randn(300, 1), torch.randn(300, 1)
         with pytest.raises(ValueError):
-            nmi.mi_rate(x, y, h=3, W=5, model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+            nmi.mi_rate(x, y, h=3, half_width=5, model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
                         training=_TRAINING, show_progress=False)
 
     def test_instantaneous_exchange_requires_dual_branch_model(self):
@@ -320,7 +320,7 @@ class TestQuantitiesRequireDualBranchModel:
 
     def test_mi_rate_h_zero_needs_no_dual_branch_model(self):
         x, y = torch.randn(300, 1), torch.randn(300, 1)
-        r = nmi.mi_rate(x, y, h=0, W=5, model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+        r = nmi.mi_rate(x, y, h=0, half_width=5, model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
                         training=_TRAINING, show_progress=False)
         assert isinstance(r, nmi.Results)
 
@@ -334,7 +334,7 @@ class TestQuantitiesRequireDualBranchModel:
 class TestQuantitiesShapesAndSweep:
     def test_mi_rate_scalar_returns_results(self):
         x, y = torch.randn(400, 1), torch.randn(400, 1)
-        r = nmi.mi_rate(x, y, h=3, W=5, model=_DB_MODEL, training=_TRAINING, show_progress=False)
+        r = nmi.mi_rate(x, y, h=3, half_width=5, model=_DB_MODEL, training=_TRAINING, show_progress=False)
         assert isinstance(r, nmi.Results)
         assert np.isfinite(r.mi_estimate)
 
@@ -352,7 +352,7 @@ class TestQuantitiesShapesAndSweep:
 
     def test_mi_rate_sweep_returns_results(self):
         x, y = torch.randn(500, 1), torch.randn(500, 1)
-        r = nmi.mi_rate(x, y, h=[0, 2, 4], W=5, model=_DB_MODEL, training=_TRAINING,
+        r = nmi.mi_rate(x, y, h=[0, 2, 4], half_width=5, model=_DB_MODEL, training=_TRAINING,
                           n_workers=2, show_progress=False)
         assert isinstance(r, nmi.Results)
         assert list(r.dataframe['h']) == [0, 2, 4]
@@ -365,6 +365,7 @@ class TestQuantitiesShapesAndSweep:
         assert isinstance(r, nmi.Results)
         assert list(r.dataframe['k']) == [0, 2, 4]
 
+    @pytest.mark.slow
     def test_directed_information_rate_sweep_returns_results(self):
         x, y = torch.randn(500, 1), torch.randn(500, 1)
         r = nmi.directed_information_rate(x, y, k=[1, 2, 3], model=_DB_MODEL, training=_TRAINING,
@@ -382,14 +383,16 @@ class TestQuantitiesShapesAndSweep:
 class TestAccuracyAgainstOracle:
     _oracle = _SharedLatentOracle(phi=0.85, a=1.0, b=1.0, sx=0.5, sy=0.5)
 
+    @pytest.mark.slow
     def test_mi_rate_accuracy(self):
         h, W = 3, 5
         x, y = self._oracle.sample(6000, seed=10)
         exact = self._oracle.mi_rate_exact(h, W)
-        r = nmi.mi_rate(torch.from_numpy(x), torch.from_numpy(y), h=h, W=W,
+        r = nmi.mi_rate(torch.from_numpy(x), torch.from_numpy(y), h=h, half_width=W,
                         model=_DB_MODEL, training=_TRAINING, show_progress=False, seed=0)
         assert abs(r.mi_estimate - exact) < 0.5
 
+    @pytest.mark.slow
     def test_instantaneous_exchange_accuracy(self):
         k = 3
         x, y = self._oracle.sample(6000, seed=11)
@@ -398,6 +401,7 @@ class TestAccuracyAgainstOracle:
                                        model=_DB_MODEL, training=_TRAINING, show_progress=False, seed=0)
         assert abs(r.mi_estimate - exact) < 0.5
 
+    @pytest.mark.slow
     def test_directed_information_rate_accuracy(self):
         k = 3
         x, y = self._oracle.sample(6000, seed=12)
@@ -443,10 +447,9 @@ class TestDualBranchShiftWindows:
             warnings.simplefilter('always')
             r = nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=c, w_processor_type='continuous',
-                                       w_processor_params={'window_size': 8, 'step_size': 8},
+                conditional=Conditional(w_data=c,
                                        align='dual_branch'),
-                processing=processing,
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': 8, 'step_size': 8}),
                 model=_DB_MODEL,
                 training=Training(n_epochs=2, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
@@ -474,15 +477,14 @@ class TestDualBranchShiftWindows:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='conditional',
-            conditional=Conditional(w_data=c, w_processor_type='continuous',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size},
+            conditional=Conditional(w_data=c,
                                    align='dual_branch'),
-            processing=processing,
+            processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
             model=_DB_MODEL,
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        details = results.details
+        details = _components(results)
         assert np.isfinite(details['mi_xw_y']) and np.isfinite(details['mi_w_y'])
         assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
             f"C=X exactly should make I(X,C;Y)={details['mi_xw_y']:.3f} closely match "
@@ -509,10 +511,9 @@ class TestDualBranchShiftWindows:
         with pytest.raises(NotImplementedError):
             nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=c, w_processor_type='continuous',
-                                       w_processor_params={'window_size': 8, 'step_size': 8},
+                conditional=Conditional(w_data=c,
                                        align='dual_branch', rigorous=True, gamma_range=range(1, 4)),
-                processing=processing,
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': 8, 'step_size': 8}),
                 model=_DB_MODEL,
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,

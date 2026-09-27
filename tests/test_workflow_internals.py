@@ -140,7 +140,7 @@ class TestWorkflowInternals:
         assert workflow.base_params['input_dim_x'] == 3 * 8 * 8
         assert workflow.base_params['input_dim_y'] == 3 * 8 * 8
 
-        # 3-D data must be unaffected (same value as the old shape[1]*shape[2]).
+        # 3-D data keeps input_dim = shape[1] * shape[2].
         x_3d = torch.randn(20, 4, 16)
         y_3d = torch.randn(20, 4, 16)
         workflow_3d = AnalysisWorkflow(x_3d, y_3d, base_params={})

@@ -1,7 +1,7 @@
 # tests/test_dimensionality.py
-"""Tests for run_dimensionality_analysis — index split, embedding history
-helpers, and the cross-run stability/near-degeneracy/ceiling-proximity checks
-that replaced the old PR-ceiling/noise-injection-ladder machinery."""
+"""Tests for run_dimensionality_analysis: the index split, the embedding
+history helpers, and the cross-run stability, near-degeneracy and
+ceiling-proximity checks."""
 import warnings
 import pytest
 import numpy as np
@@ -32,7 +32,7 @@ def _make_x(n=60, c=6, w=None):
     return torch.randn(n, c, w)
 
 
-def _minimal_result(n_epochs=3, embed_dim=4, n_tracked=10):
+def _minimal_result(n_epochs=3, embedding_dim=4, n_tracked=10):
     """Synthetic result dict as produced by a trainer run."""
     row = {
         'train_mi': 0.5,
@@ -41,11 +41,11 @@ def _minimal_result(n_epochs=3, embed_dim=4, n_tracked=10):
         'split_id': 0,
     }
     row['embedding_history_x'] = [
-        np.random.randn(n_tracked, embed_dim).astype(np.float32)
+        np.random.randn(n_tracked, embedding_dim).astype(np.float32)
         for _ in range(n_epochs)
     ]
     row['embedding_history_y'] = [
-        np.random.randn(n_tracked, embed_dim).astype(np.float32)
+        np.random.randn(n_tracked, embedding_dim).astype(np.float32)
         for _ in range(n_epochs)
     ]
     return row
@@ -379,9 +379,10 @@ class TestDefaults:
 
     @patch('neural_mi.analysis.dimensionality._dispatch_splits')
     def test_track_embeddings_not_forced(self, mock_dispatch):
-        """track_embeddings no longer gets a dimensionality-specific override
-        (the rotated-embedding extraction this mode relies on doesn't need
-        it) -- whatever the caller passed (or didn't) flows through unchanged."""
+        """track_embeddings has no dimensionality-specific override (the
+                rotated-embedding extraction this mode relies on does not need it):
+                whatever the caller passed flows through unchanged.
+        """
         mock_dispatch.return_value = [
             {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
         ]
@@ -424,11 +425,10 @@ class TestComputeStabilityReport:
         assert report['n_stable_total'] == 1
 
     def test_pure_noise_channel_excluded_even_with_spurious_correlation(self):
-        """Regression test for the mechanism the whole mode hinges on: a pure
-        noise direction with near-zero singular-value strength must NOT be
-        reported as stable, even if it happens to show a high cross-run
-        correlation by chance (confirmed directly in the validation battery --
-        see SOURCE_OF_TRUTH.md's hard_entangled_troublezone result)."""
+        """A pure noise direction with near-zero singular-value strength is
+                not reported as stable, even when it shows a high cross-run
+                correlation by chance. The whole mode hinges on this.
+        """
         rng = np.random.default_rng(42)
         n = 500
         # A shared real signal on rank 1, plus a rank-2 "noise" direction whose
@@ -457,7 +457,6 @@ class TestComputeStabilityReport:
         reproduce across splits must be excluded -- the noise-floor gate and
         the correlation gate are independent checks, not one catching for
         the other."""
-        rng = np.random.default_rng(0)
         per_split = []
         for seed in (1, 2, 3):
             local_rng = np.random.default_rng(seed)
@@ -539,9 +538,7 @@ class TestCeilingProximity:
 
 
 class TestAnalysisWorkflowDoesNotMutateCallerDict:
-    """Regression test: AnalysisWorkflow.__init__ used to assign
-    self.base_params = base_params (same reference) then .update() it,
-    mutating the caller's dict in place."""
+    """AnalysisWorkflow copies base_params and never mutates the caller's dict."""
 
     def test_base_params_not_mutated(self):
         from neural_mi.analysis.rigorous import AnalysisWorkflow
@@ -626,6 +623,41 @@ class TestDimensionalityShiftWindowsEndToEnd:
             dimensionality=Dimensionality(split_method='random', n_splits=2),
             n_workers=1, show_progress=False, seed=0,
         )
-        df = results.details['raw_results']
+        df = results.runs
         assert len(df) == 2
         assert np.all(np.isfinite(df['train_mi'].values))
+
+
+class TestNSplitsIsValidated:
+    """`n_splits` counts the independent model fits, so below 1 asks for none
+        and is refused.
+    """
+
+    @staticmethod
+    def _x():
+        rng = np.random.default_rng(0)
+        return rng.standard_normal((200, 4)).astype(np.float32)
+
+    @pytest.mark.parametrize("n_splits", [0, -1])
+    def test_below_one_is_refused(self, n_splits):
+        import neural_mi as nmi
+        from neural_mi.config import Dimensionality, Model, Training
+        with pytest.raises(ValueError, match="n_splits must be a whole number of 1 or more"):
+            nmi.run(x_data=self._x(), mode='dimensionality',
+                    dimensionality=Dimensionality(n_splits=n_splits),
+                    model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                    training=Training(n_epochs=1), n_workers=1, show_progress=False)
+
+    def test_one_split_still_runs(self):
+        import neural_mi as nmi
+        from neural_mi.config import Dimensionality, Model, Training, Output
+        result = nmi.run(x_data=self._x(), mode='dimensionality',
+                         dimensionality=Dimensionality(n_splits=1),
+                         model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                         training=Training(n_epochs=1),
+                         output=Output(return_embeddings=True),
+                         n_workers=1, show_progress=False)
+        # Embeddings come back with no y_data at all: the two sides are X's own
+        # channels.
+        assert result.get('embeddings_x').shape[0] > 0
+        assert result.get('embeddings_y').shape[0] > 0

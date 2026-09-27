@@ -34,6 +34,7 @@ def oracle():
 class TestOracleIdentities:
     """The exact values must satisfy the taxonomy's identities."""
 
+    @pytest.mark.slow
     def test_block_mi_is_extensive(self, oracle):
         """I_w = rate*w + b, so the slope must match the spectral rate.
 
@@ -73,11 +74,11 @@ class TestOracleIdentities:
         assert abs(two_sided / rate - 1) < 1e-3
         assert causal < rate
 
-    def test_storage_bounded_by_excess_entropy(self, oracle):
-        """AIS <= E_X: storage in use cannot exceed storage held."""
+    def test_storage_bounded_by_predictive_information(self, oracle):
+        """AIS <= I_pred(k): one step of future cannot reveal more than k of them."""
         ais = oracle.exact(_past('x'), [('x', 0)])
-        excess = oracle.exact(_past('x'), [('x', s) for s in range(0, K)])
-        assert ais <= excess
+        predictive = oracle.exact(_past('x'), [('x', s) for s in range(0, K)])
+        assert ais <= predictive
 
     def test_interaction_information_identity(self, oracle):
         """I(X,W;Y) - I(X;Y) - I(W;Y) equals I(X;Y|W) - I(X;Y)."""
@@ -122,6 +123,47 @@ class TestOracleSampling:
         assert data['x'].shape == (300, 3)
         assert isinstance(o, SharedLatentGaussian)
         assert o.exact([('x', 0)], [('y', 0)]) > 0
+
+    def test_return_latents_gives_the_driver_of_the_sample(self, oracle):
+        plain = oracle.sample(T=400, seed=5)
+        data, latent = oracle.sample(T=400, seed=5, return_latents=True)
+        assert latent.shape == (400, oracle.d)
+        for name, arr in data.items():
+            assert np.allclose(arr, plain[name]), "the keyword must not disturb the draw"
+        # Each process is its projection of that latent plus independent noise,
+        # so the residual must carry none of the latent back.
+        residual = data['x'] - latent @ oracle.proj['x'].T
+        assert np.abs(np.corrcoef(residual[:, 0], latent[:, 0])[0, 1]) < 0.15
+
+    def test_convenience_appends_latents_when_asked(self):
+        data, o, latent = generate_shared_latent_gaussian(
+            T=300, dims={'x': 3, 'y': 3}, d=2, seed=2, return_latents=True)
+        assert data['x'].shape == (300, 3)
+        assert latent.shape == (300, 2)
+        assert isinstance(o, SharedLatentGaussian)
+
+
+class TestOracleSNR:
+
+    def test_snr_matches_the_covariance_it_summarises(self, oracle):
+        snr = oracle.snr('x')
+        assert snr.shape == (oracle.dim('x'),)
+        signal = np.diag(oracle.proj['x'] @ oracle.Sigma_Z @ oracle.proj['x'].T)
+        assert np.allclose(snr, signal / oracle.noise['x'] ** 2)
+
+    def test_snr_predicts_the_empirical_variance_ratio(self, oracle):
+        data, latent = oracle.sample(T=100_000, seed=0, return_latents=True)
+        signal = latent @ oracle.proj['x'].T
+        empirical = signal.var(0) / (data['x'] - signal).var(0)
+        assert np.allclose(empirical, oracle.snr('x'), rtol=0.1)
+
+    def test_snr_is_infinite_without_observation_noise(self):
+        o = SharedLatentGaussian(dims={'x': 3, 'y': 3}, noise=0.0)
+        assert np.all(np.isinf(o.snr('x')))
+
+    def test_snr_rejects_an_unknown_process(self, oracle):
+        with pytest.raises(KeyError, match="Unknown process"):
+            oracle.snr('q')
 
 
 class TestOracleErrors:
@@ -178,7 +220,7 @@ class TestBuilderMatchesNamedQuantities:
         assert c is None
         self._assert_same(named, (a, b))
 
-    def test_excess_entropy(self, data):
+    def test_predictive_information(self, data):
         k = self.KK
         named = build_past_future(data['x'], past_len=k, future_len=k)
         a, b, _, _ = build_offset_arrays(
@@ -289,3 +331,51 @@ class TestBuilderEndToEnd:
         # A lower-bound estimator on a short run should land below the exact
         # value while still finding a clearly positive dependence.
         assert 0.05 < result.mi_estimate < exact * 1.5
+
+
+class TestBuildOffsetArraysStride:
+    """``stride`` thins the shared reference positions, never the offsets.
+
+    Striding each offset independently instead would shift the groups relative
+    to each other, which no shape check would notice.
+    """
+
+    @staticmethod
+    def _data(T=60):
+        # process 'x' carries its own time index, so a value names its source row
+        return {'x': np.arange(T, dtype=np.float32).reshape(T, 1),
+                'y': np.arange(T, dtype=np.float32).reshape(T, 1) + 1000.0}
+
+    def test_stride_one_is_unchanged(self):
+        data = self._data()
+        spec = {'A': [('x', -2), ('x', -1)], 'B': [('y', 0)]}
+        a1, b1, _, n1 = build_offset_arrays(data, spec)
+        a2, b2, _, n2 = build_offset_arrays(data, spec, stride=1)
+        assert n1 == n2
+        assert torch.equal(a1, a2) and torch.equal(b1, b2)
+
+    @pytest.mark.parametrize("stride", [1, 2, 3, 4])
+    def test_groups_stay_on_the_same_reference_positions(self, stride):
+        data = self._data()
+        spec = {'A': [('x', -2)], 'B': [('y', 0)], 'C': [('x', -1)]}
+        a, b, c, n = build_offset_arrays(data, spec, stride=stride)
+        assert a.shape[0] == b.shape[0] == c.shape[0] == n
+        for i in range(n):
+            ref = float(b[i, 0, 0]) - 1000.0          # B sits at offset 0
+            assert float(a[i, 0, 0]) == ref - 2
+            assert float(c[i, 0, 0]) == ref - 1
+            assert ref == 2 + i * stride              # first valid ref is -lo = 2
+
+    def test_row_count(self):
+        data = self._data(T=60)
+        spec = {'A': [('x', -2)], 'B': [('y', 0)]}
+        # 58 reference positions (-lo = 2 consumed at the start)
+        assert build_offset_arrays(data, spec, stride=1)[3] == 58
+        assert build_offset_arrays(data, spec, stride=2)[3] == 29
+        assert build_offset_arrays(data, spec, stride=5)[3] == 12
+
+    @pytest.mark.parametrize("bad", [0, -1, 0.5, 'two'])
+    def test_rejects_a_bad_stride(self, bad):
+        with pytest.raises(ValueError, match="stride must be"):
+            build_offset_arrays(self._data(), {'A': [('x', -1)], 'B': [('y', 0)]},
+                                stride=bad)

@@ -168,8 +168,8 @@ def logmeanexp_nodiag(x: torch.Tensor, dim: Optional[Union[int, Tuple[int, ...]]
     """Computes log-mean-exp of off-diagonal elements of a square matrix.
 
     This is a helper function used in several MI estimators to compute the
-    log-partition function over the marginal distribution samples, which are
-    represented by the off-diagonal elements of the score matrix.
+    log-partition function over the marginal distribution samples, represented by the off-diagonal elements of the score matrix.
+
 
     Parameters
     ----------

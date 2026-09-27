@@ -2,7 +2,7 @@
 import torch
 import numpy as np
 
-from .handler import PairedTemporalDataset
+from .handler import AlignedStreams
 from neural_mi.logger import logger
 
 
@@ -47,7 +47,7 @@ class SubsetView:
         self.dataset = dataset
         self.channels_x = channels_x
         self.channels_y = channels_y
-        self.is_temporal = isinstance(dataset, PairedTemporalDataset)
+        self.is_temporal = isinstance(dataset, AlignedStreams)
         self.time_offset = 0
         self.max_index_reduction = max_index_reduction
         

@@ -8,10 +8,9 @@ before starting a potentially long-running analysis.
 from typing import Dict, Any, Optional
 import numpy as np
 import torch
-import inspect
 from neural_mi.logger import logger
 from neural_mi.exceptions import DataShapeError
-from neural_mi.estimators import ESTIMATORS, ESTIMATOR_DEFAULTS
+from neural_mi.estimators import ESTIMATORS
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
 def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
@@ -25,7 +24,7 @@ def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
 
     An `int` is accepted wherever a `float` is expected, following Python's own
     numeric tower. Without this, `gap_fraction=1` fails while `gap_fraction=1.0`
-    succeeds, which is a distinction no caller expects to have to make, and it
+    succeeds, a distinction no caller expects to have to make, and it
     applies to every float-typed parameter in the schema (`learning_rate=1`,
     `dropout=0`, `beta=1024` and so on). `bool` is still excluded, so
     `dropout=True` does not quietly become 1.0.
@@ -197,7 +196,7 @@ class ParameterValidator:
         # Check for unknown parameters in base_params
         unknown_keys = set(bp.keys()) - set(BASE_PARAMS_SCHEMA.keys())
         if unknown_keys:
-            raise ValueError(f"Unknown parameters in 'base_params': {unknown_keys}. "
+            raise ValueError(f"Unknown parameters: {unknown_keys}. "
                              f"Allowed: {list(BASE_PARAMS_SCHEMA.keys())}")
 
         # Validate types and values
@@ -217,46 +216,40 @@ class ParameterValidator:
                 raise ValueError(f"Parameter '{key}' has invalid value '{value}'. Allowed: {ALLOWED_VALUES[key]}")
 
     def _validate_processor(self):
-        # Validate processor existence and params
-        for suffix in ['x', 'y']:
-            proc_type = self.params.get(f"processor_type_{suffix}")
-            proc_params = self.params.get(f"processor_params_{suffix}")
-
-            if proc_type:
-                if proc_params is None:
-                    raise ValueError(f"'processor_params_{suffix}' required when 'processor_type_{suffix}' is specified.")
-
-                # Check for invalid processor params
-                if proc_type in PROCESSOR_PARAMS_SCHEMA:
-                    allowed = set(PROCESSOR_PARAMS_SCHEMA[proc_type])
-                    # Allow 'preprocessed' as internal flag
-                    unknown = set(proc_params.keys()) - allowed - {'preprocessed'}
-                    if unknown:
-                        raise ValueError(f"Unknown parameters for {proc_type} processor: {unknown}. Allowed: {allowed}")
-
-                # Validate numeric bounds for specific processor params
-                ws = proc_params.get('window_size')
-                if ws is not None:
-                    if not isinstance(ws, (int, float)) or not np.isfinite(ws) or ws <= 0:
-                        raise ValueError(
-                            f"processor_params_{suffix}['window_size'] must be a positive number, "
-                            f"got {ws!r}."
-                        )
-                sr = proc_params.get('sample_rate')
-                if sr is not None:
-                    if not isinstance(sr, (int, float)) or not np.isfinite(sr) or sr <= 0:
-                        raise ValueError(
-                            f"processor_params_{suffix}['sample_rate'] must be a positive number, "
-                            f"got {sr!r}."
-                        )
-                ss = proc_params.get('step_size')
-                if ss is not None:
-                    if not isinstance(ss, (int, float)) or not np.isfinite(ss) or ss <= 0:
-                        raise ValueError(
-                            f"processor_params_{suffix}['step_size'] must be a positive number "
-                            f"(fraction of window_size if < 1, absolute time units if >= 1), "
-                            f"got {ss!r}."
-                        )
+        """Check each stream's processor parameters against its processor."""
+        streams = (('x', 'processor_type_x', 'processor_params_x'),
+                   ('y', 'processor_type_y', 'processor_params_y'),
+                   ('w', 'w_processor_type', 'w_processor_params'))
+        for name, type_key, params_key in streams:
+            proc_type = self.params.get(type_key)
+            proc_params = self.params.get(params_key)
+            if not proc_type or proc_params is None:
+                continue
+            where = f"Processing({name}_params=...)"
+            if proc_type in PROCESSOR_PARAMS_SCHEMA:
+                allowed = set(PROCESSOR_PARAMS_SCHEMA[proc_type])
+                # 'preprocessed' is an internal flag the engine sets.
+                unknown = set(proc_params.keys()) - allowed - {'preprocessed'}
+                if unknown:
+                    raise ValueError(
+                        f"Unknown parameters for the {proc_type} processor in {where}: "
+                        f"{sorted(unknown)}. Allowed: {sorted(allowed)}."
+                    )
+            ws = proc_params.get('window_size')
+            if ws is not None:
+                if not isinstance(ws, (int, float)) or not np.isfinite(ws) or ws <= 0:
+                    raise ValueError(f"window_size in {where} must be a positive number, got {ws!r}.")
+            sr = proc_params.get('sample_rate')
+            if sr is not None:
+                if not isinstance(sr, (int, float)) or not np.isfinite(sr) or sr <= 0:
+                    raise ValueError(f"sample_rate in {where} must be a positive number, got {sr!r}.")
+            ss = proc_params.get('step_size')
+            if ss is not None:
+                if not isinstance(ss, (int, float)) or not np.isfinite(ss) or ss <= 0:
+                    raise ValueError(
+                        f"step_size in {where} must be a positive number (a fraction of "
+                        f"window_size if below 1, absolute time units otherwise), got {ss!r}."
+                    )
 
     def _validate_sweep(self):
         if self.mode == "sweep" and self.params.get("sweep_grid") is None:
@@ -329,6 +322,37 @@ class ParameterValidator:
                             f"(or a list of such floats), got {r!r}."
                         )
 
+        # Dimensionality mode: n_splits counts the independent model fits, so
+        # anything below 1 asks for no fits at all. Refused here, where the
+        # value was passed.
+        if self.mode == 'dimensionality':
+            _, ns = self._mode_kwarg('n_splits')
+            if ns is not None and (not isinstance(ns, (int, np.integer))
+                                   or isinstance(ns, bool) or ns < 1):
+                raise ValueError(
+                    f"n_splits must be a whole number of 1 or more, got {ns!r}. It "
+                    f"counts the independent model fits this mode averages over, and "
+                    f"cross-run stability needs at least 2 of them to compare."
+                )
+
+            # The two sides of this mode are two halves of one recording, so an
+            # encoder that differs between them makes the count of shared
+            # directions hard to read. Allowed, since a caller may have a reason,
+            # and reported because it is usually unintended.
+            _bp = self.params.get('base_params') or {}
+            _y_side = [k for k in ('embedding_model_y', 'custom_embedding_cls_y',
+                                   'hidden_dim_y', 'n_layers_y', 'embedding_dim_y')
+                       if _bp.get(k) is not None]
+            if _y_side:
+                logger.warning(
+                    f"{_y_side[0]} was set for mode='dimensionality', whose two sides "
+                    f"are two halves of the same recording. An encoder that differs "
+                    f"between them makes the count of cross-run-stable directions hard "
+                    f"to interpret, and this mode treats the two halves as "
+                    f"interchangeable elsewhere. Leave the Y overrides unset unless you "
+                    f"mean the halves to be read differently."
+                )
+
         # Rigorous mode: validate curvature_t_threshold and confidence_level
         if self.mode == 'rigorous':
             dt = self.params.get('curvature_t_threshold')
@@ -359,33 +383,3 @@ class ParameterValidator:
                     if verbose:
                         logger.info(f"Parameter '{key}' not specified. Defaulting to {default_val}.")
 
-class EstimatorValidator:
-    """Validates the parameters for the chosen MI estimator."""
-    def __init__(self, estimator_name: str, estimator_params: Optional[Dict[str, Any]] = None):
-        self.name = estimator_name
-        self.params = estimator_params or {}
-
-        if self.name not in ESTIMATORS:
-            raise ValueError(f"Unknown estimator '{self.name}'. Allowed estimators are: {list(ESTIMATORS.keys())}")
-
-        self.func = ESTIMATORS[self.name]
-        self.signature = inspect.signature(self.func)
-
-    def validate(self):
-        valid_params = set(self.signature.parameters.keys()) - {'scores'}
-        unexpected = set(self.params.keys()) - valid_params
-        if unexpected:
-            raise ValueError(
-                f"Estimator '{self.name}' got unexpected parameters: {unexpected}. "
-                f"Allowed parameters are: {list(valid_params) if valid_params else 'None'}."
-            )
-        for name, param in self.signature.parameters.items():
-            if name == 'scores': continue
-            if param.default == inspect.Parameter.empty and name not in self.params:
-                 raise ValueError(f"Estimator '{self.name}' requires parameter '{name}'.")
-
-    def get_merged_params(self) -> Dict[str, Any]:
-        defaults = ESTIMATOR_DEFAULTS.get(self.name, {})
-        merged = defaults.copy()
-        merged.update(self.params)
-        return merged

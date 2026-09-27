@@ -1,6 +1,7 @@
 # tests/test_safety.py
-"""Regression tests guarding specific safety-critical behaviors."""
+"""Tests guarding safety-critical behaviors: leakage checks, ceilings, shift reachability."""
 import inspect
+import logging
 import warnings
 
 import numpy as np
@@ -8,7 +9,7 @@ import pytest
 import torch
 
 import neural_mi as nmi
-from neural_mi import Model, Training, Transfer
+from neural_mi import Model, Training, Transfer, Processing, Dimensionality
 from neural_mi.analysis.sweep import ParameterSweep
 from neural_mi.exceptions import TrainingError
 from neural_mi.training.trainer import Trainer
@@ -31,7 +32,7 @@ def test_transfer_mode_rejects_3d_x_data():
     """3-D x_data passed to mode='transfer' must raise ValueError."""
     x = np.random.randn(20, 3, 5)  # 3-D (pre-windowed)
     y = np.random.randn(20, 3, 5)
-    with pytest.raises(ValueError, match="mode='transfer' requires 2-D"):
+    with pytest.raises(ValueError, match="mode='transfer' requires x_data of shape"):
         nmi.run(
             x, y,
             mode='transfer',
@@ -53,7 +54,7 @@ def test_transfer_mode_accepts_2d_data():
             n_workers=1,
         )
     except ValueError as e:
-        if "requires 2-D" in str(e):
+        if "requires x_data of shape" in str(e):
             pytest.fail(f"Unexpected 3-D shape error on 2-D input: {e}")
 
 
@@ -198,10 +199,9 @@ def test_separable_critic_embedding_dim_sweep_does_not_raise():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 spec: blocked-split leakage check (WindowManager path, Fix 2)
+# Blocked-split leakage check, WindowManager path
 # ---------------------------------------------------------------------------
 
-import logging
 import re
 
 
@@ -255,7 +255,7 @@ def test_blocked_split_leakage_no_warning_with_large_gap_fraction(caplog):
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 spec: blocked-split leakage check (transfer path, Fix 3)
+# Blocked-split leakage check, transfer-entropy path
 # ---------------------------------------------------------------------------
 
 def test_transfer_path_leakage_warns_when_history_window_exceeds_gap(caplog):
@@ -287,7 +287,7 @@ def test_transfer_path_leakage_no_warning_with_large_gap(caplog):
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 spec: blocked-split leakage check skips cleanly on the static path
+# Blocked-split leakage check skips cleanly on the static path
 # ---------------------------------------------------------------------------
 
 def test_blocked_split_leakage_check_skips_on_static_path():
@@ -302,7 +302,7 @@ def test_blocked_split_leakage_check_skips_on_static_path():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 spec: ceiling warning keys on train-eval size, not eval_size (Fix 1/4)
+# The ceiling warning keys on the train-side evaluation size
 # ---------------------------------------------------------------------------
 
 def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size(caplog):
@@ -324,10 +324,9 @@ def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size
             training=Training(n_epochs=150, patience=30),
             n_workers=1, show_progress=False, seed=0,
         )
-    assert result.details['train_eval_size'] > result.details['eval_size'], (
-        "This test assumes Fix 1's decoupling actually produced a larger "
-        "train_eval_size than eval_size -- if not, the scenario doesn't "
-        "exercise the divergence this test is checking."
+    assert result.get('train_eval_size') > result.get('eval_size'), (
+        "The scenario needs train_eval_size larger than eval_size; otherwise "
+        "it does not exercise the divergence this test checks."
     )
     ceiling_msgs = [r.message for r in caplog.records if 'near its ceiling' in r.message]
     assert ceiling_msgs, f"Expected a near-ceiling warning; got: {[r.message for r in caplog.records]}"
@@ -337,7 +336,7 @@ def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 spec: saturation warning before peak-epoch selection (Fix 5)
+# Saturation warning before peak-epoch selection
 # ---------------------------------------------------------------------------
 
 def test_saturated_test_trace_warns_and_records_fraction(caplog):
@@ -357,12 +356,12 @@ def test_saturated_test_trace_warns_and_records_fraction(caplog):
             training=Training(n_epochs=150, patience=30),
             n_workers=1, show_progress=False, seed=0,
         )
-    assert 'test_trace_saturated_fraction' in result.details
-    assert result.details['test_trace_saturated_fraction'] is not None
+    assert result.get('test_trace_saturated_fraction') is not None
+    assert result.get('test_trace_saturated_fraction') is not None
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 spec: ceiling diagnostics propagate to mode='transfer' (Fix 6)
+# Ceiling diagnostics for both networks of mode='transfer'
 # ---------------------------------------------------------------------------
 
 def test_transfer_mode_returns_diagnostics_for_both_components():
@@ -375,16 +374,15 @@ def test_transfer_mode_returns_diagnostics_for_both_components():
     result = nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=20, prediction_horizon=1),
                      split=nmi.Split(mode='blocked'), training=Training(n_epochs=2, patience=2),
                      n_workers=1, show_progress=False, seed=0)
-    for key in ('diagnostics_joint', 'diagnostics_marginal'):
-        assert key in result.details, f"Missing {key} in mode='transfer' details"
-        assert result.details[key] is not None
-        assert result.details[key].get('eval_size') is not None, (
-            f"{key}['eval_size'] must not be None on the transfer path"
-        )
+    trainings = result.details[0]['trainings'].set_index('component')
+    for component in ('i_xypast_yfuture', 'i_ypast_yfuture'):
+        assert component in trainings.index, f"Missing the {component} network"
+        for key in ('eval_size', 'test_ceiling_mi', 'test_saturation'):
+            assert trainings.loc[component, key] is not None, (component, key)
 
 
 # ---------------------------------------------------------------------------
-# Phase 1.5 spec: warn once when shift_time cannot take effect (Task 2)
+# Warn once when shift_time cannot take effect
 # ---------------------------------------------------------------------------
 
 def test_shift_time_warns_when_explicitly_requested_but_dead():
@@ -504,12 +502,10 @@ def test_shift_windows_still_warns_for_spike():
     """spike is not part of the 'regular' family -- shift_windows must
     still warn (and fall back) rather than silently misinterpret spike data.
 
-    A continuous+spike pair without a shared time unit (no sample_rate on
-    the continuous side) is itself a pre-existing, orthogonal correctness
-    gap (window_size means raw samples for X but seconds for Y) that can
-    make training degenerate -- irrelevant to what's being checked here, so
-    a TrainingError from that mismatch is tolerated; only the warning
-    (raised before training starts) matters for this test.
+    Without a sample_rate on the continuous side, window_size means samples
+    for X and seconds for Y, which can make training degenerate. That is not
+    what this test checks, so a TrainingError from it is tolerated; only the
+    warning, raised before training starts, matters here.
     """
     np.random.seed(0)
     x = np.random.randn(3000, 2).astype('float32')
@@ -529,8 +525,8 @@ def test_shift_windows_still_warns_for_spike():
 
 
 def test_shift_time_silent_for_spike_pair_at_mode_estimate():
-    """spike+spike is now reachable at mode='estimate' (both sides natively
-    in seconds, no cross-unit concern) -- an explicit True must not warn."""
+    """spike+spike reaches shift_time at mode='estimate' (both sides in
+    seconds), so an explicit True must not warn."""
     x = _spike_trains(4, 400.0, 8.0, seed=1)
     y = _spike_trains(4, 400.0, 8.0, seed=2)
     proc = nmi.Processing(x='spike', x_params={'window_size': 2.0, 'step_size': 2.0},
@@ -741,3 +737,64 @@ def test_pairwise_shift_windows_still_warns_for_spike():
             pass
     msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
     assert msgs, "Expected a shift_windows warning for a continuous+spike pairwise pair"
+
+
+# ---------------------------------------------------------------------------
+# Guards and combinations that no other test exercises.
+# ---------------------------------------------------------------------------
+
+class TestPermutationAndProcessingGuards:
+    """Mode/option combinations whose behaviour is defined but was untested."""
+
+    @staticmethod
+    def _lagged_pair(n=1500, lag=3, seed=0):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal((n, 2)).astype('float32')
+        y = np.roll(x, lag, axis=0) + 0.5 * rng.standard_normal((n, 2)).astype('float32')
+        return x, y
+
+    def test_transfer_refuses_windowed_input(self):
+        """A windowed processor collapses the temporal structure TE needs, so
+        mode='transfer' refuses rows wider than one time step instead of
+        estimating from them."""
+        x, y = self._lagged_pair()
+        with pytest.raises(ValueError, match="one time step wide"):
+            nmi.run(
+                x, y, mode='transfer', transfer=Transfer(history_window=5),
+                processing=Processing(x='continuous', y='continuous',
+                                      x_params={'window_size': 4},
+                                      y_params={'window_size': 4}),
+                model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+                training=Training(n_epochs=1, batch_size=64, patience=1),
+                n_workers=1, show_progress=False,
+            )
+
+    def test_permutation_test_runs_for_transfer(self):
+        """mode='transfer' is listed as supporting permutation_test, so it must
+        produce a null distribution rather than silently skipping one."""
+        x, y = self._lagged_pair()
+        r = nmi.run(
+            x, y, mode='transfer', transfer=Transfer(history_window=4),
+            model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+            training=Training(n_epochs=1, batch_size=64, patience=1),
+            permutation_test=True, n_permutations=2,
+            n_workers=1, show_progress=False,
+        )
+        assert len(r.get('null_distribution')) == 2
+
+    def test_permutation_test_warns_and_computes_no_null_for_dimensionality(self, caplog):
+        """dimensionality reports a count rather than one MI value, so there is
+        no statistic for a null to sit under. The request warns instead of
+        being dropped in silence."""
+        rng = np.random.default_rng(1)
+        x = rng.standard_normal((400, 6)).astype('float32')
+        with caplog.at_level(logging.WARNING):
+            r = nmi.run(
+                x, mode='dimensionality',
+                dimensionality=Dimensionality(n_splits=2),
+                model=Model(embedding_dim=4, hidden_dim=16, n_layers=1),
+                training=Training(n_epochs=1, batch_size=64, patience=1),
+                permutation_test=True, n_workers=1, show_progress=False,
+            )
+        assert "has no effect for mode='dimensionality'" in caplog.text
+        assert 'null_distribution' not in r.details

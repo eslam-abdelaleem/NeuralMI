@@ -241,16 +241,16 @@ class TestDecoderModels:
     ])
     def test_decoder_output_shape(self, model_name, kwargs):
         from neural_mi.models.decoders import build_decoder
-        embed_dim = 32
+        embedding_dim = 32
         hidden_dim = 64
         n_channels = 4
         window_size = 20
         n_layers = 2
         batch_size = 8
-        z = torch.randn(batch_size, embed_dim)
+        z = torch.randn(batch_size, embedding_dim)
         dec = build_decoder(
             embedding_model=model_name,
-            embed_dim=embed_dim,
+            embedding_dim=embedding_dim,
             hidden_dim=hidden_dim,
             n_channels=n_channels,
             window_size=window_size,
@@ -270,7 +270,7 @@ class TestDecoderModels:
         from neural_mi.models.decoders import build_decoder
         dec = build_decoder(
             embedding_model='mlp',
-            embed_dim=16, hidden_dim=32, n_channels=3, window_size=10,
+            embedding_dim=16, hidden_dim=32, n_channels=3, window_size=10,
             output_activation=activation,
         )
         dec.eval()
@@ -306,13 +306,13 @@ class TestDecoderInTraining:
             x, y,
             mode='estimate',
             model=Model(embedding_model='mlp', hidden_dim=16, embedding_dim=8,
-                        n_layers=1, use_decoder=True, decoder_weight=0.5),
+                        n_layers=1, use_decoder=True, decoder_lambda=0.5),
             training=Training(n_epochs=3, batch_size=64, patience=100, learning_rate=1e-3),
             verbose=False,
             show_progress=False,
         )
         assert result.mi_estimate is not None
-        assert 'decoder_recon_loss' in result.details
+        assert result.get('decoder_recon_loss') is not None
 
 
 class TestGetTrainingEmbeddings:
@@ -389,12 +389,11 @@ class TestChunkWindowRangeToRaw:
         """The whole point of the margin in chunk_window_range_to_raw: the
         chunk must still yield exactly hi-lo windows at the worst-case
         shift (window_size - 1), not just at shift=0."""
-        from neural_mi.data.shift_windowing import chunk_window_range_to_raw, safe_n_windows, PairedWindowShifter
+        from neural_mi.data.shift_windowing import chunk_window_range_to_raw, PairedWindowShifter
         torch.manual_seed(0)
         T, C, window_size, step_size = 3000, 2, 20, 20
         raw_x = torch.randn(T, C)
         raw_y = torch.randn(T, C)
-        N = safe_n_windows(T, window_size, step_size)
         lo, hi = 3, 10
         rx0, rx1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
         chunk_shifter = PairedWindowShifter(raw_x[rx0:rx1], raw_y[rx0:rx1], window_size, step_size)
@@ -430,9 +429,9 @@ class TestRigorousShiftWindowsEndToEnd:
             n_workers=1, show_progress=False, seed=0,
         )
         assert "may be truncated" not in caplog.text
-        raw_df = results.dataframe
-        assert len(raw_df) == sum(range(1, 4))  # 1 + 2 + 3 = 6 tasks
-        assert np.all(np.isfinite(raw_df['train_mi'].values))
+        ladder = results.details[0]['trainings']
+        assert len(ladder) == sum(range(1, 4))  # 1 + 2 + 3 = 6 networks
+        assert np.all(np.isfinite(ladder['train_mi'].values))
 
 
 def _spike_window_content(tensor: torch.Tensor, no_spike_value: float):
@@ -577,6 +576,6 @@ class TestRigorousShiftTimeSpikeEndToEnd:
             n_workers=1, show_progress=False, seed=0,
         )
         assert "may be truncated" not in caplog.text
-        raw_df = results.dataframe
-        assert len(raw_df) == sum(range(1, 4))  # 1 + 2 + 3 = 6 tasks
-        assert np.all(np.isfinite(raw_df['train_mi'].values))
+        ladder = results.details[0]['trainings']
+        assert len(ladder) == sum(range(1, 4))  # 1 + 2 + 3 = 6 networks
+        assert np.all(np.isfinite(ladder['train_mi'].values))

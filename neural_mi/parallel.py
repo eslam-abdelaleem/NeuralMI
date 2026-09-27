@@ -6,7 +6,7 @@ used independently in ``analysis/rigorous.py`` (x2), ``analysis/dimensionality.p
 ``_dispatch_splits``, ``analysis/pairwise.py``'s ``_dispatch_pairs``,
 ``analysis/sweep.py``'s ``ParameterSweep._run_parallel``, and ``run.py``'s
 permutation-test dispatch, factored into one place for ``neural_mi/quantities.py``
-to use rather than adding a seventh independent copy.
+to use instead of adding a seventh independent copy.
 """
 import multiprocessing as mp
 from typing import Any, Callable, List

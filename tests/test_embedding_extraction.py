@@ -42,8 +42,8 @@ def test_return_embeddings_keys_present(simple_data):
         output=Output(return_embeddings=True),
         n_workers=1,
     )
-    assert 'embeddings_x' in results.details, "embeddings_x missing from details."
-    assert 'embeddings_y' in results.details, "embeddings_y missing from details."
+    assert results.get('embeddings_x') is not None, "embeddings_x missing from details."
+    assert results.get('embeddings_y') is not None, "embeddings_y missing from details."
 
 
 def test_return_embeddings_shapes(simple_data):
@@ -55,8 +55,8 @@ def test_return_embeddings_shapes(simple_data):
         output=Output(return_embeddings=True),
         n_workers=1,
     )
-    zx = results.details['embeddings_x']
-    zy = results.details['embeddings_y']
+    zx = results.get('embeddings_x')
+    zy = results.get('embeddings_y')
     assert isinstance(zx, np.ndarray) and zx.ndim == 2
     assert isinstance(zy, np.ndarray) and zy.ndim == 2
     assert zx.shape[1] == _BASE['embedding_dim']
@@ -110,8 +110,8 @@ def test_return_embeddings_uses_frozen_snapshot_not_live_shift_state(tmp_path, m
     y_canonical = torch.as_tensor(y).unfold(0, window_size, window_size)[:n_windows].contiguous()
     zx_expected, zy_expected = nmi.extract_embeddings(model_path, x_canonical, y_canonical)
 
-    np.testing.assert_allclose(results.details['embeddings_x'], zx_expected, atol=1e-6)
-    np.testing.assert_allclose(results.details['embeddings_y'], zy_expected, atol=1e-6)
+    np.testing.assert_allclose(results.get('embeddings_x'), zx_expected, atol=1e-6)
+    np.testing.assert_allclose(results.get('embeddings_y'), zy_expected, atol=1e-6)
 
 
 def test_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
@@ -125,7 +125,7 @@ def test_embeddings_full_dataset_not_capped_by_max_eval_samples(simple_data):
         output=Output(return_embeddings=True),
         n_workers=1,
     )
-    n_emb = results.details['embeddings_x'].shape[0]
+    n_emb = results.get('embeddings_x').shape[0]
     # All ~500 windows must be embedded, not just the max_eval_samples=10 subset
     # used for the reported MI estimate.
     assert n_emb > 10, (
@@ -229,19 +229,20 @@ def test_plot_embeddings_with_categorical_color():
     plt.close('all')
 
 
+@pytest.mark.slow
 def test_plot_embeddings_auto_method_pca_fallback():
-    """method='auto' should fall back to pca when embed_dim > dim (and umap missing)."""
+    """method='auto' should fall back to pca when embedding_dim > dim (and umap missing)."""
     z = np.random.randn(100, 16)
-    # With embed_dim=16 > dim=2, auto should apply reduction
+    # With embedding_dim=16 > dim=2, auto should apply reduction
     ax = plot_embeddings(z, method='auto', dim=2)
     assert ax is not None
     plt.close('all')
 
 
 def test_plot_embeddings_none_method_requires_enough_dims():
-    """method='none' with embed_dim < dim must raise ValueError."""
+    """method='none' with embedding_dim < dim must raise ValueError."""
     z = np.random.randn(50, 1)
-    with pytest.raises(ValueError, match="embed_dim"):
+    with pytest.raises(ValueError, match="embedding_dim"):
         plot_embeddings(z, method='none', dim=2)
 
 
@@ -278,3 +279,77 @@ def test_build_params_keys_include_norm_and_dropout():
             f"'{key}' is missing from _BUILD_PARAMS_KEYS. "
             f"Models using this setting cannot be reloaded via extract_embeddings()."
         )
+
+
+# ---------------------------------------------------------------------------
+# Saving every network a call trains
+# ---------------------------------------------------------------------------
+
+def _save_call(tmp_path, **kwargs):
+    import neural_mi as nmi
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((300, 2))
+    y = 0.8 * x + 0.5 * rng.standard_normal((300, 2))
+    base = dict(model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                split=nmi.Split(mode='random'), show_progress=False, seed=0, device='cpu')
+    base.update(kwargs)
+    return nmi.run(x, y, **base)
+
+
+def test_one_network_is_saved_to_the_path_as_given(tmp_path):
+    import neural_mi as nmi
+    path = tmp_path / 'best.pt'
+    result = _save_call(tmp_path, mode='estimate',
+                        training=nmi.Training(n_epochs=1, batch_size=64, save_best_model_path=str(path)))
+    assert path.exists()
+    assert result.get('model_path') == str(path.resolve())
+
+
+def test_every_network_of_a_grid_is_saved_under_its_labels(tmp_path):
+    import neural_mi as nmi
+    path = tmp_path / 'best.pt'
+    with pytest.warns(UserWarning, match="saves every one"):
+        result = _save_call(tmp_path, mode='sweep', sweep_grid={'embedding_dim': [4, 8], 'run_id': [0, 1]},
+                            training=nmi.Training(n_epochs=1, batch_size=64,
+                                                  save_best_model_path=str(path)))
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == ['best_embedding_dim-4_run_id-0.pt', 'best_embedding_dim-4_run_id-1.pt',
+                     'best_embedding_dim-8_run_id-0.pt', 'best_embedding_dim-8_run_id-1.pt']
+    assert sorted(result.runs['model_path'].map(lambda p: p.split('/')[-1])) == names
+
+
+def test_components_of_a_difference_are_saved_apart(tmp_path):
+    import neural_mi as nmi
+    rng = np.random.default_rng(1)
+    w = rng.standard_normal((300, 2))
+    result = _save_call(tmp_path, mode='conditional', conditional=nmi.Conditional(w_data=w),
+                        training=nmi.Training(n_epochs=1, batch_size=64,
+                                              save_best_model_path=str(tmp_path / 'm.pt')))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['m_component-mi_w_y.pt', 'm_component-mi_xw_y.pt']
+    assert result.details[0]['trainings']['model_path'].notna().all()
+
+
+def test_a_directory_gets_generated_names(tmp_path):
+    import neural_mi as nmi
+    result = _save_call(tmp_path, mode='estimate',
+                        training=nmi.Training(n_epochs=1, batch_size=64, save_best_model_path=str(tmp_path)))
+    (saved,) = list(tmp_path.iterdir())
+    assert saved.name.startswith('neuralmi_estimate_') and saved.suffix == '.pt'
+    assert result.get('model_path') == str(saved.resolve())
+
+
+def test_permutation_trials_save_nothing(tmp_path):
+    import neural_mi as nmi
+    _save_call(tmp_path, mode='estimate', permutation_test=True, n_permutations=2,
+               training=nmi.Training(n_epochs=1, batch_size=64,
+                                     save_best_model_path=str(tmp_path / 'm.pt')))
+    assert [p.name for p in tmp_path.iterdir()] == ['m.pt']
+
+
+def test_a_saved_network_reloads(tmp_path):
+    import neural_mi as nmi
+    path = tmp_path / 'm.pt'
+    _save_call(tmp_path, mode='estimate',
+               training=nmi.Training(n_epochs=1, batch_size=64, save_best_model_path=str(path)))
+    zx, zy = nmi.extract_embeddings(str(path), np.zeros((5, 2)), np.zeros((5, 2)))
+    assert zx.shape == (5, 4) and zy.shape == (5, 4)

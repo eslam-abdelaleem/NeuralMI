@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 from unittest.mock import patch
 
 from neural_mi.visualize.plot import plot_sweep_curve, plot_bias_correction_fit
-from neural_mi.results import Results
 from neural_mi.visualize.plot import set_publication_style
 
 @pytest.fixture
@@ -60,36 +59,20 @@ def test_plot_bias_correction_fit_runs_without_error(mock_show, rigorous_results
         pytest.fail(f"plot_bias_correction_fit raised an exception: {e}")
 
 @patch('neural_mi.visualize.plot.plot_sweep_curve')
-def test_results_plot_dispatcher_for_sweep(mock_plot_sweep, sweep_results_df):
-    """
-    Tests that the Results.plot() method correctly calls the sweep plot function
-    when mode is 'sweep'.
-    """
-    results = Results(
-        mode='sweep',
-        dataframe=sweep_results_df,
-        params={'sweep_var': 'embedding_dim'}
-    )
-    results.plot(show=False)
+def test_results_plot_dispatcher_for_sweep(mock_plot_sweep):
+    """Results.plot() draws a result over several configurations as MI against the
+    swept key."""
+    from tests import results_factory as rf
+    rf.sweep().plot(show=False)
     mock_plot_sweep.assert_called_once()
+    assert mock_plot_sweep.call_args.kwargs['param_col'] == 'embedding_dim'
 
 @patch('neural_mi.visualize.plot.plot_bias_correction_fit')
-def test_results_plot_dispatcher_for_rigorous(mock_plot_bias, rigorous_results_df):
-    """
-    Tests that the Results.plot() method correctly calls the bias correction plot
-    function when mode is 'rigorous'.
-    """
-    # Must include all required keys that Results.plot() validates
-    details = {
-        'slope': -0.5,
-        'mi_corrected': 0.55,
-        'mi_error': 0.05,
-        'gammas_used': list(range(1, 6)),
-    }
-    results = Results(
-        mode='rigorous',
-        dataframe=rigorous_results_df,
-        details=details
-    )
-    results.plot(show=False)
+def test_results_plot_dispatcher_for_rigorous(mock_plot_bias):
+    """Results.plot() draws a rigorous result's extrapolation, once per repeat."""
+    from tests import results_factory as rf
+    rf.rigorous().plot(show=False)
     mock_plot_bias.assert_called_once()
+    ladder, fit = mock_plot_bias.call_args.args[:2]
+    assert set(ladder['gamma']) == {1, 2, 3, 4, 5}
+    assert fit['mi_corrected'] == 0.55

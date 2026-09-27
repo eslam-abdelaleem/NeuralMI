@@ -1,10 +1,11 @@
 # neural_mi/results.py
-"""Defines the `Results` class for storing and interacting with analysis outcomes.
+"""The `Results` object every analysis mode returns.
 
-This module provides a standardized data structure for holding the results of
-different analysis modes from the `run` function. The `Results` class acts as
-a container for MI estimates, dataframes, and detailed metadata, and also
-provides a convenient `.plot()` method for visualizing the results.
+Every mode fills the same fields: ``runs`` holds one row per repeat,
+``dataframe`` one row per configuration (and per value of the mode's own axis),
+``mi_estimate`` the headline when there is exactly one such row, ``params`` the
+full configuration the call ran with, and ``details`` the structured
+diagnostics of each configuration.
 """
 import os
 import math
@@ -13,319 +14,338 @@ import pickle
 import json
 from dataclasses import dataclass, field
 from typing import Optional, Any, Dict, List
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from neural_mi.logger import logger
 
-# Module-level constant: columns produced by the MI estimator that are NOT
-# sweep/hyperparameter variables. Used when inferring the x-axis of a sweep plot.
-_RESULT_COLS: frozenset = frozenset({
-    'mi_mean', 'mi_std', 'test_mi', 'train_mi', 'mi_corrected',
-    'mi_error', 'mi_error_pred', 'slope', 'run_id', 'is_reliable', 'gammas_used',
-    'n_windows', 'n_windows_built', 'n_windows_retained', 'lag',
-    'raw_train_mi', 'train_mi_std', 'test_mi_std', 'test_mi_mean', 'eval_size',
-    # Dimensionality-specific columns
-    'pr_eig', 'pr_eig_mean', 'pr_eig_std',
-    'pr_singular', 'pr_singular_mean', 'pr_singular_std', 'split_id',
-})
+# How summary() names the value of a quantity that is not a plain MI.
+_QUANTITY_LABELS = {'conditional': 'I(X;Y|W)', 'interaction': 'II', 'transfer': 'TE(X→Y)'}
+
+# Per-component columns of the difference quantities, in the order they are
+# drawn, with their display labels.
+_COMPONENTS = {
+    'conditional': [('mi_xw_y', 'I(X,W;Y)'), ('mi_w_y', 'I(W;Y)')],
+    'interaction': [('mi_xw_y', 'I(X,W;Y)'), ('mi_x_y', 'I(X;Y)'), ('mi_w_y', 'I(W;Y)')],
+}
 
 
-def _rigorous_unreliable_reason(details: Dict[str, Any]) -> str:
-    """Compact ' (reason=...)' suffix for a rigorous is_reliable=False annotation.
+def _scalar(value: Any) -> Any:
+    """A numpy scalar as its Python value; anything else unchanged."""
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
-    Built from the same flags summary() reports (fit_quality_warning,
-    leverage_warning) rather than hardcoded, since either can be the actual
-    cause -- and neither may be set if is_reliable is False purely because
-    too few gamma points survived filtering.
+
+def _finite(value) -> bool:
+    return value is not None and not (isinstance(value, float) and math.isnan(value))
+
+
+def _fit_lines(fit: Dict[str, Any], units: str) -> List[str]:
+    """The summary lines of one extrapolation fit: its intervals and reliability."""
+    lines = []
+    if _finite(fit.get('mi_error')):
+        lines.append(f"  CI half-width : {fit['mi_error']:.4f} {units}  [confidence interval on the fitted mean]")
+    if _finite(fit.get('mi_error_pred')):
+        lines.append(f"  PI half-width : {fit['mi_error_pred']:.4f} {units}  [prediction interval, more conservative]")
+    r_squared = fit.get('r_squared')
+    if fit.get('is_reliable') is False:
+        lines.append("  ⚠  is_reliable = False: the extrapolation is unreliable.")
+        reasons = _unreliable_reasons(fit)
+        if reasons:
+            lines.append(f"     Reason(s): {'; '.join(reasons)}")
+    elif fit.get('is_reliable') is True:
+        lines.append("  ✓  is_reliable = True" + (f", R² = {r_squared:.3f}" if _finite(r_squared) else ""))
+    return lines
+
+
+def _unreliable_reasons(fit: Dict[str, Any]) -> List[str]:
+    """The checks that set ``is_reliable=False`` on this fit.
+
+    These are the four that decide it. ``fit_quality_warning`` and R² are
+    reported beside the fit and decide nothing, so they are not reasons.
     """
     reasons = []
-    if details.get('fit_quality_warning'):
-        reasons.append('fit_quality_warning=True')
-    if details.get('leverage_warning'):
-        reasons.append('leverage_warning=True')
+    if fit.get('enough_gamma_points') is False:
+        reasons.append("too few gamma points (enough_gamma_points=False)")
+    if fit.get('linear_region_found') is False:
+        reasons.append("no linear region found (linear_region_found=False)")
+    if fit.get('leverage_warning'):
+        shift = fit.get('loo_intercept_shift')
+        reasons.append("gamma=1 leverage (leverage_warning=True, LOO shift"
+                       + (f"={shift:.3f}" if _finite(shift) else "") + ")")
+    saturated = fit.get('saturated_gammas')
+    if saturated is not None and len(saturated):
+        reasons.append(f"ceiling-saturated gammas in the fit ({list(saturated)})")
+    return reasons
+
+
+def _rigorous_unreliable_reason(fit: Dict[str, Any]) -> str:
+    """Compact ' (reason)' suffix for an is_reliable=False annotation."""
+    reasons = [r.split(' (')[0] for r in _unreliable_reasons(fit)]
     return f" ({'; '.join(reasons)})" if reasons else ""
 
 
 @dataclass
 class Results:
-    """A data class to store and interact with analysis results.
-
-    This class provides a structured way to access the outputs of the `run`
-    function. Depending on the analysis `mode`, different attributes will be
-    populated.
+    """The outcome of one call to :func:`neural_mi.run` or a named quantity.
 
     Attributes
     ----------
     mode : str
-        The analysis mode that was run (e.g., 'estimate', 'sweep').
-    params : Dict[str, Any]
-        A dictionary of the parameters used for the analysis run.
-    mi_estimate : float, optional
-        A single point estimate, where the mode produces one. `None` where it
-        does not: a sweep is a curve, a lag analysis a profile, a dimensionality
-        run a set of directions, a pairwise run a matrix. That is a property of
-        the question, not an omission, so those modes leave this `None` rather
-        than reporting an arbitrary summary of a curve. Always in the units set
-        by `output_units` (bits by default).
-    dataframe : pd.DataFrame, optional
-        Per-point results, where the mode produces more than one point. `None`
-        for the single-estimate modes.
-    details : Dict[str, Any]
-        Mode-specific metadata. Read it with :meth:`get`, not by indexing, since
-        which keys exist varies by mode.
+        The analysis mode that produced the result.
+    params : dict
+        The full configuration the call ran with, defaults included. Swept
+        keys hold their grid; ``config_keys`` and ``axis_keys`` name the
+        columns that index ``dataframe``.
+    mi_estimate : float or None
+        ``dataframe['mi_mean']`` when ``dataframe`` has exactly one row,
+        otherwise ``None``. In the units set by ``Output(units=...)``.
+    dataframe : pandas.DataFrame
+        One row per configuration and axis value: ``config_id``, the grid keys,
+        the axis keys, ``mi_mean``, ``mi_std``, ``n_runs`` and the mode's
+        per-configuration columns. ``mi_std`` is the spread of repeats of the
+        procedure on the same data and is NaN when there was one repeat. It is
+        never an interval on the population value.
+    runs : pandas.DataFrame
+        One row per repeat: ``config_id``, the grid and axis keys, the repeat
+        index (``run_id`` or ``split_id``), ``mi`` (the repeat's value of the
+        quantity) and its diagnostics.
+    details : dict
+        ``{config_id: {...}}``: structured diagnostics per configuration.
 
-    Which modes populate what
-    -------------------------
-    ============== ============= ============ ==========================
-    mode           mi_estimate   dataframe    headline lives in
-    ============== ============= ============ ==========================
-    estimate       yes           no           `mi_estimate`
-    rigorous       yes           yes          `mi_estimate`
-    precision      yes           yes          `mi_estimate` (baseline MI)
-    conditional    yes           if rigorous  `mi_estimate`
-    interaction    yes           if rigorous  `mi_estimate`
-    transfer       yes           if rigorous  `mi_estimate`
-    sweep          no            yes          `dataframe['mi_mean']`
-    lag            no            yes          `dataframe['mi_mean']`
-    dimensionality no            yes          `dataframe`, plus `details`
-    pairwise       no            yes          `details['mi_matrix']`
-    ============== ============= ============ ==========================
-
-    All MI-valued fields, in every mode and in both `dataframe` and `details`,
-    are in the units set by `output_units`.
-
-    Methods
-    -------
-    get(key, default=None)
-        Read a `details` entry that this mode may or may not set.
-    summary()
-        Print a human-readable summary to stdout.
-    animate(**kwargs)
-        Animate the training history as a GIF or MP4.
-    compare(results_list, labels=None, ax=None, **kwargs)
-        Static method; overlay multiple Results on a shared axis.
-    to_dict()
-        Return a fully serialisable dict (arrays as nested lists).
-    to_json(path=None)
-        Export to a JSON file; arrays serialised as nested lists.
+    Read a single value with :meth:`get`. It finds the value in whichever of
+    these holds it, as long as the answer is unambiguous.
     """
     mode: str
     params: Dict[str, Any] = field(default_factory=dict)
     mi_estimate: Optional[float] = None
     dataframe: Optional[pd.DataFrame] = None
-    details: Dict[str, Any] = field(default_factory=dict)
+    runs: Optional[pd.DataFrame] = None
+    details: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+
+    # ------------------------------------------------------------------
+    # Reading values
+    # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        """Provides a concise representation of the Results object."""
         rep = f"Results(mode='{self.mode}'"
-        if self.mi_estimate is not None: rep += f", mi_estimate={self.mi_estimate:.4f}"
-        if self.dataframe is not None: rep += f", dataframe_shape={self.dataframe.shape}"
-        if self.details: rep += f", details_keys={list(self.details.keys())}"
+        if self.mi_estimate is not None:
+            rep += f", mi_estimate={self.mi_estimate:.4f}"
+        if self.dataframe is not None:
+            rep += f", dataframe_rows={len(self.dataframe)}"
+        if self.runs is not None:
+            rep += f", runs={len(self.runs)}"
         return rep + ")"
 
+    def _is_rigorous(self) -> bool:
+        return self.mode == 'rigorous' or (
+            self.mode in ('conditional', 'interaction', 'transfer')
+            and bool((self.params or {}).get('rigorous')))
+
+    @property
+    def config_ids(self) -> List[int]:
+        """The configurations this result holds, in grid order."""
+        if self.dataframe is not None and 'config_id' in self.dataframe.columns:
+            return [int(c) for c in pd.unique(self.dataframe['config_id'])]
+        return sorted(int(k) for k in self.details)
+
     def get(self, key: str, default: Any = None) -> Any:
-        """Read a `details` entry without having to know whether this mode sets it.
+        """Read one value without knowing which table holds it.
 
-        `details` is populated differently by every mode: `test_mi` and
-        `eval_size` are top-level only for ``mode='estimate'``,
-        `amplification_factor` exists only for the conditional/interaction/
-        transfer family, `raw_results` is absent wherever the per-run rows live
-        somewhere else. Indexing `details` directly therefore raises `KeyError`
-        on most modes, which forces every caller that handles more than one mode
-        to guard each read.
-
-        This is the same contract as `dict.get`, so a caller can write one line
-        that works for every mode::
-
-            eval_size = result.get('eval_size')      # None where not recorded
-            amp       = result.get('amplification_factor')
+        Looks in ``dataframe``, then ``details``, then the embeddings kept per
+        repeat, then ``runs``, and returns the value when exactly one row,
+        configuration or repeat holds it. Where several do, it raises and names
+        the table to read, since picking one of them would be a silent choice.
 
         Parameters
         ----------
         key : str
-            The `details` key to read.
+            The column or diagnostic to read.
         default : Any, optional
-            Returned when `key` is absent. Defaults to ``None``.
-
-        Returns
-        -------
-        Any
-            ``self.details[key]`` when present, otherwise `default`.
-
-        See Also
-        --------
-        Results.summary : mode-appropriate printed summary.
+            Returned when no table holds `key`.
         """
-        return self.details.get(key, default)
+        df = self.dataframe
+        if df is not None and key in df.columns:
+            if len(df) == 1:
+                return _scalar(df[key].iloc[0])
+            raise ValueError(
+                f"'{key}' has {len(df)} values, one per row of result.dataframe. "
+                f"Read result.dataframe['{key}'] instead."
+            )
+
+        holders = [cid for cid, entry in self.details.items() if key in entry]
+        if holders:
+            if len(holders) == 1:
+                return self.details[holders[0]][key]
+            raise ValueError(
+                f"'{key}' is recorded for {len(holders)} configurations. "
+                f"Read result.details[config_id]['{key}'] instead."
+            )
+
+        found = [(cid, rid, emb[key])
+                 for cid, entry in self.details.items()
+                 for rid, emb in (entry.get('embeddings') or {}).items() if key in emb]
+        if found:
+            if len(found) == 1:
+                return found[0][2]
+            raise ValueError(
+                f"'{key}' is recorded for {len(found)} repeats. Read "
+                f"result.details[config_id]['embeddings'][run_id]['{key}'] instead."
+            )
+
+        runs = self.runs
+        if runs is not None and key in runs.columns:
+            if len(runs) == 1:
+                return _scalar(runs[key].iloc[0])
+            raise ValueError(
+                f"'{key}' has {len(runs)} values, one per repeat. Read "
+                f"result.runs['{key}'] instead."
+            )
+        return default
+
+    def _one_config(self, config_id: Optional[int], what: str) -> int:
+        ids = self.config_ids or [0]
+        if config_id is not None:
+            if config_id not in ids:
+                raise ValueError(f"config_id={config_id} is not in this result; it holds {ids}.")
+            return config_id
+        if len(ids) == 1:
+            return ids[0]
+        raise ValueError(
+            f"{what} needs one configuration and this result holds {len(ids)}. "
+            f"Pass config_id=... (one of {ids})."
+        )
+
+    def _repeat_view(self, config_id: Optional[int] = None, run_id: Any = None) -> Dict[str, Any]:
+        """Everything recorded about one repeat, flattened into one dict.
+
+        Merges that repeat's row of ``runs``, its configuration's ``details``
+        and its embeddings. Used by the plots that draw one training run.
+        """
+        cid = self._one_config(config_id, "This view")
+        view: Dict[str, Any] = {}
+        entry = self.details.get(cid, {})
+        view.update({k: v for k, v in entry.items() if k not in ('embeddings', 'trainings')})
+        runs = self.runs
+        rid = run_id
+        key = rid
+        if runs is not None and not runs.empty:
+            rows = runs[runs['config_id'] == cid] if 'config_id' in runs.columns else runs
+            index_col = 'run_id' if 'run_id' in rows.columns else ('split_id' if 'split_id' in rows.columns else None)
+            if rid is not None and index_col is not None:
+                rows = rows[rows[index_col] == rid]
+            if len(rows):
+                row = rows.iloc[0]
+                view.update({k: _scalar(row[k]) for k in rows.columns})
+                if index_col is not None:
+                    rid = _scalar(row[index_col])
+                # A mode with an axis keeps embeddings per axis value and repeat.
+                axis = [k for k in (self.params.get('axis_keys') or []) if k in rows.columns]
+                key = (*(_scalar(row[k]) for k in axis), rid) if axis else rid
+        embeddings = entry.get('embeddings') or {}
+        if embeddings:
+            chosen = embeddings.get(key, next(iter(embeddings.values())))
+            view.update(chosen)
+        return view
+
+    # ------------------------------------------------------------------
+    # Printing
+    # ------------------------------------------------------------------
 
     def summary(self) -> None:
-        """Print a human-readable summary of the analysis results to stdout.
-
-        Prints the analysis mode, MI estimate (if available), confidence
-        interval (for ``mode='rigorous'``), reliability flag (for
-        ``mode='rigorous'``), mode-specific component values, and DataFrame
-        shape (if a DataFrame is present).
-        """
-        SEP = "─" * 50
+        """Print a readable summary of the result to stdout."""
+        sep = "─" * 56
         units = self.params.get('output_units', 'bits')
-        print(SEP)
+        df = self.dataframe
+        print(sep)
         print(f"  NeuralMI Results  |  mode = '{self.mode}'")
-        print(SEP)
-
-        if self.mode == 'precision':
-            baseline_mi   = self.details.get('baseline_mi')
-            precision_tau = self.details.get('precision_tau')
-            threshold_val = self.details.get('threshold_value')
-            if baseline_mi is not None:
-                print(f"  Baseline MI       : {baseline_mi:.4f} {units}")
-            if precision_tau is not None:
-                print(f"  Precision τ       : {precision_tau:.4g}")
-            if threshold_val is not None:
-                print(f"  Threshold MI      : {threshold_val:.4f} {units}")
-
-        elif self.mode == 'pairwise':
-            mi_matrix = self.details.get('mi_matrix')
-            df = self.dataframe
-            if mi_matrix is not None:
-                import numpy as _np
-                _finite = mi_matrix[_np.isfinite(mi_matrix)]
-                n_ch = self.details.get('n_channels', '?')
-                n_pairs = len(df) if df is not None else '?'
-                shape_str = (f"{n_ch[0]} × {n_ch[1]}" if isinstance(n_ch, tuple) else f"{n_ch} × {n_ch}")
-                print(f"  MI matrix         : {shape_str} channels  ({n_pairs} pairs)")
-                if len(_finite) > 0:
-                    print(f"  MI range          : {_finite.min():.4f} – {_finite.max():.4f} {units}")
-
-        elif self.mode == 'conditional':
-            mi_xw_y = self.details.get('mi_xw_y')
-            mi_w_y  = self.details.get('mi_w_y')
-            cmi     = self.details.get('cmi_estimate')
-            if cmi is not None:
-                print(f"  CMI I(X;Y|W)      : {cmi:.4f} {units}")
-            if mi_xw_y is not None:
-                print(f"  I(XW;Y)           : {mi_xw_y:.4f} {units}")
-            if mi_w_y is not None:
-                print(f"  I(W;Y)            : {mi_w_y:.4f} {units}")
-
-        elif self.mode == 'interaction':
-            mi_xw_y = self.details.get('mi_xw_y')
-            mi_x_y  = self.details.get('mi_x_y')
-            mi_w_y  = self.details.get('mi_w_y')
-            ii      = self.details.get('interaction_info')
-            if ii is not None:
-                print(f"  II                : {ii:.4f} {units}")
-            if mi_xw_y is not None:
-                print(f"  I(X,W;Y)          : {mi_xw_y:.4f} {units}")
-            if mi_x_y is not None:
-                print(f"  I(X;Y)            : {mi_x_y:.4f} {units}")
-            if mi_w_y is not None:
-                print(f"  I(W;Y)            : {mi_w_y:.4f} {units}")
-
-        elif self.mode == 'transfer':
-            te_xy = self.details.get('te_xy')
-            te_yx = self.details.get('te_yx')
-            di    = self.details.get('directionality_index')
-            if te_xy is not None:
-                print(f"  TE(X→Y)           : {te_xy:.4f} {units}")
-            if te_yx is not None:
-                print(f"  TE(Y→X)           : {te_yx:.4f} {units}")
-            if di is not None:
-                print(f"  Directionality    : {di:.4f}  (+1 = X→Y, -1 = Y→X, 0 = symmetric)")
-
+        print(sep)
+        n_cfg = len(self.config_ids)
+        n_rows = 0 if df is None else len(df)
+        if n_rows == 1:
+            row = df.iloc[0]
+            n_runs = int(row.get('n_runs', 1))
+            std = row.get('mi_std')
+            spread = (f" ± {std:.4f} (spread over {n_runs} repeats)"
+                      if std is not None and not pd.isna(std) else "")
+            label = _QUANTITY_LABELS.get(self.mode, 'MI estimate')
+            print(f"  {label:<12}: {self.mi_estimate:.4f} {units}{spread}"
+                  if self.mi_estimate is not None else f"  {label:<12}: (none)")
+            for col, label in _COMPONENTS.get(self.mode, []):
+                if f'{col}_mean' in df.columns:
+                    print(f"  {label:<12}: {row[f'{col}_mean']:.4f} {units}")
+            if 'amplification_factor' in df.columns and not pd.isna(row['amplification_factor']):
+                print(f"  Amplification factor : {row['amplification_factor']:.1f}x")
+            if self.mode == 'transfer' and 'te_yx_mean' in df.columns:
+                print(f"  TE(Y→X)     : {row['te_yx_mean']:.4f} {units}")
+                if 'directionality_index_mean' in df.columns:
+                    print(f"  Directionality index : {row['directionality_index_mean']:.4f}"
+                          f"  (+1 = X→Y, -1 = Y→X, 0 = symmetric)")
+            if self._is_rigorous() and self.runs is not None and len(self.runs) == 1:
+                fit = {k: _scalar(v) for k, v in self.runs.iloc[0].items()}
+                for line in _fit_lines(fit, units):
+                    print(line)
+            elif 'n_reliable' in df.columns:
+                print(f"  Reliable fits : {int(row['n_reliable'])} of {n_runs}")
+            if 'n_stable_total' in df.columns:
+                print(f"  Stable directions : {int(row['n_stable_total'])}"
+                      f"  (converged: {bool(row.get('converged'))})")
         else:
-            # Generic display for all other modes (estimate, sweep, rigorous, lag, dimensionality)
-            if self.mi_estimate is not None:
-                print(f"  MI estimate : {self.mi_estimate:.4f} {units}")
-            else:
-                print("  MI estimate : (none — see result.dataframe or result.details)")
-            if self.mode == 'rigorous':
-                mi_err = self.details.get('mi_error')
-                mi_err_pred = self.details.get('mi_error_pred')
-                is_reliable = self.details.get('is_reliable')
-                fit_quality_warning = self.details.get('fit_quality_warning')
-                leverage_warning = self.details.get('leverage_warning')
-                r_squared = self.details.get('r_squared')
-                max_abs_residual = self.details.get('max_abs_residual')
-                loo_shift = self.details.get('loo_intercept_shift')
-                if mi_err is not None:
-                    print(f"  CI half-width : {mi_err:.4f} {units}  [confidence interval on the fitted mean]")
-                if mi_err_pred is not None:
-                    print(f"  PI half-width : {mi_err_pred:.4f} {units}  [prediction interval, more conservative]")
-                if is_reliable is False:
-                    print("  ⚠  is_reliable = False — extrapolation is unreliable.")
-                    _reasons = []
-                    if fit_quality_warning:
-                        _r2_str = f", R²={r_squared:.3f}" if r_squared is not None and not math.isnan(r_squared) else ""
-                        _res_str = f", max|residual|={max_abs_residual:.2f}" if max_abs_residual is not None and not math.isnan(max_abs_residual) else ""
-                        _reasons.append(f"fit quality (fit_quality_warning=True{_r2_str}{_res_str})")
-                    if leverage_warning:
-                        _loo_str = f"={loo_shift:.3f}" if loo_shift is not None and not math.isnan(loo_shift) else ""
-                        _reasons.append(f"gamma=1 leverage (leverage_warning=True, LOO shift{_loo_str})")
-                    if _reasons:
-                        print(f"     Reason(s): {'; '.join(_reasons)}")
-                elif is_reliable is True:
-                    print("  ✓  is_reliable = True")
-                    if r_squared is not None and not math.isnan(r_squared):
-                        print(f"     R² = {r_squared:.3f}")
-            elif self.mode in ('conditional', 'transfer', 'interaction') and self.params.get('rigorous'):
-                mi_err = self.details.get('mi_error')
-                mi_err_pred = self.details.get('mi_error_pred')
-                is_reliable = self.details.get('is_reliable')
-                fit_quality_warning = self.details.get('fit_quality_warning')
-                leverage_warning = self.details.get('leverage_warning')
-                if mi_err is not None:
-                    print(f"  CI half-width : {mi_err:.4f} {units}  [bias-corrected, confidence interval]")
-                if mi_err_pred is not None:
-                    print(f"  PI half-width : {mi_err_pred:.4f} {units}  [prediction interval, more conservative]")
-                if is_reliable is False:
-                    print("  ⚠  is_reliable = False — rigorous extrapolation flagged issues.")
-                    if fit_quality_warning:
-                        print("     ↳ fit_quality_warning=True (check residuals / R²)")
-                    if leverage_warning:
-                        print("     ↳ leverage_warning=True (gamma=1 point has high leverage)")
-                elif is_reliable is True:
-                    print("  ✓  is_reliable = True  [rigorous bias-corrected estimate]")
-        if self.details.get('decoder_recon_loss') is not None:
-            print(f"  Decoder MSE : {self.details['decoder_recon_loss']:.6f}  (weighted reconstruction loss)")
-        if self.dataframe is not None:
-            rows, cols = self.dataframe.shape
-            col_names = list(self.dataframe.columns)
-            print(f"  DataFrame   : {rows} rows × {cols} cols  {col_names}")
-        print(SEP)
+            print(f"  {n_rows} rows over {n_cfg} configuration(s); see result.dataframe")
+        if self.mode == 'precision':
+            for key, label in (('baseline_mi', 'Baseline MI'), ('precision_tau', 'Precision τ'),
+                               ('threshold_value', 'Threshold MI')):
+                try:
+                    value = self.get(key)
+                except ValueError:
+                    value = None
+                if value is not None:
+                    print(f"  {label:<12}: {value:.4g}")
+        if self.mode == 'pairwise' and n_cfg == 1:
+            matrix = self.get('mi_matrix')
+            if matrix is not None:
+                finite = matrix[np.isfinite(matrix)]
+                if len(finite):
+                    print(f"  MI matrix   : {matrix.shape[0]} × {matrix.shape[1]}, range "
+                          f"{finite.min():.4f} to {finite.max():.4f} {units}")
+        if df is not None:
+            print(f"  dataframe   : {df.shape[0]} rows × {df.shape[1]} cols")
+        if self.runs is not None:
+            print(f"  runs        : {len(self.runs)} repeats")
+        print(sep)
 
-    def plot(self, ax: Optional[plt.Axes] = None, **kwargs) -> plt.Axes:
-        """Visualizes the results of the analysis.
+    # ------------------------------------------------------------------
+    # Plotting
+    # ------------------------------------------------------------------
 
-        This method dispatches to the appropriate plotting function based on the
-        analysis `mode`.
+    def _grouped_keys(self) -> List[str]:
+        keys = list(self.params.get('config_keys') or [])
+        if self.mode == 'lag':
+            keys = ['lag'] + keys
+        return [k for k in keys if self.dataframe is not None and k in self.dataframe.columns]
 
-        - For 'sweep' mode, it plots the MI estimate against the swept
-          hyperparameter.
-        - For 'dimensionality' mode, it plots which ranks of shared structure
-          are stable across splits/reruns (see THEORY.md).
-        - For 'rigorous' mode, it plots the bias correction fit.
+    def plot(self, ax: Optional[plt.Axes] = None, config_id: Optional[int] = None, **kwargs) -> plt.Axes:
+        """Draw the result.
+
+        A result over several configurations is drawn as MI against the swept
+        keys: a line for one key, a heatmap for two, bars for more (override
+        with ``kind='line'|'heatmap'|'bar'``). A single configuration gets its
+        mode's own figure: the training curve for estimate, the extrapolation
+        for rigorous, the components for the difference quantities, the MI
+        against tau for precision, the matrix for pairwise and the stability
+        chart for dimensionality. ``config_id`` picks one configuration out of
+        several for those per-configuration figures.
 
         Parameters
         ----------
-        ax : plt.Axes, optional
-            A matplotlib Axes object to plot on. If None, a new figure and
-            axes are created. Defaults to None.
-        **kwargs : dict
-            Additional keyword arguments passed to the underlying plotting
-            function (e.g., `figsize`, `show`, `title`).
-
-        Returns
-        -------
-        plt.Axes
-            The matplotlib Axes object containing the plot.
-
-        Raises
-        ------
-        ValueError
-            If the Results object does not contain the necessary data
-            (e.g., a DataFrame) to create the plot for the given mode.
-        NotImplementedError
-            If plotting is not supported for the analysis mode.
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into; a new figure is created when omitted.
+        config_id : int, optional
+            The configuration to draw with its mode's own figure.
+        **kwargs
+            ``show``, ``units``, ``title``, ``figsize``, ``kind``, and anything
+            the underlying plot function accepts.
         """
         from neural_mi.visualize.plot import (
             plot_sweep_curve, plot_sweep_heatmap, plot_sweep_bar,
@@ -333,367 +353,210 @@ class Results:
         )
 
         show = kwargs.pop('show', True)
-
         units = kwargs.pop('units', self.params.get('output_units', 'bits'))
+        n_cfg = len(self.config_ids)
+        grouped = self._grouped_keys()
+        per_config_modes = ('pairwise', 'dimensionality', 'precision')
+        draw_grouped = (config_id is None and grouped
+                        and (self.mode in ('sweep', 'lag') or n_cfg > 1)
+                        and self.mode not in per_config_modes)
 
-        # For modes that create their own figure (with custom sizing), skip
-        # creating a top-level axes here: dimensionality's per-rank bar chart
-        # and pairwise's heatmap (sized from the channel count) both need
-        # 'figsize' left in kwargs for their own branch below to pop and use.
-        _custom_figure_modes = ('dimensionality', 'pairwise')
-        if ax is None and self.mode not in _custom_figure_modes:
-            fig, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
-        elif self.mode in _custom_figure_modes:
-            pass  # figsize stays in kwargs for the mode-specific branch below
+        own_figure = self.mode in ('dimensionality', 'pairwise') and not draw_grouped
+        if ax is None and not own_figure:
+            _, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
 
-        if self.mode == 'estimate':
-            # Training curve: test MI vs epoch, with optional train MI overlay.
-            history = self.details.get('test_mi_history')
-            train_history = self.details.get('train_mi_history')
-            best_epoch = self.details.get('best_epoch')
-            conservative_epoch = self.details.get('conservative_epoch')
-            if history is None:
+        if draw_grouped:
+            kind = kwargs.pop('kind', None)
+            if kind is None:
+                kind = 'line' if len(grouped) <= 1 else ('heatmap' if len(grouped) == 2 else 'bar')
+            if kind == 'line':
+                plot_sweep_curve(self.dataframe, param_col=grouped[0], units=units,
+                                 ax=ax, show=show, **kwargs)
+            elif kind == 'heatmap':
+                if len(grouped) != 2:
+                    raise ValueError(
+                        f"kind='heatmap' needs exactly 2 swept keys, found {len(grouped)}: "
+                        f"{grouped}. Use kind='bar' for 3 or more."
+                    )
+                plot_sweep_heatmap(self.dataframe, param_x=grouped[0], param_y=grouped[1],
+                                   units=units, ax=ax, show=show, **kwargs)
+            elif kind == 'bar':
+                plot_sweep_bar(self.dataframe, param_cols=grouped, units=units,
+                               ax=ax, show=show, **kwargs)
+            else:
+                raise ValueError(f"Unknown kind='{kind}'. Expected 'line', 'heatmap' or 'bar'.")
+            return ax
+
+        cid = self._one_config(config_id, f"Results.plot() for mode='{self.mode}'")
+        row = self.dataframe[self.dataframe['config_id'] == cid] if self.dataframe is not None else None
+        runs = self.runs[self.runs['config_id'] == cid] if self.runs is not None else None
+        entry = self.details.get(cid, {})
+        colours = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
+
+        if self.mode in ('estimate', 'sweep'):
+            if runs is None or runs.empty or 'test_mi_history' not in runs.columns:
                 raise ValueError(
-                    "Results.plot() for mode='estimate' requires 'test_mi_history' "
-                    f"in result.details, but only found: {list(self.details.keys())}. "
-                    "This key is populated automatically during training."
+                    "This result holds no training history to draw. Each repeat records "
+                    "'test_mi_history' in result.runs during training."
                 )
-            import numpy as np
-            epochs = list(range(len(history)))
-            ax.plot(epochs, history, color='steelblue', linewidth=1.5,
-                    label='Test MI')
-            if train_history is not None and len(train_history) > 0:
-                train_epochs = list(range(len(train_history)))
-                ax.plot(train_epochs, train_history, color='darkorange',
-                        linewidth=1.5, linestyle='--', alpha=0.8, label='Train MI')
-            if best_epoch is not None and 0 <= best_epoch < len(history):
-                ax.axvline(best_epoch, color='tomato', linestyle='--',
-                           linewidth=1.5, label=f'Best epoch ({best_epoch})')
-                ax.scatter([best_epoch], [history[best_epoch]],
-                           color='tomato', zorder=5, s=60)
-            if conservative_epoch is not None and 0 <= conservative_epoch < len(history):
-                ax.axvline(conservative_epoch, color='mediumseagreen', linestyle=':',
-                           linewidth=1.5,
-                           label=f'Conservative epoch ({conservative_epoch}) — used for estimate')
-                ax.scatter([conservative_epoch], [history[conservative_epoch]],
-                           color='mediumseagreen', zorder=5, s=60, marker='D')
+            index_col = 'run_id' if 'run_id' in runs.columns else None
+            for i, (_, rep) in enumerate(runs.iterrows()):
+                history = list(rep['test_mi_history'])
+                colour = colours[i % len(colours)]
+                label = 'Test MI' if len(runs) == 1 else f"run {rep[index_col]}"
+                ax.plot(range(len(history)), history, color=colour, linewidth=1.5, label=label)
+                if len(runs) == 1:
+                    train_history = rep.get('train_mi_history')
+                    if isinstance(train_history, (list, np.ndarray)) and len(train_history):
+                        ax.plot(range(len(train_history)), list(train_history), color='darkorange',
+                                linewidth=1.5, linestyle='--', alpha=0.8, label='Train MI')
+                best = rep.get('best_epoch')
+                if best is not None and not pd.isna(best) and 0 <= int(best) < len(history):
+                    best = int(best)
+                    ax.axvline(best, color=colour if len(runs) > 1 else 'tomato',
+                               linestyle='--', linewidth=1.2,
+                               label=f'Best epoch ({best})' if len(runs) == 1 else None)
+                conservative = rep.get('conservative_epoch')
+                if (len(runs) == 1 and conservative is not None and not pd.isna(conservative)
+                        and 0 <= int(conservative) < len(history)):
+                    conservative = int(conservative)
+                    ax.axvline(conservative, color='mediumseagreen', linestyle=':', linewidth=1.5,
+                               label=f'Conservative epoch ({conservative}), used for estimate')
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel(f'MI ({units})', fontsize=12)
-            title = kwargs.pop('title', 'Training curve')
-            ax.set_title(title, fontsize=13)
+            ax.set_title(kwargs.pop('title', 'Training curve'), fontsize=13)
             ax.legend(fontsize=9)
             ax.grid(True, alpha=0.3)
 
-        elif self.mode in ('sweep', 'lag'):
-            if self.dataframe is None:
-                raise ValueError("Cannot plot: results do not contain a DataFrame.")
+        elif self.mode == 'lag':
+            plot_sweep_curve(self.dataframe[self.dataframe['config_id'] == cid], param_col='lag',
+                             units=units, ax=ax, show=show, **kwargs)
+            return ax
 
-            # Full list of swept parameters (not just the first) drives the
-            # plot-kind auto-selection below. Prefer the explicit list run()
-            # records; fall back to the single sweep_var / column-exclusion
-            # inference for Results objects built without it (e.g. manually
-            # constructed, or loaded from an older saved file).
-            group_vars = self.params.get('sweep_group_vars')
-            if group_vars is not None:
-                group_vars = [v for v in group_vars if v in self.dataframe.columns]
+        elif self._is_rigorous():
+            trainings = entry.get('trainings')
+            if trainings is None or runs is None or runs.empty:
+                raise ValueError("This rigorous result holds no extrapolation to draw.")
+            lines = []
+            for i, (_, rep) in enumerate(runs.iterrows()):
+                rid = rep.get('run_id', 0)
+                ladder = trainings[trainings['run_id'] == rid] if 'run_id' in trainings.columns else trainings
+                if 'component' in ladder.columns:
+                    ladder = ladder[ladder['component'] == 'combined']
+                fit = {k: _scalar(rep[k]) for k in rep.index}
+                fit['mi_corrected'] = fit.get('mi')
+                label = None if len(runs) == 1 else f"run {rid}"
+                plot_bias_correction_fit(ladder, fit, units=units, ax=ax, show=False,
+                                         label=label,
+                                         color=None if len(runs) == 1 else colours[i % len(colours)],
+                                         **kwargs)
+                reliable = fit.get('is_reliable')
+                prefix = '' if len(runs) == 1 else f"run {rid}: "
+                if reliable is False:
+                    lines.append(f"⚠ {prefix}extrapolation unreliable{_rigorous_unreliable_reason(fit)}")
+                elif reliable is True:
+                    lines.append(f"✓ {prefix}extrapolation reliable")
+            if lines:
+                ax.text(0.02, 0.98, '\n'.join(lines), transform=ax.transAxes, va='top',
+                        ha='left', fontsize=9,
+                        bbox=dict(facecolor='white', edgecolor='gray', alpha=0.85,
+                                  boxstyle='round,pad=0.3'))
+            if len(runs) > 1:
+                ax.legend(fontsize=9)
+
+        elif self.mode in ('conditional', 'interaction', 'transfer'):
+            r = row.iloc[0]
+            if self.mode == 'transfer':
+                labels = ['TE(X→Y)']
+                values = [r['mi_mean']]
+                if 'te_yx_mean' in row.columns:
+                    labels.append('TE(Y→X)')
+                    values.append(r['te_yx_mean'])
+                title = 'Transfer entropy'
+                if 'directionality_index_mean' in row.columns:
+                    di = r['directionality_index_mean']
+                    verdict = ('X → Y dominates' if di > 0.1 else
+                               'Y → X dominates' if di < -0.1 else '≈ symmetric')
+                    title += f'\nDirectionality index = {di:.3f}  ({verdict})'
             else:
-                sweep_var = self.params.get('sweep_var')
-                if not sweep_var:
-                    possible = [c for c in self.dataframe.columns if c not in _RESULT_COLS]
-                    if len(possible) == 1:
-                        sweep_var = possible[0]
-                        logger.warning(f"Inferring sweep_var='{sweep_var}' from DataFrame.")
-                    elif len(possible) > 1:
-                        raise ValueError(
-                            f"Cannot determine sweep variable. Multiple candidates found: {possible}. "
-                            f"Pass sweep_var=... explicitly."
-                        )
-                    else:
-                        raise ValueError(
-                            f"Cannot determine sweep variable. DataFrame columns: "
-                            f"{list(self.dataframe.columns)}. Pass sweep_var=... explicitly."
-                        )
-                group_vars = [sweep_var]
-
-            if not group_vars:
-                raise ValueError(
-                    f"Cannot determine sweep variable(s). DataFrame columns: "
-                    f"{list(self.dataframe.columns)}. Pass sweep_var=... explicitly."
-                )
-
-            kind = kwargs.pop('kind', None)
-            if kind is None:
-                kind = 'line' if len(group_vars) <= 1 else ('heatmap' if len(group_vars) == 2 else 'bar')
-
-            if kind == 'line':
-                plot_sweep_curve(self.dataframe, param_col=group_vars[0], units=units,
-                                 ax=ax, show=show, **kwargs)
-            elif kind == 'heatmap':
-                if len(group_vars) != 2:
-                    raise ValueError(
-                        f"kind='heatmap' requires exactly 2 swept parameters, found "
-                        f"{len(group_vars)}: {group_vars}. Use kind='bar' for 3+, or "
-                        f"kind='line' to plot against just the first."
-                    )
-                plot_sweep_heatmap(self.dataframe, param_x=group_vars[0], param_y=group_vars[1],
-                                   units=units, ax=ax, show=show, **kwargs)
-            elif kind == 'bar':
-                plot_sweep_bar(self.dataframe, param_cols=group_vars, units=units,
-                               ax=ax, show=show, **kwargs)
-            else:
-                raise ValueError(
-                    f"Unknown kind='{kind}' for mode='{self.mode}'. Expected one of "
-                    f"'line', 'heatmap', 'bar'."
-                )
-
-        elif self.mode == 'dimensionality':
-            # Per-rank stable/degenerate/below-floor chart -- not an MI-vs-swept-
-            # variable curve, since this mode doesn't sweep embedding_dim or claim
-            # a saturation point (see THEORY.md).
-            ax = plot_dimensionality_curve(self.details, ax=ax, show=show, **kwargs)
-
-        elif self.mode == 'rigorous':
-            if self.dataframe is None or not self.details:
-                raise ValueError("Rigorous results are incomplete and cannot be plotted.")
-
-            # Validate required keys before entering the plotter so
-            # missing keys raise a clear ValueError rather than a KeyError deep
-            # inside plot_bias_correction_fit.
-            _REQUIRED = {'slope', 'mi_corrected', 'mi_error', 'gammas_used'}
-            _missing = _REQUIRED - set(self.details.keys())
-            if _missing:
-                raise ValueError(
-                    f"Results.plot() for mode='rigorous' is missing required keys "
-                    f"in details: {sorted(_missing)}. Present: {sorted(self.details.keys())}. "
-                    f"This may indicate the rigorous run failed or produced only partial results."
-                )
-            plot_bias_correction_fit(self.dataframe, self.details, units=units, ax=ax, show=show, **kwargs)
-            # Annotate reliability directly on the plot -- symmetric with summary(),
-            # which reports both the True and False cases.
-            is_reliable = self.details.get('is_reliable')
-            if is_reliable is False:
-                ax.text(
-                    0.02, 0.98,
-                    f'⚠ Extrapolation unreliable{_rigorous_unreliable_reason(self.details)}',
-                    transform=ax.transAxes, va='top', ha='left', fontsize=9,
-                    color='firebrick',
-                    bbox=dict(facecolor='lightyellow', edgecolor='firebrick',
-                              alpha=0.85, boxstyle='round,pad=0.3'),
-                )
-            elif is_reliable is True:
-                ax.text(
-                    0.02, 0.98, '✓ Extrapolation reliable',
-                    transform=ax.transAxes, va='top', ha='left', fontsize=9,
-                    color='darkgreen',
-                    bbox=dict(facecolor='honeydew', edgecolor='darkgreen',
-                              alpha=0.85, boxstyle='round,pad=0.3'),
-                )
-
-        elif self.mode == 'conditional':
-            # Bar chart showing the three CMI components.
-            cmi = self.details.get('cmi_estimate')
-            mi_xw_y = self.details.get('mi_xw_y')
-            mi_w_y = self.details.get('mi_w_y')
-            if cmi is None and mi_xw_y is None:
-                raise ValueError(
-                    "Cannot plot conditional results: 'cmi_estimate' and 'mi_xw_y' "
-                    "are missing from result.details. "
-                    f"Present keys: {sorted(self.details.keys())}."
-                )
-            _labels = ['I(XW;Y)', 'I(W;Y)', 'CMI  I(X;Y|W)']
-            _values = [mi_xw_y, mi_w_y, cmi]
-            _colors = ['steelblue', 'darkorange', 'mediumseagreen']
-            valid = [(l, v, c) for l, v, c in zip(_labels, _values, _colors) if v is not None]
-            _labels, _values, _colors = (list(x) for x in zip(*valid))
-            bars = ax.bar(_labels, _values, color=_colors, width=0.45, edgecolor='white')
-            ax.set_ylabel(f'Mutual Information ({units})', fontsize=12)
-            ax.set_title('Conditional MI Components', fontsize=13)
-            ax.grid(True, axis='y', alpha=0.3)
-            for bar, val in zip(bars, _values):
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + max(_values) * 0.02,
-                    f'{val:.3f}', ha='center', va='bottom', fontsize=9,
-                )
-            import seaborn as _sns
-            _sns.despine(ax=ax)
-
-        elif self.mode == 'interaction':
-            # Bar chart showing the three MI components and the II estimate.
-            mi_xw_y = self.details.get('mi_xw_y')
-            mi_x_y = self.details.get('mi_x_y')
-            mi_w_y = self.details.get('mi_w_y')
-            ii = self.details.get('interaction_info')
-            if ii is None and mi_xw_y is None:
-                raise ValueError(
-                    "Cannot plot interaction results: 'interaction_info' and 'mi_xw_y' "
-                    "are missing from result.details. "
-                    f"Present keys: {sorted(self.details.keys())}."
-                )
-            _labels = ['I(X,W;Y)', 'I(X;Y)', 'I(W;Y)', 'II']
-            _values = [mi_xw_y, mi_x_y, mi_w_y, ii]
-            _colors = ['steelblue', 'darkorange', 'mediumpurple', 'mediumseagreen']
-            valid = [(l, v, c) for l, v, c in zip(_labels, _values, _colors) if v is not None]
-            _labels, _values, _colors = (list(x) for x in zip(*valid))
-            bars = ax.bar(_labels, _values, color=_colors, width=0.5, edgecolor='white')
-            ax.set_ylabel(f'Mutual Information ({units})', fontsize=12)
-            ax.set_title('Interaction Information Components', fontsize=13)
-            ax.grid(True, axis='y', alpha=0.3)
+                labels = [label for _, label in _COMPONENTS[self.mode]]
+                values = [r[f'{col}_mean'] for col, _ in _COMPONENTS[self.mode]]
+                labels.append('I(X;Y|W)' if self.mode == 'conditional' else 'II')
+                values.append(r['mi_mean'])
+                title = ('Conditional MI components' if self.mode == 'conditional'
+                         else 'Interaction information components')
+            bars = ax.bar(labels, values, color=colours[:len(values)], width=0.5, edgecolor='white')
             ax.axhline(0, color='black', linewidth=0.8)
-            _max_abs = max(abs(v) for v in _values) or 1.0
-            for bar, val in zip(bars, _values):
-                _va = 'bottom' if val >= 0 else 'top'
-                _offset = _max_abs * 0.02 * (1 if val >= 0 else -1)
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + _offset,
-                    f'{val:.3f}', ha='center', va=_va, fontsize=9,
-                )
-            import seaborn as _sns
-            _sns.despine(ax=ax)
-
-        elif self.mode == 'transfer':
-            # Bar chart showing TE(X→Y), TE(Y→X) and the directionality index.
-            te_xy = self.details.get('te_xy')
-            te_yx = self.details.get('te_yx')
-            di = self.details.get('directionality_index')
-            if te_xy is None:
-                raise ValueError(
-                    "Cannot plot transfer results: 'te_xy' is missing from result.details. "
-                    f"Present keys: {sorted(self.details.keys())}."
-                )
-            _labels = ['TE(X→Y)']
-            _values = [te_xy]
-            _colors = ['steelblue']
-            if te_yx is not None:
-                _labels.append('TE(Y→X)')
-                _values.append(te_yx)
-                _colors.append('darkorange')
-            bars = ax.bar(_labels, _values, color=_colors, width=0.35, edgecolor='white')
-            ax.set_ylabel(f'Transfer Entropy ({units})', fontsize=12)
-            _title = 'Transfer Entropy'
-            if di is not None:
-                _dir_str = (
-                    'X → Y dominates' if di > 0.1 else
-                    'Y → X dominates' if di < -0.1 else
-                    '≈ symmetric'
-                )
-                _title += f'\nDirectionality Index = {di:.3f}  ({_dir_str})'
-            ax.set_title(_title, fontsize=13)
+            ax.set_ylabel(f'MI ({units})', fontsize=12)
+            ax.set_title(kwargs.pop('title', title), fontsize=13)
             ax.grid(True, axis='y', alpha=0.3)
-            for bar, val in zip(bars, _values):
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + max(_values) * 0.02,
-                    f'{val:.3f}', ha='center', va='bottom', fontsize=9,
-                )
-            import seaborn as _sns
-            _sns.despine(ax=ax)
+            span = max(abs(v) for v in values) or 1.0
+            for bar, val in zip(bars, values):
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + span * 0.02 * (1 if val >= 0 else -1),
+                        f'{val:.3f}', ha='center', va='bottom' if val >= 0 else 'top', fontsize=9)
 
         elif self.mode == 'precision':
-            # Precision mode produces a MI-vs-tau curve. The curve shows MI as a function of
-            # corruption level (tau), with horizontal and vertical dashed lines
-            # marking the threshold MI and precision tau respectively.
-            if self.dataframe is None or self.dataframe.empty:
-                raise ValueError(
-                    "Cannot plot precision results: dataframe is missing or empty. "
-                    "Expected columns: 'tau' and 'train_mi'."
-                )
-            df = self.dataframe.copy()
-            if 'mi_mean' not in df.columns:
-                if 'train_mi' in df.columns:
-                    df = df.rename(columns={'train_mi': 'mi_mean'})
-
-            precision_tau   = self.details.get('precision_tau')
-            baseline_mi     = self.details.get('baseline_mi')
-            threshold_value = self.details.get('threshold_value')
-
-            tau_col = 'tau'
-            mi_col  = 'mi_mean'
-            if df.duplicated(subset=[tau_col]).any():
-                df = (df.groupby(tau_col)[mi_col]
-                        .agg(['mean', 'std'])
-                        .reset_index()
-                        .rename(columns={'mean': mi_col, 'std': 'mi_std'}))
-
-            ax.plot(df[tau_col], df[mi_col], 'o-', color='steelblue',
-                    linewidth=2, markersize=5, label='MI vs corruption')
-            if 'mi_std' in df.columns and (df['mi_std'] > 0).any():
-                ax.fill_between(df[tau_col],
-                                df[mi_col] - df['mi_std'],
-                                df[mi_col] + df['mi_std'],
+            df = row.sort_values('tau')
+            ax.plot(df['tau'], df['mi_mean'], 'o-', color='steelblue', linewidth=2,
+                    markersize=5, label='MI vs corruption')
+            if 'mi_std' in df.columns and df['mi_std'].notna().any():
+                ax.fill_between(df['tau'], df['mi_mean'] - df['mi_std'].fillna(0),
+                                df['mi_mean'] + df['mi_std'].fillna(0),
                                 alpha=0.2, color='steelblue')
-            if threshold_value is not None:
-                ax.axhline(threshold_value, color='tomato', linestyle='--',
-                           linewidth=1.5,
-                           label=f'Threshold ({threshold_value:.3f} {units})')
-            if precision_tau is not None:
-                ax.axvline(precision_tau, color='darkorange', linestyle='--',
-                           linewidth=1.5,
-                           label=f'Precision τ = {precision_tau:.4g}')
-            if baseline_mi is not None:
-                ax.annotate(f'Baseline MI = {baseline_mi:.3f} {units}',
-                            xy=(df[tau_col].iloc[0], baseline_mi),
-                            xytext=(0.05, 0.92), textcoords='axes fraction',
-                            fontsize=9, color='gray',
+            threshold = entry.get('threshold_value')
+            tau_star = entry.get('precision_tau')
+            baseline = entry.get('baseline_mi')
+            if threshold is not None:
+                ax.axhline(threshold, color='tomato', linestyle='--', linewidth=1.5,
+                           label=f'Threshold ({threshold:.3f} {units})')
+            if tau_star is not None:
+                ax.axvline(tau_star, color='darkorange', linestyle='--', linewidth=1.5,
+                           label=f'Precision τ = {tau_star:.4g}')
+            if baseline is not None:
+                ax.annotate(f'Baseline MI = {baseline:.3f} {units}',
+                            xy=(df['tau'].iloc[0], baseline), xytext=(0.05, 0.92),
+                            textcoords='axes fraction', fontsize=9, color='gray',
                             arrowprops=dict(arrowstyle='->', color='gray', lw=1))
             ax.set_xlabel('Corruption level (τ)', fontsize=12)
-            ax.set_ylabel(f'Mutual Information ({units})', fontsize=12)
-            ax.set_title('Precision Analysis: MI vs Corruption', fontsize=13)
+            ax.set_ylabel(f'MI ({units})', fontsize=12)
+            ax.set_title(kwargs.pop('title', 'MI against timing corruption'), fontsize=13)
             ax.legend(fontsize=9)
             ax.grid(True, alpha=0.3)
 
         elif self.mode == 'pairwise':
-            # Pairwise mode: render the MI matrix as a heatmap.
-            mi_matrix = self.details.get('mi_matrix')
-            if mi_matrix is None:
-                raise ValueError(
-                    "Cannot plot pairwise results: 'mi_matrix' key is missing from result.details. "
-                    "Expected a 2-D numpy array."
-                )
-            import numpy as np
             import seaborn as sns
-            units = kwargs.pop('units', self.params.get('output_units', 'bits'))
-            title = kwargs.pop('title', 'Pairwise MI Matrix')
+            matrix = entry.get('mi_matrix')
+            if matrix is None:
+                raise ValueError("This pairwise result holds no 'mi_matrix' to draw.")
+            title = kwargs.pop('title', 'Pairwise MI matrix')
             fmt = kwargs.pop('fmt', '.3f')
             cmap = kwargs.pop('cmap', 'viridis')
             figsize = kwargs.pop('figsize', None)
-
-            n_rows, n_cols = mi_matrix.shape
-            # Default figure sizing: ~0.6 in per cell, minimum 4 × 3
-            if figsize is None:
-                figsize = (max(4, n_cols * 0.65 + 1.2), max(3, n_rows * 0.65 + 1.0))
-
-            # Only create a new figure if no axes were provided; otherwise, draw into the given axes.
+            n_rows, n_cols = matrix.shape
             if ax is None:
-                fig, ax = plt.subplots(1, 1, figsize=figsize)
-
-            # Build annotation mask: hide zero entries on diagonal (self-pairs) when symmetric
-            _is_symmetric = (n_rows == n_cols and np.allclose(mi_matrix, mi_matrix.T, equal_nan=True))
-            mask = np.zeros_like(mi_matrix, dtype=bool)
-            if _is_symmetric:
-                np.fill_diagonal(mask, True)  # mask out self-pairs
-
-            # Axis labels: use channel indices or user-supplied variable_names
-            var_names_x = self.details.get('variable_names_x') or [str(i) for i in range(n_cols)]
-            var_names_y = self.details.get('variable_names_y') or [str(i) for i in range(n_rows)]
-
-            sns.heatmap(
-                mi_matrix,
-                mask=mask,
-                annot=True, fmt=fmt, cmap=cmap,
-                xticklabels=var_names_x,
-                yticklabels=var_names_y,
-                cbar_kws={'label': f'MI ({units})'},
-                ax=ax,
-                **kwargs,
-            )
+                if figsize is None:
+                    figsize = (max(4, n_cols * 0.65 + 1.2), max(3, n_rows * 0.65 + 1.0))
+                _, ax = plt.subplots(1, 1, figsize=figsize)
+            symmetric = n_rows == n_cols and np.allclose(matrix, matrix.T, equal_nan=True)
+            mask = np.zeros_like(matrix, dtype=bool)
+            if symmetric:
+                np.fill_diagonal(mask, True)
+            names_x = entry.get('variable_names_x') or [str(i) for i in range(n_cols)]
+            names_y = entry.get('variable_names_y') or [str(i) for i in range(n_rows)]
+            sns.heatmap(matrix, mask=mask, annot=True, fmt=fmt, cmap=cmap,
+                        xticklabels=names_x, yticklabels=names_y,
+                        cbar_kws={'label': f'MI ({units})'}, ax=ax, **kwargs)
             ax.set_title(title, fontsize=13)
             ax.set_xlabel('Channel Y', fontsize=11)
             ax.set_ylabel('Channel X', fontsize=11)
 
+        elif self.mode == 'dimensionality':
+            ax = plot_dimensionality_curve(entry, ax=ax, show=show, **kwargs)
+            return ax
+
         else:
-            raise NotImplementedError(f"Plotting is not implemented for mode: '{self.mode}'")
+            raise NotImplementedError(f"Plotting is not implemented for mode='{self.mode}'.")
 
         if show:
             plt.tight_layout()
@@ -701,71 +564,39 @@ class Results:
         return ax
 
     @staticmethod
-    def compare(
-        results_list: List['Results'],
-        labels: Optional[List[str]] = None,
-        ax: Optional[plt.Axes] = None,
-        **kwargs,
-    ) -> plt.Axes:
-        """Overlay-plots multiple Results objects on a shared axis for comparison.
+    def compare(results_list: List['Results'], labels: Optional[List[str]] = None,
+                ax: Optional[plt.Axes] = None, **kwargs) -> plt.Axes:
+        """Overlay several results of the same mode on one axis.
 
-        All Results objects in the list must share the same analysis mode.
-        For ``'estimate'`` mode, the test-MI training curves are overlaid with
-        distinct colours; best-epoch markers are shown as dashed vertical lines.
-        For ``'sweep'`` and ``'lag'`` modes, the sweep curves are overlaid
-        with distinct colours and a legend.  For ``'rigorous'`` mode, the
-        bias-correction fits are overlaid.  ``'dimensionality'`` is not
-        supported: its per-rank stable/degenerate/below-floor chart isn't a
-        curve, so overlaying several isn't well-defined -- call
-        ``result.plot()`` on each result individually instead.
+        Estimate results overlay their training curves; results over one swept
+        key (sweep, lag, or any mode over a one-key grid) overlay their curves;
+        rigorous results overlay their extrapolations. Every result must hold
+        one configuration for the curve and extrapolation overlays.
 
         Parameters
         ----------
         results_list : list of Results
-            Two or more Results objects to compare.  All must have the same mode.
+            Two or more results of the same mode.
         labels : list of str, optional
-            Legend labels for each result.  Defaults to ``'Result 0'``,
-            ``'Result 1'``, etc.
-        ax : plt.Axes, optional
-            An existing matplotlib Axes to plot on.  If ``None``, a new figure
-            and Axes are created.
+            Legend labels, ``'Result 0'``, ``'Result 1'``, ... by default.
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into.
         **kwargs
-            Extra keyword arguments forwarded to the underlying plot call
-            (e.g., ``figsize``, ``units``).
-
-        Returns
-        -------
-        plt.Axes
-            The shared Axes object containing all overlaid plots.
-
-        Raises
-        ------
-        ValueError
-            If ``results_list`` is empty, contains only one element, or the
-            results do not all share the same mode.
-        NotImplementedError
-            If ``compare`` is not supported for the shared mode.
+            ``show``, ``figsize``, ``units`` and plot keyword arguments.
         """
         if not results_list:
             raise ValueError("results_list is empty.")
         if len(results_list) < 2:
-            raise ValueError(
-                "results_list must contain at least two Results objects to compare."
-            )
-
+            raise ValueError("results_list must contain at least two Results objects to compare.")
         modes = [r.mode for r in results_list]
         if len(set(modes)) > 1:
-            raise ValueError(
-                f"All Results objects must share the same mode. Found: {modes}."
-            )
+            raise ValueError(f"All Results objects must share the same mode. Found: {modes}.")
         mode = modes[0]
-
         if labels is None:
             labels = [f"Result {i}" for i in range(len(results_list))]
         if len(labels) != len(results_list):
             raise ValueError(
-                f"labels length ({len(labels)}) must match results_list length "
-                f"({len(results_list)})."
+                f"labels length ({len(labels)}) must match results_list length ({len(results_list)})."
             )
 
         from neural_mi.visualize.plot import plot_sweep_curve, plot_bias_correction_fit
@@ -773,304 +604,171 @@ class Results:
         show = kwargs.pop('show', True)
         figsize = kwargs.pop('figsize', (10, 6))
         units = kwargs.pop('units', results_list[0].params.get('output_units', 'bits'))
-
         if ax is None:
             _, ax = plt.subplots(1, 1, figsize=figsize)
-
-        # Use matplotlib's default colour cycle
         colours = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
+
+        if mode in ('estimate', 'rigorous'):
+            for i, (res, label) in enumerate(zip(results_list, labels)):
+                n_repeats = 0 if res.runs is None else len(res.runs)
+                if n_repeats > 1:
+                    raise ValueError(
+                        f"Result '{label}' (index {i}) holds {n_repeats} repeats, and compare() "
+                        f"overlays one {'training curve' if mode == 'estimate' else 'extrapolation'} "
+                        f"per result. Call result.plot() to draw every repeat of one result."
+                    )
 
         if mode == 'estimate':
             for i, (res, label) in enumerate(zip(results_list, labels)):
-                history = res.details.get('test_mi_history')
+                view = res._repeat_view()
+                history = view.get('test_mi_history')
                 if history is None:
-                    raise ValueError(
-                        f"Result '{label}' (index {i}) is missing 'test_mi_history' "
-                        f"in details. This key is populated automatically during training."
-                    )
-                ax.plot(
-                    range(len(history)), history,
-                    color=colours[i % len(colours)], linewidth=1.5, label=label,
-                )
-                best_epoch = res.details.get('best_epoch')
-                if best_epoch is not None and 0 <= best_epoch < len(history):
-                    ax.axvline(best_epoch, color=colours[i % len(colours)],
-                               linestyle='--', linewidth=1, alpha=0.6)
+                    raise ValueError(f"Result '{label}' (index {i}) holds no 'test_mi_history'.")
+                history = list(history)
+                ax.plot(range(len(history)), history, color=colours[i % len(colours)],
+                        linewidth=1.5, label=label)
+                best = view.get('best_epoch')
+                if best is not None and not pd.isna(best) and 0 <= int(best) < len(history):
+                    ax.axvline(int(best), color=colours[i % len(colours)], linestyle='--',
+                               linewidth=1, alpha=0.6)
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel(f'Test MI ({units})', fontsize=12)
-            ax.set_title('Training Curves Comparison', fontsize=13)
+            ax.set_title('Training curves', fontsize=13)
             ax.legend(fontsize=9)
             ax.grid(True, alpha=0.3)
 
-        elif mode in ('sweep', 'lag', 'dimensionality'):
-            for i, (res, label) in enumerate(zip(results_list, labels)):
-                if res.dataframe is None:
-                    raise ValueError(
-                        f"Result '{label}' (index {i}) does not contain a DataFrame."
-                    )
-                _group_vars = res.params.get('sweep_group_vars')
-                if _group_vars and len(_group_vars) > 1:
-                    raise ValueError(
-                        f"Result '{label}' (index {i}) swept {len(_group_vars)} parameters "
-                        f"{_group_vars}, but compare() only overlays single-parameter sweep "
-                        f"curves (a single x-axis). Call result.plot(kind='heatmap') or "
-                        f"result.plot(kind='bar') on each result individually instead."
-                    )
-                sweep_var = res.params.get(
-                    'sweep_var',
-                    'embedding_dim' if mode == 'dimensionality' else None,
-                )
-                if not sweep_var:
-                    possible = [
-                        c for c in res.dataframe.columns if c not in _RESULT_COLS
-                    ]
-                    sweep_var = possible[0] if possible else None
-                    if sweep_var is None:
-                        raise ValueError(
-                            f"Cannot determine sweep variable for result '{label}'. "
-                            f"Set sweep_var=... in the result's params."
-                        )
-                plot_sweep_curve(
-                    res.dataframe,
-                    param_col=sweep_var,
-                    units=units,
-                    ax=ax,
-                    label=label,
-                    color=colours[i % len(colours)],
-                    **kwargs,
-                )
-            ax.legend(fontsize=9)
-
         elif mode == 'rigorous':
-            # Each per-result call below is forced show=False regardless of the
-            # outer `show`: they share one ax, and showing (which can close the
-            # figure) after only the first result would truncate the overlay.
-            # The single show at the end of this method is what actually renders it.
-            reliability_lines = []
+            lines = []
             for i, (res, label) in enumerate(zip(results_list, labels)):
-                if res.dataframe is None or not res.details:
-                    raise ValueError(
-                        f"Rigorous result '{label}' (index {i}) is missing "
-                        f"dataframe or details."
-                    )
-                plot_bias_correction_fit(
-                    res.dataframe,
-                    res.details,
-                    units=units,
-                    ax=ax,
-                    label=label,
-                    color=colours[i % len(colours)],
-                    show=False,
-                    **kwargs,
-                )
-                is_reliable = res.details.get('is_reliable')
-                if is_reliable is False:
-                    reliability_lines.append(
-                        f"⚠ {label}: unreliable{_rigorous_unreliable_reason(res.details)}"
-                    )
-                elif is_reliable is True:
-                    reliability_lines.append(f"✓ {label}: reliable")
+                cid = res._one_config(None, f"Result '{label}'")
+                runs = res.runs[res.runs['config_id'] == cid]
+                trainings = res.details.get(cid, {}).get('trainings')
+                if trainings is None or runs.empty:
+                    raise ValueError(f"Rigorous result '{label}' (index {i}) holds no extrapolation.")
+                rep = runs.iloc[0]
+                fit = {k: _scalar(rep[k]) for k in rep.index}
+                fit['mi_corrected'] = fit.get('mi')
+                rid = fit.get('run_id', 0)
+                ladder = trainings[trainings['run_id'] == rid] if 'run_id' in trainings.columns else trainings
+                plot_bias_correction_fit(ladder, fit, units=units, ax=ax, label=label,
+                                         color=colours[i % len(colours)], show=False, **kwargs)
+                if fit.get('is_reliable') is False:
+                    lines.append(f"⚠ {label}: unreliable{_rigorous_unreliable_reason(fit)}")
+                elif fit.get('is_reliable') is True:
+                    lines.append(f"✓ {label}: reliable")
             ax.legend(fontsize=9)
-            if reliability_lines:
-                ax.text(
-                    0.02, 0.98, '\n'.join(reliability_lines),
-                    transform=ax.transAxes, va='top', ha='left', fontsize=8,
-                    bbox=dict(facecolor='white', edgecolor='gray', alpha=0.85,
-                              boxstyle='round,pad=0.3'),
-                )
+            if lines:
+                ax.text(0.02, 0.98, '\n'.join(lines), transform=ax.transAxes, va='top', ha='left',
+                        fontsize=8, bbox=dict(facecolor='white', edgecolor='gray', alpha=0.85,
+                                              boxstyle='round,pad=0.3'))
 
         else:
-            raise NotImplementedError(
-                f"Results.compare() is not supported for mode='{mode}'. "
-                f"Supported modes: 'estimate', 'sweep', 'lag', 'dimensionality', 'rigorous'."
-            )
+            for i, (res, label) in enumerate(zip(results_list, labels)):
+                keys = res._grouped_keys()
+                if len(keys) != 1:
+                    raise ValueError(
+                        f"Result '{label}' (index {i}) is indexed by {keys or 'no swept key'}; "
+                        f"compare() overlays results over exactly one swept key. Call "
+                        f"result.plot() on each result instead."
+                    )
+                plot_sweep_curve(res.dataframe, param_col=keys[0], units=units, ax=ax,
+                                 label=label, color=colours[i % len(colours)], **kwargs)
+            ax.legend(fontsize=9)
 
         if show:
             plt.tight_layout()
             plt.show()
         return ax
 
-    def animate(self, **kwargs):
-        """Animate the training history as a GIF or MP4.
+    def animate(self, config_id: Optional[int] = None, run_id: Any = None, **kwargs):
+        """Animate one repeat's training history as a GIF or MP4.
 
-        Convenience wrapper around :func:`neural_mi.visualize.animate_training`.
-        All keyword arguments are forwarded unchanged.
-
-        Common parameters
-        -----------------
-        panels : list of str, optional
-            Which panels to include (auto-detected when omitted).
-            Options: ``'mi'``, ``'spectral_metrics'``, ``'spectrum'``,
-            ``'embeddings'``.
-        fps : int
-            Frames per second (default 10).
-        output_path : str, optional
-            Path to save the animation (``.gif`` or ``.mp4``).
-            When ``None`` the animation is returned without saving.
-        show : bool
-            Whether to call ``plt.show()`` (default ``True``).
-        n_components : {2, 3}
-            Dimensionality for embedding scatter plots (default 2).
-        reduction : {'pca', 'umap', 'none'}
-            Dimensionality-reduction method for embedding panels (default ``'pca'``).
-        embedding_labels : array-like or dict, optional
-            Labels for colouring embedding scatter points.  Either a 1-D array
-            (one subplot) or a dict ``{name: array}`` (one subplot per entry).
-
-        Returns
-        -------
-        matplotlib.animation.FuncAnimation
+        A thin wrapper around :func:`neural_mi.visualize.animate_training`;
+        ``config_id`` and ``run_id`` pick the repeat when the result holds more
+        than one, and every other keyword argument is forwarded unchanged.
         """
         from neural_mi.visualize.animate import animate_training
-        return animate_training(self, **kwargs)
+        return animate_training(self, config_id=config_id, run_id=run_id, **kwargs)
 
     # ------------------------------------------------------------------
-    # Persistence helpers
+    # Persistence
     # ------------------------------------------------------------------
 
-    def save(self, path: Optional[str] = None) -> str:
-        """Serialise this Results object to a pickle file.
-
-        Parameters
-        ----------
-        path : str, optional
-            Target file path or directory.
-
-            - If ``None`` or a directory path, a filename is generated
-              automatically as ``neuralmi_{mode}_{YYYYMMDD_HHMMSS}.pkl``
-              and placed there (defaults to the current working directory).
-            - If a full file path is given, it is used directly.
-
-            Existing files are never overwritten; a numeric suffix
-            (``_1``, ``_2``, …) is appended automatically when needed.
-
-        Returns
-        -------
-        str
-            The absolute path of the saved file.
-        """
+    @staticmethod
+    def _free_path(path: Optional[str], mode: str, ext: str) -> str:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = f"neuralmi_{self.mode}_{timestamp}.pkl"
-
+        base_name = f"neuralmi_{mode}_{timestamp}{ext}"
         if path is None:
             filepath = os.path.join(os.getcwd(), base_name)
         elif os.path.isdir(path):
             filepath = os.path.join(path, base_name)
         else:
             filepath = path
-
         if os.path.exists(filepath):
-            root, ext = os.path.splitext(filepath)
+            root, suffix = os.path.splitext(filepath)
             counter = 1
-            while os.path.exists(f"{root}_{counter}{ext}"):
+            while os.path.exists(f"{root}_{counter}{suffix}"):
                 counter += 1
-            filepath = f"{root}_{counter}{ext}"
+            filepath = f"{root}_{counter}{suffix}"
+        return filepath
 
+    def save(self, path: Optional[str] = None) -> str:
+        """Pickle this result and return the absolute path written.
+
+        With no `path`, or a directory, the file is named
+        ``neuralmi_{mode}_{YYYYMMDD_HHMMSS}.pkl``. A numeric suffix is appended
+        to avoid overwriting an existing file.
+        """
+        filepath = self._free_path(path, self.mode, '.pkl')
         with open(filepath, 'wb') as f:
             pickle.dump(self, f)
-
         logger.info(f"Results saved to {filepath}")
-        return filepath
+        return os.path.abspath(filepath)
 
     @classmethod
     def load(cls, path: str) -> 'Results':
-        """Load a Results object previously saved with :meth:`save`.
-
-        Parameters
-        ----------
-        path : str
-            Path to a ``.pkl`` file created by :meth:`save`.
-
-        Returns
-        -------
-        Results
-        """
+        """Load a result written by :meth:`save`."""
         with open(path, 'rb') as f:
             obj = pickle.load(f)
         if not isinstance(obj, cls):
-            raise TypeError(
-                f"Expected a Results object in '{path}', got {type(obj).__name__}."
-            )
+            raise TypeError(f"Expected a Results object in '{path}', got {type(obj).__name__}.")
         return obj
 
     def to_dict(self) -> dict:
-        """Return a fully serialisable dictionary representation.
-
-        All numpy arrays and torch tensors are converted to nested Python
-        lists via ``.tolist()``.  DataFrames are converted to
-        ``orient='records'`` lists of dicts.  Suitable for JSON export,
-        logging, or downstream inspection.
-
-        Returns
-        -------
-        dict
-            Keys: ``'mode'``, ``'mi_estimate'``, ``'params'``, ``'details'``,
-            ``'dataframe'``.  Training history lists (``'test_mi_history'``,
-            ``'train_mi_history'``, etc.) are included in full under
-            ``'details'``.
-        """
-        def _cvt(obj):
+        """A JSON-ready dict: arrays as nested lists, tables as lists of records."""
+        def cvt(obj):
             if obj is None or isinstance(obj, (bool, int, float, str)):
                 return obj
+            if isinstance(obj, np.generic):
+                return obj.item()
             if isinstance(obj, dict):
-                return {k: _cvt(v) for k, v in obj.items()}
+                return {str(k): cvt(v) for k, v in obj.items()}
             if isinstance(obj, (list, tuple)):
-                return [_cvt(v) for v in obj]
+                return [cvt(v) for v in obj]
+            if isinstance(obj, pd.DataFrame):
+                return [{str(k): cvt(v) for k, v in rec.items()} for rec in obj.to_dict(orient='records')]
             if hasattr(obj, 'tolist'):
-                return obj.tolist()  # numpy array / torch tensor → nested list
-            if hasattr(obj, 'to_dict'):
-                return obj.to_dict(orient='records')  # DataFrame
+                return obj.tolist()
             return f"<{type(obj).__name__}>"
 
         return {
-            'mode':        self.mode,
+            'mode': self.mode,
             'mi_estimate': self.mi_estimate,
-            'params':      _cvt(self.params or {}),
-            'details':     _cvt(self.details or {}),
-            'dataframe':   (self.dataframe.to_dict(orient='records')
-                            if self.dataframe is not None else None),
+            'params': cvt(self.params or {}),
+            'dataframe': cvt(self.dataframe) if self.dataframe is not None else None,
+            'runs': cvt(self.runs) if self.runs is not None else None,
+            'details': cvt(self.details or {}),
         }
 
     def to_json(self, path: Optional[str] = None) -> str:
-        """Export a human-readable JSON snapshot of all results.
+        """Write :meth:`to_dict` as JSON and return the absolute path written.
 
-        All numpy arrays are serialised as nested Python lists (not shape
-        summaries).  Training history lists (``'test_mi_history'``,
-        ``'train_mi_history'``, etc.) are included in full.  For binary
-        round-trip fidelity, use :meth:`save` / :meth:`load`.
-
-        Parameters
-        ----------
-        path : str, optional
-            Target ``.json`` file path or directory. Auto-naming follows the
-            same convention as :meth:`save` but uses a ``.json`` extension.
-
-        Returns
-        -------
-        str
-            The absolute path of the saved file.
+        Arrays are written in full as nested lists. For an exact round trip use
+        :meth:`save` and :meth:`load`.
         """
         payload = self.to_dict()
-
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = f"neuralmi_{self.mode}_{timestamp}.json"
-
-        if path is None:
-            filepath = os.path.join(os.getcwd(), base_name)
-        elif os.path.isdir(path):
-            filepath = os.path.join(path, base_name)
-        else:
-            filepath = path
-
-        if os.path.exists(filepath):
-            root, ext = os.path.splitext(filepath)
-            counter = 1
-            while os.path.exists(f"{root}_{counter}{ext}"):
-                counter += 1
-            filepath = f"{root}_{counter}{ext}"
-
+        filepath = self._free_path(path, self.mode, '.json')
         with open(filepath, 'w') as f:
             json.dump(payload, f, indent=2)
-
         logger.info(f"Results exported to {filepath}")
-        return filepath
+        return os.path.abspath(filepath)

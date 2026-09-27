@@ -1,10 +1,18 @@
 # tests/test_conditional.py
 """Tests for the conditional mutual information analysis mode."""
+import dataclasses
 import pytest
 import numpy as np
 import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Conditional, Output
+
+
+def _components(result):
+    """The component means of a one-configuration difference quantity, by name."""
+    row = result.dataframe.iloc[0]
+    return {c[:-len('_mean')]: row[c] for c in row.index if c.endswith('_mean')}
+
 
 # Minimal training params (dict kept for the engine-level run_conditional_mi test).
 _PARAMS = {
@@ -77,10 +85,10 @@ class TestConditionalMI:
             model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
-        assert 'mi_xw_y' in results.details
-        assert 'mi_w_y' in results.details
-        assert np.isfinite(results.details['mi_xw_y'])
-        assert np.isfinite(results.details['mi_w_y'])
+        assert 'mi_xw_y' in _components(results)
+        assert 'mi_w_y' in _components(results)
+        assert np.isfinite(_components(results)['mi_xw_y'])
+        assert np.isfinite(_components(results)['mi_w_y'])
 
     def test_cmi_result_consistency(self):
         """Confirms CMI estimate = I(XW;Y) - I(W;Y)."""
@@ -94,32 +102,19 @@ class TestConditionalMI:
             model=_MODEL, training=_TRAINING,
             n_workers=1,
         )
-        expected = results.details['mi_xw_y'] - results.details['mi_w_y']
+        expected = _components(results)['mi_xw_y'] - _components(results)['mi_w_y']
         assert abs(results.mi_estimate - expected) < 1e-6
 
-    def test_return_embeddings_surfaces_at_top_level(self):
-        """Regression: return_embeddings=True used to silently produce no
-        embeddings_x/embeddings_y for mode='conditional' -- no error, no
-        warning, the keys just never appeared. The joint (XW;Y) leg's
-        embeddings (already computed by task.py, just never surfaced) are
-        now pulled to the top level and stripped from raw_xw_y."""
+    def test_return_embeddings_is_refused(self):
+        """Each repeat trains one network per term of the quantity, so no single
+        network's embeddings describe the conditional MI. The request raises
+        instead of returning one component's embeddings under the quantity's name."""
         x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
         w = _make_gaussian(N, 2)
-
-        results = nmi.run(
-            x, y,
-            mode='conditional',
-            conditional=Conditional(w_data=w),
-            model=_MODEL, training=_TRAINING,
-            output=Output(return_embeddings=True),
-            n_workers=1,
-        )
-        assert 'embeddings_x' in results.details
-        assert 'embeddings_y' in results.details
-        assert results.details['embeddings_x'].shape[0] == N
-        assert results.details['embeddings_y'].shape[0] == N
-        # Stripped from the raw per-run list, not duplicated there too.
-        assert 'embeddings_x' not in results.details['raw_xw_y'][0]
+        with pytest.raises(ValueError, match="not available for mode='conditional'"):
+            nmi.run(x, y, mode='conditional', conditional=Conditional(w_data=w),
+                    model=_MODEL, training=_TRAINING, output=Output(return_embeddings=True),
+                    n_workers=1)
 
     def test_mismatched_x_w_window_sizes_raises_clear_error(self):
         """X and W with different window sizes must raise a clear ValueError
@@ -172,13 +167,12 @@ class TestConditionalMICategoricalW:
             x_raw, y_raw,
             mode='conditional',
             conditional=Conditional(
-                w_data=w_raw, w_processor_type='categorical',
-                w_processor_params={'window_size': window_size, 'step_size': window_size,
-                                    'encoding': encoding},
+                w_data=w_raw,
             ),
             processing=nmi.Processing(
                 x='continuous', x_params={'window_size': window_size, 'step_size': window_size},
-                y='continuous', y_params={'window_size': window_size, 'step_size': window_size},
+                y='continuous', y_params={'window_size': window_size, 'step_size': window_size}, w='categorical', w_params={'window_size': window_size, 'step_size': window_size,
+                                    'encoding': encoding}
             ),
             split=nmi.Split(mode='random'),
             model=_MODEL, training=_TRAINING,
@@ -186,6 +180,7 @@ class TestConditionalMICategoricalW:
         )
         assert np.isfinite(results.mi_estimate)
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("encoding", ["majority_vote", "probability"])
     def test_categorical_w_explains_shared_variance(self, encoding):
         """CMI(X;Y|W) should drop well below the raw, unconditioned MI(X;Y)
@@ -201,8 +196,14 @@ class TestConditionalMICategoricalW:
         test flaky under parallel execution. The underlying claim holds
         robustly across seeds; averaging is what actually tests it reliably.
         """
+        # 800 windows, not the helper's default 400: these thresholds were
+        # calibrated when the continuous processor emitted window_size + 1
+        # slots, and a window now holds window_size. More windows restores the
+        # construction's strength by resolving the estimate better, rather than
+        # by weakening the guard below.
         window_size = 10
-        x_raw, y_raw, w_raw = self._confounded_data(window_size=window_size)
+        x_raw, y_raw, w_raw = self._confounded_data(n_windows=800,
+                                                    window_size=window_size)
         model = Model(hidden_dim=32, embedding_dim=8, n_layers=1)
         # shift_windows=False: mode='conditional' (the second call below) never
         # reaches shift_windows, so leaving it at its default for the mode='estimate'
@@ -223,11 +224,10 @@ class TestConditionalMICategoricalW:
             conditioned = nmi.run(
                 x_raw, y_raw, mode='conditional',
                 conditional=Conditional(
-                    w_data=w_raw, w_processor_type='categorical',
-                    w_processor_params={'window_size': window_size, 'step_size': window_size,
-                                        'encoding': encoding},
+                    w_data=w_raw,
                 ),
-                processing=processing, split=nmi.Split(mode='random'),
+                processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size,
+                                        'encoding': encoding}), split=nmi.Split(mode='random'),
                 model=model, training=training, n_workers=1, seed=run_seed, show_progress=False,
             )
             raw_estimates.append(raw.mi_estimate)
@@ -266,9 +266,8 @@ class TestConditionalShiftWindows:
             warnings.simplefilter('always')
             nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=w, w_processor_type='continuous',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
-                processing=processing,
+                conditional=Conditional(w_data=w),
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -293,14 +292,13 @@ class TestConditionalShiftWindows:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='conditional',
-            conditional=Conditional(w_data=w, w_processor_type='continuous',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size}),
-            processing=processing,
+            conditional=Conditional(w_data=w),
+            processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        details = results.details
+        details = _components(results)
         assert np.isfinite(details['mi_xw_y']) and np.isfinite(details['mi_w_y'])
         assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
             f"W=X exactly should make I(XW;Y)={details['mi_xw_y']:.3f} closely match "
@@ -313,10 +311,11 @@ class TestConditionalShiftWindows:
 
 
 class TestConditionalShiftWindowsRigorous:
-    """Phase 2: shift_windows reachability for conditional's rigorous=True
-    sub-path -- mirrors TestConditionalShiftWindows, but exercises
-    run_rigorous_scalar_analysis's own _is_raw_deferred chunk-to-raw-range
-    translation instead of the plain (non-rigorous) sweep dispatch."""
+    """shift_windows for conditional's rigorous=True path.
+
+        Mirrors TestConditionalShiftWindows through run_rigorous_scalar_analysis,
+        which cuts each gamma chunk as a raw sample range before windowing.
+    """
 
     def test_engages_silently_for_matching_continuous_pair_rigorous(self):
         """No warning: shift_windows must actually reach the rigorous=True
@@ -333,10 +332,9 @@ class TestConditionalShiftWindowsRigorous:
             warnings.simplefilter('always')
             nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=w, w_processor_type='continuous',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size},
+                conditional=Conditional(w_data=w,
                                        rigorous=True, gamma_range=range(1, 4)),
-                processing=processing,
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -358,10 +356,9 @@ class TestConditionalShiftWindowsRigorous:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='conditional',
-            conditional=Conditional(w_data=w, w_processor_type='continuous',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size},
+            conditional=Conditional(w_data=w,
                                    rigorous=True, gamma_range=range(1, 4)),
-            processing=processing,
+            processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=10, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
@@ -374,10 +371,11 @@ class TestConditionalShiftWindowsRigorous:
 
 
 class TestConditionalShiftWindowsCategorical:
-    """Phase 3: shift_windows reachability for a categorical X + categorical
-    W pair, with independently-tracked (and possibly different) category
-    counts -- mirrors TestConditionalShiftWindows, adapted for categorical
-    encoding via shift_windowing.make_multi_categorical_encoder."""
+    """shift_windows for a categorical X with a categorical W.
+
+        Each side keeps its own category count, encoded through
+        shift_windowing.make_multi_categorical_encoder.
+    """
 
     def test_engages_silently_with_different_category_counts(self):
         """No warning, and a finite result: shift_windows must actually
@@ -396,9 +394,8 @@ class TestConditionalShiftWindowsCategorical:
             warnings.simplefilter('always')
             r = nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=w, w_processor_type='categorical',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
-                processing=processing,
+                conditional=Conditional(w_data=w),
+                processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -422,9 +419,8 @@ class TestConditionalShiftWindowsCategorical:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='conditional',
-            conditional=Conditional(w_data=w, w_processor_type='categorical',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size}),
-            processing=processing,
+            conditional=Conditional(w_data=w),
+            processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
@@ -435,10 +431,9 @@ class TestConditionalShiftWindowsCategorical:
         )
 
     def test_mismatched_window_size_raises_clear_error(self):
-        """Companion correctness fix: w_processor_params's window_size, if
-        explicitly set to a value different from X's, must raise rather
-        than be silently ignored (the concatenated array is windowed using
-        only processor_params_x's geometry)."""
+        """A W whose window_size differs from X's raises: the concatenated
+                array is windowed with X's geometry alone.
+        """
         np.random.seed(0)
         x = np.random.randint(0, 3, size=(2000, 1)).astype('int64')
         y = np.random.randn(2000, 2).astype('float32')
@@ -448,9 +443,8 @@ class TestConditionalShiftWindowsCategorical:
         with pytest.raises(ValueError, match="window_size"):
             nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=w, w_processor_type='categorical',
-                                       w_processor_params={'window_size': 10, 'step_size': 10}),
-                processing=processing,
+                conditional=Conditional(w_data=w),
+                processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': 10, 'step_size': 10}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -478,9 +472,8 @@ class TestConditionalShiftWindowsMixedTypes:
             warnings.simplefilter('always')
             r = nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=w, w_processor_type='categorical',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
-                processing=processing,
+                conditional=Conditional(w_data=w),
+                processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -502,9 +495,8 @@ class TestConditionalShiftWindowsMixedTypes:
             warnings.simplefilter('always')
             r = nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=w, w_processor_type='continuous',
-                                       w_processor_params={'window_size': window_size, 'step_size': window_size}),
-                processing=processing,
+                conditional=Conditional(w_data=w),
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': window_size, 'step_size': window_size}),
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
@@ -533,15 +525,14 @@ class TestConditionalShiftWindowsMixedTypes:
                                     y='continuous', y_params={'window_size': window_size, 'step_size': window_size})
         results = nmi.run(
             x, y, mode='conditional',
-            conditional=Conditional(w_data=w, w_processor_type='categorical',
-                                   w_processor_params={'window_size': window_size, 'step_size': window_size,
+            conditional=Conditional(w_data=w),
+            processing=dataclasses.replace(processing, w='categorical', w_params={'window_size': window_size, 'step_size': window_size,
                                                         'encoding': 'full_trajectory'}),
-            processing=processing,
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        details = results.details
+        details = _components(results)
         assert np.isfinite(details['mi_xw_y']) and np.isfinite(details['mi_w_y'])
         assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
             f"W as a lossless categorical recoding of X should make I(XW;Y)="
@@ -571,9 +562,8 @@ class TestConditionalShiftTimeSpike:
             warnings.simplefilter('always')
             r = nmi.run(
                 x_spikes, y_spikes, mode='conditional',
-                conditional=Conditional(w_data=w_spikes, w_processor_type='spike',
-                                       w_processor_params={'window_size': 0.05}),
-                processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+                conditional=Conditional(w_data=w_spikes),
+                processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
                 model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
                 training=Training(n_epochs=1, patience=1, shift_time=True),
                 n_workers=1, show_progress=False, seed=0,
@@ -596,14 +586,13 @@ class TestConditionalShiftTimeSpike:
         w_spikes = [s.copy() for s in x_spikes]  # exact copy of X
         results = nmi.run(
             x_spikes, y_spikes, mode='conditional',
-            conditional=Conditional(w_data=w_spikes, w_processor_type='spike',
-                                   w_processor_params={'window_size': 0.05}),
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            conditional=Conditional(w_data=w_spikes),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=15, patience=5, batch_size=32, shift_time=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        details = results.details
+        details = _components(results)
         assert np.isfinite(details['mi_xw_y']) and np.isfinite(details['mi_w_y'])
         assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
             f"W=X exactly should make I(XW;Y)={details['mi_xw_y']:.3f} closely match "
@@ -627,10 +616,9 @@ class TestConditionalShiftTimeSpike:
             n_neurons=4, n_windows=600, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='conditional',
-            conditional=Conditional(w_data=w_spikes, w_processor_type='spike',
-                                   w_processor_params={'window_size': 0.05},
+            conditional=Conditional(w_data=w_spikes,
                                    rigorous=True, gamma_range=range(1, 4)),
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=1, patience=1, shift_time=True),
             n_workers=1, show_progress=False, seed=0,
@@ -639,14 +627,10 @@ class TestConditionalShiftTimeSpike:
         assert np.isfinite(results.mi_estimate)
 
     def test_no_crash_with_shift_time_false(self):
-        """Regression: the window-validity gap between X (paired with Y,
-        requiring both to have data) and a standalone-windowed W (requiring
-        only W to have data) used to raise a sample-count ValueError for
-        spike data whenever shift_time was NOT active (the merge-based
-        mechanism above only used to engage when shift_time=True). Spike+
-        spike conditioning now always merges X and W before windowing
-        (mirrors the shift_time=True mechanism unconditionally), so this
-        must succeed regardless of shift_time."""
+        """A spike X and spike W are merged before windowing whether or not
+                shift_time is active, so X's and W's windows are valid on the same
+                rule and the call succeeds with shift_time=False.
+        """
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=800, window_size=0.05, seed=0)
@@ -654,9 +638,8 @@ class TestConditionalShiftTimeSpike:
             n_neurons=4, n_windows=800, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='conditional',
-            conditional=Conditional(w_data=w_spikes, w_processor_type='spike',
-                                   w_processor_params={'window_size': 0.05}),
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            conditional=Conditional(w_data=w_spikes),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
             training=Training(n_epochs=2, patience=1, shift_time=False),
             n_workers=1, show_progress=False, seed=0,
@@ -664,17 +647,10 @@ class TestConditionalShiftTimeSpike:
         assert np.isfinite(results.mi_estimate)
 
     def test_rigorous_no_crash_with_shift_time_false(self):
-        """Regression: run_rigorous_scalar_analysis's own _is_spike_deferred
-        gate used to additionally require base_params['shift_time'] to be
-        truthy, even though run.py's _defer_spike_conditional_interaction
-        (the only caller that sets raw_deferred=True for a spike+spike pair)
-        is unconditional on shift_time -- merging X and W before windowing
-        is a correctness requirement for spike coverage, not a shift-
-        reachability nicety. With shift_time=False, raw_deferred=True still
-        arrived with a raw (list) x_data, but _is_spike_deferred evaluated
-        False, so N = x_data.shape[0] raised 'list has no attribute shape'.
-        Confirmed via direct reproduction before the fix; this asserts it no
-        longer crashes and returns a finite estimate."""
+        """The rigorous path cuts a spike+spike pair as time ranges whether or
+                not shift_time is active, and returns a finite estimate with
+                shift_time=False.
+        """
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=400, window_size=0.05, seed=0)
@@ -682,10 +658,9 @@ class TestConditionalShiftTimeSpike:
             n_neurons=4, n_windows=400, window_size=0.05, seed=0)
         results = nmi.run(
             x_spikes, y_spikes, mode='conditional',
-            conditional=Conditional(w_data=w_spikes, w_processor_type='spike',
-                                   w_processor_params={'window_size': 0.05},
+            conditional=Conditional(w_data=w_spikes,
                                    rigorous=True, gamma_range=range(1, 4), min_gamma_points=2),
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
             training=Training(n_epochs=2, patience=1, shift_time=False, batch_size=16),
             n_workers=1, show_progress=False, seed=0,
@@ -712,14 +687,12 @@ def _gappy_timeline(duty_on=8.0, period=40.0, span=400.0, dt=0.02):
 def test_three_way_with_spike_y_windows_on_the_real_time_grid(mode, shift_windows):
     """A regular-grid X and W against a spike Y runs on both dispatch paths.
 
-    Regression test for E28. Windowing for ``shift_windows=True`` is deferred to
-    the task layer, which used to build its dataset without the caller's time
-    vectors. A continuous X was then windowed in sample-index units while the
-    spike Y stayed in seconds. On a gappy timeline, where index and real time
-    diverge, no window could satisfy coverage and the run died with "No valid
-    windows after checking data coverage" -- blaming the recording for what was
-    a units mismatch. The gaps and the coverage floor are both load-bearing
-    here: without them the two interpretations stay close enough to survive.
+        With shift_windows=True the task windows the data, and it must use the
+        caller's time vectors. In sample units a continuous X and a spike Y in
+        seconds disagree on a gappy timeline, where index and real time diverge,
+        and no window could satisfy coverage. The gaps and the coverage floor are
+        both load-bearing: without them the two readings stay close enough to
+        survive.
     """
     rng = np.random.default_rng(0)
     t = _gappy_timeline()
@@ -733,14 +706,14 @@ def test_three_way_with_spike_y_windows_on_the_real_time_grid(mode, shift_window
 
     kwargs = dict(
         processing=nmi.Processing(x='continuous', x_params=cont, x_time=t,
-                                  y='spike', y_params=win),
+                                  y='spike', y_params=win,
+                                  w='categorical', w_params=win, w_time=t),
         model=_MODEL,
         training=Training(n_epochs=2, learning_rate=1e-3, batch_size=32,
                           patience=1, shift_windows=shift_windows),
         n_workers=1, seed=0, show_progress=False,
     )
-    w_cfg = dict(w_data=direction, w_processor_type='categorical',
-                 w_processor_params=win, w_time=t)
+    w_cfg = dict(w_data=direction)
     if mode == 'conditional':
         kwargs['conditional'] = Conditional(**w_cfg)
     else:
@@ -750,3 +723,141 @@ def test_three_way_with_spike_y_windows_on_the_real_time_grid(mode, shift_window
 
     assert result.mi_estimate is not None
     assert np.isfinite(result.mi_estimate)
+
+
+class TestThirdStreamSharesTheGrid:
+    """W is built on X and Y's grid, not on one of its own.
+
+    Built separately, each call took the latest start among *its own* streams:
+    X-with-Y started where the spikes started and W-with-Y where the camera did.
+    On a recording whose spikes begin 32 ms after the camera that left the two
+    grids a third of a window apart, sharing no window times at all, and the run
+    died with 'no windows in common' while naming coverage rules as the cause.
+    """
+
+    @staticmethod
+    def _offset_clocks(seed=0):
+        """Spikes that start after the camera, as a real recording does."""
+        rng = np.random.default_rng(seed)
+        duration = 400.0
+        t = np.arange(0, duration, 1 / 10.)
+        x = rng.standard_normal((len(t), 2)).astype(np.float32)
+        y = (x + 0.5 * rng.standard_normal((len(t), 2))).astype(np.float32)
+        w = (rng.standard_normal(len(t)) > 0).astype(np.int64)[:, None]
+        return t, x, y, w
+
+    def _run(self, mode, x, y, w, t, w_rate):
+        from neural_mi.config import Interaction
+        cfg = dict(w_data=w)
+        mode_cfg = ({'conditional': Conditional(**cfg)} if mode == 'conditional'
+                    else {'interaction': Interaction(**cfg)})
+        return nmi.run(
+            x, y, mode=mode, **mode_cfg,
+            processing=nmi.Processing(
+                x='continuous', y='continuous', w='categorical',
+                x_time=self._x_time, y_time=t, w_time=t,
+                x_params={'window_size': 1.0, 'step_size': 1.0, 'sample_rate': 10},
+                y_params={'window_size': 1.0, 'step_size': 1.0, 'sample_rate': 10},
+                w_params={'window_size': 1.0, 'step_size': 1.0, 'sample_rate': w_rate,
+                          'encoding': 'full_trajectory'}),
+            model=Model(embedding_dim=4, hidden_dim=32),
+            training=Training(n_epochs=3, batch_size=128, shift_windows=False),
+            show_progress=False, seed=0, n_workers=1,
+        )
+
+    def _run_split(self, mode, x, x_time, y, w, t):
+        self._x_time = x_time
+        return self._run(mode, x, y, w, t, 10)
+
+    @pytest.mark.parametrize("mode", ["conditional", "interaction"])
+    def test_a_late_starting_x_no_longer_breaks_the_third_stream(self, mode):
+        t, x, y, w = self._offset_clocks()
+        # Drop X's first samples so its extent starts inside the others', which
+        # is what a spike train recorded after the camera does. X keeps its own
+        # shortened clock; Y and W keep the full one.
+        result = self._run_split(mode, x[3:], t[3:], y, w, t)
+        assert np.isfinite(result.mi_estimate)
+
+    def test_every_stream_reports_the_same_window_count(self):
+        from collections import OrderedDict
+        from neural_mi.data.handler import create_dataset
+        t, x, y, w = self._offset_clocks()
+        bundle = create_dataset(OrderedDict((
+            ('x', dict(data=x[3:], time=t[3:], processor_type='continuous',
+                       processor_params={'window_size': 1.0, 'step_size': 1.0,
+                                         'sample_rate': 10})),
+            ('y', dict(data=y, time=t, processor_type='continuous',
+                       processor_params={'window_size': 1.0, 'step_size': 1.0,
+                                         'sample_rate': 10})),
+            ('w', dict(data=w, time=t, processor_type='categorical',
+                       processor_params={'window_size': 1.0, 'step_size': 1.0,
+                                         'sample_rate': 10})),
+        )))
+        counts = {name: bundle.stream(name).data.shape[0] for name in bundle.stream_names}
+        assert len(set(counts.values())) == 1, counts
+        assert bundle.stream_names == ('x', 'y', 'w')
+
+
+class TestLegsShareOneShift:
+    """Every leg of a difference must see the same stretch of the recording.
+
+    Conditional MI trains one run per term and subtracts them. Those runs carry
+    different task seeds by design, so drawing per-epoch shifts from the global
+    stream had each leg looking at a different offset every epoch, and the
+    difference absorbed the gap between them. The shift generator is seeded from
+    the run's base seed instead, which costs no coordination between the runs.
+    """
+
+    @staticmethod
+    def _data(seed=0):
+        rng = np.random.default_rng(seed)
+        T = 1500
+        return (rng.standard_normal((T, 3)).astype(np.float32),
+                rng.standard_normal((T, 2)).astype(np.float32),
+                rng.standard_normal((T, 2)).astype(np.float32))
+
+    def test_both_legs_draw_the_same_shift_sequence(self):
+        import neural_mi.data.shift_windowing as shift_mod
+        x, y, w = self._data()
+        draws = []
+        real = shift_mod.WindowShifter.random_shift
+
+        def spy(self, generator=None):
+            value = real(self, generator)
+            draws.append(value)
+            return value
+
+        shift_mod.WindowShifter.random_shift = spy
+        try:
+            nmi.run(x, y, mode='conditional',
+                    conditional=Conditional(
+                        w_data=w),
+                    processing=nmi.Processing(
+                        x='continuous', y='continuous',
+                        x_params={'window_size': 10, 'step_size': 10},
+                        y_params={'window_size': 10, 'step_size': 10}, w='continuous', w_params={'window_size': 10, 'step_size': 10}),
+                    model=Model(embedding_dim=4, hidden_dim=32),
+                    training=Training(n_epochs=6, batch_size=64, patience=99,
+                                      shift_windows=True),
+                    show_progress=False, seed=0, n_workers=1)
+        finally:
+            shift_mod.WindowShifter.random_shift = real
+
+        assert len(draws) >= 4 and len(draws) % 2 == 0
+        half = len(draws) // 2
+        assert draws[:half] == draws[half:], (
+            f"legs drew different shifts: {draws[:half]} vs {draws[half:]}")
+
+    def test_the_sequence_is_reproducible_from_the_seed(self):
+        """Same seed, same shifts; a different seed moves them."""
+        from neural_mi.data.shift_windowing import WindowShifter
+        raw = torch.arange(400, dtype=torch.float32).reshape(400, 1)
+        shifter = WindowShifter(raw, 10, 10)
+
+        def draw(seed):
+            gen = torch.Generator()
+            gen.manual_seed(seed)
+            return [shifter.random_shift(gen) for _ in range(6)]
+
+        assert draw(7) == draw(7)
+        assert draw(7) != draw(8)

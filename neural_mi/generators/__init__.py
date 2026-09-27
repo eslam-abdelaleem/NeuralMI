@@ -7,23 +7,22 @@ there is nothing in this package that fails to provide one.
 
 **Exact mutual information**
 
-- :class:`SharedLatentGaussian` is the most general: jointly Gaussian processes
-  driven by a shared autoregressive latent, exposing the exact ``I(A; B | C)``
-  for any choice of processes and time offsets. Every quantity in the temporal
+- :class:`SharedLatentGaussian` is the most general, a set of jointly Gaussian
+  processes driven by a shared autoregressive latent that exposes the exact
+  ``I(A; B | C)`` for any choice of processes and time offsets. Every quantity in the temporal
   taxonomy has an exact number to check against, and ``block_mi(w)`` gives the
   exact windowed MI at window size ``w``.
 - :func:`generate_correlated_gaussians` fixes the MI of an IID pair directly.
 - :func:`generate_windowed_oscillatory` and
   :func:`generate_windowed_multichannel` return windowed data alongside the
-  *observed* MI, computed from the SNR rather than inherited from the latent.
+  *observed* MI, computed from the SNR instead of inherited from the latent.
 - :func:`generate_spike_pair` returns two spike populations sharing a discrete
   latent, with the MI exact from that latent's pmf. Available in a rate coding
-  and a timing coding, which make different demands of the spike
+  and a timing coding. The two make different demands of the spike
   representation.
 - :func:`generate_categorical_pair` and :func:`generate_xor_pair` cover
   discrete and synergistic cases. XOR's individual terms ``I(x1; Y)`` and
-  ``I(x2; Y)`` are exactly zero while the pair determines ``Y``, which is the
-  whole point of it.
+  ``I(x2; Y)`` are exactly zero while the pair determines ``Y``.
 - :func:`generate_nonlinear_from_latent` fixes the MI of a shared latent pair
   and observes it through a smooth nonlinear projection. The projection is
   smooth enough to be near information-preserving in practice, so the ``mi``
@@ -35,7 +34,7 @@ there is nothing in this package that fails to provide one.
 - :func:`generate_lagged_pair` places the dependence at a known lag *and*
   reports the MI at that peak, so ``mode='lag'`` can be checked on both.
 
-A note on windowed generators: :func:`generate_spike_pair`'s value is the MI
+:func:`generate_spike_pair`'s value is the MI
 between windows that align with its own. Analysis must use the same
 ``window_size`` and must not re-tile (``shift_time=False, shift_windows=False``),
 or a window spans two independent latent draws and can carry more.

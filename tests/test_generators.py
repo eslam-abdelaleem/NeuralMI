@@ -23,7 +23,6 @@ from neural_mi.generators import (
     pmf_mi_bits,
     symmetric_joint_pmf,
 )
-from neural_mi.generators import oracle
 
 
 class TestPmfHelpers:

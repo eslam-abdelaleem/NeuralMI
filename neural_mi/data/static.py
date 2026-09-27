@@ -4,6 +4,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 from torch.utils.data import Dataset
 from neural_mi.utils import get_device
+from neural_mi.data.corruption import corrupt
 
 
 class BaseStaticDataset(Dataset, ABC):
@@ -17,9 +18,7 @@ class BaseStaticDataset(Dataset, ABC):
             Compute device used by the model (CPU/CUDA/MPS).  Datasets do not
             use this for data storage; it is kept for reference only.
         data_device : str, optional
-            Device on which ``self.data`` tensors are stored.  Defaults to
-            ``'cpu'``, which keeps large dataset allocations in pageable system
-            RAM and lets the OS reclaim memory freely between tasks.  Pass
+            Device on which ``self.data`` tensors are stored. Defaults to ``'cpu'``, keeping large dataset allocations in pageable system RAM so the OS can reclaim memory freely between tasks. Pass
             ``'auto'`` to co-locate data with the compute device (useful when
             the same dataset is evaluated many times without reloading, e.g.
             precision analysis).
@@ -142,7 +141,11 @@ class StaticDataset(BaseStaticDataset):
         return self.data.shape[0]
 
     def apply_noise(self, amplitude):
-        """Add Gaussian noise to data."""
+        """Add uniform noise of width `amplitude` to every nonzero entry.
+
+        See :func:`neural_mi.data.corruption.corrupt`; zero entries are left as
+        they are.
+        """
         if isinstance(self.data, tuple):
             raise NotImplementedError(
                 "apply_noise is not supported for StaticDataset's compound "
@@ -154,11 +157,10 @@ class StaticDataset(BaseStaticDataset):
         # Allocate data_master if not allocated yet
         if self.data_master is None:
             self.data_master = self.data.detach().clone()
-        noise = torch.randn_like(self.data) * amplitude
-        self.data = self.data_master + noise
+        self.data = corrupt(self.data_master, amplitude, 'noise').clone()
 
     def apply_precision(self, precision_level):
-        """Round data to a specific resolution/precision level."""
+        """Move every nonzero entry to the centre of its bin of width `precision_level`."""
         if isinstance(self.data, tuple):
             raise NotImplementedError(
                 "apply_precision is not supported for StaticDataset's compound "
@@ -170,4 +172,4 @@ class StaticDataset(BaseStaticDataset):
         # Allocate data_master if not allocated yet
         if self.data_master is None:
             self.data_master = self.data.detach().clone()
-        self.data = torch.round(self.data_master / precision_level) * precision_level
+        self.data = corrupt(self.data_master, precision_level, 'rounding').clone()

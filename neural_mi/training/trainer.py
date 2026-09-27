@@ -15,8 +15,9 @@ import torch.nn as nn
 import copy
 import contextlib
 
-from neural_mi.data import PairedDataset, PairedTemporalDataset, SubsetView
-from neural_mi.logger import logger
+from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
+                            AlignedStreams)
+from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks)
@@ -24,8 +25,8 @@ from neural_mi.augmentations import apply_augmentations
 
 # Fraction of the (smoothed) test-MI history that must sit above
 # TEST_TRACE_SATURATION_THRESHOLD * ceiling before peak-epoch selection is
-# flagged as unreliable (Fix 5): a judgement call, kept as a module constant
-# so it can be tuned once more real-data experience is available.
+# flagged as unreliable. A judgement call, kept as a module constant so it can
+# be tuned in one place.
 TEST_TRACE_SATURATED_EPOCH_FRACTION_THRESHOLD = 0.5
 TEST_TRACE_SATURATION_THRESHOLD = 0.9
 CEILING_PROXIMITY_WARNING_THRESHOLD = 0.85
@@ -40,7 +41,7 @@ def _sample_with_minimum_distance(n: int, k: int, d: int) -> np.ndarray:
 
     Draws k values from a compressed range of size n - (k-1)*(d-1), then
     spreads them out by each value's rank so consecutive picks are always
-    at least d apart -- this is what keeps the blocked test-split's blocks
+    at least d apart. This is what keeps the blocked test-split's blocks
     from overlapping or sitting adjacent to each other.
     """
     sample = np.random.choice(n - (k - 1) * (d - 1), k, replace=False)
@@ -91,12 +92,12 @@ class Trainer:
                  device: torch.device, use_variational: bool = False, beta: float = 1024,
                  estimator_params: Optional[Dict[str, Any]] = None,
                  custom_smoothing_fn: Optional[Callable] = None,
-                 spectral_whitening: str = 'std',
+                 whitening: Optional[str] = 'std',
                  gradient_clip_val: Optional[float] = None,
                  decoder_x: Optional[nn.Module] = None,
                  decoder_y: Optional[nn.Module] = None,
-                 decoder_weight_x: float = 1.0,
-                 decoder_weight_y: float = 1.0,
+                 decoder_lambda_x: float = 0.001,
+                 decoder_lambda_y: float = 0.001,
                  decoder_output_activation_x: str = 'linear',
                  decoder_output_activation_y: str = 'linear',
                  use_amp: Union[bool, str] = 'auto',
@@ -131,9 +132,10 @@ class Trainer:
         custom_smoothing_fn : Callable, optional
             A custom function for smoothing the validation MI history, which takes
             a list of MI values and returns a smoothed array. If not provided, a default Gaussian + median filter will be used.
-         spectral_whitening : str, optional
-            Method for spectral whitening when computing spectral metrics. Options are 'std' for standard whitening
-            and 'zca' for ZCA whitening and None. Defaults to 'std'.
+        whitening : {'std', 'zca', None}, optional
+            Normalization of the embeddings before the cross-covariance SVD behind
+            both the spectral metrics and the rotated embeddings (see
+            :func:`neural_mi.utils.cross_covariance_svd`). Defaults to 'std'.
         gradient_clip_val : float, optional
             If set, applies ``torch.nn.utils.clip_grad_norm_`` with this value as
             the maximum gradient norm after each backward pass, before the
@@ -141,14 +143,18 @@ class Trainer:
             rates or difficult distributions.  ``None`` disables clipping.
         decoder_x : nn.Module, optional
             Decoder module that reconstructs X from the X-embedding Z_X.
-            When provided, a reconstruction loss ``decoder_weight_x * MSE(X, decoder_x(Z_X))``
-            is added to the training objective. Defaults to ``None`` (no decoder).
+            When provided, a reconstruction term enters the objective inside the
+            bottleneck bracket. Defaults to ``None`` (no decoder).
         decoder_y : nn.Module, optional
             Decoder module for Y. Defaults to ``None``.
-        decoder_weight_x : float, optional
-            Weight for the X reconstruction loss. Defaults to 1.0.
-        decoder_weight_y : float, optional
-            Weight for the Y reconstruction loss. Defaults to 1.0.
+        decoder_lambda_x : float, optional
+            What reconstructing X is worth *relative to the MI term*, so the
+            coefficient it actually contributes with is ``beta * decoder_lambda_x``
+            when ``use_variational`` and ``decoder_lambda_x`` otherwise. Defaults
+            to 0.001, so at the default ``beta`` of 1024 a reconstruction enters
+            the loss with an absolute coefficient near 1.
+        decoder_lambda_y : float, optional
+            The same for Y. Defaults to 0.001.
         decoder_output_activation_x : str, optional
             Output activation of decoder_x: ``'linear'``, ``'sigmoid'``, or ``'softmax'``.
             When ``'softmax'``, NLL loss (equivalent to cross-entropy) is used instead of MSE.
@@ -166,12 +172,12 @@ class Trainer:
         self.use_variational, self.beta = use_variational, beta
         self.estimator_params = estimator_params if estimator_params is not None else {}
         self.custom_smoothing_fn = custom_smoothing_fn
-        self.spectral_whitening = spectral_whitening
+        self.whitening = whitening
         self.gradient_clip_val = gradient_clip_val
         self.decoder_x = decoder_x.to(device) if decoder_x is not None else None
         self.decoder_y = decoder_y.to(device) if decoder_y is not None else None
-        self.decoder_weight_x = decoder_weight_x if decoder_weight_x is not None else 1.0
-        self.decoder_weight_y = decoder_weight_y if decoder_weight_y is not None else 1.0
+        self.decoder_lambda_x = decoder_lambda_x if decoder_lambda_x is not None else 0.001
+        self.decoder_lambda_y = decoder_lambda_y if decoder_lambda_y is not None else 0.001
         self.decoder_output_activation_x = decoder_output_activation_x or 'linear'
         self.decoder_output_activation_y = decoder_output_activation_y or 'linear'
         self.use_amp = use_amp
@@ -182,6 +188,7 @@ class Trainer:
               train_fraction: float = 0.9, n_test_blocks: int = 5,
               shift_time: bool = False,
               shift_windows: bool = False,
+              shift_seed: Optional[int] = None,
               patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5,
               min_improvement: float = 0.001,
               save_best_model_path: Optional[str] = None, run_id: Optional[str] = None,
@@ -199,7 +206,6 @@ class Trainer:
               scheduler: Optional[Any] = None,
               track_embeddings: Union[bool, float, int, str] = False,
               return_rotated_embeddings: bool = False,
-              rotated_embeddings_whitening: Optional[str] = 'std',
               rotated_embeddings_per_epoch: bool = False,
               return_rotation_matrices: bool = False,
               leak_check_window_size: Optional[float] = None,
@@ -273,14 +279,16 @@ class Trainer:
             If the test set is larger than this, a random subset will be used for evaluation.
             Defaults to 5000.
         train_subset_size : int, optional
-            If provided, limits the number of training samples used in each epoch to this number.
-            If the training set is larger than this, a random subset will be selected each epoch.
-            Defaults to None (use all training samples).
+            Size of the fixed subset of training samples the reported,
+            training-side MI is evaluated on. Training itself uses every
+            training sample. The evaluation is further capped at
+            ``max_eval_samples``. Defaults to None, which takes
+            ``min(n_train, max_eval_samples)``.
         split_gap_fraction : float, optional
             When using 'blocked' split_mode, this fraction of the data will be left as a gap between training and test blocks to reduce leakage.
         leak_check_window_size, leak_check_step : float, optional
             Window geometry for the blocked-split leakage check, in time units.
-            ``gap_fraction`` above buys a gap of *windows*, not time -- the
+            ``gap_fraction`` above buys a gap of *windows*, not time, the
             actual time-domain buffer is ``gap_size * step``, and if that's
             shorter than the window, train and test windows can share raw
             samples even though their indices don't overlap. Most callers
@@ -288,14 +296,14 @@ class Trainer:
             back to ``dataset.window_manager`` when one is live (e.g.
             deferred-processing paths like ``mode='lag'``). Callers whose
             windowing already happened upstream of this Trainer call (the
-            common case for most modes -- see ``run.py``, which builds the
+            common case for most modes. See ``run.py``, which builds the
             windowed dataset once and passes only the resulting tensor down)
             must pass these explicitly, since ``dataset`` here is a plain,
             already-windowed dataset with no window manager of its own.
         track_spectral_history : bool, optional
             If True, records ``pr_eig``, ``pr_singular``, and the raw cross-covariance
             spectrum (singular values) at every epoch in the returned
-            ``spectral_metrics_history`` -- can be expensive, since it evaluates on
+            ``spectral_metrics_history``, can be expensive, since it evaluates on
             ``train_eval_view`` each epoch. Defaults to False. Independent of this
             flag, the same three values are always computed once at the best epoch
             (see ``pr_eig``, ``pr_singular``, ``spectrum`` in the returned dict).
@@ -307,25 +315,25 @@ class Trainer:
             Controls whether train-set MI is evaluated at every epoch alongside test-set MI,
             yielding a ``'train_mi_history'`` in the returned results.
 
-            - ``False`` (default) — no per-epoch train evaluation.
-            - ``True`` — evaluate on the same locked-in training evaluation subset
+            - ``False`` (default), no per-epoch train evaluation.
+            - ``True``: evaluate on the same locked-in training evaluation subset
               used for the final ``train_mi`` (size capped by ``max_eval_samples``).
-            - ``'full'`` or ``1.0`` — evaluate on the entire training set, not
+            - ``'full'`` or ``1.0``: evaluate on the entire training set, not
               capped by ``max_eval_samples``. Use this when the train curve needs
               to be read against the reported estimate: a smaller evaluation
               subset carries a lower InfoNCE ceiling (``log2(n_eval)``) and so
               sits below the estimate for reasons that have nothing to do with
               training.
-            - ``float`` in ``(0, 1)`` — use that fraction of training samples.
-            - ``int >= 1`` — use exactly that many training samples (capped at
+            - ``float`` in ``(0, 1)``: use that fraction of training samples.
+            - ``int >= 1``: use exactly that many training samples (capped at
               the available training set size).
 
             An unrecognised value raises ``ValueError``.
         peak_fraction : float, optional
             Controls how the best epoch is selected for reporting train MI.
 
-            - ``1.0`` (default) — use the epoch where smoothed test MI is maximised.
-            - ``< 1.0`` — use the *first improvement checkpoint* where smoothed test
+            - ``1.0`` (default), use the epoch where smoothed test MI is maximised.
+            - ``< 1.0``: use the *first improvement checkpoint* where smoothed test
               MI reaches ``peak_fraction × max_test_mi``.  This gives a
               conservative estimate that avoids the noisiest tail of training.
               Both the conservative and best-epoch estimates are obtained via
@@ -344,11 +352,11 @@ class Trainer:
             Controls whether embeddings are extracted and stored at every epoch for
             post-hoc animation.  Mirrors the ``eval_train`` style:
 
-            - ``False`` (default) — no embedding tracking.
-            - ``True`` — track the first 512 samples.
-            - ``int >= 1`` — track exactly that many samples (first N in dataset).
-            - ``float`` in ``(0, 1)`` — track that fraction of the total dataset.
-            - ``'full'`` or ``1.0`` — track all samples (emits a ``UserWarning``
+            - ``False`` (default), no embedding tracking.
+            - ``True``: track the first 512 samples.
+            - ``int >= 1``: track exactly that many samples (first N in dataset).
+            - ``float`` in ``(0, 1)``: track that fraction of the total dataset.
+            - ``'full'`` or ``1.0``: track all samples (emits a ``UserWarning``
               about cost).
 
             An unrecognised value raises ``ValueError``.
@@ -357,7 +365,7 @@ class Trainer:
             user-supplied labels align with the original data ordering.
             Results are stored as ``'embedding_history_x'`` and
             ``'embedding_history_y'`` in the returned dict (each a list of
-            ``(n_tracked, embed_dim)`` arrays, one per epoch).
+            ``(n_tracked, embedding_dim)`` arrays, one per epoch).
 
         Returns
         -------
@@ -365,7 +373,11 @@ class Trainer:
             A dictionary containing the results of the training run.
         """
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
-        is_temporal = isinstance(dataset, PairedTemporalDataset)
+        # Any bundle carrying a window grid is temporal, not only the
+        # two-stream subclass: a three-stream conditional bundle has the same
+        # grid and the same time_shift, and testing the subclass would leave
+        # it silently unshiftable.
+        is_temporal = isinstance(dataset, AlignedStreams)
 
         # Prime the time-shift grid once, up front -- before the train/test
         # split or the frozen eval snapshot below are computed -- so
@@ -384,11 +396,6 @@ class Trainer:
 
         # 1. Split Data
         if train_indices is not None and test_indices is not None:
-            logger.warning(
-                "Custom train_indices and test_indices were provided. "
-                "The split_mode, train_fraction, n_test_blocks, and split_gap_fraction "
-                "parameters will be ignored for this run."
-            )
             train_idx, test_idx = train_indices, test_indices
         elif split_mode == 'random':
             train_idx, test_idx = self._create_random_split(len(dataset), train_fraction)
@@ -411,20 +418,18 @@ class Trainer:
             else:
                 _leak_kwargs = {}
             if is_temporal and shift_time and 'window_size' in _leak_kwargs:
-                # A training window's real content can now drift by up to a
-                # full window_size under a genuine time_shift (Phase 0 fix),
-                # while the frozen eval window stays at offset 0 -- the
-                # leak-check margin that's correct for static overlapping
-                # windows (window_size) is too small here; the safe margin
-                # is 2*window_size. Warn-only check, so this only tightens
-                # when the warning fires, it doesn't change the split itself.
+                # Under a time shift a training window's content can drift by
+                # up to a full window_size while the frozen eval window stays
+                # at offset 0, so the safe leak-check margin is
+                # 2 * window_size, not window_size. The check only warns; it
+                # does not change the split.
                 _leak_kwargs = {**_leak_kwargs, 'window_size': 2 * _leak_kwargs['window_size']}
             train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
                                                              gap_fraction=split_gap_fraction, **_leak_kwargs)
         
         n_train = len(train_idx)
         if batch_size > n_train > 0:
-            # Say so rather than capping silently. Batch size sets how many
+            # Say so instead of capping silently. Batch size sets how many
             # contrastive samples each estimate is scored against, so raising it
             # is the standard response to an estimate that looks bounded -- and
             # above n_train that response does nothing at all. Naming the real
@@ -432,12 +437,12 @@ class Trainer:
             # move.
             warnings.warn(
                 f"batch_size={batch_size} exceeds the {n_train} training samples "
-                f"available, so it has been capped to {n_train}. Batch size bounds "
-                f"how many contrastive samples each estimate is scored against, and "
-                f"raising it beyond the training-set size has no effect. To change "
-                f"that bound, increase the number of training samples: use a longer "
-                f"recording, a smaller window_size, or a smaller step_size.",
-                UserWarning, stacklevel=2,
+                f"available, so it has been capped to {n_train}. Batch size sets how "
+                f"many negatives each training step sees, and a batch cannot hold "
+                f"more samples than the training set. For larger batches, increase "
+                f"the number of training samples: use a longer recording, a smaller "
+                f"window_size, or a smaller step_size.",
+                UserWarning, stacklevel=user_stacklevel(),
             )
             batch_size = n_train
         if batch_size < 2 and n_train > 1:
@@ -459,7 +464,7 @@ class Trainer:
                 f"training samples ({len(train_idx)}). Clamping to {len(train_idx)}. "
                 f"Evaluation metrics may be less stable than expected.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
         # Clamp to available training samples to avoid ValueError from np.random.choice
         actual_train_subset_size = min(actual_train_subset_size, len(train_idx))
@@ -476,7 +481,7 @@ class Trainer:
             elif eval_train == 'full' or (isinstance(eval_train, float) and eval_train == 1.0):
                 # The whole training set, deliberately not capped by max_eval_samples.
                 # This is what makes the per-epoch train curve comparable to the
-                # reported estimate rather than sitting below it on a smaller
+                # reported estimate instead of sitting below it on a smaller
                 # evaluation subset (and so under a lower InfoNCE ceiling).
                 epoch_train_n = len(train_idx)
             elif isinstance(eval_train, float) and 0.0 < eval_train < 1.0:
@@ -494,7 +499,7 @@ class Trainer:
             if _do_epoch_train_eval:
                 epoch_train_eval_idx = self._select_train_eval_indices(train_idx, epoch_train_n, is_temporal)
                 # Wrapped in a SubsetView (like train_view/test_view/train_eval_view)
-                # rather than indexed as a plain fixed array -- for temporal data a
+                # instead of indexed as a plain fixed array -- for temporal data a
                 # shift_time rebuild can shrink window_manager.n_windows (windows
                 # failing min_coverage_fraction after the shift get dropped),
                 # which would otherwise leave this array's indices pointing past
@@ -520,11 +525,11 @@ class Trainer:
                 warnings.warn(
                     f"track_embeddings={track_embeddings!r}: storing embeddings for all "
                     f"{_N_total} samples at every epoch can be very memory-intensive "
-                    f"({_N_total} × embed_dim × n_epochs × 4 bytes). "
+                    f"({_N_total} × embedding_dim × n_epochs × 4 bytes). "
                     f"Pass an integer (e.g. track_embeddings=512) to limit tracking to the "
                     f"first N samples.",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=user_stacklevel(),
                 )
                 embed_track_n = _N_total
             elif isinstance(track_embeddings, int) and track_embeddings >= 1:
@@ -553,14 +558,14 @@ class Trainer:
                     "return_rotated_embeddings=True was requested, but this trainer's model "
                     "exposes no embedding_net_x, so there are no separate embedding "
                     "networks to rotate. Skipping rotation.",
-                    UserWarning, stacklevel=2,
+                    UserWarning, stacklevel=user_stacklevel(),
                 )
             elif not _do_embed_tracking:
                 warnings.warn(
                     "return_rotated_embeddings=True requires track_embeddings to be enabled. "
                     "No per-epoch embeddings are being tracked, so rotation will be skipped. "
                     "Set track_embeddings=True (or an integer/fraction) to enable rotation.",
-                    UserWarning, stacklevel=2,
+                    UserWarning, stacklevel=user_stacklevel(),
                 )
             else:
                 _do_rotation = True
@@ -576,9 +581,23 @@ class Trainer:
         # evaluation always reads a frozen, pre-shift snapshot (both the
         # data and the index arrays, not SubsetView's live-updating
         # `.indices`, which can drift for `shift_time`'s real
-        # PairedTemporalDataset across rebuilds) rather than whatever the
+        # PairedTemporalDataset across rebuilds) instead of whatever the
         # dataset currently holds. Training batches still read the live,
         # currently-shifted `dataset.x_dataset`/`.y_dataset` below.
+        # Per-epoch shifts are drawn from their own generator, seeded from the
+        # run's base seed instead of the per-task one. Quantities built as a
+        # difference of estimates (conditional MI, interaction information) train
+        # one leg per term, and those legs carry different task seeds by design,
+        # so drawing shifts from the global stream had every leg looking at a
+        # different stretch of the recording each epoch. Subtracting estimates
+        # taken on different data adds between-chunk variance to a residual that
+        # is already a small difference of large numbers. A shared seed puts
+        # every leg on the same shift at the same epoch, which costs nothing:
+        # no coordination between runs, just a generator they can each rebuild.
+        _shift_generator = None
+        if shift_seed is not None:
+            _shift_generator = torch.Generator()
+            _shift_generator.manual_seed(int(shift_seed) % (2 ** 31))
         _window_shifter = getattr(dataset, '_window_shifter', None)
         _shifting_active = (is_temporal and shift_time) or (shift_windows and _window_shifter is not None)
         if _shifting_active:
@@ -640,6 +659,12 @@ class Trainer:
                 with _fwd_ctx:
                     scores, kl_loss = self.model(x_batch, y_batch)
                     mi_estimate = self.estimator_fn(scores, **self.estimator_params)
+                    # In the bottleneck Lagrangian beta scales everything on the
+                    # relevance side, the MI term and both reconstructions alike.
+                    # Keeping the reconstructions inside it is what lets the
+                    # lambdas stay relative to the MI term: without it, changing
+                    # beta would silently re-weight reconstruction against MI.
+                    mi_coeff = self.beta if self.use_variational else 1.0
                     if self.use_variational:
                         loss = kl_loss - self.beta * mi_estimate
                     else:
@@ -649,11 +674,11 @@ class Trainer:
                         z_x, z_y = self.model.get_training_embeddings(x_batch, y_batch)
                         if self.decoder_x is not None:
                             recon_x = self.decoder_x(z_x)
-                            loss = loss + self.decoder_weight_x * self._decoder_loss(
+                            loss = loss + mi_coeff * self.decoder_lambda_x * self._decoder_loss(
                                 recon_x, x_batch, self.decoder_output_activation_x)
                         if self.decoder_y is not None:
                             recon_y = self.decoder_y(z_y)
-                            loss = loss + self.decoder_weight_y * self._decoder_loss(
+                            loss = loss + mi_coeff * self.decoder_lambda_y * self._decoder_loss(
                                 recon_y, y_batch, self.decoder_output_activation_y)
                 if _amp_active:
                     _scaler.scale(loss).backward()
@@ -719,7 +744,7 @@ class Trainer:
                     if _do_rotation and rotated_embeddings_per_epoch:
                         _rot = compute_cross_covariance_rotation(
                             embedding_history_x[-1], embedding_history_y[-1],
-                            whitening=rotated_embeddings_whitening,
+                            whitening=self.whitening,
                         )
                         embedding_history_x_rotated.append(_rot['zx_rotated'])
                         embedding_history_y_rotated.append(_rot['zy_rotated'])
@@ -757,14 +782,21 @@ class Trainer:
 
             # Data Augmentation: Temporal Shifting
             if is_temporal and shift_time:
-                time_shift = np.random.uniform(high=dataset.window_manager.window_size)
+                # Same reasoning as the window shift below: drawn from the
+                # shared generator so every leg of a difference lands on the
+                # same stretch at the same epoch.
+                if _shift_generator is not None:
+                    time_shift = float(torch.rand(1, generator=_shift_generator).item()
+                                       * dataset.window_manager.window_size)
+                else:
+                    time_shift = np.random.uniform(high=dataset.window_manager.window_size)
                 dataset.time_shift(offset_x=time_shift, offset_y=time_shift)
 
             # Data Augmentation: cheap reslice-based window shift (see
             # neural_mi/data/shift_windowing.py). No-op unless `dataset` was
             # built with an attached shifter.
             if shift_windows and _window_shifter is not None:
-                _shift = _window_shifter.random_shift()
+                _shift = _window_shifter.random_shift(_shift_generator)
                 _x_shifted, _y_shifted = _window_shifter.windows_at(_shift)
                 dataset.x_dataset.data = _x_shifted
                 dataset.y_dataset.data = _y_shifted
@@ -818,19 +850,16 @@ class Trainer:
         _scale = nats_to_bits  # 1/ln(2) for bits, 1.0 for nats -- same scale as every other reported MI
         _units = output_units
 
-        # Ceiling diagnostics: computed and recorded for every mode/estimator
-        # (Fix 6), not just InfoNCE, since even a non-hard-ceiling estimator's
-        # proximity to log(n_eval) is informative. `eval_size` keeps its
-        # existing, already-relied-upon meaning (test-side n, e.g. the
-        # dimensionality noise-injection ladder keys ceiling comparisons on
-        # it) -- unchanged, still populated unconditionally now rather than
-        # only for InfoNCE. `train_eval_size` is new: the sample count behind
-        # the *reported* evaluation (`train_mi`), which Fix 1 decoupled from
-        # `eval_size` -- the two are no longer interchangeable, so this needs
-        # its own name rather than overloading `eval_size` to mean either one
-        # depending on caller (that would silently break existing callers).
+        # Ceiling diagnostics, for every estimator: even one without a hard
+        # ceiling is informative about its distance from log(n_eval).
+        # `eval_size` is the test-side sample count, and `train_eval_size` the
+        # count behind the reported estimate (`train_mi`). They can differ, so
+        # each has its own name and ceiling.
         _eval_size = min(len(test_idx), max_eval_samples) if len(test_idx) > 0 else None
-        _train_eval_size = actual_train_subset_size if actual_train_subset_size > 0 else None
+        # The train-side estimate is evaluated on at most max_eval_samples rows of
+        # its subset, so that is the count its ceiling is set by.
+        _train_eval_size = (min(actual_train_subset_size, max_eval_samples)
+                            if actual_train_subset_size > 0 else None)
         _test_ceiling_mi = (np.log(_eval_size) * _scale) if _eval_size and _eval_size >= 2 else None
         _train_ceiling_mi = (np.log(_train_eval_size) * _scale) if _train_eval_size and _train_eval_size >= 2 else None
         _test_saturation = (final_test_mi * _scale / _test_ceiling_mi) if _test_ceiling_mi else None
@@ -852,10 +881,10 @@ class Trainer:
                     f"estimator for high-MI scenarios."
                 )
 
-        # Fix 5: is peak-epoch selection actually distinguishing epochs, or is
-        # the smoothed test trace riding at/near its own ceiling for most of
-        # training -- in which case the argmax below is close to a coin flip
-        # over flat noise, and the reported best_epoch is arbitrary.
+        # Does peak-epoch selection distinguish epochs at all? When the
+        # smoothed test trace rides near its ceiling for most of training, the
+        # argmax below is close to a coin flip over flat noise, and the
+        # reported best_epoch is arbitrary.
         _smoothed_history = np.asarray(
             self.custom_smoothing_fn(history) if self.custom_smoothing_fn
             else self._smooth(history, smoothing_sigma, median_window)
@@ -893,7 +922,7 @@ class Trainer:
                 f"Consider increasing n_epochs (or lowering patience to enable "
                 f"early stopping).",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
 
         # All-negative flag (from test MI history; warning deferred until _raw_train_mi is set)
@@ -948,13 +977,13 @@ class Trainer:
             warnings.warn(
                 f"All test MI values in the training history are non-positive "
                 f"(max test MI = {max(valid_history) * _scale:.4f} {_units} at epoch {best_ep}). "
-                f"The model failed to learn a generalising representation — this typically "
+                f"The model learned no representation that generalises. This typically "
                 f"indicates too few epochs, too high a learning rate, or degenerate data. "
                 f"Reporting train MI = 0 {_units}. The raw train MI was "
                 f"{_raw_train_mi * _scale:.4f} {_units} (likely reflecting overfitting, not true MI). "
                 f"Consider increasing n_epochs, reducing learning_rate, or inspecting data quality.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=user_stacklevel(),
             )
             final_train_mi = 0.0
 
@@ -969,30 +998,23 @@ class Trainer:
         if _shifting_active:
             # Any post-training read of the dataset (e.g. task.py's
             # return_embeddings extraction) must use this frozen, pre-shift
-            # snapshot rather than dataset.x_data/y_data directly -- those
+            # snapshot instead of dataset.x_data/y_data directly -- those
             # properties reflect whatever shift was last applied during
             # training, not the canonical view best_model_state was scored
             # against.
             results['_frozen_eval_x'] = _eval_x_source
             results['_frozen_eval_y'] = _eval_y_source
         if _eval_size is not None:
-            # eval_size = min(len(test_idx), max_eval_samples): the *test-side*
-            # evaluation denominator (unchanged meaning -- e.g. the
-            # dimensionality noise-injection ladder already keys ceiling
-            # comparisons on it). Its ceiling is log(eval_size), NOT
-            # log(batch_size). Populated for every mode/estimator now, not
-            # just InfoNCE (Fix 6) -- the reference value is informative even
-            # for estimators without a hard ceiling.
+            # eval_size = min(len(test_idx), max_eval_samples), the test-side
+            # evaluation count. Its ceiling is log(eval_size), not
+            # log(batch_size).
             results['eval_size'] = _eval_size
             results['test_ceiling_mi'] = _test_ceiling_mi
             results['test_saturation'] = _test_saturation
         if _train_eval_size is not None:
-            # train_eval_size: sample count behind the *reported* evaluation
-            # (train_mi). Deliberately a separate field from eval_size, not a
-            # reuse of it -- Fix 1 decoupled the two (train_eval_size can now
-            # be larger than eval_size), so they can differ and callers that
-            # want "the ceiling for what I'm actually being shown" need this,
-            # not eval_size.
+            # train_eval_size, the sample count behind the reported estimate
+            # (train_mi). It can exceed eval_size, and it is the ceiling that
+            # applies to the number the caller is shown.
             results['train_eval_size'] = _train_eval_size
             results['train_ceiling_mi'] = _train_ceiling_mi
             results['train_saturation'] = _train_saturation
@@ -1029,7 +1051,7 @@ class Trainer:
                 _ref_ep = min(best_ep, len(embedding_history_x) - 1)
                 _rot = compute_cross_covariance_rotation(
                     embedding_history_x[_ref_ep], embedding_history_y[_ref_ep],
-                    whitening=rotated_embeddings_whitening,
+                    whitening=self.whitening,
                 )
                 U, V = _rot['rotation_x'], _rot['rotation_y']
                 for _zx_ep, _zy_ep in zip(embedding_history_x, embedding_history_y):
@@ -1051,14 +1073,15 @@ class Trainer:
                 _tx = _to_device(_index_batch(_eval_x_source, _eval_train_eval_idx), self.device)
                 _ty = _eval_y_source[_eval_train_eval_idx, ...].to(self.device)
                 _zx, _zy = self.model.get_embeddings(_tx, _ty)  # uses existing no_grad method
+                _mi_coeff = self.beta if self.use_variational else 1.0
                 _recon_loss = 0.0
                 if self.decoder_x is not None:
                     _recon_x = self.decoder_x(_zx)
-                    _recon_loss += self.decoder_weight_x * float(
+                    _recon_loss += _mi_coeff * self.decoder_lambda_x * float(
                         self._decoder_loss(_recon_x, _tx, self.decoder_output_activation_x).item())
                 if self.decoder_y is not None:
                     _recon_y = self.decoder_y(_zy)
-                    _recon_loss += self.decoder_weight_y * float(
+                    _recon_loss += _mi_coeff * self.decoder_lambda_y * float(
                         self._decoder_loss(_recon_y, _ty, self.decoder_output_activation_y).item())
             results['decoder_recon_loss'] = _recon_loss
 
@@ -1094,8 +1117,8 @@ class Trainer:
             Scalar loss value.
         """
         if activation == 'softmax':
-            # recon: (B, C, W) — probability over C channels for each time step.
-            # target: (B, C, W) — ground-truth (one-hot or soft target over channels).
+            # recon: (B, C, W), probability over C channels for each time step.
+            # target: (B, C, W), ground-truth (one-hot or soft target over channels).
             # Use distributional cross-entropy:
             #   L = -E_{b,w} [ sum_c target_{b,c,w} * log(recon_{b,c,w}) ].
             log_probs = torch.log(recon.clamp(min=1e-8))  # (B, C, W)
@@ -1165,18 +1188,18 @@ class Trainer:
 
         Always returns both participation-ratio variants (``pr_eig``,
         ``pr_singular``) plus the raw spectrum (singular values) they were
-        computed from -- ``effective_rank``/``spectral_entropy`` are omitted
+        computed from, ``effective_rank``/``spectral_entropy`` are omitted
         since they're cheaply derivable from the spectrum if ever needed.
         """
         self.model.eval()
         with torch.no_grad():
             zx, zy = self.model.get_embeddings(_to_device(x, self.device), y.to(self.device))
 
-        spectrum = compute_cross_covariance_spectrum(zx, zy, whitening=self.spectral_whitening)
+        spectrum = compute_cross_covariance_spectrum(zx, zy, whitening=self.whitening)
         metrics = compute_spectral_metrics(spectrum)
 
         results = {
-            'spectral_whitening': self.spectral_whitening,
+            'whitening': self.whitening,
             'pr_eig': metrics['pr_eig'],
             'pr_singular': metrics['pr_singular'],
             'spectrum': spectrum,
@@ -1257,7 +1280,7 @@ class Trainer:
         evaluation (the final report, and per-epoch tracking via
         ``eval_train``).
 
-        For static data a plain random subsample is fine -- there's no
+        For static data a plain random subsample is fine. There's no
         temporal structure whose contiguity needs to survive anything.
 
         For temporal data, a *scattered* random subsample is wrong even
@@ -1266,13 +1289,13 @@ class Trainer:
         it to time ranges once, then re-deriving indices from those ranges
         whenever the dataset's windows are rebuilt (`views.py`). A random
         scatter of individual window indices has almost no contiguous
-        runs, so it degenerates into one zero-width time range per index --
+        runs, so it degenerates into one zero-width time range per index,
         thousands of them for a large subset. Re-quantizing that many
         degenerate ranges against a shifted window grid collides many of
         them onto the same window (deduplicated away) or drops them into a
         gap between windows entirely, silently discarding a large fraction
         of the subset on the very next shift. This is a lossy
-        representation problem, not a "large shift" problem -- it fires
+        representation problem, not a "large shift" problem. It fires
         regardless of shift magnitude once the subset is scattered enough.
 
         The fix is to never *construct* a scattered temporal subset in the
@@ -1281,10 +1304,10 @@ class Trainer:
         ``_create_blocked_split`` carves out test blocks + gap buffers).
         Pick one contiguous sub-chunk per segment, sized proportionally to
         that segment's length, so the eval subset stays representable as a
-        handful of wide time ranges -- exactly what ``SubsetView`` already
+        handful of wide time ranges, exactly what ``SubsetView`` already
         handles correctly and cheaply across rebuilds (`train_view`/
-        `test_view` are also wide contiguous ranges) -- while still
-        covering every part of the recording rather than sampling
+        `test_view` are also wide contiguous ranges), while still
+        covering every part of the recording instead of sampling
         disproportionately from just one segment (a non-stationary
         recording would otherwise bias the eval MI toward whichever
         segment happened to be sampled, the same "don't let one chunk

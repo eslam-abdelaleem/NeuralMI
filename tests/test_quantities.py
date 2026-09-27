@@ -1,18 +1,13 @@
 # tests/test_quantities.py
-"""Tests for neural_mi/quantities.py's information-quantities convenience
-functions (Stage 1: unconditioned I(A;B) on offset slices, no architecture
-change).
+"""Tests for the named quantities of neural_mi/quantities.py.
 
 Ground truth comes from a small, self-contained shared-latent Gaussian AR(1)
-oracle (X_t = a*Z_t + noise, Y_t = b*Z_t + noise, Z_t = phi*Z_{t-1} + noise),
-the same construction used to validate this taxonomy during development, kept
-self-contained here rather than importing the scratch harness scripts that
-aren't part of the shipped package. Mutual information between any set of
-offset slices of X and/or Y is exact via the standard Gaussian log-det
-formula on the process's Toeplitz autocovariance.
+oracle (X_t = a*Z_t + noise, Y_t = b*Z_t + noise, Z_t = phi*Z_{t-1} + noise).
+Mutual information between any set of offset slices of X and/or Y is exact via
+the standard Gaussian log-det formula on the process's Toeplitz
+autocovariance.
 """
 import numpy as np
-import pandas as pd
 import pytest
 import torch
 
@@ -63,13 +58,13 @@ class _SharedLatentOracle:
     def ais_exact(self, k):
         return self.mi_bits([('x', s) for s in range(-k, 0)], [('x', 0)])
 
-    def excess_entropy_exact(self, k, future_k):
+    def predictive_information_exact(self, k):
         return self.mi_bits([('x', s) for s in range(-k, 0)],
-                             [('x', s) for s in range(0, future_k)])
+                             [('x', s) for s in range(0, k)])
 
-    def cross_predictive_exact(self, past_k, future_k):
-        return self.mi_bits([('x', s) for s in range(-past_k, 0)],
-                             [('y', s) for s in range(0, future_k)])
+    def cross_predictive_exact(self, k):
+        return self.mi_bits([('x', s) for s in range(-k, 0)],
+                             [('y', s) for s in range(0, k)])
 
     def block_mi_exact(self, w):
         return self.mi_bits([('x', s) for s in range(w)], [('y', s) for s in range(w)])
@@ -134,9 +129,9 @@ class TestConvenienceFunctionsReturnResults:
         assert isinstance(r, nmi.Results)
         assert r.mi_estimate is not None
 
-    def test_excess_entropy_returns_results(self):
+    def test_predictive_information_returns_results(self):
         x = torch.randn(300, 1)
-        r = nmi.excess_entropy(x, k=3, future_k=2, model=_MODEL, training=_TRAINING,
+        r = nmi.predictive_information(x, k=3, model=_MODEL, training=_TRAINING,
                                 show_progress=False)
         assert isinstance(r, nmi.Results)
 
@@ -147,7 +142,7 @@ class TestConvenienceFunctionsReturnResults:
 
     def test_cross_predictive_information_returns_results(self):
         x, y = torch.randn(300, 1), torch.randn(300, 1)
-        r = nmi.cross_predictive_information(x, y, past_k=3, model=_MODEL,
+        r = nmi.cross_predictive_information(x, y, k=3, model=_MODEL,
                                               training=_TRAINING, show_progress=False)
         assert isinstance(r, nmi.Results)
 
@@ -159,15 +154,13 @@ class TestConvenienceFunctionsReturnResults:
 
 
 class TestTransferEntropy:
-    """`transfer_entropy` (E23): the plain quantity had no wrapper while its
-    conditional variant did, so a notebook showing "here is TE, now here is TE
-    controlling for W" had to switch API level between the two lines.
+    """`transfer_entropy` is the plain quantity beside its conditional variant.
 
-    Contract tests, for the same reason the conditional class below gives:
-    measured on real recordings (verification V14) TE carries a seed-to-seed
-    spread larger than its own mean, so asserting a value would assert noise.
-    What is pinned is that the wrapper is exactly the `mode='transfer'` call it
-    claims to be, and that its sweep path returns the documented shape.
+        Contract tests, for the reason the conditional class below gives: on real
+        recordings TE carries a seed-to-seed spread larger than its own mean, so
+        asserting a value would assert noise. What is pinned is that the wrapper is
+        exactly the `mode='transfer'` call it claims to be, and that its sweep path
+        returns the documented shape.
     """
 
     @staticmethod
@@ -200,16 +193,14 @@ class TestTransferEntropy:
 
 
 class TestConditionalTransferEntropy:
-    """`conditional_transfer_entropy` is exported from the package top level and
-    had zero test references anywhere in the suite.
+    """`conditional_transfer_entropy`, exported from the package top level.
 
-    Deliberately a contract test, not an accuracy test. Measured against
-    SharedLatentGaussian (verification V5) this quantity carries an
-    error-amplification factor near 100 and a seed-to-seed spread larger than
-    its own value, so it is not distinguishable from zero at any sample size a
-    test can afford. Asserting a value would be asserting noise. What is worth
-    pinning is that it runs, returns the documented shape, and reports the
-    amplification factor a caller needs in order to know not to trust it.
+        A contract test, not an accuracy test. Against SharedLatentGaussian this
+        quantity carries an amplification factor near 100 and a seed-to-seed
+        spread larger than its own value, so it is not distinguishable from zero at
+        any sample size a test can afford. What is pinned is that it runs, returns
+        the documented shape, and reports the amplification factor a caller needs
+        to know not to trust it.
     """
 
     def test_returns_results_with_amplification(self):
@@ -251,6 +242,7 @@ class TestConvenienceFunctionsSweep:
     """An iterable construction parameter must dispatch a sweep and return a
     Results shaped like mode='sweep''s, so every entry point reads the same way."""
 
+    @pytest.mark.slow
     def test_active_information_storage_sweep_returns_results(self):
         x = torch.randn(300, 1)
         r = nmi.active_information_storage(x, k=[2, 3, 4], model=_MODEL, training=_TRAINING,
@@ -262,7 +254,7 @@ class TestConvenienceFunctionsSweep:
         assert list(df['k']) == [2, 3, 4]
         assert 'mi_mean' in df.columns
         assert df['mi_mean'].notna().all()
-        assert r.get('raw_results') is not None
+        assert len(r.runs) == 3
 
     def test_block_mi_sweep_returns_results(self):
         x, y = torch.randn(300, 1), torch.randn(300, 1)
@@ -303,31 +295,31 @@ class TestAccuracyAgainstOracle:
         )
         assert abs(r.mi_estimate - exact) < 0.5
 
-    def test_excess_entropy_at_least_ais(self):
+    def test_predictive_information_at_least_ais(self):
         """E_X >= AIS_X always (a longer future window can only reveal more)."""
         k = 5
         x, _y = self._oracle.sample(4000, seed=1)
         ais_exact = self._oracle.ais_exact(k)
-        ee_exact = self._oracle.excess_entropy_exact(k, future_k=3)
+        ee_exact = self._oracle.predictive_information_exact(k)
         assert ee_exact >= ais_exact - 1e-9  # exact-math sanity check on the oracle itself
 
         r_ais = nmi.active_information_storage(
             torch.from_numpy(x), k=k, model=_MODEL, training=_TRAINING,
             show_progress=False, seed=0,
         )
-        r_ee = nmi.excess_entropy(
-            torch.from_numpy(x), k=k, future_k=3, model=_MODEL, training=_TRAINING,
+        r_ee = nmi.predictive_information(
+            torch.from_numpy(x), k=k, model=_MODEL, training=_TRAINING,
             show_progress=False, seed=0,
         )
         assert abs(r_ais.mi_estimate - ais_exact) < 0.5
         assert abs(r_ee.mi_estimate - ee_exact) < 0.5
 
     def test_cross_predictive_information_accuracy(self):
-        past_k = 5
+        k = 5
         x, y = self._oracle.sample(4000, seed=2)
-        exact = self._oracle.cross_predictive_exact(past_k, future_k=1)
+        exact = self._oracle.cross_predictive_exact(k)
         r = nmi.cross_predictive_information(
-            torch.from_numpy(x), torch.from_numpy(y), past_k=past_k,
+            torch.from_numpy(x), torch.from_numpy(y), k=k,
             model=_MODEL, training=_TRAINING, show_progress=False, seed=0,
         )
         assert abs(r.mi_estimate - exact) < 0.5
@@ -361,12 +353,10 @@ class TestAccuracyAgainstOracle:
 # show_progress must reach every per-task run(), not just the outer sweep bar
 # --------------------------------------------------------------------------
 class TestSweepShowProgressPropagation:
-    """Regression: dispatch_tasks' own show_progress only ever controlled the
-    outer per-task-loop bar; the four task functions never forwarded the
-    caller's show_progress into their own inner run() call, so
-    show_progress=False silently failed to suppress each sweep entry's own
-    training-loop progress bar. Checked here by capturing what quantities.py's
-    module-level run() actually receives, not by scraping stdout."""
+    """show_progress reaches every per-value run() call of a swept quantity,
+        not just the outer progress bar. Checked by capturing what quantities.py's
+        module-level run() receives.
+    """
 
     def test_active_information_storage_sweep_forwards_show_progress(self, monkeypatch):
         received = []
@@ -407,6 +397,377 @@ class TestSweepShowProgressPropagation:
         monkeypatch.setattr(nmi.quantities, 'run', _spy)
         x, y = torch.randn(300, 1), torch.randn(300, 1)
         model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16, n_layers=1)
-        nmi.mi_rate(x, y, h=[0, 3], W=5, model=model, training=Training(n_epochs=2, patience=1),
+        nmi.mi_rate(x, y, h=[0, 3], half_width=5, model=model, training=Training(n_epochs=2, patience=1),
                    n_workers=1, show_progress=False)
         assert received and all(v is False for v in received)
+
+
+class TestIterableAndGridCompose:
+    """A quantity's own iterable parameter is a grid key like any other, so it
+    composes with sweep_grid: every value runs every configuration and repeat
+    of the grid, and the result has one dataframe row per combination."""
+
+    @staticmethod
+    def _data():
+        from neural_mi.generators import SharedLatentGaussian
+        oracle = SharedLatentGaussian(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
+                                      phi=0.9, coupling=0.4, noise=1.0, seed=0)
+        s = oracle.sample(T=1200, seed=0)
+        return tuple(s[k].astype('float32') for k in ('x', 'y', 'w'))
+
+    @staticmethod
+    def _cheap():
+        return dict(model=nmi.Model(embedding_dim=4, hidden_dim=32),
+                    training=Training(n_epochs=2, batch_size=256),
+                    show_progress=False, seed=0)
+
+    @pytest.mark.parametrize("quantity", [
+        'active_information_storage', 'predictive_information',
+        'cross_predictive_information', 'block_mi', 'transfer_entropy',
+    ])
+    def test_an_iterable_and_repeats_give_one_row_per_value(self, quantity):
+        x, y, _ = self._data()
+        calls = {
+            'active_information_storage': lambda: nmi.active_information_storage(
+                x, k=[2, 3], sweep_grid={'run_id': [0, 1]}, **self._cheap()),
+            'predictive_information': lambda: nmi.predictive_information(
+                x, k=[2, 3], sweep_grid={'run_id': [0, 1]}, **self._cheap()),
+            'cross_predictive_information': lambda: nmi.cross_predictive_information(
+                x, y, k=[2, 3], sweep_grid={'run_id': [0, 1]}, **self._cheap()),
+            'block_mi': lambda: nmi.block_mi(
+                x, y, window_size=[2, 3], sweep_grid={'run_id': [0, 1]}, **self._cheap()),
+            'transfer_entropy': lambda: nmi.transfer_entropy(
+                x, y, history_window=[2, 3], sweep_grid={'run_id': [0, 1]}, **self._cheap()),
+        }
+        param = {'block_mi': 'window_size', 'transfer_entropy': 'history_window'}.get(quantity, 'k')
+        result = calls[quantity]()
+        assert list(result.dataframe[param]) == [2, 3]
+        assert list(result.dataframe['n_runs']) == [2, 2]
+        assert result.mi_estimate is None
+        assert result.params['config_keys'] == [param]
+
+    def test_the_parameter_inside_sweep_grid_is_refused(self):
+        x, _, _ = self._data()
+        with pytest.raises(ValueError, match="leave 'k' out of sweep_grid"):
+            nmi.active_information_storage(x, k=[2, 3], sweep_grid={'k': [4]}, **self._cheap())
+
+    @pytest.mark.parametrize("quantity", ['transfer_entropy', 'interaction_information'])
+    def test_repeats_of_a_difference_quantity_are_kept_per_repeat(self, quantity):
+        x, y, w = self._data()
+        calls = {
+            'transfer_entropy': lambda: nmi.transfer_entropy(
+                x, y, history_window=2, sweep_grid={'run_id': [0, 1, 2]}, **self._cheap()),
+            'interaction_information': lambda: nmi.interaction_information(
+                x, y, w, sweep_grid={'run_id': [0, 1, 2]}, **self._cheap()),
+        }
+        result = calls[quantity]()
+        assert len(result.runs) == 3
+        assert result.mi_estimate == pytest.approx(result.runs['mi'].mean())
+
+    def test_a_scalar_parameter_with_repeats_is_one_row(self):
+        x, y, _ = self._data()
+        repeats = nmi.block_mi(x, y, window_size=3, sweep_grid={'run_id': [0, 1]}, **self._cheap())
+        assert len(repeats.dataframe) == 1 and repeats.dataframe['n_runs'].iloc[0] == 2
+        assert len(repeats.runs) == 2
+        assert 'train_ceiling_mi' in repeats.runs.columns
+        assert repeats.params['window_size'] == 3
+
+    def test_rigorous_runs_on_a_single_mi_quantity(self):
+        x, _, _ = self._data()
+        result = nmi.active_information_storage(
+            x, k=2, rigorous=nmi.Rigorous(gamma_range=range(1, 3), min_gamma_points=2),
+            **self._cheap())
+        assert result.mode == 'rigorous'
+        assert 'trainings' in result.details[0]
+
+
+class TestConditionalQuantitiesReportTheirSpread:
+    """A quantity built by subtraction now says how far it moves between runs.
+
+    The components were averaged and then subtracted, which gives a better
+    point estimate and no variance. Taking the same combination run by run
+    leaves that estimate exactly where it was, because ``mean(a) - mean(b)``
+    and ``mean(a - b)`` are the same number for equal-length lists, and it
+    makes the spread available. That spread is what says whether a difference
+    is resolved at all.
+    """
+
+    @staticmethod
+    def _data():
+        from neural_mi.generators import SharedLatentGaussian
+        oracle = SharedLatentGaussian(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
+                                      phi=0.9, coupling=0.4, noise=1.0, seed=0)
+        s = oracle.sample(T=1500, seed=0)
+        return tuple(s[k].astype('float32') for k in ('x', 'y', 'w'))
+
+    @staticmethod
+    def _cheap():
+        return dict(model=nmi.Model(embedding_dim=4, hidden_dim=32),
+                    training=Training(n_epochs=3, batch_size=256),
+                    show_progress=False, seed=0)
+
+    def test_combined_spread_matches_the_paired_difference(self):
+        from neural_mi.analysis.sweep import combined_spread
+        joint = [1.0, 2.0, 3.0]
+        marginal = [0.5, 0.5, 0.5]
+        expected = float(np.std([0.5, 1.5, 2.5], ddof=1))
+        assert combined_spread((joint, marginal), (1, -1)) == pytest.approx(expected)
+
+    def test_combined_spread_handles_three_terms(self):
+        from neural_mi.analysis.sweep import combined_spread
+        xw, x, w = [3.0, 4.0], [1.0, 1.0], [1.0, 2.0]
+        expected = float(np.std([1.0, 1.0], ddof=1))
+        assert combined_spread((xw, x, w), (1, -1, -1)) == pytest.approx(expected)
+
+    @pytest.mark.parametrize("lists", [
+        (([1.0], [2.0]),),                      # one run, nothing to spread
+        (([1.0, 2.0], [3.0]),),                 # a component lost a run
+    ])
+    def test_combined_spread_is_none_when_there_is_no_spread_to_report(self, lists):
+        from neural_mi.analysis.sweep import combined_spread
+        assert combined_spread(lists[0], (1, -1)) is None
+
+    def test_the_point_estimate_is_untouched_by_the_pairing(self):
+        """mean(a) - mean(b) == mean(a - b), so no existing number moves."""
+        from neural_mi.analysis.sweep import combined_spread
+        rng = np.random.default_rng(0)
+        a, b = list(rng.normal(size=7)), list(rng.normal(size=7))
+        assert np.mean(a) - np.mean(b) == pytest.approx(
+            np.mean([ai - bi for ai, bi in zip(a, b)]))
+        assert combined_spread((a, b), (1, -1)) is not None
+
+    @pytest.mark.parametrize("quantity", [
+        'transfer_entropy', 'conditional_transfer_entropy', 'interaction_information',
+    ])
+    def test_every_difference_quantity_reports_the_spread_of_its_repeats(self, quantity):
+        x, y, w = self._data()
+        calls = {
+            'transfer_entropy': lambda: nmi.transfer_entropy(
+                x, y, history_window=3, sweep_grid={'run_id': [0, 1, 2]},
+                n_workers=1, **self._cheap()),
+            'conditional_transfer_entropy': lambda: nmi.conditional_transfer_entropy(
+                x, y, w, history_window=3, sweep_grid={'run_id': [0, 1, 2]},
+                n_workers=1, **self._cheap()),
+            'interaction_information': lambda: nmi.interaction_information(
+                x, y, w, sweep_grid={'run_id': [0, 1, 2]},
+                n_workers=1, **self._cheap()),
+        }
+        result = calls[quantity]()
+        spread = result.get('mi_std')
+        assert spread is not None and spread >= 0.0
+        # The spread of the per-repeat differences, from the runs table.
+        assert spread == pytest.approx(result.runs['mi'].std(ddof=1))
+
+    def test_a_single_run_reports_no_spread_rather_than_zero(self):
+        x, y, _ = self._data()
+        result = nmi.transfer_entropy(x, y, history_window=3, **self._cheap())
+        assert np.isnan(result.get('mi_std'))
+
+
+class TestOffsetQuantitiesAcceptAGrid:
+    """``processing=`` builds the grid these quantities index.
+
+        Given a Processing, the streams go onto one grid first, so offsets index
+        rows that are uniformly spaced and mean the same instant in every stream.
+        That is what lets them take spike times at all.
+    """
+
+    @staticmethod
+    def _spiking_driven_by_position(seed=0, duration=600.0, bin_size=0.05):
+        rng = np.random.default_rng(seed)
+        t = np.arange(0, duration, bin_size)
+        pos = np.sin(2 * np.pi * t / 40)[:, None].astype(np.float32)
+        rate = 40.0 * np.clip(pos[:, 0], 0, None) + 2.0
+        trains = []
+        for _ in range(8):
+            counts = rng.poisson(rate * bin_size)
+            trains.append(np.sort(np.concatenate(
+                [t[i] + rng.uniform(0, bin_size, n) for i, n in enumerate(counts) if n])))
+        return t, pos, trains, bin_size
+
+    @staticmethod
+    def _cfg():
+        return dict(model=Model(embedding_dim=8, hidden_dim=128, n_layers=2),
+                    training=Training(n_epochs=40, batch_size=256, patience=15),
+                    show_progress=False, seed=0)
+
+    def _processing(self, t, bin_size):
+        return nmi.Processing(
+            x='spike', y='continuous', y_time=t,
+            x_params={'window_size': bin_size, 'bin_size': bin_size,
+                      'drop_empty_windows': False},
+            y_params={'window_size': bin_size, 'sample_rate': 1 / bin_size})
+
+    @pytest.mark.slow
+    def test_spike_input_now_works_and_finds_real_structure(self):
+        t, pos, spikes, bin_size = self._spiking_driven_by_position()
+        proc = self._processing(t, bin_size)
+        driven = nmi.cross_predictive_information(
+            spikes, pos, k=10, processing=proc, **self._cfg())
+        assert driven.mi_estimate > 0.5
+
+    def test_and_reports_nothing_when_there_is_nothing(self):
+        t, pos, spikes, bin_size = self._spiking_driven_by_position()
+        rng = np.random.default_rng(1)
+        randomised = [np.sort(rng.uniform(0, 600.0, len(s))) for s in spikes]
+        flat = nmi.cross_predictive_information(
+            randomised, pos, k=10,
+            processing=self._processing(t, bin_size), **self._cfg())
+        assert abs(flat.mi_estimate) < 0.2
+
+    def test_a_raw_array_is_unchanged_by_the_new_route(self):
+        """No Processing means slice the array directly, exactly as before."""
+        from neural_mi.analysis.offsets import build_past_future
+        ramp = torch.arange(200, dtype=torch.float32).reshape(200, 1)
+        past, present = build_past_future(ramp, past_len=5, future_len=1)
+        assert past.shape == (195, 1, 5)
+        assert past[0, 0].tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
+        assert float(present[0, 0, 0]) == 5.0
+
+    def test_transfer_entropy_refuses_a_grid_it_cannot_index(self):
+        """A categorical stream spends its trailing axis on categories, which
+        mode='transfer' cannot flatten without changing what a lag means."""
+        t, pos, spikes, bin_size = self._spiking_driven_by_position()
+        labels = (pos[:, 0] > 0).astype(np.int64)[:, None]
+        with pytest.raises(ValueError, match="one time step"):
+            nmi.transfer_entropy(
+                spikes, labels, history_window=8,
+                processing=nmi.Processing(
+                    x='spike', y='categorical', y_time=t,
+                    x_params={'window_size': bin_size, 'bin_size': bin_size,
+                              'drop_empty_windows': False},
+                    y_params={'window_size': bin_size, 'sample_rate': 1 / bin_size}),
+                **self._cfg())
+
+
+class TestStride:
+    """``stride`` thins the rows without changing the quantity.
+
+    ``k``, ``h``, ``W`` and ``history_window`` define the random variable;
+    ``stride`` decides how densely that variable is sampled out of one
+    recording. The estimate should survive a change of stride, the row count
+    should not.
+    """
+
+    _oracle = _SharedLatentOracle(phi=0.85, a=1.0, b=1.0, sx=0.5, sy=0.5)
+
+    @staticmethod
+    def _ramp(T=40, C=1):
+        """signal[t, 0] == t, so a row's value reveals the time it came from."""
+        return torch.arange(T * C, dtype=torch.float32).reshape(T, C) / C
+
+    # ---- stride 1 is exactly the construction that came before -------------
+
+    def test_stride_one_matches_explicit_slicing(self):
+        sig = self._ramp(30, 2)
+        past, fut = build_past_future(sig, past_len=4, future_len=2, stride=1)
+        expected_past = torch.stack([sig[i:i + 4].T for i in range(25)])
+        expected_fut = torch.stack([sig[i + 4:i + 6].T for i in range(25)])
+        assert torch.equal(past, expected_past)
+        assert torch.equal(fut, expected_fut)
+
+    # ---- row counts --------------------------------------------------------
+
+    @pytest.mark.parametrize("stride,expected", [(1, 25), (2, 13), (3, 9), (4, 7)])
+    def test_row_count(self, stride, expected):
+        """T=30, past 4, future 2 leaves 25 positions; stride keeps every n-th."""
+        past, fut = build_past_future(self._ramp(30), past_len=4, future_len=2,
+                                      stride=stride)
+        assert past.shape[0] == expected
+        assert fut.shape[0] == expected
+
+    # ---- alignment, the failure a shape check cannot catch -----------------
+
+    @pytest.mark.parametrize("stride", [1, 2, 3, 5])
+    def test_past_and_future_stay_adjacent(self, stride):
+        """X_future[i] must start exactly where X_past[i] ends, at any stride."""
+        past, fut = build_past_future(self._ramp(40), past_len=4, future_len=2,
+                                      stride=stride)
+        for i in range(past.shape[0]):
+            assert float(past[i, 0, 0]) == i * stride
+            assert float(fut[i, 0, 0]) == i * stride + 4
+
+    @pytest.mark.parametrize("stride", [1, 2, 3])
+    def test_dual_branch_builders_stay_aligned(self, stride):
+        """The three arrays of each dual-branch quantity share their time base.
+
+        These mix ``unfold`` output with a direct slice, so a stride applied to
+        one and not the other misaligns A against B while leaving every shape
+        correct and raising nothing.
+        """
+        from neural_mi.quantities import (_build_mi_rate_arrays,
+                                          _build_inst_exchange_arrays,
+                                          _build_dir_info_rate_arrays)
+        x = self._ramp(60)
+        y = x + 1000.0
+
+        x_all, y0, y_past = _build_mi_rate_arrays(x, y, h=3, half_width=2, stride=stride)
+        for i in range(y0.shape[0]):
+            centre = float(y0[i, 0, 0]) - 1000.0
+            assert float(x_all[i, 0, 2]) == centre       # centre of the 2 * half_width + 1 window
+            assert float(y_past[i, 0, -1]) == centre - 1 + 1000.0
+
+        x0, yf, _c = _build_inst_exchange_arrays(x, y, k=3, stride=stride)
+        for i in range(x0.shape[0]):
+            assert float(x0[i, 0, 0]) == float(yf[i, 0, 0]) - 1000.0
+
+        a, yf2, _yp = _build_dir_info_rate_arrays(x, y, k=3, stride=stride)
+        for i in range(a.shape[0]):
+            assert float(a[i, 0, -1]) == float(yf2[i, 0, 0]) - 1000.0
+
+    @pytest.mark.slow
+    def test_estimate_survives_a_change_of_stride(self):
+        """Same quantity, half the rows, same answer within estimator noise."""
+        x, _y = self._oracle.sample(8000, seed=1)
+        exact = self._oracle.ais_exact(5)
+        got = [nmi.active_information_storage(
+                   torch.from_numpy(x), k=5, stride=st, model=_MODEL,
+                   training=_TRAINING, show_progress=False, seed=0).mi_estimate
+               for st in (1, 2)]
+        for value in got:
+            assert abs(value - exact) < 0.5
+        assert abs(got[0] - got[1]) < 0.5
+
+    # ---- the split check has to see the real stride -----------------------
+
+    def test_leak_check_step_carries_the_stride(self):
+        """At stride 1 a one-window gap buys one sample of separation, so a
+        wrong value here waves through a split that shares almost a whole
+        window."""
+        import neural_mi.analysis.transfer as transfer_mod
+        x, y = self._oracle.sample(1200, seed=4)
+        seen = {}
+        real = transfer_mod._joint_marginal_difference
+
+        def spy(a, b, c, d, base_params, *args, **kwargs):
+            seen.setdefault('step', base_params.get('leak_check_step'))
+            seen.setdefault('rows', a.shape[0])
+            return real(a, b, c, d, base_params, *args, **kwargs)
+
+        transfer_mod._joint_marginal_difference = spy
+        try:
+            nmi.transfer_entropy(torch.from_numpy(x), torch.from_numpy(y),
+                                 history_window=5, stride=4, model=_MODEL,
+                                 training=_TRAINING, show_progress=False, seed=0)
+        finally:
+            transfer_mod._joint_marginal_difference = real
+        assert seen['step'] == 4
+        assert seen['rows'] == (1200 - 5 - 1) // 4 + 1
+
+    # ---- validation --------------------------------------------------------
+
+    @pytest.mark.parametrize("bad", [0.5, 0, -1, 'two', True])
+    def test_rejects_a_stride_that_is_not_a_whole_count(self, bad):
+        x, _y = self._oracle.sample(400, seed=5)
+        with pytest.raises(ValueError, match="stride must be"):
+            nmi.active_information_storage(torch.from_numpy(x), k=3, stride=bad,
+                                           model=_MODEL, training=_TRAINING,
+                                           show_progress=False, seed=0)
+
+    def test_fractional_stride_names_the_difference_from_step_size(self):
+        """The message has to explain why 0.5 works for block_mi and not here."""
+        x, _y = self._oracle.sample(400, seed=5)
+        with pytest.raises(ValueError, match="no fractional reading"):
+            nmi.active_information_storage(torch.from_numpy(x), k=3, stride=0.5,
+                                           model=_MODEL, training=_TRAINING,
+                                           show_progress=False, seed=0)

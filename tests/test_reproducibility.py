@@ -40,9 +40,9 @@ class TestEstimateModeReproducibility:
         assert run_once() == run_once() == run_once()
 
     def test_different_seeds_need_not_reproduce(self):
-        """Sanity check that the fixture actually exercises real randomness --
-        otherwise a bug that ignores random_seed entirely could pass the test
-        above vacuously."""
+        """The fixture exercises real randomness, so a random_seed that is
+                ignored entirely cannot pass the test above vacuously.
+        """
         x, y = _make_data()
         r1 = nmi.run(x, y, mode='estimate', model=_MODEL, training=_TRAINING,
                     split=_SPLIT, seed=1, n_workers=1, show_progress=False).mi_estimate
@@ -60,7 +60,7 @@ class TestSweepModeReproducibility:
             result = nmi.run(x, y, mode='sweep', sweep_grid={'run_id': list(range(3))},
                              model=_MODEL, training=_TRAINING, split=_SPLIT,
                              seed=7, n_workers=1, show_progress=False)
-            return result.details['raw_results']['train_mi'].tolist()
+            return result.runs['train_mi'].tolist()
 
         assert run_once() == run_once()
 
@@ -72,7 +72,7 @@ class TestSweepModeReproducibility:
         result = nmi.run(x, y, mode='sweep', sweep_grid={'run_id': list(range(3))},
                          model=_MODEL, training=_TRAINING, split=_SPLIT,
                          seed=7, n_workers=1, show_progress=False)
-        train_mis = result.details['raw_results']['train_mi'].tolist()
+        train_mis = result.runs['train_mi'].tolist()
         assert len(set(train_mis)) > 1
 
     def test_seed_key_does_not_leak_into_dataframe(self):
@@ -80,7 +80,7 @@ class TestSweepModeReproducibility:
         result = nmi.run(x, y, mode='sweep', sweep_grid={'run_id': list(range(2))},
                          model=_MODEL, training=_TRAINING, split=_SPLIT,
                          seed=7, n_workers=1, show_progress=False)
-        assert '_seed_key' not in result.details['raw_results'].columns
+        assert '_seed_key' not in result.runs.columns
         assert '_seed_key' not in result.dataframe.columns
 
 
@@ -93,7 +93,7 @@ class TestRigorousModeReproducibility:
             result = nmi.run(x, y, mode='rigorous', model=_MODEL, training=_TRAINING,
                              split=_SPLIT, rigorous={'gamma_range': range(1, 4), 'min_gamma_points': 2},
                              seed=11, n_workers=1, show_progress=False)
-            return result.dataframe['train_mi'].tolist()
+            return result.details[0]['trainings']['train_mi'].tolist()
 
         assert run_once() == run_once()
 
@@ -106,21 +106,12 @@ class TestRigorousModeReproducibility:
 
 
 class TestReproducibilityUnderParallelism:
-    """`run()` used to warn "Reproducibility with random_seed is not guaranteed
-    with n_workers > 1" on every parallel call. It was false, and it survived
-    because every test in this file pinned n_workers=1 -- the suite only ever
-    checked the case the warning declared safe.
+    """Results do not depend on n_workers.
 
-    The guarantee is real and comes from `run_training_task` re-seeding
-    random/numpy/torch inside each worker from `random_seed` plus a
-    deterministic per-task key, which makes worker count and scheduling order
-    irrelevant. These pin it for the shared task path and for the two modes
-    that dispatch differently, so the claim cannot silently regress.
-
-    The cost of the false warning was concrete: it pushes callers onto
-    n_workers=1 to protect a property they already have, which is a straight
-    multiple on wall clock for the repeat-heavy `sweep_grid={'run_id': ...}`
-    runs that the amplification warning tells them to do.
+        `run_training_task` re-seeds random/numpy/torch inside each worker from
+        `random_seed` plus a deterministic per-task key, which makes worker count
+        and scheduling order irrelevant. These pin that for the shared task path
+        and for the two modes that dispatch differently.
     """
 
     def test_estimate_matches_between_serial_and_parallel(self):
@@ -153,14 +144,14 @@ class TestReproducibilityUnderParallelism:
         for col in ('pr_eig_mean', 'pr_singular_mean', 'mi_mean'):
             assert np.array_equal(r1.dataframe[col].to_numpy(),
                                   r2.dataframe[col].to_numpy()), col
-        assert r1.details['n_stable_total'] == r2.details['n_stable_total']
-        assert r1.details['stable_directions'] == r2.details['stable_directions']
+        assert r1.get('n_stable_total') == r2.get('n_stable_total')
+        assert r1.details[0]['stable_directions'] == r2.details[0]['stable_directions']
 
     def test_pairwise_matches_between_serial_and_parallel(self):
         rng = np.random.default_rng(0)
         d = rng.normal(size=(300, 4)).astype(np.float32)
         kw = dict(mode='pairwise', model=Model(embedding_dim=4, hidden_dim=16),
                   training=_TRAINING, split=_SPLIT, seed=3, show_progress=False)
-        m1 = np.asarray(nmi.run(d, n_workers=1, **kw).details['mi_matrix'])
-        m2 = np.asarray(nmi.run(d, n_workers=2, **kw).details['mi_matrix'])
+        m1 = np.asarray(nmi.run(d, n_workers=1, **kw).get('mi_matrix'))
+        m2 = np.asarray(nmi.run(d, n_workers=2, **kw).get('mi_matrix'))
         assert np.array_equal(np.nan_to_num(m1), np.nan_to_num(m2))

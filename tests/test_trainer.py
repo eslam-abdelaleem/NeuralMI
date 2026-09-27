@@ -23,7 +23,7 @@ def dummy_data():
 @pytest.fixture
 def dummy_model():
     """Provides a simple separable critic."""
-    net_x = MLP(input_dim=5, hidden_dim=8, embed_dim=4, n_layers=1)
+    net_x = MLP(input_dim=5, hidden_dim=8, embedding_dim=4, n_layers=1)
     return SeparableCritic(embedding_net_x=net_x)
 
 def dummy_estimator(scores, **kwargs):
@@ -106,7 +106,7 @@ def test_trainer_spectral_history_per_epoch(dummy_data, dummy_model):
     history = results['spectral_metrics_history']
     assert len(history) == 2
     for epoch_metrics in history:
-        assert set(epoch_metrics.keys()) == {'spectral_whitening', 'pr_eig', 'pr_singular', 'spectrum'}
+        assert set(epoch_metrics.keys()) == {'whitening', 'pr_eig', 'pr_singular', 'spectrum'}
 
 def test_trainer_custom_smoothing(dummy_data, dummy_model):
     """Tests the custom smoothing hook for early stopping."""
@@ -171,7 +171,7 @@ class TestEvalTrain:
         return PairedDataset(x, y)
 
     def _trainer(self):
-        net_x = MLP(input_dim=4, hidden_dim=8, embed_dim=4, n_layers=1)
+        net_x = MLP(input_dim=4, hidden_dim=8, embedding_dim=4, n_layers=1)
         model = SeparableCritic(embedding_net_x=net_x)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
         return Trainer(model, dummy_estimator, optimizer, torch.device('cpu'))
@@ -249,7 +249,7 @@ class TestTrackEmbeddings:
         return PairedDataset(torch.randn(n, 4), torch.randn(n, 4))
 
     def _trainer(self):
-        net_x = MLP(input_dim=4, hidden_dim=8, embed_dim=4, n_layers=1)
+        net_x = MLP(input_dim=4, hidden_dim=8, embedding_dim=4, n_layers=1)
         model = SeparableCritic(embedding_net_x=net_x)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
         return Trainer(model, dummy_estimator, optimizer, torch.device('cpu'))
@@ -285,7 +285,7 @@ class TestPeakFraction:
         return PairedDataset(x, y)
 
     def _trainer(self):
-        net_x = MLP(input_dim=4, hidden_dim=8, embed_dim=4, n_layers=1)
+        net_x = MLP(input_dim=4, hidden_dim=8, embedding_dim=4, n_layers=1)
         model = SeparableCritic(embedding_net_x=net_x)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
         return Trainer(model, dummy_estimator, optimizer, torch.device('cpu'))
@@ -396,12 +396,11 @@ class TestUnderTrainingWarning:
 
 
 class TestSelectTrainEvalIndices:
-    """Regression tests for the SubsetView eval-subset fix: a temporal eval
-    subset must be built from contiguous sub-chunks of train_idx's own
-    contiguous segments, not a scattered np.random.choice sample -- the
-    latter degenerates into thousands of zero-width time ranges that
-    collide/drop en masse on the very next shift_time rebuild
-    (see CHANGELOG / NEURALMI_REFERENCE.md's shift-mechanisms section)."""
+    """A temporal eval subset is built from contiguous sub-chunks of
+        train_idx's own contiguous segments. A scattered random sample would
+        degenerate into many zero-width time ranges that collide and drop on the
+        next shift_time rebuild.
+    """
 
     def _select(self, train_idx, target_size, is_temporal):
         return Trainer.__new__(Trainer)._select_train_eval_indices(train_idx, target_size, is_temporal)
@@ -445,7 +444,7 @@ class TestSelectTrainEvalIndices:
         SubsetView + a real blocked split: the contiguous-chunk selection
         must lose dramatically less of the eval subset after a shift than
         the scattered approach it replaces."""
-        from neural_mi.data.handler import PairedTemporalDataset, WindowManager
+        from neural_mi.data.handler import PairedTemporalDataset
         from neural_mi.data.temporal import SpikeWindowDataset
         from neural_mi.data.views import SubsetView
 
@@ -476,21 +475,17 @@ class TestSelectTrainEvalIndices:
         new_loss = (new_before - new_after) / new_before
         assert new_loss < 0.10, f"Contiguous-chunk selection lost {new_loss:.1%} after a shift"
         assert new_loss < old_loss, (
-            f"Expected the fix to lose less than the scattered baseline "
+            f"Expected contiguous chunks to lose less than a scattered sample "
             f"(old={old_loss:.1%}, new={new_loss:.1%})"
         )
 
 
 class TestShiftEvaluationConsistency:
-    """shift_time/shift_windows are meant to affect training
-    dynamics only. Regression test for a real gap: the reported test_mi/
-    train_mi used to be evaluated against whichever shift happened to be
-    left over from the last epoch trained, decoupled from which epoch's
-    weights were actually being scored. Fixed by freezing both the
-    evaluation *content* (a snapshot taken before any shift) and *which
-    indices* count as the test/train-eval set (the original arrays, not
-    SubsetView's live-updating `.indices`, which drifts for
-    shift_time's real PairedTemporalDataset)."""
+    """shift_time and shift_windows affect training dynamics only. The
+        reported test_mi and train_mi are evaluated on content frozen before any
+        shift and on the original test and train-eval indices, so they do not
+        depend on whichever shift the last epoch left behind.
+    """
 
     def test_shift_windows_final_mi_matches_canonical_reeval(self):
         from neural_mi.data.static import StaticDataset
@@ -511,8 +506,8 @@ class TestShiftEvaluationConsistency:
         train_idx = np.arange(int(n * 0.8))
         test_idx = np.arange(int(n * 0.8), n)
 
-        net_x = MLP(input_dim=C * window_size, hidden_dim=16, embed_dim=8, n_layers=1)
-        net_y = MLP(input_dim=C * window_size, hidden_dim=16, embed_dim=8, n_layers=1)
+        net_x = MLP(input_dim=C * window_size, hidden_dim=16, embedding_dim=8, n_layers=1)
+        net_y = MLP(input_dim=C * window_size, hidden_dim=16, embedding_dim=8, n_layers=1)
         critic = SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y)
         optimizer = torch.optim.Adam(critic.parameters(), lr=1e-3)
         trainer = Trainer(critic, infonce_lower_bound, optimizer, torch.device('cpu'))
@@ -559,8 +554,8 @@ class TestShiftEvaluationConsistency:
         x0_canonical = dataset.x_dataset.data.clone()
         y0_canonical = dataset.y_dataset.data.clone()
 
-        net_x = MLP(input_dim=C * window_size, hidden_dim=16, embed_dim=8, n_layers=1)
-        net_y = MLP(input_dim=C * window_size, hidden_dim=16, embed_dim=8, n_layers=1)
+        net_x = MLP(input_dim=C * window_size, hidden_dim=16, embedding_dim=8, n_layers=1)
+        net_y = MLP(input_dim=C * window_size, hidden_dim=16, embedding_dim=8, n_layers=1)
         critic = SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y)
         optimizer = torch.optim.Adam(critic.parameters(), lr=1e-3)
         trainer = Trainer(critic, infonce_lower_bound, optimizer, torch.device('cpu'))

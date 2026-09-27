@@ -1,8 +1,7 @@
 # neural_mi/exceptions.py
 """Defines custom exceptions for the neural_mi library.
 
-Using custom exceptions allows for more specific error handling and clearer
-error messages, making the library easier to debug and use.
+Using custom exceptions allows for more specific error handling and clearer error messages.
 """
 
 class NeuralMIError(Exception):

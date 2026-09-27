@@ -11,14 +11,14 @@ apply_augmentations(x, aug_params) -> torch.Tensor
 
 aug_params keys
 ---------------
-Spatial (4-D input only — warns and skips for lower-dimensional input):
-  random_flip_h        : True | {'prob': float}   — flip along height axis
-  random_flip_v        : True | {'prob': float}   — flip along width axis
-  random_rotation_90   : True                     — rotate by 0/90/180/270°
-  random_crop          : {'padding': int}         — pad-then-crop
+Spatial (4-D input only, warns and skips for lower-dimensional input):
+  random_flip_h        : True | {'prob': float}, flip along height axis
+  random_flip_v        : True | {'prob': float}, flip along width axis
+  random_rotation_90   : True, rotate by 0/90/180/270°
+  random_crop          : {'padding': int}, pad-then-crop
   random_erase         : {'prob': float, 'scale': (min, max)}
-  time_mask            : {'max_width': int}       — mask random column range
-  freq_mask            : {'max_height': int}      — mask random row range
+  time_mask            : {'max_width': int}, mask random column range
+  freq_mask            : {'max_height': int}, mask random row range
   gaussian_blur        : {'kernel_size': int, 'sigma': float}
 
 Non-spatial (any ndim):
@@ -39,6 +39,8 @@ import torch
 import torch.nn.functional as F
 from typing import Any, Dict
 
+from neural_mi.logger import user_stacklevel
+
 # All keys that require 4-D input
 _SPATIAL_KEYS = frozenset({
     'random_flip_h', 'random_flip_v', 'random_rotation_90',
@@ -50,10 +52,10 @@ _NON_SPATIAL_KEYS = frozenset({
     'gaussian_noise', 'intensity_scale', 'channel_dropout', 'custom',
 })
 
-# The full vocabulary. An unrecognised key used to be skipped in silence, so a
-# typo disabled the augmentation you asked for while training carried on looking
-# normal. Checked against this set below and warned about, matching how the
-# module already reports a spatial augmentation it cannot apply.
+# The full vocabulary. Keys are checked against this set below and an
+# unrecognised one is warned about, matching how the module reports a spatial
+# augmentation it cannot apply. Skipping a typo in silence would disable the
+# augmentation you asked for while training carried on looking normal.
 _VALID_KEYS = _SPATIAL_KEYS | _NON_SPATIAL_KEYS
 
 
@@ -63,10 +65,10 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
     Parameters
     ----------
     x : torch.Tensor
-        Batch of shape ``(N, C, ...)`` — typically ``(N, C, W)`` or ``(N, C, H, W)``.
+        Batch of shape ``(N, C, ...)``: typically ``(N, C, W)`` or ``(N, C, H, W)``.
     aug_params : dict
         Augmentation specification.  See module docstring for valid keys.
-        An unrecognised key is ignored with a ``UserWarning`` rather than in
+        An unrecognised key is ignored with a ``UserWarning`` instead of in
         silence, since a typo would otherwise disable the augmentation without
         any sign of it.
 
@@ -84,7 +86,7 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
             f"Unrecognised augmentation key(s) {unknown}; they will be ignored, "
             f"so the augmentation you asked for is not being applied. Valid keys "
             f"are {sorted(_VALID_KEYS)}.",
-            UserWarning, stacklevel=3,
+            UserWarning, stacklevel=user_stacklevel(),
         )
 
     is_4d = (x.ndim == 4)
@@ -94,8 +96,8 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
     if requested_spatial and not is_4d:
         warnings.warn(
             f"Spatial augmentations {sorted(requested_spatial)} require 4-D input "
-            f"(N, C, H, W). Got {x.ndim}-D — spatial augmentations will be skipped.",
-            UserWarning, stacklevel=3,
+            f"(N, C, H, W). Got {x.ndim}-D, spatial augmentations will be skipped.",
+            UserWarning, stacklevel=user_stacklevel(),
         )
 
     # --- Spatial augmentations (4-D only) ---

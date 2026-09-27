@@ -57,17 +57,9 @@ class TestLagRecoversKnownLag:
     """mode='lag' must find the lag it was given, both with and without an
     explicit processing= argument.
 
-    The suite previously exercised mode='lag' only through
-    test_run_lag_mode, which asserts shape and column names and never checks
-    the recovered peak, and which always passes processing=. A bug that made
-    _shift_data return the data UNSHIFTED whenever processor_type was None
-    (raw arrays, no processing=) therefore went unnoticed: every lag reported
-    roughly the unshifted estimate and the profile was flat. Both halves of
-    that gap are covered here -- the value is checked, and the no-processing
-    call is exercised.
-
-    Needs a real training budget, so it is deliberately separate from the fast
-    smoke test rather than folded into it.
+    With raw arrays and no processing=, the data must still be shifted by
+    each lag: a flat profile would mean every lag saw the unshifted data. The
+    recovered peak is checked in both cases.
     """
 
     TRUE_LAG = 20
@@ -86,8 +78,9 @@ class TestLagRecoversKnownLag:
         df = results.dataframe
         return {int(a): float(b) for a, b in zip(df['lag'], df['mi_mean'])}, exact
 
+    @pytest.mark.slow
     def test_recovers_known_lag_without_processing(self):
-        """The regression for the unshifted-data bug: raw arrays, no processing=."""
+        """Raw arrays, no processing=: each lag still shifts the data."""
         prof, _ = self._profile()
         peak = max(prof, key=prof.get)
         assert peak == self.TRUE_LAG, f"peak at {peak}, expected {self.TRUE_LAG}: {prof}"
@@ -96,6 +89,7 @@ class TestLagRecoversKnownLag:
             f"profile is nearly flat, which is what the unshifted-data bug looked "
             f"like: {prof}")
 
+    @pytest.mark.slow
     def test_recovers_known_lag_with_processing(self):
         prof, _ = self._profile(
             processing=Processing(x='continuous', y='continuous',
@@ -129,10 +123,8 @@ class TestLagShiftWindows:
         assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
 
     def test_n_windows_reflects_true_window_count_not_raw_samples(self):
-        """n_windows_this_lag used to be the raw post-lag-truncation sample
-        count (windowing hadn't happened yet at that point) mislabeled as a
-        window count. With window_size > 1 the true window count must be
-        strictly smaller."""
+        """n_windows_built counts windows, not raw samples: with
+        window_size > 1 it must be strictly smaller than the sample count."""
         np.random.seed(0)
         T, window_size = 2000, 10
         x = np.random.randn(T, 2).astype('float32')
@@ -144,7 +136,7 @@ class TestLagShiftWindows:
                           training=Training(n_epochs=1, patience=1, shift_windows=True),
                           n_workers=1, show_progress=False, seed=0)
         # Canonical column name, shared with every other mode (task.py's).
-        n_windows = results.details['raw_results']['n_windows_built'].iloc[0]
+        n_windows = results.dataframe['n_windows_built'].iloc[0]
         raw_sample_count = T  # lag=0 -> no truncation
         assert n_windows < raw_sample_count, (
             f"n_windows={n_windows} should be well below the raw sample count "
@@ -161,8 +153,8 @@ def mock_sweep():
         instance.run.return_value = [{'test_mi': 1.0}]
         yield MockSweep
 
-def test_dimensionality_forces_hybrid_critic_and_modest_embedding_dim(mock_sweep):
-    """Proves the orchestrator overrides user params to guarantee accurate dim estimation.
+def test_dimensionality_defaults_to_hybrid_critic_and_modest_embedding_dim(mock_sweep):
+    """With no critic_type set, the mode uses the hybrid critic and a modest embedding.
 
     pr_eig/pr_singular/spectrum are always computed at the best epoch regardless
     of any dimensionality-specific forcing (see Trainer._extract_spectral_metrics),
@@ -170,24 +162,31 @@ def test_dimensionality_forces_hybrid_critic_and_modest_embedding_dim(mock_sweep
 
     embedding_dim defaults to a MODEST value (8), not a large one -- an
     over-provisioned embedding is exactly what lets artifact directions
-    (products/combinations of true factors) masquerade as real ones. This is
-    the opposite of the old PR-based mode's "large bottleneck" default.
+    (products/combinations of true factors) masquerade as real ones.
     """
     x_data = torch.randn(100, 4)
-    # The user asks for a simple separable critic, but the orchestrator MUST override this
-    base_params = {'critic_type': 'separable'}
+    df, _embeddings = run_dimensionality_analysis(x_data, {}, split_method='spatial')
 
-    df, _embeddings = run_dimensionality_analysis(x_data, base_params, split_method='spatial')
-
-    # Extract the parameters that were actually passed to the Sweep Engine
-    call_args = mock_sweep.call_args[1]
-    analysis_params = call_args['base_params']
-
-    # Assertions for overriding behavior
-    assert analysis_params['critic_type'] == 'hybrid', "Failed to force Hybrid critic."
+    analysis_params = mock_sweep.call_args[1]['base_params']
+    assert analysis_params['critic_type'] == 'hybrid'
     assert analysis_params['embedding_dim'] == 8, "Failed to inject the modest default bottleneck."
-
     assert isinstance(df, pd.DataFrame)
+
+
+def test_dimensionality_runs_a_separable_critic_with_a_warning(mock_sweep):
+    """An explicit separable critic has an embedding per side, so the mode runs it,
+    and warns that a dot-product score can change which directions come out stable."""
+    x_data = torch.randn(100, 4)
+    with pytest.warns(UserWarning, match="critic_type='separable'"):
+        run_dimensionality_analysis(x_data, {'critic_type': 'separable'}, split_method='spatial')
+    assert mock_sweep.call_args[1]['base_params']['critic_type'] == 'separable'
+
+
+def test_dimensionality_refuses_a_concat_critic(mock_sweep):
+    """A concat critic embeds X and Y jointly, leaving no per-side directions to compare."""
+    with pytest.raises(ValueError, match="cannot use critic_type='concat'"):
+        run_dimensionality_analysis(torch.randn(100, 4), {'critic_type': 'concat'},
+                                    split_method='spatial')
 
 def test_dimensionality_interaction_no_split(mock_sweep):
     """Proves Interaction Dimensionality passes X and Y directly without splitting."""
@@ -226,8 +225,9 @@ def test_dimensionality_intrinsic_splits(mock_sweep):
 
     # 3. Test Random Split loops
     run_dimensionality_analysis(x_data, base_params, split_method='random', n_splits=3)
-    # 1 call from spatial, 1 from temporal, 3 from random = 5 total calls to Sweep engine
-    assert mock_sweep.return_value.run.call_count == 5, "Random split loop failed."
+    # spatial runs n_splits (default 3) fits on the same halves, temporal one,
+    # random 3: 7 calls to the sweep engine.
+    assert mock_sweep.return_value.run.call_count == 7, "Split loops ran the wrong number of fits."
 
 # --- Task Routing Tests ---
 

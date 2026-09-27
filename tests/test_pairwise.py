@@ -43,7 +43,7 @@ class TestPairwiseMI:
         for col in ('ch_x', 'ch_y', 'mi_mean', 'mi_std'):
             assert col in results.dataframe.columns, f"Missing column: {col}"
         assert 'mi_estimate' not in results.dataframe.columns, (
-            "Old column 'mi_estimate' should no longer be present; use 'mi_mean'."
+            "The per-pair column is 'mi_mean', as in every mode."
         )
 
     def test_pairwise_cross_returns_full_matrix(self):
@@ -69,7 +69,9 @@ class TestPairwiseMI:
             n_workers=1,
         )
         assert np.all(np.isfinite(results.dataframe['mi_mean'].values))
-        assert np.all(results.dataframe['mi_std'].values >= 0)
+        # One run per pair: there is no spread to report, so mi_std is NaN.
+        assert results.dataframe['mi_std'].isna().all()
+        assert (results.dataframe['n_runs'] == 1).all()
 
     def test_pairwise_mode_field(self):
         """Results.mode should be 'pairwise'."""
@@ -112,3 +114,33 @@ class TestPairwiseMI:
             f"(0,2)={mi_02}, (1,2)={mi_12} -- a channel-slicing bug in the "
             f"deferred windowing path would break this."
         )
+
+
+class TestEmbeddingsAreKeptPerPair:
+    """Every channel pair is its own network, so a pairwise repeat is one pair
+    and one run, and that is what its embeddings are kept under."""
+
+    @staticmethod
+    def _x():
+        rng = np.random.default_rng(0)
+        latent = rng.standard_normal((N, 2))
+        return (latent @ rng.standard_normal((2, N_CH))
+                + 0.3 * rng.standard_normal((N, N_CH))).astype(np.float32)
+
+    def test_embeddings_are_kept_per_pair_and_run(self):
+        from neural_mi import Output
+        result = nmi.run(x_data=self._x(), mode='pairwise', model=_MODEL,
+                         training=_TRAINING, output=Output(return_embeddings=True),
+                         n_workers=1, show_progress=False)
+        embeddings = result.details[0]['embeddings']
+        pairs = [(i, j) for i in range(N_CH) for j in range(i + 1, N_CH)]
+        assert sorted(embeddings) == sorted((i, j, 0) for i, j in pairs)
+        for entry in embeddings.values():
+            assert entry['embeddings_x'].shape[0] > 0
+        # The matrix itself is unaffected.
+        assert result.get('mi_matrix').shape == (N_CH, N_CH)
+
+    def test_no_embeddings_are_kept_unless_asked_for(self):
+        result = nmi.run(x_data=self._x(), mode='pairwise', model=_MODEL,
+                         training=_TRAINING, n_workers=1, show_progress=False)
+        assert 'embeddings' not in result.details[0]
