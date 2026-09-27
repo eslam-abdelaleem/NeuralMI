@@ -38,11 +38,8 @@ jobs:
       - name: Install Pandoc
         run: sudo apt-get update && sudo apt-get install -y pandoc
 
-      - name: Install Project Dependencies
-        run: pip install -e .
-
-      - name: Install Documentation Dependencies
-        run: pip install -r docs/requirements-docs.txt
+      - name: Install the package and the docs toolchain
+        run: pip install -e ".[docs]"
 
       - name: Build Sphinx Site
         run: sphinx-build -b html docs/source docs/_build/html

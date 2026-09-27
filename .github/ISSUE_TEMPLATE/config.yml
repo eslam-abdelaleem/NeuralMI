@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://eslam-abdelaleem.github.io/NeuralMI/
+    about: Usage, theory, and every message the library can emit.
+  - name: A number you are unsure how to read
+    url: https://github.com/eslam-abdelaleem/NeuralMI/blob/main/reference/USING.md
+    about: What the reported value is, its ceiling, and what the diagnostics claim.
