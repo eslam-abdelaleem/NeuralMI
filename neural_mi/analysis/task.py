@@ -242,7 +242,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 raise ValueError(
                     f"embedding_model='cnn' (CNN1D) does not support 4-D input "
                     f"(shape {tuple(_x.shape)}). "
-                    "Use embedding_model='cnn2d' to preserve spatial structure, "
+                    "Use embedding_model='cnn2d' to preserve spatial structure "
                     "or embedding_model='mlp' to process flattened C×H×W features."
                 )
             elif _emb not in _4D_NATIVE:
@@ -285,12 +285,10 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         if isinstance(_n_channels_x, tuple):
             raise NotImplementedError(
                 "use_decoder=True is not supported with a compound (tuple) "
-                "embedding input, e.g. DualBranchEmbedding used via "
-                "mode='conditional'(align='dual_branch'). Reconstructing a "
-                "compound (A, C) input from one fused embedding has no single "
-                "well-defined decoder architecture (unlike use_variational, "
-                "which just needs the base encoder's output dimension). Use "
-                "use_decoder=False for this path."
+                "embedding input such as DualBranchEmbedding in mode='conditional' "
+                "with align='dual_branch'. Reconstructing a compound (A, C) input "
+                "from one fused embedding has no single well-defined decoder "
+                "architecture. Use use_decoder=False for this path."
             )
         _embedding_model = params.get('embedding_model', 'mlp')
         _embedding_dim = params.get('embedding_dim', params.get('hidden_dim', 64))
@@ -395,7 +393,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         smoothing_sigma=params.get('smoothing_sigma', 1.0),
         median_window=params.get('median_window', 5),
         min_improvement=params.get('min_improvement', 0.001),
-        run_id=run_id,
         output_units=params.get('output_units', 'nats'),
         verbose=params.get('verbose', False),
         show_progress=params.get('show_progress', True),
@@ -441,8 +438,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             # trained at all has two of them.
             raise ValueError(
                 "Embedding extraction reached a trained task with no Y side. Both "
-                "sides exist by construction for every mode, so this is an internal "
-                "invariant that has been broken, not a configuration problem."
+                "sides exist by construction for every mode. This is a broken "
+                "internal invariant and a bug in NeuralMI."
             )
         else:
             trainer.model.eval()
@@ -472,9 +469,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             if params.get('return_rotated_embeddings', False):
                 if params.get('critic_type', 'separable') == 'concat':
                     warnings.warn(
-                        "return_rotated_embeddings=True has no effect for critic_type='concat', "
-                        "which has no separate embedding networks to rotate. Skipping "
-                        "rotation for this analysis task.",
+                        "return_rotated_embeddings=True has no effect for critic_type='concat'. "
+                        "That critic has no separate embedding networks to rotate.",
                         UserWarning, stacklevel=user_stacklevel(),
                     )
                 else:
@@ -491,14 +487,25 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                         results['embeddings_rotation_y'] = _rot['rotation_y']
                     logger.debug("Computed rotated embeddings (whitening=%r).", _whitening)
 
-    results.pop('_frozen_eval_x', None)
-    results.pop('_frozen_eval_y', None)
+    frozen_x = results.pop('_frozen_eval_x', None)
+    frozen_y = results.pop('_frozen_eval_y', None)
 
     return_params = params.copy()
     return_params.pop('custom_critic', None)
     return_params.pop('custom_embedding_cls', None)
     return_params.pop('_seed_key', None)
+    return_params.pop('_keep_trained', None)
     final_result = {**return_params, **results}
+    if params.get('_keep_trained'):
+        # mode='precision' evaluates this network again on corrupted copies of
+        # its training rows, so it needs the trainer, the dataset and, when the
+        # windows were shifted during training, the pre-shift snapshot the
+        # network was scored on.
+        final_result['_trainer'] = trainer
+        final_result['_dataset'] = dataset
+        if frozen_x is not None:
+            final_result['_frozen_eval_x'] = frozen_x
+            final_result['_frozen_eval_y'] = frozen_y
 
     # Window retention belongs with the per-task numbers instead of on the run
     # as a whole: it varies per task, systematically so across a window_size

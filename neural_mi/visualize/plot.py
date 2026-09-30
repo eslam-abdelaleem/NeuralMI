@@ -246,105 +246,74 @@ def plot_sweep_bar(summary_df: pd.DataFrame, param_cols: list, mean_col: str = '
 
 
 def plot_dimensionality_curve(
+    runs: pd.DataFrame,
     details: Dict[str, Any],
     ax: Optional[plt.Axes] = None,
     show: bool = True,
+    units: str = 'bits',
     **kwargs,
 ) -> plt.Axes:
-    """Per-rank chart of which directions of shared structure are trustworthy.
+    """MI against embedding dimension, with every restart, the curve and the reading.
 
-    Visualises ``result.details['stability_per_rank']`` (plus
-    ``'stable_directions'`` and ``'stable_but_degenerate_groups'``): one bar
-    per embedding rank, height = mean singular-value strength across splits
-    (log scale), coloured by status:
-
-    - **stable** (green): reproducible across every split/rerun, above the
-      noise floor, individually trustworthy.
-    - **stable, degenerate group** (amber, hatched): reproducible and above
-      the noise floor, but too close in strength to an adjacent rank to individually order. Existence is confirmed and identity is not claimed. Ranks
-      in the same group share a bracket above their bars.
-    - **not stable / below noise floor** (grey): not reported as trustworthy,
-      either because it didn't reproduce across splits or its strength is
-      indistinguishable from noise.
-
-    This does not plot ``pr_eig``/``pr_singular`` (see
-    ``result.dataframe`` for those, kept as a secondary, non-headline
-    diagnostic) or an MI-vs-embedding-dim curve. This mode does not sweep
-    embedding_dim or claim a saturation point.
+    Each restart is a faint point. The curve is the running maximum of the best
+    restart over increasing embedding dimension. The dotted line is
+    ``saturation_ratio`` of the plateau and the dashed line the reading,
+    ``dimension_at_most``. With several splits of X each gets its own colour.
 
     Parameters
     ----------
+    runs : pandas.DataFrame
+        ``result.runs`` of one configuration of a ``mode='dimensionality'`` run.
     details : dict
-        ``result.details`` from a ``mode='dimensionality'`` run. Must contain
-        ``'stability_per_rank'`` (a dict as produced by
-        ``_compute_stability_report`` in ``analysis/dimensionality.py``).
+        ``result.details`` of the same configuration.
     ax : plt.Axes, optional
         Axes to plot on. Creates a new figure if ``None``.
     show : bool, optional
         Whether to call ``plt.show()`` at the end. Defaults to True.
+    units : str, optional
+        The MI units for the axis label.
     **kwargs
-        Additional keyword arguments forwarded to ``ax.bar``.
+        ``figsize`` and ``title``.
 
     Returns
     -------
     plt.Axes
     """
-    per_rank = details.get('stability_per_rank')
-    if not per_rank:
-        raise ValueError(
-            "Cannot plot: details does not contain 'stability_per_rank' (need at "
-            "least 2 splits/reruns to compute cross-run stability -- see the "
-            "warning emitted by run_dimensionality_analysis if this is missing)."
-        )
-
-    ranks = sorted(per_rank.keys())
-    stable_set = set(details.get('stable_directions', []))
-    degenerate_groups = details.get('stable_but_degenerate_groups', [])
-    degenerate_set = {r for group in degenerate_groups for r in group}
-
-    strengths = [per_rank[r].get('mean_strength') or 0.0 for r in ranks]
-    colors, hatches = [], []
-    for r in ranks:
-        if r in stable_set:
-            colors.append('#2ca02c'); hatches.append(None)
-        elif r in degenerate_set:
-            colors.append('#d4a017'); hatches.append('//')
-        else:
-            colors.append('#b0b0b0'); hatches.append(None)
-
+    if runs is None or runs.empty or 'mi_curve' not in runs.columns:
+        raise ValueError("Cannot plot: runs holds no fits of a mode='dimensionality' curve.")
     created_fig = ax is None
     if ax is None:
-        fig, ax = plt.subplots(figsize=kwargs.pop('figsize', (8, 5)))
-
-    bars = ax.bar([str(r) for r in ranks], strengths, color=colors,
-                  edgecolor='white', linewidth=0.5, **kwargs)
-    for bar, hatch in zip(bars, hatches):
-        if hatch:
-            bar.set_hatch(hatch)
-
-    if any(s > 0 for s in strengths):
-        ax.set_yscale('log')
-    ax.set_xlabel('Rank', fontsize=11)
-    ax.set_ylabel('Mean singular-value strength (across splits)', fontsize=11)
-    ax.set_title('Dimensionality: cross-run-stable directions', fontsize=12)
-
-    # Bracket contiguous degenerate groups above their bars.
-    if strengths:
-        y_top = max(strengths) * 1.15
-        for group in degenerate_groups:
-            xs = [ranks.index(r) for r in group]
-            ax.plot([min(xs), max(xs)], [y_top, y_top], color='#d4a017', lw=1.5)
-            ax.text(np.mean(xs), y_top * 1.05, 'grouped', ha='center', fontsize=8, color='#d4a017')
-
-    legend_handles = [
-        patches.Patch(facecolor='#2ca02c', label='Stable (individually trustworthy)'),
-        patches.Patch(facecolor='#d4a017', hatch='//', label='Stable, degenerate group'),
-        patches.Patch(facecolor='#b0b0b0', label='Not stable / below noise floor'),
-    ]
-    ax.legend(handles=legend_handles, fontsize=8, loc='upper right')
-    ax.grid(True, axis='y', linestyle=':')
+        _, ax = plt.subplots(figsize=kwargs.pop('figsize', (8, 5)))
+    ratio = details.get('saturation_ratio', 0.95)
+    splits = sorted(runs['split_id'].unique())
+    colours = sns.color_palette(n_colors=max(len(splits), 1))
+    for colour, split in zip(colours, splits):
+        fits = runs[runs['split_id'] == split]
+        ax.scatter(fits['embedding_dim'], fits['mi'], color=colour, alpha=0.35, s=18,
+                   edgecolors='none')
+        curve = fits.groupby('embedding_dim')['mi_curve'].first().sort_index()
+        ax.plot(curve.index, curve.values, '-o', color=colour, ms=4,
+                label=f'split {split}' if len(splits) > 1 else 'best restart, running maximum')
+        plateau = (details.get('plateau') or {}).get(split)
+        if plateau is not None:
+            ax.axhline(ratio * plateau, color=colour, linestyle=':', linewidth=1)
+        reading = (details.get('dimension_at_most_per_split') or {}).get(split)
+        if reading is not None:
+            ax.axvline(reading, color=colour, linestyle='--', linewidth=1)
+    ks = sorted(runs['embedding_dim'].unique())
+    ax.set_xscale('log', base=2)
+    ax.set_xticks(ks)
+    ax.set_xticklabels([str(k) for k in ks])
+    ax.set_xlabel('embedding dimension', fontsize=11)
+    ax.set_ylabel(f'MI ({units})', fontsize=11)
+    reading = details.get('dimension_at_most')
+    ax.set_title(kwargs.pop('title', f'at most {reading} embedding dimensions carry '
+                                     f'{ratio:.0%} of the MI'), fontsize=12)
+    ax.plot([], [], color='grey', linestyle=':', label=f'{ratio:.0%} of the plateau')
+    ax.plot([], [], color='grey', linestyle='--', label='reading')
+    ax.legend(fontsize=8)
+    ax.grid(True, linestyle=':')
     sns.despine(ax=ax)
-
     if created_fig:
         plt.tight_layout()
     if show:
@@ -405,7 +374,10 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     fit_color = 'red' if color is None else color
 
     sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color=raw_color, alpha=0.5)
-    agg = raw_results_df.groupby('gamma')['train_mi'].mean().reset_index()
+    # The mean per gamma uses the rungs the fit used. A rung reported as 0
+    # produced nothing and still shows as a point.
+    produced = raw_results_df[raw_results_df['train_mi'] != 0]
+    agg = produced.groupby('gamma')['train_mi'].mean().reset_index()
 
     # A single label collapses the three elements below to one legend entry
     # (via the proxy artist added after them) instead of three near-duplicate
@@ -516,7 +488,7 @@ def plot_embeddings(
     if method == 'none':
         if embedding_dim < dim:
             raise ValueError(
-                f"method='none' requires embedding_dim >= dim, but embedding_dim={embedding_dim} < dim={dim}."
+                f"method='none' requires embedding_dim >= dim and has embedding_dim={embedding_dim} < dim={dim}."
             )
         z_plot = z[:, :dim]
     elif method == 'pca':
@@ -564,9 +536,10 @@ def plot_embeddings(
 
     # --- Resolve colour ---
     if color is None:
+        # Without values to map there is no colormap to apply, and matplotlib
+        # warns about one it would ignore. A cmap the caller passed stays in.
         c_arr = None
-        cmap = kwargs.pop('cmap', 'viridis')
-        scatter_kwargs = {'c': None, 'cmap': cmap, **kwargs}
+        scatter_kwargs = dict(kwargs)
         legend_handles = None
     else:
         color = np.asarray(color)

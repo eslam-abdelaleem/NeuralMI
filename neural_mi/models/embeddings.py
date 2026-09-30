@@ -1076,11 +1076,10 @@ class VariationalWrapper(nn.Module):
         if isinstance(x, (tuple, list)):
             raise NotImplementedError(
                 "use_variational=True is not supported with a compound (tuple) "
-                "embedding input, e.g. DualBranchEmbedding used via "
-                "mode='conditional'(align='dual_branch'). This wrapper reaches "
-                "into x.shape[0] directly below, not just the base encoder's "
-                "output, which a tuple input doesn't have. Use "
-                "use_variational=False for this path."
+                "embedding input such as DualBranchEmbedding in mode='conditional' "
+                "with align='dual_branch'. The variational wrapper reads "
+                "x.shape[0] from the input itself. A tuple input has no shape. "
+                "Use use_variational=False for this path."
             )
         h = self.base_encoder(x)                     # (batch, embedding_dim)
         mu = self.mu_head(h)                          # (batch, embedding_dim)
@@ -1169,9 +1168,7 @@ class DualBranchEmbedding(BaseEmbedding):
     ``task.py``'s explicit check. Nor is ``shared_encoder=True``, X's role
     needs the dual (tuple-input) branch, Y's role needs the single
     (plain-tensor) branch, and one encoder instance can't be both; see
-    ``build_critic``'s explicit check. Not compatible with
-    ``max_samples_per_task`` (``mode='sweep'``-only, unrelated to the
-    quantities this class serves).
+    ``build_critic``'s explicit check.
     """
     input_style = 'channels'
 

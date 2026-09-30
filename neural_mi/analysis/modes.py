@@ -12,16 +12,18 @@ worker process.
 """
 import hashlib
 import math
+import warnings
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 from neural_mi.analysis.assemble import (
-    config_lookup, convert_record, network_values, single_network_rows,
+    config_lookup, convert_record, embedding_values, network_values, single_network_rows,
     split_grid, NATS_TO_BITS, NETWORK_KEYS,
 )
 from neural_mi.analysis.sweep import ParameterSweep, amplification_factor, merge_grid_values
+from neural_mi.logger import user_stacklevel
 
 # Repeat-level fit values a rigorous extrapolation reports.
 _FIT_KEYS = (
@@ -29,7 +31,7 @@ _FIT_KEYS = (
     'enough_gamma_points', 'curvature_coefficient', 'curvature_se', 'curvature_t',
     'curvature_slope', 'fit_quality_warning', 'leverage_warning', 'r_squared',
     'max_abs_residual', 'loo_intercept_shift', 'gammas_used', 'chunking_mode',
-    'n_tasks_created', 'saturated_gammas',
+    'n_tasks_created', 'saturated_gammas', 'zero_rungs',
 )
 
 # The components of each difference quantity: (column, raw-results key, sign).
@@ -41,6 +43,22 @@ _DIFFERENCES = {
 }
 _TRANSFER_REVERSE = [('i_yxpast_xfuture', 'raw_yxpast_xfuture', 1),
                      ('i_xpast_xfuture', 'raw_xpast_xfuture', -1)]
+# Interaction information is signed. The other combined quantities are
+# information and cannot be negative.
+_SIGNED = ('interaction',)
+_QUANTITY_NAMES = {'conditional': 'Conditional MI', 'transfer': 'TE(X→Y)',
+                   'interaction': 'Interaction information', 'rigorous': 'MI'}
+
+
+def _floor_at_zero(row: Dict[str, Any], key: str) -> bool:
+    """Report a negative ``row[key]`` as 0 and keep the measured value as
+    ``row[key + '_raw']``. Returns whether the value was negative."""
+    value = row.get(key)
+    negative = value is not None and not (isinstance(value, float) and math.isnan(value)) and value < 0
+    row[f'{key}_raw'] = value
+    if negative:
+        row[key] = 0.0
+    return negative
 
 
 def _produced(rows, details, config_keys, *, axis_keys=(), mean_cols=('test_mi',), std_cols=(),
@@ -75,11 +93,9 @@ def _repeat_params(params: Dict[str, Any], run_id: Any, has_run_id: bool) -> Dic
 # ---------------------------------------------------------------------------
 
 def produce_single_network(mode, x, y, base_params, grid, *, to_bits, n_workers=1,
-                           is_proc_sweep=None, max_samples_per_task=None):
+                           is_proc_sweep=None):
     """estimate and sweep: one network per repeat."""
     kwargs = {'n_workers': n_workers}
-    if max_samples_per_task is not None:
-        kwargs['max_samples_per_task'] = max_samples_per_task
     if mode == 'sweep':
         results = ParameterSweep(x, y, base_params).run(grid, is_proc_sweep=is_proc_sweep, **kwargs)
     else:
@@ -101,10 +117,28 @@ def produce_lag(x, y, base_params, grid, *, to_bits, lag_range, n_workers=1, equ
 # Rigorous: one extrapolation per configuration and repeat
 # ---------------------------------------------------------------------------
 
-def _fit_row(fit: Dict[str, Any], to_bits: bool) -> Dict[str, Any]:
+def _fit_row(fit: Dict[str, Any], to_bits: bool, quantity: str = 'rigorous') -> Dict[str, Any]:
+    """One fit as a row. An extrapolated value of a quantity that cannot be
+    negative is reported as 0 when it comes out below zero, with the
+    extrapolated value kept as ``mi_raw``."""
     row = {'mi': fit.get('mi_corrected')}
     row.update({k: fit[k] for k in _FIT_KEYS if k in fit})
-    return convert_record(row, to_bits)
+    row = convert_record(row, to_bits)
+    if quantity in _SIGNED:
+        return row
+    if _floor_at_zero(row, 'mi'):
+        units = 'bits' if to_bits else 'nats'
+        error = row.get('mi_error')
+        spread = (f" ± {error:.4f}" if isinstance(error, (int, float)) and math.isfinite(error)
+                  else "")
+        warnings.warn(
+            f"The extrapolated {_QUANTITY_NAMES[quantity]} is negative "
+            f"({row['mi_raw']:.4f}{spread} {units}). It cannot be negative. It is reported "
+            f"as 0 {units} and the extrapolated value is kept as mi_raw in result.runs. A value "
+            f"this close to zero is not resolved at this sample size.",
+            UserWarning, stacklevel=user_stacklevel(),
+        )
+    return row
 
 
 def _ladder_rows(frame: pd.DataFrame, to_bits: bool, extra: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -178,13 +212,15 @@ def _difference_rows(mode, raw, cid, cfg, config_keys, run_ids, to_bits, bidirec
         comp = {col: (vals[i] if i < len(vals) else math.nan) for col, vals in values.items()}
         mi = sum(sign * comp[col] for col, _, sign in spec)
         row = {'config_id': cid, **{k: cfg.get(k) for k in config_keys}, 'run_id': rid, 'mi': mi, **comp}
+        if mode not in _SIGNED:
+            _floor_at_zero(row, 'mi')
         if bidirectional:
             back = {col: (vals[i] if i < len(vals) else math.nan) for col, vals in reverse.items()}
-            te_yx = sum(sign * back[col] for col, _, sign in _TRANSFER_REVERSE)
-            total = abs(mi) + abs(te_yx)
             row.update(back)
-            row['te_yx'] = te_yx
-            row['directionality_index'] = (mi - te_yx) / total if total > 1e-10 else 0.0
+            row['te_yx'] = sum(sign * back[col] for col, _, sign in _TRANSFER_REVERSE)
+            _floor_at_zero(row, 'te_yx')
+            total = abs(row['mi']) + abs(row['te_yx'])
+            row['directionality_index'] = (row['mi'] - row['te_yx']) / total if total > 1e-10 else 0.0
         rows.append(row)
     for col, key, _ in spec + (_TRANSFER_REVERSE if bidirectional else []):
         for i, result in enumerate(raw.get(key) or []):
@@ -195,14 +231,17 @@ def _difference_rows(mode, raw, cid, cfg, config_keys, run_ids, to_bits, bidirec
 
 
 def _difference_scalars(mode, rows, bidirectional=False) -> Dict[str, Any]:
-    """Amplification of the configuration's aggregate, from the component means."""
+    """Amplification of the configuration's aggregate, from the component means.
+
+    It uses the measured combination, since a value reported as 0 would make
+    the factor infinite."""
     spec = _DIFFERENCES[mode]
     means = [float(np.nanmean([r[col] for r in rows])) for col, _, _ in spec]
-    result = float(np.nanmean([r['mi'] for r in rows]))
+    result = float(np.nanmean([r.get('mi_raw', r['mi']) for r in rows]))
     scalars = {'amplification_factor': amplification_factor(means, result)}
     if bidirectional:
         back = [float(np.nanmean([r[col] for r in rows])) for col, _, _ in _TRANSFER_REVERSE]
-        te_yx = float(np.nanmean([r['te_yx'] for r in rows]))
+        te_yx = float(np.nanmean([r.get('te_yx_raw', r['te_yx']) for r in rows]))
         scalars['amplification_factor_yx'] = amplification_factor(back, te_yx)
     return scalars
 
@@ -253,7 +292,7 @@ def produce_difference(mode, x, y, w, base_params, grid, *, to_bits, ctx, n_work
     return _produced(rows, details, config_keys, mean_cols=mean_cols, row_scalars=scalars)
 
 
-def produce_difference_rigorous(mode, x, y, w, base_params, grid, *, to_bits, ctx, n_workers=1):
+def produce_difference_rigorous(mode, x, y, base_params, grid, *, to_bits, ctx, n_workers=1):
     """conditional, interaction, transfer with rigorous=True: one extrapolation
     of the combined quantity per configuration and repeat."""
     from neural_mi.analysis.rigorous import run_rigorous_scalar_analysis
@@ -273,7 +312,7 @@ def produce_difference_rigorous(mode, x, y, w, base_params, grid, *, to_bits, ct
                 raw_deferred=ctx.get('raw_deferred', False),
                 **(ctx.get('temporal_kwargs') or {}), **ctx['rigorous_kwargs'])
             rows.append({'config_id': cid, **{k: cfg.get(k) for k in config_keys}, 'run_id': rid,
-                         **_fit_row(fit, to_bits)})
+                         **_fit_row(fit, to_bits, quantity=mode)})
             ladder = fit.get('raw_results_df')
             if ladder is not None and len(ladder):
                 frame = ladder.copy()
@@ -330,32 +369,52 @@ def produce_pairwise(x, y, base_params, grid, *, to_bits, n_workers=1, pairs=Non
 
 def produce_dimensionality(x, y, base_params, grid, *, to_bits, n_workers=1, dim_kwargs=None,
                            user_set_keys=None):
-    """One stability report per configuration; its repeats are the splits."""
-    from neural_mi.analysis.dimensionality import run_dimensionality_analysis
+    """One curve of MI against embedding dimension per configuration.
+
+    A repeat is one network: a restart at one embedding dimension of one split.
+    Each ``dataframe`` row is one split and one embedding dimension, carrying
+    the best restart (``mi_best``) and the curve (``mi_curve``), the running
+    maximum of the best restarts over increasing dimension.
+    """
+    from neural_mi.analysis.dimensionality import _best, _curve, run_dimensionality_analysis
     configs, _ = split_grid(grid)
     config_keys = [k for k in (grid or {}) if k != 'run_id']
     dim_kwargs = dict(dim_kwargs or {})
     user_set = set(user_set_keys) if user_set_keys is not None else set(base_params)
-    rows, details, scalars = [], {}, {}
+    scale = NATS_TO_BITS if to_bits else 1.0
+    rows, details = [], {}
     for cid, cfg in enumerate(configs):
         params = merge_grid_values(base_params, cfg)
-        frame, extra = run_dimensionality_analysis(x, params, y_data=y, sweep_grid=None,
-                                                   n_workers=n_workers,
-                                                   user_set_keys=user_set | set(cfg), **dim_kwargs)
-        for record in frame.to_dict(orient='records'):
-            values = convert_record(network_values(record), to_bits)
-            rows.append({'config_id': cid, **{k: cfg.get(k) for k in config_keys},
-                         'split_id': record.get('split_id'), 'mi': values.get('train_mi'), **values})
-        entry = {k: v for k, v in extra.items() if k not in ('embeddings_x', 'embeddings_y')
-                 and not k.startswith('embeddings_') and not k.startswith('embedding_history')}
-        emb = {k: v for k, v in extra.items() if k.startswith('embeddings_') or k.startswith('embedding_history')}
-        if emb:
-            last_split = rows[-1]['split_id'] if rows else 0
-            entry['embeddings'] = {last_split: emb}
+        fits, info = run_dimensionality_analysis(x, params, y_data=y, n_workers=n_workers,
+                                                 user_set_keys=user_set | set(cfg), **dim_kwargs)
+        best = {s: _best(fits, s) for s in {f['split_id'] for f in fits}}
+        curves = {s: _curve(b) for s, b in best.items()}
+        entry = dict(info, plateau={s: v * scale for s, v in info['plateau'].items()})
+        embeddings = {}
+        for f in fits:
+            s, k, r = f['split_id'], int(f['embedding_dim']), f['run_id']
+            values = convert_record(network_values(f), to_bits)
+            rows.append({'config_id': cid, **{c: cfg.get(c) for c in config_keys},
+                         'split_id': s, 'embedding_dim': k, 'run_id': r,
+                         'mi': 0.0 if f.get('all_mi_negative') else values.get('train_mi'), **values,
+                         'mi_best': best[s][k] * scale, 'mi_curve': curves[s][k] * scale})
+            found = embedding_values(f)
+            if found:
+                embeddings[(s, k, r)] = found
+        if embeddings:
+            entry['embeddings'] = embeddings
+            at_bound = {}
+            for s, k in info['dimension_at_most_per_split'].items():
+                fits_at = [f for f in fits if f['split_id'] == s and int(f['embedding_dim']) == k]
+                if fits_at:
+                    top = max(fits_at, key=lambda f: f.get('train_mi') or -math.inf)
+                    at_bound[s] = embeddings.get((s, k, top['run_id']))
+            entry['embeddings_at_bound'] = at_bound
         details[cid] = entry
-        scalars[cid] = {'n_stable_total': extra.get('n_stable_total'), 'converged': extra.get('converged')}
-    return _produced(rows, details, config_keys, mean_cols=('test_mi', 'pr_eig', 'pr_singular'),
-                     std_cols=('pr_eig', 'pr_singular'), row_scalars=scalars)
+    rows.sort(key=lambda row: (row['config_id'], row['split_id'], row['embedding_dim'], row['run_id']))
+    return _produced(rows, details, config_keys, axis_keys=('split_id', 'embedding_dim'),
+                     mean_cols=('test_mi', 'pr_eig', 'pr_singular'),
+                     first_cols=('mi_best', 'mi_curve'))
 
 
 def produce_precision(x, y, base_params, *, to_bits, n_workers=1, precision_kwargs=None):
@@ -366,6 +425,12 @@ def produce_precision(x, y, base_params, *, to_bits, n_workers=1, precision_kwar
     for record in out['samples']:
         value = convert_record({'mi': record['mi']}, to_bits)['mi']
         row = {'config_id': 0, 'tau': record['tau'], 'mi': value}
+        # Past the point where the curve crosses zero the frozen critic's bound
+        # has broken. Those values are reported as 0, measured ones kept, and
+        # precision.py's warning says so. The threshold is read off the
+        # measured curve, and a crossing of a positive threshold is the same
+        # either way.
+        _floor_at_zero(row, 'mi')
         if 'noise_sample' in record:
             row['noise_sample'] = record['noise_sample']
         rows.append(row)
@@ -395,8 +460,7 @@ def produce(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers=1):
     """
     if mode in ('estimate', 'sweep'):
         return produce_single_network(mode, x, y, base_params, grid, to_bits=to_bits,
-                                      n_workers=n_workers, is_proc_sweep=ctx.get('is_proc_sweep'),
-                                      max_samples_per_task=ctx.get('max_samples_per_task'))
+                                      n_workers=n_workers, is_proc_sweep=ctx.get('is_proc_sweep'))
     if mode == 'lag':
         return produce_lag(x, y, base_params, grid, to_bits=to_bits, lag_range=ctx['lag_range'],
                            n_workers=n_workers, equalize_n=ctx.get('equalize_n', False))
@@ -405,7 +469,7 @@ def produce(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers=1):
                                 rigorous_kwargs=ctx.get('rigorous_kwargs'))
     if mode in _DIFFERENCES:
         if ctx.get('rigorous'):
-            return produce_difference_rigorous(mode, x, y, w, base_params, grid, to_bits=to_bits,
+            return produce_difference_rigorous(mode, x, y, base_params, grid, to_bits=to_bits,
                                                ctx=ctx, n_workers=n_workers)
         return produce_difference(mode, x, y, w, base_params, grid, to_bits=to_bits, ctx=ctx,
                                   n_workers=n_workers)

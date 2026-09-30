@@ -424,8 +424,11 @@ class TestPretrainedBackboneEmbedding:
             pytorch_predefined='resnet18', pretrained=False,
         )
         x = torch.randn(4, 3, 64, 64)
-        out = model(x)
+        with pytest.warns(UserWarning, match="spatial size") as caught:
+            out = model(x)
         assert out.shape == (4, 8)
+        # Raised in forward, which torch calls, and still named at this line.
+        assert caught[0].filename == __file__
 
     @torchvision_available
     def test_backbone_frozen(self):

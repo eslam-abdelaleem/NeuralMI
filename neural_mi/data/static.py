@@ -110,7 +110,7 @@ class StaticDataset(BaseStaticDataset):
             data = data.detach().cpu().numpy()
 
         if not isinstance(data, np.ndarray):
-            raise ValueError(f"Data must be a list, numpy array, or torch.Tensor, got {type(data)}")
+            raise ValueError(f"Data must be a list, a numpy array or a torch.Tensor. Got {type(data)}.")
 
         # Check for invalid values
         if not np.all(np.isfinite(data)):

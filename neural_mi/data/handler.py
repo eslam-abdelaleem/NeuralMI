@@ -11,7 +11,7 @@ from .temporal import (
 from .static import StaticDataset
 from .shift_windowing import resolve_step_size
 from torch.utils.data import Dataset
-from neural_mi.logger import logger, user_stacklevel
+from neural_mi.logger import groups_repeats, logger, user_stacklevel
 
 _REGULAR_GRID_TYPES = ('continuous', 'categorical')
 
@@ -119,22 +119,22 @@ class WindowManager:
         # possible: below 1 the fraction reading is the only one available, so
         # an absolute step wider than the window cannot be expressed at all.
         if step < window:
-            remedy = (f"pass step_size={step / window:g}, which is {step:g} as a "
+            remedy = (f"pass step_size={step / window:g} to get {step:g} as a "
                       f"fraction of the window")
         elif step == window:
-            remedy = "pass step_size=None, the default, for a step of one window"
+            remedy = "pass step_size=None (the default) for a step of one window"
         else:
-            remedy = (f"there is no way to ask for a {step:g} step at "
-                      f"window_size={window:g}, since every value below 1 is read "
-                      f"as a fraction; use a larger window_size or rescale your "
+            remedy = (f"a {step:g} step cannot be expressed at "
+                      f"window_size={window:g} because every value below 1 is read "
+                      f"as a fraction. Use a larger window_size or rescale your "
                       f"time unit")
         warnings.warn(
-            f"step_size={step:g} was read as a fraction of window_size={window:g}, "
-            f"giving a step of {applied:g} time units and {overlap:g}% overlap "
-            f"between consecutive windows. Every step_size below 1 is a fraction, "
-            f"so if you meant {step:g} as an absolute duration, {remedy}. This is "
-            f"reported only when window_size is below 1, where a fraction and a "
-            f"duration are both plausible readings of the same number.",
+            f"step_size={step:g} was read as a fraction of window_size={window:g}. "
+            f"That gives a step of {applied:g} time units and {overlap:g}% overlap "
+            f"between consecutive windows. Every step_size below 1 is a fraction. "
+            f"If you meant {step:g} as an absolute duration, {remedy}. This is "
+            f"reported only when window_size is below 1. A fraction and a duration "
+            f"are then both plausible readings of the same number.",
             UserWarning, stacklevel=user_stacklevel(),
         )
 
@@ -218,7 +218,7 @@ class _NamedStreams:
         )
         if not self._streams:
             raise ValueError(
-                f"{owner} needs at least one stream; every entry was None."
+                f"{owner} needs at least one stream and every entry was None."
             )
 
     @property
@@ -380,15 +380,15 @@ class AlignedStreams(_NamedStreams, Dataset):
                 ]
                 logger.warning(
                     f"Window coverage validation kept {self.n_windows_retained} of "
-                    f"{self.n_windows_built} windows ({self.window_retention:.1%}), "
-                    f"dropped by {' and '.join(dropped_by) or 'coverage rules'}. The "
-                    f"estimate therefore describes the retained subensemble, so a "
-                    f"per-window figure is per *retained* window. For spike data, "
+                    f"{self.n_windows_built} windows ({self.window_retention:.1%}). "
+                    f"Dropped per stream: {' and '.join(dropped_by) or 'coverage rules'}. "
+                    f"The estimate describes the retained windows only. A per-window "
+                    f"figure is per retained window. For spike data, "
                     f"{{'drop_empty_windows': False}} in the stream's processor "
                     f"parameters keeps silent windows and estimates the unrestricted "
                     f"quantity. Retention falls quickly as more variables are required "
-                    f"to be simultaneously valid. Reported once per run; per-task "
-                    f"values are in result.runs as 'window_retention'."
+                    f"to be simultaneously valid. This is reported once per run. The "
+                    f"per-task values are in result.runs as 'window_retention'."
                 )
 
             # Step 3: Update WindowManager's tracking
@@ -446,9 +446,9 @@ class AlignedStreams(_NamedStreams, Dataset):
             if n_safe < 1:
                 raise ValueError(
                     f"Recording span ({usable_span:.6g}) is too short to reserve a "
-                    f"safe time-shift margin ({margin:.6g}, i.e. 2*window_size) with "
+                    f"safe time-shift margin ({margin:.6g} = 2 * window_size) with "
                     f"window_size={window_size}. Reduce window_size, increase the "
-                    f"recording length, or disable shift_time."
+                    f"recording length or disable shift_time."
                 )
             self._shift_n_windows = n_safe
         return self._shift_n_windows
@@ -582,9 +582,9 @@ class StreamBundle(_PairAccessors, AlignedStreams):
         """
         if offset_y != offset_x:
             logger.warning(
-                f"time_shift got offset_x={offset_x} != offset_y={offset_y}; "
-                f"only offset_x is used to shift the single window grid every "
-                f"stream shares."
+                f"time_shift got offset_x={offset_x} != offset_y={offset_y}. Only "
+                f"offset_x is used. It shifts the single window grid every stream "
+                f"shares."
             )
         self.shift_grid(offset_x)
 
@@ -811,16 +811,17 @@ def _warn_on_mixed_units(specs):
         if not (spec.get('processor_params') or {}).get('sample_rate'):
             logger.warning(
                 f"processor_type mixes 'spike' ({', '.join(spikes)}) with "
-                f"'{kind}' on stream {name!r}, with no 'sample_rate' set on it. "
-                f"'spike' timestamps are always in seconds; '{kind}' defaults to "
-                f"raw sample-index units without a sample_rate, so the streams' "
-                f"window boundaries may not correspond to the same real time and "
-                f"the alignment between them may be meaningless. Set "
-                f"{{'sample_rate': ...}} in the processor parameters of {name!r}, or "
-                f"give it a time vector, to put them on a shared time unit."
+                f"'{kind}' on stream {name!r} without a 'sample_rate' on it. "
+                f"'spike' timestamps are always in seconds. '{kind}' is in raw "
+                f"sample-index units without a sample_rate. The streams' window "
+                f"boundaries may then cover different real times and make the "
+                f"alignment meaningless. Set {{'sample_rate': ...}} in the processor "
+                f"parameters of {name!r} or give it a time vector to put them on a "
+                f"shared time unit."
             )
 
 
+@groups_repeats
 def create_dataset(x_data, y_data=None,
                    x_time=None, y_time=None,
                    processor_type_x=None, processor_params_x=None,
@@ -874,7 +875,7 @@ def create_dataset(x_data, y_data=None,
             raise ValueError(
                 "create_dataset received a mapping of streams and also one of the "
                 "x_*/y_* arguments. Put every stream's data, time and processor "
-                "settings in the mapping, or use the two-argument form."
+                "settings in the mapping or use the two-argument form."
             )
         specs = OrderedDict(x_data)
         argument_names = {name: f"stream {name!r}" for name in specs}
@@ -902,7 +903,7 @@ def create_dataset(x_data, y_data=None,
                     "processor_type_x='continuous', processor_params_x={...}).")
             raise ValueError(
                 f"{argument_names[name]} was given the string {spec['data']!r} as data. "
-                f"Data must be array-like (list, numpy array, or torch.Tensor). "
+                f"Data must be array-like (list, numpy array or torch.Tensor). "
                 + (hint if pair_form and name == 'y' else "")
             )
 
@@ -924,9 +925,9 @@ def create_dataset(x_data, y_data=None,
                 window_size = this_window
             elif this_window != window_size:
                 logger.warning(
-                    f"Stream {name!r} specifies window_size={this_window}, but every "
+                    f"Stream {name!r} specifies window_size={this_window}. Every "
                     f"stream shares a single WindowManager and must use the same "
-                    f"window size. Using window_size={window_size}."
+                    f"window size. window_size={window_size} is used."
                 )
         if this_step is not None:
             if step_size is None:
@@ -950,10 +951,10 @@ def create_dataset(x_data, y_data=None,
     if static and windowed:
         raise ValueError(
             f"A pre-processed stream (processor_type=None) cannot be paired with a "
-            f"windowed processor_type: {sorted(static)} are pre-processed while "
+            f"windowed processor_type. {sorted(static)} are pre-processed and "
             f"{sorted(windowed)} are windowed. A pre-processed stream has no time axis "
-            f"to align windows against, so the two cannot share a grid. "
-            f"Give every stream a real processor_type (e.g. 'continuous'), or "
+            f"to align windows against and cannot share a grid with a windowed one. "
+            f"Give every stream a real processor_type (for example 'continuous') or "
             f"pre-process all of them and pass processor_type=None throughout."
         )
 

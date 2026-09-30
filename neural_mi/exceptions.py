@@ -1,8 +1,5 @@
 # neural_mi/exceptions.py
-"""Defines custom exceptions for the neural_mi library.
-
-Using custom exceptions allows for more specific error handling and clearer error messages.
-"""
+"""The library's own exceptions and its warning category."""
 
 class NeuralMIError(Exception):
     """Base class for all custom exceptions in the neural_mi library."""
@@ -33,3 +30,13 @@ class TrainingError(NeuralMIError):
     created.
     """
     pass
+
+
+class CombinationWarning(UserWarning):
+    """A quantity combined from several MI estimates cannot be read as it stands.
+
+    Raised for a conditional MI or transfer entropy that came out negative, for
+    interaction information whose components are in an impossible order, and for
+    a combined value with a large error-amplification factor. Filter it with
+    ``warnings.filterwarnings('ignore', category=nmi.CombinationWarning)``.
+    """

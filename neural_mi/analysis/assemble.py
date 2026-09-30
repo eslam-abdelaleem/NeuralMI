@@ -9,15 +9,18 @@ assembling repeat rows into a :class:`~neural_mi.results.Results`.
 
 A repeat row is a plain dict carrying ``config_id``, the grid keys of its
 configuration, the mode's axis keys (``lag``, ``tau``, ``ch_x``/``ch_y``), a
-repeat index (``run_id`` or ``split_id``), the repeat's value of the quantity
+repeat index (``run_id``), the repeat's value of the quantity
 under ``mi``, and whatever per-repeat diagnostics the mode reports.
 """
 import itertools
 import math
+import warnings
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
+from neural_mi.logger import user_stacklevel
 
 # Values one trained network reports about itself. A single-network repeat
 # carries these as columns of ``runs``; a multi-network repeat keeps them per
@@ -40,15 +43,15 @@ NETWORK_KEYS: Tuple[str, ...] = (
 EMBEDDING_PREFIXES: Tuple[str, ...] = ('embeddings_', 'embedding_history', 'embedding_rotation',
                                        'embedding_track')
 
-REPEAT_KEYS: Tuple[str, ...] = ('run_id', 'split_id', 'noise_sample')
+REPEAT_KEYS: Tuple[str, ...] = ('run_id', 'noise_sample')
 
 # Values a network or a combine step reports in nats, converted once when the
 # caller asked for bits. Ceilings arrive already in the requested units, and
 # saturations and participation ratios have none.
 MI_KEYS: Tuple[str, ...] = (
-    'mi', 'train_mi', 'test_mi', 'raw_train_mi', 'train_mi_at_peak',
+    'mi', 'mi_raw', 'train_mi', 'test_mi', 'raw_train_mi', 'train_mi_at_peak',
     'mi_error', 'mi_error_pred', 'slope',
-    'mi_xw_y', 'mi_w_y', 'mi_x_y', 'te_yx',
+    'mi_xw_y', 'mi_w_y', 'mi_x_y', 'te_yx', 'te_yx_raw',
     'i_xypast_yfuture', 'i_ypast_yfuture', 'i_yxpast_xfuture', 'i_xpast_xfuture',
 )
 MI_HISTORY_KEYS: Tuple[str, ...] = ('test_mi_history', 'train_mi_history')
@@ -164,12 +167,16 @@ def _hashable(value: Any) -> Any:
 def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'mi',
               mean_cols: Iterable[str] = (), first_cols: Iterable[str] = (),
               std_cols: Iterable[str] = ()) -> pd.DataFrame:
-    """One row per group: ``mi_mean``, ``mi_std``, ``n_runs`` and column means.
+    """One row per group: ``mi_mean``, ``mi_std``, ``n_runs``, ``n_zero`` and column means.
 
-    ``mi_std`` is the sample standard deviation across repeats and is NaN when
-    a group has fewer than two, never 0. ``mean_cols`` are averaged into
+    A repeat reported as 0 produced nothing: its network learned nothing that
+    generalises, or its value came out negative. The means and spreads use the
+    repeats that produced a value, and ``n_zero`` counts the others. A group
+    whose repeats all produced nothing reports 0. ``mi_std`` is the sample
+    standard deviation across the repeats used and is NaN below two, never 0. ``mean_cols`` are averaged into
     ``<col>_mean`` and ``std_cols`` spread into ``<col>_std`` the same way;
-    ``first_cols`` are constant within a group and copied.
+    ``first_cols`` are constant within a group and copied. ``n_runs`` counts
+    every repeat, including one that could not produce a number (NaN).
     Grid values that pandas cannot group on (dicts) are grouped by a hashable
     stand-in and restored afterwards.
     """
@@ -177,7 +184,8 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
     std_cols = [c for c in std_cols if c in runs.columns]
     first_cols = [c for c in first_cols if c in runs.columns and c not in group_cols]
     if runs.empty:
-        cols = list(group_cols) + ['mi_mean', 'mi_std', 'n_runs'] + [f'{c}_mean' for c in mean_cols] + first_cols
+        cols = (list(group_cols) + ['mi_mean', 'mi_std', 'n_runs', 'n_zero']
+                + [f'{c}_mean' for c in mean_cols] + first_cols)
         return pd.DataFrame(columns=cols)
 
     work = runs.copy()
@@ -188,15 +196,24 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
         keyed[col] = key
     key_cols = [keyed[c] for c in group_cols]
 
-    rows = []
+    rows, zero_groups = [], []
     grouper = key_cols[0] if len(key_cols) == 1 else key_cols
     for _, group in work.groupby(grouper, sort=False, dropna=False):
         values = pd.to_numeric(group[value_col], errors='coerce')
+        n_rows = len(group)
         n = int(values.notna().sum())
+        n_zero = int((values == 0).sum())
+        if n_zero < n:
+            used = values.notna() & (values != 0)
+            group, values = group[used.values], values[used.values]
         row = {col: group[col].iloc[0] for col in group_cols}
-        row['mi_mean'] = float(values.mean()) if n else math.nan
-        row['mi_std'] = float(values.std(ddof=1)) if n >= 2 else math.nan
-        row['n_runs'] = n
+        n_used = int(values.notna().sum())
+        row['mi_mean'] = float(values.mean()) if n_used else math.nan
+        row['mi_std'] = float(values.std(ddof=1)) if n_used >= 2 else math.nan
+        row['n_runs'] = n_rows
+        row['n_zero'] = n_zero
+        if n >= 2 and n_zero:
+            zero_groups.append((n_zero, n))
         for col in mean_cols:
             col_values = pd.to_numeric(group[col], errors='coerce')
             row[f'{col}_mean'] = float(col_values.mean()) if col_values.notna().any() else math.nan
@@ -206,7 +223,37 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
         for col in first_cols:
             row[col] = group[col].iloc[0]
         rows.append(row)
+    _warn_zero_repeats(zero_groups)
     return pd.DataFrame(rows)
+
+
+def _warn_zero_repeats(zero_groups: List[Tuple[int, int]]) -> None:
+    """Say once per result which repeats produced nothing and were left out."""
+    if not zero_groups:
+        return
+    n_zero = sum(z for z, _ in zero_groups)
+    n_all = sum(n for _, n in zero_groups)
+    all_zero = sum(1 for z, n in zero_groups if z == n)
+    reading = (f"{all_zero} row(s) had no repeat that produced a value and report 0. "
+               if all_zero else "")
+    if len(zero_groups) == 1:
+        warnings.warn(
+            f"{n_zero} of {n_all} repeats produced nothing (reported as 0) and are left out of "
+            f"mi_mean and mi_std. {reading}A repeat that produced nothing among clearly positive "
+            f"ones is most likely a failed run. When every repeat is near zero, the quantity "
+            f"itself may be near zero. result.runs keeps every repeat.",
+            UserWarning, stacklevel=user_stacklevel(),
+        )
+    else:
+        warnings.warn(
+            f"{len(zero_groups)} rows of dataframe hold {n_zero} of their {n_all} repeats that "
+            f"produced nothing (reported as 0). Those repeats are left out of mi_mean and "
+            f"mi_std. n_zero counts them in each row. {reading}A repeat that produced "
+            f"nothing among clearly positive ones is most likely a failed run. When every "
+            f"repeat is near zero, the quantity itself may be near zero. result.runs keeps "
+            f"every repeat.",
+            UserWarning, stacklevel=user_stacklevel(),
+        )
 
 
 def build_results(mode: str, params: Dict[str, Any], runs_rows: List[Dict[str, Any]], *,
@@ -238,8 +285,8 @@ def build_results(mode: str, params: Dict[str, Any], runs_rows: List[Dict[str, A
         ``{config_id: {...}}`` structured diagnostics per configuration.
     row_scalars : dict, optional
         ``{config_id: {column: value}}`` scalars that belong on every
-        ``dataframe`` row of a configuration (``n_stable_total``,
-        ``amplification_factor``, ``mi_error``). They are computed by the mode,
+        ``dataframe`` row of a configuration (``amplification_factor``,
+        ``mi_error``). They are computed by the mode,
         not averaged here, because they are functions of the aggregate.
     """
     from neural_mi.results import Results

@@ -40,11 +40,16 @@ def animate_training(
     embedding_labels: Optional[Union[np.ndarray, Dict[str, np.ndarray]]] = None,
     config_id: Optional[int] = None,
     run_id=None,
+    lag=None,
+    ch_x=None,
+    ch_y=None,
+    split_id=None,
+    embedding_dim=None,
     **kwargs,
 ) -> manim.FuncAnimation:
-    """Animate one repeat's training history as a GIF or MP4.
+    """Animate one network's training history as a GIF or MP4.
 
-    Creates a frame-by-frame animation of the training history of one repeat.
+    Creates a frame-by-frame animation of the training history of one network.
     Panels are auto-detected from the available data or specified explicitly.
 
     Parameters
@@ -96,7 +101,13 @@ def animate_training(
         arrays produce a discrete palette with a legend.
 
     config_id, run_id : optional
-        The repeat to animate, needed only when the result holds more than one.
+        The configuration and repeat of the network to animate, needed only
+        when the result holds more than one.
+    lag, ch_x, ch_y, split_id, embedding_dim : optional
+        The axis values that pick the network in ``mode='lag'`` (``lag``),
+        ``'pairwise'`` (``ch_x`` and ``ch_y``) and ``'dimensionality'``
+        (``split_id`` and ``embedding_dim``). A call that matches more than one
+        network is refused and names the keys to pass.
     **kwargs
         ``figsize`` : tuple, forwarded to ``plt.figure``.
 
@@ -108,8 +119,11 @@ def animate_training(
 
     Examples
     --------
-    >>> result = nmi.run(x, mode='dimensionality', model=nmi.Model(...), training=nmi.Training(...))
+    >>> result = nmi.run(x, y, output=nmi.Output(track_embeddings=True))
     >>> anim = result.animate(output_path='training.gif', fps=8)
+
+    >>> # One network of a dimensionality curve
+    >>> anim = result.animate(split_id=0, embedding_dim=4, run_id=0)
 
     >>> # With embedding labels
     >>> anim = result.animate(
@@ -117,7 +131,9 @@ def animate_training(
     ...     reduction='umap',
     ... )
     """
-    details = result._repeat_view(config_id, run_id)
+    axis = {k: v for k, v in dict(lag=lag, ch_x=ch_x, ch_y=ch_y, split_id=split_id,
+                                   embedding_dim=embedding_dim).items() if v is not None}
+    details = result._repeat_view(config_id, run_id, what="animate()", **axis)
 
     # ---- collect history arrays ----
     test_history = list(details.get('test_mi_history', []))
@@ -130,7 +146,7 @@ def animate_training(
     n_frames = len(test_history)
     if n_frames == 0:
         raise ValueError(
-            "This repeat holds no 'test_mi_history', so there is nothing to "
+            "This network holds no 'test_mi_history' and has nothing to "
             "animate. The history is recorded for every trained network."
         )
 
@@ -300,7 +316,7 @@ def animate_training(
             if c is not None and np.issubdtype(np.asarray(c).dtype, np.floating):
                 fig.colorbar(sc, ax=ax_emb, fraction=0.04, pad=0.04)
             elif color_arr is not None:
-                _add_categorical_legend(ax_emb, sc, color_arr)
+                _add_categorical_legend(ax_emb, color_arr)
 
             embed_scatters.append(sc)
 
@@ -369,8 +385,8 @@ def animate_training(
                 writer = manim.FFMpegWriter(fps=fps)
             except Exception:
                 warnings.warn(
-                    "FFMpeg not found; falling back to PillowWriter (GIF). "
-                    "Install ffmpeg to export MP4.",
+                    "FFMpeg was not found and the animation is written with PillowWriter "
+                    "as a GIF. Install ffmpeg to export MP4.",
                     UserWarning,
                     stacklevel=user_stacklevel(),
                 )
@@ -448,7 +464,7 @@ def _fit_reducer(
         all_reduced = reducer.fit_transform(all_embeds)
     else:
         raise ValueError(
-            f"reduction='{reduction}' not recognised. Choose 'pca', 'umap', or 'none'."
+            f"reduction='{reduction}' is not recognised. Choose 'pca', 'umap' or 'none'."
         )
 
     n_tracked = embed_history[0].shape[0]
@@ -462,7 +478,7 @@ def _fit_reducer(
 def _resolve_scatter_color(color_arr):
     """Return (c, cmap, vmin, vmax) for ax.scatter."""
     if color_arr is None:
-        return None, 'viridis', None, None
+        return None, None, None, None
     color_arr = np.asarray(color_arr)
     is_categorical = not np.issubdtype(color_arr.dtype, np.floating)
     if is_categorical:
@@ -475,7 +491,7 @@ def _resolve_scatter_color(color_arr):
     return color_arr.astype(float), 'viridis', None, None
 
 
-def _add_categorical_legend(ax, sc, color_arr):
+def _add_categorical_legend(ax, color_arr):
     """Add a discrete legend for categorical colour arrays."""
     color_arr = np.asarray(color_arr)
     unique_vals = np.unique(color_arr)

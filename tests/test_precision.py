@@ -1,4 +1,6 @@
 # tests/test_precision.py
+import importlib
+
 import numpy as np
 import pytest
 import torch
@@ -321,10 +323,10 @@ def test_run_precision_analysis_corruption_sweep_uses_frozen_snapshot_not_live_s
     torch.testing.assert_close(_captured_tau0[1], y0[train_idx])
 
 def test_precision_windows_on_the_timestamps_like_every_other_mode(monkeypatch):
-    """mode='precision' builds its own dataset, and it windows on the
-        caller's timestamps as every other mode does: a 25 Hz recording with
-        window_size=1.0 gives 80 windows 25 samples wide. The spy stops the run
-        at the build, which is the only part under test.
+    """mode='precision' trains its baseline through the shared training task,
+        which windows on the caller's timestamps as every other mode does: a
+        25 Hz recording with window_size=1.0 gives 80 windows 25 samples wide.
+        The spy stops the run at the build, which is the only part under test.
     """
 
     class Built(Exception):
@@ -336,7 +338,7 @@ def test_precision_windows_on_the_timestamps_like_every_other_mode(monkeypatch):
         seen.update(kwargs)
         raise Built
 
-    monkeypatch.setattr(precision_module, 'create_dataset', spy)
+    monkeypatch.setattr(importlib.import_module('neural_mi.analysis.task'), 'create_dataset', spy)
 
     t = np.arange(0, 80, 1 / 25.0)
     x = np.sin(2 * np.pi * 0.3 * t)[:, None]
@@ -363,3 +365,37 @@ def test_precision_windows_on_the_timestamps_like_every_other_mode(monkeypatch):
                              processor_params_y={'window_size': 1.0, 'step_size': 1.0})
     assert dataset.x_data.shape[2] == 25
     assert len(dataset) == 80
+
+
+def test_precision_baseline_trains_with_every_setting_other_modes_honour(monkeypatch):
+    """The baseline trains through the shared training task, so the settings every
+    other mode passes to training reach it: the split's gap, the epoch selection,
+    eval_train and the decoders."""
+    import neural_mi as nmi
+    from neural_mi import Model, Training, Split, Precision
+    from neural_mi.training.trainer import Trainer
+    seen = {}
+    real_init, real_train = Trainer.__init__, Trainer.train
+
+    def init(self, *args, **kwargs):
+        seen['init'] = kwargs
+        return real_init(self, *args, **kwargs)
+
+    def train(self, *args, **kwargs):
+        seen['train'] = kwargs
+        return real_train(self, *args, **kwargs)
+
+    monkeypatch.setattr(Trainer, '__init__', init)
+    monkeypatch.setattr(Trainer, 'train', train)
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((400, 2))
+    y = x + 0.5 * rng.standard_normal((400, 2))
+    nmi.run(x, y, mode='precision', precision=Precision(tau_grid=[0.5]),
+            model=Model(embedding_dim=4, hidden_dim=8, n_layers=1, use_decoder=True),
+            training=Training(n_epochs=2, batch_size=32, smoothing_sigma=2.0, eval_train=True),
+            split=Split(gap_fraction=0.3), show_progress=False, seed=0)
+    assert seen['train']['split_gap_fraction'] == 0.3
+    assert seen['train']['smoothing_sigma'] == 2.0
+    assert seen['train']['eval_train'] is True
+    assert seen['train']['shift_seed'] is not None
+    assert seen['init']['decoder_x'] is not None

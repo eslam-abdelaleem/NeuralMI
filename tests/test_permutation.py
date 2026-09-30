@@ -54,7 +54,7 @@ class TestPermutationTest:
 
     def test_every_configuration_gets_its_own_null(self):
         x, y = _pair(0.5)
-        with pytest.warns(UserWarning, match="all 2 configurations of sweep_grid included"):
+        with pytest.warns(UserWarning, match="with all 2 configurations of sweep_grid"):
             result = nmi.run(x, y, mode='sweep', model=_MODEL, training=_TRAINING,
                              sweep_grid={'embedding_dim': [4, 8]}, permutation_test=True,
                              n_permutations=2, n_workers=1, show_progress=False)
@@ -367,7 +367,8 @@ class TestModesWithoutANullDistribution:
         y = {'y_data': self._x()} if with_y else {}
         with caplog.at_level('WARNING', logger='neural_mi'):
             result = nmi.run(x_data=self._x(), mode='dimensionality',
-                             dimensionality=Dimensionality(n_splits=1),
+                             dimensionality=Dimensionality(n_restarts=1, reference_dim=2,
+                                                           embedding_dims=[1]),
                              model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
                              training=Training(n_epochs=1), permutation_test=True,
                              n_permutations=3, n_workers=1, show_progress=False, **y)
@@ -460,3 +461,25 @@ class TestTheNullMovesX:
         shuffled = shift_x(x, {}, 'block')
         assert sorted(shuffled[:, 0, 0].tolist()) == sorted(x[:, 0, 0].tolist())
         assert torch.equal(shuffled[:, 0, 1] - shuffled[:, 0, 0], torch.ones(10))
+
+
+def test_a_trial_raises_no_warnings_of_its_own():
+    """A trial trains on data whose dependence was destroyed on purpose, so what
+    its networks warn about (a value near or below zero, nothing learned) is the
+    null working. None of it reaches the caller."""
+    import warnings
+    from neural_mi.analysis import permutation
+    x = torch.as_tensor(np.random.default_rng(0).standard_normal((200, 2, 1)), dtype=torch.float32)
+
+    def noisy_produce(*args, **kwargs):
+        warnings.warn("TE(X→Y) estimate is negative (-0.0006 bits).", UserWarning)
+        warnings.warn("Training completed all 8 epoch(s) without early stopping", UserWarning)
+        return {'rows': [{'config_id': 0, 'run_id': 0, 'mi': 0.0, 'raw_train_mi': -0.01}],
+                'details': {}, 'axis_keys': []}
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        with patch('neural_mi.analysis.modes.produce', side_effect=noisy_produce):
+            values = permutation._trial(('estimate', x, x, None, {}, None, {}, True, 1, 'circular'))
+    assert caught == []
+    assert values == {(0,): (0.0, -0.01)}

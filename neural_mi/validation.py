@@ -47,7 +47,7 @@ ALLOWED_VALUES = {
     'estimator_name': list(ESTIMATORS.keys()),  # 'infonce', 'smile'
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
-    'norm_layer': [None, 'batch', 'layer'],
+    'norm_layer': [None, 'auto', 'none', 'batch', 'layer'],
 }
 
 class DataValidator:
@@ -84,7 +84,7 @@ class DataValidator:
     def _validate_type(self, data: Any, name: str, proc_type: Optional[str]):
         """Validates the base type and dtype of a data stream."""
         if not isinstance(data, (np.ndarray, torch.Tensor, list)):
-            raise TypeError(f"{name} must be np.ndarray, torch.Tensor, or list, got {type(data)}")
+            raise TypeError(f"{name} must be an np.ndarray, a torch.Tensor or a list. Got {type(data)}.")
 
         if proc_type in ['continuous', 'categorical']:
             is_numeric = False
@@ -110,7 +110,7 @@ class DataValidator:
                     is_numeric = False
 
             if not is_numeric:
-                raise TypeError(f"{name} must contain numeric data, but found type {dtype_repr}.")
+                raise TypeError(f"{name} must contain numeric data and holds type {dtype_repr}.")
 
             # Non-integer numeric data for the categorical processor (e.g. float
             # labels) is not an error here: CategoricalWindowDataset relabels it
@@ -125,7 +125,7 @@ class DataValidator:
             if data.ndim not in [2, 3]:
                 raise DataShapeError(
                     f"{name} must be a 2D array of shape (n_timepoints, n_channels) "
-                    f"or a pre-processed 3D tensor, but got a {data.ndim}D array."
+                    f"or a pre-processed 3D tensor. It is a {data.ndim}D array."
                 )
             if data.size == 0: raise ValueError(f"{name} is empty.")
         elif proc_type == 'spike':
@@ -143,8 +143,8 @@ class DataValidator:
                     raise ValueError(f"{name}[{i}] contains negative spike times.")
                 if len(spikes) > 1 and not np.all(spikes[:-1] <= spikes[1:]):
                     logger.warning(
-                        f"{name}[{i}] spike times are not sorted; "
-                        "they will be sorted automatically by SpikeWindowDataset."
+                        f"{name}[{i}] spike times are not sorted. "
+                        "SpikeWindowDataset sorts them."
                     )
         elif proc_type in ['continuous', 'categorical']:
             if isinstance(data, (np.ndarray, torch.Tensor)):
@@ -164,7 +164,10 @@ class DataValidator:
                 logger.warning(f"x_data has {len(self.x_data)} channels, y_data has {len(self.y_data)}.")
         elif not is_x_list and not is_y_list:
             if self.x_data.ndim == 3 and self.y_data.ndim == 3 and self.x_data.shape[0] != self.y_data.shape[0]:
-                raise DataShapeError(f"Pre-processed data must have same number of samples, but got {self.x_data.shape[0]} and {self.y_data.shape[0]}.")
+                raise DataShapeError(
+                    f"Pre-processed X and Y must have the same number of samples. They "
+                    f"have {self.x_data.shape[0]} and {self.y_data.shape[0]}."
+                )
 
 class ParameterValidator:
     """Validates the hyperparameter dictionary provided to the `run` function."""
@@ -259,7 +262,7 @@ class ParameterValidator:
         """Look up a mode kwarg from either the named top-level params (e.g.
         `lag_range`, `curvature_t_threshold`) or from inside `analysis_kwargs`, where
         mode kwargs without a dedicated named parameter live (e.g. `n_splits`,
-        `gamma_range`, `equalize_n`, `max_samples_per_task`, `pairs`).
+        `gamma_range`, `equalize_n`, `pairs`).
 
         Returns
         -------
@@ -304,10 +307,10 @@ class ParameterValidator:
                                if not isinstance(x, (int, float, np.integer, np.floating))]
                 if non_numeric:
                     raise ValueError(
-                        f"lag_range entries must all be numeric, but found non-numeric "
+                        f"lag_range entries must all be numeric. Non-numeric "
                         f"values: {non_numeric[:5]}{'...' if len(non_numeric) > 5 else ''}. "
-                        f"Use range(-10, 11), a list of integers, or np.arange(...) for "
-                        f"time-based lags (e.g. spike trains)."
+                        f"Use range(-10, 11), a list of integers or np.arange(...) for "
+                        f"time-based lags (for example spike trains)."
                     )
 
         # Precision mode: validate threshold_ratio bounds
@@ -322,35 +325,44 @@ class ParameterValidator:
                             f"(or a list of such floats), got {r!r}."
                         )
 
-        # Dimensionality mode: n_splits counts the independent model fits, so
-        # anything below 1 asks for no fits at all. Refused here, where the
-        # value was passed.
+        # Dimensionality mode: the counts and the grid, refused here where they
+        # were passed.
         if self.mode == 'dimensionality':
-            _, ns = self._mode_kwarg('n_splits')
-            if ns is not None and (not isinstance(ns, (int, np.integer))
-                                   or isinstance(ns, bool) or ns < 1):
-                raise ValueError(
-                    f"n_splits must be a whole number of 1 or more, got {ns!r}. It "
-                    f"counts the independent model fits this mode averages over, and "
-                    f"cross-run stability needs at least 2 of them to compare."
-                )
+            for key in ('n_splits', 'n_restarts'):
+                _, n = self._mode_kwarg(key)
+                if n is not None and (not isinstance(n, (int, np.integer))
+                                      or isinstance(n, bool) or n < 1):
+                    raise ValueError(f"{key} must be a whole number of 1 or more, got {n!r}.")
+            _, ratio = self._mode_kwarg('saturation_ratio')
+            if ratio is not None and not (0 < ratio <= 1):
+                raise ValueError(f"saturation_ratio must lie in (0, 1], got {ratio!r}.")
+            _, ref = self._mode_kwarg('reference_dim')
+            if ref is not None and (not isinstance(ref, (int, np.integer))
+                                    or isinstance(ref, bool) or ref < 2):
+                raise ValueError(f"reference_dim must be a whole number of 2 or more, got {ref!r}.")
+            _, dims = self._mode_kwarg('embedding_dims')
+            if dims is not None:
+                dims = list(dims)
+                bad = [k for k in dims if not isinstance(k, (int, np.integer))
+                       or isinstance(k, bool) or k < 1]
+                if not dims or bad:
+                    raise ValueError(
+                        f"embedding_dims must hold whole numbers of 1 or more, got {dims!r}."
+                    )
 
-            # The two sides of this mode are two halves of one recording, so an
-            # encoder that differs between them makes the count of shared
-            # directions hard to read. Allowed, since a caller may have a reason,
-            # and reported because it is usually unintended.
+            # The two sides of this mode are two halves of one recording. An
+            # encoder that differs between them is allowed and reported, because
+            # it is usually unintended.
             _bp = self.params.get('base_params') or {}
             _y_side = [k for k in ('embedding_model_y', 'custom_embedding_cls_y',
                                    'hidden_dim_y', 'n_layers_y', 'embedding_dim_y')
                        if _bp.get(k) is not None]
             if _y_side:
                 logger.warning(
-                    f"{_y_side[0]} was set for mode='dimensionality', whose two sides "
-                    f"are two halves of the same recording. An encoder that differs "
-                    f"between them makes the count of cross-run-stable directions hard "
-                    f"to interpret, and this mode treats the two halves as "
-                    f"interchangeable elsewhere. Leave the Y overrides unset unless you "
-                    f"mean the halves to be read differently."
+                    f"{_y_side[0]} was set for mode='dimensionality'. The mode's two "
+                    f"sides are two halves of the same recording. An encoder that differs "
+                    f"between the halves makes the curve hard to read. Leave the Y "
+                    f"overrides unset unless you mean the halves to be read differently."
                 )
 
         # Rigorous mode: validate curvature_t_threshold and confidence_level
@@ -369,7 +381,7 @@ class ParameterValidator:
     def apply_defaults(self):
         """Populates missing parameters in base_params with defaults."""
         bp = self.params["base_params"]
-        verbose = bp.get('verbose', True)
+        verbose = bp.get('verbose', BASE_PARAMS_SCHEMA['verbose']['default'])
 
         for key, schema in BASE_PARAMS_SCHEMA.items():
             if key not in bp and 'default' in schema:

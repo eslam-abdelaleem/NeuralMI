@@ -14,7 +14,8 @@ from tqdm.auto import tqdm
 from typing import List, Dict, Any, Optional, Sequence
 
 from neural_mi.analysis.task import run_training_task
-from neural_mi.logger import logger, user_stacklevel, worker_init_args
+from neural_mi.exceptions import CombinationWarning
+from neural_mi.logger import CapturedTask, logger, released, user_stacklevel, worker_init_args
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import mi_report_units
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
@@ -143,7 +144,7 @@ class ParameterSweep:
                         UserWarning,
                         stacklevel=user_stacklevel(),
                     )
-            all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sequential Sweep Progress", disable=not show_progress or len(tasks) == 1)]
+            all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sweep", disable=not show_progress or len(tasks) == 1)]
         else:
             logger.info(f"Starting parameter sweep with {effective_workers} workers...")
             _configure_multiprocessing()
@@ -155,8 +156,8 @@ class ParameterSweep:
             with mp.get_context("spawn").Pool(processes=effective_workers,
                                           initializer=_log_init, initargs=_log_args) as pool:
                 all_results = list(tqdm(
-                    pool.imap(run_training_task, tasks), total=len(tasks),
-                    desc="Parameter Sweep Progress", unit="task", disable=not show_progress
+                    released(pool.imap(CapturedTask(run_training_task), tasks)), total=len(tasks),
+                    desc="Sweep", unit="task", disable=not show_progress
                 ))
         return all_results
     
@@ -164,7 +165,6 @@ class ParameterSweep:
         self,
         sweep_grid: Dict[str, List],
         is_proc_sweep: Optional[bool] = None,
-        max_samples_per_task: Optional[int] = None,
         **kwargs,
     ) -> List[tuple]:
         """Prepares the tasks for the parameter sweep.
@@ -191,8 +191,8 @@ class ParameterSweep:
         if self.base_params.get('critic_type') == 'concat' and 'embedding_dim' in sweep_grid:
             raise ValueError(
                 "'embedding_dim' cannot be swept when critic_type='concat'. "
-                "ConcatCritic has no separate embedding networks, so embedding_dim "
-                "has no effect. Remove 'embedding_dim' from sweep_grid, or switch "
+                "ConcatCritic has no separate embedding networks and ignores "
+                "embedding_dim. Remove 'embedding_dim' from sweep_grid or switch "
                 "to critic_type='separable' or 'hybrid'."
             )
 
@@ -210,8 +210,8 @@ class ParameterSweep:
             _proc = params.get('processor_type_x', self.base_params.get('processor_type_x', None))
             if not _already_preprocessed and _proc is None and str(_emb).lower() in ('gru', 'lstm'):
                 raise ValueError(
-                    f"sweep_grid contains embedding_model='{_emb}', which needs a time axis, but X "
-                    f"has no processor and so no time axis. Remove 'gru'/'lstm' from the "
+                    f"sweep_grid contains embedding_model='{_emb}'. That encoder needs a time "
+                    f"axis. X has no processor and so no time axis. Remove 'gru'/'lstm' from the "
                     f"sweep or set Processing(x=...) to a windowed processor."
                 )
 
@@ -228,19 +228,8 @@ class ParameterSweep:
                 task_data_x = _ensure_cpu(self.x_data)
                 task_data_y = _ensure_cpu(self.y_data)
             else:
-                x_to_send, y_to_send = self.x_data, self.y_data
-                if max_samples_per_task and isinstance(self.x_data, tuple):
-                    raise NotImplementedError(
-                        "max_samples_per_task is not supported with compound "
-                        "(tuple) X-role data (mode='conditional'(align='dual_branch')). "
-                        "Not needed for the quantities that use this path."
-                    )
-                if max_samples_per_task and self.x_data is not None and self.x_data.shape[0] > max_samples_per_task:
-                    indices = np.random.choice(self.x_data.shape[0], max_samples_per_task, replace=False)
-                    x_to_send = self.x_data[indices]
-                    y_to_send = self.y_data[indices] if self.y_data is not None else None
-                task_data_x = _ensure_cpu(x_to_send)
-                task_data_y = _ensure_cpu(y_to_send)
+                task_data_x = _ensure_cpu(self.x_data)
+                task_data_y = _ensure_cpu(self.y_data)
 
             task_run_id = f"{run_id_base}_c{i_combo}"
             # A purely deterministic per-task key for run_training_task's seeding
@@ -254,9 +243,9 @@ class ParameterSweep:
         return tasks
 
     def run(self, sweep_grid: Dict[str, List], is_proc_sweep: Optional[bool] = None, n_workers: Optional[int] = None,
-            max_samples_per_task: Optional[int] = None, **kwargs) -> List[Dict[str, Any]]:
+            **kwargs) -> List[Dict[str, Any]]:
         """Executes the hyperparameter sweep in parallel."""
-        tasks = self._prepare_tasks(sweep_grid, is_proc_sweep, max_samples_per_task, **kwargs)
+        tasks = self._prepare_tasks(sweep_grid, is_proc_sweep, **kwargs)
         results = self._run_parallel(tasks, n_workers)
         logger.info("Parameter sweep finished.")
         return results
@@ -314,11 +303,83 @@ def amplification_factor(components: Sequence[float], result: float) -> float:
     Returns
     -------
     float
-        The amplification factor, or ``inf`` when ``result`` is exactly zero.
+        The amplification factor, ``inf`` when ``result`` is exactly zero, or
+        ``nan`` when every component is zero, where nothing is combined.
     """
+    total = sum(abs(c) for c in components)
+    if total == 0:
+        return float('nan')
     if result == 0:
         return float('inf')
-    return float(sum(abs(c) for c in components) / abs(result))
+    return float(total / abs(result))
+
+
+def warn_combination(quantity_name: str, result: float, joint: tuple, marginals: Sequence[tuple],
+                     base_params: Dict[str, Any], *, signed: bool = False,
+                     raw_key: str = 'mi_raw') -> None:
+    """Warn when a quantity combined from MI estimates cannot be read as it stands.
+
+    ``joint`` and each of ``marginals`` are ``(label, value, key)``: the term's
+    name for the message, its estimate in nats, and the key it is reported
+    under. Each marginal is contained in the joint term, so the joint cannot
+    carry less information than any of them. A joint estimate that came out
+    below a marginal is reported first, and otherwise a high amplification
+    factor. ``signed`` marks a quantity whose negative values are meaningful,
+    such as interaction information. Any other quantity is reported as 0 when
+    it comes out negative, with the measured value kept under ``raw_key``.
+    """
+    _scale, _units = mi_report_units(base_params)
+    j_label, j_value, _ = joint
+    terms = [joint, *marginals]
+    keys = ', '.join(f"'{key}'" for _, _, key in terms)
+    short = [m for m in marginals if j_value < m[1]]
+    if short:
+        m_label, m_value, _ = max(short, key=lambda m: m[1])
+        pair_amp = amplification_factor([j_value, m_value], j_value - m_value)
+        order = (f"The joint term I({j_label})={j_value * _scale:.4f} came out below "
+                 f"the I({m_label})={m_value * _scale:.4f} it contains.")
+        if pair_amp >= AMPLIFICATION_WARN_THRESHOLD:
+            reading = (f"The two are close enough (error-amplification factor {pair_amp:.0f}x) "
+                       f"for an error of about {100.0 / pair_amp:.2g}% in either one to flip the "
+                       f"order. The true difference between them is most likely near zero. More "
+                       f"repeats (a longer sweep_grid run_id range) or more data narrow it.")
+        else:
+            reading = (f"At this error-amplification factor ({pair_amp:.1f}x) flipping the order "
+                       f"takes an error of more than {100.0 / pair_amp:.2g}% in a component. One "
+                       f"of the two networks most likely fell short. The joint network is the "
+                       f"usual one because its input is larger. Train longer or with more "
+                       f"capacity before reading the result.")
+        if signed:
+            warnings.warn(
+                f"The components of {quantity_name} ({result * _scale:.4f} {_units}) are in an "
+                f"impossible order. {order} {reading} The component estimates are in "
+                f"result.runs ({keys}).",
+                CombinationWarning, stacklevel=user_stacklevel(),
+            )
+        else:
+            warnings.warn(
+                f"{quantity_name} estimate is negative ({result * _scale:.4f} {_units}). The "
+                f"quantity cannot be negative. It is reported as 0 {_units} and the measured value "
+                f"is kept as {raw_key} in result.runs. {order} {reading} The component estimates "
+                f"are in result.runs ({keys}).",
+                CombinationWarning, stacklevel=user_stacklevel(),
+            )
+        return
+    amp = amplification_factor([value for _, value, _ in terms], result)
+    if amp >= AMPLIFICATION_WARN_THRESHOLD:
+        count = {2: 'two', 3: 'three'}.get(len(terms), str(len(terms)))
+        listing = ', '.join(f"I({label})={value * _scale:.4f}" for label, value, _ in terms)
+        warnings.warn(
+            f"{quantity_name} has an error-amplification factor of {amp:.1f}x. It is a "
+            f"small residual ({result * _scale:.4f} {_units}) of {count} much larger estimates "
+            f"({listing}). A relative error of eps on each component becomes roughly "
+            f"{amp:.0f}*eps on the result (about {amp:.0f}% for a 1% component error). "
+            f"Report the components ({keys}) beside the point estimate. The joint term is "
+            f"the largest. It reaches its ceiling first and then biases the result downward. "
+            f"Check it for ceiling saturation. Look for more data or more training "
+            f"before concluding that the true value is small.",
+            CombinationWarning, stacklevel=user_stacklevel(),
+        )
 
 
 def combined_spread(value_lists, signs) -> Optional[float]:
@@ -361,6 +422,8 @@ def _joint_marginal_difference(
     joint_key: str, marginal_key: str,
     is_proc_sweep: bool = False,
     marginal_base_params: Optional[Dict[str, Any]] = None,
+    reported: bool = True,
+    raw_key: str = 'mi_raw',
 ) -> tuple:
     """Estimate a chain-rule difference I(joint) - I(marginal) via two
     independent ParameterSweep runs.
@@ -401,6 +464,13 @@ def _joint_marginal_difference(
         ``processor_params_x['_categorical_block_specs']``, and a single
         shared ``base_params`` cannot carry both. ``None`` (default) reuses
         ``base_params`` for both sweeps.
+    reported : bool, optional
+        ``True`` when the difference is the quantity the caller reads: it is
+        checked with :func:`warn_combination`, and returned as 0 when it comes
+        out negative. Pass ``False`` when it is one term of a larger quantity,
+        whose caller checks that quantity itself.
+    raw_key : str, optional
+        Where the caller keeps the measured value, named in the warning.
 
     Returns
     -------
@@ -444,37 +514,9 @@ def _joint_marginal_difference(
         f"amplification factor={amp:.1f}x."
     )
 
-    # A negative difference is always a high-amplification case, so the two
-    # conditions are reported as one warning instead of two: the amplification
-    # factor is the mechanism behind the impossible sign, not a separate issue.
-    if difference < 0:
-        warnings.warn(
-            f"{quantity_name} estimate is negative ({difference * _scale:.4f} {_units}). This is "
-            f"theoretically impossible and arises from noise in the two independent "
-            f"MI estimates whose difference defines it "
-            f"(I({joint_label})={mi_joint * _scale:.4f}, I({marginal_label})={mi_marginal * _scale:.4f}, "
-            f"error-amplification factor {amp:.0f}x). At that amplification the "
-            f"components would need sub-{100.0 / amp:.2g}% accuracy for the sign of the "
-            f"result to be determined at all, so the most likely reading is that the true "
-            f"value is near zero instead of that it is negative. Common causes: too few "
-            f"training runs (increase sweep_grid run_id range), high estimator "
-            f"variance (try more epochs or a larger batch_size), or very small true "
-            f"value close to zero. The component estimates are in result.runs "
-            f"('{joint_key}', '{marginal_key}') for inspection.",
-            UserWarning, stacklevel=user_stacklevel(),
-        )
-    elif amp >= AMPLIFICATION_WARN_THRESHOLD:
-        warnings.warn(
-            f"{quantity_name} has an error-amplification factor of {amp:.1f}x. It is a "
-            f"small residual ({difference * _scale:.4f} {_units}) of two much larger estimates "
-            f"(I({joint_label})={mi_joint * _scale:.4f}, I({marginal_label})={mi_marginal * _scale:.4f}), so a "
-            f"relative error of eps on each component becomes roughly {amp:.0f}*eps on the "
-            f"result: a 1% component error is about {amp:.0f}% here. Do not read the point "
-            f"estimate on its own. Report the components ('{joint_key}', '{marginal_key}') "
-            f"alongside it, check the joint term for ceiling saturation (it is the larger "
-            f"of the two and saturates first, which biases the result toward zero), and "
-            f"prefer more data or more training before concluding that the true value is "
-            f"small.",
-            UserWarning, stacklevel=user_stacklevel(),
-        )
+    if reported:
+        warn_combination(quantity_name, difference, (joint_label, mi_joint, joint_key),
+                         [(marginal_label, mi_marginal, marginal_key)], base_params,
+                         raw_key=raw_key)
+        difference = max(difference, 0.0)
     return difference, mi_joint, mi_marginal, results_joint, results_marginal, per_run

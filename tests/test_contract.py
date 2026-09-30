@@ -19,7 +19,7 @@ from neural_mi import Model, Training, Split
 
 N = 360
 _MODEL = Model(embedding_dim=4, hidden_dim=8, n_layers=1)
-_TRAINING = Training(n_epochs=1, batch_size=64, patience=1)
+_TRAINING = Training(n_epochs=1, batch_size=64, patience=1, learning_rate=3e-2)   # every rung learns in one epoch
 _COMMON = dict(model=_MODEL, training=_TRAINING, split=Split(mode='random'), n_workers=1,
                show_progress=False, seed=0)
 _RIGOROUS_FIT = dict(gamma_range=range(1, 3), min_gamma_points=2)
@@ -45,7 +45,8 @@ def _mode_kwargs(mode, w, rigorous=False):
         'interaction': {'interaction': nmi.Interaction(w_data=w, **fit)},
         'transfer': {'transfer': nmi.Transfer(history_window=2, **fit)},
         'pairwise': {},
-        'dimensionality': {'dimensionality': nmi.Dimensionality(n_splits=2)},
+        'dimensionality': {'dimensionality': nmi.Dimensionality(n_restarts=2, reference_dim=4,
+                                                                embedding_dims=[1, 2])},
     }[mode]
 
 
@@ -60,13 +61,15 @@ MODES = ['estimate', 'sweep', 'rigorous', 'lag', 'precision', 'conditional', 'in
          'transfer', 'pairwise', 'dimensionality']
 # Combinations that must refuse, with the message that says why.
 REFUSED = {
-    ('dimensionality', 'repeats'): "n_splits",
-    ('dimensionality', 'both'): "n_splits",
+    ('dimensionality', 'repeats'): "n_restarts",
+    ('dimensionality', 'configs'): "embedding_dims",
+    ('dimensionality', 'both'): "n_restarts",
     ('transfer', 'processor'): "one time step wide",
 }
 # A mode that ignores the grid with a warning, and runs its base configuration once.
 IGNORES_GRID = {'estimate', 'precision'}
-AXIS = {'lag': ['lag'], 'precision': ['tau'], 'pairwise': ['ch_x', 'ch_y']}
+AXIS = {'lag': ['lag'], 'precision': ['tau'], 'pairwise': ['ch_x', 'ch_y'],
+        'dimensionality': ['split_id', 'embedding_dim']}
 
 
 def _expected_shape(mode, grid_name):
@@ -75,7 +78,8 @@ def _expected_shape(mode, grid_name):
         grid = {}
     run_ids = grid.pop('run_id', [0])
     configs = list(itertools.product(*grid.values())) or [()]
-    n_axis = {'lag': 2, 'precision': 2, 'pairwise': 1}.get(mode, 1)
+    # dimensionality: one split at embedding_dim 1, 2 and the reference 4.
+    n_axis = {'lag': 2, 'precision': 2, 'pairwise': 1, 'dimensionality': 3}.get(mode, 1)
     repeats = 2 if mode == 'dimensionality' else len(run_ids)
     return list(grid), len(configs), n_axis, repeats
 
@@ -102,7 +106,7 @@ def _check(result, mode, grid_name):
     config_keys, n_configs, n_axis, n_repeats = _expected_shape(mode, grid_name)
     df, runs = result.dataframe, result.runs
     assert df is not None and runs is not None
-    for col in ('config_id', 'mi_mean', 'mi_std', 'n_runs'):
+    for col in ('config_id', 'mi_mean', 'mi_std', 'n_runs', 'n_zero'):
         assert col in df.columns, col
     assert result.params['config_keys'] == config_keys
     assert result.params['axis_keys'] == AXIS.get(mode, [])
@@ -120,14 +124,20 @@ def _check(result, mode, grid_name):
     else:
         assert result.mi_estimate is None
     assert set(result.details) <= set(range(n_configs))
-    # Each configuration's mean is the mean of its own repeats.
+    # Each configuration's mean is the mean of its own repeats that produced a
+    # value. A repeat reported as 0 produced nothing and is counted in n_zero,
+    # and a row whose repeats all produced nothing reports 0.
     for _, row in df.iterrows():
         mask = runs['config_id'] == row['config_id']
         for axis in AXIS.get(mode, []):
             mask &= runs[axis] == row[axis]
         values = runs.loc[mask, 'mi'].astype(float)
-        if values.notna().any():
-            assert row['mi_mean'] == pytest.approx(values.mean())
+        produced = values[values.notna() & (values != 0)]
+        assert row['n_zero'] == int((values == 0).sum())
+        if len(produced):
+            assert row['mi_mean'] == pytest.approx(produced.mean())
+        elif (values == 0).any():
+            assert row['mi_mean'] == 0.0
 
 
 @pytest.mark.parametrize('grid_name', list(GRIDS))
@@ -150,7 +160,10 @@ def test_rigorous_difference_quantities_follow_the_contract(mode, grid_name):
     # One extrapolation per repeat; the interval is reported only for a single repeat.
     assert 'is_reliable' in result.runs.columns
     if n_repeats == 1:
-        assert result.dataframe['mi_error'].notna().all()
+        # A ladder left with fewer than two values of gamma cannot be fitted and
+        # reports no interval.
+        fitted = result.runs['gammas_used'].map(len) >= 2
+        assert result.dataframe.loc[fitted.values, 'mi_error'].notna().all()
     else:
         assert result.dataframe['mi_error'].isna().all()
     for cid in range(n_configs):
@@ -186,7 +199,7 @@ def test_a_processor_grid_windows_each_setting(mode):
 
 def test_a_processor_key_without_a_processor_is_refused():
     x, y, _ = _data()
-    with pytest.raises(ValueError, match="no stream in this call has a processor"):
+    with pytest.raises(ValueError, match="No stream in this call has a processor"):
         nmi.run(x, y, mode='sweep', sweep_grid={'window_size': [1, 2]}, **_COMMON)
 
 
@@ -229,11 +242,11 @@ def test_n_workers_on_a_single_network_warns():
 
 
 @pytest.mark.parametrize('grid, mode, extra, match', [
-    ({'banana': [1, 2]}, 'sweep', {}, "not a setting NeuralMI reads"),
+    ({'banana': [1, 2]}, 'sweep', {}, "reads no setting named 'banana'"),
     ({'mode': ['random']}, 'sweep', {}, "swept under the name 'split_mode'"),
     ({'history_window': [1, 3]}, 'transfer', {'transfer': nmi.Transfer(history_window=1)},
-     "a setting of mode='transfer'"),
-    ({'n_splits': [2, 3]}, 'dimensionality', {}, "a setting of mode='dimensionality'"),
+     "mode='transfer' reads"),
+    ({'n_splits': [2, 3]}, 'dimensionality', {}, "mode='dimensionality' reads"),
     ({'output_units': ['nats']}, 'sweep', {}, "units of the whole result"),
 ])
 def test_a_grid_key_that_changes_nothing_is_refused(grid, mode, extra, match):

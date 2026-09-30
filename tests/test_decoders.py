@@ -152,9 +152,13 @@ class TestBottleneckWeighting:
 
     def test_beta_is_inert_without_a_variational_encoder(self):
         # With no KL term there is nothing for beta to trade against, so the
-        # lambdas carry their own weight and beta drops out entirely.
-        base = self._recon(beta=1.0, variational=False)
-        assert self._recon(beta=4.0, variational=False) == pytest.approx(base, rel=1e-6)
+        # lambdas carry their own weight and beta drops out entirely. The call
+        # says so before it trains.
+        inert = r"no effect in this call.*beta \(use_variational=True only\)"
+        with pytest.warns(UserWarning, match=inert):
+            base = self._recon(beta=1.0, variational=False)
+        with pytest.warns(UserWarning, match=inert):
+            assert self._recon(beta=4.0, variational=False) == pytest.approx(base, rel=1e-6)
 
     def test_shared_lambda_reaches_both_axes(self):
         # decoder_lambda_x/y are present as None once defaults are applied, so

@@ -32,7 +32,7 @@ import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 
 from neural_mi.analysis.assemble import _hashable
-from neural_mi.logger import logger, user_stacklevel, worker_init_args
+from neural_mi.logger import CapturedTask, logger, released, user_stacklevel, worker_init_args
 
 # Offsets closer than this fraction of the recording to zero, in either
 # direction, are excluded from a circular shift.
@@ -192,9 +192,9 @@ def shift_x(x_data: Any, base_params: Dict[str, Any], permutation_shuffle: str,
 def row_values(mode: str, produced: Dict[str, Any]) -> Dict[tuple, Tuple[float, float]]:
     """A producer's repeats averaged into one ``(mi, mi_raw)`` per ``dataframe`` row.
 
-    ``mi`` follows the reported convention, where a network whose test MI never
-    rose above zero contributes 0. ``mi_raw`` uses every network's unclipped
-    training-side value instead, combined the same way.
+    ``mi`` follows the reported convention, as ``aggregate`` forms ``mi_mean``:
+    repeats reported as 0 produced nothing and are left out, and a row with no
+    other repeat is 0. ``mi_raw`` averages every repeat's measured value.
     """
     from neural_mi.analysis.modes import _DIFFERENCES
 
@@ -226,8 +226,12 @@ def row_values(mode: str, produced: Dict[str, Any]) -> Dict[tuple, Tuple[float, 
     for key, pairs in grouped.items():
         mi = np.array([math.nan if v is None else v for v, _ in pairs], dtype=float)
         raw = np.array([math.nan if v is None else v for _, v in pairs], dtype=float)
-        out[key] = (float(np.nanmean(mi)) if np.isfinite(mi).any() else math.nan,
-                    float(np.nanmean(raw)) if np.isfinite(raw).any() else math.nan)
+        produced = mi[np.isfinite(mi) & (mi != 0)]
+        if produced.size:
+            mi_value = float(produced.mean())
+        else:
+            mi_value = 0.0 if np.isfinite(mi).any() else math.nan
+        out[key] = (mi_value, float(np.nanmean(raw)) if np.isfinite(raw).any() else math.nan)
     return out
 
 
@@ -238,7 +242,14 @@ def _trial(args) -> Optional[Dict[tuple, Tuple[float, float]]]:
     np.random.seed(seed)
     x_null = shift_x(x, base_params, permutation_shuffle, ctx)
     try:
-        produced = produce(mode, x_null, y, w, base_params, grid, ctx=ctx, to_bits=to_bits, n_workers=1)
+        # A trial's networks train on data whose dependence was destroyed on
+        # purpose, so the warnings they raise (an estimate near or below zero,
+        # a network that learned nothing) describe the null working as
+        # intended. The observed call has already raised its own.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            produced = produce(mode, x_null, y, w, base_params, grid, ctx=ctx, to_bits=to_bits,
+                               n_workers=1)
     except Exception as exc:
         logger.warning(f"Permutation trial failed: {exc}")
         return None
@@ -272,15 +283,15 @@ def permutation_nulls(mode: str, x, y, w, base_params: Dict[str, Any], grid, *, 
         _log_init, _log_args = worker_init_args()
         with mp.get_context('spawn').Pool(processes=min(n_workers, n_permutations),
                                           initializer=_log_init, initargs=_log_args) as pool:
-            trials = list(tqdm(pool.imap(_trial, args), total=n_permutations,
+            trials = list(tqdm(released(pool.imap(CapturedTask(_trial), args)), total=n_permutations,
                                desc="Permutation test", leave=False, disable=not show_progress))
     else:
         trials = [_trial(a) for a in tqdm(args, desc="Permutation test", leave=False,
                                           disable=not show_progress)]
     if trials and all(t is None for t in trials):
         warnings.warn(
-            f"All {n_permutations} permutation trials for mode='{mode}' failed, so there is "
-            f"no null distribution. The log lists each failure under 'Permutation trial failed'.",
+            f"All {n_permutations} permutation trials for mode='{mode}' failed and left no "
+            f"null distribution. The log lists each failure under 'Permutation trial failed'.",
             UserWarning, stacklevel=user_stacklevel(),
         )
     return trials

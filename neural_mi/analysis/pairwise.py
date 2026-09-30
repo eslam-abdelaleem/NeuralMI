@@ -31,7 +31,7 @@ from tqdm.auto import tqdm
 from typing import Dict, Any, Optional, List, Tuple
 
 from neural_mi.analysis.sweep import ParameterSweep
-from neural_mi.logger import logger, worker_init_args
+from neural_mi.logger import CapturedTask, logger, released, worker_init_args
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 
@@ -128,7 +128,7 @@ def _dispatch_pairs(pair_tasks: List[tuple], n_workers: int, show_progress: bool
     with mp.get_context('spawn').Pool(processes=n_workers,
                                       initializer=_log_init, initargs=_log_args) as pool:
         records = list(tqdm(
-            pool.imap(_run_pair_task_for_pool, pair_tasks), total=n_pairs,
+            released(pool.imap(CapturedTask(_run_pair_task_for_pool), pair_tasks)), total=n_pairs,
             desc="Pairwise MI", disable=not show_progress
         ))
     return records
@@ -197,7 +197,7 @@ def run_pairwise_mi(
     if not (isinstance(x_data, list) or (hasattr(x_data, 'ndim') and x_data.ndim in (2, 3))):
         raise ValueError(
             "run_pairwise_mi expects x_data of shape (n_samples, n_channels, window_size), "
-            "raw (n_samples, n_channels), or a list of per-neuron spike-time arrays. "
+            "raw (n_samples, n_channels) or a list of per-neuron spike-time arrays. "
             f"Got {type(x_data).__name__}"
             + (f" with shape {tuple(x_data.shape)}." if hasattr(x_data, 'shape') else ".")
         )
@@ -212,7 +212,7 @@ def run_pairwise_mi(
         if not _same_kind:
             raise ValueError(
                 "x_data and y_data must both be raw (n_samples, n_channels), both "
-                "already-windowed (n_samples, n_channels, window_size), or both a "
+                "already-windowed (n_samples, n_channels, window_size) or both a "
                 "list of per-neuron spike-time arrays."
             )
         n_ch_x = _n_channels_of(x_data)

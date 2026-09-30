@@ -21,7 +21,7 @@ BASE_PARAMS_SCHEMA = {
     # task layer sees the same grid the eager path gets via create_dataset.
     'x_time': {'type': (object, type(None))},
     'y_time': {'type': (object, type(None))},
-    'verbose': {'type': bool, 'default': True},
+    'verbose': {'type': bool, 'default': False},
     'show_progress': {'type': bool, 'default': True},
     'device': {'type': (str, type(None), torch.device), 'default': None},
     'split_mode': {'type': str, 'default': 'blocked'},
@@ -120,7 +120,10 @@ BASE_PARAMS_SCHEMA = {
     'branch_model': {'type': str, 'default': 'gru'}, # embedding_model='dual_branch' only: each branch's architecture
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
     'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
-    'norm_layer': {'type': (str, type(None)), 'default': None},
+    # 'auto' is layer normalisation for the hybrid critic in mode='dimensionality'
+    # and none otherwise. Layer norm stops the fits of that mode from stalling. It
+    # also divides out each sample's overall scale and the information it carries.
+    'norm_layer': {'type': (str, type(None)), 'default': 'auto'},
     # Whether embedding layers carry bias terms. Without them the network is
     # positively homogeneous, so an all-zero input embeds to exactly zero.
     # A mean-centring `norm_layer` is served by an affine-free RMSNorm when
@@ -178,32 +181,23 @@ MODE_KWARGS_SCHEMA = {
     },
     'sweep': {
         'n_workers': {'type': int, 'default': 1},
-        'max_samples_per_task': {'type': int, 'default': None},
     },
     'dimensionality': {
         'n_workers': {'type': int, 'default': 1},
+        # The embedding dimensions to fit. None chooses them from the reference fit.
+        'embedding_dims': {'type': (list, tuple, range, type(None)), 'default': None},
+        'n_restarts': {'type': int, 'min': 1, 'default': 4},
+        'saturation_ratio': {'type': float, 'min': 0.0, 'default': 0.95},
+        # None is 64, refitted larger when its participation ratio comes close to that.
+        'reference_dim': {'type': (int, type(None)), 'min': 2, 'default': None},
         'split_method': {'type': str, 'default': 'random'}, # 'random'|'spatial'|'temporal'|'index'|'horizontal'|'vertical'|'row_interleaved'|'col_interleaved'|'diagonal'|'antidiagonal'
-        # Independent repeats: channel-splits for intrinsic mode, seed-reruns for
-        # interaction mode. 2 gives one cross-run comparison pair; 3 is a more
-        # robust minimum for the stability check below.
-        'n_splits': {'type': int, 'min': 2, 'default': 3},
+        # Random channel splits of X; the other split methods give one split.
+        'n_splits': {'type': (int, type(None)), 'min': 1, 'default': None},
         'lag': {'type': int, 'default': 1}, # if split_method='temporal'
         # Required when split_method='index': list of channel indices assigned to X.
         # Y is automatically the complement (all remaining channels).
         'channel_indices_x': {'type': (list, type(None)), 'default': None},
-        # Thresholds for deciding which directions of shared structure are
-        # trustworthy (see _compute_stability_report in analysis/dimensionality.py).
-        # Defaults are reasonable starting points validated on a battery of
-        # synthetic conditions, not derived constants -- tune to how strict a
-        # given analysis needs to be.
-        'stability_threshold': {'type': float, 'min': 0.0, 'default': 0.7},
-        'degeneracy_ratio_threshold': {'type': float, 'min': 1.0, 'default': 1.3},
-        'min_strength_fraction': {'type': float, 'min': 0.0, 'default': 0.05},
-        # A standalone warning: is the MI estimate close enough to its
-        # evaluation ceiling (log(eval_size)) that any reading built on it
-        # deserves extra caution? It warns and changes nothing, since ceiling
-        # proximity degrades the stability checks gracefully and does not
-        # mislead them.
+        # Warn when the reference fit's MI is this close to its evaluation ceiling.
         'ceiling_mi_fraction': {'type': float, 'default': 0.85},
     },
     'rigorous': {
@@ -212,7 +206,6 @@ MODE_KWARGS_SCHEMA = {
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
-        'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
         # None = auto-detect from leak_check_window_size (set exactly when a
         # windowed processor was used); True/False overrides the detector.
@@ -242,7 +235,6 @@ MODE_KWARGS_SCHEMA = {
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
-        'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
         'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
@@ -254,7 +246,6 @@ MODE_KWARGS_SCHEMA = {
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
-        'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
         # Transfer entropy is unconditionally temporal (built from
         # unfold-based history windows); run.py always forces this True for
@@ -271,7 +262,6 @@ MODE_KWARGS_SCHEMA = {
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
-        'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
         'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },

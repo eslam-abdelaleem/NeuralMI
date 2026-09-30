@@ -52,12 +52,11 @@ def relabel_categorical_data(data) -> np.ndarray:
         # n_categories = data.max() + 1) and raise an opaque error there.
         raise ValueError(
             f"CategoricalWindowDataset: integer-typed labels must be "
-            f"non-negative (they are used directly as category indices "
-            f"for np.bincount); got a minimum value of {arr.min()}. "
-            f"Non-integer labels (e.g. strings or floats) are relabeled "
-            f"to consecutive non-negative integers automatically -- if "
-            f"these values are meant to be category codes, remap them "
-            f"to [0, n_categories) first."
+            f"non-negative because they index np.bincount directly. The "
+            f"smallest label is {arr.min()}. Non-integer labels (strings or "
+            f"floats, for example) are relabelled to consecutive non-negative "
+            f"integers automatically. If these values are category codes, "
+            f"remap them to [0, n_categories) first."
         )
     return np.asarray(arr, dtype=np.int32)
 
@@ -1066,7 +1065,7 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         else:
             raise ValueError(
                 f"Unknown encoding '{self.encoding}'. "
-                f"Expected 'majority_vote', 'probability', or 'full_trajectory'."
+                f"Expected 'majority_vote', 'probability' or 'full_trajectory'."
             )
         self.data_master = self.data.detach().clone()
 

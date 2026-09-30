@@ -9,7 +9,7 @@ import pytest
 import torch
 
 import neural_mi as nmi
-from neural_mi import Model, Training, Transfer, Processing, Dimensionality
+from neural_mi import Model, Training, Transfer, Processing, Dimensionality, Split
 from neural_mi.analysis.sweep import ParameterSweep
 from neural_mi.exceptions import TrainingError
 from neural_mi.training.trainer import Trainer
@@ -175,7 +175,6 @@ def test_concat_critic_embedding_dim_sweep_raises():
         sweep._prepare_tasks(
             {'embedding_dim': [4, 8]},
             is_proc_sweep=False,
-            max_samples_per_task=None,
         )
 
 
@@ -193,7 +192,6 @@ def test_separable_critic_embedding_dim_sweep_does_not_raise():
     tasks = sweep._prepare_tasks(
         {'embedding_dim': [4, 8]},
         is_proc_sweep=False,
-        max_samples_per_task=None,
     )
     assert len(tasks) == 2
 
@@ -783,7 +781,7 @@ class TestPermutationAndProcessingGuards:
         assert len(r.get('null_distribution')) == 2
 
     def test_permutation_test_warns_and_computes_no_null_for_dimensionality(self, caplog):
-        """dimensionality reports a count rather than one MI value, so there is
+        """dimensionality reports a curve and not one MI value, so there is
         no statistic for a null to sit under. The request warns instead of
         being dropped in silence."""
         rng = np.random.default_rng(1)
@@ -791,10 +789,71 @@ class TestPermutationAndProcessingGuards:
         with caplog.at_level(logging.WARNING):
             r = nmi.run(
                 x, mode='dimensionality',
-                dimensionality=Dimensionality(n_splits=2),
+                dimensionality=Dimensionality(n_splits=2, n_restarts=1, reference_dim=2,
+                                              embedding_dims=[1]),
                 model=Model(embedding_dim=4, hidden_dim=16, n_layers=1),
                 training=Training(n_epochs=1, batch_size=64, patience=1),
                 permutation_test=True, n_workers=1, show_progress=False,
             )
         assert "has no effect for mode='dimensionality'" in caplog.text
         assert 'null_distribution' not in r.details
+
+
+# ---------------------------------------------------------------------------
+# Custom split indices address the rows the network trains on
+# ---------------------------------------------------------------------------
+
+def _custom_split_data():
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((400, 2))
+    return x, x + 0.5 * rng.standard_normal((400, 2)), rng.standard_normal((400, 2))
+
+
+_CUSTOM_SPLIT = Split(train_indices=np.arange(0, 300), test_indices=np.arange(310, 380))
+
+
+@pytest.mark.parametrize('case', ['rigorous', 'lag', 'transfer', 'conditional_rigorous',
+                                  'dimensionality_lag', 'processing'])
+def test_custom_split_is_refused_where_rows_are_not_the_ones_passed(case):
+    """Rigorous chunks, lag shifts, transfer histories and windows are rows the
+    library builds, so indices into the caller's rows would split the wrong rows."""
+    from neural_mi import Rigorous, Lag, Conditional
+    x, y, w = _custom_split_data()
+    calls = {
+        'rigorous': dict(mode='rigorous', rigorous=Rigorous(gamma_range=range(1, 3))),
+        'lag': dict(mode='lag', lag=Lag(lag_range=[0, 1])),
+        'transfer': dict(mode='transfer', transfer=Transfer(history_window=2)),
+        'conditional_rigorous': dict(mode='conditional', conditional=Conditional(w_data=w, rigorous=True)),
+        'dimensionality_lag': dict(mode='dimensionality', dimensionality=Dimensionality(lag=2)),
+        'processing': dict(mode='estimate', processing=Processing(x='continuous', x_params={'window_size': 5},
+                                                                   y='continuous', y_params={'window_size': 5})),
+    }
+    yy = None if case == 'dimensionality_lag' else y
+    xx = np.hstack([x, y]) if case == 'dimensionality_lag' else x
+    with pytest.raises(ValueError, match="indexes the rows the network trains on"):
+        nmi.run(xx, yy, split=_CUSTOM_SPLIT, training=_TRAINING, show_progress=False, **calls[case])
+
+
+def test_custom_split_needs_both_index_lists():
+    x, y, _ = _custom_split_data()
+    with pytest.raises(ValueError, match="used together"):
+        nmi.run(x, y, split=Split(train_indices=np.arange(0, 300)), training=_TRAINING,
+                show_progress=False)
+
+
+def test_named_quantity_that_builds_rows_refuses_a_custom_split():
+    x, y, _ = _custom_split_data()
+    with pytest.raises(ValueError, match="builds? .*rows|rows built from shifted copies"):
+        nmi.active_information_storage(x, k=3, split=_CUSTOM_SPLIT, training=_TRAINING,
+                                       show_progress=False)
+
+
+@pytest.mark.parametrize('call', ['estimate', 'instantaneous_mi'])
+def test_custom_split_still_applies_where_rows_are_the_ones_passed(call):
+    x, y, _ = _custom_split_data()
+    if call == 'estimate':
+        result = nmi.run(x, y, split=_CUSTOM_SPLIT, model=_MODEL, training=_TRAINING, show_progress=False)
+    else:
+        result = nmi.instantaneous_mi(x, y, split=_CUSTOM_SPLIT, model=_MODEL, training=_TRAINING,
+                                      show_progress=False)
+    assert np.isfinite(result.mi_estimate)

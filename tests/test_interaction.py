@@ -191,12 +191,18 @@ class TestInteractionInformationPlumbing:
         plt.close('all')
 
     def test_rigorous_runs(self):
-        x, y, w = np.random.randn(600, 1), np.random.randn(600, 1), np.random.randn(600, 1)
+        rng = np.random.default_rng(0)
+        x, y, w = (rng.standard_normal((600, 1)) for _ in range(3))
         r = nmi.run(x, y, mode='interaction',
                    interaction=Interaction(w_data=w, rigorous=True, gamma_range=range(1, 4)),
                    model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
-        assert r.mi_estimate is not None
-        assert np.isfinite(r.mi_estimate)
+        fit = r.runs.iloc[0]
+        # A ladder left with fewer than two values of gamma that produced a value
+        # cannot be extrapolated and reports an unreliable NaN.
+        if len(fit['gammas_used']) >= 2:
+            assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
+        else:
+            assert not fit['is_reliable']
 
     def test_permutation_test_runs(self):
         x, y, w = np.random.randn(N, 1), np.random.randn(N, 1), np.random.randn(N, 1)

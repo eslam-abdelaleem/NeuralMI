@@ -114,20 +114,22 @@ class TestReproducibilityUnderParallelism:
         and for the two modes that dispatch differently.
     """
 
-    def test_estimate_matches_between_serial_and_parallel(self):
+    def test_repeats_match_between_serial_and_parallel(self):
         x, y = _make_data()
-        kw = dict(mode='estimate', model=_MODEL, training=_TRAINING,
+        # Two repeats, so n_workers=2 has two networks to run side by side.
+        kw = dict(mode='sweep', model=_MODEL, training=_TRAINING,
                   split=_SPLIT, seed=42, show_progress=False,
                   sweep_grid={'run_id': [0, 1]})
-        serial = nmi.run(x, y, n_workers=1, **kw).mi_estimate
-        parallel = nmi.run(x, y, n_workers=2, **kw).mi_estimate
+        serial = nmi.run(x, y, n_workers=1, **kw).runs['mi'].tolist()
+        parallel = nmi.run(x, y, n_workers=2, **kw).runs['mi'].tolist()
         assert serial == parallel
 
     def test_no_reproducibility_warning_is_emitted(self, caplog):
         x, y = _make_data()
         with caplog.at_level('WARNING', logger='neural_mi'):
-            nmi.run(x, y, mode='estimate', model=_MODEL, training=_TRAINING,
-                    split=_SPLIT, seed=42, n_workers=2, show_progress=False)
+            nmi.run(x, y, mode='sweep', model=_MODEL, training=_TRAINING,
+                    split=_SPLIT, seed=42, n_workers=2, sweep_grid={'run_id': [0, 1]},
+                    show_progress=False)
         assert not any('eproducibility' in r.message for r in caplog.records)
 
     def test_dimensionality_matches_between_serial_and_parallel(self):
@@ -135,17 +137,17 @@ class TestReproducibilityUnderParallelism:
         rng = np.random.default_rng(0)
         x = rng.normal(size=(400, 4)).astype(np.float32)
         y = (x @ rng.normal(size=(4, 4)) + 0.2 * rng.normal(size=(400, 4))).astype(np.float32)
-        kw = dict(mode='dimensionality', model=Model(embedding_dim=4, hidden_dim=16),
+        kw = dict(mode='dimensionality', model=Model(hidden_dim=16),
                   training=_TRAINING, split=_SPLIT, seed=5, show_progress=False,
-                  dimensionality=Dimensionality(n_splits=2))
-        # mode='dimensionality' has no mi_estimate; its result is the spectrum
-        # and the stability verdict read off it, so compare those.
+                  dimensionality=Dimensionality(n_restarts=2, reference_dim=4,
+                                                embedding_dims=[1, 2]))
+        # mode='dimensionality' has no mi_estimate; its result is the curve over
+        # embedding dimensions and the reading, so compare those.
         r1, r2 = nmi.run(x, y, n_workers=1, **kw), nmi.run(x, y, n_workers=2, **kw)
-        for col in ('pr_eig_mean', 'pr_singular_mean', 'mi_mean'):
+        for col in ('mi_curve', 'mi_best', 'pr_singular_mean'):
             assert np.array_equal(r1.dataframe[col].to_numpy(),
                                   r2.dataframe[col].to_numpy()), col
-        assert r1.get('n_stable_total') == r2.get('n_stable_total')
-        assert r1.details[0]['stable_directions'] == r2.details[0]['stable_directions']
+        assert r1.get('dimension_at_most') == r2.get('dimension_at_most')
 
     def test_pairwise_matches_between_serial_and_parallel(self):
         rng = np.random.default_rng(0)

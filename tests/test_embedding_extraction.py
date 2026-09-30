@@ -353,3 +353,15 @@ def test_a_saved_network_reloads(tmp_path):
                training=nmi.Training(n_epochs=1, batch_size=64, save_best_model_path=str(path)))
     zx, zy = nmi.extract_embeddings(str(path), np.zeros((5, 2)), np.zeros((5, 2)))
     assert zx.shape == (5, 4) and zy.shape == (5, 4)
+
+
+@pytest.mark.parametrize("dim", [2, 3])
+def test_plot_embeddings_without_color_raises_no_colormap_warning(dim):
+    """Without values there is nothing for a colormap to map, and passing one
+    anyway makes matplotlib warn that it was ignored."""
+    import warnings
+    z = np.random.randn(60, 4)
+    with warnings.catch_warnings():
+        warnings.filterwarnings('error', message="No data for colormapping")
+        plot_embeddings(z, method='pca', dim=dim)
+    plt.close('all')

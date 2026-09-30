@@ -579,3 +579,81 @@ class TestRigorousShiftTimeSpikeEndToEnd:
         ladder = results.details[0]['trainings']
         assert len(ladder) == sum(range(1, 4))  # 1 + 2 + 3 = 6 networks
         assert np.all(np.isfinite(ladder['train_mi'].values))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# What the ladder reports, and what it keeps to itself
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_a_flat_ladder_has_undefined_r_squared_and_says_nothing():
+    """Every chunk at the same value leaves nothing for a line to explain, so
+    R-squared is NaN, without numpy's division warning leaking through."""
+    import warnings
+    from neural_mi.analysis.rigorous import _compute_fit_diagnostics
+    gammas = [1, 2, 3, 4, 5]
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', RuntimeWarning)
+        result = _compute_fit_diagnostics(_make_df(gammas, [0.0] * len(gammas)), gammas)
+    assert np.isnan(result['r_squared'])
+
+
+def test_a_chunk_keeps_its_combination_warnings_to_itself():
+    """A chunk's combined value is one point on the ladder. Its sign and
+    amplification warnings stay quiet, while a network's own warnings pass."""
+    import warnings
+    from neural_mi.analysis.rigorous import _run_scalar_fn_task
+    from neural_mi import CombinationWarning
+
+    def scalar_fn(x, y, params):
+        warnings.warn("Conditional MI estimate is negative (-0.2 bits).", CombinationWarning)
+        warnings.warn("Training completed all 2 epoch(s) without early stopping", UserWarning)
+        return 0.1
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        row = _run_scalar_fn_task((scalar_fn, None, None, {}, {}, None, 2, 0, 50))
+    assert row['train_mi'] == 0.1
+    assert [str(w.message)[:20] for w in caught] == ["Training completed a"]
+
+
+def test_a_fractional_step_cuts_each_chunk_with_the_step_the_windows_use():
+    """The window count applies the step convention, so the chunk-to-raw
+    translation must too: step_size=0.5 is half a 20-sample window."""
+    import neural_mi as nmi
+    from unittest.mock import patch
+    from neural_mi.analysis import rigorous
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((2000, 2)).astype(np.float32)
+    y = (x + 0.5 * rng.standard_normal((2000, 2))).astype(np.float32)
+    steps = []
+    real = rigorous.chunk_window_range_to_raw
+
+    def spy(lo, hi, window_size, step_size):
+        steps.append(step_size)
+        return real(lo, hi, window_size, step_size)
+
+    with patch.object(rigorous, 'chunk_window_range_to_raw', side_effect=spy):
+        nmi.run(x, y, mode='rigorous', rigorous=nmi.Rigorous(gamma_range=range(1, 3)),
+                processing=nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 0.5},
+                                          y='continuous', y_params={'window_size': 20, 'step_size': 0.5}),
+                model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                training=nmi.Training(n_epochs=1, batch_size=32), show_progress=False)
+    assert steps and set(steps) == {10}
+
+
+def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma(caplog):
+    """A rung at 0 produced nothing. The fit leaves it out and says how many per gamma,
+    and warns again where half or more of a gamma's rungs produced nothing."""
+    from neural_mi.analysis.rigorous import _drop_zero_rungs
+    ladder = _make_df([1, 2, 2, 3, 3, 3], [0.5, 0.4, 0.0, 0.3, 0.0, 0.0])
+    with caplog.at_level('WARNING', logger='neural_mi'):
+        kept, n = _drop_zero_rungs(ladder, "Rigorous fit: ")
+    assert n == 3 and list(kept['train_mi']) == [0.5, 0.4, 0.3]
+    messages = [r.message for r in caplog.records]
+    assert any(m.startswith("Rigorous fit: 3 of 6 rungs") and "gamma 2: 1 of 2, gamma 3: 2 of 3" in m
+               for m in messages)
+    assert any("half or more of the rungs produced nothing at gamma=[2, 3]" in m for m in messages)
+    caplog.clear()
+    with caplog.at_level('WARNING', logger='neural_mi'):
+        kept, n = _drop_zero_rungs(_make_df([1, 2], [0.5, 0.4]), "")
+    assert n == 0 and len(kept) == 2 and not caplog.records

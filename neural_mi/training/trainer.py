@@ -191,7 +191,7 @@ class Trainer:
               shift_seed: Optional[int] = None,
               patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5,
               min_improvement: float = 0.001,
-              save_best_model_path: Optional[str] = None, run_id: Optional[str] = None,
+              save_best_model_path: Optional[str] = None,
               output_units: str = 'nats', verbose: bool = True, show_progress: bool = True,
               split_mode: str = 'blocked',
               train_indices: Optional[np.ndarray] = None,
@@ -254,8 +254,6 @@ class Trainer:
             Minimum relative improvement to reset the patience counter. Defaults to 0.001.
         save_best_model_path : str, optional
             If provided, saves the best model's state dictionary to this path.
-        run_id : str, optional
-            An identifier for the training run, used for display purposes.
         output_units : {'nats', 'bits'}, optional
             The units for displaying the MI estimate. Defaults to 'nats'.
         verbose : bool, optional
@@ -426,7 +424,10 @@ class Trainer:
                 _leak_kwargs = {**_leak_kwargs, 'window_size': 2 * _leak_kwargs['window_size']}
             train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
                                                              gap_fraction=split_gap_fraction, **_leak_kwargs)
-        
+        # Kept for callers that evaluate the trained network again afterwards,
+        # as mode='precision' does on corrupted copies of the training rows.
+        self.last_train_indices = train_idx
+
         n_train = len(train_idx)
         if batch_size > n_train > 0:
             # Say so instead of capping silently. Batch size sets how many
@@ -437,11 +438,11 @@ class Trainer:
             # move.
             warnings.warn(
                 f"batch_size={batch_size} exceeds the {n_train} training samples "
-                f"available, so it has been capped to {n_train}. Batch size sets how "
-                f"many negatives each training step sees, and a batch cannot hold "
-                f"more samples than the training set. For larger batches, increase "
-                f"the number of training samples: use a longer recording, a smaller "
-                f"window_size, or a smaller step_size.",
+                f"available and is capped to {n_train}. Batch size sets how many "
+                f"negatives each training step sees. A batch cannot hold more samples "
+                f"than the training set. A longer recording, a smaller window_size or "
+                f"a smaller step_size gives more training samples and allows larger "
+                f"batches.",
                 UserWarning, stacklevel=user_stacklevel(),
             )
             batch_size = n_train
@@ -550,24 +551,21 @@ class Trainer:
             embed_track_n = 0
 
         # Rotation is only meaningful for critics with separate embedding networks.
+        # The trainer rotates the per-epoch history, so it has work only when
+        # embeddings are tracked. The final embeddings are rotated after
+        # training (analysis/task.py) whether or not they were tracked, and
+        # run() warns up front about a rotation setting that nothing uses.
         _has_embed_nets = hasattr(self.model, 'embedding_net_x')
         _do_rotation = False
         if return_rotated_embeddings:
             if not _has_embed_nets:
                 warnings.warn(
-                    "return_rotated_embeddings=True was requested, but this trainer's model "
-                    "exposes no embedding_net_x, so there are no separate embedding "
-                    "networks to rotate. Skipping rotation.",
+                    "return_rotated_embeddings=True was requested and this trainer's model "
+                    "exposes no embedding_net_x. It has no separate embedding networks to "
+                    "rotate and rotation is skipped.",
                     UserWarning, stacklevel=user_stacklevel(),
                 )
-            elif not _do_embed_tracking:
-                warnings.warn(
-                    "return_rotated_embeddings=True requires track_embeddings to be enabled. "
-                    "No per-epoch embeddings are being tracked, so rotation will be skipped. "
-                    "Set track_embeddings=True (or an integer/fraction) to enable rotation.",
-                    UserWarning, stacklevel=user_stacklevel(),
-                )
-            else:
+            elif _do_embed_tracking:
                 _do_rotation = True
 
         # AMP: only active on CUDA; silently no-ops on CPU/MPS.
@@ -631,7 +629,7 @@ class Trainer:
         nan_streak = 0
         
         display_progress = show_progress if show_progress is not None else verbose
-        epoch_iterator = tqdm(range(n_epochs), desc=f"Run {run_id or ''}", leave=False,
+        epoch_iterator = tqdm(range(n_epochs), desc="Training", leave=False,
                               disable=not display_progress)
         
         # 3. Epoch Loop
@@ -758,9 +756,10 @@ class Trainer:
                 if nan_streak >= 3:
                     raise TrainingError(
                         f"Training aborted: {nan_streak} consecutive NaN MI values "
-                        f"(epochs {epoch + 2 - nan_streak}–{epoch + 1}). "
-                        f"Check your learning_rate, batch_size, and input data for "
-                        f"numerical instability (e.g. exploding gradients, zero-variance channels)."
+                        f"(epochs {epoch + 2 - nan_streak} to {epoch + 1}). "
+                        f"Check your learning_rate, batch_size and input data for "
+                        f"numerical instability (for example exploding gradients or "
+                        f"zero-variance channels)."
                     )
                 logger.warning(
                     f"NaN MI detected at epoch {epoch + 1} (consecutive NaN streak: "
@@ -804,7 +803,7 @@ class Trainer:
                 dataset.y_dataset.data_master = None
 
             if display_progress:
-                epoch_iterator.set_description(f"Run {run_id or ''} | MI: {mi_nats * nats_to_bits:.3f}")
+                epoch_iterator.set_description(f"Training | MI: {mi_nats * nats_to_bits:.3f}")
 
             # LR scheduler step
             if scheduler is not None:
@@ -916,11 +915,10 @@ class Trainer:
         if no_improve < patience and len(history) > 1 and best_ep >= len(history) - 1:
             warnings.warn(
                 f"Training completed all {len(history)} epoch(s) without early "
-                f"stopping, and the best (smoothed) test MI occurred at the final "
-                f"epoch. MI may still have been increasing when training stopped, "
-                f"so the reported estimate could be an under-trained lower bound. "
-                f"Consider increasing n_epochs (or lowering patience to enable "
-                f"early stopping).",
+                f"stopping and the best (smoothed) test MI occurred at the final "
+                f"epoch. MI may still have been rising when training stopped. The "
+                f"reported estimate may then be an under-trained lower bound. Raise "
+                f"n_epochs or lower patience to let early stopping act.",
                 UserWarning,
                 stacklevel=user_stacklevel(),
             )
@@ -977,11 +975,27 @@ class Trainer:
             warnings.warn(
                 f"All test MI values in the training history are non-positive "
                 f"(max test MI = {max(valid_history) * _scale:.4f} {_units} at epoch {best_ep}). "
-                f"The model learned no representation that generalises. This typically "
-                f"indicates too few epochs, too high a learning rate, or degenerate data. "
-                f"Reporting train MI = 0 {_units}. The raw train MI was "
-                f"{_raw_train_mi * _scale:.4f} {_units} (likely reflecting overfitting, not true MI). "
-                f"Consider increasing n_epochs, reducing learning_rate, or inspecting data quality.",
+                f"The model learned no representation that generalises. This usually "
+                f"means too few epochs, too high a learning rate or degenerate data. "
+                f"Train MI is reported as 0 {_units}. The raw train MI was "
+                f"{_raw_train_mi * _scale:.4f} {_units} and most likely reflects overfitting. "
+                f"Raise n_epochs, lower learning_rate or inspect the data.",
+                UserWarning,
+                stacklevel=user_stacklevel(),
+            )
+            final_train_mi = 0.0
+        elif final_train_mi is not None and final_train_mi < 0:
+            # The test MI rose above zero, so the network learned something,
+            # but the training-side value at the reported epoch came out below
+            # zero. MI cannot be negative, so it is reported as 0 like the case
+            # above, with the measured value kept as raw_train_mi.
+            warnings.warn(
+                f"The train MI at the reported epoch is negative "
+                f"({final_train_mi * _scale:.4f} {_units}) while the test MI peaked at "
+                f"{max(valid_history) * _scale:.4f} {_units} at epoch {best_ep}. MI cannot be "
+                f"negative. Train MI is reported as 0 {_units} and the measured value is "
+                f"kept as raw_train_mi. This usually means too few epochs or too few "
+                f"samples for the network to learn the dependence.",
                 UserWarning,
                 stacklevel=user_stacklevel(),
             )
@@ -1159,8 +1173,8 @@ class Trainer:
         if np.isnan(result):
             logger.warning(
                 "MI evaluation returned NaN. This may indicate numerical instability, "
-                "a degenerate batch, or exploding gradients. Check your learning_rate, "
-                "batch_size, and input data for anomalies."
+                "a degenerate batch or exploding gradients. Check your learning_rate, "
+                "batch_size and input data for anomalies."
             )
         return result
 

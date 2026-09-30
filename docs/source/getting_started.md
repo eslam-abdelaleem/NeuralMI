@@ -19,7 +19,7 @@ quantity. The simplest one is a single estimate.
 
 ## Where to go next
 
-The [tutorials](tutorials.rst) are five notebooks meant to be read in order,
-starting from what an estimate is and what governs its accuracy.
-[USING.md](USING.md) shows the call for each task and how to read what comes
-back, and the [home page](index.rst) lists every reference document.
+The five [tutorials](tutorials.rst) are meant to be read in order and start from
+what an estimate is and what governs its accuracy. [USING.md](USING.md) shows
+the call for each task and how to read what comes back. The [home
+page](index.rst) lists every reference document.

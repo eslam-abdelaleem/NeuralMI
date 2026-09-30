@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 __all__ = [
     "Model", "Training", "Split", "Estimator", "Output", "Processing",
     "Rigorous", "Precision", "Lag", "Transfer", "Dimensionality", "Conditional",
-    "Interaction", "Pairwise", "Sweep",
+    "Interaction", "Pairwise",
     "as_config",
 ]
 
@@ -72,7 +72,7 @@ def as_config(value: Union[None, "T", Dict[str, Any]], cls: Type[T]) -> Optional
             )
         return cls(**value)
     raise TypeError(
-        f"Expected {cls.__name__}, a dict, or None; got {type(value).__name__}."
+        f"Expected {cls.__name__}, a dict or None. Got {type(value).__name__}."
     )
 
 
@@ -103,7 +103,7 @@ class Model:
     nhead: Optional[int] = None                    # Transformer
     branch_model: Optional[str] = None             # embedding_model='dual_branch' only: each branch's own architecture, defaults to 'gru'
     dropout: Optional[float] = None
-    norm_layer: Optional[str] = None               # 'layer'|'batch'|None
+    norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None
@@ -199,13 +199,11 @@ class Output:
     whitening: Optional[str] = None                # 'std'|'zca'|None, for spectra and rotations
     rotated_embeddings_per_epoch: Optional[bool] = None
     return_rotation_matrices: Optional[bool] = None
-    # Display-only labels (not part of base_params; carried in result.params)
-    x_name: Optional[str] = None
-    y_name: Optional[str] = None
+    # Channel labels for the pairwise heatmap (not part of base_params)
     channel_names_x: Optional[List[str]] = None
     channel_names_y: Optional[List[str]] = None
 
-    _LABEL_FIELDS = ("x_name", "y_name", "channel_names_x", "channel_names_y")
+    _LABEL_FIELDS = ("channel_names_x", "channel_names_y")
 
     def to_base_params(self) -> Dict[str, Any]:
         d = _non_none(self)
@@ -259,7 +257,6 @@ class Rigorous:
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
-    r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
     temporal_chunking: Optional[bool] = None
 
@@ -314,7 +311,6 @@ class Transfer:
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
-    r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
     # w_data is a dedicated run argument; the rest are analysis kwargs. How W
@@ -333,36 +329,19 @@ class Transfer:
 
 @dataclass
 class Dimensionality:
-    """Parameters for ``mode='dimensionality'``: cross-seed-stable directions of
-    shared structure (interaction: between two views; intrinsic: between
-    split-halves of one dataset), plus a cheap separable-vs-entangled regime
-    read. Does not return an exact dimensionality count. See ``THEORY.md``
-    for why a nonlinear encoder given more capacity than the true number of
-    shared factors can construct combinations of them that are
-    indistinguishable from genuine factors by any spectral measure.
-
-    ``stability_threshold``, ``degeneracy_ratio_threshold``, and
-    ``min_strength_fraction`` tune how the mode decides which directions are
-    trustworthy (see ``_compute_stability_report`` in
-    ``analysis/dimensionality.py``): a direction must be reproducible across
-    independent retrainings (``stability_threshold``) and above the noise
-    floor (``min_strength_fraction``) to be reported at all, and adjacent
-    directions within ``degeneracy_ratio_threshold`` of each other in strength
-    are reported as a group instead of individually ranked. Their defaults
-    (0.7, 1.3, 0.05) are empirical starting points validated on a battery of
-    synthetic conditions. Treat them as tunable.
-    ``ceiling_mi_fraction`` tunes a separate, lightweight warning: whether the
-    underlying MI estimate is close enough to its evaluation ceiling
-    (``log(eval_size)``) that any reading built on it should be treated with
-    extra caution.
+    """Parameters for ``mode='dimensionality'``: the MI against embedding
+    dimension, and the smallest embedding dimension that carries
+    ``saturation_ratio`` of it. Between X and Y when ``y_data`` is given, and
+    between two halves of X otherwise. See ``THEORY.md``.
     """
+    embedding_dims: Optional[Union[List[int], range]] = None
+    n_restarts: Optional[int] = None
+    saturation_ratio: Optional[float] = None
+    reference_dim: Optional[int] = None
     split_method: Optional[str] = None
     n_splits: Optional[int] = None
     lag: Optional[int] = None
     channel_indices_x: Optional[List[int]] = None
-    stability_threshold: Optional[float] = None
-    degeneracy_ratio_threshold: Optional[float] = None
-    min_strength_fraction: Optional[float] = None
     ceiling_mi_fraction: Optional[float] = None
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
@@ -389,7 +368,6 @@ class Conditional:
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
-    r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
     # w_data is a dedicated run argument; the rest are analysis kwargs. How W
@@ -422,7 +400,6 @@ class Interaction:
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
-    r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
     # w_data is a dedicated run argument; the rest are analysis kwargs. How W
@@ -448,11 +425,3 @@ class Pairwise:
         return _non_none(self)
 
 
-@dataclass
-class Sweep:
-    """Parameters for ``mode='sweep'`` execution (sweep-execution concerns, not
-    model/training configuration)."""
-    max_samples_per_task: Optional[int] = None
-
-    def to_analysis_kwargs(self) -> Dict[str, Any]:
-        return _non_none(self)

@@ -33,7 +33,7 @@ def test_shared_configs_route_to_engine(capture_engine):
         training=Training(n_epochs=5),                  # named engine kwarg -> flat
         split=Split(mode='random', gap_fraction=0.0),   # renamed -> split_mode/split_gap_fraction (flat)
         estimator='smile',                              # string shorthand
-        output=Output(units='nats', x_name='LFP'),      # units->output_units; x_name label
+        output=Output(units='nats'),                    # units->output_units
         n_workers=3, seed=7,
     )
     assert out == "ENGINE_CALLED"
@@ -44,7 +44,6 @@ def test_shared_configs_route_to_engine(capture_engine):
     assert kw['split_gap_fraction'] == 0.0
     assert kw['estimator'] == 'smile'
     assert kw['output_units'] == 'nats'
-    assert kw['x_name'] == 'LFP'
     assert kw['random_seed'] == 7
     assert kw['n_workers'] == 3
     assert kw['mode'] == 'estimate'
@@ -114,3 +113,109 @@ def test_end_to_end_estimate_runs():
         seed=0, show_progress=False,
     )
     assert np.isfinite(res.mi_estimate)
+
+
+# ---------------------------------------------------------------------------
+# Settings that would have no effect are named before any work
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('model, training, named', [
+    (Model(kernel_size=5), None, "kernel_size"),
+    (Model(embedding_model='gru', nhead=2), None, "nhead"),
+    (Model(n_layers_head=3), None, "n_layers_head"),
+    (Model(critic_type='separable'), Training(lr_head_multiplier=5.0), "lr_head_multiplier"),
+    (Model(beta=2.0), None, "beta"),
+    (Model(decoder_lambda=2.0), None, "decoder_lambda"),
+    (Model(custom_critic=object(), embedding_dim=8), None, "embedding_dim"),
+])
+def test_ineffective_setting_warns(capture_engine, model, training, named):
+    with pytest.warns(UserWarning, match=f"no effect in this call.*{named}"):
+        nmi.run([[1]], [[1]], mode='estimate', model=model, training=training)
+
+
+@pytest.mark.parametrize('mode, model', [
+    ('estimate', Model(embedding_model='cnn', kernel_size=5)),
+    ('estimate', Model(critic_type='hybrid', n_layers_head=3)),
+    ('estimate', Model(use_variational=True, beta=2.0)),
+    ('estimate', Model(use_decoder=True, decoder_lambda=2.0)),
+    ('estimate', Model(embedding_model='mlp', embedding_model_y='gru', bidirectional=True)),
+    ('dimensionality', Model(n_layers_head=3)),     # dimensionality trains a hybrid critic
+])
+def test_effective_setting_is_quiet(capture_engine, mode, model):
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings('error', message="These settings have no effect")
+        nmi.run([[1]], [[1]], mode=mode, model=model)
+
+
+def test_setting_spelled_out_at_its_default_is_quiet(capture_engine):
+    import warnings
+    from neural_mi.defaults import BASE_PARAMS_SCHEMA
+    with warnings.catch_warnings():
+        warnings.filterwarnings('error', message="These settings have no effect")
+        nmi.run([[1]], [[1]], mode='estimate',
+                model=Model(kernel_size=BASE_PARAMS_SCHEMA['kernel_size']['default']))
+
+
+def test_unknown_estimator_parameter_raises_before_training(capture_engine):
+    with pytest.raises(ValueError, match=r"Estimator\(params=...\) names \['clp'\].*'clip'"):
+        nmi.run([[1]], [[1]], mode='estimate',
+                estimator=nmi.Estimator(name='smile', params={'clp': 5.0}))
+    assert 'kw' not in capture_engine
+
+
+def test_known_estimator_parameter_is_accepted(capture_engine):
+    nmi.run([[1]], [[1]], mode='estimate',
+            estimator=nmi.Estimator(name='smile', params={'clip': 5.0}))
+    assert 'kw' in capture_engine
+
+
+# ---------------------------------------------------------------------------
+# The defaults that apply agree with the documented ones
+# ---------------------------------------------------------------------------
+
+def test_engine_defaults_match_the_schema():
+    """_run_flat's keyword defaults are the ones that apply, and defaults.py is
+    the one PARAMETERS.md is checked against, so the two must agree."""
+    import inspect
+    from neural_mi.defaults import BASE_PARAMS_SCHEMA
+    signature = inspect.signature(importlib.import_module('neural_mi.run')._run_flat)
+    differ = {}
+    for name, p in signature.parameters.items():
+        if p.default is inspect.Parameter.empty or p.default is None or name not in BASE_PARAMS_SCHEMA:
+            continue
+        documented = BASE_PARAMS_SCHEMA[name].get('default')
+        if documented != p.default:
+            differ[name] = (p.default, documented)
+    assert differ == {}
+
+
+@pytest.mark.parametrize('mode, output, named', [
+    ('estimate', Output(return_rotated_embeddings=True), "return_rotated_embeddings"),
+    ('estimate', Output(return_embeddings=True, return_rotated_embeddings=True,
+                        rotated_embeddings_per_epoch=True), "rotated_embeddings_per_epoch"),
+    ('estimate', Output(return_embeddings=True, return_rotation_matrices=True),
+     "return_rotation_matrices"),
+    ('dimensionality', Output(return_rotation_matrices=True), "return_rotation_matrices"),
+    ('dimensionality', Output(track_embeddings=True, rotated_embeddings_per_epoch=True),
+     "rotated_embeddings_per_epoch"),
+])
+def test_rotation_setting_nothing_reads_warns(capture_engine, mode, output, named):
+    with pytest.warns(UserWarning, match=f"no effect in this call.*{named}"):
+        nmi.run([[1]], [[1]], mode=mode, output=output)
+
+
+@pytest.mark.parametrize('mode, output', [
+    ('estimate', Output(return_embeddings=True, return_rotated_embeddings=True,
+                        return_rotation_matrices=True)),
+    ('estimate', Output(track_embeddings=True, return_rotated_embeddings=True,
+                        rotated_embeddings_per_epoch=True)),
+    ('dimensionality', Output(return_embeddings=True, return_rotated_embeddings=True,
+                              return_rotation_matrices=True)),
+    ('dimensionality', None),
+])
+def test_rotation_setting_something_reads_is_quiet(capture_engine, mode, output):
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings('error', message="These settings have no effect")
+        nmi.run([[1]], [[1]], mode=mode, output=output)

@@ -136,10 +136,12 @@ class TestFitReducer:
 # ---------------------------------------------------------------------------
 
 class TestResolveScatterColor:
-    def test_none_returns_viridis(self):
+    def test_none_has_no_colormap(self):
+        # Without values there is nothing to map, and a colormap passed anyway
+        # makes matplotlib warn that it is ignored.
         c, cmap, vmin, vmax = _resolve_scatter_color(None)
         assert c is None
-        assert cmap == 'viridis'
+        assert cmap is None
         assert vmin is None
 
     def test_continuous_float_array(self):
@@ -323,3 +325,59 @@ class TestResultAnimate:
 
 # Avoid matplotlib object import error in mock
 from unittest.mock import MagicMock  # noqa: E402 (already imported via top-level, harmless)
+
+
+# ---------------------------------------------------------------------------
+# Picking one network
+# ---------------------------------------------------------------------------
+
+def _axis_result(mode, axis):
+    """A result whose networks differ along ``axis`` and in ``run_id``."""
+    import itertools
+    import pandas as pd
+    from neural_mi.results import Results
+    names = list(axis)
+    rows, embeddings = [], {}
+    for values in itertools.product(*axis.values(), (0, 1)):
+        *point, rid = values
+        rows.append({'config_id': 0, **dict(zip(names, point)), 'run_id': rid, 'mi': 1.0,
+                     'test_mi_history': [0.1, float(sum(point) + rid)]})
+        embeddings[(*point, rid)] = {'embedding_history_x': [np.zeros((4, 2))],
+                                     'embedding_history_y': [np.zeros((4, 2))],
+                                     'tag': (*point, rid)}
+    return Results(mode=mode, params={'axis_keys': names}, runs=pd.DataFrame(rows),
+                   details={0: {'embeddings': embeddings}})
+
+
+class TestPickOneNetwork:
+    def test_the_axis_values_and_run_id_pick_the_network(self):
+        view = _axis_result('lag', {'lag': (0, 2)})._repeat_view(run_id=1, lag=2)
+        assert view['tag'] == (2, 1) and view['test_mi_history'][-1] == 3.0
+
+    def test_an_ambiguous_call_names_the_keys_to_pass(self):
+        with pytest.raises(ValueError, match=r"Pass lag=\.\.\., run_id=\.\.\."):
+            _axis_result('lag', {'lag': (0, 2)})._repeat_view()
+        with pytest.raises(ValueError, match=r"Pass run_id=\.\.\. \(run_id in \[0, 1\]\)"):
+            _axis_result('lag', {'lag': (0, 2)})._repeat_view(lag=0)
+
+    def test_a_dimensionality_network_is_picked_by_split_size_and_restart(self):
+        result = _axis_result('dimensionality', {'split_id': (0, 1), 'embedding_dim': (2, 4)})
+        assert result._repeat_view(split_id=1, embedding_dim=4, run_id=0)['tag'] == (1, 4, 0)
+        with pytest.raises(ValueError, match='embedding_dim=...'):
+            result._repeat_view(split_id=1, run_id=0)
+
+    def test_a_value_no_network_has_is_refused(self):
+        with pytest.raises(ValueError, match='No network of configuration 0 has lag=5'):
+            _axis_result('lag', {'lag': (0, 2)})._repeat_view(lag=5, run_id=0)
+
+    def test_an_axis_of_another_mode_is_refused(self):
+        with pytest.raises(ValueError, match="split_id does not pick a network of mode='lag'"):
+            _axis_result('lag', {'lag': (0, 2)})._repeat_view(split_id=0)
+
+    def test_animate_forwards_the_axis_values(self):
+        result = _axis_result('pairwise', {'ch_x': (0,), 'ch_y': (1, 2)})
+        with pytest.raises(ValueError, match=r"animate\(\) shows one network"):
+            animate_training(result, show=False)
+        anim = animate_training(result, ch_x=0, ch_y=2, run_id=1, panels=['mi'], show=False)
+        assert isinstance(anim, manim.FuncAnimation)
+        plt.close('all')

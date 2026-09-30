@@ -1,4 +1,4 @@
-# NeuralMI: mutual information estimation for neural data
+# NeuralMI: information-theoretic analysis of neural data at scale
 
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen)](https://eslam-abdelaleem.github.io/NeuralMI/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -7,25 +7,23 @@
 **NeuralMI brings information-theoretic analysis to the scale of modern neuroscience using neural-network-based information estimators.**
 
 
-<img src="docs/source/_static/correlation_blind.png" alt="A folded Gaussian: correlation +0.001, information 1.554 bits" style="float: left; max-width: 50%; margin-right: 15px; margin-bottom: 10px;">
+<img src="docs/source/_static/correlation_blind.png" alt="A folded Gaussian: correlation +0.001, information 1.554 bits" style="float: left; max-width: 40%; margin-right: 15px; margin-bottom: 10px;">
 
-Correlation is the usual way to ask whether two signals are related, but it is
-blind to any nonlinear relationship. For example, a Gaussian folded about zero has a perfect relationship between $x$ and $y$, yet the correlation is zero because the two halves of the linear trend cancel exactly.
-
-
-Mutual information sees that relationship because it captures linear and nonlinear dependencies alike. It also answers questions a
-correlation has no form for, such as how much a population's past says about its own future, what one area adds about another beyond what that area already predicts of itself, or what a pair of signals carries that neither carries alone.
-
-<img src="docs/source/_static/sample_sweep.png" alt="Estimate against sample count at 1000 channels per side: NeuralMI reaches the true 4 bits by 1000 samples, KSG stays under 2" style="float: right; max-width: 60%; margin-right: 15px; margin-bottom: 10px;">
+Correlation is the usual way to ask whether two signals are related or not. However, it is blind to any nonlinear relationship. For example, a Gaussian folded about zero has a perfect relationship between $x$ and $y$ and zero correlation because the two halves of the linear trend cancel exactly.
 
 
-The obstacle to applying information-theoretic measures to large, multimodal neuroscience datasets is the curse of dimensionality. Classical estimators need samples in proportion to the dimensions they are handed, so past ~10 dimensions they outrun any recording of realistic size. Information-theoretic analysis has mostly been limited to a handful of channels for that reason.
+Mutual information sees that relationship because it captures linear and nonlinear dependencies alike. It also answers questions a correlation has no form for: how much a population's past says about its own future, what one area adds about another beyond what that area already predicts of itself, or what a pair of signals carries that neither carries alone.
+
+<img src="docs/source/_static/sample_sweep.png" alt="Estimate against sample count at 1000 channels per side: NeuralMI reaches the true 4 bits by 1000 samples, KSG stays under 2" style="float: right; max-width: 50%; margin-right: 15px; margin-bottom: 10px;">
+
+
+The obstacle to applying information-theoretic measures to large, multimodal neuroscience datasets is the curse of dimensionality. Classical estimators need samples in proportion to the dimensions they are handed. Past ~10 dimensions they outrun any recording of realistic size. Information-theoretic analysis has mostly been limited to a handful of channels for that reason.
 
 Neural-network-based estimators overcome this by learning a map into a low-dimensional embedding while estimating the information in it. The samples needed then follow the latent structure of the data and not the channel count it arrived on.
 
 
 Giving each modality its own encoder also lets spike times, tracked trajectories and trial labels be analysed
-together on one timeline, each in its own subspace and through an encoder with its own inductive bias.
+together on one timeline. Each sits in its own subspace processed by an encoder with its own inductive bias.
 
 ![Three streams on their own clocks, cut into aligned windows](docs/source/_static/alignment.png)
 
@@ -105,7 +103,7 @@ exact    : 2.000 bits
 | document | answers |
 |---|---|
 | [`USING.md`](reference/USING.md) | how to call each analysis and read what comes back |
-| [`PARAMETERS.md`](reference/PARAMETERS.md) | every setting, with its default |
+| [`PARAMETERS.md`](reference/PARAMETERS.md) | every setting and its default |
 | [`THEORY.md`](reference/THEORY.md) | what the numbers mean and why the estimators behave as they do |
 | [`MESSAGES.md`](reference/MESSAGES.md) | what a warning the library printed means |
 | [`ANATOMY.md`](reference/ANATOMY.md) | what an estimator is, built from scratch in PyTorch |
@@ -114,9 +112,16 @@ exact    : 2.000 bits
 
 ## Citing
 
-If you use NeuralMI, please cite
-[Abdelaleem et al., 2025](https://arxiv.org/abs/2506.00330). GitHub's "Cite this
-repository" button gives the entry, from [`CITATION.cff`](CITATION.cff).
+Please cite the library in addition to the paper behind each part of NeuralMI you used.
+
+| you used | please cite |
+|-|-----|
+| the estimators, `mode='rigorous'` | Eslam Abdelaleem\*, K. Michael Martini\* and Ilya Nemenman. [Accurate estimation of mutual information in high dimensional data](https://arxiv.org/abs/2506.00330). arXiv:2506.00330, 2025. |
+| `mode='dimensionality'` | Paarth Gulati\*, Eslam Abdelaleem\*, Audrey Sederberg and Ilya Nemenman. [Mutual information and task-relevant latent dimensionality](https://proceedings.mlr.press/v326/gulati26a.html). *Proceedings of GRaM*, PMLR 326:262-293, 2026. |
+| variational encoders and decoders | Eslam Abdelaleem*, Ilya Nemenman and K. Michael Martini*. [Deep variational multivariate information bottleneck: a framework for variational losses](http://jmlr.org/papers/v26/24-0204.html). *Journal of Machine Learning Research* 26, 2025. |
+| `mode='precision'` | Leo Wood, Eslam Abdelaleem, Audrey Sederberg and Simon Sponberg. Hawkmoth descending neurons carry motor information in spike timing across synergistic populations. In preparation. |
+| analyses of neural populations at scale | Eslam Abdelaleem et al. Information-theoretic analysis of neural populations at scale. In preparation. |
+
 
 ## Questions and problems
 

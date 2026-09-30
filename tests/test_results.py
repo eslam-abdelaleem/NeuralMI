@@ -1,4 +1,4 @@
-# tests/test_results_extended.py
+# tests/test_results.py
 import json
 import math
 import os
@@ -316,3 +316,43 @@ class TestToDict:
         with open(fp) as f:
             data = json.load(f)
         assert data['runs'][0]['test_mi_history'] == pytest.approx(history)
+
+
+class TestRepeatsThatProducedNothing:
+    """A repeat reported as 0 produced nothing. Averages use the other repeats."""
+
+    @staticmethod
+    def _aggregate(values):
+        import warnings
+        import pandas as pd
+        from neural_mi.analysis.assemble import aggregate
+        runs = pd.DataFrame({'config_id': [0] * len(values), 'run_id': range(len(values)),
+                             'mi': values, 'test_mi': [v / 2 for v in values]})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            frame = aggregate(runs, ['config_id'], mean_cols=['test_mi'])
+        return frame.iloc[0], [str(w.message) for w in caught]
+
+    def test_zeros_are_left_out_of_the_mean_and_spread(self):
+        row, messages = self._aggregate([2.0, 2.2, 0.0, 1.8])
+        assert row['mi_mean'] == pytest.approx(2.0) and row['n_zero'] == 1 and row['n_runs'] == 4
+        assert row['mi_std'] == pytest.approx(0.2)
+        assert row['test_mi_mean'] == pytest.approx(1.0)       # the same repeats
+        assert len(messages) == 1 and messages[0].startswith("1 of 4 repeats produced nothing")
+
+    def test_all_zeros_report_zero(self):
+        row, messages = self._aggregate([0.0, 0.0, 0.0])
+        assert row['mi_mean'] == 0.0 and row['n_zero'] == 3
+        assert "no repeat that produced a value" in messages[0]
+
+    def test_one_repeat_is_reported_as_it_is(self):
+        row, messages = self._aggregate([0.0])
+        assert row['mi_mean'] == 0.0 and messages == []
+
+    def test_the_null_is_averaged_the_same_way(self):
+        from neural_mi.analysis.permutation import row_values
+        produced = {'rows': [{'config_id': 0, 'run_id': r, 'mi': v, 'raw_train_mi': v - 0.1}
+                             for r, v in enumerate([0.3, 0.0, 0.5])],
+                    'details': {}, 'axis_keys': []}
+        mi, raw = row_values('estimate', produced)[(0,)]
+        assert mi == pytest.approx(0.4) and raw == pytest.approx(0.1666667)

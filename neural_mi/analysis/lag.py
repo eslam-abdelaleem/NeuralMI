@@ -62,7 +62,7 @@ def run_lag_analysis(
     proc_type_y = base_params.get('processor_type_y')
     if proc_type_y is None:
         proc_type_y = proc_type_x
-        logger.info("Processing(y=...) is not set, so Y is read with X's processor.")
+        logger.info("Processing(y=...) is not set and Y is read with X's processor.")
 
     # Infer sample_rate from processor_params to resolve unit ambiguity
     sample_rate = base_params.get('processor_params_x', {}).get('sample_rate', None)

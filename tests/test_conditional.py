@@ -91,7 +91,8 @@ class TestConditionalMI:
         assert np.isfinite(_components(results)['mi_w_y'])
 
     def test_cmi_result_consistency(self):
-        """Confirms CMI estimate = I(XW;Y) - I(W;Y)."""
+        """CMI is I(XW;Y) - I(W;Y), reported as 0 when that comes out negative,
+        with the measured difference kept as mi_raw."""
         x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
         w = _make_gaussian(N, 2)
 
@@ -103,7 +104,8 @@ class TestConditionalMI:
             n_workers=1,
         )
         expected = _components(results)['mi_xw_y'] - _components(results)['mi_w_y']
-        assert abs(results.mi_estimate - expected) < 1e-6
+        assert results.runs['mi_raw'].iloc[0] == pytest.approx(expected, abs=1e-6)
+        assert results.mi_estimate == pytest.approx(max(expected, 0.0), abs=1e-6)
 
     def test_return_embeddings_is_refused(self):
         """Each repeat trains one network per term of the quantity, so no single

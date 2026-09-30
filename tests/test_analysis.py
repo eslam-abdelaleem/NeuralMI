@@ -6,7 +6,6 @@ import neural_mi as nmi
 from neural_mi import Model, Training, Processing, Lag, Split
 import torch
 from unittest.mock import patch
-from neural_mi.analysis.dimensionality import run_dimensionality_analysis
 
 # shift_time disabled to avoid dynamic window sizing issues in tests.
 MODEL_TEST = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
@@ -143,91 +142,6 @@ class TestLagShiftWindows:
             f"({raw_sample_count}) once window_size={window_size} windowing is accounted for"
         )
 
-
-@pytest.fixture
-def mock_sweep():
-    """Fixture to mock the ParameterSweep engine so we only test the orchestrator."""
-    with patch('neural_mi.analysis.dimensionality.ParameterSweep') as MockSweep:
-        # Setup the mock to return a dummy dataframe row
-        instance = MockSweep.return_value
-        instance.run.return_value = [{'test_mi': 1.0}]
-        yield MockSweep
-
-def test_dimensionality_defaults_to_hybrid_critic_and_modest_embedding_dim(mock_sweep):
-    """With no critic_type set, the mode uses the hybrid critic and a modest embedding.
-
-    pr_eig/pr_singular/spectrum are always computed at the best epoch regardless
-    of any dimensionality-specific forcing (see Trainer._extract_spectral_metrics),
-    so there's nothing left to force for spectral tracking specifically.
-
-    embedding_dim defaults to a MODEST value (8), not a large one -- an
-    over-provisioned embedding is exactly what lets artifact directions
-    (products/combinations of true factors) masquerade as real ones.
-    """
-    x_data = torch.randn(100, 4)
-    df, _embeddings = run_dimensionality_analysis(x_data, {}, split_method='spatial')
-
-    analysis_params = mock_sweep.call_args[1]['base_params']
-    assert analysis_params['critic_type'] == 'hybrid'
-    assert analysis_params['embedding_dim'] == 8, "Failed to inject the modest default bottleneck."
-    assert isinstance(df, pd.DataFrame)
-
-
-def test_dimensionality_runs_a_separable_critic_with_a_warning(mock_sweep):
-    """An explicit separable critic has an embedding per side, so the mode runs it,
-    and warns that a dot-product score can change which directions come out stable."""
-    x_data = torch.randn(100, 4)
-    with pytest.warns(UserWarning, match="critic_type='separable'"):
-        run_dimensionality_analysis(x_data, {'critic_type': 'separable'}, split_method='spatial')
-    assert mock_sweep.call_args[1]['base_params']['critic_type'] == 'separable'
-
-
-def test_dimensionality_refuses_a_concat_critic(mock_sweep):
-    """A concat critic embeds X and Y jointly, leaving no per-side directions to compare."""
-    with pytest.raises(ValueError, match="cannot use critic_type='concat'"):
-        run_dimensionality_analysis(torch.randn(100, 4), {'critic_type': 'concat'},
-                                    split_method='spatial')
-
-def test_dimensionality_interaction_no_split(mock_sweep):
-    """Proves Interaction Dimensionality passes X and Y directly without splitting."""
-    x_data = torch.randn(100, 2)
-    y_data = torch.randn(100, 2)
-    
-    # User provides a specific bottleneck, which should NOT be overridden
-    base_params = {'embedding_dim': 16} 
-    
-    run_dimensionality_analysis(x_data, base_params, y_data=y_data)
-
-    call_args = mock_sweep.call_args[1]
-    analysis_params = call_args['base_params']
-    
-    # Verify exact X and Y were passed, not splits
-    assert call_args['x_data'] is x_data
-    assert call_args['y_data'] is y_data
-    assert analysis_params['embedding_dim'] == 16
-
-def test_dimensionality_intrinsic_splits(mock_sweep):
-    """Proves Intrinsic Dimensionality correctly slices data based on split_method."""
-    x_data = torch.randn(100, 4) # 100 timepoints, 4 channels
-    base_params = {}
-    
-    # 1. Test Spatial Split
-    run_dimensionality_analysis(x_data, base_params, split_method='spatial')
-    call_args = mock_sweep.call_args[1]
-    assert call_args['x_data'].shape == (100, 2), "Spatial split failed on X."
-    assert call_args['y_data'].shape == (100, 2), "Spatial split failed on Y."
-    
-    # 2. Test Temporal Split (lag=2)
-    run_dimensionality_analysis(x_data, base_params, split_method='temporal', lag=2)
-    call_args = mock_sweep.call_args[1]
-    assert call_args['x_data'].shape == (98, 4), "Temporal split failed on X."
-    assert call_args['y_data'].shape == (98, 4), "Temporal split failed on Y."
-
-    # 3. Test Random Split loops
-    run_dimensionality_analysis(x_data, base_params, split_method='random', n_splits=3)
-    # spatial runs n_splits (default 3) fits on the same halves, temporal one,
-    # random 3: 7 calls to the sweep engine.
-    assert mock_sweep.return_value.run.call_count == 7, "Split loops ran the wrong number of fits."
 
 # --- Task Routing Tests ---
 

@@ -48,6 +48,7 @@ import torch
 
 from neural_mi.run import run
 from neural_mi.results import Results
+from neural_mi.logger import call_verbosity, collect_repeats
 from neural_mi.parallel import dispatch_tasks
 from neural_mi.analysis.assemble import merge_results
 from neural_mi.analysis.offsets import (build_past_future, build_cross_offset, grid_rows,
@@ -60,7 +61,7 @@ from neural_mi.embeddings_io import model_file, resolve_model_path, warn_saving_
 # The fit settings a Rigorous config carries into a difference quantity's own
 # config (Transfer, Conditional, Interaction).
 _FIT_FIELDS = ('gamma_range', 'curvature_t_threshold', 'min_gamma_points',
-               'confidence_level', 'residual_threshold', 'r2_threshold', 'leverage_threshold')
+               'confidence_level', 'residual_threshold', 'leverage_threshold')
 
 
 def _is_sweep(value: Any) -> bool:
@@ -151,6 +152,18 @@ def _task(task) -> Results:
                  show_progress=show_progress, transfer=transfer)
 
 
+def _refuse_custom_split(run_kwargs: Dict[str, Any], quantity: str) -> None:
+    """Refuse custom split indices for a quantity that builds its own rows."""
+    from neural_mi.config import Split, as_config
+    split = as_config(run_kwargs.get('split'), Split)
+    if split is not None and (split.train_indices is not None or split.test_indices is not None):
+        raise ValueError(
+            f"{quantity}() trains on rows built from shifted copies of the data. "
+            f"Split(train_indices=..., test_indices=...) would then address rows other than "
+            f"the ones you passed. Split with Split(mode=...) and Split(train_fraction=...)."
+        )
+
+
 def _named(quantity: str, param: str, value, build, *, run_kwargs: Dict[str, Any], rigorous,
            n_workers: int, show_progress: bool, construction: Dict[str, Any],
            sweep_mode: str) -> Results:
@@ -161,6 +174,16 @@ def _named(quantity: str, param: str, value, build, *, run_kwargs: Dict[str, Any
     ``construction`` holds the settings held fixed, recorded in ``params``.
     ``sweep_mode`` labels a merged result.
     """
+    with call_verbosity(run_kwargs.get('verbose')), collect_repeats():
+        return _named_run(quantity, param, value, build, run_kwargs=run_kwargs, rigorous=rigorous,
+                          n_workers=n_workers, show_progress=show_progress,
+                          construction=construction, sweep_mode=sweep_mode)
+
+
+def _named_run(quantity: str, param: str, value, build, *, run_kwargs: Dict[str, Any], rigorous,
+               n_workers: int, show_progress: bool, construction: Dict[str, Any],
+               sweep_mode: str) -> Results:
+    _refuse_custom_split(run_kwargs, quantity)
     grid = dict(run_kwargs.get('sweep_grid') or {})
     if param in grid:
         raise ValueError(
@@ -604,10 +627,10 @@ def _require_dual_branch_model(run_kwargs: Dict[str, Any], fn_name: str) -> None
     )
     if not is_dual_branch:
         raise ValueError(
-            f"{fn_name} needs A and C at different window lengths, which requires "
-            f"model=Model(embedding_model='dual_branch', ...) (or a DualBranchEmbedding "
-            f"subclass via custom_embedding_cls). Got embedding_model={embedding_model!r}, "
-            f"custom_embedding_cls={custom_cls!r}."
+            f"{fn_name} needs A and C at different window lengths. That requires "
+            f"model=Model(embedding_model='dual_branch', ...) or a DualBranchEmbedding "
+            f"subclass through custom_embedding_cls. The call has "
+            f"embedding_model={embedding_model!r} and custom_embedding_cls={custom_cls!r}."
         )
 
 
@@ -745,11 +768,10 @@ def mi_rate(
         _require_dual_branch_model(run_kwargs, 'mi_rate')
     if _is_sweep(h) and _is_sweep(half_width):
         raise ValueError(
-            "mi_rate takes an iterable for h or for half_width, and not for both. The "
-            "two windows bias the estimate in opposite directions, so the reading you "
-            "want comes from sweeping one, fixing it past its knee, then sweeping the "
-            "other. A grid over both costs len(h) * len(half_width) training runs for "
-            "the same conclusion."
+            "mi_rate takes an iterable for h or for half_width and refuses one for both. "
+            "The two windows bias the estimate in opposite directions. Sweep one, fix it "
+            "past its knee and then sweep the other. A grid over both costs "
+            "len(h) * len(half_width) training runs for the same conclusion."
         )
     rows = _on_one_grid(OrderedDict((('x', x_data), ('y', y_data))),
                         run_kwargs.pop('processing', None))

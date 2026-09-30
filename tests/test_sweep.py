@@ -1,11 +1,12 @@
-# tests/test_sweep_extended.py
+# tests/test_sweep.py
 import warnings
 import pytest
 import torch
 import numpy as np
+import neural_mi as nmi
 from neural_mi.analysis.sweep import ParameterSweep
 
-class TestSweepExtended:
+class TestSweepMechanics:
     def test_sweep_init_with_tensor(self):
         # Testing logic that infers dims from tensor
         x = torch.randn(10, 5, 20) # (batch, channels, features)
@@ -28,18 +29,7 @@ class TestSweepExtended:
         sweep = ParameterSweep(x, y, base_params)
 
         with pytest.raises(ValueError, match="embedding_dim"):
-            sweep._prepare_tasks(sweep_grid={'embedding_dim': [4]}, is_proc_sweep=False, max_samples_per_task=None)
-
-    def test_prepare_tasks_max_samples(self):
-        x = np.random.randn(100, 5)
-        y = np.random.randn(100, 5)
-        base_params = {}
-        sweep = ParameterSweep(x, y, base_params)
-
-        tasks = sweep._prepare_tasks(sweep_grid={}, is_proc_sweep=False, max_samples_per_task=10)
-        task_x, task_y, _, _ = tasks[0]
-        assert task_x.shape[0] == 10
-        assert task_y.shape[0] == 10
+            sweep._prepare_tasks(sweep_grid={'embedding_dim': [4]}, is_proc_sweep=False)
 
     def test_prepare_tasks_proc_sweep(self):
         # Checks that raw data is passed if is_proc_sweep=True
@@ -48,7 +38,7 @@ class TestSweepExtended:
         base_params = {}
         sweep = ParameterSweep(x, y, base_params)
 
-        tasks = sweep._prepare_tasks(sweep_grid={'window_size': [10]}, is_proc_sweep=True, max_samples_per_task=None)
+        tasks = sweep._prepare_tasks(sweep_grid={'window_size': [10]}, is_proc_sweep=True)
         task_x, task_y, params, _ = tasks[0]
 
         # Verify params got updated
@@ -63,7 +53,7 @@ class TestSweepExtended:
         base_params = {'save_best_model_path': 'model.pth'}
         sweep = ParameterSweep(x, y, base_params)
 
-        tasks = sweep._prepare_tasks(sweep_grid={'dim': [4]}, is_proc_sweep=False, max_samples_per_task=None)
+        tasks = sweep._prepare_tasks(sweep_grid={'dim': [4]}, is_proc_sweep=False)
         _, _, params, _ = tasks[0]
         from neural_mi.embeddings_io import model_file
         assert model_file(params) == 'model_dim-4.pth'
@@ -231,7 +221,8 @@ class TestJointMarginalDifference:
                 quantity_name="Test Quantity", joint_label="J", marginal_label="M",
                 joint_key="my_joint_key", marginal_key="my_marginal_key",
             )
-        assert diff < 0
+        # The quantity cannot be negative, so it is reported as 0.
+        assert diff == 0.0
 
     def test_positive_difference_does_not_warn(self, monkeypatch):
         from neural_mi.analysis.sweep import _joint_marginal_difference
@@ -244,3 +235,53 @@ class TestJointMarginalDifference:
                 joint_key="j_key", marginal_key="m_key",
             )
         assert not any(issubclass(w.category, UserWarning) for w in caught)
+
+
+class TestGridValues:
+    """Each sweep_grid value is the values to run: an iterable gives one
+    configuration per item and anything else is one fixed value."""
+
+    @staticmethod
+    def _data():
+        return nmi.generators.generate_correlated_gaussians(200, 2, 1.0, use_torch=False, seed=0)
+
+    @pytest.mark.parametrize('values', [
+        [4, 8], (4, 8), np.array([4, 8]), torch.tensor([4, 8]), (d for d in [4, 8]), range(4, 9, 4)],
+        ids=['list', 'tuple', 'array', 'tensor', 'generator', 'range'])
+    def test_every_iterable_gives_one_configuration_per_value(self, values):
+        x, y = self._data()
+        r = nmi.run(x, y, mode='sweep', sweep_grid={'embedding_dim': values},
+                    training=nmi.Training(n_epochs=1), show_progress=False)
+        assert r.dataframe['embedding_dim'].tolist() == [4, 8]
+
+    def test_a_single_value_fixes_the_setting(self):
+        x, y = self._data()
+        r = nmi.run(x, y, mode='sweep', sweep_grid={'embedding_dim': 8, 'run_id': range(2)},
+                    training=nmi.Training(n_epochs=1), show_progress=False)
+        assert r.dataframe['embedding_dim'].tolist() == [8]
+        assert r.runs['embedding_dim'].tolist() == [8, 8]
+
+    def test_a_string_is_one_value_and_not_its_letters(self):
+        x, y = self._data()
+        r = nmi.run(x, y, mode='sweep', sweep_grid={'embedding_model': 'mlp', 'embedding_dim': [4, 8]},
+                    training=nmi.Training(n_epochs=1), show_progress=False)
+        assert len(r.dataframe) == 2
+
+    def test_a_dict_is_one_value(self):
+        x, y = self._data()
+        r = nmi.run(x, y, mode='sweep', estimator='smile',
+                    sweep_grid={'estimator_params': {'clip': 5.0}, 'embedding_dim': [4, 8]},
+                    training=nmi.Training(n_epochs=1), show_progress=False)
+        assert len(r.dataframe) == 2
+
+    def test_an_empty_value_list_is_refused(self):
+        x, y = self._data()
+        with pytest.raises(ValueError, match="holds no values"):
+            nmi.run(x, y, mode='sweep', sweep_grid={'embedding_dim': []},
+                    training=nmi.Training(n_epochs=1), show_progress=False)
+
+    def test_a_grid_that_is_not_a_dict_is_refused(self):
+        x, y = self._data()
+        with pytest.raises(TypeError, match="must be a dict"):
+            nmi.run(x, y, mode='sweep', sweep_grid=[('embedding_dim', [4, 8])],
+                    training=nmi.Training(n_epochs=1), show_progress=False)

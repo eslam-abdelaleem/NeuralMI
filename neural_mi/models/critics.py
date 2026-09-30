@@ -22,6 +22,45 @@ def _device_of(x) -> torch.device:
     return (x[0] if isinstance(x, (tuple, list)) else x).device
 
 
+# The most values one block of pair activations may hold: rows of the score
+# matrix times N pairs times the head's hidden width. A training batch of a few
+# hundred samples fits in one block and a large evaluation set in a few dozen.
+_PAIR_BLOCK_ELEMENTS = 2 ** 24
+
+
+def _is_plain_mlp(net) -> bool:
+    """An MLP whose first module is a linear layer applied to the whole input."""
+    network = getattr(net, 'network', None)
+    return (isinstance(network, nn.Sequential) and len(network) > 0
+            and isinstance(network[0], nn.Linear) and hasattr(net, 'output_layer'))
+
+
+def _score_pairs(mlp: nn.Module, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """``mlp([a_i, b_j])`` for every pair, as an ``(len(a), len(b))`` matrix.
+
+    The first layer is affine, so its value on a pair is the layer applied to
+    ``[a_i, 0]`` plus the layer applied to ``[0, b_j]`` minus one bias. Both
+    sides pass through that layer once and together, which also runs a
+    spectral norm's power iteration once per call. The rest of the network runs
+    on the pair sums in blocks of at most ``_PAIR_BLOCK_ELEMENTS`` values.
+    """
+    first, rest = mlp.network[0], mlp.network[1:]
+    n_a, n_b = a.shape[0], b.shape[0]
+    both = torch.cat([torch.cat([a, a.new_zeros(n_a, b.shape[1])], dim=1),
+                      torch.cat([b.new_zeros(n_b, a.shape[1]), b], dim=1)], dim=0)
+    hidden = first(both)
+    h_a, h_b = hidden[:n_a], hidden[n_a:]
+    if first.bias is not None:
+        h_b = h_b - first.bias
+    width = hidden.shape[1]
+    rows = max(1, _PAIR_BLOCK_ELEMENTS // max(1, n_b * width))
+    blocks = []
+    for start in range(0, n_a, rows):
+        pre = h_a[start:start + rows].unsqueeze(1) + h_b.unsqueeze(0)
+        blocks.append(mlp.output_layer(rest(pre.reshape(-1, width))).view(-1, n_b))
+    return torch.cat(blocks, dim=0)
+
+
 def _slice_batch(x, start: int, end: int):
     """Slice the leading (batch) dimension of x, whether x is a plain
     tensor or a tuple/list of tensors sharing that dimension."""
@@ -214,8 +253,11 @@ class HybridCritic(BaseCritic):
             self.max_n_batches, self.use_variational
         )
 
-        # 2. Score all N² pairs in row-chunks so the full (N², 2d) pair tensor
-        #    is never materialized at once, same pattern as ConcatCritic.forward.
+        # 2. Score all N² pairs. The head built by build_critic is a plain MLP
+        #    and takes the fast route; any other head scores pairs in row-chunks
+        #    so the full (N², 2d) pair tensor is never materialized at once.
+        if _is_plain_mlp(self.decision_head):
+            return _score_pairs(self.decision_head, x_embedded, y_embedded), total_kl_loss
         chunk_rows = max(1, self.max_n_batches // batch_size)
         scores = torch.zeros(batch_size, batch_size, device=x_embedded.device)
         y_exp = y_embedded.unsqueeze(0)  # (1, N, d), shared view, no copy
@@ -265,6 +307,9 @@ class ConcatCritic(BaseCritic):
         batch_size = x.size(0)
         x_flat = x.view(batch_size, -1)
         y_flat = y.view(batch_size, -1)
+        if not self.use_variational and _is_plain_mlp(self.embedding_net):
+            return (_score_pairs(self.embedding_net, x_flat, y_flat),
+                    torch.tensor(0.0, device=x.device))
 
         # Row-wise chunking: process chunk_rows rows of x per iteration.
         # Each chunk contains chunk_rows * N pairs, bounding peak memory to

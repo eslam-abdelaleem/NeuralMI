@@ -38,12 +38,12 @@ class TestShiftFamily:
 
 class TestMixedPairSampleRateOk:
     def test_true_when_regular_side_has_sample_rate(self):
-        assert mixed_pair_sample_rate_ok('continuous', {'sample_rate': 100.0}, 'spike', {})
-        assert mixed_pair_sample_rate_ok('spike', {}, 'categorical', {'sample_rate': 50.0})
+        assert mixed_pair_sample_rate_ok('continuous', {'sample_rate': 100.0}, {})
+        assert mixed_pair_sample_rate_ok('spike', {}, {'sample_rate': 50.0})
 
     def test_false_when_missing(self):
-        assert not mixed_pair_sample_rate_ok('continuous', {}, 'spike', {})
-        assert not mixed_pair_sample_rate_ok('continuous', None, 'spike', None)
+        assert not mixed_pair_sample_rate_ok('continuous', {}, {})
+        assert not mixed_pair_sample_rate_ok('continuous', None, None)
 
 
 def test_seconds_to_samples():
@@ -496,3 +496,18 @@ class TestTheTwoRoutesReadTheSameClock:
         xt_late = np.arange(5, 60, 1 / 100.0)
         x_late = np.sin(xt_late)[:, None]
         assert try_build_shift_windows_dataset(x_late, y, self._params(xt_late, yt)) is None
+
+
+@pytest.mark.parametrize('step_size, expected', [(None, 0.05), (0.5, 0.025)])
+def test_the_spike_rigorous_grid_reads_the_step_like_every_other_path(step_size, expected):
+    """An unset step is one window. Filling it in with window_size before the
+    WindowManager sees it would read 0.05 as 5% of a 0.05 s window."""
+    from neural_mi.data.shift_windowing import spike_shift_grid_info
+    rng = np.random.default_rng(0)
+    spikes = [np.sort(rng.uniform(0, 10.0, 200)) for _ in range(3)]
+    params = {'processor_params_x': {'window_size': 0.05, 'step_size': step_size}}
+    n, _, window, step = spike_shift_grid_info(spikes, spikes, params)
+    assert window == 0.05 and step == pytest.approx(expected)
+    # The shift margin and the spikes' own extent take a few windows off the
+    # count. A step read as a fraction a second time would multiply it by 20.
+    assert n == pytest.approx(10.0 / expected, rel=0.1)

@@ -5,13 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neural_mi"
 version = "1.0.0"
-description = "A Python toolbox for rigorous mutual information estimation in neuroscience"
+description = "A Python toolbox for information-theoretic analysis of neural data at scale"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
     { name = "Eslam Abdelaleem" },
+    { name = "Leo Wood" },
+    { name = "Audrey Sederberg" },
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -24,14 +26,17 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
+# Each floor is the first release that works with numpy 1.26 and numpy 2. torch
+# needs 2.4 for nn.RMSNorm. CI runs the test suite with every package at its floor
+# (the floors job in .github/workflows/tests.yml) and at its latest release.
 dependencies = [
-    "matplotlib>=3.5.0",
-    "numpy>=1.23.0",
-    "pandas>=1.4.0",
-    "scipy>=1.9.0",
-    "seaborn>=0.12.0",
-    "statsmodels>=0.13.0",
-    "torch>=2.0.0",
+    "matplotlib>=3.8.4",
+    "numpy>=1.26.0",
+    "pandas>=2.2.2",
+    "scipy>=1.13.0",
+    "seaborn>=0.13.2",
+    "statsmodels>=0.14.2",
+    "torch>=2.4.0",
     "tqdm>=4.60.0",
 ]
 
@@ -41,11 +46,11 @@ dependencies = [
 # PCA, t-SNE and UMAP projections of the learned embeddings. neural_mi.visualize
 # imports both packages only when one of those plots is drawn.
 viz = [
-    "scikit-learn>=1.0.0",
-    "umap-learn>=0.5.0",
+    "scikit-learn>=1.4.2",
+    "umap-learn>=0.5.6",
 ]
 # Pretrained image networks as encoders (embedding_model='pretrained_backbone').
-vision = ["torchvision>=0.15.0"]
+vision = ["torchvision>=0.19.0"]
 # Running the tutorial notebooks. benchmark-mi provides the KSG estimator that
 # notebook 01 compares against, and it brings in JAX, a large install.
 tutorials = [

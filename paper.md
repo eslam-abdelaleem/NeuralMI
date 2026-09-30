@@ -1,5 +1,5 @@
 ---
-title: 'NeuralMI: A Python Toolbox for Rigorous Mutual Information Estimation in Neuroscience'
+title: 'NeuralMI: Information-theoretic analysis of neural data at scale'
 tags:
   - Python
   - neuroscience
@@ -10,134 +10,188 @@ tags:
 authors:
   - name: Eslam Abdelaleem
     orcid: 0009-0006-9429-3589
-    affiliation: 1
+    affiliation: 1,2
+  - name: Leo Wood
+    orcid: 0000-0003-1829-7781
+    affiliation: 3
+  - name: Audrey Sederberg
+    orcid: 0000-0003-4458-3773
+    affiliation: 1,2
 affiliations:
-  - name: Georgia Institute of Technology
+  - name: School of Physics, Georgia Institute of Technology
     index: 1
-date: 10 March 2026
+  - name: School of Psychological and Brain Sciences, Georgia Institute of Technology
+    index: 2
+  - name: Princeton Neuroscience Institute
+    index: 3
+date: 30 September 2026
 bibliography: paper.bib
 ---
 
 # Summary
 
-`NeuralMI` is a Python library for estimating mutual information (MI) from
-neural recordings with neural-network-based estimators. MI measures how much
-knowing one variable narrows down another, in bits, and it captures linear and
-nonlinear dependencies alike. Because it assumes no form for the relationship,
-it applies to the high-dimensional, nonlinear signals of modern neuroscience.
+Neural signals depend on one another and on the world in ways that are rarely
+linear. Information theory measures that dependence in bits whatever its form.
+It also asks questions that simple linear measures like variances and correlations have no form for: how much a population's
+past predicts its own future, which of two areas leads the other and by how
+long, how precisely spikes must be timed to carry a message, what one signal
+adds about another beyond what a third already says, and what a pair of signals
+carries that neither carries alone. Each of these questions is answered by an
+information quantity estimated from recorded samples.
 
-Every analysis goes through one function, `nmi.run()`. It accepts continuous
-recordings, spike times and categorical labels, each on its own clock, and
-returns a `Results` object with the estimates, their spread across repeats and
-the diagnostics of every trained network. Ten analysis modes cover a single estimate
-(`estimate`), a hyperparameter grid (`sweep`), bias-corrected estimation with a
-confidence interval (`rigorous`), temporal lags (`lag`), spike-timing precision
-(`precision`), conditional MI (`conditional`), transfer entropy (`transfer`),
-interaction information (`interaction`), all-to-all channel matrices
-(`pairwise`) and directions of shared structure (`dimensionality`). Eleven named
-quantities, from active information storage to the directed information rate,
-are each one choice of time offsets in a single conditional MI,
-$I(A;B \mid C)$. The `rigorous` mode implements the subsampling-and-extrapolation
-bias correction of @abdelaleem2025accurate, and the `dimensionality` mode builds
-on the cross-covariance spectral method of @gulati2026mutual.
+Those estimates have been hard to obtain from modern recordings. Classical
+estimators need a number of samples that grows quickly with the number of
+dimensions they are given. Recordings now reach thousands of channels. At that
+size the classical estimators need more data than an experiment can collect.
+Information-theoretic analysis has therefore stayed with a few channels at a
+time.
+
+`NeuralMI` brings these analyses to the scale of modern neuroscience. It
+estimates mutual information (MI) with neural networks that learn a compact
+embedding of each signal that information is estimable in. This allows for accurate estimation at large dimensional setups that were not possible before.
+The same estimation process can answer a whole family of questions like what we asked above. Also, spike times, continuous recordings and behavioural labels each pass through an encoder suited to their modality and are compared in the same unit.
 
 # Statement of need
 
-Classical
-non-parametric estimators such as the $k$-nearest-neighbour method of
-@kraskov2004estimating need samples in proportion to the dimensions they are
-handed, and past roughly ten dimensions no recording of realistic length is
-enough. Neural-network-based estimators [@oord2018representation;
-@song2020understanding] learn a low-dimensional embedding of each variable and
-estimate the information in it, so the samples they need follow the latent
-structure of the data and not the channel count it arrived on. They bring
-problems of their own. They are lower bounds with a ceiling set by how many
-samples are scored together, and with finite data they carry a systematic bias
-of order $1/N$ that can be large at the sample sizes of typical experiments.
-Existing implementations, scattered across individual paper repositories, give
-point estimates only, with no bias correction, no confidence intervals, no
-handling of neural data formats and no common interface across analyses.
+Estimating MI from finite samples is hard in general and especially hard for high-dimensional systems. Simple approaches like binning need a number of
+samples that grows exponentially with the dimension. Classic approaches like the $k$-nearest-neighbour
+estimator of @kraskov2004estimating lose accuracy past about ten dimensions
+[@holmes2019estimation]. Neural estimators [@belghazi2018mutual;
+@oord2018representation; @poole2019variational; @song2020understanding] train a
+network to map each variable to a low-dimensional embedding in which the
+information can be estimated. The samples they need then follow the latent
+structure of the data and not the number of channels it arrived on
+[@abdelaleem2025accurate]. \autoref{fig:sweep} shows the difference on two
+populations of a thousand channels each.
 
-`NeuralMI` addresses these gaps in one package built around the workflow of
-experimental neuroscience. First, it corrects the finite-sample bias by training
-on nested subsets of the data and extrapolating along the predicted $1/N$ trend
-[@abdelaleem2025accurate], and it reports the corrected value with a confidence
-interval and a verdict on whether the extrapolation can be trusted. Second, it
-ships processors for the three data formats most common in systems
-neuroscience: continuous time series (LFP, EEG, calcium imaging, kinematics),
-spike times, and categorical behavioural states. Streams on different clocks
-are aligned on real time, and the window grid is redrawn at a random offset in
-every epoch, so the network sees new windows without a sliding-window array
-ever being stored. Third, the default train/test split is blocked, with a gap
-between the blocks. Overlapping windows are near copies of one another, and a
-random split that places copies on both sides inflates the estimate. Fourth,
-every estimate reports the ceiling of the partition it was evaluated on, every
-difference quantity reports how much component error it inherits, and every
-warning the library can emit is documented by its text.
+![Two populations of 1000 channels share four bits through ten latent
+dimensions. NeuralMI recovers the four bits by a thousand samples. The
+$k$-nearest-neighbour estimator is still below two bits at five
+thousand.\label{fig:sweep}](docs/source/_static/sample_sweep.png)
 
-# Functionality
 
-**Data.** `Processing` selects a processor for each stream (`'continuous'`,
-`'spike'` or `'categorical'`) and its window settings, and each stream becomes
-a `(n_samples, n_channels, window_size)` tensor. `create_dataset` aligns a pair
-or any number of named streams on real time, honouring each stream's sample
-rate or time vector, and keeps the windows in which every stream has data.
+Every quantity below can be built from the conditional MI $I(A;B \mid C)$
+between chosen signals at chosen time offsets. Using 
+the chain rule we can write each conditional quantity as a difference of two MI estimates that we know how to estimate properly:
+$$
+I(A;B \mid C) = I([A,C];B) - I(C;B).
+$$
 
-**Estimators and models.** InfoNCE [@oord2018representation] has low variance
-and is capped at $\log K$, where $K$ is the number of samples scored together.
-SMILE [@song2020understanding] clips the density ratio, has no such cap and is
-noisier. Eleven embedding architectures, from an MLP to recurrent,
-convolutional, transformer and pretrained image encoders, and three critics are
-built in, and custom encoders and critics are accepted.
+Using this decomposition, we can estimate quantities like active information storage which asks what a signal's
+past says about its present, transfer entropy that asks what one signal's past adds
+about another's next step once the second signal's own past is known, interaction
+information that compares what a pair of signals carries together with what each
+carries alone, etc. 
 
-**Training and the reported number.** The data are split into a training and a
-held-out partition. The held-out MI is smoothed across epochs, and its peak
-selects the epoch whose weights are kept. The reported value is the MI on the
-training partition at that epoch.
+\autoref{fig:taxonomy} shows twelve quantities as patterns of time offsets over
+this one primitive. An estimator that makes MI work at scale therefore makes the
+whole family work at scale.
 
-**Bias correction.** `mode='rigorous'` trains networks on the data cut into
-$\gamma = 1, \ldots, 10$ equal parts and fits the estimate against $\gamma$ by
-weighted least squares, following
-$I_{\text{est}} \approx I_{\text{true}} + a\gamma/N$. The fit keeps the range of
-$\gamma$ over which a quadratic term is statistically indistinguishable from
-zero, and its intercept at $\gamma = 0$ is the corrected estimate. Four checks,
-on the number of values of $\gamma$ left, the linear region, the leverage of
-$\gamma = 1$ and the estimator's ceiling, decide whether the result is reliable.
+![Twelve information quantities as patterns of time offsets. Each row marks the
+time steps of $X$, $Y$ and $W$ that play $A$, $B$ and the conditioned-out $C$ in
+$I(A;B \mid C)$.\label{fig:taxonomy}](docs/source/_static/taxonomy.png)
 
-**Quantities.** Each named quantity is $I(A; B \mid C)$ for one pattern of time
-offsets. A conditional quantity is computed through the chain rule,
-$I(A; B \mid C) = I([A, C]; B) - I(C; B)$, and reports an amplification factor,
-the summed size of the two components relative to the result. A small
-difference of two large estimates inherits their errors many times over, and the
-factor measures by how much.
 
-**Dimensionality.** `mode='dimensionality'` trains a Hybrid Critic `n_splits`
-times on the same data, rotates each fit's embeddings by a singular value
-decomposition of their cross-covariance so that the directions are ordered by
-shared variance, and reports the directions that reproduce across every pair of
-fits. It also reports two Participation Ratios (PR) of the singular values
-$\sigma_i$: $\text{PR}_{\text{eig}} = (\sum_i \sigma_i^2)^2 / \sum_i \sigma_i^4$
-and $\text{PR}_{\text{singular}} = (\sum_i \sigma_i)^2 / \sum_i \sigma_i^2$.
+# State of the field
 
-**Other analyses.** `mode='lag'` sweeps a time offset between the streams.
-`mode='precision'` freezes a trained network and degrades the timing of its
-input at increasing resolutions $\tau$, and it reports the $\tau$ at which the
-information falls below a set fraction of its baseline. `mode='pairwise'` builds
-all-to-all channel matrices. Permutation tests build a null distribution by
-shifting X circularly in time while Y and W stay in place.
+Several toolboxes estimate information-theoretic quantities from neural data.
+JIDT [@lizier2014jidt] and IDTxl [@wollstadt2019idtxl] compute transfer entropy,
+active information storage and related measures and infer networks from them.
+NIT [@maffulli2022nit] estimates information in small populations with
+limited-sampling bias corrections. Frites [@combrisson2022group] builds
+group-level statistics on the Gaussian-copula estimator of @ince2017statistical.
+dit [@james2018dit] works with discrete distributions. Their estimators count, find neighbours or assume Gaussian dependence. Each of these degrades or becomes
+an approximation as the number of channels grows.
 
-**Documentation.** Five tutorial notebooks, read in order, cover what mutual
-information detects that correlation misses and where classical estimators
-fail, what a single estimate is and what governs its accuracy, the catalogue of
-quantities and their units, what processing and splitting do to a recording,
-with two real hippocampal sessions [@grosmark2016diversity], and how to choose
-the estimator and the architecture. Every quantitative claim in them is checked
-against an exact value from a generator that knows the answer or against a
-control measured on the same recording. Seven reference documents cover usage,
-every parameter, the theory, every warning, and the internals.
+Neural estimators of MI are mostly released as code accompanying a paper. They are often used as an objective to obtain better representations. Only recently was it shown how to use them as accurate estimators with proper regularisation, stopping rules and error bars [@abdelaleem2025accurate]. Such literature rarely handles the formats, windowing, splits, units or bias of neural recordings.
+
+The existing toolboxes are organised around estimators computed in one pass. A
+neural estimate comes out of a procedure: a train and test split, an
+epoch-selection rule, repeated fits and an extrapolation over subsets of the
+data. Adding it to one of them would place a training loop and its diagnostics
+under an interface designed for one-pass estimators. `NeuralMI` is built around
+that loop.
+
+# Software design
+
+**Encoders for each modality.** Each stream is cut into windows on its own
+clock. The windows of all streams are aligned on one grid in real time
+(\autoref{fig:alignment}). The grid starts at a new random offset in every epoch
+so that the network sees new windows without a sliding-window array ever being
+stored. Each side of an estimate has its own encoder chosen for its modality:
+fully connected, convolutional in one or two dimensions, recurrent,
+temporal-convolutional, transformer, linear recurrent, set-based or a pretrained
+image network. Custom encoders and critics plug in through the same interface.
+Whatever the encoders, the estimate is information in bits. Spike trains,
+positions and trial labels are then compared on the same ruler.
+
+![Three streams on their own clocks (spike times, a position trace with a gap
+and trial labels) cut into windows aligned in time. Each stream then passes
+through its own encoder.\label{fig:alignment}](docs/source/_static/alignment.png){ width=90% }
+
+**Two ways in.** The quantities are functions, one per question, grouped by the
+number of signals they involve. `active_information_storage` and
+`predictive_information` take one signal. `instantaneous_mi`, `block_mi`,
+`cross_predictive_information`, `mi_rate`, `instantaneous_exchange`,
+`directed_information_rate` and `transfer_entropy` take two.
+`conditional_transfer_entropy` and `interaction_information` take three. Each
+builds its time offsets from the raw series and returns the estimate. The modes
+of `nmi.run(x, y, mode=...)` cover the analyses that are not a single quantity.
+
+- `sweep` repeats an estimate and runs it over a grid of settings.
+- `rigorous` corrects the finite-sample bias.
+- `lag` scans the MI over time shifts between the two signals.
+- `precision` measures how the MI falls as spike times or values are coarsened.
+- `pairwise` estimates the MI between every pair of channels.
+- `dimensionality` finds the smallest embedding that carries the shared
+  information [@gulati2026mutual].
+
+**One result.** Every quantity and every mode returns the same `Results` object:
+one row per trained network, one row per configuration with the mean and spread
+over repeats, and the diagnostics of the analysis. Repeats and grids of settings
+work the same way everywhere. Settings are validated before any training. A
+setting that would have no effect is refused or named in a warning.
+
+**A number that can be reported.** Neural estimators are lower bounds capped at
+the logarithm of the number of samples scored together [@mcallester2020formal].
+`NeuralMI` trains each network on one partition of the data and evaluates both
+partitions after every epoch. The peak of the smoothed held-out curve selects
+the epoch. The training-side estimate at that epoch is reported with its ceiling
+[@abdelaleem2025accurate]. The default split holds out contiguous blocks with a
+gap because overlapping windows are near copies of one another.
+`mode='rigorous'` estimates the MI on the data cut into $\gamma = 1, \ldots, 10$
+equal parts and extrapolates linearly in $\gamma$ to infinite data
+[@strong1998entropy; @holmes2019estimation; @abdelaleem2025accurate]. A
+quantity built as a difference of estimates reports an amplification factor for
+the error it inherits from them. A quantity that cannot be negative is reported as 0 when it
+comes out negative and is left out of averages.
+
+**Reproducibility.** Each task seeds itself from the call's seed and its
+position in the grid. A result is the same at any number of worker processes.
+Warnings raised in workers are relayed to the caller's line and shown once per
+call or notebook cell with a count. Every message the library can print is documented by its
+text. A test checks the documentation against the code in both directions.
+
+# Research impact statement
+
+`NeuralMI` implements the estimation and bias-correction procedure of
+@abdelaleem2025accurate, the dimensionality analysis of @gulati2026mutual and
+the variational encoders and decoders of @abdelaleem2025deep. It opens the door to answering questions that were not possible at that scale before. Five tutorial
+notebooks check every quantitative claim against an exact value from a generator
+that knows the answer. More than 1,500 tests, a documentation site and seven
+reference documents come with the package. `NeuralMI` is released under
+the MIT licence.
+
+# AI usage disclosure
+
+Generative AI (Anthropic's Claude, Google's Jules) was used under the authors' direction and based on their previously written code to
+write and refactor code, tests, documentation, and tutorials. The authors reviewed its output. Correctness is checked against quantities that can
+be computed exactly. The library generates data whose MI is known in closed form
+(correlated Gaussians, nonlinear maps of Gaussian latents, discrete joint
+distributions and jointly Gaussian time series with shared latents). Its tests
+and tutorials compare every estimator and every quantity against those exact
+values.
 
 # Acknowledgements
-
-*Acknowledgements and funding sources to be added prior to submission.*
 
 # References

@@ -62,14 +62,14 @@ def _literal(cell):
 TABLES = _parameter_tables()
 CONFIGS = [cfg.Model, cfg.Training, cfg.Split, cfg.Estimator, cfg.Output, cfg.Processing,
            cfg.Rigorous, cfg.Precision, cfg.Lag, cfg.Transfer, cfg.Conditional, cfg.Interaction,
-           cfg.Pairwise, cfg.Dimensionality, cfg.Sweep]
+           cfg.Pairwise, cfg.Dimensionality]
 # Config fields stored under another name in the parameter schema.
 SCHEMA_NAME = {'Split': {'mode': 'split_mode', 'gap_fraction': 'split_gap_fraction'},
                'Estimator': {'name': 'estimator_name', 'params': 'estimator_params'},
                'Output': {'units': 'output_units'}}
 MODE_OF = {'Rigorous': 'rigorous', 'Precision': 'precision', 'Lag': 'lag', 'Transfer': 'transfer',
            'Conditional': 'conditional', 'Interaction': 'interaction', 'Pairwise': 'pairwise',
-           'Dimensionality': 'dimensionality', 'Sweep': 'sweep'}
+           'Dimensionality': 'dimensionality'}
 
 
 @pytest.mark.parametrize('cls', CONFIGS, ids=lambda c: c.__name__)

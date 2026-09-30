@@ -111,18 +111,18 @@ def _as_tensor(data) -> torch.Tensor:
     if _is_spike_input(data):
         raise TypeError(
             "Raw spike times were passed to a quantity that indexes by integer "
-            "time offset, which needs a regularly sampled (n_timepoints, "
+            "time offset. That needs a regularly sampled (n_timepoints, "
             "n_channels) series. Build one by binning at the window size and "
-            "keeping silent windows, so the time axis stays contiguous:\n"
+            "keeping silent windows to keep the time axis contiguous:\n"
             "    ds = create_dataset(x_data=spikes, processor_type_x='spike',\n"
             "            processor_params_x={'bin_size': b, 'window_size': b,\n"
             "                                'normalize_bins': False,\n"
             "                                'drop_empty_windows': False})\n"
             "    series = ds.x_data.squeeze(-1)   # (n_bins, n_neurons)\n"
             "Dropping silent windows would leave consecutive indices more than "
-            "one bin apart, so the offsets would not be the ones you asked for. "
-            "block_mi is the exception: it does real windowing, so it takes "
-            "spike times directly via processing=Processing(x='spike', y='spike')."
+            "one bin apart and move the offsets away from the ones you asked for. "
+            "block_mi windows the data itself and takes spike times directly "
+            "through processing=Processing(x='spike', y='spike')."
         )
     return torch.as_tensor(np.asarray(data), dtype=torch.float32)
 
@@ -232,14 +232,14 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
             t = t.unsqueeze(-1)
         if t.ndim != 2:
             raise ValueError(
-                f"Process {name!r} has shape {tuple(t.shape)}; expected "
+                f"Process {name!r} has shape {tuple(t.shape)}. Expected "
                 f"(n_timepoints, n_channels)."
             )
         tensors[name] = t.to(dtype)
         lengths.add(t.shape[0])
     if len(lengths) > 1:
         raise ValueError(
-            f"All processes must share a timepoint count; got {sorted(lengths)}. "
+            f"All processes must share a timepoint count and have {sorted(lengths)}. "
             f"Truncate them to a common length before building offsets."
         )
 
@@ -247,8 +247,8 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
     unknown = requested - set(tensors)
     if unknown:
         raise ValueError(
-            f"spec references {sorted(unknown)}, which data does not provide "
-            f"(available: {sorted(tensors)})."
+            f"spec references {sorted(unknown)}. data provides only "
+            f"{sorted(tensors)}."
         )
 
     stride = validate_stride(stride, 'build_offset_arrays')
@@ -259,7 +259,7 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
     n_positions = total - hi - start
     if n_positions <= 0:
         raise ValueError(
-            f"Offsets span {lo} to {hi}, which leaves no valid samples in a series "
+            f"Offsets span {lo} to {hi} and leave no valid samples in a series "
             f"of {total} timepoints. Shorten the offset range or use a longer recording."
         )
     # Reference positions are start, start+stride, ... within n_positions, so
@@ -285,9 +285,9 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
             counts = {v: len(o) for v, o in by_process.items()}
             raise ValueError(
                 f"Group {group_name!r} gives different offset counts per process "
-                f"({counts}), so the group has no single window length. Give each "
-                f"process the same number of offsets, or split the group across the "
-                f"dual-branch conditional path."
+                f"({counts}) and has no single window length. Give each process the "
+                f"same number of offsets or split the group across the dual-branch "
+                f"conditional path."
             )
         out[group_name] = torch.cat(blocks, dim=1)
 
@@ -357,8 +357,8 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
         # the future" convention: advancing X's clock by `lag` is equivalent
         # to comparing X's past against Y's present.
         logger.info(
-            f"Mixed-modality lag: X is 'spike', Y is '{y_processor_type}'. "
-            f"Shifting X's spike times by +{lag}s; Y is left at its original times."
+            f"Mixed-modality lag with X 'spike' and Y '{y_processor_type}'. X's spike "
+            f"times are shifted by +{lag}s and Y stays at its original times."
         )
         x_shifted = [spikes + lag for spikes in x_data]
         return x_shifted, y_data
@@ -368,8 +368,8 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
         # spike times need shifting; X is unaffected in both sub-cases).
         if not x_is_spike:
             logger.info(
-                f"Mixed-modality lag: Y is 'spike', X is '{x_processor_type}'. "
-                f"Shifting Y's spike times by -{lag}s; X is left at its original times."
+                f"Mixed-modality lag with Y 'spike' and X '{x_processor_type}'. Y's spike "
+                f"times are shifted by -{lag}s and X stays at its original times."
             )
         y_shifted = [spikes - lag for spikes in y_data]
         return x_data, y_shifted
@@ -399,16 +399,15 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
             # handled: pick the documented reading and say so.
             if x_data.ndim >= 3:
                 logger.warning(
-                    f"Lag on pre-processed data with shape {x_data.shape}: axis 0 is "
-                    f"windows, not timepoints, so lag={lag} shifts by {lag} WINDOWS "
-                    f"({lag} x step_size timepoints), not {lag} samples. Pass unwindowed "
-                    f"data with processing=Processing(x='continuous', ...) if you want "
-                    f"the lag in timepoints."
+                    f"Lag on pre-processed data with shape {x_data.shape}. Axis 0 counts "
+                    f"windows. lag={lag} shifts by {lag} windows ({lag} x step_size "
+                    f"timepoints). Pass unwindowed data with "
+                    f"processing=Processing(x='continuous', ...) for a lag in timepoints."
                 )
             else:
                 logger.info(
-                    f"Lag on pre-processed data with shape {x_data.shape}: axis 0 is "
-                    f"timepoints, so lag={lag} shifts by {lag} samples."
+                    f"Lag on pre-processed data with shape {x_data.shape}. Axis 0 counts "
+                    f"timepoints and lag={lag} shifts by {lag} samples."
                 )
             lag_samples = int(lag)
         elif sample_rate is not None:
@@ -420,8 +419,8 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
                 f"Lag units for '{y_processor_type}' data are ambiguous without a sample_rate. "
                 f"Treating lag={lag} as samples (index offset). "
                 f"To specify lag in seconds, set 'sample_rate' in Processing(x_params=...). "
-                f"Note: spike data always uses seconds, so mixing processor types without "
-                f"sample_rate will produce inconsistent lag scales."
+                f"Spike data always use seconds. Mixing processor types without "
+                f"sample_rate gives inconsistent lag scales."
             )
             lag_samples = int(lag)
 
@@ -438,9 +437,9 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
 
     raise ValueError(
         f"_shift_data cannot apply a lag to y_processor_type={y_processor_type!r}. "
-        f"Expected 'spike', 'continuous', 'categorical', or None (pre-processed). "
+        f"Expected 'spike', 'continuous', 'categorical' or None (pre-processed). "
         f"Returning the data unshifted would report a lag analysis that never "
-        f"applied a lag, so this raises instead."
+        f"applied a lag."
     )
 
     
@@ -548,7 +547,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             raise ValueError(
                 f"{_given_y[0]} was set with critic_type='concat'. ConcatCritic "
                 f"scores the raw concatenated pair and has no separate embedding "
-                f"networks, so there is no Y-side encoder to configure. Switch to "
+                f"networks or Y-side encoder to configure. Switch to "
                 f"critic_type='separable' or 'hybrid'."
             )
         if shared_encoder:
@@ -560,18 +559,17 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         if spec_y['model_type'] == 'dual_branch' and not _y_custom:
             raise ValueError(
                 "embedding_model_y='dual_branch' is not a usable combination. "
-                "DualBranchEmbedding exists for a compound (tuple) X-role input, "
-                "and the Y role is always a single plain population."
+                "DualBranchEmbedding exists for a compound (tuple) X-role input. "
+                "The Y role is always a single plain population."
             )
     if (embedding_params.get('embedding_dim_y') is not None
             and spec_y['embedding_dim'] != spec_x['embedding_dim']
             and critic_type == 'separable'):
         raise ValueError(
             f"embedding_dim_y={spec_y['embedding_dim']} differs from "
-            f"embedding_dim={spec_x['embedding_dim']} under "
-            f"critic_type='separable', which scores a pair by taking the dot "
-            f"product of the two embeddings and therefore needs one width. "
-            f"critic_type='hybrid' concatenates them instead and accepts "
+            f"embedding_dim={spec_x['embedding_dim']}. critic_type='separable' "
+            f"scores a pair by the dot product of the two embeddings and needs "
+            f"one width. critic_type='hybrid' concatenates them and accepts "
             f"different widths."
         )
 
@@ -637,7 +635,10 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 # not accept regularisation kwargs it may know nothing about.
                 model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
                 model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-                model_kwargs['norm_layer'] = embedding_params.get('norm_layer', None)
+                # 'auto' is resolved to 'layer' by mode='dimensionality' for the
+                # hybrid critic. Everywhere else it means no normalisation.
+                norm = embedding_params.get('norm_layer', 'auto')
+                model_kwargs['norm_layer'] = None if norm in ('auto', 'none') else norm
         return EmbeddingModel, input_dim, model_kwargs
 
     Model_x, input_dim_x, model_kwargs = _resolve_side(spec_x, 'x')
@@ -674,9 +675,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     for Model_, unused in ((Model_x, None), (Model_y, None)):
         if not (bias_x and bias_y) and not getattr(Model_, 'zero_preserving', True):
             warnings.warn(
-                f"bias=False was requested, but {Model_.__name__} carries an "
-                f"input-independent additive term (a positional encoding, or biases "
-                f"baked into pretrained weights), so an all-zero input will not embed "
+                f"bias=False was requested and {Model_.__name__} carries an "
+                f"input-independent additive term (a positional encoding or biases "
+                f"baked into pretrained weights). An all-zero input will not embed "
                 f"to zero. The bias terms it does own are still removed.",
                 UserWarning, stacklevel=user_stacklevel(),
             )
@@ -696,9 +697,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             # receive it. Gating this on any other capability would report a bias
             # problem the class does not have.
             warnings.warn(
-                f"bias=False applies to the embedding layers, but "
+                f"bias=False applies to the embedding layers. "
                 f"{Model_.__name__}.__init__ does not accept a `bias` "
-                f"argument, so its layers keep their bias terms. Add `bias=True` to "
+                f"argument and its layers keep their bias terms. Add `bias=True` to "
                 f"the signature and pass it to the layers to support this.",
                 UserWarning, stacklevel=user_stacklevel(),
             )
@@ -738,8 +739,8 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         logger.warning(
             f"Large first embedding layer detected: input_dim_x={input_dim_x} x "
             f"hidden_dim={hidden_dim} = {first_layer_params:,} parameters. "
-            f"This may cause overfitting on small datasets. Consider reducing "
-            f"window_size, hidden_dim, or using a different embedding model."
+            f"It may overfit small datasets. A smaller window_size or hidden_dim or "
+            f"another embedding model avoids that."
         )
 
     # --- Critic Assembly ---
@@ -999,68 +1000,6 @@ def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[s
     return metrics
 
 
-def compute_regime_diagnostic(x: Union[np.ndarray, torch.Tensor],
-                              separable_threshold: float = 3.0) -> Dict[str, Any]:
-    """Cheap (no training), free-standing diagnostic: does the raw channel data
-    of one view look "separable" (each channel driven mostly by a single
-    underlying factor, a block/grouped correlation structure) or "entangled"
-    (mixed-selectivity. Every channel reflects several factors jointly)?
-
-    Not a dimensionality count and not wired into any other computation,
-    informational context only. Empirically, an isolated large ratio between
-    consecutive eigenvalues of the within-view channel correlation matrix
-    marks the separable case; a flat/gradual ratio curve marks the entangled
-    case. The default threshold (3.0) is a rough heuristic calibrated on
-    exactly two validated example cases (separable ~14-16x, genuine
-    joint/radial entangled ~1.7x). Treat it as a guide, not a precise
-    cutoff; ``peak_val`` is always returned alongside the label so a caller
-    can judge borderline cases directly. A mild nonlinearity (e.g. a
-    linear-projection-then-tanh) is not a fair "entangled" case and reads as
-    separable-like. This diagnostic responds to whether there is a clean
-    channel-to-factor grouping, not to nonlinearity as such (even a pure
-    rotation of independently-driven channels destroys that grouping and
-    reads as entangled-like).
-
-    Parameters
-    ----------
-    x : np.ndarray or torch.Tensor
-        Raw channel data for one view, shape ``(N, C)`` or ``(N, C, W)``. For
-        3-D input each ``(sample, window-position)`` pair is treated as an
-        independent observation of the ``C`` channels.
-    separable_threshold : float, optional
-        Peak consecutive-eigenvalue-ratio above which the regime is labeled
-        ``'separable-like'``. Defaults to 3.0.
-
-    Returns
-    -------
-    dict with keys ``'eigvals'``, ``'ratios'``, ``'peak_rank'``, ``'peak_val'``,
-    ``'regime'`` (``'separable-like'`` or ``'entangled-like'``).
-    """
-    if torch.is_tensor(x):
-        arr = x.detach().cpu().float().numpy()
-    else:
-        arr = np.asarray(x, dtype=np.float64)
-    if arr.ndim == 3:
-        arr = arr.transpose(0, 2, 1).reshape(-1, arr.shape[1])
-    if arr.shape[1] < 2:
-        raise ValueError(
-            f"compute_regime_diagnostic requires at least 2 channels, got shape {arr.shape}."
-        )
-
-    arr_c = arr - arr.mean(axis=0, keepdims=True)
-    corr = np.corrcoef(arr_c, rowvar=False)
-    eigvals = np.linalg.eigvalsh(corr)[::-1]
-    eigvals = np.clip(eigvals, 1e-8, None)
-    ratios = eigvals[:-1] / eigvals[1:]
-    peak_idx = int(np.argmax(ratios))
-    peak_val = float(ratios[peak_idx])
-    regime = 'separable-like' if peak_val >= separable_threshold else 'entangled-like'
-    return {
-        'eigvals': eigvals.tolist(), 'ratios': ratios.tolist(),
-        'peak_rank': peak_idx + 1, 'peak_val': peak_val, 'regime': regime,
-    }
-
-
 def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
                                  window_size: float, gap_fraction: float,
                                  path_label: str = "") -> bool:
@@ -1086,9 +1025,9 @@ def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
     min_gap_fraction = (window_size / (block * step)) if (block > 0 and step > 0) else float('inf')
     _where = f" ({path_label})" if path_label else ""
     logger.warning(
-        f"Blocked split may leak raw samples between train and test{_where}: "
-        f"gap_size={gap_size} windows x step={step} = {buffer:.3g} samples of "
-        f"buffer, but window_size={window_size}. Train and test windows can "
+        f"Blocked split may leak raw samples between train and test{_where}. "
+        f"gap_size={gap_size} windows x step={step} gives {buffer:.3g} samples of "
+        f"buffer against a window_size of {window_size}. Train and test windows can "
         f"share up to {window_size - buffer:.3g} samples. Increase "
         f"Split(gap_fraction=...) to at least {min_gap_fraction:.4f} "
         f"(currently {gap_fraction}) to eliminate this."

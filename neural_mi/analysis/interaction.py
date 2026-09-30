@@ -20,7 +20,7 @@ from neural_mi.data.shift_windowing import (SHIFT_PACK_CONCAT, SHIFT_PACK_FIRST,
                                             _REGULAR_GRID_PROCESSOR_TYPES)
 from neural_mi.analysis.conditional import _merge_raw_blocks
 from neural_mi.analysis.sweep import (combined_spread, ParameterSweep, _joint_marginal_difference,
-                                      amplification_factor)
+                                      warn_combination, amplification_factor)
 from neural_mi.logger import logger
 from neural_mi.embeddings_io import saved_paths, with_model_labels
 from neural_mi.utils import mi_report_units
@@ -210,33 +210,29 @@ def run_interaction_information(
             # mismatch here means something else is wrong -- always a hard
             # error (mirrors conditional.py's identical reasoning).
             raise ValueError(
-                "x_data, y_data, and w_data must have the same number of samples. "
-                f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(w_data.shape)}."
+                "x_data, y_data and w_data must have the same number of samples. Their "
+                f"shapes are {tuple(x_data.shape)}, {tuple(y_data.shape)} and {tuple(w_data.shape)}."
             )
         if x_data.shape[0] != w_data.shape[0]:
             if abs(x_data.shape[0] - w_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
                 min_n = min(x_data.shape[0], w_data.shape[0])
                 logger.warning(
-                    f"mode='interaction': x_data/y_data have {x_data.shape[0]} windows but w_data has "
-                    f"{w_data.shape[0]}; truncating all three to the shared first "
-                    f"{min_n}. **This is only "
-                    f"correct if the extra window is at an edge.** If it falls in "
-                    f"the middle, every window after it is paired with its "
-                    f"neighbour instead: measured once at index 2730 of 3332, that "
-                    f"misaligned 18% of the windows with no further warning. "
-                    f"Callers who reach this through nmi.run() are aligned by "
-                    f"window time beforehand and never see this; reaching it means "
-                    f"raw tensors were passed to the engine directly, where no "
-                    f"window times exist to align on. Pass arrays that already "
-                    f"agree in length if the ordering matters."
+                    f"mode='interaction': x_data and y_data have {x_data.shape[0]} windows and w_data "
+                    f"has {w_data.shape[0]}. All three are truncated to the first {min_n}. This is "
+                    f"correct only if the extra window is at an edge. A window missing in the "
+                    f"middle pairs every later window with its neighbour. Once, at index 2730 of "
+                    f"3332, that misaligned 18% of the windows. nmi.run() aligns the streams by "
+                    f"window time first and never reaches this. Reaching it means raw tensors were "
+                    f"passed to the engine directly without window times to align on. Pass arrays "
+                    f"that already agree in length if the ordering matters."
                 )
                 x_data = x_data[:min_n]
                 y_data = y_data[:min_n]
                 w_data = w_data[:min_n]
             else:
                 raise ValueError(
-                    "x_data, y_data, and w_data must have the same number of samples. "
-                    f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(w_data.shape)}."
+                    "x_data, y_data and w_data must have the same number of samples. Their "
+                    f"shapes are {tuple(x_data.shape)}, {tuple(y_data.shape)} and {tuple(w_data.shape)}."
                 )
         if x_data.shape[2] != w_data.shape[2]:
             if w_data.shape[2] == 1:
@@ -251,9 +247,9 @@ def run_interaction_information(
                     f"mode='interaction': x_data window size ({x_data.shape[2]}) and w_data window size "
                     f"({w_data.shape[2]}) differ by {abs(x_data.shape[2] - w_data.shape[2])} "
                     f"sample(s). Every processor emits window_size slots for a window of "
-                    f"window_size, so check that Processing(x_params=...) and Processing(w_params=...) "
-                    f"agree on window_size and sample_rate. Trimming both to the "
-                    f"shared start, length {min_w}, instead of raising."
+                    f"window_size. Check that Processing(x_params=...) and Processing(w_params=...) "
+                    f"agree on window_size and sample_rate. Both are trimmed to their first "
+                    f"{min_w} samples."
                 )
                 x_data = x_data[:, :, :min_w]
                 w_data = w_data[:, :, :min_w]
@@ -274,6 +270,7 @@ def run_interaction_information(
         joint_key="mi_xw_y", marginal_key="mi_x_y",
         is_proc_sweep=raw_deferred,
         marginal_base_params=marginal_x_bp,
+        reported=False,
     )
     mi_w_y, raw_w_y, _w_vals = _single_mi_mean(
         w_role, y_data, with_model_labels(marginal_w_bp, component='mi_w_y'), sweep_grid, n_workers,
@@ -288,6 +285,9 @@ def run_interaction_information(
         f"I(X;Y)={mi_x_y * _scale:.4f}, I(W;Y)={mi_w_y * _scale:.4f}, "
         f"II={ii * _scale:.4f} {_units}."
     )
+    warn_combination("Interaction information", ii, ("X,W;Y", mi_xw_y, 'mi_xw_y'),
+                     [("X;Y", mi_x_y, 'mi_x_y'), ("W;Y", mi_w_y, 'mi_w_y')],
+                     base_params, signed=True)
 
     return {
         'interaction_info': ii,

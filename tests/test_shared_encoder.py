@@ -93,6 +93,8 @@ def test_dimensionality_defaults_shared_encoder_true():
     results = nmi.run(
         x, mode='dimensionality',
         model=_MODEL, training=_TRAINING,
+        dimensionality=nmi.Dimensionality(n_splits=2, n_restarts=1, reference_dim=2,
+                                          embedding_dims=[1]),
         n_workers=1,
     )
     assert results is not None, "dimensionality mode returned None."
@@ -105,6 +107,8 @@ def test_dimensionality_shared_encoder_can_be_overridden():
         x, mode='dimensionality',
         model=Model(embedding_dim=4, hidden_dim=8, n_layers=1, shared_encoder=False),
         training=_TRAINING,
+        dimensionality=nmi.Dimensionality(n_splits=2, n_restarts=1, reference_dim=2,
+                                          embedding_dims=[1]),
         n_workers=1,
     )
     assert results is not None

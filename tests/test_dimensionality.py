@@ -1,663 +1,386 @@
-# tests/test_dimensionality.py
-"""Tests for run_dimensionality_analysis: the index split, the embedding
-history helpers, and the cross-run stability, near-degeneracy and
-ceiling-proximity checks."""
+"""mode='dimensionality': the MI against embedding dimension and where it saturates.
+
+The procedure is tested with a stand-in for the fitting step that returns known
+curves, so the grid, the early stop, the extension, the readings and the warnings
+are checked exactly and fast. One small real run checks the wiring end to end.
+"""
+import logging
+import math
 import warnings
-import pytest
+
+import matplotlib
+matplotlib.use('Agg')
 import numpy as np
+import pytest
 import torch
-from unittest.mock import patch
 
-import pandas as pd
+import neural_mi as nmi
+from neural_mi.analysis import dimensionality as dim
+from neural_mi.analysis.dimensionality import run_dimensionality_analysis
 
-from neural_mi.analysis.dimensionality import (
-    run_dimensionality_analysis,
-    _extract_embedding_history,
-    _strip_embeddings,
-    _compute_stability_report,
-    _group_adjacent,
-    _classify_regime,
-    _warn_if_near_ceiling,
-)
+BITS = math.log(2)          # one bit in nats
+TOTAL = 4 * BITS            # the fake curves carry 4 bits
 
 
-# ---------------------------------------------------------------------------
-# Helpers / minimal mocks
-# ---------------------------------------------------------------------------
+class FakeFits:
+    """Stands in for ``_fit``: every network reads ``curve(k, split, restart)``."""
 
-def _make_x(n=60, c=6, w=None):
-    """Return a small float32 Tensor of shape (n, c) or (n, c, w)."""
-    if w is None:
-        return torch.randn(n, c)
-    return torch.randn(n, c, w)
+    def __init__(self, curve, pr=3.0, test_ratio=0.97, eval_size=1000):
+        self.curve, self.pr, self.test_ratio, self.eval_size = curve, pr, test_ratio, eval_size
+        self.calls, self.params = [], []
 
-
-def _minimal_result(n_epochs=3, embedding_dim=4, n_tracked=10):
-    """Synthetic result dict as produced by a trainer run."""
-    row = {
-        'train_mi': 0.5,
-        'test_mi': 0.5,
-        'pr_eig': 2.0, 'pr_singular': 2.0,
-        'split_id': 0,
-    }
-    row['embedding_history_x'] = [
-        np.random.randn(n_tracked, embedding_dim).astype(np.float32)
-        for _ in range(n_epochs)
-    ]
-    row['embedding_history_y'] = [
-        np.random.randn(n_tracked, embedding_dim).astype(np.float32)
-        for _ in range(n_epochs)
-    ]
-    return row
+    def __call__(self, views, ks, n_restarts, n_workers):
+        self.calls.append(list(ks))
+        out = []
+        for split_id, _x, _y, params in views:
+            self.params.append(params)
+            for k in ks:
+                for r in range(n_restarts):
+                    mi = self.curve(k, split_id, r)
+                    out.append(dict(split_id=split_id, embedding_dim=k, run_id=r, train_mi=mi,
+                                    test_mi=self.test_ratio * mi, eval_size=self.eval_size,
+                                    pr_singular=self.pr, pr_eig=self.pr, best_epoch=5,
+                                    test_mi_history=[0.0] * 20))
+        return out
 
 
-# ---------------------------------------------------------------------------
-# _extract_embedding_history
-# ---------------------------------------------------------------------------
+def saturating_at(d):
+    return lambda k, s, r: TOTAL * min(k, d) / d
 
-class TestExtractEmbeddingHistory:
-    def test_returns_empty_when_no_history(self):
-        rows = [{'train_mi': 0.5}, {'train_mi': 0.6}]
-        result = _extract_embedding_history(rows)
-        assert result == {}
 
-    def test_returns_history_from_last_result(self):
-        row0 = {'embedding_history_x': ['a'], 'embedding_history_y': ['b']}
-        row1 = {'embedding_history_x': ['c'], 'embedding_history_y': ['d']}
-        rows = [row0, row1]
-        result = _extract_embedding_history(rows)
-        # Should pick row1 (last)
-        assert result['embedding_history_x'] == ['c']
-        assert result['embedding_history_y'] == ['d']
+@pytest.fixture
+def xy():
+    return torch.randn(200, 6), torch.randn(200, 6)
 
-    def test_returns_first_match_from_reverse(self):
-        row0 = {'train_mi': 0.5}
-        row1 = {'embedding_history_x': ['x'], 'embedding_history_y': ['y']}
-        rows = [row0, row1]
-        result = _extract_embedding_history(rows)
-        assert result['embedding_history_x'] == ['x']
+
+def analyse(monkeypatch, fake, x, y=None, **kwargs):
+    monkeypatch.setattr(dim, '_fit', fake)
+    kwargs.setdefault('n_restarts', 2)
+    return run_dimensionality_analysis(x, {'split_mode': 'random'}, y_data=y, **kwargs)
 
 
 # ---------------------------------------------------------------------------
-# _strip_embeddings
+# The grid, the curve and the reading
 # ---------------------------------------------------------------------------
 
-class TestStripEmbeddings:
-    def test_removes_all_embedding_keys(self):
-        row = {
-            'train_mi': 0.5,
-            'embeddings_x': np.zeros((5, 4)),
-            'embeddings_y': np.zeros((5, 4)),
-            'embeddings_x_rotated': np.zeros((5, 4)),
-            'embeddings_y_rotated': np.zeros((5, 4)),
-            'embeddings_rotation_singular_values': np.zeros(4),
-            'embeddings_rotation_x': np.zeros((4, 4)),
-            'embeddings_rotation_y': np.zeros((4, 4)),
-            'embedding_history_x': [],
-            'embedding_history_y': [],
-        }
-        _strip_embeddings([row])
-        for key in ('embeddings_x', 'embeddings_y', 'embeddings_x_rotated',
-                    'embeddings_y_rotated', 'embeddings_rotation_singular_values',
-                    'embeddings_rotation_x', 'embeddings_rotation_y',
-                    'embedding_history_x', 'embedding_history_y'):
-            assert key not in row
-        assert 'train_mi' in row  # non-embedding key unaffected
-
-    def test_no_error_when_keys_absent(self):
-        row = {'train_mi': 0.5}
-        _strip_embeddings([row])  # should not raise
-
-
-# ---------------------------------------------------------------------------
-# run_dimensionality_analysis — index split: input validation
-# ---------------------------------------------------------------------------
-
-class TestIndexSplitValidation:
-    """Unit tests that exercise only the validation logic — no training required."""
-
-    def test_missing_channel_indices_x_raises(self):
-        x = _make_x()
-        with pytest.raises(ValueError, match="channel_indices_x"):
-            run_dimensionality_analysis(
-                x, base_params={'n_epochs': 1}, split_method='index'
-            )
-
-    def test_out_of_range_index_raises(self):
-        x = _make_x(c=6)
-        with pytest.raises(ValueError, match="must be integers in"):
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1},
-                split_method='index',
-                channel_indices_x=[0, 1, 99],  # 99 >= n_channels=6
-            )
-
-    def test_all_channels_to_x_raises(self):
-        x = _make_x(c=4)
-        with pytest.raises(ValueError, match="Y would be empty"):
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1},
-                split_method='index',
-                channel_indices_x=[0, 1, 2, 3],  # all 4 channels
-            )
-
-    def test_empty_channel_indices_x_raises(self):
-        x = _make_x(c=4)
-        with pytest.raises(ValueError, match="X would be empty"):
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1},
-                split_method='index',
-                channel_indices_x=[],
-            )
-
-    def test_unknown_split_method_raises(self):
-        x = _make_x()
-        with pytest.raises(ValueError, match="Unknown split_method"):
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1},
-                split_method='invalid_method',
-            )
-
-
-# ---------------------------------------------------------------------------
-# run_dimensionality_analysis — index split: shared_encoder guard
-# ---------------------------------------------------------------------------
-
-class TestIndexSplitSharedEncoderGuard:
-    """Verify that unequal channel counts disable shared_encoder with a warning.
-
-    These tests call run_dimensionality_analysis directly (not through run()),
-    so base_params is treated as fully user-set (see the user_set_keys
-    fallback in run_dimensionality_analysis) -- an explicit
-    shared_encoder=True in base_params is respected as user intent, exactly
-    like calling run() with model=Model(shared_encoder=True) would be.
-    """
-
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_unequal_channels_disables_shared_encoder(self, mock_dispatch, caplog):
-        """shared_encoder=True should be overridden to False when |X| != |Y|."""
-        import logging
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = _make_x(c=6)
+class TestGrid:
+    def test_a_small_participation_ratio_runs_one_to_ten(self, caplog):
         with caplog.at_level(logging.WARNING, logger='neural_mi'):
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1, 'shared_encoder': True},
-                split_method='index',
-                channel_indices_x=[0, 1],  # X=2, Y=4 → unequal
-                n_splits=1,
-            )
-        # Warning is emitted via logger.warning(), not warnings.warn()
-        assert any('shared_encoder' in r.message for r in caplog.records), (
-            f"Expected a shared_encoder warning in log, got: {[r.message for r in caplog.records]}"
-        )
-        # The params forwarded to _dispatch_splits should have shared_encoder=False
-        call_args = mock_dispatch.call_args[0]  # positional args
-        split_tasks = call_args[0]
-        _, _, forwarded_params, _, _ = split_tasks[0]
-        assert forwarded_params.get('shared_encoder') is False
+            assert dim._default_grid(3.0) == list(range(1, 11))
+        assert not caplog.records
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_equal_channels_keeps_shared_encoder(self, mock_dispatch):
-        """shared_encoder should remain True when both sides have equal channel counts."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = _make_x(c=6)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1, 'shared_encoder': True},
-                split_method='index',
-                channel_indices_x=[0, 1, 2],  # X=3, Y=3 → equal
-                n_splits=1,
-            )
-        messages = [str(w.message) for w in caught
-                    if 'shared_encoder' in str(w.message)]
-        assert not messages, f"Unexpected shared_encoder warning: {messages}"
-        call_args = mock_dispatch.call_args[0]
-        split_tasks = call_args[0]
-        _, _, forwarded_params, _, _ = split_tasks[0]
-        # shared_encoder should NOT have been silently overridden
-        assert forwarded_params.get('shared_encoder') is True
+    def test_a_middle_ratio_runs_one_to_twenty_and_says_so(self, caplog):
+        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+            assert dim._default_grid(7.0) == list(range(1, 21))
+        assert '1 to 20' in caplog.text
+
+    def test_a_large_ratio_runs_a_log_grid_to_twice_the_ratio(self, caplog):
+        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+            grid = dim._default_grid(15.0)
+        assert grid[0] == 1 and grid[-1] == 30 and len(grid) <= 10
+        assert 'log scale' in caplog.text and 'embedding_dims' in caplog.text
+
+    def test_the_log_grid_is_increasing_and_spans_its_range(self):
+        grid = dim._log_grid(11, 63)
+        assert grid[0] == 11 and grid[-1] == 63 and grid == sorted(set(grid))
+
+
+class TestReading:
+    def test_the_curve_is_the_running_maximum(self):
+        assert dim._curve({1: 1.0, 2: 3.0, 3: 2.5, 4: 3.2}) == {1: 1.0, 2: 3.0, 3: 3.0, 4: 3.2}
+
+    def test_the_reading_is_the_first_k_at_the_threshold(self):
+        best = {1: 1.0, 2: 2.0, 3: 3.9, 4: 4.0, 64: 4.0}
+        assert dim._reading(best, 0.95) == (3, 4.0)
+
+    def test_the_best_restart_counts(self):
+        fits = [dict(split_id=0, embedding_dim=2, train_mi=v) for v in (1.0, 3.0, 2.0)]
+        assert dim._best(fits, 0) == {2: 3.0}
+
+    def test_three_consecutive_values_confirm(self):
+        best = {1: 1.0, 2: 4.0, 3: 4.0, 4: 4.0}
+        assert dim._confirmed(best, [1, 2, 3], 3.8) is None
+        assert dim._confirmed(best, [1, 2, 3, 4], 3.8) == 2
 
 
 # ---------------------------------------------------------------------------
-# run_dimensionality_analysis — index split: channel slicing
+# The procedure
 # ---------------------------------------------------------------------------
 
-class TestIndexSplitChannelSlicing:
-    """Verify that x_a and x_b contain the right channels."""
+class TestProcedure:
+    def test_the_reading_matches_a_known_dimension(self, monkeypatch, xy):
+        fits, info = analyse(monkeypatch, FakeFits(saturating_at(3)), *xy)
+        assert info['dimension_at_most'] == 3
+        assert info['dimension_at_most_per_split'] == {0: 3}
+        assert info['dimension_at_most_std'] is None
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_2d_data_correct_channel_split(self, mock_dispatch):
-        """For 2-D data (N, C), x_a[:,i] == x_data[:,channel_indices_x[i]]."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = torch.arange(60, dtype=torch.float32).reshape(10, 6)
-        run_dimensionality_analysis(
-            x,
-            base_params={'n_epochs': 1},
-            split_method='index',
-            channel_indices_x=[0, 2, 4],
-            n_splits=1,
-        )
-        call_args = mock_dispatch.call_args[0]
-        split_tasks = call_args[0]
-        x_a, x_b, _, _, _ = split_tasks[0]
-        assert x_a.shape == (10, 3)
-        assert x_b.shape == (10, 3)
-        # Column 0 of x_a must equal column 0 of original x
-        np.testing.assert_array_equal(x_a[:, 0].numpy(), x[:, 0].numpy())
-        np.testing.assert_array_equal(x_a[:, 1].numpy(), x[:, 2].numpy())
-        np.testing.assert_array_equal(x_a[:, 2].numpy(), x[:, 4].numpy())
-        # x_b must contain the complement channels: [1, 3, 5]
-        np.testing.assert_array_equal(x_b[:, 0].numpy(), x[:, 1].numpy())
+    def test_the_reference_fit_runs_first(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(3))
+        _, info = analyse(monkeypatch, fake, *xy)
+        assert fake.calls[0] == [64] and info['reference_dim'] == 64
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_3d_data_correct_channel_split(self, mock_dispatch):
-        """For 3-D data (N, C, W), channel dim is 1."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = torch.randn(10, 6, 8)
-        run_dimensionality_analysis(
-            x,
-            base_params={'n_epochs': 1},
-            split_method='index',
-            channel_indices_x=[0, 1],
-            n_splits=1,
-        )
-        call_args = mock_dispatch.call_args[0]
-        split_tasks = call_args[0]
-        x_a, x_b, _, _, _ = split_tasks[0]
-        assert x_a.shape == (10, 2, 8)
-        assert x_b.shape == (10, 4, 8)
+    def test_the_default_grid_stops_after_three_values_at_the_threshold(self, monkeypatch, xy, caplog):
+        fake = FakeFits(saturating_at(3))
+        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+            _, info = analyse(monkeypatch, fake, *xy)
+        assert fake.calls[1:] == [[1, 2, 3], [4, 5, 6]]
+        assert info['stopped_early'] and info['embedding_dims'] == [1, 2, 3, 4, 5, 6, 64]
+        assert any('the grid stopped at embedding_dim=6' in r.getMessage() for r in caplog.records)
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_n_splits_creates_correct_number_of_tasks(self, mock_dispatch):
-        """For index split, n_splits tasks should be dispatched."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': i}
-            for i in range(3)
-        ]
-        x = _make_x(c=6)
-        run_dimensionality_analysis(
-            x,
-            base_params={'n_epochs': 1},
-            split_method='index',
-            channel_indices_x=[0, 1, 2],
-            n_splits=3,
-        )
-        call_args = mock_dispatch.call_args[0]
-        split_tasks = call_args[0]
-        assert len(split_tasks) == 3
-        # Each task should have a distinct split_id
-        split_ids = [t[4] for t in split_tasks]
-        assert split_ids == [0, 1, 2]
+    def test_explicit_embedding_dims_are_all_fitted(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(3))
+        _, info = analyse(monkeypatch, fake, *xy, embedding_dims=range(1, 9))
+        assert fake.calls[1:] == [list(range(1, 9))]
+        assert not info['stopped_early'] and info['dimension_at_most'] == 3
+
+    def test_a_reference_close_to_its_ratio_is_refitted_larger(self, monkeypatch, xy, caplog):
+        fake = FakeFits(saturating_at(3), pr=40.0)
+        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+            _, info = analyse(monkeypatch, fake, *xy, embedding_dims=[1, 2, 3, 4])
+        assert fake.calls[:2] == [[64], [160]] and info['reference_dim'] == 160
+        assert any('refitted at embedding_dim=160' in r.getMessage() for r in caplog.records)
+
+    def test_a_reference_you_set_is_kept(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(3), pr=40.0)
+        _, info = analyse(monkeypatch, fake, *xy, reference_dim=16, embedding_dims=[1, 2, 3, 4])
+        assert fake.calls[0] == [16] and info['reference_dim'] == 16
+
+    def test_a_curve_still_climbing_past_the_grid_extends_it(self, monkeypatch, xy, caplog):
+        fake = FakeFits(saturating_at(30), pr=3.0)
+        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+            _, info = analyse(monkeypatch, fake, *xy)
+        assert any('The grid is extended' in r.getMessage() for r in caplog.records)
+        assert 28 <= info['dimension_at_most'] < 64
+
+    def test_a_curve_saturating_only_at_the_reference_warns(self, monkeypatch, xy):
+        fake = FakeFits(lambda k, s, r: TOTAL * k / 64)
+        with pytest.warns(UserWarning, match='only at the reference'):
+            _, info = analyse(monkeypatch, fake, *xy, embedding_dims=[1, 2, 4])
+        assert info['dimension_at_most_per_split'][0] == 64
+
+    def test_several_random_splits_give_a_median_and_a_spread(self, monkeypatch, xy):
+        fake = FakeFits(lambda k, s, r: TOTAL * min(k, 2 + s) / (2 + s))
+        _, info = analyse(monkeypatch, fake, xy[0], n_splits=3, embedding_dims=range(1, 8))
+        assert info['dimension_at_most_per_split'] == {0: 2, 1: 3, 2: 4}
+        assert info['dimension_at_most'] == 3
+        assert info['dimension_at_most_std'] == pytest.approx(1.0)
+
+    def test_x_alone_is_split_five_times_by_default(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(2))
+        _, info = analyse(monkeypatch, fake, xy[0], embedding_dims=[1, 2, 3])
+        assert len(info['dimension_at_most_per_split']) == 5
+
+    def test_the_restarts_share_one_held_out_set(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(2))
+        analyse(monkeypatch, fake, xy[0], n_splits=2, embedding_dims=[1, 2, 3])
+        tests = [tuple(np.asarray(p['test_indices'])) for p in fake.params]
+        assert len(set(tests)) == 1
 
 
-# ---------------------------------------------------------------------------
-# run_dimensionality_analysis — embedding_dim / shared_encoder / track_embeddings
-# defaults, and the user_set_keys mechanism that makes them work correctly
-# whether called through run() or directly.
-# ---------------------------------------------------------------------------
+class TestWarnings:
+    def test_restarts_that_disagree_below_the_reading_warn(self, monkeypatch, xy):
+        fake = FakeFits(lambda k, s, r: TOTAL * min(k, 3) / 3 * (0.5 if r == 0 and k < 3 else 1.0))
+        with pytest.warns(UserWarning, match='below the reading differ by more than'):
+            analyse(monkeypatch, fake, *xy, embedding_dims=range(1, 6))
 
-class TestDefaults:
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_embedding_dim_defaults_to_8_when_unset(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = _make_x(c=4)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1}, split_method='random', n_splits=1)
-        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
-        assert forwarded_params.get('embedding_dim') == 8
+    def test_a_held_out_plateau_far_below_the_training_side_warns(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(3), test_ratio=0.7)
+        with pytest.warns(UserWarning, match='overstate the dimension'):
+            analyse(monkeypatch, fake, *xy, embedding_dims=range(1, 6))
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_embedding_dim_explicit_value_respected(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = _make_x(c=4)
-        run_dimensionality_analysis(
-            x, base_params={'n_epochs': 1, 'embedding_dim': 64},
-            split_method='random', n_splits=1,
-        )
-        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
-        assert forwarded_params.get('embedding_dim') == 64
+    def test_a_plateau_near_the_ceiling_warns(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(3), eval_size=20)
+        with pytest.warns(UserWarning, match='near its evaluation ceiling'):
+            analyse(monkeypatch, fake, *xy, embedding_dims=range(1, 6))
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_shared_encoder_true_for_intrinsic_by_default(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = _make_x(c=4)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1}, split_method='random', n_splits=1)
-        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
-        assert forwarded_params.get('shared_encoder') is True
+    def test_views_that_share_nothing_have_no_reading(self, monkeypatch, xy):
+        with pytest.warns(UserWarning, match='share no information'):
+            _, info = analyse(monkeypatch, FakeFits(lambda k, s, r: 0.0), *xy, embedding_dims=[1, 2])
+        assert info['dimension_at_most'] is None
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_shared_encoder_false_for_interaction_by_default(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x, y = _make_x(c=4), _make_x(c=4)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1}, y_data=y, n_splits=1)
-        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
-        assert forwarded_params.get('shared_encoder') is False
-
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_user_set_keys_from_run_distinguishes_explicit_from_schema_default(self, mock_dispatch):
-        """The exact bug this mechanism fixes: base_params already contains
-        embedding_dim=64 (the schema default, applied by run()'s
-        ParameterValidator.apply_defaults() before dispatch) even though the
-        user never set it -- only user_set_keys (the pre-defaults key set)
-        can tell these apart."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = _make_x(c=4)
-        run_dimensionality_analysis(
-            x, base_params={'n_epochs': 1, 'embedding_dim': 64},  # schema-defaulted value
-            split_method='random', n_splits=1,
-            user_set_keys=set(),  # ...but the user never actually set it
-        )
-        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
-        assert forwarded_params.get('embedding_dim') == 8, (
-            "embedding_dim=64 in base_params without being in user_set_keys must be "
-            "treated as the schema default, not a user override"
-        )
-
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_track_embeddings_not_forced(self, mock_dispatch):
-        """track_embeddings has no dimensionality-specific override (the
-                rotated-embedding extraction this mode relies on does not need it):
-                whatever the caller passed flows through unchanged.
-        """
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        x = _make_x(c=4)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1}, split_method='random', n_splits=1)
-        _, _, forwarded_params, _, _ = mock_dispatch.call_args[0][0][0]
-        assert 'track_embeddings' not in forwarded_params
+    def test_a_clean_curve_raises_no_warning(self, monkeypatch, xy):
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            analyse(monkeypatch, FakeFits(saturating_at(3)), *xy, embedding_dims=range(1, 6))
 
 
-# ---------------------------------------------------------------------------
-# _compute_stability_report — the core mechanism this mode is built on
-# ---------------------------------------------------------------------------
+class TestSettings:
+    def test_the_mode_trains_a_hybrid_critic_to_convergence(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(2))
+        analyse(monkeypatch, fake, *xy, embedding_dims=[1, 2, 3])
+        p = fake.params[0]
+        assert p['critic_type'] == 'hybrid' and p['n_epochs'] == 500 and p['patience'] == 50
 
-class TestComputeStabilityReport:
-    def _make_split(self, seed, n=500, embedding_dim=3, shared=None, strengths=None):
-        rng = np.random.default_rng(seed)
-        if shared is None:
-            shared = np.zeros((n, 0))
-        strengths = strengths or [1.0] * embedding_dim
-        z = np.zeros((n, embedding_dim))
-        for i in range(embedding_dim):
-            if i < shared.shape[1]:
-                z[:, i] = strengths[i] * shared[:, i] + 0.05 * rng.standard_normal(n)
-            else:
-                z[:, i] = rng.standard_normal(n)
-        return z
+    def test_the_hybrid_critic_is_layer_normalised_here_only(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(2))
+        analyse(monkeypatch, fake, *xy, embedding_dims=[1, 2, 3])
+        assert fake.params[0]['norm_layer'] == 'layer'
+        fake = FakeFits(saturating_at(2))
+        monkeypatch.setattr(dim, '_fit', fake)
+        with pytest.warns(UserWarning, match="critic_type='separable'"):
+            run_dimensionality_analysis(xy[0], {'critic_type': 'separable', 'norm_layer': 'auto'},
+                                        y_data=xy[1], embedding_dims=[1, 2, 3])
+        assert fake.params[0]['norm_layer'] == 'auto'
 
-    def test_reproducible_direction_is_stable_and_above_floor(self):
-        """A direction driven by a shared signal across all 'splits' should be
-        flagged stable and individually trustworthy."""
-        rng = np.random.default_rng(0)
-        shared_signal = rng.standard_normal((500, 1))
-        per_split = []
-        for seed in (1, 2, 3):
-            z = self._make_split(seed, embedding_dim=1, shared=shared_signal, strengths=[2.0])
-            per_split.append({'zx_rotated_test': z, 'singular_values': np.array([2.0])})
-        report = _compute_stability_report(per_split, stability_threshold=0.7,
-                                           degeneracy_ratio_threshold=1.3, min_strength_fraction=0.05)
-        assert report['stable_directions'] == [1]
-        assert report['n_stable_total'] == 1
+    def test_a_norm_you_chose_is_kept(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(2))
+        monkeypatch.setattr(dim, '_fit', fake)
+        run_dimensionality_analysis(xy[0], {'norm_layer': 'none'}, y_data=xy[1],
+                                    embedding_dims=[1, 2, 3], user_set_keys={'norm_layer'})
+        assert fake.params[0]['norm_layer'] == 'none'
 
-    def test_pure_noise_channel_excluded_even_with_spurious_correlation(self):
-        """A pure noise direction with near-zero singular-value strength is
-                not reported as stable, even when it shows a high cross-run
-                correlation by chance. The whole mode hinges on this.
-        """
-        rng = np.random.default_rng(42)
-        n = 500
-        # A shared real signal on rank 1, plus a rank-2 "noise" direction whose
-        # values happen to correlate across the two draws purely by chance
-        # (fixed seed search would be needed to guarantee this in general, so
-        # instead we construct the spurious correlation directly: same tiny,
-        # near-zero-strength vector reused with a small independent perturbation).
-        shared = rng.standard_normal((n, 1))
-        base_noise_direction = rng.standard_normal(n) * 1e-4  # near-zero strength
-        per_split = []
-        for seed in (1, 2):
-            local_rng = np.random.default_rng(seed)
-            z = np.zeros((n, 2))
-            z[:, 0] = 2.0 * shared[:, 0] + 0.05 * local_rng.standard_normal(n)
-            # Same base direction (spurious cross-run correlation) but negligible strength.
-            z[:, 1] = base_noise_direction + 1e-6 * local_rng.standard_normal(n)
-            per_split.append({'zx_rotated_test': z, 'singular_values': np.array([2.0, 1e-4])})
-        report = _compute_stability_report(per_split, stability_threshold=0.7,
-                                           degeneracy_ratio_threshold=1.3, min_strength_fraction=0.05)
-        assert report['per_rank'][2]['below_noise_floor'] is True
-        assert 2 not in report['stable_directions']
-        assert report['n_stable_total'] == 1
+    def test_settings_you_chose_are_kept(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(2))
+        monkeypatch.setattr(dim, '_fit', fake)
+        run_dimensionality_analysis(xy[0], {'n_epochs': 7, 'patience': 3}, y_data=xy[1],
+                                    embedding_dims=[1, 2, 3], user_set_keys={'n_epochs', 'patience'})
+        assert fake.params[0]['n_epochs'] == 7 and fake.params[0]['patience'] == 3
 
-    def test_unstable_direction_excluded_despite_real_strength(self):
-        """A direction with real singular-value strength but that doesn't
-        reproduce across splits must be excluded -- the noise-floor gate and
-        the correlation gate are independent checks, not one catching for
-        the other."""
-        per_split = []
-        for seed in (1, 2, 3):
-            local_rng = np.random.default_rng(seed)
-            z = local_rng.standard_normal((500, 1)) * 1.5  # real strength, but independent per split
-            per_split.append({'zx_rotated_test': z, 'singular_values': np.array([1.5])})
-        report = _compute_stability_report(per_split, stability_threshold=0.7,
-                                           degeneracy_ratio_threshold=1.3, min_strength_fraction=0.05)
-        assert report['per_rank'][1]['below_noise_floor'] is False
-        assert report['per_rank'][1]['stable'] is False
-        assert report['n_stable_total'] == 0
+    def test_halves_of_x_share_an_encoder_and_x_and_y_do_not(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(2))
+        analyse(monkeypatch, fake, xy[0], split_method='spatial', embedding_dims=[1, 2, 3])
+        assert fake.params[0]['shared_encoder'] is True
+        fake = FakeFits(saturating_at(2))
+        analyse(monkeypatch, fake, *xy, embedding_dims=[1, 2, 3])
+        assert fake.params[0]['shared_encoder'] is False
 
-    def test_adjacent_close_strength_ranks_grouped_not_individually_ordered(self):
-        """Two reproducible ranks of near-identical strength must be reported
-        as a group, not individually ranked."""
-        rng = np.random.default_rng(0)
-        shared = rng.standard_normal((500, 2))
-        per_split = []
-        for seed in (1, 2, 3):
-            z = self._make_split(seed, embedding_dim=2, shared=shared, strengths=[2.0, 1.9])
-            per_split.append({'zx_rotated_test': z, 'singular_values': np.array([2.0, 1.9])})
-        report = _compute_stability_report(per_split, stability_threshold=0.7,
-                                           degeneracy_ratio_threshold=1.3, min_strength_fraction=0.05)
-        assert report['stable_directions'] == []
-        assert report['stable_but_degenerate_groups'] == [[1, 2]]
-        assert report['n_stable_total'] == 2
+    def test_a_concat_critic_is_refused(self, xy):
+        with pytest.raises(ValueError, match="cannot use critic_type='concat'"):
+            run_dimensionality_analysis(xy[0], {'critic_type': 'concat'}, y_data=xy[1])
 
+    def test_a_separable_critic_warns(self, monkeypatch, xy):
+        monkeypatch.setattr(dim, '_fit', FakeFits(saturating_at(2)))
+        with pytest.warns(UserWarning, match="critic_type='separable'"):
+            run_dimensionality_analysis(xy[0], {'critic_type': 'separable'}, y_data=xy[1],
+                                        embedding_dims=[1, 2, 3])
 
-class TestGroupAdjacent:
-    def test_empty(self):
-        assert _group_adjacent([]) == []
+    def test_n_splits_with_y_is_refused(self, xy):
+        with pytest.raises(ValueError, match='applies without y_data'):
+            run_dimensionality_analysis(xy[0], {}, y_data=xy[1], n_splits=3)
 
-    def test_single(self):
-        assert _group_adjacent([3]) == [[3]]
+    def test_n_splits_with_a_fixed_split_is_refused(self, xy):
+        with pytest.raises(ValueError, match='would repeat one split'):
+            run_dimensionality_analysis(xy[0], {}, split_method='spatial', n_splits=3)
 
-    def test_contiguous_and_separate_runs(self):
-        assert _group_adjacent([1, 2, 5, 6, 7, 10]) == [[1, 2], [5, 6, 7], [10]]
+    def test_an_unknown_split_method_is_refused(self, xy):
+        with pytest.raises(ValueError, match='Unknown split_method'):
+            run_dimensionality_analysis(xy[0], {}, split_method='zigzag')
+
+    @pytest.mark.parametrize('kwargs', [dict(embedding_dims=[2, 64]),
+                                        dict(embedding_dims=[2, 8], reference_dim=8)])
+    def test_a_grid_that_reaches_the_reference_is_refused(self, xy, kwargs):
+        with pytest.raises(ValueError, match='must be smaller than the reference'):
+            run_dimensionality_analysis(xy[0], {}, y_data=xy[1], **kwargs)
 
 
 # ---------------------------------------------------------------------------
-# Ceiling-proximity diagnostic (lightweight, standalone -- not a remediation)
+# Splitting X
 # ---------------------------------------------------------------------------
 
-class TestCeilingProximity:
-    def test_classify_regime_pinned_detached_collapsed(self):
-        assert _classify_regime(9.5, 10.0, 1.0, 0.5) == ('pinned', False)
-        assert _classify_regime(5.0, 10.0, 1.0, 0.5) == ('detached', True)
-        assert _classify_regime(0.1, 10.0, 1.0, 0.5) == ('collapsed', False)
-        assert _classify_regime(float('nan'), 10.0, 1.0, 0.5) == ('collapsed', False)
+class TestHalves:
+    def test_random_draws_one_assignment_per_split(self):
+        halves = dim._halves(torch.randn(50, 8), {}, 'random', 4, {})
+        assert len(halves) == 4 and all(a.shape == (50, 4) and b.shape == (50, 4) for a, b, _ in halves)
 
-    def test_warn_if_near_ceiling_warns_when_pinned(self):
-        eval_size = 100.0
-        ceiling = np.log(eval_size)
-        df = pd.DataFrame({'test_mi': [0.95 * ceiling] * 3, 'eval_size': [eval_size] * 3})
-        with pytest.warns(UserWarning, match="near its evaluation ceiling"):
-            _warn_if_near_ceiling(df, ceiling_mi_fraction=0.85)
+    def test_spatial_splits_at_the_midpoint_once(self):
+        x = torch.arange(24.).reshape(3, 8)
+        [(a, b, _)] = dim._halves(x, {}, 'spatial', 5, {})
+        assert torch.equal(a, x[:, :4]) and torch.equal(b, x[:, 4:])
 
-    def test_warn_if_near_ceiling_silent_when_detached(self):
-        eval_size = 1000.0
-        ceiling = np.log(eval_size)
-        df = pd.DataFrame({'test_mi': [0.3 * ceiling] * 3, 'eval_size': [eval_size] * 3})
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _warn_if_near_ceiling(df, ceiling_mi_fraction=0.85)
-        assert not any('evaluation ceiling' in str(w.message) for w in caught)
+    def test_temporal_pairs_x_with_itself_later(self):
+        x = torch.arange(10.).reshape(10, 1).repeat(1, 2)
+        [(a, b, _)] = dim._halves(x, {}, 'temporal', 1, {'lag': 2})
+        assert torch.equal(a, x[:-2]) and torch.equal(b, x[2:])
 
-    def test_ceiling_mi_fraction_is_configurable(self):
-        eval_size = 100.0
-        ceiling = np.log(eval_size)
-        df = pd.DataFrame({'test_mi': [0.95 * ceiling] * 3, 'eval_size': [eval_size] * 3})
-        with pytest.warns(UserWarning, match="near its evaluation ceiling"):
-            _warn_if_near_ceiling(df, ceiling_mi_fraction=0.85)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _warn_if_near_ceiling(df, ceiling_mi_fraction=0.99)
-        assert not any('evaluation ceiling' in str(w.message) for w in caught)
+    @pytest.mark.parametrize('shape', [(20, 6), (20, 6, 3)])
+    def test_index_takes_the_named_channels_and_the_rest(self, shape):
+        x = torch.randn(*shape)
+        [(a, b, _)] = dim._halves(x, {}, 'index', 1, {'channel_indices_x': [0, 2, 4]})
+        assert torch.equal(a, x[:, [0, 2, 4], ...]) and torch.equal(b, x[:, [1, 3, 5], ...])
 
-    def test_missing_columns_no_error(self):
-        _warn_if_near_ceiling(pd.DataFrame({'foo': [1, 2, 3]}))  # should not raise
+    def test_unequal_index_halves_turn_off_a_shared_encoder(self, caplog):
+        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+            [(_, _, params)] = dim._halves(torch.randn(20, 5), {'shared_encoder': True}, 'index', 1,
+                                           {'channel_indices_x': [0, 1]})
+        assert params['shared_encoder'] is False
+        assert 'unequal channel counts' in caplog.text
 
+    @pytest.mark.parametrize('indices, match', [
+        (None, "requires a 'channel_indices_x'"), ([0, 9], 'must be integers in'),
+        ([0, 1, 2, 3], 'covers all channels'), ([], 'is empty')])
+    def test_bad_index_splits_are_refused(self, indices, match):
+        with pytest.raises(ValueError, match=match):
+            dim._halves(torch.randn(20, 4), {}, 'index', 1, {'channel_indices_x': indices})
 
-class TestAnalysisWorkflowDoesNotMutateCallerDict:
-    """AnalysisWorkflow copies base_params and never mutates the caller's dict."""
+    def test_image_splits_need_four_dimensional_input(self):
+        with pytest.raises(ValueError, match='requires 4-D input'):
+            dim._halves(torch.randn(20, 4), {}, 'horizontal', 1, {})
 
-    def test_base_params_not_mutated(self):
-        from neural_mi.analysis.rigorous import AnalysisWorkflow
-        original = {'n_epochs': 5}
-        original_copy = dict(original)
-        x = torch.randn(20, 3, 4)
-        y = torch.randn(20, 3, 4)
-        AnalysisWorkflow(x, y, original)
-        assert original == original_copy, (
-            f"caller's base_params was mutated: {original} != {original_copy}"
-        )
+    @pytest.mark.parametrize('method, a_shape, b_shape', [
+        ('horizontal', (5, 1, 2, 4), (5, 1, 2, 4)), ('vertical', (5, 1, 4, 2), (5, 1, 4, 2)),
+        ('row_interleaved', (5, 1, 2, 4), (5, 1, 2, 4)), ('col_interleaved', (5, 1, 4, 2), (5, 1, 4, 2)),
+        ('diagonal', (5, 1, 10), (5, 1, 6)), ('antidiagonal', (5, 1, 10), (5, 1, 6))])
+    def test_image_splits_cut_the_picture(self, method, a_shape, b_shape):
+        [(a, b, _)] = dim._halves(torch.randn(5, 1, 4, 4), {}, method, 1, {})
+        assert tuple(a.shape) == a_shape and tuple(b.shape) == b_shape
+
+    def test_triangular_splits_refuse_a_convolutional_encoder(self):
+        with pytest.raises(ValueError, match='triangular'):
+            dim._halves(torch.randn(5, 1, 4, 4), {'embedding_model': 'cnn2d'}, 'diagonal', 1, {})
 
 
 # ---------------------------------------------------------------------------
-# _n_samples_for_shared_split -- shift_windows reachability
+# Through run()
 # ---------------------------------------------------------------------------
 
-class TestNSamplesForSharedSplit:
-    """When windowing is deferred (raw 2-D x_data + shift_windows=True), the
-    shared train/test split must be computed over the shift-invariant window
-    count, not the raw sample count -- otherwise it produces indices that
-    don't correspond to any real window in each split's actual dataset."""
-
-    def test_unchanged_for_already_windowed_data(self):
-        from neural_mi.analysis.dimensionality import _n_samples_for_shared_split
-        x = torch.randn(50, 4, 8)  # already windowed (N, C, W)
-        n = _n_samples_for_shared_split(x, None, {'shift_windows': True})
-        assert n == 50
-
-    def test_unchanged_for_raw_data_when_shift_windows_off(self):
-        from neural_mi.analysis.dimensionality import _n_samples_for_shared_split
-        x = torch.randn(3000, 4)  # raw (T, C), shift not requested
-        n = _n_samples_for_shared_split(x, None, {'shift_windows': False})
-        assert n == 3000
-
-    def test_intrinsic_mode_matches_safe_n_windows(self):
-        from neural_mi.analysis.dimensionality import _n_samples_for_shared_split
-        from neural_mi.data.shift_windowing import safe_n_windows
-        x = torch.randn(3000, 4)
-        params = {
-            'shift_windows': True,
-            'processor_params_x': {'window_size': 20, 'step_size': 20},
-        }
-        n = _n_samples_for_shared_split(x, None, params)
-        assert n == safe_n_windows(3000, 20, 20)
-        assert n < 3000  # sanity: genuinely different from the raw count
-
-    def test_interaction_mode_matches_min_of_paired_shifter(self):
-        from neural_mi.analysis.dimensionality import _n_samples_for_shared_split
-        from neural_mi.data.shift_windowing import PairedWindowShifter
-        x = torch.randn(3000, 4)
-        y = torch.randn(2000, 3)  # different length -> different n_windows
-        params = {
-            'shift_windows': True,
-            'processor_type_x': 'continuous', 'processor_type_y': 'continuous',
-            'processor_params_x': {'window_size': 20, 'step_size': 20},
-        }
-        n = _n_samples_for_shared_split(x, y, params)
-        expected = PairedWindowShifter(x, y, 20, 20).n_windows
-        assert n == expected
-        assert n < 3000
+SMALL = dict(dimensionality=nmi.Dimensionality(n_restarts=1, reference_dim=4, embedding_dims=[1, 2]),
+             training=nmi.Training(n_epochs=3, batch_size=64), model=nmi.Model(hidden_dim=16),
+             show_progress=False)
 
 
-class TestDimensionalityShiftWindowsEndToEnd:
-    """A real (un-mocked) run confirming the shared split stays valid once
-    each split independently, really windows its own raw data -- if
-    _n_samples_for_shared_split computed the wrong (too-large) count, the
-    shared test/train indices would be out of bounds for each split's
-    actual (much smaller) windowed dataset and this would crash."""
-
-    def test_intrinsic_random_split_shift_windows_no_crash(self):
-        import neural_mi as nmi
-        from neural_mi import Training, Dimensionality
-
-        torch.manual_seed(0)
-        np.random.seed(0)
-        x = np.random.randn(3000, 4).astype('float32')
-        proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20})
-        results = nmi.run(
-            x, mode='dimensionality', processing=proc,
-            training=Training(n_epochs=2, batch_size=16, shift_windows=True),
-            dimensionality=Dimensionality(split_method='random', n_splits=2),
-            n_workers=1, show_progress=False, seed=0,
-        )
-        df = results.runs
-        assert len(df) == 2
-        assert np.all(np.isfinite(df['train_mi'].values))
+def _data():
+    return nmi.generators.generate_nonlinear_from_latent(400, 2, 6, 1.0, seed=0, use_torch=False)
 
 
-class TestNSplitsIsValidated:
-    """`n_splits` counts the independent model fits, so below 1 asks for none
-        and is refused.
-    """
+def test_run_returns_the_curve_and_the_reading():
+    x, y = _data()
+    r = nmi.run(x, y, mode='dimensionality', output=nmi.Output(return_embeddings=True), seed=0, **SMALL)
+    df = r.dataframe
+    assert list(df['embedding_dim']) == [1, 2, 4]
+    assert {'mi_best', 'mi_curve', 'split_id', 'n_runs'} <= set(df.columns)
+    assert (np.diff(df['mi_curve']) >= 0).all()
+    assert r.get('dimension_at_most') in (1, 2, 4)
+    entry = r.details[0]
+    assert set(entry['embeddings']) == {(0, 1, 0), (0, 2, 0), (0, 4, 0)}
+    assert 0 in entry['embeddings_at_bound']
+    r.summary()
+    r.plot(show=False)
 
-    @staticmethod
-    def _x():
-        rng = np.random.default_rng(0)
-        return rng.standard_normal((200, 4)).astype(np.float32)
 
-    @pytest.mark.parametrize("n_splits", [0, -1])
-    def test_below_one_is_refused(self, n_splits):
-        import neural_mi as nmi
-        from neural_mi.config import Dimensionality, Model, Training
-        with pytest.raises(ValueError, match="n_splits must be a whole number of 1 or more"):
-            nmi.run(x_data=self._x(), mode='dimensionality',
-                    dimensionality=Dimensionality(n_splits=n_splits),
-                    model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-                    training=Training(n_epochs=1), n_workers=1, show_progress=False)
+def test_an_embedding_dim_set_on_the_model_is_reported_as_ignored():
+    x, y = _data()
+    settings = dict(SMALL, model=nmi.Model(hidden_dim=16, embedding_dim=8))
+    with pytest.warns(UserWarning, match=r"embedding_dim \(mode='dimensionality' sets it"):
+        nmi.run(x, y, mode='dimensionality', seed=0, **settings)
 
-    def test_one_split_still_runs(self):
-        import neural_mi as nmi
-        from neural_mi.config import Dimensionality, Model, Training, Output
-        result = nmi.run(x_data=self._x(), mode='dimensionality',
-                         dimensionality=Dimensionality(n_splits=1),
-                         model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-                         training=Training(n_epochs=1),
-                         output=Output(return_embeddings=True),
-                         n_workers=1, show_progress=False)
-        # Embeddings come back with no y_data at all: the two sides are X's own
-        # channels.
-        assert result.get('embeddings_x').shape[0] > 0
-        assert result.get('embeddings_y').shape[0] > 0
+
+@pytest.mark.parametrize('settings, match', [
+    (dict(n_restarts=0), 'n_restarts must be a whole number'),
+    (dict(n_splits=0), 'n_splits must be a whole number'),
+    (dict(saturation_ratio=1.5), r'saturation_ratio must lie in \(0, 1\]'),
+    (dict(reference_dim=1), 'reference_dim must be a whole number of 2'),
+    (dict(embedding_dims=[0, 2]), 'embedding_dims must hold whole numbers'),
+    (dict(embedding_dims=[]), 'embedding_dims must hold whole numbers')])
+def test_bad_settings_are_refused_before_any_fit(settings, match):
+    x, y = _data()
+    with pytest.raises(ValueError, match=match):
+        nmi.run(x, None, mode='dimensionality', dimensionality=nmi.Dimensionality(**settings),
+                show_progress=False)
+
+
+@pytest.mark.parametrize('grid, match', [({'embedding_dim': [2, 4]}, 'embedding_dims'),
+                                         ({'run_id': [0, 1]}, 'n_restarts')])
+def test_the_grid_cannot_vary_what_the_mode_varies(grid, match):
+    x, y = _data()
+    with pytest.raises(ValueError, match=match):
+        nmi.run(x, y, mode='dimensionality', sweep_grid=grid, **SMALL)

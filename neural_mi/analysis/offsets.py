@@ -186,10 +186,10 @@ def one_step_rows(rows, caller: str):
     wide = {n: r.shape[-1] for n, r in rows.items() if r.shape[-1] != 1}
     if wide:
         raise ValueError(
-            f"{caller} needs a grid whose rows are one time step wide, and "
+            f"{caller} needs a grid whose rows are one time step wide. "
             f"{sorted(wide)} came back wider than that ({wide}). Set each stream's "
             f"window_size to one step (bin_size for spikes, 1/sample_rate for "
-            f"continuous). A categorical stream cannot satisfy this, since its "
+            f"continuous). A categorical stream cannot satisfy this because its "
             f"encoder uses that axis for categories."
         )
     return {n: r.squeeze(-1) for n, r in rows.items()}

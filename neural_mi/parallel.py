@@ -14,7 +14,7 @@ from typing import Any, Callable, List
 from tqdm.auto import tqdm
 
 from neural_mi.utils import _configure_multiprocessing
-from neural_mi.logger import logger, worker_init_args
+from neural_mi.logger import CapturedTask, logger, released, worker_init_args
 
 
 def dispatch_tasks(
@@ -70,5 +70,5 @@ def dispatch_tasks(
     with mp.get_context('spawn').Pool(processes=n_workers,
                                       initializer=_log_init, initargs=_log_args) as pool:
         return list(tqdm(
-            pool.imap(fn, tasks), total=n_tasks, desc=desc, disable=not show_progress
+            released(pool.imap(CapturedTask(fn), tasks)), total=n_tasks, desc=desc, disable=not show_progress
         ))

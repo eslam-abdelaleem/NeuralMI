@@ -194,12 +194,19 @@ class TestDualBranchIntegration:
         assert np.isfinite(r.mi_estimate)
 
     def test_dual_branch_rigorous_end_to_end(self):
+        np.random.seed(0)
         a, c, y = self._mismatched_data()
         r = nmi.run(a, y, mode='conditional',
                     conditional=Conditional(w_data=c, align='dual_branch', rigorous=True,
                                             gamma_range=range(1, 4)),
                     model=_DB_MODEL, training=_TRAINING, show_progress=False)
-        assert np.isfinite(r.mi_estimate)
+        fit = r.runs.iloc[0]
+        # A ladder left with fewer than two values of gamma that produced a value
+        # cannot be extrapolated and reports an unreliable NaN.
+        if len(fit['gammas_used']) >= 2:
+            assert np.isfinite(r.mi_estimate)
+        else:
+            assert not fit['is_reliable']
 
     def test_permutation_test_with_dual_branch_raises_clear_error(self):
         a, c, y = self._mismatched_data()

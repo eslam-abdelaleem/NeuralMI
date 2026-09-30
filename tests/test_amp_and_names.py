@@ -72,37 +72,13 @@ class TestAMP:
 
 
 class TestNamedVariables:
-    """Tests for x_name, y_name, channel_names_x, channel_names_y."""
-
-    def test_x_name_stored_in_params(self):
-        """x_name is stored in result.params when provided."""
-        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
-        r = nmi.run(x, y, mode='estimate',
-                    model=_MODEL, training=_training(), output=Output(x_name='LFP'), n_workers=1)
-        assert r.params.get('x_name') == 'LFP'
-
-    def test_y_name_stored_in_params(self):
-        """y_name is stored in result.params when provided."""
-        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
-        r = nmi.run(x, y, mode='estimate',
-                    model=_MODEL, training=_training(), output=Output(y_name='MUA'), n_workers=1)
-        assert r.params.get('y_name') == 'MUA'
-
-    def test_both_names_stored_together(self):
-        """x_name and y_name can be provided together and both appear in params."""
-        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
-        r = nmi.run(x, y, mode='estimate', model=_MODEL, training=_training(),
-                    output=Output(x_name='LFP', y_name='spikes'), n_workers=1)
-        assert r.params['x_name'] == 'LFP'
-        assert r.params['y_name'] == 'spikes'
+    """Tests for channel_names_x and channel_names_y."""
 
     def test_no_names_leaves_params_clean(self):
         """Omitting names does not add spurious keys to result.params."""
         x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
         r = nmi.run(x, y, mode='estimate',
                     model=_MODEL, training=_training(), n_workers=1)
-        assert 'x_name' not in r.params
-        assert 'y_name' not in r.params
         assert 'channel_names_x' not in r.params
 
     def test_channel_names_x_in_pairwise_details_self(self):

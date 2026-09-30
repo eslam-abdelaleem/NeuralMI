@@ -11,6 +11,7 @@ to gamma = 0 to obtain a bias-corrected MI value.  All per-run MI estimates are
 ``train_mi`` (evaluated on the large training partition at the best-generalising
 checkpoint), consistent with every other analysis mode.
 """
+import warnings
 import numpy as np
 import pandas as pd
 import itertools
@@ -21,13 +22,14 @@ from tqdm.auto import tqdm
 from typing import Any, Dict, List, Optional, Tuple
 
 from neural_mi.analysis.task import run_training_task
-from neural_mi.logger import logger, worker_init_args
+from neural_mi.logger import CapturedTask, logger, released, worker_init_args
 from neural_mi.embeddings_io import with_model_labels
-from neural_mi.exceptions import InsufficientDataError, TrainingError
+from neural_mi.exceptions import CombinationWarning, InsufficientDataError, TrainingError
 from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
 from neural_mi.data.shift_windowing import (
     n_windows_if_deferred, shift_family, chunk_window_range_to_raw, seconds_to_samples,
     spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
+    resolve_step_size,
 )
 
 
@@ -169,9 +171,76 @@ def _extrapolate_mi(group: pd.DataFrame, gammas_to_fit: List[int],
     return intercept, mi_error, mi_error_pred, slope
 
 
+def _fit_target(param_dict: Dict[str, Any]) -> str:
+    """What a message calls one fit's configuration: its grid values, or this call."""
+    shown = {k: v for k, v in param_dict.items() if k != 'dummy_group'}
+    return str(shown) if shown else "this call"
+
+
+def _fit_label(param_dict: Dict[str, Any]) -> str:
+    """The prefix of a message about one fit."""
+    return f"Fit for {_fit_target(param_dict)}: "
+
+
+def _unfittable_ladder(kept: pd.DataFrame, where: str) -> Optional[Dict[str, Any]]:
+    """The fit of a ladder with fewer than two values of gamma left, or None.
+
+    A line needs two values of gamma. With none left every rung produced nothing
+    and the fit reports 0. With one left the ladder cannot be extrapolated and
+    the fit reports NaN. Either way it is unreliable.
+    """
+    gammas = sorted(int(g) for g in kept['gamma'].unique())
+    if len(gammas) >= 2:
+        return None
+    if not gammas:
+        logger.warning(f"{where}every rung of the gamma ladder produced nothing. The fit "
+                       f"reports 0 and is unreliable.")
+        value = 0.0
+    else:
+        logger.warning(f"{where}only gamma={gammas[0]} has rungs that produced a value. A line "
+                       f"needs two values of gamma. The fit reports NaN and is unreliable.")
+        value = float('nan')
+    nan = float('nan')
+    return {'mi_corrected': value, 'mi_error': nan, 'mi_error_pred': nan, 'slope': nan,
+            'is_reliable': False, 'linear_region_found': False, 'enough_gamma_points': False,
+            'gammas_used': gammas, 'fit_quality_warning': False, 'leverage_warning': False,
+            'r_squared': nan, 'max_abs_residual': nan, 'loo_intercept_shift': nan}
+
+
+def _drop_zero_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int]:
+    """The ladder without its rungs reported as 0, and how many there were.
+
+    A rung is 0 when its network learned nothing that generalises or its value
+    came out negative. Either way it produced nothing, like a failed chunk, and
+    the fit leaves it out. A gamma with no rung left drops out of the fit, where
+    ``min_gamma_points`` decides whether enough remain.
+    """
+    is_zero = group['train_mi'] == 0
+    if not is_zero.any():
+        return group, 0
+    per_gamma = group.assign(_zero=is_zero).groupby('gamma')['_zero'].agg(['sum', 'count'])
+    hit = per_gamma[per_gamma['sum'] > 0]
+    counts = ', '.join(f"gamma {int(g)}: {int(r['sum'])} of {int(r['count'])}"
+                       for g, r in hit.iterrows())
+    logger.warning(
+        f"{where}{int(is_zero.sum())} of {len(group)} rungs of the gamma ladder produced "
+        f"nothing (reported as 0) and are left out of the fit ({counts}). A rung produces "
+        f"nothing when its network learned nothing that generalises or its value came out "
+        f"negative. runs counts them in zero_rungs."
+    )
+    half = [int(g) for g, r in per_gamma.iterrows() if r['sum'] >= 0.5 * r['count']]
+    if half:
+        logger.warning(
+            f"{where}half or more of the rungs produced nothing at gamma={half}. The chunks "
+            f"there are likely too small to estimate this quantity. A gamma with no rung left "
+            f"drops out of the fit. The fit is unreliable with fewer than min_gamma_points "
+            f"values of gamma."
+        )
+    return group[~is_zero], int(is_zero.sum())
+
+
 def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
                                residual_threshold: float = 2.5,
-                               r2_threshold: float = 0.90,
                                leverage_threshold: float = 0.20) -> Dict[str, Any]:
     """Computes fit diagnostics for the WLS linear extrapolation.
 
@@ -200,12 +269,6 @@ def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
         The gamma values retained after ``_find_linear_region``.
     residual_threshold : float
         Maximum allowed absolute externally studentized residual.
-    r2_threshold : float
-        Unused by this function's own logic; accepted for a uniform call
-        signature across diagnostics helpers. R² is reported as a diagnostic,
-        not used as a gate: with large N the bias across gamma is inherently
-        small (near-flat line) so R² collapses toward zero even for a sound
-        fit, and if R² is already bad there's nothing meaningful to gate on.
     leverage_threshold : float
         Maximum allowed relative shift in intercept when γ=1 is left out.
 
@@ -234,7 +297,10 @@ def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
     # ------------------------------------------------------------------
     # Check A: residual quality
     # ------------------------------------------------------------------
-    r_squared = fit_linear.rsquared
+    # A ladder with no spread (every chunk at the same value, typically 0) leaves
+    # R-squared undefined. It is reported as NaN, which the summary skips.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r_squared = fit_linear.rsquared
 
     try:
         influence = fit_linear.get_influence()
@@ -323,12 +389,12 @@ def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) 
                 saturated_gammas.append(g)
     if saturated_gammas:
         logger.warning(
-            f"Rigorous fit uses gamma={sorted(saturated_gammas)}, which are "
-            f"saturated (mean train_saturation > {SATURATION_WARNING_THRESHOLD:.0%} "
+            f"Rigorous fit uses the saturated gamma={sorted(saturated_gammas)} "
+            f"(mean train_saturation above {SATURATION_WARNING_THRESHOLD:.0%} "
             f"of their own ceiling). An extrapolation anchored on saturated "
-            f"rungs cannot be trusted, since the fitted slope reflects the ceiling "
-            f"as much as the true bias. Consider increasing max_eval_samples "
-            f"or narrowing gamma_range to exclude these."
+            f"rungs cannot be trusted. The fitted slope reflects the ceiling "
+            f"as much as the true bias. Raise max_eval_samples or narrow "
+            f"gamma_range to leave these out."
         )
         out['saturated_gammas'] = sorted(saturated_gammas)
     else:
@@ -340,7 +406,6 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                                curvature_t_threshold: float, min_gamma_points: int,
                                confidence_level: float,
                                residual_threshold: float = 2.5,
-                               r2_threshold: float = 0.90,
                                leverage_threshold: float = 0.20,
                                chunking_mode: str = 'permuted',
                                n_tasks_created: int = 0) -> List[Dict[str, Any]]:
@@ -369,6 +434,14 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
     for params, group in valid_df.groupby(grouper):
         param_values = params if isinstance(params, tuple) else (params,)
         param_dict = dict(zip(group_keys, param_values))
+        group, zero_rungs = _drop_zero_rungs(group, _fit_label(param_dict))
+        unfittable = _unfittable_ladder(group, _fit_label(param_dict))
+        if unfittable is not None:
+            param_dict.update(unfittable, chunking_mode=chunking_mode,
+                              n_tasks_created=n_tasks_created, zero_rungs=zero_rungs)
+            param_dict.pop('dummy_group', None)
+            corrected_results.append(param_dict)
+            continue
 
         try:
             gammas_used, linear_region_found, curvature_stats = _find_linear_region(
@@ -376,11 +449,11 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             enough_gamma_points = len(gammas_used) >= min_gamma_points
             is_reliable = enough_gamma_points and linear_region_found
             if not enough_gamma_points:
-                logger.warning(f"Fit for {param_dict} is unreliable (final gamma points < {min_gamma_points}).")
+                logger.warning(f"Fit for {_fit_target(param_dict)} is unreliable (final gamma points < {min_gamma_points}).")
             elif not linear_region_found:
                 logger.warning(
-                    f"Fit for {param_dict} is unreliable: no linear region was found down to "
-                    f"min_gamma_points={min_gamma_points}, so the fit uses gamma={gammas_used} "
+                    f"Fit for {_fit_target(param_dict)} is unreliable. No linear region was found down to "
+                    f"min_gamma_points={min_gamma_points}. The fit uses gamma={gammas_used} "
                     f"without having satisfied the curvature criterion."
                 )
 
@@ -389,14 +462,14 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             )
 
             diagnostics = _compute_fit_diagnostics(
-                group, gammas_used, residual_threshold, r2_threshold, leverage_threshold
+                group, gammas_used, residual_threshold, leverage_threshold
             )
             per_gamma_diagnostics = _compute_per_gamma_diagnostics(group, gammas_used)
 
             if diagnostics['leverage_warning']:
                 is_reliable = False
                 logger.warning(
-                    f"Fit diagnostics triggered for {param_dict}: "
+                    f"Fit diagnostics triggered for {_fit_target(param_dict)}: "
                     f"leverage_warning={diagnostics['leverage_warning']}."
                 )
             # fit_quality_warning is informational only; does not affect is_reliable
@@ -417,7 +490,7 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             if per_gamma_diagnostics['saturated_gammas']:
                 is_reliable = False
                 logger.warning(
-                    f"Fit for {param_dict} marked unreliable: gamma="
+                    f"Fit for {_fit_target(param_dict)} marked unreliable: gamma="
                     f"{per_gamma_diagnostics['saturated_gammas']} used in the fit are ceiling-saturated."
                 )
 
@@ -433,13 +506,14 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                 'gammas_used': gammas_used,
                 'chunking_mode': chunking_mode,
                 'n_tasks_created': n_tasks_created,
+                'zero_rungs': zero_rungs,
             })
             param_dict.update(diagnostics)
             param_dict.update(per_gamma_diagnostics)
             param_dict.pop('dummy_group', None)
             corrected_results.append(param_dict)
         except InsufficientDataError as e:
-            logger.error(f"Could not perform extrapolation for params {param_dict}: {e}")
+            logger.error(f"Could not perform extrapolation for params {_fit_target(param_dict)}: {e}")
 
     return corrected_results
 
@@ -507,7 +581,7 @@ class AnalysisWorkflow:
         **kwargs : Dict[str, Any]
             Additional keyword arguments for the bias correction, such as
             ``curvature_t_threshold``, ``min_gamma_points``, ``confidence_level``,
-            ``residual_threshold``, ``r2_threshold``, and ``leverage_threshold``.
+            ``residual_threshold`` and ``leverage_threshold``.
 
         Returns
         -------
@@ -538,17 +612,17 @@ class AnalysisWorkflow:
         expected_total = expected_per_combo * n_combos
         if len(tasks) != expected_total:
             logger.warning(
-                f"Rigorous analysis: expected {expected_total} tasks "
+                f"Rigorous analysis expected {expected_total} tasks "
                 f"({n_combos} combo(s) x sum(gamma_range)={expected_per_combo}) "
-                f"but created {len(tasks)}. The gamma ladder may be truncated; "
-                f"investigate before trusting the extrapolation."
+                f"and created {len(tasks)}. The gamma ladder may be truncated. "
+                f"Check it before trusting the extrapolation."
             )
 
         if n_workers <= 1:
             logger.info("Running rigorous analysis sequentially (n_workers=1)...")
             raw_results = [
                 run_training_task(task)
-                for task in tqdm(tasks, desc="Rigorous Analysis Progress",
+                for task in tqdm(tasks, desc="Rigorous analysis",
                                  unit="task", disable=not show_progress)
             ]
         else:
@@ -557,8 +631,8 @@ class AnalysisWorkflow:
             with mp.get_context('spawn').Pool(processes=n_workers,
                                           initializer=_log_init, initargs=_log_args) as pool:
                 raw_results = list(tqdm(
-                    pool.imap(run_training_task, tasks), total=len(tasks),
-                    desc="Rigorous Analysis Progress", unit="task", disable=not show_progress
+                    released(pool.imap(CapturedTask(run_training_task), tasks)), total=len(tasks),
+                    desc="Rigorous analysis", unit="task", disable=not show_progress
                 ))
 
         logger.info("All training tasks finished. Performing bias correction...")
@@ -570,7 +644,6 @@ class AnalysisWorkflow:
             'min_gamma_points': kwargs.pop('min_gamma_points', 5),
             'confidence_level': kwargs.pop('confidence_level', 0.68),
             'residual_threshold': kwargs.pop('residual_threshold', 2.5),
-            'r2_threshold': kwargs.pop('r2_threshold', 0.90),
             'leverage_threshold': kwargs.pop('leverage_threshold', 0.20),
         }
 
@@ -662,7 +735,7 @@ class AnalysisWorkflow:
             _wp_x = self.base_params.get('processor_params_x') or {}
             _wp_y = self.base_params.get('processor_params_y') or _wp_x
             _window_size = _wp_x.get('window_size')
-            _step_size = _wp_x.get('step_size') or _window_size
+            _step_size = resolve_step_size(_window_size, _wp_x.get('step_size'))
             _period_x = 1.0 / _wp_x['sample_rate'] if _wp_x.get('sample_rate') else 1.0
             _period_y = 1.0 / _wp_y['sample_rate'] if _wp_y.get('sample_rate') else 1.0
             _window_size_x = seconds_to_samples(_window_size, _period_x)
@@ -696,16 +769,16 @@ class AnalysisWorkflow:
                     min_reliable_samples = int(np.ceil(_bs / _held_out))
                 if min_chunk_size < min_reliable_samples:
                     logger.warning(
-                        f"gamma={gamma}: smallest data subset has {min_chunk_size} samples, "
-                        f"below the ~{min_reliable_samples} at which the held-out partition "
-                        f"of a chunk can still fill one evaluation batch "
+                        f"gamma={gamma}: the smallest data subset has {min_chunk_size} "
+                        f"samples. Below about {min_reliable_samples} the held-out partition "
+                        f"of a chunk cannot fill one evaluation batch "
                         f"(batch_size={current_params.get('batch_size', 128)}, "
                         f"train_fraction={current_params.get('train_fraction', 0.9)}). "
-                        f"This is a caution instead of a threshold: MI values from chunks "
-                        f"this small are dominated by noise, and a straight line through "
-                        f"noisy rungs still looks straight, so the linearity check cannot "
-                        f"warn you about it. Prefer a smaller gamma_range or more data. "
-                        f"Set Training(min_reliable_samples=...) to move this line."
+                        f"MI values from chunks this small are dominated by noise. A "
+                        f"straight line through noisy rungs still looks straight and the "
+                        f"linearity check cannot catch it. Use a smaller gamma_range or "
+                        f"more data. Set Training(min_reliable_samples=...) to move this "
+                        f"line."
                     )
 
                 for i_subset, subset_indices in enumerate(chunks):
@@ -800,7 +873,7 @@ def run_rigorous_analysis(
     **kwargs
         Additional keyword arguments forwarded to ``AnalysisWorkflow.run()``.
         Common ones: ``curvature_t_threshold``, ``min_gamma_points``, ``confidence_level``,
-        ``residual_threshold``, ``r2_threshold``, ``leverage_threshold``.
+        ``residual_threshold``, ``leverage_threshold``.
 
     Returns
     -------
@@ -832,7 +905,11 @@ def _run_scalar_fn_task(args: tuple) -> Dict[str, Any]:
     scalar_fn, x_sub, y_sub, params, extra_sub, extra_kwargs, gamma, chunk, chunk_size = args
     params = with_model_labels(params, gamma=gamma, chunk=chunk)
     try:
-        value = scalar_fn(x_sub, y_sub, params, **extra_sub, **(extra_kwargs or {}))
+        # A chunk's combined value is one point on the ladder, never the
+        # reported result, so the checks on a combined quantity stay quiet here.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', CombinationWarning)
+            value = scalar_fn(x_sub, y_sub, params, **extra_sub, **(extra_kwargs or {}))
         # A scalar_fn may also return the paths of the networks it saved.
         value, paths = value if isinstance(value, tuple) else (value, None)
         return {'gamma': gamma, 'chunk': chunk, 'train_mi': value, '_error': None,
@@ -855,9 +932,7 @@ def run_rigorous_scalar_analysis(
     min_gamma_points: int = 5,
     confidence_level: float = 0.68,
     residual_threshold: float = 2.5,
-    r2_threshold: float = 0.90,
     leverage_threshold: float = 0.20,
-    verbose: bool = False,
     temporal_chunking: Optional[bool] = None,
     raw_deferred: bool = False,
 ) -> Dict[str, Any]:
@@ -915,14 +990,8 @@ def run_rigorous_scalar_analysis(
         ``0.68`` (roughly ±1 σ).
     residual_threshold : float, optional
         Passed to ``_compute_fit_diagnostics``.  Defaults to ``2.5``.
-    r2_threshold : float, optional
-        Passed to ``_compute_fit_diagnostics`` but unused by its logic; R² is
-        reported as a diagnostic, not used as a gate (see that function's
-        docstring).  Defaults to ``0.90``.
     leverage_threshold : float, optional
         Passed to ``_compute_fit_diagnostics``.  Defaults to ``0.20``.
-    verbose : bool, optional
-        Passed to ``_find_linear_region``.  Defaults to ``False``.
     raw_deferred : bool, optional
         ``True`` when ``x_data``/``y_data`` (and every array in
         ``extra_data``) are raw, unwindowed 2-D arrays and this call should
@@ -1015,7 +1084,7 @@ def run_rigorous_scalar_analysis(
         _wp_x = base_params.get('processor_params_x') or {}
         _wp_y = base_params.get('processor_params_y') or _wp_x
         _window_size = _wp_x.get('window_size')
-        _step_size = _wp_x.get('step_size') or _window_size
+        _step_size = resolve_step_size(_window_size, _wp_x.get('step_size'))
         _period_x = 1.0 / _wp_x['sample_rate'] if _wp_x.get('sample_rate') else 1.0
         _period_y = 1.0 / _wp_y['sample_rate'] if _wp_y.get('sample_rate') else 1.0
         _window_size_x = seconds_to_samples(_window_size, _period_x)
@@ -1108,7 +1177,7 @@ def run_rigorous_scalar_analysis(
         with mp.get_context('spawn').Pool(processes=effective_workers,
                                       initializer=_log_init, initargs=_log_args) as pool:
             raw_rows = list(tqdm(
-                pool.imap(_run_scalar_fn_task, tasks), total=len(tasks),
+                released(pool.imap(CapturedTask(_run_scalar_fn_task), tasks)), total=len(tasks),
                 desc="Rigorous scalar analysis", unit="task", disable=not show_progress
             ))
 
@@ -1125,12 +1194,20 @@ def run_rigorous_scalar_analysis(
     if len(rows) < min_gamma_points:
         raise InsufficientDataError(
             f"The rigorous fit collected only {len(rows)} successful chunk "
-            f"estimates, fewer than min_gamma_points={min_gamma_points}, so it "
-            f"cannot extrapolate."
+            f"estimates. It needs min_gamma_points={min_gamma_points} to "
+            f"extrapolate."
         )
 
-    df = pd.DataFrame(rows, columns=['gamma', 'chunk', 'train_mi']
-                      + (['model_path'] if any('model_path' in r for r in rows) else []))
+    ladder = pd.DataFrame(rows, columns=['gamma', 'chunk', 'train_mi']
+                          + (['model_path'] if any('model_path' in r for r in rows) else []))
+    # The fit uses the rungs that produced a value. The ladder reported in
+    # raw_results_df keeps every rung.
+    df, zero_rungs = _drop_zero_rungs(ladder, "Rigorous fit (rigorous=True): ")
+    unfittable = _unfittable_ladder(df, "Rigorous fit (rigorous=True): ")
+    if unfittable is not None:
+        return {**unfittable, 'raw_results_df': ladder, 'chunking_mode': resolved_chunking_mode,
+                'n_tasks_created': len(tasks), 'zero_rungs': zero_rungs,
+                'per_gamma_train_mi_spread': {}}
 
     gammas_used, linear_region_found, curvature_stats = _find_linear_region(
         df, curvature_t_threshold, min_gamma_points)
@@ -1144,22 +1221,22 @@ def run_rigorous_scalar_analysis(
         gammas_used = sorted(df['gamma'].unique().tolist())
         linear_region_found = False
         logger.warning(
-            "Rigorous fit (rigorous=True): linear region too small after pruning; "
-            "falling back to all %d gamma values (is_reliable will be False).",
+            "Rigorous fit (rigorous=True): the linear region is too small after "
+            "pruning. The fit falls back to all %d gamma values and is_reliable is False.",
             len(gammas_used),
         )
         mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
             df, gammas_used, confidence_level
         )
     # Note: diagnostics uses the same gamma-based regression as _extrapolate_mi
-    diagnostics = _compute_fit_diagnostics(df, gammas_used, residual_threshold, r2_threshold, leverage_threshold)
+    diagnostics = _compute_fit_diagnostics(df, gammas_used, residual_threshold, leverage_threshold)
 
     enough_gamma_points = len(gammas_used) >= min_gamma_points
     is_reliable = enough_gamma_points and linear_region_found
     if enough_gamma_points and not linear_region_found:
         logger.warning(
             "Rigorous fit (rigorous=True): no linear region was found down to "
-            "min_gamma_points=%d; the fit uses gamma=%s without having satisfied "
+            "min_gamma_points=%d. The fit uses gamma=%s without having satisfied "
             "the curvature criterion.", min_gamma_points, gammas_used,
         )
     if diagnostics['leverage_warning']:
@@ -1194,9 +1271,10 @@ def run_rigorous_scalar_analysis(
         'enough_gamma_points': enough_gamma_points,
         **curvature_stats,
         'gammas_used': gammas_used,
-        'raw_results_df': df,
+        'raw_results_df': ladder,
         'chunking_mode': resolved_chunking_mode,
         'n_tasks_created': len(tasks),
         'per_gamma_train_mi_spread': per_gamma_spread,
+        'zero_rungs': zero_rungs,
         **diagnostics,
     }

@@ -102,7 +102,7 @@ def shift_family(processor_type_x: Optional[str], processor_type_y_effective: Op
 
 
 def mixed_pair_sample_rate_ok(processor_type_x: Optional[str], processor_params_x: Optional[dict],
-                              processor_type_y_effective: Optional[str], processor_params_y: Optional[dict]) -> bool:
+                              processor_params_y: Optional[dict]) -> bool:
     """For a ``shift_family(...) == 'mixed'`` pair, check whether the
     regular-grid side (`continuous`/`categorical`) has `sample_rate` set.
 
@@ -177,7 +177,7 @@ def make_categorical_encoder(n_categories: int, encoding: str) -> Callable[[torc
     if encoding not in ('majority_vote', 'probability', 'full_trajectory'):
         raise ValueError(
             f"Unknown encoding '{encoding}'. Expected 'majority_vote', "
-            f"'probability', or 'full_trajectory'."
+            f"'probability' or 'full_trajectory'."
         )
 
     def _encode(raw_windows: torch.Tensor) -> torch.Tensor:
@@ -240,7 +240,7 @@ def make_multi_categorical_encoder(block_specs: List[Tuple[int, Optional[int]]],
     if encoding not in ('majority_vote', 'probability', 'full_trajectory'):
         raise ValueError(
             f"Unknown encoding '{encoding}'. Expected 'majority_vote', "
-            f"'probability', or 'full_trajectory'."
+            f"'probability' or 'full_trajectory'."
         )
     _per_block_encoders = [make_categorical_encoder(n_cat, encoding) if n_cat is not None else None
                            for _, n_cat in block_specs]
@@ -270,8 +270,8 @@ def make_multi_categorical_encoder(block_specs: List[Tuple[int, Optional[int]]],
             ch0 += n_ch
         if ch0 != n_channels:
             raise ValueError(
-                f"block_specs channel counts sum to {ch0}, but raw_windows has "
-                f"{n_channels} channels -- block_specs must partition every "
+                f"block_specs channel counts sum to {ch0} and raw_windows has "
+                f"{n_channels} channels. block_specs must partition every "
                 f"channel of the concatenated array."
             )
         max_w = max(o.shape[2] for o in outputs)
@@ -584,11 +584,10 @@ def _build_shifted_dataset(stream_defs, params, data_device, pack_roles, shifter
         period = stream_period(proc_params, times[name])
         if period is None:
             logger.warning(
-                f"shift_windows is off for this run: stream {name!r} was given a "
-                f"time vector whose sampling is irregular, and the reslice route "
-                f"needs one period for the whole recording. The windows are built "
-                f"the eager way instead, which checks each window against the "
-                f"timestamps. Set {{'sample_rate': ...}} in that stream's processor "
+                f"shift_windows is off for this run because stream {name!r} was given "
+                f"a time vector whose sampling is irregular. The reslice route needs "
+                f"one period for the whole recording. The eager route builds the "
+                f"windows here and checks each one against the timestamps. Set {{'sample_rate': ...}} in that stream's processor "
                 f"parameters to state a period and keep the reslice route."
             )
             return None
@@ -601,10 +600,10 @@ def _build_shifted_dataset(stream_defs, params, data_device, pack_roles, shifter
               for t in times.values() if t is not None and len(np.asarray(t)) > 0]
     if starts and max(starts) - min(starts) > 0.5 * max(periods.values()):
         logger.warning(
-            f"shift_windows is off for this run: the streams' time vectors start "
-            f"{max(starts) - min(starts):.4g} s apart, and the reslice route lines "
-            f"them up by sample number. The windows are built the eager way "
-            f"instead, which starts the grid at the latest start among them."
+            f"shift_windows is off for this run because the streams' time vectors "
+            f"start {max(starts) - min(starts):.4g} s apart. The reslice route lines "
+            f"them up by sample number. The eager route builds the windows here and "
+            f"starts the grid at the latest start among them."
         )
         return None
 
@@ -658,8 +657,8 @@ def try_build_shift_windows_dataset(x_data, y_data, params: dict, data_device: s
     _window_size = _wp_x.get('window_size')
     if _window_size is None:
         raise ValueError(
-            "shift_windows=True requires Processing(x_params={'window_size': ...}), "
-            "optionally with 'step_size', which defaults to window_size."
+            "shift_windows=True requires Processing(x_params={'window_size': ...}). "
+            "'step_size' is optional and defaults to window_size."
         )
     _step_size = resolve_step_size(_window_size, _wp_x.get('step_size'))
     # window_size/step_size are in the shared WindowManager unit -- seconds if
@@ -721,8 +720,8 @@ def try_build_shift_windows_dataset_dual_branch(x_data: Tuple, y_data, params: d
     _window_size_x_raw = _wp_x.get('window_size')
     if _window_size_x_raw is None:
         raise ValueError(
-            "shift_windows=True requires Processing(x_params={'window_size': ...}), "
-            "optionally with 'step_size', which defaults to window_size."
+            "shift_windows=True requires Processing(x_params={'window_size': ...}). "
+            "'step_size' is optional and defaults to window_size."
         )
     _step_size_x_raw = resolve_step_size(_window_size_x_raw, _wp_x.get('step_size'))
     # C's own window_size -- unlike try_build_shift_windows_dataset's X/Y
@@ -839,8 +838,8 @@ def try_build_shift_windows_dataset_tuple(x_data, y_data, params: dict,
     _window_size = _wp_x.get('window_size')
     if _window_size is None:
         raise ValueError(
-            "shift_windows=True requires Processing(x_params={'window_size': ...}), "
-            "optionally with 'step_size', which defaults to window_size."
+            "shift_windows=True requires Processing(x_params={'window_size': ...}). "
+            "'step_size' is optional and defaults to window_size."
         )
     _step_size = resolve_step_size(_window_size, _wp_x.get('step_size'))
     # The second stream keeps its own window_size only where that is its
@@ -985,12 +984,15 @@ def spike_shift_grid_info(x_data: List[np.ndarray], y_data: List[np.ndarray],
 
     _wp_x = params.get('processor_params_x') or {}
     window_size = _wp_x.get('window_size')
-    step_size = _wp_x.get('step_size') or window_size
+    # Left as given: the WindowManager applies the step convention itself,
+    # and a step filled in here with window_size would be read as a fraction
+    # whenever the window is below 1.
+    step_size = _wp_x.get('step_size')
     if window_size is None:
         raise ValueError(
             "shift_time=True with mode='rigorous' for a spike+spike pair "
-            "requires Processing(x_params={'window_size': ...}), optionally with "
-            "'step_size', which defaults to window_size."
+            "requires Processing(x_params={'window_size': ...}). 'step_size' is "
+            "optional and defaults to window_size."
         )
     x_ds = SpikeWindowDataset(x_data)
     y_ds = SpikeWindowDataset(y_data)

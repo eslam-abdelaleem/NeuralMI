@@ -13,15 +13,10 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Union
 
-from neural_mi.training.trainer import Trainer
-from neural_mi.estimators import ESTIMATORS
-from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device
-from neural_mi.data.handler import create_dataset
+from neural_mi.analysis.task import run_training_task
 from neural_mi.data.corruption import corrupt, METHODS
-from neural_mi.embeddings_io import save_network
-from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
 from neural_mi.logger import logger
-from neural_mi.defaults import BASE_PARAMS_SCHEMA
+from neural_mi.validation import ParameterValidator
 
 
 def _empty_value(base_params: Dict[str, Any], side: str) -> float:
@@ -115,99 +110,21 @@ def run_precision_analysis(
     """
     logger.info("Initializing Precision Analysis...")
 
-    # 1. Prepare Data & Model
-    # Precision analysis trains once then runs many forward passes on the same
-    # dataset at different corruption levels, so keeping data on the compute
-    # device ('auto') would avoid repeated host<->device transfers -- but
-    # base_params['dataset_device'] is always already populated with the
-    # schema's global default ('cpu') by ParameterValidator.apply_defaults()
-    # before this function runs, so the 'auto' fallback below only takes
-    # effect if a caller invokes run_precision_analysis() directly with a
-    # base_params dict that omits the key (bypassing run()'s validation).
-    # Through the public run() API, set dataset_device='auto' explicitly in
-    # base_params to get the co-located-with-compute-device behavior.
-    device = get_device(base_params.get('device'))
-    _data_device_raw = base_params.get('dataset_device', 'auto')
-    _data_device = str(device) if _data_device_raw == 'auto' else (_data_device_raw or 'cpu')
-
-    dataset = try_build_shift_windows_dataset(x_data, y_data, base_params, data_device=_data_device)
-    if dataset is None:
-        dataset = create_dataset(
-            x_data, y_data,
-            # The time vectors travel in base_params and must be passed on.
-            # Without them a timestamped stream is windowed in sample-index
-            # units here while every other mode windows it in seconds, so the
-            # same data gives a different grid under mode='precision'.
-            x_time=base_params.get('x_time'),
-            y_time=base_params.get('y_time'),
-            processor_type_x=base_params.get('processor_type_x'),
-            processor_type_y=base_params.get('processor_type_y'),
-            processor_params_x=base_params.get('processor_params_x'),
-            processor_params_y=base_params.get('processor_params_y'),
-            data_device=_data_device,
-        )
-    
-    # Update dimensions in base_params based on the dataset
-    if dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
-        base_params['input_dim_x'] = dataset.x_data.shape[1] * dataset.x_data.shape[2]
-        base_params['n_channels_x'] = dataset.x_data.shape[1]
-    if dataset.y_data is not None and hasattr(dataset.y_data, 'shape'):
-        base_params['input_dim_y'] = dataset.y_data.shape[1] * dataset.y_data.shape[2]
-        base_params['n_channels_y'] = dataset.y_data.shape[1]
-
-    if base_params.get('custom_critic') is not None:
-        critic = base_params['custom_critic']
-        logger.debug("Using provided custom critic.")
-    else:
-        critic = build_critic(base_params.get('critic_type', 'separable'), base_params, base_params.get('custom_embedding_cls'))
-
-    optimizer, scheduler = build_optimizer_and_scheduler(base_params, critic)
-
-    trainer = Trainer(
-        model=critic.to(device),
-        estimator_fn=ESTIMATORS[base_params.get('estimator_name', 'infonce')],
-        optimizer=optimizer,
-        device=device,
-        use_variational=base_params.get('use_variational', False),
-        beta=base_params.get('beta', 1024.0),
-        estimator_params=base_params.get('estimator_params'),
-        gradient_clip_val=base_params.get('gradient_clip_val', None),
-    )
-    
-    # Determine train/test splits explicitly so we can reuse the exact test set for evaluation
-    n_samples = len(dataset)
-    _train_frac_default = BASE_PARAMS_SCHEMA['train_fraction']['default']
-    train_frac = base_params.get('train_fraction', _train_frac_default)
-    split_mode = base_params.get('split_mode', 'blocked')
-    if base_params.get('train_indices') is not None and base_params.get('test_indices') is not None:
-        train_idx, test_idx = base_params['train_indices'], base_params['test_indices']
-    elif split_mode == 'random':
-        train_idx, test_idx = trainer._create_random_split(n_samples, train_frac)
-    else:
-        train_idx, test_idx = trainer._create_blocked_split(n_samples, train_frac, base_params.get('n_test_blocks', 5))
-        
-    # 2. Train the Baseline Model (Zero-Noise)
+    # 1. Train the baseline at full precision. It goes through the same task as
+    # every other mode, so every Model, Training and Split setting applies to it,
+    # and the task hands back the trainer and the dataset for the sweep below.
     logger.info("Training baseline model at maximum precision...")
-    baseline_results = trainer.train(
-        dataset,
-        n_epochs=base_params.get('n_epochs', 50),
-        batch_size=base_params.get('batch_size', 256),
-        patience=base_params.get('patience', 1000),
-        train_indices=train_idx,
-        test_indices=test_idx,
-        verbose=base_params.get('verbose', False),
-        show_progress=base_params.get('show_progress', True),
-        max_eval_samples=base_params.get('max_eval_samples', 5000),
-        track_spectral_history=False,  # Skip per-epoch dimensionality math to save time
-        scheduler=scheduler,
-        shift_time=base_params.get('shift_time', True),
-        shift_windows=base_params.get('shift_windows', True),
-    )
-    
+    # A direct caller can pass a partial base_params; fill it from the schema as
+    # run() does, so a direct call trains exactly what run() would.
+    params = dict(base_params)
+    ParameterValidator({'base_params': params}).apply_defaults()
+    baseline_results = run_training_task((x_data, y_data, {**params, '_keep_trained': True}, 'precision'))
+    trainer = baseline_results.pop('_trainer')
+    dataset = baseline_results.pop('_dataset')
+    train_idx = trainer.last_train_indices
+    device = trainer.device
     baseline_mi = baseline_results['train_mi']
-    # The baseline is the one network this mode trains, saved like any other.
-    from neural_mi.analysis.task import _BUILD_PARAMS_KEYS
-    model_path = save_network(trainer.model, base_params, _BUILD_PARAMS_KEYS)
+    model_path = baseline_results.get('model_path')
     logger.info(f"Baseline MI established: {baseline_mi:.3f} nats")
 
     # 3. The Precision Sweep (Inference Only)
@@ -277,14 +194,14 @@ def run_precision_analysis(
         # caller prints.
         _depth = abs(_worst) / baseline_mi if baseline_mi else float('inf')
         logger.warning(
-            f"mode='precision': MI goes negative from tau={_first['tau']:g} onward, "
-            f"reaching roughly {_depth:.0f}x the baseline in the opposite "
-            f"direction. Past this point the frozen critic is being evaluated on "
-            f"inputs it was never trained for, and the estimator's lower bound is "
-            f"unbounded below, so the depth of the fall measures how badly the "
-            f"bound has broken instead of how much information the corruption "
-            f"destroyed. The threshold crossing remains readable; do not quote or "
-            f"plot the tail as an amount of information."
+            f"mode='precision': MI goes negative from tau={_first['tau']:g} onward and "
+            f"reaches roughly {_depth:.0f}x the baseline in the opposite direction. "
+            f"Past this point the frozen critic is evaluated on inputs it was never "
+            f"trained for. The estimator's lower bound is unbounded below there. The "
+            f"depth of the fall measures how badly the bound has broken. MI cannot be "
+            f"negative. Those values are reported as 0 and the measured ones are kept "
+            f"as mi_raw in result.runs. The threshold crossing is read before that "
+            f"point and is unaffected."
         )
 
     # 4. Find Precision Threshold(s)

@@ -572,3 +572,33 @@ class TestShiftEvaluationConsistency:
             f"trained model against the canonical (shift=0) view ({manual_mi}) -- if this fails, "
             f"either the content snapshot or the frozen test-index handling has regressed"
         )
+
+def test_a_reported_mi_is_never_negative_and_keeps_the_measured_value():
+    """A network's reported MI is 0 when its test MI never rose above zero, and
+    also when the training-side value at the reported epoch came out below zero.
+    Either way raw_train_mi keeps the measured value, and the second case warns.
+
+    Small, briefly trained runs produce both cases. The scan requires at least
+    one run of the second kind, so the rule is exercised and not assumed.
+    """
+    import neural_mi as nmi
+    rng = np.random.default_rng(0)
+    partly_negative = 0
+    for seed in range(12):
+        x = rng.standard_normal((60, 2)).astype(np.float32)
+        y = (x + rng.standard_normal((60, 2))).astype(np.float32)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            result = nmi.run(x, y, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                             training=nmi.Training(n_epochs=2, learning_rate=1e-4, batch_size=8,
+                                                   patience=1),
+                             split=nmi.Split(mode='random'), seed=seed, show_progress=False)
+        row = result.runs.iloc[0]
+        said = any('reported epoch is negative' in str(w.message) for w in caught)
+        assert result.mi_estimate >= 0 and row['train_mi'] >= 0
+        if row['raw_train_mi'] < 0 and not row['all_mi_negative']:
+            partly_negative += 1
+            assert row['train_mi'] == 0 and said
+        else:
+            assert not said
+    assert partly_negative >= 1, "no run came out partly negative; widen the scan"

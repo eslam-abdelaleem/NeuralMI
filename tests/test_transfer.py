@@ -80,8 +80,11 @@ class TestTransferEntropy:
         assert results.get('n_samples') > 0
 
     def test_te_estimate_equals_difference(self):
-        x = np.random.randn(N, 1)
-        y = np.random.randn(N, 1)
+        """TE is the difference of its components, reported as 0 when that comes
+        out negative, with the measured difference kept as mi_raw."""
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((N, 1))
+        y = rng.standard_normal((N, 1))
         results = nmi.run(
             x, y,
             mode='transfer',
@@ -91,7 +94,8 @@ class TestTransferEntropy:
         )
         expected = (results.get('i_xypast_yfuture_mean')
                     - results.get('i_ypast_yfuture_mean'))
-        assert abs(results.mi_estimate - expected) < 1e-6
+        assert results.runs['mi_raw'].iloc[0] == pytest.approx(expected, abs=1e-6)
+        assert results.mi_estimate == pytest.approx(max(expected, 0.0), abs=1e-6)
 
     def test_return_embeddings_is_refused(self):
         """No single network of the two describes the transfer entropy."""

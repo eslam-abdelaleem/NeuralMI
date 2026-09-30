@@ -251,8 +251,8 @@ def run_conditional_mi(
         c_data = c_data.to(device)
         if x_data.shape[0] != y_data.shape[0] or x_data.shape[0] != c_data.shape[0]:
             raise ValueError(
-                "x_data, y_data, and c_data must have the same number of samples. "
-                f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(c_data.shape)}."
+                "x_data, y_data and c_data must have the same number of samples. Their "
+                f"shapes are {tuple(x_data.shape)}, {tuple(y_data.shape)} and {tuple(c_data.shape)}."
             )
         # No window-size trim/tolerance here -- a mismatch is expected and
         # required for this path, that's the entire reason it exists.
@@ -376,33 +376,29 @@ def run_conditional_mi(
         # (create_dataset), so they should always match exactly. A mismatch
         # here means something else is wrong -- always a hard error.
         raise ValueError(
-            "x_data, y_data, and w_data must have the same number of samples. "
-            f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(w_data.shape)}."
+            "x_data, y_data and w_data must have the same number of samples. Their "
+            f"shapes are {tuple(x_data.shape)}, {tuple(y_data.shape)} and {tuple(w_data.shape)}."
         )
     if x_data.shape[0] != w_data.shape[0]:
         if abs(x_data.shape[0] - w_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
             min_n = min(x_data.shape[0], w_data.shape[0])
             logger.warning(
-                f"mode='conditional': x_data/y_data have {x_data.shape[0]} windows but w_data has "
-                f"{w_data.shape[0]}; truncating all three to the shared first "
-                f"{min_n}. **This is only "
-                f"correct if the extra window is at an edge.** If it falls in "
-                f"the middle, every window after it is paired with its "
-                f"neighbour instead: measured once at index 2730 of 3332, that "
-                f"misaligned 18% of the windows with no further warning. "
-                f"Callers who reach this through nmi.run() are aligned by "
-                f"window time beforehand and never see this; reaching it means "
-                f"raw tensors were passed to the engine directly, where no "
-                f"window times exist to align on. Pass arrays that already "
-                f"agree in length if the ordering matters."
+                f"mode='conditional': x_data and y_data have {x_data.shape[0]} windows and w_data "
+                f"has {w_data.shape[0]}. All three are truncated to the first {min_n}. This is "
+                f"correct only if the extra window is at an edge. A window missing in the "
+                f"middle pairs every later window with its neighbour. Once, at index 2730 of "
+                f"3332, that misaligned 18% of the windows. nmi.run() aligns the streams by "
+                f"window time first and never reaches this. Reaching it means raw tensors were "
+                f"passed to the engine directly without window times to align on. Pass arrays "
+                f"that already agree in length if the ordering matters."
             )
             x_data = x_data[:min_n]
             y_data = y_data[:min_n]
             w_data = w_data[:min_n]
         else:
             raise ValueError(
-                "x_data, y_data, and w_data must have the same number of samples. "
-                f"Got shapes {tuple(x_data.shape)}, {tuple(y_data.shape)}, {tuple(w_data.shape)}."
+                "x_data, y_data and w_data must have the same number of samples. Their "
+                f"shapes are {tuple(x_data.shape)}, {tuple(y_data.shape)} and {tuple(w_data.shape)}."
             )
     if x_data.shape[2] != w_data.shape[2]:
         if w_data.shape[2] == 1:
@@ -418,9 +414,9 @@ def run_conditional_mi(
                 f"mode='conditional': x_data window size ({x_data.shape[2]}) and w_data window size "
                 f"({w_data.shape[2]}) differ by {abs(x_data.shape[2] - w_data.shape[2])} "
                 f"sample(s). Every processor emits window_size slots for a window of "
-                f"window_size, so check that Processing(x_params=...) and Processing(w_params=...) "
-                f"agree on window_size and sample_rate. Trimming both to the "
-                f"shared start, length {min_w}, instead of raising."
+                f"window_size. Check that Processing(x_params=...) and Processing(w_params=...) "
+                f"agree on window_size and sample_rate. Both are trimmed to their first "
+                f"{min_w} samples."
             )
             x_data = x_data[:, :, :min_w]
             w_data = w_data[:, :, :min_w]

@@ -21,6 +21,10 @@ from neural_mi.logger import logger
 
 # How summary() names the value of a quantity that is not a plain MI.
 _QUANTITY_LABELS = {'conditional': 'I(X;Y|W)', 'interaction': 'II', 'transfer': 'TE(X→Y)'}
+# The axes whose values are separate networks. Precision's tau is one network
+# evaluated many times.
+_NETWORK_AXES = {'lag': ('lag',), 'pairwise': ('ch_x', 'ch_y'),
+                 'dimensionality': ('split_id', 'embedding_dim')}
 
 # Per-component columns of the difference quantities, in the order they are
 # drawn, with their display labels.
@@ -109,7 +113,7 @@ class Results:
         never an interval on the population value.
     runs : pandas.DataFrame
         One row per repeat: ``config_id``, the grid and axis keys, the repeat
-        index (``run_id`` or ``split_id``), ``mi`` (the repeat's value of the
+        index (``run_id``), ``mi`` (the repeat's value of the
         quantity) and its diagnostics.
     details : dict
         ``{config_id: {...}}``: structured diagnostics per configuration.
@@ -208,7 +212,7 @@ class Results:
         ids = self.config_ids or [0]
         if config_id is not None:
             if config_id not in ids:
-                raise ValueError(f"config_id={config_id} is not in this result; it holds {ids}.")
+                raise ValueError(f"config_id={config_id} is not in this result. It holds {ids}.")
             return config_id
         if len(ids) == 1:
             return ids[0]
@@ -217,35 +221,60 @@ class Results:
             f"Pass config_id=... (one of {ids})."
         )
 
-    def _repeat_view(self, config_id: Optional[int] = None, run_id: Any = None) -> Dict[str, Any]:
-        """Everything recorded about one repeat, flattened into one dict.
+    def _repeat_view(self, config_id: Optional[int] = None, run_id: Any = None,
+                     what: str = "This view", **axis: Any) -> Dict[str, Any]:
+        """Everything recorded about one network, flattened into one dict.
 
-        Merges that repeat's row of ``runs``, its configuration's ``details``
-        and its embeddings. Used by the plots that draw one training run.
+        Merges that network's row of ``runs``, its configuration's ``details``
+        and its embeddings. ``run_id`` and, in a mode whose axis runs over
+        separate networks, the axis values pick the network. A call that
+        matches more than one network is refused with the keys to pass.
         """
-        cid = self._one_config(config_id, "This view")
+        cid = self._one_config(config_id, what)
+        network_axes = _NETWORK_AXES.get(self.mode, ())
+        unknown = sorted(set(axis) - set(network_axes))
+        if unknown:
+            raise ValueError(
+                f"{', '.join(unknown)} does not pick a network of mode='{self.mode}'. Its "
+                f"networks are picked by {', '.join(network_axes + ('run_id',))}."
+            )
         view: Dict[str, Any] = {}
         entry = self.details.get(cid, {})
         view.update({k: v for k, v in entry.items() if k not in ('embeddings', 'trainings')})
         runs = self.runs
-        rid = run_id
-        key = rid
+        key = run_id
         if runs is not None and not runs.empty:
             rows = runs[runs['config_id'] == cid] if 'config_id' in runs.columns else runs
-            index_col = 'run_id' if 'run_id' in rows.columns else ('split_id' if 'split_id' in rows.columns else None)
-            if rid is not None and index_col is not None:
-                rows = rows[rows[index_col] == rid]
-            if len(rows):
-                row = rows.iloc[0]
-                view.update({k: _scalar(row[k]) for k in rows.columns})
-                if index_col is not None:
-                    rid = _scalar(row[index_col])
-                # A mode with an axis keeps embeddings per axis value and repeat.
-                axis = [k for k in (self.params.get('axis_keys') or []) if k in rows.columns]
-                key = (*(_scalar(row[k]) for k in axis), rid) if axis else rid
+            picked = {k: v for k, v in dict(axis, run_id=run_id).items() if v is not None}
+            for k, v in picked.items():
+                if k in rows.columns:
+                    rows = rows[rows[k] == v]
+            if rows.empty:
+                raise ValueError(
+                    f"No network of configuration {cid} has "
+                    f"{', '.join(f'{k}={v!r}' for k, v in picked.items())}."
+                )
+            names = [k for k in network_axes + ('run_id',) if k in rows.columns]
+            if names and len(rows[names].drop_duplicates()) > 1:
+                open_keys = [k for k in names if rows[k].nunique() > 1]
+                values = '; '.join(f"{k} in {sorted(_scalar(v) for v in rows[k].unique())}"
+                                   for k in open_keys)
+                raise ValueError(
+                    f"{what} shows one network and {len(rows[names].drop_duplicates())} of "
+                    f"configuration {cid} match. Pass "
+                    f"{', '.join(f'{k}=...' for k in open_keys)} ({values})."
+                )
+            row = rows.iloc[0]
+            view.update({k: _scalar(row[k]) for k in rows.columns})
+            rid = _scalar(row['run_id']) if 'run_id' in rows.columns else run_id
+            # A mode with an axis keeps embeddings per axis value and repeat.
+            axis_keys = [k for k in (self.params.get('axis_keys') or []) if k in rows.columns]
+            key = (*(_scalar(row[k]) for k in axis_keys), rid) if axis_keys else rid
         embeddings = entry.get('embeddings') or {}
-        if embeddings:
-            chosen = embeddings.get(key, next(iter(embeddings.values())))
+        chosen = embeddings.get(key)
+        if chosen is None and len(embeddings) == 1:
+            chosen = next(iter(embeddings.values()))
+        if chosen:
             view.update(chosen)
         return view
 
@@ -288,9 +317,17 @@ class Results:
                     print(line)
             elif 'n_reliable' in df.columns:
                 print(f"  Reliable fits : {int(row['n_reliable'])} of {n_runs}")
-            if 'n_stable_total' in df.columns:
-                print(f"  Stable directions : {int(row['n_stable_total'])}"
-                      f"  (converged: {bool(row.get('converged'))})")
+        elif self.mode == 'dimensionality':
+            for cid in self.config_ids:
+                entry = self.details.get(cid, {})
+                spread = entry.get('dimension_at_most_std')
+                spread = f" ± {spread:.1f} over splits" if spread is not None else ""
+                print(f"  At most {entry.get('dimension_at_most')} embedding dimensions carry "
+                      f"{entry.get('saturation_ratio', 0.95):.0%} of the MI{spread}"
+                      + (f"  (configuration {cid})" if n_cfg > 1 else ""))
+                print(f"  Participation ratio at embedding_dim={entry.get('reference_dim')}: "
+                      f"{entry.get('pr_singular', float('nan')):.1f}")
+            print(f"  The curve over embedding dimensions is in result.dataframe")
         else:
             print(f"  {n_rows} rows over {n_cfg} configuration(s); see result.dataframe")
         if self.mode == 'precision':
@@ -333,8 +370,8 @@ class Results:
         with ``kind='line'|'heatmap'|'bar'``). A single configuration gets its
         mode's own figure: the training curve for estimate, the extrapolation
         for rigorous, the components for the difference quantities, the MI
-        against tau for precision, the matrix for pairwise and the stability
-        chart for dimensionality. ``config_id`` picks one configuration out of
+        against tau for precision, the matrix for pairwise and the curve over
+        embedding dimensions for dimensionality. ``config_id`` picks one configuration out of
         several for those per-configuration figures.
 
         Parameters
@@ -444,7 +481,7 @@ class Results:
                 if 'component' in ladder.columns:
                     ladder = ladder[ladder['component'] == 'combined']
                 fit = {k: _scalar(rep[k]) for k in rep.index}
-                fit['mi_corrected'] = fit.get('mi')
+                fit['mi_corrected'] = fit['mi_raw'] if _finite(fit.get('mi_raw')) else fit.get('mi')
                 label = None if len(runs) == 1 else f"run {rid}"
                 plot_bias_correction_fit(ladder, fit, units=units, ax=ax, show=False,
                                          label=label,
@@ -552,7 +589,7 @@ class Results:
             ax.set_ylabel('Channel X', fontsize=11)
 
         elif self.mode == 'dimensionality':
-            ax = plot_dimensionality_curve(entry, ax=ax, show=show, **kwargs)
+            ax = plot_dimensionality_curve(runs, entry, ax=ax, show=show, units=units, **kwargs)
             return ax
 
         else:
@@ -613,7 +650,7 @@ class Results:
                 n_repeats = 0 if res.runs is None else len(res.runs)
                 if n_repeats > 1:
                     raise ValueError(
-                        f"Result '{label}' (index {i}) holds {n_repeats} repeats, and compare() "
+                        f"Result '{label}' (index {i}) holds {n_repeats} repeats. compare() "
                         f"overlays one {'training curve' if mode == 'estimate' else 'extrapolation'} "
                         f"per result. Call result.plot() to draw every repeat of one result."
                     )
@@ -647,7 +684,7 @@ class Results:
                     raise ValueError(f"Rigorous result '{label}' (index {i}) holds no extrapolation.")
                 rep = runs.iloc[0]
                 fit = {k: _scalar(rep[k]) for k in rep.index}
-                fit['mi_corrected'] = fit.get('mi')
+                fit['mi_corrected'] = fit['mi_raw'] if _finite(fit.get('mi_raw')) else fit.get('mi')
                 rid = fit.get('run_id', 0)
                 ladder = trainings[trainings['run_id'] == rid] if 'run_id' in trainings.columns else trainings
                 plot_bias_correction_fit(ladder, fit, units=units, ax=ax, label=label,
@@ -667,9 +704,9 @@ class Results:
                 keys = res._grouped_keys()
                 if len(keys) != 1:
                     raise ValueError(
-                        f"Result '{label}' (index {i}) is indexed by {keys or 'no swept key'}; "
+                        f"Result '{label}' (index {i}) is indexed by {keys or 'no swept key'}. "
                         f"compare() overlays results over exactly one swept key. Call "
-                        f"result.plot() on each result instead."
+                        f"result.plot() on each result."
                     )
                 plot_sweep_curve(res.dataframe, param_col=keys[0], units=units, ax=ax,
                                  label=label, color=colours[i % len(colours)], **kwargs)
@@ -681,11 +718,13 @@ class Results:
         return ax
 
     def animate(self, config_id: Optional[int] = None, run_id: Any = None, **kwargs):
-        """Animate one repeat's training history as a GIF or MP4.
+        """Animate one network's training history as a GIF or MP4.
 
-        A thin wrapper around :func:`neural_mi.visualize.animate_training`;
-        ``config_id`` and ``run_id`` pick the repeat when the result holds more
-        than one, and every other keyword argument is forwarded unchanged.
+        A thin wrapper around :func:`neural_mi.visualize.animate_training`.
+        ``config_id``, ``run_id`` and the axis values of the mode (``lag``;
+        ``ch_x`` and ``ch_y``; ``split_id`` and ``embedding_dim``) pick the
+        network when the result holds more than one. Every other keyword
+        argument is forwarded unchanged.
         """
         from neural_mi.visualize.animate import animate_training
         return animate_training(self, config_id=config_id, run_id=run_id, **kwargs)

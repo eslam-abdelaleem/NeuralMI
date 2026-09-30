@@ -91,12 +91,13 @@ def warn_saving_several(save_path: str) -> None:
     root, ext = os.path.splitext(save_path)
     warnings.warn(
         f"save_best_model_path: this call trains several networks and saves every one of "
-        f"them, as {root}_<labels>{ext}, where the labels name each network (its grid "
-        f"values and run_id, and its gamma and chunk, component, lag, channel pair or split "
-        f"where the call has them). Each network's path is recorded as 'model_path' in "
-        f"result.runs, or in result.details[config_id]['trainings'] where a repeat trains "
-        f"several networks. Every file holds a whole network, so this can take a lot of disk "
-        f"space. To keep one model, rerun the configuration you want on its own with this path.",
+        f"them as {root}_<labels>{ext}. The labels name each network by its grid values and "
+        f"run_id, plus its gamma and chunk, component, lag, channel pair or split where the "
+        f"call has them. Each network's path is recorded as 'model_path' in result.runs. "
+        f"Where a repeat trains several networks the paths are in "
+        f"result.details[config_id]['trainings']. Every file holds a whole network and the "
+        f"files can take a lot of disk space. To keep one model, rerun the configuration you "
+        f"want on its own with this path.",
         UserWarning, stacklevel=user_stacklevel(),
     )
 

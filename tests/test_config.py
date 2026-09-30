@@ -62,10 +62,10 @@ def test_estimator_renames():
 
 
 def test_output_units_and_labels_split():
-    o = cfg.Output(units="nats", x_name="LFP", channel_names_x=["a", "b"])
+    o = cfg.Output(units="nats", channel_names_x=["a", "b"])
     bp = o.to_base_params()
     assert bp == {"output_units": "nats"}          # units renamed, labels excluded
-    assert o.to_labels() == {"x_name": "LFP", "channel_names_x": ["a", "b"]}
+    assert o.to_labels() == {"channel_names_x": ["a", "b"]}
 
 
 def test_processing_renames():

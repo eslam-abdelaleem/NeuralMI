@@ -2,10 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+This project adheres to [Semantic
+Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0]
+## [1.0.0] - 2026-09-30
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
@@ -20,14 +21,14 @@ Ten analysis modes cover one number (`estimate`), a parallelised hyperparameter
 grid (`sweep`), finite-sample bias correction by extrapolation (`rigorous`),
 temporal offsets (`lag`), spike-timing precision (`precision`), conditional MI
 (`conditional`), transfer entropy (`transfer`), interaction information
-(`interaction`), all-to-all matrices (`pairwise`), and directions of shared
-structure that reproduce across retrainings (`dimensionality`).
+(`interaction`), all-to-all matrices (`pairwise`), and the smallest embedding
+dimension that carries the shared information (`dimensionality`).
 
 Eleven named quantities (`active_information_storage`, `predictive_information`,
 `cross_predictive_information`, `instantaneous_mi`, `block_mi`, `mi_rate`,
 `instantaneous_exchange`, `directed_information_rate`, `transfer_entropy`,
-`conditional_transfer_entropy` and `interaction_information`) each build the
-offset pattern they need, so a quantity is requested by name.
+`conditional_transfer_entropy` and `interaction_information`) are requested by
+name and each build the offset pattern they need.
 
 ### Data
 
@@ -37,28 +38,34 @@ kinematics, raw spike times and behavioural or stimulus labels onto one
 a mapping of any number of named streams and aligns them on real time, honouring
 per-stream sample rates and time vectors.
 
-Splitting is `blocked` by default, with a configurable gap between the blocks.
-Overlapping windows are near copies of one another, and a random split that
+Splitting is `blocked` by default and leaves a configurable gap between the
+blocks. Overlapping windows are near copies of one another. A random split that
 places copies on both sides inflates the estimate. `random` is there for
 independent samples.
 
 ### Estimators and models
 
-The estimator is InfoNCE or SMILE, selectable per run. The library builds
-eleven embedding architectures (`mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn`,
+The estimator is InfoNCE or SMILE, selectable per run. The library builds eleven
+embedding architectures (`mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn`,
 `transformer`, `lru`, `deepsets`, `dual_branch` and `pretrained_backbone`) and
 three critics (`separable`, `concat` and `hybrid`). Custom critics and embedding
-classes are supported, and the two sides of a critic can carry different
-encoders through the `_y` settings.
+classes are supported. The two sides of a critic can carry different encoders
+through the `_y` settings.
 
 ### Reading a number honestly
 
-The estimators are variational lower bounds, so the library reports what bounds
-its own answer. Every estimate carries the ceiling of the partition it was
-evaluated on. Difference quantities carry an `amplification_factor` saying how
-much component error the answer inherits. `mode='rigorous'` reports
+Because the estimators are variational lower bounds, the library reports what
+bounds its own answer. Every estimate carries the ceiling of the partition it
+was evaluated on. Difference quantities carry an `amplification_factor` saying
+how much component error the answer inherits. `mode='rigorous'` reports
 `is_reliable` and `mi_error` alongside the corrected estimate. Optional
-permutation testing gives a null distribution where the mode supports one.
+permutation testing gives a null distribution where the mode supports one. A
+quantity that cannot be negative is never reported below zero and keeps its
+measured value beside the reported one. Averages over repeats and rigorous fits
+leave out the repeats and chunks that produced nothing. A setting that would
+have no effect is named in a warning. The call refuses settings it cannot
+honour: an estimator parameter the estimator does not take, or custom split
+indices on a mode that builds its own rows.
 
 Every message the library can emit is documented by its text in
 `reference/MESSAGES.md`.
@@ -77,6 +84,237 @@ Everything below is the detailed change record kept on the development branch.
 It is not part of the release notes.
 
 ## [Unreleased]
+
+### Fixed: settings that were accepted and then ignored
+
+`mode='precision'` trained its baseline network through a copy of the training
+code that dropped settings every other mode honours: the split gap, the seed,
+smoothing, `eval_train`, the shift seed and the decoders. The baseline now
+trains through the same task as every other mode.
+
+Custom `train_indices` and `test_indices` address the rows the network trains
+on. They are refused where those rows are not the ones passed:
+`mode='rigorous'`, `'lag'` and `'transfer'`, `rigorous=True`, a dimensionality
+`lag`, data windowed through `Processing` and the named quantities that build
+their own rows. The two lists must be given together.
+
+`r2_threshold` is removed because every rigorous config accepted it and nothing
+read it.
+
+One warning names every setting a call ignores: an encoder setting for another
+encoder, the head settings without the hybrid critic, `beta` without a
+variational encoder, the decoder settings without a decoder, any `Model` setting
+beside a `custom_critic`, and the rotation outputs that nothing reads. A setting
+spelled out at its default does not count.
+
+A parameter the chosen estimator does not take is refused before any training.
+The two copies of the `verbose` default now agree. A test pins every default
+`_run_flat()` applies to the one in `defaults.py`.
+
+### Fixed: warnings that said something false
+
+The interaction information warnings described the conditional MI $I(X,W;Y) -
+I(X;Y) = I(W;Y \mid X)$ and called a negative value impossible although
+interaction information is signed. Its checks now treat it as its own three-term
+value with an amplification warning over three components and a warning when its
+joint term falls below a term it contains.
+
+The amplification factor is now NaN when every component is 0. The infinite
+factor it replaces made the warning describe two zeros as a small residual of
+much larger estimates. The warning for a negative difference now reads a high
+factor as noise flipping two close components and a factor near 1 as a joint
+network that fell short.
+
+Permutation trials keep every warning to themselves because their warnings
+describe the null working as intended. A chunk of a rigorous ladder keeps its
+combination warnings to itself. Those warnings now share the exported class
+`nmi.CombinationWarning`.
+
+Every dimensionality call told the caller to set `track_embeddings` for a
+rotation that never needed tracking. An unlabelled embedding plot no longer
+passes matplotlib a colormap it ignores. A flat rigorous ladder reports $R^2$ as
+NaN without a numpy warning. A warning raised inside a network's forward pass
+names the caller's line.
+
+### Fixed: two step-size bugs in `mode='rigorous'`
+
+With spike data, `shift_time` and a window below 1 s, the default step was read
+twice. The fit then windowed at 95% overlap and counted about 20 times more
+windows than exist. On the raw-deferred route for continuous data a fractional
+`step_size` was taken as a step in samples. Every chunk of the ladder then cut
+the wrong span of data and failed on small recordings. Both now use the shared
+step convention.
+
+### Changed: a quantity that cannot be negative is never reported below zero
+
+A network's value is 0 when its held-out MI never rose above zero and now also
+when its training-side value at the reported epoch came out negative. A
+conditional MI or transfer entropy, an extrapolated rigorous value and a point
+of a precision curve are 0 when they come out negative. The library warns in
+every case and keeps the measured value in `raw_train_mi`, `mi_raw` or
+`te_yx_raw`. Interaction information is signed and stays as measured.
+
+A repeat reported as 0 produced nothing and is left out of `mi_mean` and
+`mi_std`. `n_zero` counts those repeats and `n_runs` counts every repeat. A row
+whose repeats all produced nothing reports 0. The permutation null averages its
+trials the same way so that the p-value compares like with like.
+
+A rigorous fit leaves out the rungs that produced nothing and reports their
+count at each $\gamma$ in a warning and in `zero_rungs`. It warns again where
+half or more of a $\gamma$'s rungs are 0. A ladder left with fewer than two
+values of $\gamma$ reports an unreliable 0 when every rung produced nothing and
+an unreliable NaN otherwise.
+
+### Changed: one small-data warning
+
+Arrays passed in and windows the library builds get the same warning below 200
+samples or windows. It also fires on the routes that window inside each task:
+continuous data with window shifting, spike data and lag scans at their largest
+lag. It quotes the scaling $N \sim d^2/I$ from tutorial 02 and points at
+`mode='rigorous'` as the check.
+
+### Changed: dependency floors
+
+The floors are numpy 1.26, pandas 2.2.2, scipy 1.13, matplotlib 3.8.4, seaborn
+0.13.2, statsmodels 0.14.2, torch 2.4, scikit-learn 1.4.2, umap-learn 0.5.6 and
+torchvision 0.19. Each is the first release that works with both numpy 1.26 and
+numpy 2. The old torch floor of 2.0 crashed with `bias=False` because that
+setting uses `nn.RMSNorm` from torch 2.4. The suite passes with every package at
+its floor and at its latest release. A CI job pins every dependency at its floor
+and runs the suite on Python 3.11.
+
+### Changed: reference documents and notebooks
+
+The reference documents, README, contributing guide, docs pages, roadmap, paper
+and tutorial text had a language pass that removed clauses appended after a
+comma. The tutorials and the README figures notebook were re-executed on the
+final code.
+
+`reference/ANATOMY.md` now trains its from-scratch estimator on the data of
+tutorial 02 with an exact answer of 4 bits. It traces the training and held-out
+curves, smooths the held-out curve as the library does and reads the training
+curve at its peak. A figure of the two curves, drawn by the README figures
+notebook, sits on the page. Tutorial 03's section 4 follows the order of its
+figure of offset patterns. The figure's code sits inside a function so that its
+short windows leave the notebook's history length alone. Tutorial 05 closes the
+series with pointers to the reference documents and the modes the notebooks
+leave out. Machine paths are gone from every notebook output.
+
+`paper.md` follows the current JOSS sections: summary, statement of need, state
+of the field, software design, research impact and AI usage.
+
+### Removed: settings that did nothing useful
+
+`Sweep(max_samples_per_task=...)` trained each configuration of a sweep on its
+own random subset. Configurations were then compared on different data, windowed
+rows lost their time order before a blocked split and the setting did nothing
+when the grid held a processor parameter. `Sweep` held only this setting and is
+removed with it. `Output(x_name=..., y_name=...)` was stored in `result.params`
+and read by nothing. It is removed too.
+
+### Changed: every value of `sweep_grid` is the values to run
+
+A list, tuple, range, array, tensor or generator gives one configuration per
+value. A string, a dict or a scalar is one fixed value. A scalar used to crash,
+a string was split into its letters and a generator was used up before the grid
+was built. A key with no values or a grid that is not a dict is refused.
+
+### Changed: the hybrid and concat critics score pairs in large blocks
+
+Both critics used to score the pairs of a batch 512 at a time. A batch of 256
+took 128 passes through the decision head. An evaluation set of 3,600 took 3,600
+passes every epoch. The head's spectral normalisation ran its power iteration on
+each pass. Because the head's first layer is affine, each side now passes
+through it once and the pairs are scored in blocks of up to 2^24 values.
+Scores and gradients match the old route to float precision. A 150-epoch fit
+on 4,000 samples took 170 to 199 s with the hybrid critic and now takes 18 s
+with the same accuracy (2.98 bits against an exact 3). The concat critic
+speeds up in the same way. `max_n_batches` now bounds the samples an encoder
+embeds at once and the pairs a custom head scores at once.
+
+### Changed: the printed messages follow the house style
+
+Every warning, log message and error the library prints was rewritten in the
+style of the reference documents. Their content is unchanged. The MESSAGES.md
+keys that quoted the old wording follow the new text.
+
+### Added: a test that every setting is read
+
+`tests/test_settings_are_read.py` fails when a setting declared in `defaults.py`,
+or a field of a config class, reaches no code that reads it. It would have
+caught `Output.x_name` and `Output.y_name`. The tests of plotting, results and
+sweeps now sit in `test_visualize.py`, `test_results.py` and `test_sweep.py`.
+
+### Fixed: `run()` overrode `nmi.set_verbosity()`
+
+Every call set the log level to WARNING for its duration because `verbose`
+defaulted to `False`. `nmi.set_verbosity('ERROR')` therefore silenced nothing
+raised during a call, and the count of repeated messages came after the level
+was restored and was hidden. `verbose` now defaults to `None` and keeps the
+level `nmi.set_verbosity()` set. `True` and `False` still set INFO or WARNING for
+one call. The library's logger now starts at WARNING, the level every call used
+before.
+
+### Fixed: `animate()` chose a network without saying so
+
+`Results.animate()` took the first network whenever several matched the call.
+In `mode='lag'`, `'pairwise'` and `'dimensionality'` that was the first lag,
+channel pair, or split and embedding size. In a sweep with repeats it was the
+first repeat. The axis values (`lag`, `ch_x` and `ch_y`, `split_id` and
+`embedding_dim`) now pick the network beside `config_id` and `run_id`. A call
+that still matches more than one is refused with the keys to pass.
+
+### Added: repeated warnings are shown once per call, cell or block
+
+Within one call each kind of warning or log message is shown the first time it
+comes up. Later ones that differ only in their numbers are counted. The call
+ends with one line per kind giving the count. In IPython and Jupyter the count
+covers every NeuralMI call of a cell and the line comes when the cell ends.
+`nmi.grouped_warnings()` does the same over a block of a script. Messages raised
+outside a NeuralMI call are left alone. Worker processes hand their
+warnings and log messages back with their results. They are raised again at the
+caller's line and no longer name `neural_mi/analysis/task.py` with a machine
+path.
+
+### Changed: `mode='dimensionality'` reads the dimension where the MI saturates
+
+The mode estimates the MI at a series of embedding sizes with the hybrid critic
+and reports the smallest size whose curve reaches `saturation_ratio` (0.95) of
+its plateau. At each size the best of `n_restarts` (4) networks counts. The
+curve is the running maximum of those values over size. A reference fit at 64
+dimensions runs first and its participation ratio sizes the grid. The grid stops
+once three sizes in a row reach the threshold. A curve that has not reached it
+by the end of the grid gets one extension toward the reference.
+`Dimensionality(embedding_dims=...)` fits exactly the values given. Each random
+channel split gives its own reading. `dimension_at_most` is their median and
+`dimension_at_most_std` their spread. Every network's embeddings are kept by
+split, size and restart. With four bits shared through 2, 4, 8 and 16 latent
+dimensions the readings were 2, 4, 9 and 20. The last two came with held-out
+values 12% and 28% below the training side. The mode warns when that gap passes
+10%.
+
+The mode used to count the directions that reproduced across fits at one fixed
+embedding size. That report is removed with its settings
+(`stability_threshold`, `degeneracy_ratio_threshold` and
+`min_strength_fraction`) and its outputs (`stable_directions`,
+`stable_but_degenerate_groups`, `n_stable_total` and `converged`). The regime
+diagnostic read before training (`regime_x`, `regime_y`) is removed as well.
+`n_splits` now counts random channel splits of X (5 by default). A call with
+`y_data` or a fixed split method refuses it. In this mode `n_epochs` defaults to
+500 with `patience` 50. `Model(embedding_dim=...)` is reported as ignored.
+
+### Changed: `mode='dimensionality'` layer-normalises the hybrid critic
+
+The new default `norm_layer='auto'` means layer normalisation in the MLP encoder
+for the hybrid critic in `mode='dimensionality'` and none everywhere else. At
+four latent dimensions every layer-normalised fit with $k = d$ reached the full
+4 bits. The fits without it stalled near 3 bits and read a 4-D Gaussian as 5
+dimensions. Layer normalisation divides out each sample's overall scale and
+loses the information that scale carries. On a 6-D Gaussian carrying 3 bits it
+lowered both critics' estimates by 8%. The lengths of the two vectors alone
+share 0.20 bits there. A norm that only centres lost nothing on that Gaussian
+and did not cure the stalls. Outside the dimensionality mode the default stays
+without normalisation.
 
 ### Changed: one place for dependencies, and docs that include their originals
 

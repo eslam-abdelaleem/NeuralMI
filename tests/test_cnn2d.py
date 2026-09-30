@@ -3,7 +3,7 @@
 import warnings
 import pytest
 import torch
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from neural_mi.models.embeddings import CNN2D
 from neural_mi.models import CNN2D as CNN2D_from_init
@@ -283,297 +283,85 @@ class TestFourDInputHandling:
 
 
 # ---------------------------------------------------------------------------
-# Spatial split methods in run_dimensionality_analysis
+# Spatial split methods of mode='dimensionality'
 # ---------------------------------------------------------------------------
 
 class TestSpatialSplits:
-    """Verify spatial split methods for 4-D data."""
+    """The image splits of X into two halves, for 4-D (N, C, H, W) data."""
 
     def _4d(self, n=20, c=2, h=8, w=8):
         return torch.randn(n, c, h, w)
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_horizontal_correct_shapes(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = self._4d(h=8)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='horizontal', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        assert x_a.shape == (20, 2, 4, 8)
-        assert x_b.shape == (20, 2, 4, 8)
+    def _split(self, x, method, params=None, **kwargs):
+        from neural_mi.analysis.dimensionality import _halves
+        return _halves(x, params or {}, method, 1, kwargs)
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_horizontal_odd_h(self, mock_dispatch):
-        """For odd H, bottom half has one extra row."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = self._4d(h=7)  # H=7 → top=3, bottom=4
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='horizontal', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        assert x_a.shape[2] == 3
-        assert x_b.shape[2] == 4
+    def test_horizontal_correct_shapes(self):
+        [(a, b, _)] = self._split(self._4d(), 'horizontal')
+        assert a.shape == (20, 2, 4, 8) and b.shape == (20, 2, 4, 8)
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_vertical_correct_shapes(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = self._4d(w=10)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='vertical', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        assert x_a.shape == (20, 2, 8, 5)
-        assert x_b.shape == (20, 2, 8, 5)
+    def test_horizontal_odd_h(self):
+        [(a, b, _)] = self._split(self._4d(h=7), 'horizontal')
+        assert a.shape[2] == 3 and b.shape[2] == 4
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_row_interleaved_correct_shapes(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = self._4d(h=6)  # even H → equal halves
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='row_interleaved', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        assert x_a.shape == (20, 2, 3, 8)  # rows 0,2,4
-        assert x_b.shape == (20, 2, 3, 8)  # rows 1,3,5
+    def test_vertical_correct_shapes(self):
+        [(a, b, _)] = self._split(self._4d(), 'vertical')
+        assert a.shape == (20, 2, 8, 4) and b.shape == (20, 2, 8, 4)
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_row_interleaved_interleaves_rows(self, mock_dispatch):
-        """Verify actual pixel values are interleaved correctly."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.arange(2 * 4 * 4, dtype=torch.float32).reshape(1, 2, 4, 4)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='row_interleaved', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        torch.testing.assert_close(x_a, x[:, :, 0::2, :])
-        torch.testing.assert_close(x_b, x[:, :, 1::2, :])
-
-    def test_3d_input_raises_for_spatial_splits(self):
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(20, 4, 8)  # 3D
-        for method in ('horizontal', 'vertical', 'row_interleaved', 'col_interleaved',
-                       'diagonal', 'antidiagonal'):
-            with pytest.raises(ValueError, match="4-D"):
-                run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                            split_method=method)
-
-    def test_h1_horizontal_raises(self):
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(10, 2, 1, 8)  # H=1
-        with pytest.raises(ValueError, match="H >= 2"):
-            run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                        split_method='horizontal')
-
-    def test_w1_vertical_raises(self):
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(10, 2, 8, 1)  # W=1
-        with pytest.raises(ValueError, match="W >= 2"):
-            run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                        split_method='vertical')
-
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_n_splits_creates_correct_number_of_tasks(self, mock_dispatch):
-        """Spatial splits run the same slices n_splits times (weight init varies)."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': i}
-            for i in range(4)
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
+    def test_row_interleaved_interleaves_rows(self):
         x = self._4d()
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='horizontal', n_splits=4)
-        tasks = mock_dispatch.call_args[0][0]
-        assert len(tasks) == 4
-        # All tasks share the same spatial split (identical x_a / x_b)
-        for task in tasks[1:]:
-            torch.testing.assert_close(task[0], tasks[0][0])
+        [(a, b, _)] = self._split(x, 'row_interleaved')
+        assert torch.equal(a, x[:, :, 0::2, :]) and torch.equal(b, x[:, :, 1::2, :])
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_uneven_split_disables_shared_encoder(self, mock_dispatch, caplog):
-        """Odd H horizontal split should disable shared_encoder with a logger warning."""
-        import logging
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = self._4d(h=7)  # odd H → uneven halves
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1, 'shared_encoder': True},
-                split_method='horizontal', n_splits=1,
-            )
-        assert any('shared_encoder' in r.message for r in caplog.records)
-        _, _, forwarded_params, *_ = mock_dispatch.call_args[0][0][0]
-        assert forwarded_params.get('shared_encoder') is False
+    def test_col_interleaved_interleaves_columns(self):
+        x = self._4d()
+        [(a, b, _)] = self._split(x, 'col_interleaved')
+        assert torch.equal(a, x[:, :, :, 0::2]) and torch.equal(b, x[:, :, :, 1::2])
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_even_split_keeps_shared_encoder(self, mock_dispatch):
-        """Even H should NOT disable shared_encoder."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = self._4d(h=8)  # even H → equal halves
-        run_dimensionality_analysis(
-            x,
-            base_params={'n_epochs': 1, 'shared_encoder': True},
-            split_method='horizontal', n_splits=1,
-        )
-        _, _, forwarded_params, *_ = mock_dispatch.call_args[0][0][0]
-        assert forwarded_params.get('shared_encoder') is True
+    @pytest.mark.parametrize('method', ['horizontal', 'vertical', 'row_interleaved',
+                                        'col_interleaved', 'diagonal', 'antidiagonal'])
+    def test_3d_input_raises_for_spatial_splits(self, method):
+        with pytest.raises(ValueError, match='requires 4-D input'):
+            self._split(torch.randn(20, 4, 8), method)
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_index_split_4d(self, mock_dispatch):
-        """Index split must correctly slice channel dim for 4-D input."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(10, 6, 4, 4)
-        run_dimensionality_analysis(
-            x, base_params={'n_epochs': 1},
-            split_method='index', channel_indices_x=[0, 1, 2], n_splits=1,
-        )
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        assert x_a.shape == (10, 3, 4, 4)
-        assert x_b.shape == (10, 3, 4, 4)
+    @pytest.mark.parametrize('method, h, w', [('horizontal', 1, 8), ('row_interleaved', 1, 8),
+                                              ('vertical', 8, 1), ('col_interleaved', 8, 1)])
+    def test_a_single_row_or_column_raises(self, method, h, w):
+        with pytest.raises(ValueError, match='requires'):
+            self._split(self._4d(h=h, w=w), method)
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_col_interleaved_correct_shapes(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = self._4d(h=8, w=8)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='col_interleaved', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        assert x_a.shape == (20, 2, 8, 4)  # even columns
-        assert x_b.shape == (20, 2, 8, 4)  # odd columns
+    def test_index_split_4d(self):
+        x = self._4d(c=4)
+        from neural_mi.analysis.dimensionality import _halves
+        [(a, b, _)] = _halves(x, {}, 'index', 1, {'channel_indices_x': [0, 3]})
+        assert torch.equal(a, x[:, [0, 3]]) and torch.equal(b, x[:, [1, 2]])
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_col_interleaved_interleaves_columns(self, mock_dispatch):
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.arange(1 * 1 * 4 * 4, dtype=torch.float).reshape(1, 1, 4, 4)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='col_interleaved', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        assert torch.equal(x_a, x[:, :, :, 0::2])
-        assert torch.equal(x_b, x[:, :, :, 1::2])
+    def test_geometric_diagonal_correct_mask(self):
+        x = self._4d(n=3, c=1, h=4, w=4)
+        [(a, b, _)] = self._split(x, 'diagonal')
+        rows, cols = torch.meshgrid(torch.arange(4), torch.arange(4), indexing='ij')
+        flat = x.reshape(3, 1, -1)
+        assert torch.equal(a, flat[:, :, (rows <= cols).reshape(-1)])
+        assert torch.equal(b, flat[:, :, (rows > cols).reshape(-1)])
 
-    def test_w1_col_interleaved_raises(self):
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(10, 2, 4, 1)
-        with pytest.raises(ValueError, match="W >= 2"):
-            run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                        split_method='col_interleaved')
+    def test_geometric_antidiagonal_correct_mask(self):
+        x = self._4d(n=3, c=1, h=4, w=4)
+        [(a, b, _)] = self._split(x, 'antidiagonal')
+        rows, cols = torch.meshgrid(torch.arange(4), torch.arange(4), indexing='ij')
+        flat = x.reshape(3, 1, -1)
+        assert torch.equal(a, flat[:, :, (rows + cols <= 3).reshape(-1)])
 
-    # --- geometric diagonal / antidiagonal ---
+    def test_uneven_split_disables_shared_encoder(self, caplog):
+        with caplog.at_level('WARNING', logger='neural_mi'):
+            [(_, _, params)] = self._split(self._4d(h=4, w=5), 'diagonal', {'shared_encoder': True})
+        assert params['shared_encoder'] is False
+        assert 'non-square' in caplog.text
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_geometric_diagonal_pixel_counts_square(self, mock_dispatch):
-        """For a square 4×4 image: upper+diagonal=10 pixels, lower=6 pixels."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(5, 1, 4, 4)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='diagonal', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        # C=1, upper+diag=10, lower=6
-        assert x_a.shape == (5, 1, 10)
-        assert x_b.shape == (5, 1, 6)
+    def test_even_split_keeps_shared_encoder(self):
+        [(_, _, params)] = self._split(self._4d(), 'horizontal', {'shared_encoder': True})
+        assert params['shared_encoder'] is True
 
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_geometric_diagonal_correct_mask(self, mock_dispatch):
-        """Diagonal mask: x_a contains pixels where row <= col."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.arange(1 * 1 * 3 * 3, dtype=torch.float).reshape(1, 1, 3, 3)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='diagonal', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        H, W = 3, 3
-        row_idx = torch.arange(H).unsqueeze(1)
-        col_idx = torch.arange(W).unsqueeze(0)
-        mask_a = (row_idx <= col_idx).reshape(-1)
-        x_flat = x.reshape(1, 1, -1)
-        assert torch.equal(x_a, x_flat[:, :, mask_a])
-        assert torch.equal(x_b, x_flat[:, :, ~mask_a])
-
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_geometric_antidiagonal_correct_mask(self, mock_dispatch):
-        """Antidiagonal mask: x_a contains pixels where row + col <= W-1."""
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.arange(1 * 1 * 3 * 3, dtype=torch.float).reshape(1, 1, 3, 3)
-        run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                    split_method='antidiagonal', n_splits=1)
-        x_a, x_b, *_ = mock_dispatch.call_args[0][0][0]
-        H, W = 3, 3
-        row_idx = torch.arange(H).unsqueeze(1)
-        col_idx = torch.arange(W).unsqueeze(0)
-        mask_a = (row_idx + col_idx <= W - 1).reshape(-1)
-        x_flat = x.reshape(1, 1, -1)
-        assert torch.equal(x_a, x_flat[:, :, mask_a])
-        assert torch.equal(x_b, x_flat[:, :, ~mask_a])
-
-    @patch('neural_mi.analysis.dimensionality._dispatch_splits')
-    def test_geometric_diagonal_rectangular_warns(self, mock_dispatch, caplog):
-        """Non-square input should emit a warning but still run."""
-        import logging
-        mock_dispatch.return_value = [
-            {'train_mi': 0.5, 'test_mi': 0.5, 'pr_eig': 2.0, 'pr_singular': 2.0, 'split_id': 0}
-        ]
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(5, 1, 4, 6)  # H != W
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
-            run_dimensionality_analysis(x, base_params={'n_epochs': 1},
-                                        split_method='diagonal', n_splits=1)
-        assert any('non-square' in r.message for r in caplog.records)
-
-    def test_geometric_diagonal_cnn2d_raises(self):
-        """CNN2D cannot process triangular pixel subsets — must raise."""
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(5, 2, 4, 4)
-        with pytest.raises(ValueError, match="cnn2d"):
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1, 'embedding_model': 'cnn2d'},
-                split_method='diagonal',
-            )
-
-    def test_geometric_antidiagonal_cnn_raises(self):
-        """CNN1D cannot process triangular pixel subsets — must raise."""
-        from neural_mi.analysis.dimensionality import run_dimensionality_analysis
-        x = torch.randn(5, 2, 4, 4)
-        with pytest.raises(ValueError, match="cnn"):
-            run_dimensionality_analysis(
-                x,
-                base_params={'n_epochs': 1, 'embedding_model': 'cnn'},
-                split_method='antidiagonal',
-            )
-
-
-# needed for mock
-from unittest.mock import MagicMock  # noqa: E402
+    @pytest.mark.parametrize('model', ['cnn2d', 'cnn'])
+    def test_triangular_splits_refuse_convolutional_encoders(self, model):
+        with pytest.raises(ValueError, match='triangular'):
+            self._split(self._4d(), 'diagonal', {'embedding_model': model})

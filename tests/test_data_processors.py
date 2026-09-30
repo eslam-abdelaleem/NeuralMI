@@ -1202,7 +1202,7 @@ class TestAmbiguousStepSize:
     @pytest.mark.parametrize("step, expected", [
         (0.125, "pass step_size=0.25"),                      # reachable as a fraction
         (0.5, "pass step_size=None"),                        # exactly one window
-        (0.75, "there is no way to ask for a 0.75 step"),    # wider than the window
+        (0.75, "a 0.75 step cannot be expressed"),    # wider than the window
     ])
     def test_remedy_covers_all_three_cases(self, step, expected):
         reset_retention_warnings()

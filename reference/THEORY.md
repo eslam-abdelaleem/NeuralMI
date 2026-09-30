@@ -1,8 +1,8 @@
 # Theory
 
 This page explains what NeuralMI estimates and why its estimators behave as they
-do. [USING.md](USING.md) shows the calls, and [PARAMETERS.md](PARAMETERS.md)
-lists every setting.
+do. [USING.md](USING.md) shows the calls. [PARAMETERS.md](PARAMETERS.md) lists
+every setting.
 
 ## Contents
 
@@ -17,7 +17,7 @@ lists every setting.
   [silent windows](#silent-windows),
   [temporal information quantities](#temporal-information-quantities),
   [interaction information](#interaction-information)
-- [Cross-run-stable directions of shared structure](#cross-run-stable-directions-of-shared-structure)
+- [The dimension that carries the shared information](#the-dimension-that-carries-the-shared-information)
 - [Spike-timing precision](#spike-timing-precision)
 - [Regularised objectives](#regularised-objectives)
 
@@ -32,17 +32,16 @@ $$
 I(X; Y) = \int p(x, y) \log \frac{p(x, y)}{p(x)p(y)} \, dx \, dy
 $$
 
-Computing it directly requires the distributions themselves, and for the
-high-dimensional, continuous data of neuroscience they are unknown. Binning and
-kernel density estimates fail as the dimension grows.
+Computing it directly requires distributions that are unknown for
+high-dimensional continuous data. Binning and kernel density estimates fail as
+the dimension grows.
 
 Neural estimators avoid the densities by training a network, the critic $f(x,
 y)$, to tell pairs that occurred together, $(x_i, y_i)$, from pairs drawn from
-different samples of the same batch, $(x_i, y_j)$. Its scores enter a
-variational lower bound on the MI, and training the critic tightens the bound
-([Poole et al., 2019](https://proceedings.mlr.press/v97/poole19a.html)). The
-bounds differ in how they trade bias, the average distance from the true value,
-against variance, the spread over runs.
+different samples of the same batch, $(x_i, y_j)$. Training the critic tightens
+the variational lower bound its scores enter ([Poole et al.,
+2019](https://proceedings.mlr.press/v97/poole19a.html)). The bounds differ in
+how they trade bias against variance.
 
 ### InfoNCE
 
@@ -53,47 +52,45 @@ $$
 I(X;Y) \ge \mathbb{E}\left[ f(x,y) - \log\left(\frac{1}{N}\sum_{j=1}^N e^{f(x,y_j)}\right) \right]
 $$
 
-For each true pair, the critic has to pick the real partner $y$ of $x$ out of
-$N$ candidates, a classification problem. Its estimates vary little from run to
-run.
+For each true pair the critic picks the real partner $y$ of $x$ out of $N$
+candidates. Its estimates vary little from run to run.
 
-The bound can never exceed $\log N$, where $N$ is the number of samples it is
-evaluated on. Any distribution-free lower bound on MI from $N$ samples is
-limited to order $\log N$
-([McAllester and Stratos, 2020](https://proceedings.mlr.press/v108/mcallester20a.html)).
-The reported values are evaluated on `train_eval_size` samples on the training
-side and `eval_size` on the held-out side, each capped by `max_eval_samples`
-and by how many samples the split produced. During training, $N$ is the batch
-size, and `batch_size` shapes the gradients without capping the reported value.
-A short recording, a large `window_size` or a small held-out fraction all shrink
-$N$. Along a sweep over `window_size` the ceiling falls, since fewer windows fit
-in the recording. The windowed MI grows with the window, so the estimate
-reaches its ceiling from both directions. `runs` reports each side's ceiling in
-`train_ceiling_mi` and `test_ceiling_mi`, and the fraction of it the estimate
-reached in `train_saturation` and `test_saturation`.
+The bound can never exceed $\log N$ for $N$ evaluation samples. Any
+distribution-free lower bound on MI from $N$ samples is limited to order $\log
+N$ ([McAllester and Stratos,
+2020](https://proceedings.mlr.press/v108/mcallester20a.html)). The reported
+values are evaluated on `train_eval_size` training samples and `eval_size`
+held-out samples up to the caps set by `max_eval_samples` and by the size of the
+split. During training $N$ is the batch size and shapes the gradients without
+capping the reported value. A short recording, a large `window_size` or a small
+held-out fraction all shrink $N$. Along a sweep over `window_size` the ceiling
+falls because fewer windows fit in the recording. Since the windowed MI grows
+with the window, estimate and ceiling close in on each other. `runs` reports
+each side's ceiling (`train_ceiling_mi`, `test_ceiling_mi`) and the fraction of
+it the estimate reached (`train_saturation`, `test_saturation`).
 
 ### SMILE
 
 SMILE ([Song and Ermon, 2020](https://arxiv.org/abs/1910.06222)) bounds the MI
-through the Donsker-Varadhan representation used by MINE
-([Belghazi et al., 2018](https://proceedings.mlr.press/v80/belghazi18a.html)),
-with the scores of the unpaired samples clipped at $\tau$:
+through the Donsker-Varadhan representation used by MINE ([Belghazi et al.,
+2018](https://proceedings.mlr.press/v80/belghazi18a.html)) and clips the scores
+of the unpaired samples at $\tau$:
 
 $$
 I(X;Y) \ge \mathbb{E}\left[ f(x,y) \right] - \log \mathbb{E}\left[ e^{\text{clip}(f(x,y'), \tau)} \right]
 $$
 
-The normalising term is where MINE's variance comes from, and clipping keeps a
-few large scores from dominating it. SMILE has no $\log N$ ceiling and is less
-biased when the MI is large, at the price of a higher variance. A clip of
-$\tau = 5$ is the default. A lower clip lowers the variance and raises the
-bias.
+Clipping keeps a few large scores from dominating the normalising term that
+gives MINE its variance. SMILE has no $\log N$ ceiling and pays for its lower
+bias at large MI with a higher variance than InfoNCE. A clip below the default
+$\tau = 5$ lowers the variance and raises the bias.
 
 :::{admonition} Choosing
 :class: tip
 
-InfoNCE is the general-purpose choice, and SMILE suits a true MI that may be
-large compared with the log of the evaluation size. :::
+InfoNCE is the general-purpose choice. SMILE suits a true MI that may be large
+compared with the log of the evaluation size.
+:::
 
 :::{admonition} References
 :class: note
@@ -113,34 +110,44 @@ large compared with the log of the evaluation size. :::
 A training run splits the samples into a training set and a held-out set,
 evaluates the MI on the held-out set at every epoch, smooths that curve, and
 takes the epoch at its peak. The critic's weights at that epoch are then
-evaluated on the training samples, and that value is `mi_estimate`. The
-held-out value at the same epoch is `test_mi` in `runs`.
+evaluated on the training samples to give `mi_estimate`. The held-out value at
+the same epoch is `test_mi` in `runs`.
 
 The held-out curve plays the part a bandwidth choice plays in kernel density
-estimation. On the training side the critic can fit ever finer structure, and
-the held-out side sets the scale of structure the data support. The MI is a
-property of the dataset, and once the held-out curve has fixed the epoch, the
-training side reads that property on the larger sample ([Abdelaleem et al.,
+estimation. On the training side the critic can fit ever finer structure. The
+held-out side sets the scale of structure the data support. The MI is a property
+of the dataset. Once the held-out curve has fixed the epoch, the training side
+reads it on the larger sample ([Abdelaleem et al.,
 2025a](https://arxiv.org/abs/2506.00330)). The training side's larger evaluation
-set also raises its $\log N$ ceiling and lowers its variance. `mode='rigorous'`
-extrapolates the same training-side values, so every mode reports one kind of
-number.
+set also raises its $\log N$ ceiling and lowers its variance. Since
+`mode='rigorous'` extrapolates the same training-side values, every mode reports
+one kind of number.
 
-The two values at the selected epoch differ. The difference widens as the
-data shrink, since a critic of fixed capacity fits a small training set more
-easily. The reported value can sit slightly above the true one. Under a blocked
-split the difference does not shrink when consecutive windows stop overlapping,
-and it stays flat as the correlation time varies over more than an order of
-magnitude. The smoothed curve, the selected epoch and the final training-side
-evaluation are three separate reads, so exact agreement between the reported
-numbers is not expected.
+The two values at the selected epoch differ. The difference widens as the data
+shrink because a critic of fixed capacity fits a small training set more easily.
+The reported value can sit slightly above the true one. Under a blocked split
+the difference neither shrinks when consecutive windows stop overlapping nor
+changes as the correlation time varies over more than an order of magnitude. The
+reported numbers come from separate reads (the smoothed curve, the selected
+epoch and the final training-side evaluation) and need not agree exactly.
+
+A quantity that cannot be negative is never reported below zero. A network's
+value is 0 when its held-out MI never rose above zero or when its training-side
+value at the selected epoch came out negative. A conditional MI or transfer
+entropy formed from two networks, an extrapolated value from `mode='rigorous'`
+and a point of a precision curve are 0 when they come out negative. The library
+warns in every case and keeps the measured value in `runs` under `raw_train_mi`
+for a network and under `mi_raw` or `te_yx_raw` otherwise. Interaction
+information is signed and is reported as measured. Averages over repeats treat a
+value reported as 0 as a run that produced nothing and leave it out ([the spread
+over repeats](#the-spread-over-repeats)).
 
 ### Finite-sampling bias
 
 Any estimate from $N$ samples carries a bias that depends on $N$. The classical
 limited-sampling bias makes finite samples look more dependent than the source
 and inflates the estimate. A variational lower bound whose critic learned from
-little data undershoots. Which effect dominates depends on the regime, and in
+little data undershoots. Which effect dominates depends on the regime. In
 both cases the bias shrinks with the sample size:
 
 $$
@@ -148,8 +155,8 @@ I_{\text{estimated}}(N) \approx I_{\text{true}} + \frac{a}{N} + O\left(\frac{1}{
 $$
 
 The estimate is therefore approximately linear in $1/N$
-([Strong et al., 1998](https://doi.org/10.1103/PhysRevLett.80.197)), and the
-linear trend can be fitted and removed.
+([Strong et al., 1998](https://doi.org/10.1103/PhysRevLett.80.197)). Fitting
+that line removes the trend.
 
 ### Correcting it
 
@@ -157,74 +164,80 @@ linear trend can be fitted and removed.
 ([Holmes and Nemenman, 2019](https://doi.org/10.1103/PhysRevE.100.022404);
 [Abdelaleem et al., 2025a](https://arxiv.org/abs/2506.00330)).
 
-1. At $\gamma = 1$ the whole dataset is one chunk. At $\gamma = 2$ it is cut into
-   two halves that do not overlap, at $\gamma = 3$ into thirds, and so on, and
-   each chunk is estimated on its own.
-2. Substituting $N_{\text{chunk}} = N/\gamma$ into the bias formula gives
-   $I_{\text{estimated}} \approx I_{\text{true}} + \frac{a}{N}\,\gamma$, so the
-   estimate is linear in $\gamma$. A weighted linear regression of the estimates
-   against $\gamma$ is fitted.
-3. The fit is extrapolated to $\gamma = 0$, where each chunk would hold infinitely
-   many samples and $1/N_{\text{chunk}} \to 0$. The intercept is the corrected
-   estimate, and its confidence interval gives `mi_error`.
+1. At $\gamma = 1$ the whole dataset is one chunk. Each larger $\gamma$ cuts it
+   into $\gamma$ chunks that do not overlap and are estimated on their own.
+2. Substituting $N_{\text{chunk}} = N/\gamma$ into the bias formula gives the
+   linear relation $I_{\text{estimated}} \approx I_{\text{true}} +
+   \frac{a}{N}\,\gamma$ that a weighted linear regression of the estimates
+   against $\gamma$ fits.
+3. The fit is extrapolated to the limit of infinitely large chunks at
+   $\gamma = 0$. The intercept is the corrected estimate and its confidence
+   interval gives `mi_error`.
 
-The relation is only approximately linear, since at large $\gamma$ the chunks
-are small and finite-sample effects and under-fitted networks bend the curve. A
-quadratic in $\gamma$ is fitted, and the largest $\gamma$ values are dropped
-until the quadratic term is statistically indistinguishable from zero, $|a_2| /
-\mathrm{SE}(a_2) <$ `curvature_t_threshold` (default 2.0, roughly the 5%
-two-sided level). The remaining points give the final regression. The search
-never trims below `min_gamma_points`, and when it reaches that floor with the
-trend still curved, `linear_region_found` is `False`.
+The relation is only approximately linear because at large $\gamma$ the chunks
+are small enough for finite-sample effects and under-fitted networks to bend the
+curve. The fit therefore starts from a quadratic in $\gamma$ and drops the
+largest values of $\gamma$ until the quadratic term's t-statistic $|a_2| /
+\mathrm{SE}(a_2)$ falls below `curvature_t_threshold` (default 2.0, roughly the
+5% two-sided level). The remaining points give the final regression. A search
+that reaches `min_gamma_points` with the trend still curved stops there and sets
+`linear_region_found` to `False`.
+
+The fit treats a rung reported as 0 ([the reported
+number](#the-reported-number)) as a failed chunk that produced nothing and
+counts it in `zero_rungs`. `min_gamma_points` then decides whether enough values
+of $\gamma$ remain once those with no rung left have dropped out. The fit warns
+about zero rungs and warns again where they make up half or more of a $\gamma$.
 
 A fit is reliable when it used at least `min_gamma_points` values of $\gamma$,
 found a linear region, does not move by more than `leverage_threshold` when the
 $\gamma = 1$ points are left out, and, in `mode='rigorous'`, uses no $\gamma$
 whose estimates sit at their ceiling. The leave-one-out check asks whether the
-extrapolation depends on the full-data anchor, a question independent of the
-scale of the estimates. $R^2$ and the studentised residuals are reported beside
-the fit and decide nothing. Both depend on scale and behave badly under this
-weighted fit. With many samples the estimates across $\gamma$ cluster tightly
+extrapolation depends on the full-data anchor, independently of the scale of the
+estimates. Because $R^2$ and the studentised residuals depend on that scale and
+behave badly under this weighted fit, they are reported beside the fit and
+decide nothing. With many samples the estimates across $\gamma$ cluster tightly
 and $R^2 = 1 - SS_\text{res}/SS_\text{tot}$ collapses with the small total
 variance. The rungs at small $\gamma$ have little noise and dominate the mean
-squared error, while those at large $\gamma$ are noisier by construction. The
-residual ratio $e_i/s$ is therefore large even for a valid fit.
+squared error. Those at large $\gamma$ are noisier by construction and have a
+large residual ratio $e_i/s$ even when the fit is valid.
 
 The extrapolation removes the part of the bias that changes with the sample
-size. Bias already present at $\gamma = 1$ that is the same at every chunk size
-sits in the intercept and passes through. A flat slope says the estimate is
-stable over a range of $N$. That is information about the data, and it leaves
-open whether the estimate is unbiased. Likewise `mi_error` says how well the
-line is determined, and a reliable fit with a small `mi_error` means the part of
-the bias that depends on $N$ has been removed and the fit is well determined. It
-gives no bound on how far the intercept sits from the truth.
+size. Bias that is the same at every chunk size sits in the intercept and passes
+through. A flat slope says the estimate is stable over a range of $N$ and leaves
+open whether it is unbiased. Likewise `mi_error` says how well the line is
+determined. A reliable fit with a small `mi_error` has removed the part of the
+bias that depends on $N$. It gives no bound on how far the intercept sits from
+the truth.
 
 ### The spread over repeats
 
-`mi_std` is the standard deviation over repeats of the whole procedure on the
-same data, each repeat retraining its networks from a new initialisation. It
-measures how much the procedure's output moves. Repeats share their data, so the
-spread says nothing about how the estimate would move on a new recording. It
-is no interval on the population value. For the same reason the intervals of
-rigorous repeats cannot be combined into one.
+`mi_mean` and `mi_std` are the mean and standard deviation of the result over
+repeats that retrain the networks from new initialisations on the same data.
+Repeats that produced nothing are reported as 0, counted in `n_zero` and left
+out of both statistics. A row reports 0 only when all of its repeats produced
+nothing. Among clearly positive repeats a zero is most likely a failed run. When
+every repeat is near zero the quantity itself may be near zero. Since the
+repeats share their data, the spread says nothing about how the estimate would
+move on a new recording and is no interval on the population value. For the same
+reason the intervals of rigorous repeats cannot be combined into one.
 
 The spread is the most direct test of whether a value is resolved at all. A
 quantity whose spread over repeats exceeds its own value is not distinguishable
-from zero at that sample size, however confident its point estimate looks. For
-a quantity built as a difference, the difference is formed repeat by repeat,
-and its spread is the spread of those differences.
+from zero at that sample size. The spread of a difference quantity is the spread
+of its per-repeat differences.
 
 ### The permutation null
 
 A permutation test asks whether the observed value could arise with no
 dependence between X and Y. Each null trial reruns the whole call with X moved
 in time and everything else in place. A circular shift moves X by one random
-offset with wrap-around, drawn at least 10% of the recording's length away from
-zero in either direction, so no trial leaves X nearly aligned with Y. A block
-shuffle cuts X into blocks one window long and reorders them. Either way X keeps
-its own temporal structure, apart from the seams, and so do Y and W, and the
-only thing removed is the alignment between X and the rest. A spike population
-moves as a whole, so the structure among its neurons survives.
+offset with wrap-around. The offset is at least 10% of the recording's length
+away from zero in either direction. No trial therefore leaves X nearly aligned
+with Y. A block shuffle cuts X into blocks one window long and reorders them.
+Either way X, Y and W keep their temporal structure, apart from the seams in X.
+Only the alignment between X and the rest is removed. A spike population moves
+as a whole and keeps the structure among its neurons.
 
 The p-value of an observed value against $n$ null trials is
 
@@ -235,14 +248,18 @@ $$
 so the smallest value $n$ trials can report is $1/(n+1)$. A small p-value says
 that dependence exists at that resolution and says nothing about its size.
 
-The reported value of a network whose held-out MI never rose above zero is 0,
-which piles null trials up at exactly zero. `null_distribution_raw` keeps every
-trial's training-side value as measured, for inspecting the null's shape.
+The null trials of a quantity that cannot be negative pile up at exactly zero
+because no value of it is reported below zero ([the reported
+number](#the-reported-number)). The p-value compares the observed value with the
+trials on that same scale. With one repeat per value, setting negatives to 0
+leaves the p-value unchanged whenever the observed value is positive and makes
+it 1 when the observed value is 0. `null_distribution_raw` keeps the measured
+values and shows the null's shape.
 
 ### Amplification
 
-The conditional quantities are formed by combining separately trained estimates,
-and the answer is often small compared with the numbers it came from:
+The conditional quantities combine separately trained estimates into a result
+that is often small compared with them:
 
 $$
 \begin{aligned}
@@ -265,14 +282,14 @@ result.
 
 | factor | reading |
 |---|---|
-| about 1 | little cancels, and component errors pass through at their own size |
+| about 1 | little cancels and component errors pass through at their own size |
 | 2 to 10 | ordinary; report the components beside the result |
-| 10 or more | a small residual of large, similar numbers, where a 1% component error becomes 10% or more; the library warns |
+| 10 or more | a small residual of large, similar numbers (a 1% component error becomes 10% or more); the library warns |
 | infinite | the result is exactly zero |
 
-The factor grows without bound as the result approaches zero, so it is largest
-for the conclusion a conditional analysis is usually run to support, that W
-explains X away:
+The factor grows without bound as the result approaches zero and is therefore
+largest when W explains X away. A conditional analysis is usually run to support
+that conclusion:
 
 | $I(X,W;Y)$ | $I(W;Y)$ | $I(X;Y \mid W)$ | amplification |
 |---|---|---|---|
@@ -283,18 +300,22 @@ explains X away:
 
 A negative estimate of a quantity that cannot be negative is usually explained
 by a large factor. At 300 the components would need an accuracy better than
-0.3% for the sign to be determined, and "the true value is near zero" is then
-the better reading.
+0.3% to fix the sign. A true value near zero is then the better reading. A
+negative estimate at a factor near 1 means the joint term came out below the
+term it contains by more than noise explains. One of the two networks fell
+short, most often the joint one with its larger input. Either way the value is
+reported as 0 ([the reported number](#the-reported-number)).
 
 $\text{amp}\,\epsilon$ assumes the component errors are independent or aligned.
 The components come from the same estimator on the same data with the same
-architecture, so part of their bias is shared and cancels. The factor is
-therefore a bound on the damage more than a prediction of it. Working the other way, the
-joint term is the largest component, reaches the InfoNCE ceiling first, and
-biases the difference toward zero, so `test_saturation` on the joint network
-(in `details[config_id]['trainings']`) belongs beside any small value. The
-factor says how fragile the arithmetic is. Whether the result is distinguishable
-from zero is settled by the spread over repeats or by a permutation test.
+architecture. Part of their bias is therefore shared and cancels. The factor is
+therefore a bound on the damage more than a prediction of it. Working the other
+way, the joint term is the largest component and reaches the InfoNCE ceiling
+first. A saturated joint term biases the difference toward zero.
+`test_saturation` on the joint network (in `details[config_id]['trainings']`)
+therefore belongs beside any small value. The factor says how fragile the
+arithmetic is. Whether the result is distinguishable from zero is settled by the
+spread over repeats or by a permutation test.
 
 ---
 
@@ -302,33 +323,32 @@ from zero is settled by the spread over repeats or by a permutation test.
 
 ### What the number is per
 
-On data without a windowing processor, every reported value is per joint
-observation, one row $(x_i, y_i)$. On windowed data it is per window,
-$I(X_{1:w}; Y_{1:w})$ for windows of $w$ samples, and it does not convert to a
-rate by division.
+On data without a windowing processor every reported value is per joint
+observation $(x_i, y_i)$. On windowed data it is the per-window quantity
+$I(X_{1:w}; Y_{1:w})$ for windows of $w$ samples and does not convert to a rate
+by division.
 
-Monotonicity in the window holds by construction, since a longer window's
-samples contain a shorter window's at the same start and MI cannot fall when
+The windowed MI cannot fall as the window grows because a longer window's
+samples contain a shorter window's at the same start and MI never decreases when
 more variables are observed on either side. Going from $w$ to $w + 1$ gives
 $I_{w+1} \ge I_w$ in two steps. A sweep over `window_size` whose raw values rise
 and then fall is therefore reporting an estimation artefact. The usual causes
-are the ceiling, which falls as fewer windows fit in the recording
-([InfoNCE](#infonce)), and an embedding of fixed capacity that stops keeping up
+are a ceiling that falls as fewer windows fit in the recording
+([InfoNCE](#infonce)) and an embedding of fixed capacity that stops keeping up
 with the growing input.
 
-Extensivity, a stronger and separate claim, says the curve eventually rises
-linearly as $I_w = \bar{I}w + b$, a form that holds only once $w$ exceeds the
-dependence timescale of the two processes. Below that timescale the curve still
-bends. The rate $\bar{I}$ is the slope of the linear part. The offset $b$ has
-come out positive in every case examined, since the chain-rule increments
-decrease toward $\bar{I}$ and their partial sums sit above $\bar{I}w$. It is the
-subextensive part of the block MI, similar in shape to a single process's excess
-entropy ([temporal information quantities](#temporal-information-quantities))
-without being the same quantity.
+Extensivity is the separate, stronger claim that the curve rises linearly, $I_w
+= \bar{I}w + b$, once $w$ exceeds the dependence timescale of the two processes.
+Below that timescale the curve still bends. The rate $\bar{I}$ is the slope of
+the linear part. The offset $b$ has come out positive in every case examined
+because the chain-rule increments decrease toward $\bar{I}$ and their partial
+sums sit above $\bar{I}w$. It is the subextensive part of the block MI, similar
+in shape to a single process's excess entropy ([temporal information
+quantities](#temporal-information-quantities)) without being the same quantity.
 
 A larger window generically reports a larger raw MI because it is built from
 more data, whether or not the coupling changed. Windowed values at different
-window sizes are therefore not comparable as "how much X and Y share", and a
+window sizes are therefore not comparable as "how much X and Y share". A
 windowed value quoted without its window size cannot be read.
 
 A reported value is in one of these units:
@@ -341,36 +361,34 @@ A reported value is in one of these units:
 | a fraction of the target's entropy | a discrete target with $n$ levels, $H = \log_2 n$ when equally occupied | targets of different sizes |
 
 "X and Y carry 3 bits" is a statement in bits per observation. Knowing Y removes
-on average 3 bits of uncertainty about X, the equivalent of three yes-or-no
-questions.
+on average 3 bits of uncertainty about X.
 
 ### Getting a rate
 
 Since $I_w = \bar{I}w + b$ with $b$ nonzero, dividing one windowed value by its
 duration leaves a residual $b/w$ that changes with the window. The rate comes
-either from `mi_rate`, which estimates the per-step quantity directly
-([temporal information quantities](#temporal-information-quantities)), or from
-the slope of block MI against window size over a suitable range of $w$. That
-range needs $w$ large enough for the curve to have straightened and small enough
-for the estimates to stay below the ceiling. When no range satisfies both, the
-slope is unavailable on that recording and `mi_rate` is the only route.
+either from the direct per-step estimate of `mi_rate` ([temporal information
+quantities](#temporal-information-quantities)) or from the slope of block MI
+against window size over a suitable range of $w$. That range needs $w$ large
+enough for the curve to have straightened and small enough for the estimates to
+stay below the ceiling. When no range satisfies both, the slope is unavailable
+on that recording and `mi_rate` is the only route.
 
-The lower end of the range is the dependence timescale, and the estimator can
-find it. Sweeping `mi_rate`'s history length $h$ gives the chain-rule increments
-$I(X_{all}; Y_t \mid Y_{t-h:t-1})$ at successive $h$, and the increments
-converge to $\bar{I}$. The $h$ at which they settle is the timescale over which
-Y's own past still carries information about its present, and above it the block
-curve is linear. The autocorrelation time is a poorer substitute, since
-autocorrelation is a second-order measure and a process can have none at a lag
-where it has strong nonlinear dependence ([Fraser and Swinney,
-1986](https://doi.org/10.1103/PhysRevA.33.1134)). It is only a lower bound on
-the timescale.
+A sweep of `mi_rate`'s history length $h$ finds the lower end of that range. The
+chain-rule increments $I(X_{all}; Y_t \mid Y_{t-h:t-1})$ converge to $\bar{I}$
+as $h$ grows and settle once $h$ reaches the dependence timescale over which Y's
+own past still carries information about its present. Above that timescale the
+block curve is linear. The autocorrelation time is a poorer substitute because
+autocorrelation is a second-order measure. A process can have no autocorrelation
+at a lag where it has strong nonlinear dependence ([Fraser and Swinney,
+1986](https://doi.org/10.1103/PhysRevA.33.1134)). The autocorrelation time is
+only a lower bound on the timescale.
 
 A per-step quantity converts to bits per second by dividing by the bin width.
 Transfer entropy, instantaneous exchange, the directed information rate, active
 information storage and the MI rate are per step in this sense. Predictive and
-cross-predictive information are not, since their $B$ group spans a window. A
-rate quoted without its bin width cannot be read.
+cross-predictive information have a $B$ group spanning a window and are per
+window. A rate quoted without its bin width cannot be read.
 
 ### Silent windows
 
@@ -385,11 +403,11 @@ $$
 where $p$ is the fraction of windows kept. With silent windows dropped the
 library estimates the last term, in bits per active window. Keeping them
 (`drop_empty_windows=False`) estimates the left-hand side, in bits per window.
-Scaling by $p$ does not convert between them, since $I(A;Y)$ is the information
-carried by whether the population is active at all. Two neurons that fall
-silent together and fire together, with unrelated patterns while active, have
-almost no MI over active windows and substantial MI overall, so keeping silent
-windows can move an estimate up as well as down.
+Scaling by $p$ cannot convert between them because $I(A;Y)$ carries the
+information in whether the population is active at all. Two neurons that fall
+silent and fire together but have unrelated patterns while active carry almost
+no MI over active windows and substantial MI overall. Keeping silent windows can
+therefore move an estimate up as well as down.
 
 :::{admonition} References
 :class: note
@@ -404,9 +422,8 @@ windows can move an estimate up as well as down.
 
 ### Temporal information quantities
 
-A family of quantities describes how information is organised across time,
-within one process or between two. Every one of them, interaction information
-excepted, reduces to
+The quantities that describe how information is organised across time within one
+process or between two all reduce to
 
 $$
 \boxed{\;I(A; B \mid C) \;=\; I([A, C]\,;\, B) \;-\; I(C; B)\;}
@@ -431,37 +448,36 @@ $X_{all}(L) = X_{t-L:t+L}$, a two-sided window of half-width $L$:
 
 The first five have no conditioning set and are a single estimate of
 $I(A;B)$, free of the [amplification](#amplification) that a difference carries.
-The literature holds several definitions of these quantities, differing in
-formalism and in name, and some are better justified than others. The question
-being asked decides which set of offsets captures it.
+The literature defines these quantities in several ways, differing in formalism
+and in name. The question being asked decides which set of offsets captures it.
 
 **Instantaneous MI**, $I(X_0; Y_0)$, is the MI between two processes at matching
 time indices.
 
 **Active information storage**, $\mathrm{AIS}_X = I(X_{past}(k); X_0)$, measures
-how much a process's recent history predicts its present value, the part of $X$
-at each step that is stored and not new
-([Lizier et al., 2012](https://doi.org/10.1016/j.ins.2012.04.016)).
+how much of a process's present value is stored in its recent history and not
+new ([Lizier et al., 2012](https://doi.org/10.1016/j.ins.2012.04.016)).
 
 **Predictive information**, $I_{pred}(k) = I(X_{past}(k); X_{fut}(k))$, measures
-what a past says about its own future
-([Bialek et al., 2001](https://direct.mit.edu/neco/article/13/11/2409/6472/Predictability-Complexity-and-Learning);
-[Palmer et al., 2015](https://doi.org/10.1073/pnas.1506855112)). A longer future
-can only reveal more about the past, so $I_{pred}(k) \ge \mathrm{AIS}_X$, by the
-monotonicity argument of [what the number is per](#what-the-number-is-per). Its
-limit as $k \to \infty$ is the excess entropy
-([Crutchfield and Feldman, 2003](https://pubs.aip.org/aip/cha/article/13/1/25/510735/Regularities-unseen-randomness-observed-Levels-of)),
-a property of the process. Sweeping $k$ reads it off as the plateau of the
-curve, and a curve that keeps climbing belongs to a process whose excess entropy
-is infinite. The growth law is often the finding. At large $k$ the predictive
-information stays finite, grows logarithmically, or grows as a fractional power.
-Logarithmic growth marks a process described by finitely many parameters, with
-the coefficient counting them, and power-law growth marks a nonparametric one
-([Bialek et al., 2001](https://direct.mit.edu/neco/article/13/11/2409/6472/Predictability-Complexity-and-Learning)).
+what a past says about its own future ([Bialek et al.,
+2001](https://direct.mit.edu/neco/article/13/11/2409/6472/Predictability-Complexity-and-Learning);
+[Palmer et al., 2015](https://doi.org/10.1073/pnas.1506855112)). By the
+monotonicity argument of [what the number is per](#what-the-number-is-per), a
+longer future can only reveal more about the past and $I_{pred}(k) \ge
+\mathrm{AIS}_X$. Its limit as $k \to \infty$ is the excess entropy of the
+process ([Crutchfield and Feldman,
+2003](https://pubs.aip.org/aip/cha/article/13/1/25/510735/Regularities-unseen-randomness-observed-Levels-of)).
+Sweeping $k$ reads it off as the plateau of the curve. A curve that keeps
+climbing belongs to a process whose excess entropy is infinite. The growth law
+is often the finding. At large $k$ the predictive information stays finite,
+grows logarithmically, or grows as a fractional power. Logarithmic growth marks
+a process described by finitely many parameters and counts them in its
+coefficient. Power-law growth marks a nonparametric one ([Bialek et al.,
+2001](https://direct.mit.edu/neco/article/13/11/2409/6472/Predictability-Complexity-and-Learning)).
 
-**Cross-predictive information**, $I(X_{past}(k); Y_{fut}(k))$, asks how much a
-window of X's past tells about an equally long window of Y's future, the
-two-process version of predictive information.
+**Cross-predictive information**, $I(X_{past}(k); Y_{fut}(k))$, is the
+two-process version of predictive information. It asks how much a window of X's
+past tells about an equally long window of Y's future.
 
 **Block MI**, $I(X_{1:w}; Y_{1:w})$, is what a windowed estimate computes. Its
 growth with $w$ is discussed under [what the number is per](#what-the-number-is-per).
@@ -470,17 +486,18 @@ growth with $w$ is discussed under [what the number is per](#what-the-number-is-
 conditions on Y's past so that Y's own storage is not counted as something X
 transferred ([Schreiber, 2000](https://doi.org/10.1103/PhysRevLett.85.461)). A
 history too short leaves part of that storage uncontrolled and inflates the
-transfer, and a history too long inflates the critic's input and can cost
-accuracy. A sweep over `history_window` finds the plateau, and a curve still
-moving at the longest history has not converged. For Gaussian variables transfer
-entropy equals Granger causality
-([Barnett et al., 2009](https://doi.org/10.1103/PhysRevLett.103.238701)).
+transfer. A history too long inflates the critic's input and can cost accuracy.
+A sweep over `history_window` finds the plateau. A curve still moving at the
+longest history has not converged. For Gaussian variables transfer entropy
+equals Granger causality ([Barnett et al.,
+2009](https://doi.org/10.1103/PhysRevLett.103.238701)).
 
 Transfer entropy measures the predictive information a source adds under
-conditioning, and that differs from a causal effect or an information flow in
-the sense its name suggests. It mixes information the source provides on its own
-with information that arises only from the source and the target's past together
-([James et al., 2016](https://doi.org/10.1103/PhysRevLett.116.238701)).
+conditioning. Because that information mixes what the source provides on its own
+with what arises only from the source and the target's past together ([James et
+al., 2016](https://doi.org/10.1103/PhysRevLett.116.238701)), transfer entropy
+measures neither a causal effect nor an information flow in the sense its name
+suggests.
 
 **Conditional transfer entropy**,
 $\mathrm{TE}_{X\to Y \mid W} = I(X_{past}; Y_0 \mid Y_{past}, W_{past})$, adds a
@@ -493,30 +510,30 @@ information rate between X and Y
 ([Gelfand and Yaglom, 1959](https://doi.org/10.1090/trans2/012)). It asks how
 much X in a symmetric window around the present tells about Y's present, once
 enough of Y's past is controlled for. The quantity is the joint limit
-$L \to \infty$ and $h \to \infty$, and the two windows bias the estimate in
+$L \to \infty$ and $h \to \infty$. The two windows bias the estimate in
 opposite directions. Too small an $h$ leaves Y's own dependence uncontrolled and
-reads high, and too narrow an $L$ leaves signal out and reads low. A curve that
+reads high. Too narrow an $L$ leaves signal out and reads low. A curve that
 has flattened along one window can therefore sit at a converged-looking wrong
 value set by the other. Sweep one, fix it past its knee, then sweep the other.
 
 $X_{all}$ is two-sided because the MI rate is the chain-rule decomposition of
-the symmetric block MI, whose term at time $t$ conditions on all of X, including
-the part after $t$. Truncating X to its past gives the directed information
-rate below, and the difference between the two is the reverse transfer entropy.
+the symmetric block MI. Its term at time $t$ conditions on the whole of X before
+and after $t$. Truncating X to its past gives the directed information rate
+below. The difference between the two is the reverse transfer entropy.
 
-**Instantaneous exchange**, $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$, asks how
-much X and Y share at the same instant beyond what their separate pasts explain.
-It is the term that completes transfer entropy in the decomposition of directed
-information
-([Amblard and Michel, 2009](https://arxiv.org/abs/0911.2873);
-[Amblard and Michel, 2014](https://arxiv.org/abs/1203.5572)), and for Gaussian
-processes it corresponds to Geweke's instantaneous linear feedback
-([Geweke, 1982](https://doi.org/10.1080/01621459.1982.10477803)). Zero-lag
-coupling is often a nuisance, as with volume conduction in EEG. When a shared
-driver acts on both processes within one time step, it is the dominant coupling,
-and discarding it discards the dependence. Which case holds is a property of the
-system. As a difference of two estimates, it inherits their
-[amplification](#amplification) when it is small.
+**Instantaneous exchange**, $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$, asks
+how much X and Y share at the same instant beyond what their separate pasts
+explain. It is the term that completes transfer entropy in the decomposition of
+directed information ([Amblard and Michel,
+2009](https://arxiv.org/abs/0911.2873); [Amblard and Michel,
+2014](https://arxiv.org/abs/1203.5572)). For Gaussian processes it corresponds
+to Geweke's instantaneous linear feedback ([Geweke,
+1982](https://doi.org/10.1080/01621459.1982.10477803)). Volume conduction in EEG
+is one case where zero-lag coupling is a nuisance. When a shared driver acts on
+both processes within one time step, the zero-lag coupling is the dependence.
+Which case holds is a property of the system. As a difference of two estimates,
+instantaneous exchange inherits their [amplification](#amplification) when it is
+small.
 
 **Directed information rate**, $I(X_{past}(k), X_0; Y_0 \mid Y_{past}(k))$, is
 everything X's past and present together tell about Y's present beyond Y's own
@@ -528,13 +545,13 @@ I(X_{past}, X_0; Y_0 \mid Y_{past}) = I(X_{past}; Y_0 \mid Y_{past}) + I(X_0; Y_
 $$
 
 Adding the two estimated parts would carry transfer entropy's small,
-high-variance residual into a better-behaved quantity, so
-`directed_information_rate` estimates it from its own $A$, $B$ and $C$, and the
-decomposition checks the result.
+high-variance residual into a better-behaved quantity.
+`directed_information_rate` therefore estimates it from its own $A$, $B$ and $C$
+and leaves the decomposition to check the result.
 
 The MI rate, instantaneous exchange and the directed information rate have $A$
 and $C$ groups of different lengths. Concatenating them would mean zero-padding
-the shorter one and leaving the network to learn to ignore the padding, so they
+the shorter one and leaving the network to learn to ignore the padding. They
 embed the two groups in separate branches of one network
 (`Model(embedding_model='dual_branch')`) and fuse the results.
 
@@ -553,8 +570,8 @@ $$
 \text{DI rate} = \mathrm{TE}_{X \to Y} + \text{instantaneous exchange}
 $$
 
-Both follow from the chain rule with matched conditioning and hold at any finite
-history, so a deviation points to the estimation.
+Because both follow from the chain rule with matched conditioning and hold at
+any finite history, a deviation points to the estimation.
 
 Massey's conservation law holds per step
 ([Massey and Massey, 2005](https://doi.org/10.1109/ISIT.2005.1523313)):
@@ -563,12 +580,12 @@ $$
 \text{MI rate} = \text{DI rate}(X \to Y) + \mathrm{TE}_{Y \to X}
 $$
 
-It is a limit, reached once $L$ and $h$ are both past the dependence timescale,
-and at small windows the gap is a property of the truncation. The gap between the
-symmetric and the directed quantity is the reverse transfer entropy, so the two
-coincide only without feedback. A shared latent creates feedback in Massey's
-sense even with no causal path between the processes, and the MI rate then needs
-the two-sided window on X that the directed rate does without.
+It is a limit reached once $L$ and $h$ are both past the dependence timescale.
+At small windows the gap is a property of the truncation. The gap between the
+symmetric and the directed quantity is the reverse transfer entropy and closes
+only without feedback. A shared latent creates feedback in Massey's sense even
+with no causal path between the processes. The MI rate then needs the two-sided
+window on X that the directed rate does without.
 
 :::{admonition} References
 :class: note
@@ -602,39 +619,36 @@ and it is estimated from three separate MI estimates. Since
 $I(X,W;Y) - I(W;Y) = I(X;Y \mid W)$, it can also be written as the gap between a
 conditional and an unconditional MI, $II = I(X;Y \mid W) - I(X;Y)$.
 
-Interaction information is signed, and both signs have a standard reading. When
-$II < 0$, X and W carry overlapping information about Y, and observing both
-tells less than the sum of observing each. A shared upstream driver is the
-common cause. X and W are then each partial proxies for it, and knowing one
-reduces what the other can add. When $II > 0$, X and W together reveal something
-about Y that neither reveals alone, as in an XOR-like dependence of Y on a
-combination of X and W that neither shows in isolation.
+Each sign of interaction information has a standard reading. When $II < 0$, X
+and W carry overlapping information about Y. Observing both then tells less than
+the sum of observing each. A shared upstream driver is the common cause. X and W
+are then partial proxies for it. Knowing one reduces what the other can add.
+When $II > 0$, X and W together reveal something about Y that neither reveals
+alone. An XOR-like dependence of Y on X and W is the standard example.
 
-Interaction information is a net measure, with synergy and redundancy entering
-at opposite signs, so a system with 0.5 bits of each returns $II = 0$, the same
-as a system with no interaction. A value near zero cannot tell "nothing is
-happening" from "two things are happening and cancelling". Separating them takes
-a partial information decomposition, which asks for four terms (redundancy, two
-unique terms and synergy) while classical information theory supplies three
-equations relating them ([Williams and Beer,
-2010](https://arxiv.org/abs/1004.2515)). The system is underdetermined, any
-decomposition needs an extra axiom, and different reasonable axioms give
+Interaction information is a net measure in which synergy and redundancy enter
+with opposite signs. A system with 0.5 bits of each returns $II = 0$ like a
+system with no interaction. A value near zero cannot tell "nothing is happening"
+from "two things are happening and cancelling". Separating them takes a partial
+information decomposition into four terms (redundancy, two unique terms and
+synergy). Because classical information theory supplies only three equations for
+those four terms ([Williams and Beer, 2010](https://arxiv.org/abs/1004.2515)),
+every decomposition needs an extra axiom. Different reasonable axioms give
 different answers on the same data ([Bertschinger et al.,
 2014](https://doi.org/10.3390/e16042161)). The library implements none of them
 for that reason.
 
-Papers differ in the sign convention of this quantity. McGill's interaction
-information ([McGill, 1954](https://doi.org/10.1007/BF02289159)) and Bell's
-co-information ([Bell,
+Papers differ in the sign convention of this quantity and in the order of its
+subtraction. McGill's interaction information ([McGill,
+1954](https://doi.org/10.1007/BF02289159)) and Bell's co-information ([Bell,
 2003](https://www.kecl.ntt.co.jp/icl/signal/ica2003/cdrom/data/0187.pdf)) differ
-by a sign for odd numbers of variables, and papers order the subtraction
-differently. Under the convention above, positive means net synergy and negative
-means net redundancy. A published value is compared by its formula, beside its
-name.
+by a sign for odd numbers of variables. Under the convention above, positive
+means net synergy and negative means net redundancy. Comparing a published value
+takes its formula as well as its name.
 
-Interaction information combines three estimates and is usually small compared
-with them, so its [amplification](#amplification) is often large. The three
-components belong beside it in any report.
+Because interaction information combines three estimates and is usually small
+compared with them, its [amplification](#amplification) is often large. The
+three components belong beside it in any report.
 
 :::{admonition} References
 :class: note
@@ -647,92 +661,93 @@ components belong beside it in any report.
 
 ---
 
-## Cross-run-stable directions of shared structure
+## The dimension that carries the shared information
 
-A nonlinear encoder with more embedding capacity than the number of latent
-factors two views share can build combinations of them, products and
-higher-order mixtures, that look after training like independent factors in the
-spectrum. Every measure computed from one trained embedding's spectrum, such as
-the participation ratio, the eigengap or the singular-value profile, is blind to
-the difference. No exact count of "the" dimensionality can be read from a single
-trained spectrum ([Gulati et al., 2026](https://proceedings.mlr.press/v326/gulati26a.html)).
-`mode='dimensionality'` reports what can be read: a regime estimate taken before
-training, the directions that reproduce across independent fits, and the
-participation ratios as a secondary description.
+A nonlinear encoder with more embedding dimensions than the latent factors two
+views share can build combinations of those factors (products and higher-order
+mixtures) that look like extra factors in its trained spectrum. Every measure
+read from one trained spectrum is blind to the difference. The participation
+ratio, the eigengap and the singular-value profile all count the constructed
+directions.
 
-### A regime read before training
+`mode='dimensionality'` reads the dimension from the information itself. It
+estimates the MI at a series of embedding sizes $k$ and reports the smallest
+$k$ that carries a set fraction of it ([Gulati et al., 2026](https://proceedings.mlr.press/v326/gulati26a.html)).
 
-The regime diagnostic centres each view's channels, computes the eigenvalues of
-the channel correlation matrix, and looks at the ratios of consecutive
-eigenvalues. An isolated large ratio marks a separable-like regime, with each
-channel driven mostly by one factor. A flat curve of ratios marks an
-entangled-like regime, with channels reflecting several factors jointly, as in
-mixed selectivity. It runs once, without training, and is reported as `regime_x`
-and `regime_y`. The threshold, a peak ratio of 3.0, is a heuristic calibrated on
-two validated cases, about 14 to 16 for a clean separable case and about 1.7 for an entangled one.
+### The curve and the reading
 
-### Directions that reproduce
+The critic is the hybrid critic unless set. It embeds X and Y separately into
+$k$ dimensions each and scores the pair with a small network on their
+concatenation. A dot-product critic ties the score to the geometry of the
+embedding and needs more dimensions than the shared structure has to represent
+a nonlinear dependence. Each fit reports its value by the max-test heuristic
+([The reported number](#the-reported-number)). In this mode the hybrid
+critic's encoders use layer normalisation as the optimzier tend to get stalled during the training for small embedding dimensions. Layer normalisation divides out each sample's overall scale and lowers the
+curve where that scale carries information. The reading is taken against the
+curve's own plateau, so the precise value for MI is less relevant compared to how the curve behaves
 
-The mode uses the hybrid critic unless another is set. It embeds X and Y
-separately and scores their concatenation with a small network, avoiding the
-rigid geometry of a dot product. The embedding is kept small, 8 dimensions unless
-set, since spare capacity is what lets an encoder build combinations.
-
-With `Output(whitening='std')`, the default, each embedding dimension is divided
-by its standard deviation,
+A restart can settle with fewer directions than its embedding allows and read
+low. At each $k$ the mode trains `n_restarts` networks (4) and keeps the best
+value $\max_r I_r(k)$. A larger embedding can represent any solution of a smaller one.
+The curve is therefore the running maximum
 
 $$
-\tilde{Z}_{X,i} = \frac{Z_{X,i}}{\mathrm{std}(Z_{X,i})}, \qquad \tilde{Z}_{Y,i} = \frac{Z_{Y,i}}{\mathrm{std}(Z_{Y,i})},
+\hat I(k) = \max_{k' \le k} \max_r I_r(k'),
 $$
 
-and the cross-covariance of the whitened held-out embeddings,
+Its plateau $\hat I_\infty$ is the largest value over every fitted $k$
+including a large reference fit (64 dimensions unless set). With $\rho$ the
+`saturation_ratio` (0.95), the reading is
 
 $$
-C_{XY} = \frac{1}{N-1} (\tilde{Z}_X - \bar{\tilde{Z}}_X)^T (\tilde{Z}_Y - \bar{\tilde{Z}}_Y),
+k^\ast = \min \{ k : \hat I(k) \ge \rho \, \hat I_\infty \}.
 $$
 
-is decomposed by SVD into a rotation, ordering the directions by shared
-variance, and singular values $\sigma_i$. One spectrum cannot separate true
-factors from constructed ones, so the fit is repeated `n_splits` times and each
-rank's direction is compared across fits, on held-out data only. A rank is
-stable when its direction correlates across every pair of fits at least at
-`stability_threshold` (0.7), since a constructed combination belongs to one fit
-and is not expected to reproduce. It must also clear a noise floor, a mean
-strength of at least `min_strength_fraction` (0.05) of the strongest rank,
-because a pure-noise direction can correlate across fits by chance. Adjacent
-stable ranks whose strengths differ by less than `degeneracy_ratio_threshold`
-(1.3) are reported as a group whose members exist and cannot be ordered.
+### Why the reading bounds the dimension from above
 
-`stable_directions` lists the ranks that are individually stable,
-`stable_but_degenerate_groups` the groups, and `n_stable_total` their count, a
-lower bound on the number of shared directions.
+A direction the encoder constructs from the true factors is a function of them.
+By the data-processing inequality it carries no information about the other
+view beyond what the factors carry and cannot raise the curve. An embedding
+large enough to hold the true factors already reaches the plateau. The reading
+is therefore an upper bound on the number of dimensions needed to carry the
+fraction $\rho$ of the shared information.
 
-Without `y_data` the mode splits one dataset into two halves that share no
-channel, at random by default or by the chosen `split_method`, and each fit uses
-a new split as well as a new initialisation. With `y_data` it compares X and Y
-directly, and the fits differ in their initialisation.
+A factor that carries less than $1 - \rho$ of the information can fall below
+the threshold and go uncounted. The bound also needs converged fits and a
+plateau set by the data. A plateau
+capped by the ceiling $\log N$ ([InfoNCE](#infonce)) lets small embeddings reach
+the threshold early and can put the reading below the dimension. An encoder
+could in principle pack two factors into one dimension with a space-filling
+map. That would lower the reading and leave it a bound on the dimensions the
+network needed.
 
-### Participation ratios
+### Choosing the grid
 
-Each fit also reports two participation ratios of its own spectrum, in `runs`:
+The reference fit runs first. The participation ratios of its cross-covariance
+spectrum,
 
 $$
-\mathrm{PR}_{\text{singular}} = \frac{\left(\sum_i \sigma_i\right)^2}{\sum_i \sigma_i^2}, \qquad \mathrm{PR}_{\text{eig}} = \frac{\left(\sum_i \sigma_i^2\right)^2}{\sum_i \sigma_i^4}.
+\mathrm{PR}_{\text{singular}} = \frac{\left(\sum_i \sigma_i\right)^2}{\sum_i \sigma_i^2}, \qquad \mathrm{PR}_{\text{eig}} = \frac{\left(\sum_i \sigma_i^2\right)^2}{\sum_i \sigma_i^4},
 $$
 
-Both measure how spread out one spectrum is. `pr_eig` weights by
-$\lambda_i = \sigma_i^2$ and responds more to the rank of the representation
-than `pr_singular`, which weights by $\sigma_i$. Neither can tell true factors
-from constructed ones.
+describe how spread its spectrum is. They count constructed directions along
+with true ones. The mode uses $\mathrm{PR}_{\text{singular}}$ only to size the grid as it's less conservative.
+When twice $\mathrm{PR}_{\text{singular}}$ is at most 10 the grid is 1 to 10. Up to 20 it is 1 to 20.
+Beyond 20 it is 10 values on a log scale from 1 to twice the ratio. A reference whose ratio reaches three eighths of its size is (75\% of 2*$\mathrm{PR}_{\text{singular}}$) refitted at
+four times the ratio (4*$\mathrm{PR}_{\text{singular}}$). The grid is fitted three values at a time and stops once
+three values in a row reach the threshold on every split. A curve that is still
+short of the threshold at the end of the grid gets one extension on a log scale
+up to the reference. `embedding_dims` replaces the grid and fits every value.
 
-### Convergence and the ceiling
+### Splits and their spread
 
-A fit that has not converged has an incomplete spectrum, and its directions can
-mislead. Each fit counts as converged when its best epoch comes before its last,
-and `converged` is `True` only when every fit converged. When the MI estimate
-sits within `ceiling_mi_fraction` (0.85) of its ceiling the mode warns, since a
-spectrum built on a saturated estimate needs extra scrutiny. A converged fit near
-its ceiling reports fewer stable directions than exist.
+Without `y_data` the mode splits the channels of X into two halves that share no
+channel. `split_method='random'` draws `n_splits` (5) channel assignments. Each
+gives its own curve and its own reading. The mode reports the median reading as
+`dimension_at_most` and the standard deviation over splits as its spread. The
+other split methods give one split. With `y_data` the two views are X and Y and
+the restarts are the only repeats. Every fit of a call uses one held-out set.
+
 
 :::{admonition} References
 :class: note
@@ -745,17 +760,16 @@ its ceiling reports fewer stable directions than exist.
 
 ## Spike-timing precision
 
-Many neural codes rely on spike timing at the millisecond scale
-([Tang et al., 2014](https://doi.org/10.1371/journal.pbio.1002018)), and the
-precision at which a representation carries information shows in how the
-information degrades as the timing is perturbed
-([Ortega et al., 2023](https://doi.org/10.1371/journal.pcbi.1011170)).
-`mode='precision'` trains once and evaluates many times, so no network is
-retrained per level of corruption.
+Many neural codes rely on spike timing at the millisecond scale. The precision at which a
+representation carries information shows in how the information degrades as the
+timing is perturbed ([Tang et al.,
+2014](https://doi.org/10.1371/journal.pbio.1002018), [Ortega et al.,
+2023](https://doi.org/10.1371/journal.pcbi.1011170)). `mode='precision'` trains
+once and evaluates the frozen network at every level of corruption.
 
-A critic is first trained on the uncorrupted data, and its baseline MI is
-recorded. The network is then frozen, and the data are corrupted over a grid of
-levels $\tau$. Rounding, the default, moves every value to the centre of its bin
+A critic is first trained on the uncorrupted data and its baseline MI recorded.
+The network is then frozen and the data corrupted over a grid of levels
+$\tau$. Rounding, the default, moves every value to the centre of its bin
 of width $\tau$,
 
 $$
@@ -767,17 +781,11 @@ and is averaged over `n_noise_samples` draws. Both keep the timing resolution at
 $\tau$.
 
 The corruption touches only entries that hold a measurement. A spike window
-stores its spike times in a fixed number of slots, and the unused slots carry an
-empty value, zero by default. Jittering those slots would hand the frozen critic
-spikes that never happened: on a timing-coded spike pair, 69% of the entries of
-each window were unused slots, and jittering them took the MI from 1.17 to
-$-6.3$ bits at the smallest $\tau$, 5 ms. The unused slots, empty bins and
-zero-padded gaps therefore stay as they are. Bin centres sit $\tau/2$ away from
-every multiple of $\tau$, so rounding never moves a spike onto an empty value of
-zero either. Rounding to the nearest multiple would do so. On the same data it
-deletes 5.7% of the spikes at $\tau = 0.2$ s and 25% at $\tau = 0.4$ s, and the
-lost spikes mix into the loss of timing being measured. Under both methods the
-number of spikes stays fixed and only their timing degrades.
+stores its spike times in a fixed number of slots. The unused slots carry an
+empty value (zero by default). Jittering those slots would hand the frozen
+critic spikes that never happened. Rounding to bin centres never moves a spike onto an empty value of
+zero either. Under both
+methods the number of spikes stays fixed and only their timing degrades.
 
 The precision is the smallest $\tau$ at which the corrupted MI falls below a
 fraction $\rho$ of the baseline:
@@ -791,10 +799,11 @@ cost more than 10% of the information. Several ratios at once, such as
 `threshold_ratio=[0.9, 0.75, 0.5]`, trace the whole profile, from the onset of
 the loss to its collapse.
 
-The frozen critic was trained on clean inputs, and a lower bound can fall
-arbitrarily far below zero on inputs unlike its training data. Past the
-threshold the curve measures how far the bound has broken, and the crossing of
-the threshold is the reading.
+The frozen critic was trained on clean inputs. On inputs unlike its training
+data a lower bound can fall arbitrarily far below zero. Past the threshold the
+curve measures how far the bound has broken. The crossing of the threshold is
+the reading. Points below zero are reported as 0 and keep their measured values
+in `mi_raw`.
 
 :::{admonition} References
 :class: note
@@ -807,16 +816,16 @@ the threshold is the reading.
 
 ## Regularised objectives
 
-The standard objective trains the critic to maximise the MI alone,
-$\mathcal{L} = -\hat{I}(Z_X; Z_Y)$. Two regularisers can be added, a
-variational encoder and a reconstruction decoder, and together they give the
-deep variational symmetric information bottleneck
-([Abdelaleem et al., 2025b](http://jmlr.org/papers/v26/24-0204.html)).
+The standard objective trains the critic to maximise the MI alone, $\mathcal{L}
+= -\hat{I}(Z_X; Z_Y)$. A variational encoder and a reconstruction decoder can be
+added as regularisers. Together they give the deep variational symmetric
+information bottleneck ([Abdelaleem et al.,
+2025b](http://jmlr.org/papers/v26/24-0204.html)).
 
 ### Variational encoders
 
-A variational encoder learns a distribution over embeddings, $q(z \mid x)$, a
-Gaussian with mean and variance $(\mu_x, \sigma_x)$, in place of a single
+A variational encoder learns a Gaussian distribution over embeddings,
+$q(z \mid x)$ with mean and variance $(\mu_x, \sigma_x)$, in place of a single
 embedding per input. A KL term pulls each distribution toward a standard normal
 prior:
 
@@ -825,26 +834,26 @@ $$
 $$
 
 `Model(use_variational=True)` places a wrapper on top of any encoder. The
-encoder maps the input to a deterministic embedding, and the wrapper adds linear
+encoder maps the input to a deterministic embedding. The wrapper adds linear
 heads for $\mu$ and $\log \sigma^2$ and samples with the reparameterisation
-trick. The KL term is averaged per sample, so $\beta$ has the same meaning at
-any batch size. The default $\beta = 1024$ lets the MI term dominate while the
-KL term still penalises degenerate distributions. A smaller $\beta$ strengthens
-the pull toward the prior, and $\beta \ll 1$ can collapse the embeddings onto it
-and lower the estimated MI.
+trick. Averaging the KL term per sample gives $\beta$ the same meaning at any
+batch size. The default $\beta = 1024$ lets the MI term dominate while the KL
+term still penalises degenerate distributions. A smaller $\beta$ strengthens the
+pull toward the prior. At $\beta \ll 1$ the embeddings can collapse onto it and
+lower the estimated MI.
 
-The concat critic has no embedding of X or of Y, only one network scoring each
-pair, so the variational layer sits on that network's output. Each score becomes
-a draw from a Gaussian whose mean and variance the network produces, and the KL
-term pulls every score toward the prior. It regularises the critic and has no
-information-bottleneck reading, which needs the separable or hybrid critic. On
-correlated Gaussians with 2.00 bits, the concat critic gave 1.87 bits without the
-layer and 1.94 with it at the default $\beta$, and 1.51 at $\beta = 1$.
+The concat critic has one network scoring each pair and no separate embedding of
+X or Y. Its variational layer sits on that network's output and turns each score
+into a draw from a Gaussian whose mean and variance the network produces. The KL
+term regularises the critic by pulling every score toward the prior. The
+information-bottleneck reading needs the separable or hybrid critic. On
+correlated Gaussians with 2.00 bits the concat critic gave 1.87 bits without the
+layer, 1.94 with it at the default $\beta$ and 1.51 at $\beta = 1$.
 
 ### Reconstruction decoders
 
-`Model(use_decoder=True)` adds a decoder $d_X$ that maps $Z_X$ back to the input,
-and likewise for Y, trained together with the critic:
+`Model(use_decoder=True)` adds decoders $d_X$ and $d_Y$ that map each embedding
+back to its input and train together with the critic:
 
 $$
 \mathcal{L} = -\Big[\hat{I}(Z_X; Z_Y) - \lambda_X \, \mathcal{L}_\text{rec}(X,\hat{X}) - \lambda_Y \, \mathcal{L}_\text{rec}(Y,\hat{Y})\Big]
@@ -852,8 +861,8 @@ $$
 
 with $\hat{X} = d_X(Z_X)$ and $\hat{Y} = d_Y(Z_Y)$. $\lambda_X$ and $\lambda_Y$
 (`decoder_lambda_x`, `decoder_lambda_y`) set how much reconstruction error
-counts against one nat of shared information, and the default is small (0.001).
-The reconstruction loss follows the decoder's output:
+counts against one nat of shared information and default to a small 0.001. The
+reconstruction loss follows the decoder's output:
 
 | output activation | data | loss |
 |---|---|---|
@@ -869,17 +878,18 @@ $$
 \mathcal{L} = \overline{D}_\text{KL}(Z_X) + \overline{D}_\text{KL}(Z_Y) - \beta\Big[\hat{I}(Z_X; Z_Y) - \lambda_X \, \mathcal{L}_\text{rec}(X,\hat{X}) - \lambda_Y \, \mathcal{L}_\text{rec}(Y,\hat{Y})\Big].
 $$
 
-$\beta$ scales everything the objective is asked to preserve, the MI term and both
-reconstructions, so the effective weight on a reconstruction is $\beta\lambda$. A
-third constant on the MI term would be redundant, since scaling all three terms
-by $c$ and $\beta$ by $1/c$ leaves the objective unchanged. The KL terms pull the
-embeddings toward the prior, and the decoders make each embedding keep enough to
-rebuild its own input. The objective therefore favours embeddings that are informative
-about the other variable, regular in distribution, and faithful to their own
-input. This is the deep variational symmetric information bottleneck of
-[Abdelaleem et al., 2025b](http://jmlr.org/papers/v26/24-0204.html), an
-instance of the multivariate information bottleneck
-([Friedman et al., 2001](https://arxiv.org/abs/1301.2270)).
+$\beta$ scales everything the objective is asked to preserve (the MI term and
+both reconstructions). The effective weight on a reconstruction is therefore
+$\beta\lambda$. A third constant on the MI term would be redundant because
+scaling all three terms by $c$ and $\beta$ by $1/c$ leaves the objective
+unchanged. The KL terms pull the embeddings toward the prior. The decoders make
+each embedding keep enough to rebuild its own input. The objective therefore
+favours embeddings that are informative about the other variable, regular in
+distribution, and faithful to their own input. This objective is the deep
+variational symmetric information bottleneck of [Abdelaleem et al.,
+2025b](http://jmlr.org/papers/v26/24-0204.html) and an instance of the
+multivariate information bottleneck ([Friedman et al.,
+2001](https://arxiv.org/abs/1301.2270)).
 
 :::{admonition} References
 :class: note

@@ -1,20 +1,28 @@
 cff-version: 1.2.0
-message: "If you use NeuralMI, please cite the paper that describes its estimator."
+message: "If you use NeuralMI, please cite the papers that describe the work it rests on. The Citing section of the README says which paper goes with which part of the library."
 title: "NeuralMI"
-abstract: "A Python toolbox for rigorous mutual information estimation in neuroscience."
+abstract: "A Python toolbox for information-theoretic analysis of neural data at scale."
 type: software
 authors:
   - family-names: Abdelaleem
     given-names: Eslam
     orcid: "https://orcid.org/0009-0006-9429-3589"
     affiliation: "Georgia Institute of Technology"
+  - family-names: Wood
+    given-names: Leo
+    orcid: "https://orcid.org/0000-0003-1829-7781"
+    affiliation: "Princeton Neuroscience Institute, Princeton University"
+  - family-names: Sederberg
+    given-names: Audrey
+    orcid: "https://orcid.org/0000-0003-4458-3773"
+    affiliation: "Georgia Institute of Technology"
 version: 1.0.0
 license: MIT
 repository-code: "https://github.com/eslam-abdelaleem/NeuralMI"
 url: "https://eslam-abdelaleem.github.io/NeuralMI/"
 keywords:
-  - mutual information
   - information theory
+  - mutual information
   - neuroscience
   - neural data analysis
 preferred-citation:
@@ -30,3 +38,55 @@ preferred-citation:
   journal: "arXiv preprint arXiv:2506.00330"
   year: 2025
   url: "https://arxiv.org/abs/2506.00330"
+references:
+  - type: conference-paper
+    title: "Mutual information and task-relevant latent dimensionality"
+    authors:
+      - family-names: Gulati
+        given-names: Paarth
+      - family-names: Abdelaleem
+        given-names: Eslam
+      - family-names: Sederberg
+        given-names: Audrey
+      - family-names: Nemenman
+        given-names: Ilya
+    collection-title: "Proceedings of GRaM: the Second Edition of the Workshop on Geometry-grounded Representation Learning and Generative Modeling"
+    publisher:
+      name: "PMLR"
+    volume: 326
+    start: 262
+    end: 293
+    year: 2026
+    url: "https://proceedings.mlr.press/v326/gulati26a.html"
+  - type: article
+    title: "Deep variational multivariate information bottleneck: a framework for variational losses"
+    authors:
+      - family-names: Abdelaleem
+        given-names: Eslam
+      - family-names: Nemenman
+        given-names: Ilya
+      - family-names: Martini
+        given-names: K. Michael
+    journal: "Journal of Machine Learning Research"
+    volume: 26
+    year: 2025
+    url: "http://jmlr.org/papers/v26/24-0204.html"
+  - type: article
+    status: in-preparation
+    title: "Hawkmoth descending neurons carry motor information in spike timing across synergistic populations"
+    authors:
+      - family-names: Wood
+        given-names: Leo
+      - family-names: Abdelaleem
+        given-names: Eslam
+      - family-names: Sederberg
+        given-names: Audrey
+      - family-names: Sponberg
+        given-names: Simon
+  - type: article
+    status: in-preparation
+    title: "Information-theoretic analysis of neural populations at scale"
+    authors:
+      - family-names: Abdelaleem
+        given-names: Eslam
+      - name: "et al."

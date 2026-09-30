@@ -83,9 +83,8 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
     unknown = sorted(set(aug_params) - _VALID_KEYS)
     if unknown:
         warnings.warn(
-            f"Unrecognised augmentation key(s) {unknown}; they will be ignored, "
-            f"so the augmentation you asked for is not being applied. Valid keys "
-            f"are {sorted(_VALID_KEYS)}.",
+            f"Unrecognised augmentation key(s) {unknown} are ignored and those "
+            f"augmentations are not applied. Valid keys are {sorted(_VALID_KEYS)}.",
             UserWarning, stacklevel=user_stacklevel(),
         )
 

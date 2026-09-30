@@ -38,7 +38,6 @@ Per-mode configs:
 .. autoclass:: neural_mi.Conditional
 .. autoclass:: neural_mi.Interaction
 .. autoclass:: neural_mi.Pairwise
-.. autoclass:: neural_mi.Sweep
 
 Named quantities (``quantities``)
 ---------------------------------
@@ -103,15 +102,17 @@ callable on its own.
 Logging
 -------
 
-These functions set the library's logging level.
+These functions set the library's logging level and group repeated warnings.
 
 .. autofunction:: neural_mi.logger.set_verbose
 .. autofunction:: neural_mi.logger.set_verbosity
+.. autofunction:: neural_mi.logger.grouped_warnings
 
 Exceptions
 ----------
 
-The library's own exceptions, all derived from ``NeuralMIError``.
+The library's own exceptions, all derived from ``NeuralMIError``, and ``CombinationWarning``
+for the warnings about a quantity combined from several estimates.
 
 .. automodule:: neural_mi.exceptions
    :members:

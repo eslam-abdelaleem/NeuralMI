@@ -200,10 +200,9 @@ class SubsetView:
                     f"SubsetView: window count dropped from {old_count} to "
                     f"{new_count} ({reduction:.1%} reduction) after dataset "
                     f"rebuild. This usually means shift_time moved "
-                    f"windows outside the valid recording range. Consider "
-                    f"reducing the shift magnitude, or set "
-                    f"max_index_reduction > {self.max_index_reduction:.0%} "
-                    f"to suppress this warning."
+                    f"windows outside the valid recording range. Reduce the "
+                    f"shift magnitude or set max_index_reduction above "
+                    f"{self.max_index_reduction:.0%} to suppress this warning."
                 )
     
     def __len__(self):

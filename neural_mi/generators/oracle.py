@@ -65,7 +65,7 @@ def _slogdet(matrix: np.ndarray) -> float:
     if sign <= 0:
         raise np.linalg.LinAlgError(
             f"Covariance block is not positive definite (slogdet sign={sign}). "
-            f"This usually means a process was given zero observation noise, or "
+            f"This usually means a process was given zero observation noise or "
             f"the same (process, offset) pair appears twice in one spec."
         )
     return float(logdet)
@@ -309,8 +309,8 @@ class SharedLatentGaussian:
         if a is None or b is None:
             if len(self.names) < 2:
                 raise ValueError(
-                    "This oracle defines a single process, so there is no pair to "
-                    "measure. Name two processes in dims, or pass a and b explicitly."
+                    "This oracle defines a single process and has no pair to "
+                    "measure. Name two processes in dims or pass a and b explicitly."
                 )
             a = a if a is not None else self.names[0]
             b = b if b is not None else self.names[1]
@@ -821,7 +821,7 @@ def generate_spike_pair(n_windows: int = 4000, window_size: float = 1.0,
     if lag_windows >= n_windows:
         raise ValueError(
             f"lag_windows ({lag_windows}) must be smaller than n_windows "
-            f"({n_windows}), or no overlapping windows remain.")
+            f"({n_windows}). Otherwise no overlapping windows remain.")
 
     rng = np.random.default_rng(seed)
     pmf = symmetric_joint_pmf(n_levels, rho)
@@ -912,8 +912,8 @@ def generate_xor_pair(n_samples: int, noise: float = 0.1, use_torch: bool = True
     """
     if noise <= 0:
         raise ValueError(
-            f"noise must be positive, got {noise}. At exactly zero Y is discrete "
-            f"and this differential-entropy calculation does not apply; the "
+            f"noise must be positive and is {noise}. At exactly zero Y is discrete "
+            f"and this differential-entropy calculation does not apply. The "
             f"limiting value is 1 bit.")
     rng = np.random.default_rng(seed)
     x1 = rng.integers(0, 2, size=n_samples) if seed is not None else np.random.randint(0, 2, size=n_samples)

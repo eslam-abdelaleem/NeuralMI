@@ -294,7 +294,7 @@ class TestBuilderBehaviour:
                        'C': [('x', -1), ('y', -3), ('y', -2), ('y', -1)]})
 
     def test_unknown_process_is_named(self, data):
-        with pytest.raises(ValueError, match="which data does not provide"):
+        with pytest.raises(ValueError, match="data provides only"):
             build_offset_arrays(data, {'A': [('z', 0)], 'B': [('y', 0)]})
 
     def test_mismatched_lengths_rejected(self):
