@@ -4,10 +4,11 @@
 It provides the function `create_dataset` as a unified interface to create
 paired datasets composed of different data types `ContinuousDataset` and `SpikeDataset`.
 """
-from .handler import create_dataset, PairedDataset, PairedTemporalDataset
+from .handler import AlignedStreams, AlignedStaticStreams, StreamBundle, create_dataset, PairedDataset, PairedTemporalDataset
 from .views import SubsetView
 
 __all__ = [
+    'AlignedStreams', 'AlignedStaticStreams', 'StreamBundle',
     'create_dataset',
     'PairedDataset',
     'PairedTemporalDataset',

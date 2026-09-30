@@ -2,13 +2,72 @@
 """Defines the critic models for neural mutual information estimation.
 
 This module contains various critic architectures used to compute a score
-function `f(x, y)`, which is the core of many lower-bound estimators of
+function `f(x, y)`, the core of many lower-bound estimators of
 mutual information. The critics are designed to be flexible and can be
 combined with different embedding models.
 """
 import torch
 import torch.nn as nn
-from typing import get_type_hints, get_origin, Optional, Tuple
+from typing import Any, Optional, Tuple
+
+
+def _batch_size_of(x) -> int:
+    """Batch size of x, whether x is a plain tensor or a tuple/list of
+    tensors sharing a leading (sample) dimension, DualBranchEmbedding's
+    compound ``(a_batch, c_batch)`` input, in particular."""
+    return (x[0] if isinstance(x, (tuple, list)) else x).shape[0]
+
+
+def _device_of(x) -> torch.device:
+    return (x[0] if isinstance(x, (tuple, list)) else x).device
+
+
+# The most values one block of pair activations may hold: rows of the score
+# matrix times N pairs times the head's hidden width. A training batch of a few
+# hundred samples fits in one block and a large evaluation set in a few dozen.
+_PAIR_BLOCK_ELEMENTS = 2 ** 24
+
+
+def _is_plain_mlp(net) -> bool:
+    """An MLP whose first module is a linear layer applied to the whole input."""
+    network = getattr(net, 'network', None)
+    return (isinstance(network, nn.Sequential) and len(network) > 0
+            and isinstance(network[0], nn.Linear) and hasattr(net, 'output_layer'))
+
+
+def _score_pairs(mlp: nn.Module, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """``mlp([a_i, b_j])`` for every pair, as an ``(len(a), len(b))`` matrix.
+
+    The first layer is affine, so its value on a pair is the layer applied to
+    ``[a_i, 0]`` plus the layer applied to ``[0, b_j]`` minus one bias. Both
+    sides pass through that layer once and together, which also runs a
+    spectral norm's power iteration once per call. The rest of the network runs
+    on the pair sums in blocks of at most ``_PAIR_BLOCK_ELEMENTS`` values.
+    """
+    first, rest = mlp.network[0], mlp.network[1:]
+    n_a, n_b = a.shape[0], b.shape[0]
+    both = torch.cat([torch.cat([a, a.new_zeros(n_a, b.shape[1])], dim=1),
+                      torch.cat([b.new_zeros(n_b, a.shape[1]), b], dim=1)], dim=0)
+    hidden = first(both)
+    h_a, h_b = hidden[:n_a], hidden[n_a:]
+    if first.bias is not None:
+        h_b = h_b - first.bias
+    width = hidden.shape[1]
+    rows = max(1, _PAIR_BLOCK_ELEMENTS // max(1, n_b * width))
+    blocks = []
+    for start in range(0, n_a, rows):
+        pre = h_a[start:start + rows].unsqueeze(1) + h_b.unsqueeze(0)
+        blocks.append(mlp.output_layer(rest(pre.reshape(-1, width))).view(-1, n_b))
+    return torch.cat(blocks, dim=0)
+
+
+def _slice_batch(x, start: int, end: int):
+    """Slice the leading (batch) dimension of x, whether x is a plain
+    tensor or a tuple/list of tensors sharing that dimension."""
+    if isinstance(x, (tuple, list)):
+        return tuple(t[start:end] for t in x)
+    return x[start:end]
+
 
 class BaseCritic(nn.Module):
     """Abstract base class for critic models.
@@ -19,8 +78,8 @@ class BaseCritic(nn.Module):
     """
     def __init__(self):
         super().__init__()
-        
-    def _get_embeddings_and_kl(self, x_out: any, y_out: any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    def _get_embeddings_and_kl(self, x_out: Any, y_out: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Helper to unpack embeddings and KL loss from variational models."""
         kl_loss_x = torch.tensor(0.0, device=x_out[0].device if isinstance(x_out, tuple) else x_out.device)
         kl_loss_y = torch.tensor(0.0, device=y_out[0].device if isinstance(y_out, tuple) else y_out.device)
@@ -43,14 +102,14 @@ class BaseCritic(nn.Module):
 
         ``VariationalWrapper.forward`` already returns a per-sample-mean KL (raw KL
         summed over the embedding dimensions and batch, then divided by batch size).
-        We accumulate those per-sample means across chunks and average them — no
+        We accumulate those per-sample means across chunks and average them, no
         additional division by the full batch size is applied, as that would
         double-count the normalization already performed inside the wrapper.
         """
-        batch_size = x.shape[0]
+        batch_size = _batch_size_of(x)
         n_chunks = 0
 
-        # Fast path for small datasets — wrapper already gives per-sample mean KL.
+        # Fast path for small datasets, wrapper already gives per-sample mean KL.
         if batch_size <= max_n_batches:
             x_out = net_x(x)
             y_out = net_y(y)
@@ -59,14 +118,14 @@ class BaseCritic(nn.Module):
 
         # Chunked processing to prevent OOM
         x_embeds, y_embeds = [], []
-        total_kl_acc = torch.tensor(0.0, device=x.device)
+        total_kl_acc = torch.tensor(0.0, device=_device_of(x))
 
         for i in range(0, batch_size, max_n_batches):
             end_idx = min(i + max_n_batches, batch_size)
             chunk_size = end_idx - i
 
-            x_out = net_x(x[i:end_idx])
-            y_out = net_y(y[i:end_idx])
+            x_out = net_x(_slice_batch(x, i, end_idx))
+            y_out = net_y(_slice_batch(y, i, end_idx))
 
             x_emb, y_emb, kl = self._get_embeddings_and_kl(x_out, y_out)
 
@@ -98,7 +157,7 @@ class BaseCritic(nn.Module):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
         else:
             # ConcatCritic: no separate embedding networks, return flat inputs.
-            # This is semantically honest — concat critics have no separable embedding.
+            # This is semantically honest, concat critics have no separable embedding.
             return x.view(x.shape[0], -1), y.view(y.shape[0], -1)
             
         max_n = getattr(self, 'max_n_batches', 512)
@@ -122,7 +181,7 @@ class BaseCritic(nn.Module):
         Returns
         -------
         tuple of (z_x, z_y) : torch.Tensor
-            Embedding tensors, each of shape ``(batch, embed_dim)``.
+            Embedding tensors, each of shape ``(batch, embedding_dim)``.
         """
         if hasattr(self, 'embedding_net_x'):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
@@ -142,14 +201,14 @@ class SeparableCritic(BaseCritic):
     def __init__(self, 
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
-                 embed_dim: int = None, 
+                 embedding_dim: int = None, 
                  max_n_batches: int = 512, 
                  use_variational: bool = False,
                  **kwargs):
         super().__init__()
         self.embedding_net_x = embedding_net_x
         self.embedding_net_y = embedding_net_y or embedding_net_x
-        self.embed_dim = embed_dim
+        self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
 
@@ -171,7 +230,7 @@ class HybridCritic(BaseCritic):
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
                  decision_head: nn.Module,
-                 embed_dim: int = None, 
+                 embedding_dim: int = None, 
                  max_n_batches: int = 512, 
                  use_variational: bool = False,
                  **kwargs):
@@ -179,12 +238,14 @@ class HybridCritic(BaseCritic):
         self.embedding_net_x = embedding_net_x
         self.embedding_net_y = embedding_net_y or embedding_net_x
         self.decision_head = decision_head
-        self.embed_dim = embed_dim
+        self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size = x.size(0)
+        # x may be a plain tensor or a tuple (DualBranchEmbedding's compound
+        # (a_batch, c_batch) input) -- _batch_size_of handles both.
+        batch_size = _batch_size_of(x)
 
         # 1. Embed inputs (chunked over samples to bound encoder memory).
         x_embedded, y_embedded, total_kl_loss = self._compute_embeddings_chunked(
@@ -192,11 +253,14 @@ class HybridCritic(BaseCritic):
             self.max_n_batches, self.use_variational
         )
 
-        # 2. Score all N² pairs in row-chunks so the full (N², 2d) pair tensor
-        #    is never materialized at once — same pattern as ConcatCritic.forward.
+        # 2. Score all N² pairs. The head built by build_critic is a plain MLP
+        #    and takes the fast route; any other head scores pairs in row-chunks
+        #    so the full (N², 2d) pair tensor is never materialized at once.
+        if _is_plain_mlp(self.decision_head):
+            return _score_pairs(self.decision_head, x_embedded, y_embedded), total_kl_loss
         chunk_rows = max(1, self.max_n_batches // batch_size)
         scores = torch.zeros(batch_size, batch_size, device=x_embedded.device)
-        y_exp = y_embedded.unsqueeze(0)  # (1, N, d) — shared view, no copy
+        y_exp = y_embedded.unsqueeze(0)  # (1, N, d), shared view, no copy
 
         for start in range(0, batch_size, chunk_rows):
             end = min(start + chunk_rows, batch_size)
@@ -219,27 +283,23 @@ class ConcatCritic(BaseCritic):
 
     .. note:: **Variational mode with ConcatCritic**
 
-        Setting ``use_variational=True`` together with ``critic_type='concat'`` is
-        supported but has a different theoretical interpretation than with separable
-        or hybrid critics.  Here the variational wrapper is applied to the
-        *concatenated pair* ``[x_i, y_j]``, not to individual samples, so the KL
-        term measures uncertainty over the *pair* representation rather than over
-        each variable's marginal distribution.  This departs from the standard
-        Information Bottleneck formulation described in the docs.  The training will
-        run without error, but the KL regularisation effect is weaker and harder to
-        interpret.  Unless you have a specific reason to use this combination,
-        prefer ``critic_type='separable'`` or ``'hybrid'`` when
-        ``use_variational=True``.
+        With ``use_variational=True`` the variational layer sits on the output of
+        the network, the score of the pair ``[x_i, y_j]``. Each score becomes a
+        draw from a Gaussian whose mean and variance the network produces, and
+        the KL term pulls every score toward the standard normal prior. That
+        regularises the critic, but there is no embedding of X or of Y for it to
+        compress, so it carries no information-bottleneck reading. The separable
+        and hybrid critics give that reading.
     """
     def __init__(self,
                  embedding_net: nn.Module,
-                 embed_dim: int = None,
+                 embedding_dim: int = None,
                  max_n_batches: int = 512,
                  use_variational: bool = False,
                  **kwargs):
         super().__init__()
         self.embedding_net = embedding_net
-        self.embed_dim = embed_dim
+        self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
 
@@ -247,15 +307,18 @@ class ConcatCritic(BaseCritic):
         batch_size = x.size(0)
         x_flat = x.view(batch_size, -1)
         y_flat = y.view(batch_size, -1)
+        if not self.use_variational and _is_plain_mlp(self.embedding_net):
+            return (_score_pairs(self.embedding_net, x_flat, y_flat),
+                    torch.tensor(0.0, device=x.device))
 
         # Row-wise chunking: process chunk_rows rows of x per iteration.
         # Each chunk contains chunk_rows * N pairs, bounding peak memory to
-        # max_n_batches pairs — same budget as the original flat-index loop.
+        # max_n_batches pairs, same budget as the original flat-index loop.
         chunk_rows = max(1, self.max_n_batches // batch_size)
         scores = torch.zeros(batch_size, batch_size, device=x.device)
         total_kl_acc = torch.tensor(0.0, device=x.device)
         n_pair_chunks = 0
-        y_exp = y_flat.unsqueeze(0)  # (1, N, dy) — shared view, no copy
+        y_exp = y_flat.unsqueeze(0)  # (1, N, dy), shared view, no copy
 
         for start in range(0, batch_size, chunk_rows):
             end = min(start + chunk_rows, batch_size)

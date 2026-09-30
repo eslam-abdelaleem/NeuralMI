@@ -9,11 +9,14 @@ dist/
 *.egg-info/
 *.whl
 
-# Sphinx documentation build directory
-docs/build/
+# Sphinx documentation build directory. The CI writes docs/_build/html.
+docs/_build/
 
-# Pytest cache
+# Pytest and coverage
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
 .tox/
 
 # Jupyter Notebook checkpoints
@@ -34,3 +37,9 @@ env/
 
 # Claude Code local session state
 .claude/
+
+# Tutorial data. Only the two hippocampal sessions that notebook 04 loads are
+# tracked; the Allen recordings belong to the notebooks kept out of the course.
+tutorials/data/*.npy
+tutorials/data/processed_hippocampus_data_raw.pkl
+archive/

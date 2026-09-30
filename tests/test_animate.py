@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as manim
 from unittest.mock import patch
 
-from neural_mi.results import Results
 from neural_mi.visualize.animate import (
     animate_training,
     _auto_panels,
@@ -25,20 +24,17 @@ from neural_mi.visualize.animate import (
 def _make_result(
     n_epochs=5,
     n_tracked=20,
-    embed_dim=4,
+    embedding_dim=4,
     include_spectral=False,
     include_spectrum=False,
     include_embeddings=True,
     include_train=False,
 ):
-    """Build a minimal Results object with synthetic training history."""
-    test_history = list(np.linspace(0.1, 1.0, n_epochs))
-    details = {
-        'test_mi_history': test_history,
-        'best_epoch': n_epochs - 1,
-    }
+    """A one-repeat result with synthetic training history, in the shape run() returns."""
+    from tests import results_factory as rf
+    extra = {}
     if include_train:
-        details['train_mi_history'] = list(np.linspace(0.2, 1.1, n_epochs))
+        extra['train_mi_history'] = list(np.linspace(0.2, 1.1, n_epochs))
     if include_spectral or include_spectrum:
         spectral = []
         for e in range(n_epochs):
@@ -46,21 +42,17 @@ def _make_result(
             if include_spectrum:
                 entry['spectrum'] = list(np.linspace(1.0, 0.1, 8))
             spectral.append(entry)
-        details['spectral_metrics_history'] = spectral
+        extra['spectral_metrics_history'] = spectral
+    embeddings = None
     if include_embeddings:
-        details['embedding_history_x'] = [
-            np.random.randn(n_tracked, embed_dim).astype(np.float32)
-            for _ in range(n_epochs)
-        ]
-        details['embedding_history_y'] = [
-            np.random.randn(n_tracked, embed_dim).astype(np.float32)
-            for _ in range(n_epochs)
-        ]
-    return Results(
-        mode='dimensionality',
-        params={'output_units': 'bits'},
-        details=details,
-    )
+        embeddings = {
+            'embedding_history_x': [np.random.randn(n_tracked, embedding_dim).astype(np.float32)
+                                    for _ in range(n_epochs)],
+            'embedding_history_y': [np.random.randn(n_tracked, embedding_dim).astype(np.float32)
+                                    for _ in range(n_epochs)],
+        }
+    return rf.estimate(mi=1.0, history=tuple(np.linspace(0.1, 1.0, n_epochs)),
+                       best_epoch=n_epochs - 1, embeddings=embeddings, **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -106,8 +98,8 @@ class TestAutoPanels:
 # ---------------------------------------------------------------------------
 
 class TestFitReducer:
-    def test_no_reduction_when_embed_dim_le_n_components(self):
-        # embed_dim=2, n_components=2 — no reduction needed
+    def test_no_reduction_when_embedding_dim_le_n_components(self):
+        # embedding_dim=2, n_components=2 — no reduction needed
         history = [np.random.randn(10, 2) for _ in range(3)]
         reducer, reduced = _fit_reducer(history, n_components=2, reduction='pca')
         assert reducer is None
@@ -144,10 +136,12 @@ class TestFitReducer:
 # ---------------------------------------------------------------------------
 
 class TestResolveScatterColor:
-    def test_none_returns_viridis(self):
+    def test_none_has_no_colormap(self):
+        # Without values there is nothing to map, and a colormap passed anyway
+        # makes matplotlib warn that it is ignored.
         c, cmap, vmin, vmax = _resolve_scatter_color(None)
         assert c is None
-        assert cmap == 'viridis'
+        assert cmap is None
         assert vmin is None
 
     def test_continuous_float_array(self):
@@ -215,11 +209,8 @@ class TestAnimateTraining:
         plt.close('all')
 
     def test_missing_test_mi_history_raises(self):
-        result = Results(
-            mode='estimate',
-            params={},
-            details={'train_mi_history': [0.5, 0.6]},
-        )
+        from tests import results_factory as rf
+        result = rf.estimate(history=None, train_mi_history=[0.5, 0.6])
         with pytest.raises(ValueError, match="test_mi_history"):
             animate_training(result, show=False)
 
@@ -243,7 +234,7 @@ class TestAnimateEmbeddings:
     @patch('matplotlib.pyplot.show')
     def test_single_embedding_label_array(self, mock_show):
         pytest.importorskip('sklearn')
-        result = _make_result(n_tracked=20, embed_dim=8)
+        result = _make_result(n_tracked=20, embedding_dim=8)
         labels = np.random.randint(0, 3, size=20)
         anim = animate_training(
             result,
@@ -258,7 +249,7 @@ class TestAnimateEmbeddings:
     @patch('matplotlib.pyplot.show')
     def test_dict_embedding_labels_multiple_subplots(self, mock_show):
         pytest.importorskip('sklearn')
-        result = _make_result(n_tracked=20, embed_dim=8)
+        result = _make_result(n_tracked=20, embedding_dim=8)
         labels = {
             'category': np.random.randint(0, 3, size=20),
             'position': np.random.randn(20).astype(float),
@@ -293,7 +284,7 @@ class TestAnimateEmbeddings:
     @patch('matplotlib.pyplot.show')
     def test_3d_embeddings(self, mock_show):
         pytest.importorskip('sklearn')
-        result = _make_result(n_tracked=20, embed_dim=8)
+        result = _make_result(n_tracked=20, embedding_dim=8)
         anim = animate_training(
             result,
             panels=['embeddings'],
@@ -307,7 +298,7 @@ class TestAnimateEmbeddings:
     @patch('matplotlib.pyplot.show')
     def test_reduction_none(self, mock_show):
         """reduction='none' should use first n_components dimensions directly."""
-        result = _make_result(n_tracked=20, embed_dim=4)
+        result = _make_result(n_tracked=20, embedding_dim=4)
         anim = animate_training(
             result,
             panels=['mi', 'embeddings'],
@@ -329,8 +320,64 @@ class TestResultAnimate:
         mock_fn.return_value = MagicMock(spec=manim.FuncAnimation)
         result = _make_result(include_embeddings=False)
         result.animate(show=False, fps=5)
-        mock_fn.assert_called_once_with(result, show=False, fps=5)
+        mock_fn.assert_called_once_with(result, config_id=None, run_id=None, show=False, fps=5)
 
 
 # Avoid matplotlib object import error in mock
 from unittest.mock import MagicMock  # noqa: E402 (already imported via top-level, harmless)
+
+
+# ---------------------------------------------------------------------------
+# Picking one network
+# ---------------------------------------------------------------------------
+
+def _axis_result(mode, axis):
+    """A result whose networks differ along ``axis`` and in ``run_id``."""
+    import itertools
+    import pandas as pd
+    from neural_mi.results import Results
+    names = list(axis)
+    rows, embeddings = [], {}
+    for values in itertools.product(*axis.values(), (0, 1)):
+        *point, rid = values
+        rows.append({'config_id': 0, **dict(zip(names, point)), 'run_id': rid, 'mi': 1.0,
+                     'test_mi_history': [0.1, float(sum(point) + rid)]})
+        embeddings[(*point, rid)] = {'embedding_history_x': [np.zeros((4, 2))],
+                                     'embedding_history_y': [np.zeros((4, 2))],
+                                     'tag': (*point, rid)}
+    return Results(mode=mode, params={'axis_keys': names}, runs=pd.DataFrame(rows),
+                   details={0: {'embeddings': embeddings}})
+
+
+class TestPickOneNetwork:
+    def test_the_axis_values_and_run_id_pick_the_network(self):
+        view = _axis_result('lag', {'lag': (0, 2)})._repeat_view(run_id=1, lag=2)
+        assert view['tag'] == (2, 1) and view['test_mi_history'][-1] == 3.0
+
+    def test_an_ambiguous_call_names_the_keys_to_pass(self):
+        with pytest.raises(ValueError, match=r"Pass lag=\.\.\., run_id=\.\.\."):
+            _axis_result('lag', {'lag': (0, 2)})._repeat_view()
+        with pytest.raises(ValueError, match=r"Pass run_id=\.\.\. \(run_id in \[0, 1\]\)"):
+            _axis_result('lag', {'lag': (0, 2)})._repeat_view(lag=0)
+
+    def test_a_dimensionality_network_is_picked_by_split_size_and_restart(self):
+        result = _axis_result('dimensionality', {'split_id': (0, 1), 'embedding_dim': (2, 4)})
+        assert result._repeat_view(split_id=1, embedding_dim=4, run_id=0)['tag'] == (1, 4, 0)
+        with pytest.raises(ValueError, match='embedding_dim=...'):
+            result._repeat_view(split_id=1, run_id=0)
+
+    def test_a_value_no_network_has_is_refused(self):
+        with pytest.raises(ValueError, match='No network of configuration 0 has lag=5'):
+            _axis_result('lag', {'lag': (0, 2)})._repeat_view(lag=5, run_id=0)
+
+    def test_an_axis_of_another_mode_is_refused(self):
+        with pytest.raises(ValueError, match="split_id does not pick a network of mode='lag'"):
+            _axis_result('lag', {'lag': (0, 2)})._repeat_view(split_id=0)
+
+    def test_animate_forwards_the_axis_values(self):
+        result = _axis_result('pairwise', {'ch_x': (0,), 'ch_y': (1, 2)})
+        with pytest.raises(ValueError, match=r"animate\(\) shows one network"):
+            animate_training(result, show=False)
+        anim = animate_training(result, ch_x=0, ch_y=2, run_id=1, panels=['mi'], show=False)
+        assert isinstance(anim, manim.FuncAnimation)
+        plt.close('all')

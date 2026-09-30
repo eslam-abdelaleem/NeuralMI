@@ -5,17 +5,17 @@ Contains the core, parallelizable training task function.
 import gc as _gc
 import threading
 import warnings
+import weakref
 import torch
-import torch.optim as optim
-import torch.optim.lr_scheduler as _lr_sched
 import numpy as np
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 
-from neural_mi.utils import build_critic, get_device, compute_cross_covariance_rotation
+from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device, compute_cross_covariance_rotation
 from neural_mi.estimators import ESTIMATORS
 from neural_mi.training.trainer import Trainer
-from neural_mi.logger import logger
-from neural_mi.data.handler import create_dataset, PairedDataset
+from neural_mi.logger import logger, user_stacklevel
+from neural_mi.embeddings_io import save_network
+from neural_mi.data.handler import create_dataset, AlignedStaticStreams
 
 # Batch size used for embedding extraction (no effect on training).
 # Large enough to keep GPU utilisation high; small enough to avoid OOM.
@@ -31,14 +31,31 @@ _EMBEDDING_BATCH = 512
 #
 # In sequential sweeps where data and processor params are constant across
 # tasks, this means create_dataset() is called once and every subsequent task
-# reuses the pre-built object — eliminating N-1 redundant tensor copies.
+# reuses the pre-built object, eliminating N-1 redundant tensor copies.
 #
 # In multiprocessing (spawn) mode each worker starts with an empty cache; the
 # first task in a worker populates it and later tasks in the same worker
 # benefit automatically.
+#
+# The key is built from data_ptr()/id(), which identifies an *allocation*, not
+# a specific object: if a source array is freed and a new one happens to be
+# allocated at the same address, the key can collide. Each entry also stores a
+# weakref to the original x_data/y_data so a hit can verify true object
+# identity before being trusted; a mismatch (or a dead weakref) is treated as
+# a miss and the dataset is rebuilt.
 _DATASET_CACHE_LOCK = threading.Lock()
-_DATASET_CACHE: dict = {}       # {cache_key -> PairedDataset}
+_DATASET_CACHE: dict = {}       # {cache_key -> (PairedDataset, x_weakref, y_weakref)}
 _DATASET_CACHE_MAXSIZE = 4      # LRU eviction when this is exceeded
+
+
+def _safe_weakref(obj):
+    """Return a weakref to obj, or None if obj is None or not weakly referenceable."""
+    if obj is None:
+        return None
+    try:
+        return weakref.ref(obj)
+    except TypeError:
+        return None
 
 # Keys that fully determine dataset construction (anything else is a model/
 # training hyperparameter and does NOT affect the dataset).
@@ -81,11 +98,25 @@ _BUILD_PARAMS_KEYS = [
     'use_variational', 'shared_encoder',
     'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
     'dropout', 'norm_layer', 'use_spectral_norm',
-    'use_decoder', 'decoder_weight', 'decoder_weight_x', 'decoder_weight_y',
+    'use_decoder', 'decoder_lambda', 'decoder_lambda_x', 'decoder_lambda_y',
     'decoder_output_activation_x', 'decoder_output_activation_y',
     # PretrainedBackboneEmbedding architecture parameters
     'pytorch_predefined', 'pretrained',
 ]
+
+
+def _decoder_lambda(params: Dict[str, Any], axis: str) -> float:
+    """Resolve the reconstruction weight for one axis.
+
+    The per-axis keys carry an explicit ``None`` once defaults have been
+    applied, so a plain ``dict.get`` fallback would return that ``None``
+    instead of the shared ``decoder_lambda``. Both levels are therefore
+    checked for ``None`` by hand.
+    """
+    value = params.get(f'decoder_lambda_{axis}')
+    if value is None:
+        value = params.get('decoder_lambda')
+    return 0.001 if value is None else float(value)
 
 
 def run_training_task(args: tuple) -> Dict[str, Any]:
@@ -93,12 +124,20 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     import random as _random
     x_data, y_data, params, run_id = args
 
-    # Deterministic per-worker seeding: derive a seed from the base seed and
-    # the run_id string so every task is reproducible but unique.
+    # Deterministic per-worker seeding: derive a seed from the base seed and a
+    # per-task key so every task is reproducible but unique. Uses '_seed_key'
+    # (set by the task-preparation code, e.g. sweep.py/rigorous.py's
+    # _prepare_tasks, from purely deterministic indices like the sweep
+    # combination/gamma/subset index) instead of 'run_id' itself, which
+    # callers may prefix with a random UUID (for display/log distinctness
+    # across repeated calls) -- hashing that directly would make the
+    # "task_seed" -- and therefore the whole run -- different on every call
+    # even with an explicit, fixed random_seed and n_workers=1.
     base_seed = params.get('random_seed', None)
     if base_seed is not None:
         import hashlib
-        task_seed = (base_seed + int(hashlib.md5(str(run_id).encode()).hexdigest(), 16)) % (2**31)
+        seed_key = params.get('_seed_key', run_id)
+        task_seed = (base_seed + int(hashlib.md5(str(seed_key).encode()).hexdigest(), 16)) % (2**31)
         _random.seed(task_seed)
         np.random.seed(task_seed)
         torch.manual_seed(task_seed)
@@ -113,58 +152,97 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     _data_device: str = str(_compute_device) if _raw_dd == 'auto' else (_raw_dd or 'cpu')
 
     # ------------------------------------------------------------------
-    # Dataset construction — with module-level cache for static datasets.
+    # Dataset construction, with module-level cache for static datasets.
     # ------------------------------------------------------------------
-    _cache_key = _dataset_cache_key(x_data, y_data,
-                                    {**params, 'dataset_device': _data_device})
-    dataset = None
-    with _DATASET_CACHE_LOCK:
-        dataset = _DATASET_CACHE.get(_cache_key)
-
-    if dataset is None:
-        dataset = create_dataset(
-            x_data, y_data,
-            processor_type_x=params.get('processor_type_x'),
-            processor_type_y=params.get('processor_type_y'),
-            processor_params_x=params.get('processor_params_x'),
-            processor_params_y=params.get('processor_params_y'),
-            data_device=_data_device,
-        )
-        # Only cache immutable static datasets — temporal datasets are mutated
-        # by time_shift() during training and must not be shared.
-        if isinstance(dataset, PairedDataset):
-            with _DATASET_CACHE_LOCK:
-                if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
-                    # Evict the oldest entry (dict preserves insertion order).
-                    _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
-                _DATASET_CACHE[_cache_key] = dataset
-            logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
-        else:
-            logger.debug("Temporal dataset — skipping cache (mutable via time_shift).")
+    from neural_mi.data.shift_windowing import (
+        try_build_shift_windows_dataset, try_build_shift_windows_dataset_tuple,
+    )
+    if isinstance(x_data, tuple):
+        # Compound "X-role" data: two raw streams windowed independently and
+        # combined afterwards. params['_shift_pack'] says how -- kept apart for
+        # dual_branch, concatenated for a conditioning variable that shares X's
+        # window axis, or used alone for the marginal leg.
+        dataset = try_build_shift_windows_dataset_tuple(x_data, y_data, params, data_device=_data_device)
     else:
-        logger.debug("Dataset cache hit — reusing pre-built dataset.")
+        dataset = try_build_shift_windows_dataset(x_data, y_data, params, data_device=_data_device)
+    if dataset is not None:
+        _cache_key = None  # never cached (mutated in place every epoch); the
+        # cleanup step near the end of this function reads _cache_key back
+        # out of _DATASET_CACHE to decide whether `dataset` is safe to `del`
+        # -- None always misses, so it's always deleted, correctly, here.
+    else:
+        _cache_key = _dataset_cache_key(x_data, y_data,
+                                        {**params, 'dataset_device': _data_device})
+        dataset = None
+        with _DATASET_CACHE_LOCK:
+            _cache_entry = _DATASET_CACHE.get(_cache_key)
+        if _cache_entry is not None:
+            _cached_dataset, _x_ref, _y_ref = _cache_entry
+            _x_is_live = _x_ref is None or _x_ref() is x_data
+            _y_is_live = _y_ref is None or _y_ref() is y_data
+            if _x_is_live and _y_is_live:
+                dataset = _cached_dataset
+            else:
+                logger.debug("Dataset cache key collision (stale data_ptr/id), rebuilding.")
+
+        if dataset is None:
+            dataset = create_dataset(
+                x_data, y_data,
+                x_time=params.get('x_time'),
+                y_time=params.get('y_time'),
+                processor_type_x=params.get('processor_type_x'),
+                processor_type_y=params.get('processor_type_y'),
+                processor_params_x=params.get('processor_params_x'),
+                processor_params_y=params.get('processor_params_y'),
+                data_device=_data_device,
+            )
+            # Only cache immutable static datasets, temporal datasets are mutated
+            # by time_shift() during training and must not be shared.
+            if isinstance(dataset, AlignedStaticStreams):
+                with _DATASET_CACHE_LOCK:
+                    if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
+                        # Evict the oldest entry (dict preserves insertion order).
+                        _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
+                    _DATASET_CACHE[_cache_key] = (dataset, _safe_weakref(x_data), _safe_weakref(y_data))
+                logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
+            else:
+                logger.debug("Temporal dataset, skipping cache (mutable via time_shift).")
+        else:
+            logger.debug("Dataset cache hit, reusing pre-built dataset.")
 
     # Models that natively support 4-D input (N, C, H, W):
-    #   'cnn2d' — Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
-    #   'mlp'   — flattens C*H*W into a feature vector; spatial structure ignored.
+    #   'cnn2d', Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
+    #   'mlp', flattens C*H*W into a feature vector; spatial structure ignored.
     # Models that require 3-D input (N, C, W):
-    #   'cnn'        — raises ValueError for 4-D (ambiguous channel/spatial axes).
-    #   sequence models (gru, lstm, tcn, transformer) — emit UserWarning; their
+    #   'cnn', raises ValueError for 4-D (ambiguous channel/spatial axes).
+    #   sequence models (gru, lstm, tcn, transformer), emit UserWarning; their
     #                   forward() methods expect 3-D and will fail at the first batch
     #                   if the user proceeds.  Use 'cnn2d' or 'mlp' instead.
     _4D_NATIVE = {'cnn2d', 'mlp', 'pretrained_backbone'}
 
-    if dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
+    if isinstance(dataset.x_data, tuple):
+        # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
+        # mode='conditional'(align='dual_branch')) -- dims become a matching
+        # 2-tuple instead of a single int. The hasattr(..., 'shape') guard
+        # below is False for a tuple, so without this branch the whole
+        # dim-computation block would be silently skipped and
+        # DualBranchEmbedding would never receive the dims it needs.
+        _a, _c = dataset.x_data
+        params['n_channels_x'] = (_a.shape[1], _c.shape[1])
+        params['input_dim_x'] = (_a.shape[1] * _a.shape[2], _c.shape[1] * _c.shape[2])
+    elif dataset.x_data is not None and hasattr(dataset.x_data, 'shape'):
         _x = dataset.x_data
         params['n_channels_x'] = _x.shape[1]
         if _x.ndim == 4:
             params['input_dim_x'] = _x.shape[1] * _x.shape[2] * _x.shape[3]
+            params['input_height_x'] = _x.shape[2]
+            params['input_width_x'] = _x.shape[3]
             _emb = params.get('embedding_model', 'mlp')
             if _emb == 'cnn':
                 raise ValueError(
                     f"embedding_model='cnn' (CNN1D) does not support 4-D input "
                     f"(shape {tuple(_x.shape)}). "
-                    "Use embedding_model='cnn2d' to preserve spatial structure, "
+                    "Use embedding_model='cnn2d' to preserve spatial structure "
                     "or embedding_model='mlp' to process flattened C×H×W features."
                 )
             elif _emb not in _4D_NATIVE:
@@ -174,7 +252,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                     "Spatial dimensions H×W are not preserved by this model. "
                     "Consider embedding_model='cnn2d' for spatially-structured data.",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=user_stacklevel(),
                 )
         else:
             params['input_dim_x'] = _x.shape[1] * _x.shape[2]
@@ -184,12 +262,14 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         params['n_channels_y'] = _y.shape[1]
         if _y.ndim == 4:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2] * _y.shape[3]
+            params['input_height_y'] = _y.shape[2]
+            params['input_width_y'] = _y.shape[3]
         else:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2]
 
     if params.get('custom_critic') is not None:
         critic = params['custom_critic']
-        logger.debug("Using pre-initialized custom critic model. Model architecture parameters in 'base_params' will be ignored.")
+        logger.debug("Using the custom critic as given, so the Model(...) architecture settings are ignored.")
     else:
         critic = build_critic(params.get('critic_type', 'separable'),
                               params,
@@ -200,14 +280,23 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     decoder_y = None
     if params.get('use_decoder', False):
         from neural_mi.models.decoders import build_decoder
+
+        _n_channels_x = params.get('n_channels_x', 1)
+        if isinstance(_n_channels_x, tuple):
+            raise NotImplementedError(
+                "use_decoder=True is not supported with a compound (tuple) "
+                "embedding input such as DualBranchEmbedding in mode='conditional' "
+                "with align='dual_branch'. Reconstructing a compound (A, C) input "
+                "from one fused embedding has no single well-defined decoder "
+                "architecture. Use use_decoder=False for this path."
+            )
         _embedding_model = params.get('embedding_model', 'mlp')
-        _embed_dim = params.get('embedding_dim', params.get('hidden_dim', 64))
+        _embedding_dim = params.get('embedding_dim', params.get('hidden_dim', 64))
         _hidden_dim = params.get('hidden_dim', 64)
         _n_layers = params.get('n_layers', 2)
         _dec_act_x = params.get('decoder_output_activation_x', 'linear')
         _dec_act_y = params.get('decoder_output_activation_y', 'linear')
 
-        _n_channels_x = params.get('n_channels_x', 1)
         _n_channels_y = params.get('n_channels_y', 1)
         _input_dim_x = params.get('input_dim_x', _n_channels_x)
         _input_dim_y = params.get('input_dim_y', _n_channels_y)
@@ -216,7 +305,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
 
         decoder_x = build_decoder(
             embedding_model=_embedding_model,
-            embed_dim=_embed_dim,
+            embedding_dim=_embedding_dim,
             hidden_dim=_hidden_dim,
             n_channels=_n_channels_x,
             window_size=_window_size_x,
@@ -224,105 +313,34 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             output_activation=_dec_act_x,
             kernel_size=params.get('kernel_size', 7),
             nhead=params.get('nhead', 4),
+            height=params.get('input_height_x'),
+            width=params.get('input_width_x'),
+            dropout=params.get('dropout', 0.3),
         )
-        # Separate decoder for Y if asymmetric architecture or different data type
-        # For shared_encoder=True, we still build separate decoders (X and Y may differ in n_channels)
-        if _n_channels_y != _n_channels_x or _window_size_y != _window_size_x or _dec_act_x != _dec_act_y:
-            decoder_y = build_decoder(
-                embedding_model=_embedding_model,
-                embed_dim=_embed_dim,
-                hidden_dim=_hidden_dim,
-                n_channels=_n_channels_y,
-                window_size=_window_size_y,
-                n_layers=_n_layers,
-                output_activation=_dec_act_y,
-                kernel_size=params.get('kernel_size', 7),
-                nhead=params.get('nhead', 4),
-            )
-        else:
-            decoder_y = build_decoder(
-                embedding_model=_embedding_model,
-                embed_dim=_embed_dim,
-                hidden_dim=_hidden_dim,
-                n_channels=_n_channels_y,
-                window_size=_window_size_y,
-                n_layers=_n_layers,
-                output_activation=_dec_act_y,
-                kernel_size=params.get('kernel_size', 7),
-                nhead=params.get('nhead', 4),
-            )
+        # Always build a dedicated decoder_y -- X and Y may differ in n_channels/
+        # window_size/activation even when shared_encoder=True.
+        decoder_y = build_decoder(
+            embedding_model=_embedding_model,
+            embedding_dim=_embedding_dim,
+            hidden_dim=_hidden_dim,
+            n_channels=_n_channels_y,
+            window_size=_window_size_y,
+            n_layers=_n_layers,
+            output_activation=_dec_act_y,
+            kernel_size=params.get('kernel_size', 7),
+            nhead=params.get('nhead', 4),
+            height=params.get('input_height_y'),
+            width=params.get('input_width_y'),
+            dropout=params.get('dropout', 0.3),
+        )
         logger.debug(
             f"Built decoder_x ({type(decoder_x).__name__}) and decoder_y ({type(decoder_y).__name__}) "
             f"for use_decoder=True."
         )
 
-    _OPTIMIZERS = {
-        'adam': optim.Adam,
-        'adamw': optim.AdamW,
-        'sgd': optim.SGD,
-        'rmsprop': optim.RMSprop,
-        'adagrad': optim.Adagrad,
-    }
-    _opt_val = params.get('optimizer', 'adam')
-    if isinstance(_opt_val, type):
-        OptCls = _opt_val
-    else:
-        OptCls = _OPTIMIZERS.get(str(_opt_val).lower())
-        if OptCls is None:
-            raise ValueError(
-                f"Unknown optimizer '{_opt_val}'. "
-                f"Supported names: {list(_OPTIMIZERS.keys())}. "
-                f"You can also pass a torch.optim.Optimizer subclass directly."
-            )
-    # Collect all trainable parameters (critic + optional decoders).
-    # When lr_head_multiplier is set and the critic has a decision_head (i.e. hybrid),
-    # split into two param groups so the head can train at a different rate.
-    _base_lr = params['learning_rate']
-    _head_mult = params.get('lr_head_multiplier')
-    _decoder_params = []
-    if decoder_x is not None:
-        _decoder_params.extend(decoder_x.parameters())
-    if decoder_y is not None:
-        _decoder_params.extend(decoder_y.parameters())
-
-    if _head_mult is not None and _head_mult != 1.0 and hasattr(critic, 'decision_head'):
-        _head_ids = {id(p) for p in critic.decision_head.parameters()}
-        _encoder_params = [p for p in critic.parameters() if id(p) not in _head_ids]
-        _encoder_params.extend(_decoder_params)
-        _param_groups = [
-            {'params': _encoder_params,                        'lr': _base_lr},
-            {'params': list(critic.decision_head.parameters()), 'lr': _base_lr * _head_mult},
-        ]
-        optimizer = OptCls(_param_groups, **params.get('optimizer_params', {}))
-    else:
-        _all_params = list(critic.parameters()) + _decoder_params
-        optimizer = OptCls(_all_params, lr=_base_lr, **params.get('optimizer_params', {}))
-
-    _SCHEDULER_NAMES = {'cosine', 'step', 'plateau', 'cosine_warmup'}
-    _sched_val = params.get('scheduler', None)
-    scheduler = None
-    if _sched_val is not None:
-        _sched_params = params.get('scheduler_params', {})
-        n_epochs = params['n_epochs']
-        if isinstance(_sched_val, type):
-            scheduler = _sched_val(optimizer, **_sched_params)
-        elif _sched_val == 'cosine':
-            scheduler = _lr_sched.CosineAnnealingLR(optimizer, T_max=n_epochs, **_sched_params)
-        elif _sched_val == 'step':
-            scheduler = _lr_sched.StepLR(optimizer, step_size=max(1, n_epochs // 3), **_sched_params)
-        elif _sched_val == 'plateau':
-            scheduler = _lr_sched.ReduceLROnPlateau(optimizer, mode='max', **_sched_params)
-        elif _sched_val == 'cosine_warmup':
-            warmup = max(1, int(n_epochs * 0.1))
-            warmup_sched = _lr_sched.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup)
-            cosine_sched = _lr_sched.CosineAnnealingLR(optimizer, T_max=max(1, n_epochs - warmup))
-            scheduler = _lr_sched.SequentialLR(optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup])
-        else:
-            raise ValueError(
-                f"Unknown scheduler '{_sched_val}'. "
-                f"Supported names: {sorted(_SCHEDULER_NAMES)}. "
-                f"You can also pass a torch.optim.lr_scheduler class directly."
-            )
+    optimizer, scheduler = build_optimizer_and_scheduler(
+        params, critic, decoder_x=decoder_x, decoder_y=decoder_y,
+    )
 
     device = _compute_device  # already resolved above
 
@@ -344,12 +362,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         beta=params.get('beta', 1024.0),
         estimator_params=params.get('estimator_params'),
         custom_smoothing_fn=params.get('custom_smoothing_fn'),
-        spectral_whitening=params.get('spectral_whitening', 'std'),
+        whitening=params.get('whitening', 'std'),
         gradient_clip_val=params.get('gradient_clip_val', None),
         decoder_x=decoder_x,
         decoder_y=decoder_y,
-        decoder_weight_x=params.get('decoder_weight_x', params.get('decoder_weight', 1.0)),
-        decoder_weight_y=params.get('decoder_weight_y', params.get('decoder_weight', 1.0)),
+        decoder_lambda_x=_decoder_lambda(params, 'x'),
+        decoder_lambda_y=_decoder_lambda(params, 'y'),
         decoder_output_activation_x=params.get('decoder_output_activation_x', 'linear'),
         decoder_output_activation_y=params.get('decoder_output_activation_y', 'linear'),
         use_amp=params.get('use_amp', 'auto'),
@@ -368,13 +386,13 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         params['batch_size'],
         train_fraction=params.get('train_fraction', 0.9),
         n_test_blocks=params.get('n_test_blocks', 5),
-        random_time_shifting=params.get('random_time_shifting', False),
-        epochs_to_max_shift=params.get('epochs_to_max_shift', 5),
+        shift_time=params.get('shift_time', True),
+        shift_seed=base_seed,
+        shift_windows=params.get('shift_windows', True),
         patience=params['patience'],
         smoothing_sigma=params.get('smoothing_sigma', 1.0),
         median_window=params.get('median_window', 5),
         min_improvement=params.get('min_improvement', 0.001),
-        run_id=run_id,
         output_units=params.get('output_units', 'nats'),
         verbose=params.get('verbose', False),
         show_progress=params.get('show_progress', True),
@@ -385,44 +403,58 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         max_eval_samples=params.get('max_eval_samples', 5000),
         split_gap_fraction=params.get('split_gap_fraction', 0.5),
         train_subset_size=params.get('train_subset_size'),
-        track_spectral_metrics=params.get('track_spectral_metrics', False),
-        spectral_output=params.get('spectral_output', 'default'),
-        return_spectrum=params.get('return_spectrum', False),
+        track_spectral_history=params.get('track_spectral_history', False),
         max_index_reduction=params.get('max_index_reduction', 0.05),
         eval_train=params.get('eval_train', False),
         peak_fraction=params.get('peak_fraction', 1.0),
         scheduler=scheduler,
         track_embeddings=params.get('track_embeddings', False),
         return_rotated_embeddings=params.get('return_rotated_embeddings', False),
-        rotated_embeddings_whitening=params.get('rotated_embeddings_whitening', 'std'),
         rotated_embeddings_per_epoch=params.get('rotated_embeddings_per_epoch', False),
         return_rotation_matrices=params.get('return_rotation_matrices', False),
+        leak_check_window_size=params.get('leak_check_window_size'),
+        leak_check_step=params.get('leak_check_step'),
     )
 
-    # Save model in extended format {'state_dict': ..., 'build_params': {...}}
+    # Save the best epoch's network with what rebuilding it needs, under a name
+    # that carries the labels identifying this network within the call.
     if _save_path:
-        build_params = {k: params[k] for k in _BUILD_PARAMS_KEYS if k in params}
-        torch.save({'state_dict': trainer.model.state_dict(), 'build_params': build_params},
-                   _save_path)
-        logger.debug(f"Model saved (extended format) to {_save_path}.")
+        results['model_path'] = save_network(trainer.model, params, _BUILD_PARAMS_KEYS)
 
     # Optionally extract embeddings from the trained model.
-    # Uses the full dataset in original sample order — no capping, no shuffling —
+    # Uses the full dataset in original sample order, no capping, no shuffling —
     # so the returned arrays align index-for-index with the caller's raw data.
+    # Reads through the frozen pre-shift snapshot when one was taken (shift_windows/
+    # shift_time were active): dataset.x_data/.y_data reflect whatever shift was
+    # last applied during training, not the canonical view best_model_state was
+    # scored against.
     if params.get('return_embeddings', False):
-        _all_x = dataset.x_data
-        _all_y = dataset.y_data
+        _all_x = results.get('_frozen_eval_x', dataset.x_data)
+        _all_y = results.get('_frozen_eval_y', dataset.y_data)
         if _all_y is None:
-            logger.warning("return_embeddings=True but y_data is None. Skipping embedding extraction.")
+            # Unreachable through run(). Only 'dimensionality' and 'pairwise'
+            # accept y_data=None, and both build their own second side before
+            # any training happens; the model scores pairs, so a task that
+            # trained at all has two of them.
+            raise ValueError(
+                "Embedding extraction reached a trained task with no Y side. Both "
+                "sides exist by construction for every mode. This is a broken "
+                "internal invariant and a bug in NeuralMI."
+            )
         else:
             trainer.model.eval()
-            _n = _all_x.shape[0]
+            # _all_x may be a plain tensor or a tuple (DualBranchEmbedding's
+            # compound "X-role" data, mode='conditional'(align='dual_branch')).
+            _is_tuple_x = isinstance(_all_x, tuple)
+            _n = (_all_x[0] if _is_tuple_x else _all_x).shape[0]
             _zx_parts, _zy_parts = [], []
             with torch.no_grad():
                 for _start in range(0, _n, _EMBEDDING_BATCH):
                     _end = min(_start + _EMBEDDING_BATCH, _n)
+                    _x_batch = (tuple(t[_start:_end].to(device) for t in _all_x)
+                                if _is_tuple_x else _all_x[_start:_end].to(device))
                     _bzx, _bzy = trainer.model.get_embeddings(
-                        _all_x[_start:_end].to(device),
+                        _x_batch,
                         _all_y[_start:_end].to(device),
                     )
                     _zx_parts.append(_bzx.detach().cpu())
@@ -437,12 +469,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             if params.get('return_rotated_embeddings', False):
                 if params.get('critic_type', 'separable') == 'concat':
                     warnings.warn(
-                        "return_rotated_embeddings=True has no effect for ConcatCritic, "
-                        "which has no separate embedding networks. Skipping rotation.",
-                        UserWarning, stacklevel=2,
+                        "return_rotated_embeddings=True has no effect for critic_type='concat'. "
+                        "That critic has no separate embedding networks to rotate.",
+                        UserWarning, stacklevel=user_stacklevel(),
                     )
                 else:
-                    _whitening = params.get('rotated_embeddings_whitening', 'std')
+                    _whitening = params.get('whitening', 'std')
                     _rot = compute_cross_covariance_rotation(
                         results['embeddings_x'], results['embeddings_y'],
                         whitening=_whitening,
@@ -455,10 +487,47 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                         results['embeddings_rotation_y'] = _rot['rotation_y']
                     logger.debug("Computed rotated embeddings (whitening=%r).", _whitening)
 
+    frozen_x = results.pop('_frozen_eval_x', None)
+    frozen_y = results.pop('_frozen_eval_y', None)
+
     return_params = params.copy()
     return_params.pop('custom_critic', None)
     return_params.pop('custom_embedding_cls', None)
+    return_params.pop('_seed_key', None)
+    return_params.pop('_keep_trained', None)
     final_result = {**return_params, **results}
+    if params.get('_keep_trained'):
+        # mode='precision' evaluates this network again on corrupted copies of
+        # its training rows, so it needs the trainer, the dataset and, when the
+        # windows were shifted during training, the pre-shift snapshot the
+        # network was scored on.
+        final_result['_trainer'] = trainer
+        final_result['_dataset'] = dataset
+        if frozen_x is not None:
+            final_result['_frozen_eval_x'] = frozen_x
+            final_result['_frozen_eval_y'] = frozen_y
+
+    # Window retention belongs with the per-task numbers instead of on the run
+    # as a whole: it varies per task, systematically so across a window_size
+    # sweep on spike data, where the retained subensemble can go from a small
+    # fraction of the recording to all of it. Reported here it lands beside
+    # train_mi in the results frame, and it reaches the caller whether the
+    # windowing happened here or in run() itself.
+    # Windowing happens either here or in run(), so read this task's own
+    # dataset first and fall back to the value run() handed down when it did
+    # the windowing itself. The shift_windows reslice path drops nothing by
+    # construction, so 1.0 is the truthful value when neither is present.
+    _retention = getattr(dataset, 'window_retention', None)
+    if _retention is not None:
+        final_result['window_retention'] = _retention
+        final_result['n_windows_built'] = getattr(dataset, 'n_windows_built', None)
+        final_result['n_windows_retained'] = getattr(dataset, 'n_windows_retained', None)
+    else:
+        final_result['window_retention'] = params.get('_window_retention', 1.0)
+        final_result['n_windows_built'] = params.get('_n_windows_built')
+        final_result['n_windows_retained'] = params.get('_n_windows_retained')
+    for _k in ('_window_retention', '_n_windows_built', '_n_windows_retained'):
+        final_result.pop(_k, None)
 
     # ------------------------------------------------------------------
     # Release device-bound objects so the backend allocator can reclaim
@@ -472,8 +541,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         del decoder_y
     # Only delete the dataset reference if it is NOT in the shared cache —
     # cached datasets are intentionally kept alive for reuse by future tasks.
-    _cached = _DATASET_CACHE.get(_cache_key)
-    if _cached is not dataset:
+    _cache_entry = _DATASET_CACHE.get(_cache_key)
+    _cached_dataset = _cache_entry[0] if _cache_entry is not None else None
+    if _cached_dataset is not dataset:
         del dataset
     if scheduler is not None:
         del scheduler

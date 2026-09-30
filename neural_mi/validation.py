@@ -5,27 +5,49 @@ This module contains validators that are used by the main `run` function to
 ensure that the provided data and hyperparameters are valid and compatible
 before starting a potentially long-running analysis.
 """
-from typing import Dict, Any, Union, List, Optional
+from typing import Dict, Any, Optional
 import numpy as np
 import torch
-import inspect
 from neural_mi.logger import logger
 from neural_mi.exceptions import DataShapeError
-from neural_mi.estimators import ESTIMATORS, ESTIMATOR_DEFAULTS
+from neural_mi.estimators import ESTIMATORS
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
+
+def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
+    """Raise TypeError unless `value` matches `expected_type`.
+
+    Two deliberate departures from a plain `isinstance` check.
+
+    `bool` is a subclass of `int` in Python, so a plain check lets
+    `n_epochs=True` silently validate as an int. Reject `bool` values unless the
+    schema explicitly lists `bool` among the expected types.
+
+    An `int` is accepted wherever a `float` is expected, following Python's own
+    numeric tower. Without this, `gap_fraction=1` fails while `gap_fraction=1.0`
+    succeeds, a distinction no caller expects to have to make, and it
+    applies to every float-typed parameter in the schema (`learning_rate=1`,
+    `dropout=0`, `beta=1024` and so on). `bool` is still excluded, so
+    `dropout=True` does not quietly become 1.0.
+    """
+    allowed = expected_type if isinstance(expected_type, tuple) else (expected_type,)
+    if isinstance(value, bool) and bool not in allowed:
+        raise TypeError(f"{context} '{key}' must be of type {expected_type}, got bool ({value!r}).")
+    if float in allowed and isinstance(value, int):
+        return
+    if not isinstance(value, expected_type):
+        raise TypeError(f"{context} '{key}' must be of type {expected_type}, got {type(value)}.")
+
 
 ALLOWED_VALUES = {
     'critic_type': ['separable', 'concat', 'hybrid'],
     'embedding_model': ['mlp', 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                        'pretrained_backbone'],
+                        'pretrained_backbone', 'lru', 'dual_branch', 'deepsets'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
-    'spectral_mode': ['none', 'summary', 'full'],
-    'spectral_output': ['default', 'all'],
     'estimator_name': list(ESTIMATORS.keys()),  # 'infonce', 'smile'
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
-    'norm_layer': [None, 'batch', 'layer'],
+    'norm_layer': [None, 'auto', 'none', 'batch', 'layer'],
 }
 
 class DataValidator:
@@ -62,23 +84,39 @@ class DataValidator:
     def _validate_type(self, data: Any, name: str, proc_type: Optional[str]):
         """Validates the base type and dtype of a data stream."""
         if not isinstance(data, (np.ndarray, torch.Tensor, list)):
-            raise TypeError(f"{name} must be np.ndarray, torch.Tensor, or list, got {type(data)}")
+            raise TypeError(f"{name} must be an np.ndarray, a torch.Tensor or a list. Got {type(data)}.")
 
         if proc_type in ['continuous', 'categorical']:
             is_numeric = False
+            dtype_repr = type(data).__name__
             if isinstance(data, np.ndarray):
                 is_numeric = np.issubdtype(data.dtype, np.number)
+                dtype_repr = data.dtype
             elif isinstance(data, torch.Tensor):
                 is_numeric = data.is_floating_point() or data.is_complex() or \
                              data.dtype in [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8]
-            
+                dtype_repr = data.dtype
+            elif isinstance(data, list):
+                # run()'s own docstring documents `list` as an accepted x_data/y_data
+                # type; convert once here (create_dataset does the same downstream)
+                # so a numeric list passes validation, and a genuinely non-numeric
+                # or malformed one gets this clear error instead of an unrelated
+                # AttributeError from `data.dtype` (plain lists have no such attribute).
+                try:
+                    arr = np.asarray(data)
+                    is_numeric = np.issubdtype(arr.dtype, np.number)
+                    dtype_repr = arr.dtype
+                except Exception:
+                    is_numeric = False
+
             if not is_numeric:
-                raise TypeError(f"{name} must contain numeric data, but found type {data.dtype}.")
-            
-            if proc_type == 'categorical' and isinstance(data, (np.ndarray, torch.Tensor)):
-                d_np = data.numpy() if isinstance(data, torch.Tensor) else data
-                if not np.issubdtype(d_np.dtype, np.integer):
-                    raise TypeError(f"{name} for categorical processor must be integer type, but found {d_np.dtype}.")
+                raise TypeError(f"{name} must contain numeric data and holds type {dtype_repr}.")
+
+            # Non-integer numeric data for the categorical processor (e.g. float
+            # labels) is not an error here: CategoricalWindowDataset relabels it
+            # to consecutive integer category codes automatically and warns when
+            # it does, so no separate integer-dtype check is enforced at this
+            # earlier validation stage.
 
     def _validate_shape(self, data: Any, name: str, proc_type: Optional[str]):
         """Validates the dimensions and size of a data stream."""
@@ -86,8 +124,8 @@ class DataValidator:
             if not isinstance(data, (np.ndarray, torch.Tensor)): return
             if data.ndim not in [2, 3]:
                 raise DataShapeError(
-                    f"{name} must be a 2D array of shape (n_channels, n_timepoints) "
-                    f"or a pre-processed 3D tensor, but got a {data.ndim}D array."
+                    f"{name} must be a 2D array of shape (n_timepoints, n_channels) "
+                    f"or a pre-processed 3D tensor. It is a {data.ndim}D array."
                 )
             if data.size == 0: raise ValueError(f"{name} is empty.")
         elif proc_type == 'spike':
@@ -105,8 +143,8 @@ class DataValidator:
                     raise ValueError(f"{name}[{i}] contains negative spike times.")
                 if len(spikes) > 1 and not np.all(spikes[:-1] <= spikes[1:]):
                     logger.warning(
-                        f"{name}[{i}] spike times are not sorted; "
-                        "they will be sorted automatically by SpikeWindowDataset."
+                        f"{name}[{i}] spike times are not sorted. "
+                        "SpikeWindowDataset sorts them."
                     )
         elif proc_type in ['continuous', 'categorical']:
             if isinstance(data, (np.ndarray, torch.Tensor)):
@@ -126,7 +164,10 @@ class DataValidator:
                 logger.warning(f"x_data has {len(self.x_data)} channels, y_data has {len(self.y_data)}.")
         elif not is_x_list and not is_y_list:
             if self.x_data.ndim == 3 and self.y_data.ndim == 3 and self.x_data.shape[0] != self.y_data.shape[0]:
-                raise DataShapeError(f"Pre-processed data must have same number of samples, but got {self.x_data.shape[0]} and {self.y_data.shape[0]}.")
+                raise DataShapeError(
+                    f"Pre-processed X and Y must have the same number of samples. They "
+                    f"have {self.x_data.shape[0]} and {self.y_data.shape[0]}."
+                )
 
 class ParameterValidator:
     """Validates the hyperparameter dictionary provided to the `run` function."""
@@ -158,7 +199,7 @@ class ParameterValidator:
         # Check for unknown parameters in base_params
         unknown_keys = set(bp.keys()) - set(BASE_PARAMS_SCHEMA.keys())
         if unknown_keys:
-            raise ValueError(f"Unknown parameters in 'base_params': {unknown_keys}. "
+            raise ValueError(f"Unknown parameters: {unknown_keys}. "
                              f"Allowed: {list(BASE_PARAMS_SCHEMA.keys())}")
 
         # Validate types and values
@@ -166,8 +207,7 @@ class ParameterValidator:
             schema = BASE_PARAMS_SCHEMA[key]
             # Type check
             expected_type = schema['type']
-            if not isinstance(value, expected_type):
-                raise TypeError(f"Parameter '{key}' must be of type {expected_type}, got {type(value)}.")
+            _check_type(value, expected_type, key, "Parameter")
 
             # Min value check (skip for non-scalar types like list/dict)
             if 'min' in schema and value is not None and not isinstance(value, (list, dict)) and value < schema['min']:
@@ -179,50 +219,62 @@ class ParameterValidator:
                 raise ValueError(f"Parameter '{key}' has invalid value '{value}'. Allowed: {ALLOWED_VALUES[key]}")
 
     def _validate_processor(self):
-        # Validate processor existence and params
-        for suffix in ['x', 'y']:
-            proc_type = self.params.get(f"processor_type_{suffix}")
-            proc_params = self.params.get(f"processor_params_{suffix}")
-
-            if proc_type:
-                if proc_params is None:
-                    raise ValueError(f"'processor_params_{suffix}' required when 'processor_type_{suffix}' is specified.")
-
-                # Check for invalid processor params
-                if proc_type in PROCESSOR_PARAMS_SCHEMA:
-                    allowed = set(PROCESSOR_PARAMS_SCHEMA[proc_type])
-                    # Allow 'preprocessed' as internal flag
-                    unknown = set(proc_params.keys()) - allowed - {'preprocessed'}
-                    if unknown:
-                        raise ValueError(f"Unknown parameters for {proc_type} processor: {unknown}. Allowed: {allowed}")
-
-                # Validate numeric bounds for specific processor params
-                ws = proc_params.get('window_size')
-                if ws is not None:
-                    if not isinstance(ws, (int, float)) or not np.isfinite(ws) or ws <= 0:
-                        raise ValueError(
-                            f"processor_params_{suffix}['window_size'] must be a positive number, "
-                            f"got {ws!r}."
-                        )
-                sr = proc_params.get('sample_rate')
-                if sr is not None:
-                    if not isinstance(sr, (int, float)) or not np.isfinite(sr) or sr <= 0:
-                        raise ValueError(
-                            f"processor_params_{suffix}['sample_rate'] must be a positive number, "
-                            f"got {sr!r}."
-                        )
-                ss = proc_params.get('step_size')
-                if ss is not None:
-                    if not isinstance(ss, (int, float)) or not np.isfinite(ss) or ss <= 0:
-                        raise ValueError(
-                            f"processor_params_{suffix}['step_size'] must be a positive number "
-                            f"(fraction of window_size if < 1, absolute time units if >= 1), "
-                            f"got {ss!r}."
-                        )
+        """Check each stream's processor parameters against its processor."""
+        streams = (('x', 'processor_type_x', 'processor_params_x'),
+                   ('y', 'processor_type_y', 'processor_params_y'),
+                   ('w', 'w_processor_type', 'w_processor_params'))
+        for name, type_key, params_key in streams:
+            proc_type = self.params.get(type_key)
+            proc_params = self.params.get(params_key)
+            if not proc_type or proc_params is None:
+                continue
+            where = f"Processing({name}_params=...)"
+            if proc_type in PROCESSOR_PARAMS_SCHEMA:
+                allowed = set(PROCESSOR_PARAMS_SCHEMA[proc_type])
+                # 'preprocessed' is an internal flag the engine sets.
+                unknown = set(proc_params.keys()) - allowed - {'preprocessed'}
+                if unknown:
+                    raise ValueError(
+                        f"Unknown parameters for the {proc_type} processor in {where}: "
+                        f"{sorted(unknown)}. Allowed: {sorted(allowed)}."
+                    )
+            ws = proc_params.get('window_size')
+            if ws is not None:
+                if not isinstance(ws, (int, float)) or not np.isfinite(ws) or ws <= 0:
+                    raise ValueError(f"window_size in {where} must be a positive number, got {ws!r}.")
+            sr = proc_params.get('sample_rate')
+            if sr is not None:
+                if not isinstance(sr, (int, float)) or not np.isfinite(sr) or sr <= 0:
+                    raise ValueError(f"sample_rate in {where} must be a positive number, got {sr!r}.")
+            ss = proc_params.get('step_size')
+            if ss is not None:
+                if not isinstance(ss, (int, float)) or not np.isfinite(ss) or ss <= 0:
+                    raise ValueError(
+                        f"step_size in {where} must be a positive number (a fraction of "
+                        f"window_size if below 1, absolute time units otherwise), got {ss!r}."
+                    )
 
     def _validate_sweep(self):
         if self.mode == "sweep" and self.params.get("sweep_grid") is None:
             raise ValueError(f"'sweep_grid' required for mode='{self.mode}'.")
+
+    def _mode_kwarg(self, key: str):
+        """Look up a mode kwarg from either the named top-level params (e.g.
+        `lag_range`, `curvature_t_threshold`) or from inside `analysis_kwargs`, where
+        mode kwargs without a dedicated named parameter live (e.g. `n_splits`,
+        `gamma_range`, `equalize_n`, `pairs`).
+
+        Returns
+        -------
+        tuple[bool, Any]
+            ``(present, value)``.
+        """
+        if key in self.params:
+            return True, self.params[key]
+        analysis_kwargs = self.params.get('analysis_kwargs') or {}
+        if key in analysis_kwargs:
+            return True, analysis_kwargs[key]
+        return False, None
 
     def _validate_mode_kwargs(self):
         """Validates **analysis_kwargs passed to run() for the specific mode."""
@@ -232,35 +284,33 @@ class ParameterValidator:
 
         # Check required kwargs
         for key, schema in mode_schema.items():
-            if schema.get('required', False) and key not in self.params:
+            present, _ = self._mode_kwarg(key)
+            if schema.get('required', False) and not present:
                 raise ValueError(
                     f"Mode '{self.mode}' requires keyword argument '{key}'."
                 )
 
         # Check types of provided kwargs that match the schema
         for key, schema in mode_schema.items():
-            if key in self.params and self.params[key] is not None:
-                val = self.params[key]
+            present, val = self._mode_kwarg(key)
+            if present and val is not None:
                 expected_type = schema.get('type')
-                if expected_type and not isinstance(val, expected_type):
-                    raise TypeError(
-                        f"Keyword argument '{key}' for mode '{self.mode}' must be "
-                        f"of type {expected_type}, got {type(val)}."
-                    )
+                if expected_type:
+                    _check_type(val, expected_type, key, f"Keyword argument (mode='{self.mode}')")
 
         # lag_range entries must be numeric (int for sample lags, float for time lags)
         if self.mode == 'lag':
-            lr = self.params.get('lag_range')
+            _, lr = self._mode_kwarg('lag_range')
             if lr is not None:
                 items = list(lr)
                 non_numeric = [x for x in items
                                if not isinstance(x, (int, float, np.integer, np.floating))]
                 if non_numeric:
                     raise ValueError(
-                        f"lag_range entries must all be numeric, but found non-numeric "
+                        f"lag_range entries must all be numeric. Non-numeric "
                         f"values: {non_numeric[:5]}{'...' if len(non_numeric) > 5 else ''}. "
-                        f"Use range(-10, 11), a list of integers, or np.arange(...) for "
-                        f"time-based lags (e.g. spike trains)."
+                        f"Use range(-10, 11), a list of integers or np.arange(...) for "
+                        f"time-based lags (for example spike trains)."
                     )
 
         # Precision mode: validate threshold_ratio bounds
@@ -275,12 +325,52 @@ class ParameterValidator:
                             f"(or a list of such floats), got {r!r}."
                         )
 
-        # Rigorous mode: validate delta_threshold and confidence_level
+        # Dimensionality mode: the counts and the grid, refused here where they
+        # were passed.
+        if self.mode == 'dimensionality':
+            for key in ('n_splits', 'n_restarts'):
+                _, n = self._mode_kwarg(key)
+                if n is not None and (not isinstance(n, (int, np.integer))
+                                      or isinstance(n, bool) or n < 1):
+                    raise ValueError(f"{key} must be a whole number of 1 or more, got {n!r}.")
+            _, ratio = self._mode_kwarg('saturation_ratio')
+            if ratio is not None and not (0 < ratio <= 1):
+                raise ValueError(f"saturation_ratio must lie in (0, 1], got {ratio!r}.")
+            _, ref = self._mode_kwarg('reference_dim')
+            if ref is not None and (not isinstance(ref, (int, np.integer))
+                                    or isinstance(ref, bool) or ref < 2):
+                raise ValueError(f"reference_dim must be a whole number of 2 or more, got {ref!r}.")
+            _, dims = self._mode_kwarg('embedding_dims')
+            if dims is not None:
+                dims = list(dims)
+                bad = [k for k in dims if not isinstance(k, (int, np.integer))
+                       or isinstance(k, bool) or k < 1]
+                if not dims or bad:
+                    raise ValueError(
+                        f"embedding_dims must hold whole numbers of 1 or more, got {dims!r}."
+                    )
+
+            # The two sides of this mode are two halves of one recording. An
+            # encoder that differs between them is allowed and reported, because
+            # it is usually unintended.
+            _bp = self.params.get('base_params') or {}
+            _y_side = [k for k in ('embedding_model_y', 'custom_embedding_cls_y',
+                                   'hidden_dim_y', 'n_layers_y', 'embedding_dim_y')
+                       if _bp.get(k) is not None]
+            if _y_side:
+                logger.warning(
+                    f"{_y_side[0]} was set for mode='dimensionality'. The mode's two "
+                    f"sides are two halves of the same recording. An encoder that differs "
+                    f"between the halves makes the curve hard to read. Leave the Y "
+                    f"overrides unset unless you mean the halves to be read differently."
+                )
+
+        # Rigorous mode: validate curvature_t_threshold and confidence_level
         if self.mode == 'rigorous':
-            dt = self.params.get('delta_threshold')
+            dt = self.params.get('curvature_t_threshold')
             if dt is not None and (not isinstance(dt, (int, float)) or dt <= 0):
                 raise ValueError(
-                    f"delta_threshold must be a positive float, got {dt!r}."
+                    f"curvature_t_threshold must be a positive float, got {dt!r}."
                 )
             cl = self.params.get('confidence_level')
             if cl is not None and (not isinstance(cl, (int, float)) or not (0 < cl < 1)):
@@ -291,7 +381,7 @@ class ParameterValidator:
     def apply_defaults(self):
         """Populates missing parameters in base_params with defaults."""
         bp = self.params["base_params"]
-        verbose = bp.get('verbose', True)
+        verbose = bp.get('verbose', BASE_PARAMS_SCHEMA['verbose']['default'])
 
         for key, schema in BASE_PARAMS_SCHEMA.items():
             if key not in bp and 'default' in schema:
@@ -305,33 +395,3 @@ class ParameterValidator:
                     if verbose:
                         logger.info(f"Parameter '{key}' not specified. Defaulting to {default_val}.")
 
-class EstimatorValidator:
-    """Validates the parameters for the chosen MI estimator."""
-    def __init__(self, estimator_name: str, estimator_params: Optional[Dict[str, Any]] = None):
-        self.name = estimator_name
-        self.params = estimator_params or {}
-
-        if self.name not in ESTIMATORS:
-            raise ValueError(f"Unknown estimator '{self.name}'. Allowed estimators are: {list(ESTIMATORS.keys())}")
-
-        self.func = ESTIMATORS[self.name]
-        self.signature = inspect.signature(self.func)
-
-    def validate(self):
-        valid_params = set(self.signature.parameters.keys()) - {'scores'}
-        unexpected = set(self.params.keys()) - valid_params
-        if unexpected:
-            raise ValueError(
-                f"Estimator '{self.name}' got unexpected parameters: {unexpected}. "
-                f"Allowed parameters are: {list(valid_params) if valid_params else 'None'}."
-            )
-        for name, param in self.signature.parameters.items():
-            if name == 'scores': continue
-            if param.default == inspect.Parameter.empty and name not in self.params:
-                 raise ValueError(f"Estimator '{self.name}' requires parameter '{name}'.")
-
-    def get_merged_params(self) -> Dict[str, Any]:
-        defaults = ESTIMATOR_DEFAULTS.get(self.name, {})
-        merged = defaults.copy()
-        merged.update(self.params)
-        return merged

@@ -2,9 +2,8 @@
 import pytest
 import numpy as np
 import neural_mi as nmi
-from neural_mi import Training, Estimator, Processing
+from neural_mi import Training, Estimator, Processing, Rigorous
 from neural_mi.validation import ParameterValidator, DataValidator
-from neural_mi.defaults import BASE_PARAMS_SCHEMA
 from neural_mi.exceptions import DataShapeError
 
 def get_valid_params():
@@ -60,10 +59,31 @@ def test_data_validator_categorical_success():
     x = np.random.randint(0, 3, size=(2, 100))
     DataValidator(x, x, processor_type_x='categorical', processor_type_y='categorical').validate()
 
-def test_data_validator_categorical_wrong_type():
-    x = np.random.rand(2, 100) # Should be integers
-    with pytest.raises(TypeError, match="must be integer type"):
+def test_data_validator_categorical_non_integer_passes_validation():
+    """Non-integer numeric data for the categorical processor is not a
+    DataValidator error -- CategoricalWindowDataset relabels it to integer
+    category codes automatically (and warns when it does; see
+    tests/test_data_processors.py for that behavior)."""
+    x = np.random.rand(2, 100)
+    DataValidator(x, x, processor_type_x='categorical', processor_type_y='categorical').validate()
+
+def test_data_validator_categorical_rejects_non_numeric():
+    x = np.array([['a'] * 100, ['b'] * 100])
+    with pytest.raises(TypeError, match="must contain numeric data"):
         DataValidator(x, x, processor_type_x='categorical', processor_type_y='categorical').validate()
+
+def test_data_validator_numeric_list_passes_continuous_validation():
+    """A plain Python list of numeric values (documented as an accepted
+    x_data/y_data type by run()) must not crash: lists have no .dtype
+    attribute, so the numeric check must convert first rather than access
+    data.dtype directly (that raised an unrelated AttributeError)."""
+    x = [[float(i)] for i in range(10)]
+    DataValidator(x, x, processor_type_x='continuous', processor_type_y='continuous').validate()
+
+def test_data_validator_non_numeric_list_raises_clean_type_error():
+    x = [['a'], ['b'], ['c']]
+    with pytest.raises(TypeError, match="must contain numeric data"):
+        DataValidator(x, x, processor_type_x='continuous', processor_type_y='continuous').validate()
 
 
 # --- Integration-level validation tests (via nmi.run) ---
@@ -101,7 +121,7 @@ def test_run_detects_invalid_choice_values(small_data):
 
 def test_run_detects_invalid_processor_params(small_data):
     x, y = small_data
-    with pytest.raises(ValueError, match="Unknown parameters for continuous processor"):
+    with pytest.raises(ValueError, match="Unknown parameters for the continuous processor"):
         nmi.run(x, y,
                 processing=Processing(x='continuous',
                                       x_params={'window_size': 1, 'invalid_param': 5}),
@@ -164,3 +184,28 @@ def test_run_preserves_scheduler_params(small_data):
         n_workers=1,
     )
     assert result.params['base_params']['scheduler_params'] == {'gamma': 0.5}
+
+
+def test_run_rejects_bool_for_int_param(small_data):
+    """bool is an int subclass in Python; n_epochs=True must not silently validate."""
+    x, y = small_data
+    with pytest.raises(TypeError, match="Parameter 'n_epochs' must be of type"):
+        nmi.run(x, y, training=Training(n_epochs=True), n_workers=1)
+
+
+def test_run_validates_mode_kwargs_living_in_analysis_kwargs(small_data):
+    """Mode kwargs with no dedicated named parameter (e.g. Rigorous.residual_threshold)
+    live inside **analysis_kwargs at the engine boundary, and they are type-checked
+    there too."""
+    x, y = small_data
+    with pytest.raises(TypeError, match="residual_threshold"):
+        nmi.run(x, y, mode='rigorous', rigorous=Rigorous(residual_threshold='bad'),
+                training=Training(n_epochs=1), n_workers=1)
+
+
+def test_run_refuses_a_config_it_does_not_take(small_data):
+    x, y = small_data
+    with pytest.raises(TypeError, match="sweep"):
+        nmi.run(x, y, mode='sweep', sweep_grid={'embedding_dim': [4, 8]},
+                sweep={'max_samples_per_task': 10},
+                training=Training(n_epochs=1), n_workers=1)

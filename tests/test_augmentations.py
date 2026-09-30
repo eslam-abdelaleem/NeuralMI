@@ -149,6 +149,11 @@ def test_time_mask_introduces_zeros():
 
 
 def test_freq_mask_introduces_zeros():
+    # _freq_mask draws a height in [0, max_height] per sample, so all four
+    # samples drawing 0 is a legitimate outcome that leaves the batch
+    # untouched. Unseeded, this test asserted a 1-in-625 coin flip and failed
+    # whenever the preceding tests left the global RNG in one of those states.
+    torch.manual_seed(0)
     x = torch.ones(4, 1, 8, 16)
     out = apply_augmentations(x, {'freq_mask': {'max_height': 4}})
     assert out.shape == x.shape

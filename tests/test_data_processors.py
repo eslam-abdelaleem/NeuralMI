@@ -2,7 +2,10 @@
 import pytest
 import numpy as np
 import torch
-from neural_mi.data.handler import WindowManager, PairedTemporalDataset, PairedDataset
+import warnings
+
+from neural_mi.data.handler import (WindowManager, PairedTemporalDataset, PairedDataset,
+                                    create_dataset, reset_retention_warnings)
 from neural_mi.data.temporal import ContinuousWindowDataset, SpikeWindowDataset, CategoricalWindowDataset
 from neural_mi.data.static import StaticDataset
 
@@ -41,6 +44,35 @@ def test_continuous_window_dataset(continuous_data):
     assert dataset.data.shape[0] == 10
     assert dataset.data.shape[1] == 2
     assert dataset.data.shape[2] > 0
+
+def test_continuous_window_warns_on_heavily_gap_interpolated_retained_window(caplog):
+    """min_coverage_fraction only counts raw timestamps per window, not
+    how much of a *retained* window's content is fabricated by np.interp
+    bridging a large internal gap. A window can pass coverage on the
+    strength of a few real timestamps near its start while most of its span
+    sits deep inside an empty gap -- that must be surfaced, not silent.
+    (remove_invalid_windows(), where this is checked, only runs via the full
+    PairedTemporalDataset orchestration -- not from a bare
+    ContinuousWindowDataset -- so exercise it through that path.)"""
+    import logging
+    t = np.concatenate([np.arange(0, 10, 1.0), np.arange(90, 100, 1.0)])
+    data = np.random.randn(len(t), 1)
+    x_dataset = ContinuousWindowDataset(data, time_vector=t, min_coverage_fraction=0.2)
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        PairedTemporalDataset(x_dataset, window_size=20.0, t_start=0.0, t_end=80.0)
+    assert any('bridged by interpolation' in r.message for r in caplog.records)
+
+
+def test_continuous_window_no_gap_warning_for_clean_data(caplog):
+    """A dataset with no large internal gaps must not trigger the gap-interpolation warning."""
+    import logging
+    t = np.arange(0, 100, 1.0)
+    data = np.random.randn(len(t), 1)
+    x_dataset = ContinuousWindowDataset(data, time_vector=t)
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        PairedTemporalDataset(x_dataset, window_size=10.0, t_start=0.0, t_end=90.0)
+    assert not any('bridged by interpolation' in r.message for r in caplog.records)
+
 
 def test_continuous_window_with_jumps():
     """Test ContinuousWindowDataset dealing with jumps in time with no data"""
@@ -98,6 +130,32 @@ def test_categorical_window_dataset_float_labels_still_relabeled():
     time = np.arange(4)
     dataset = CategoricalWindowDataset(data, time)
     assert dataset.data_orig.min() >= 0
+
+def test_categorical_window_dataset_non_integer_relabel_warns_and_is_consistent(caplog):
+    """Non-integer input (a float array the caller forgot to .astype(int))
+        needs no pre-cast: DataValidator lets it through (see
+        tests/test_validation.py), and CategoricalWindowDataset relabels it to
+        consecutive integer codes, with a warning. The relabeling is a bijection in
+        ascending value order: 1.5 -> 0, 2.5 -> 1, 3.5 -> 2.
+    """
+    import logging
+    data = np.array([1.5, 2.5, 3.5, 2.5, 1.5], dtype=np.float64)
+    time = np.arange(5)
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        dataset = CategoricalWindowDataset(data, time)
+    assert any('relabeled to consecutive integer category codes' in r.message
+              for r in caplog.records)
+    np.testing.assert_array_equal(dataset.data_orig.flatten(), [0, 1, 2, 1, 0])
+
+def test_categorical_window_dataset_integer_labels_no_relabel_warning(caplog):
+    """Already-integer-typed data must not trigger the relabeling warning."""
+    import logging
+    data = np.array([0, 1, 2, 1, 0], dtype=np.int64)
+    time = np.arange(5)
+    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        CategoricalWindowDataset(data, time)
+    assert not any('relabeled to consecutive integer category codes' in r.message
+                  for r in caplog.records)
 
 # PairedTemporalDataset Tests
 def test_paired_temporal_dataset(continuous_data, spike_data):
@@ -243,106 +301,151 @@ def test_spike_time_shift_effects(spike_data):
 
 
 def test_paired_time_shift_positive(continuous_data, spike_data):
-    """Test positive time shifts on paired dataset."""
+    """A positive time shift re-tiles: windowed content changes and the
+        window count stays at the margin-reserved value. The grid slides over
+        fixed raw data, so the offset survives every window-membership test.
+    """
     c_data, c_time = continuous_data
     s_data = spike_data
-    
+
     x_dataset = ContinuousWindowDataset(c_data, c_time)
     y_dataset = SpikeWindowDataset(s_data)
-    
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=1.0)
-    
-    # Store original
-    original_x_time = paired_dataset.x_dataset.time_vector.copy()
-    original_y_times = [st.copy() for st in paired_dataset.y_dataset.data_orig]
-    original_x_data = paired_dataset.x_data.detach().clone()
-    # Apply positive shifts
-    shift_x = 10.0
-    shift_y = 5.0
-    paired_dataset.time_shift(offset_x=shift_x, offset_y=shift_y)
-    # Check shifts applied correctly
-    assert np.allclose(paired_dataset.x_dataset.time_vector, original_x_time + shift_x)
-    for orig, shifted in zip(original_y_times, paired_dataset.y_dataset.data_orig):
-        assert np.allclose(shifted, orig + shift_y)
-    # Undo shifts, check back to normal.
-    # Float-point round-trips on spike times (e.g. t + 5 - 5) can shift window
-    # boundary calculations by epsilon, yielding ±1 window vs. the original.
-    # We verify the continuous time vector is restored and window count is close;
-    # we do NOT compare window data tensors since window indices may be offset by 1.
+
+    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
+
     paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
-    assert np.allclose(paired_dataset.x_dataset.time_vector, original_x_time, atol=1e-6)
-    n_orig = original_x_data.shape[0]
-    n_now  = paired_dataset.x_data.shape[0]
-    assert abs(n_now - n_orig) <= 1, (
-        f"Window count after undoing shifts ({n_now}) differs from original ({n_orig}) by more than 1"
+    n_baseline = len(paired_dataset)
+    baseline_x = paired_dataset.x_data.detach().clone()
+    # Raw data must never be rewritten by a shift.
+    original_x_time = paired_dataset.x_dataset.time_vector.copy()
+
+    shift = 6.0
+    paired_dataset.time_shift(offset_x=shift, offset_y=shift)
+
+    assert np.allclose(paired_dataset.x_dataset.time_vector, original_x_time), (
+        "time_shift must not mutate the underlying raw time vector."
+    )
+    assert len(paired_dataset) == n_baseline, (
+        "Window count should stay fixed at the margin-reserved value for any "
+        "offset in [0, window_size)."
+    )
+    assert not torch.equal(paired_dataset.x_data.detach(), baseline_x), (
+        "A nonzero shift should change which raw samples land in each "
+        "window; identical content indicates the offset is being canceled "
+        "out (the Phase-0 re-tiling bug)."
     )
 
 
-def test_paired_time_shift_negative(continuous_data, spike_data):
-    """Test negative time shifts on paired dataset."""
+def test_paired_time_shift_mismatched_offsets_warns_and_uses_x(continuous_data, spike_data, caplog):
+    """offset_x and offset_y are expected to be equal in production (a single
+    shared grid drives both X and Y); a caller passing different values gets
+    a warning and only offset_x is honored."""
     c_data, c_time = continuous_data
     s_data = spike_data
-    
+
     x_dataset = ContinuousWindowDataset(c_data, c_time)
     y_dataset = SpikeWindowDataset(s_data)
-    
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=1.0)
-    
-    # Store original
-    original_x_time = paired_dataset.x_dataset.time_vector.copy()
-    original_y_times = [st.copy() for st in paired_dataset.y_dataset.data_orig]
-    # Apply negative shifts
-    shift_x = -15.0
-    shift_y = -20.0
-    paired_dataset.time_shift(offset_x=shift_x, offset_y=shift_y)
-    
-    # Check shifts applied correctly
-    assert np.allclose(paired_dataset.x_dataset.time_vector, original_x_time + shift_x)
-    for orig, shifted in zip(original_y_times, paired_dataset.y_dataset.data_orig):
-        assert np.allclose(shifted, orig + shift_y)
+    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
+
+    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
+    n_windows = len(paired_dataset)
+
+    with caplog.at_level('WARNING'):
+        paired_dataset.time_shift(offset_x=3.0, offset_y=7.0)
+    assert any('offset_x' in rec.message and 'offset_y' in rec.message for rec in caplog.records)
+    assert paired_dataset.window_manager.t_start == paired_dataset._base_t_start + 3.0
+    assert len(paired_dataset) == n_windows
 
 
 def test_paired_time_shift_large(continuous_data, spike_data):
-    """Test very large time shifts (up to t_end) on paired dataset."""
+    """A shift near the top of the valid range ([0, window_size)) still
+    genuinely re-tiles and keeps the window count fixed."""
     c_data, c_time = continuous_data
     s_data = spike_data
-    
+
     x_dataset = ContinuousWindowDataset(c_data, c_time)
     y_dataset = SpikeWindowDataset(s_data)
-    
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=1.0)
-    
-    # Store original
-    original_x_time = paired_dataset.x_dataset.time_vector.copy()
-    original_y_times = [st.copy() for st in paired_dataset.y_dataset.data_orig]
-    t_end = paired_dataset.window_manager.t_end
-    # Apply large shift close to t_end
-    shift_amount = t_end - 10.0
+
+    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
+
+    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
+    n_baseline = len(paired_dataset)
+    baseline_x = paired_dataset.x_data.detach().clone()
+
+    shift_amount = 9.999  # just under window_size
     paired_dataset.time_shift(offset_x=shift_amount, offset_y=shift_amount)
 
-    # Check shifts applied correctly
-    assert np.allclose(paired_dataset.x_dataset.time_vector, original_x_time + shift_amount)
-    for orig, shifted in zip(original_y_times, paired_dataset.y_dataset.data_orig):
-        assert np.allclose(shifted, orig + shift_amount)
+    assert len(paired_dataset) == n_baseline
+    assert not torch.equal(paired_dataset.x_data.detach(), baseline_x)
 
 
 def test_paired_time_shift_very_small(continuous_data, spike_data):
-    """Test very small time shifts on paired dataset."""
+    """Even a very small nonzero shift should perturb windowed content --
+    it must never be silently absorbed back into a no-op."""
     c_data, c_time = continuous_data
     s_data = spike_data
-    
+
     x_dataset = ContinuousWindowDataset(c_data, c_time)
     y_dataset = SpikeWindowDataset(s_data)
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=1.0)
-    
-    # Store original
-    original_x_time = paired_dataset.x_dataset.time_vector.copy()
-    # Apply very small shift
-    shift_amount = 0.001
+    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
+
+    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
+    n_baseline = len(paired_dataset)
+    baseline_x = paired_dataset.x_data.detach().clone()
+
+    shift_amount = 1e-3
     paired_dataset.time_shift(offset_x=shift_amount, offset_y=shift_amount)
 
-    # Check shifts applied correctly (use appropriate tolerance)
-    assert np.allclose(paired_dataset.x_dataset.time_vector, original_x_time + shift_amount, atol=1e-10)
+    assert len(paired_dataset) == n_baseline
+    assert not torch.equal(paired_dataset.x_data.detach(), baseline_x)
+
+
+def test_paired_time_shift_spike_spike_pair_changes_content():
+    """Pure spike+spike pair (no continuous side): content genuinely differs
+    between two offsets, and window count stays fixed across the shift."""
+    rng = np.random.default_rng(0)
+    x_data = [np.sort(rng.random(300) * 100.0)]
+    y_data = [np.sort(rng.random(250) * 100.0)]
+    x_dataset = SpikeWindowDataset(x_data)
+    y_dataset = SpikeWindowDataset(y_data)
+    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
+
+    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
+    n_windows = len(paired_dataset)
+    content_a = paired_dataset.x_data.detach().clone()
+
+    paired_dataset.time_shift(offset_x=6.0, offset_y=6.0)
+    content_b = paired_dataset.x_data.detach().clone()
+
+    assert len(paired_dataset) == n_windows
+    assert not torch.equal(content_a, content_b), (
+        "Shifting a spike+spike pair by a nonzero offset should change which "
+        "spikes land in each window; identical content indicates the offset "
+        "is being canceled out (the Phase-0 re-tiling bug)."
+    )
+
+
+def test_paired_time_shift_window_count_fixed_across_sweep():
+    """Window count stays exactly at the margin-reserved value across a
+    sweep of offsets spanning [0, window_size)."""
+    rng = np.random.default_rng(1)
+    x_data = [np.sort(rng.random(400) * 150.0)]
+    y_data = [np.sort(rng.random(350) * 150.0)]
+    x_dataset = SpikeWindowDataset(x_data)
+    y_dataset = SpikeWindowDataset(y_data)
+    window_size = 10.0
+    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size)
+
+    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
+    n_windows = len(paired_dataset)
+    assert n_windows > 0
+
+    for offset in (0.0, 2.5, 5.0, 7.5, 9.9):
+        paired_dataset.time_shift(offset_x=offset, offset_y=offset)
+        assert len(paired_dataset) == n_windows, (
+            f"Window count changed at offset={offset}: expected {n_windows}, "
+            f"got {len(paired_dataset)}"
+        )
 
 
 def test_time_shift_roundtrip(continuous_data):
@@ -537,11 +640,12 @@ def test_precision_continuous(continuous_data):
     
     # Apply precision
     precision = 0.1
+    held = dataset.data_master != 0
     dataset.apply_precision(precision)
-    # All non-zero values should be multiples of precision
-    mask = dataset._data_mask
-    values = dataset.data[mask] / precision
-    assert torch.allclose(values, torch.round(values), atol=1e-5, rtol=1e-5)
+    # Every value that held one sits at the centre of a bin of width precision.
+    values = dataset.data[held] / precision - 0.5
+    assert torch.allclose(values, torch.round(values), atol=1e-4, rtol=1e-5)
+    assert torch.all(dataset.data[~held] == 0)
 
 
 def test_precision_spike(spike_data):
@@ -552,12 +656,15 @@ def test_precision_spike(spike_data):
 
     # Apply precision
     precision = 0.05
+    held = dataset.data_master != dataset.no_spike_value
     dataset.apply_precision(precision)
 
-    # All spike times should be multiples of precision
-    mask = dataset._data_mask
-    values = dataset.data[mask] / precision
-    assert torch.allclose(values, torch.round(values), atol=1e-5, rtol=1e-5)
+    # Every spike time sits at the centre of a bin of width precision, the
+    # unused slots are untouched, and no spike lands on the unused value.
+    values = dataset.data[held] / precision - 0.5
+    assert torch.allclose(values, torch.round(values), atol=1e-4, rtol=1e-5)
+    assert torch.all(dataset.data[~held] == dataset.no_spike_value)
+    assert torch.all(dataset.data[held] != dataset.no_spike_value)
 
 
 # --- Data Splitting Tests ---
@@ -616,14 +723,13 @@ def test_default_blocked_split(iid_3d_data):
 
 # --- Mixed-Modality Alignment Tests ---
 
-from neural_mi.data.handler import create_dataset
-
 
 def test_continuous_and_spike_alignment():
     """Aligned windows from a continuous stream and a spike stream have equal sample counts."""
     time_cont = np.arange(1000) / 100.0
     x_cont = np.random.randn(1000, 2)
-    y_spike, _ = nmi.generators.generate_correlated_spike_trains(duration=10.0)
+    y_spike, _, _ = nmi.generators.generate_spike_pair(
+            n_neurons=10, n_windows=100, window_size=0.1, seed=0)
 
     dataset = create_dataset(
         x_data=x_cont, y_data=y_spike,
@@ -648,6 +754,39 @@ def test_different_continuous_params_alignment():
     )
     assert dataset.x_data.shape[0] == dataset.y_data.shape[0]
     assert dataset.x_data.shape[0] >= 9
+
+
+def test_window_size_falls_back_to_y_when_only_y_specifies_it():
+    """When both X and Y use a real windowed processor but only
+    processor_params_y specifies window_size, create_dataset must fall back to
+    Y's value instead of always taking (missing) processor_params_x['window_size']
+    and silently ending up with window_size=None."""
+    x_data = np.random.randn(1000, 1).astype(np.float32)
+    y_data = np.random.randn(1000, 1).astype(np.float32)
+    dataset = create_dataset(
+        x_data=x_data, y_data=y_data,
+        processor_type_x='continuous', processor_params_x={'sample_rate': 100},
+        processor_type_y='continuous', processor_params_y={'window_size': 0.5, 'sample_rate': 100},
+    )
+    assert dataset.x_data.shape[0] == dataset.y_data.shape[0]
+
+
+def test_static_x_with_windowed_y_raises_clear_error():
+    """Pairing a genuinely pre-processed (Static) X with a windowed Y can never
+    work -- StaticDataset has no temporal extent to align windows against.
+    Must raise an actionable ValueError, not an internal AttributeError from
+    PairedTemporalDataset expecting get_temporal_extent() on both sides.
+    (The reverse direction -- Y forced static while X is windowed -- isn't
+    reachable via the public API: an unset processor_type_y always inherits
+    processor_type_x rather than defaulting to None/static.)"""
+    x_data = np.random.randn(1000, 1, 1).astype(np.float32)  # already pre-processed
+    y_data = np.random.randn(1000, 1).astype(np.float32)     # raw, needs windowing
+    with pytest.raises(ValueError, match="cannot be paired with a windowed processor_type"):
+        create_dataset(
+            x_data=x_data, y_data=y_data,
+            processor_type_x=None,
+            processor_type_y='continuous', processor_params_y={'window_size': 0.5, 'sample_rate': 100},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -725,16 +864,16 @@ class TestDatasetDevice:
         ds.move_data_to_windows()
         assert ds.data.device.type == compute_dev.type
 
-    def test_noise_buffer_device_matches_data(self):
-        """Noise buffer in apply_noise must be on the same device as self.data."""
+    def test_noise_stays_on_the_data_device(self):
+        """apply_noise leaves the corrupted data on the device the data was on."""
         data = np.random.randn(100, 2)
         time = np.arange(100, dtype=float)
         wm = WindowManager(window_size=10, t_start=0, t_end=100)
         ds = ContinuousWindowDataset(data, time, window_manager=wm)
         ds.move_data_to_windows()
+        device = ds.data.device
         ds.apply_noise(0.01)
-        # After apply_noise the noise buffer should share device with self.data
-        assert ds._noise_buffer.device == ds.data.device
+        assert ds.data.device == device
 
     def test_dataset_device_propagates_through_run(self):
         """run() with Training(dataset_device='cpu') completes without error."""
@@ -762,11 +901,11 @@ class TestDatasetDevice:
 
 
 # ---------------------------------------------------------------------------
-# Regression tests
+# Correctness invariants
 # ---------------------------------------------------------------------------
 
-class TestBugFixes:
-    """Regression tests for correctness invariants across the data pipeline."""
+class TestPipelineInvariants:
+    """Correctness invariants across the data pipeline."""
 
     # --- SubsetView: device-agnostic indexing ---
 
@@ -812,8 +951,9 @@ class TestBugFixes:
         assert torch.allclose(ds.data, result_first)
 
     def test_spike_apply_precision_independent_of_call_order(self, spike_data):
-        """Applying precision A then B equals applying B alone (data_master is
-        always the reference, never the previously rounded data)."""
+        """Applying precision A then B equals applying B alone: data_master is
+                always the reference, never already-rounded data.
+        """
         wm = WindowManager(window_size=1.0, t_start=0, t_end=100)
 
         ds_ab = SpikeWindowDataset(spike_data, window_manager=wm)
@@ -879,3 +1019,254 @@ class TestBugFixes:
         ds.data = torch.zeros_like(ds.data)
         ds.reset()
         assert torch.equal(ds.data, saved)
+
+    # --- CategoricalWindowDataset: 1-D input (mirrors ContinuousWindowDataset) ---
+
+    def test_categorical_window_dataset_1d_integer_input(self):
+        """A 1-D array of integer category labels (single channel) is expanded
+                to (N, 1) and windowed.
+        """
+        data = np.random.randint(0, 3, size=50)
+        time = np.arange(50, dtype=float)
+        wm = WindowManager(window_size=5.0, t_start=0.0, t_end=50.0)
+        ds = CategoricalWindowDataset(data, time, window_manager=wm)
+        ds.move_data_to_windows()
+        assert ds.data_orig.shape == (50, 1)
+        assert ds.data.shape[1] == 1  # single channel
+
+    def test_categorical_window_dataset_1d_float_input_relabeled(self):
+        """1-D non-integer labels are expanded to (N, 1) and relabeled in place,
+        not flattened by np.unique's return_inverse."""
+        data = np.array([1.5, 2.5, 2.5, 1.5])
+        time = np.arange(4, dtype=float)
+        ds = CategoricalWindowDataset(data, time)
+        assert ds.data_orig.shape == (4, 1)
+
+    def test_categorical_window_dataset_2d_non_integer_relabel_preserves_shape(self):
+        """Relabeling non-integer 2-D (multi-channel) labels must preserve the
+        (n_timepoints, n_channels) shape -- np.unique(..., return_inverse=True)
+        always returns a flattened array, so a missing reshape silently
+        collapsed multi-channel string/float labels to 1-D."""
+        data = np.array([['a', 'b'], ['b', 'a'], ['a', 'a'], ['b', 'b']])
+        time = np.arange(4, dtype=float)
+        ds = CategoricalWindowDataset(data, time)
+        assert ds.data_orig.shape == (4, 2)
+
+    # --- BinnedSpikeDataset: bin-width normalization and device-safe coverage ---
+
+    def test_binned_spike_normalizes_by_actual_bin_width(self):
+        """When window_size isn't an exact multiple of bin_size, normalization
+        must use the actual bin width (window_size / n_bins), not the
+        requested bin_size -- otherwise spikes/second is misreported."""
+        from neural_mi.data.temporal import BinnedSpikeDataset
+        # window_size=10, bin_size=3 -> n_bins=ceil(10/3)=4 -> actual bin width=2.5
+        window_size, bin_size = 10.0, 3.0
+        n_bins = int(np.ceil(window_size / bin_size))
+        actual_bin_width = window_size / n_bins
+        # One spike per bin's start, well inside a single window at t=0.
+        spikes = np.array([0.1])
+        wm = WindowManager(window_size=window_size, t_start=0.0, t_end=window_size)
+        ds = BinnedSpikeDataset([spikes], bin_size=bin_size, window_manager=wm, normalize=True)
+        # A count of 1 spike normalized should equal 1/actual_bin_width, not 1/bin_size.
+        expected = 1.0 / actual_bin_width
+        actual = ds.data[0, 0, :].max().item()
+        assert actual == pytest.approx(expected, rel=1e-5)
+        assert actual != pytest.approx(1.0 / bin_size, rel=1e-5)
+
+    def test_binned_spike_validate_window_coverage_works_on_mps(self):
+        """validate_window_coverage() must work when data lives on an
+        accelerator -- .numpy() requires a CPU tensor first."""
+        if not torch.backends.mps.is_available():
+            pytest.skip("MPS not available on this machine")
+        from neural_mi.data.temporal import BinnedSpikeDataset
+        spikes = [np.sort(np.random.rand(20) * 50)]
+        wm = WindowManager(window_size=5.0, t_start=0.0, t_end=50.0)
+        ds = BinnedSpikeDataset(spikes, bin_size=1.0, window_manager=wm, data_device='mps')
+        valid = ds.validate_window_coverage()
+        assert isinstance(valid, np.ndarray)
+        assert valid.dtype == bool
+
+class TestCreateDatasetDiagnostics:
+    """create_dataset's positional trap and the built window width."""
+
+    @staticmethod
+    def _continuous_pair(window_size=5):
+        return create_dataset(
+            np.random.randn(200, 3), np.random.randn(200, 3),
+            processor_type_x='continuous',
+            processor_params_x={'window_size': window_size, 'step_size': window_size},
+            processor_type_y='continuous',
+            processor_params_y={'window_size': window_size, 'step_size': window_size})
+
+    @staticmethod
+    def _mixed_pair():
+        spikes = [np.sort(np.random.uniform(0, 50, 40)) for _ in range(4)]
+        return create_dataset(
+            spikes, np.random.randn(50, 2),
+            processor_type_x='spike',
+            processor_params_x={'window_size': 1.0, 'step_size': 1.0, 'n_seconds': 50},
+            processor_type_y='continuous',
+            processor_params_y={'window_size': 1.0, 'step_size': 1.0, 'sample_rate': 1.0})
+
+    def test_processor_type_passed_positionally_names_the_parameter(self):
+        # create_dataset(x, 'continuous', {...}) lands the processor type in
+        # y_data. The message must name y_data and give the keyword form,
+        # rather than reporting an anonymous bad type from deeper down.
+        with pytest.raises(ValueError) as exc:
+            create_dataset(np.random.randn(100, 2), 'continuous', {'window_size': 1})
+        msg = str(exc.value)
+        assert 'y_data' in msg
+        assert 'processor_type_x' in msg
+
+    def test_string_x_data_is_caught_too(self):
+        with pytest.raises(ValueError, match='x_data'):
+            create_dataset('continuous', np.random.randn(100, 2))
+
+    def test_legitimate_calls_are_unaffected(self):
+        # A list is valid data (spike times arrive as one), so the guard must
+        # reject strings only.
+        assert self._continuous_pair().x_data.shape[0] > 0
+        assert self._mixed_pair().x_data.shape[0] > 0
+
+    def test_continuous_window_width_is_the_window_size(self):
+        """A window covers [t, t+w), so it holds w slots and windows tile,
+                as the spike and categorical processors and the shift-based builder
+                agree.
+        """
+        ds = self._continuous_pair(window_size=5)
+        assert ds.x_window_width == 5
+        assert ds.y_window_width == 5
+        assert ds.x_window_width == ds.x_data.shape[-1]
+
+    def test_consecutive_continuous_windows_do_not_share_a_sample(self):
+        ramp = np.arange(31, dtype=np.float32)[:, None]
+        ds = create_dataset(ramp, processor_type_x='continuous',
+                            processor_params_x={'window_size': 5, 'step_size': 5})
+        first, second = ds.x_data[0, 0].tolist(), ds.x_data[1, 0].tolist()
+        assert first == [0.0, 1.0, 2.0, 3.0, 4.0]
+        assert second == [5.0, 6.0, 7.0, 8.0, 9.0]
+        assert not set(first) & set(second)
+
+    def test_the_two_sides_can_differ_in_a_mixed_pair(self):
+        # A spike side counts spike slots and a continuous side counts time
+        # slots, so one number for the pair would be wrong here. This is the
+        # case the per-side properties exist for.
+        ds = self._mixed_pair()
+        assert ds.x_window_width != ds.y_window_width
+        assert ds.y_window_width == 1  # window_size=1.0 -> 1 time slot
+
+    def test_width_on_a_preprocessed_pair(self):
+        ds = create_dataset(np.random.randn(100, 2, 7), np.random.randn(100, 2, 7))
+        assert isinstance(ds, PairedDataset)
+        assert ds.x_window_width == 7
+        assert ds.y_window_width == 7
+
+    def test_width_is_none_when_y_is_absent(self):
+        ds = create_dataset(np.random.randn(100, 2, 7))
+        assert ds.x_window_width == 7
+        assert ds.y_window_width is None
+
+
+class TestAmbiguousStepSize:
+    """``step_size`` below 1 is a fraction, which is a trap once windows are seconds."""
+
+    @staticmethod
+    def _spikes():
+        return [np.arange(0.05, 10.0, 0.13)]
+
+    def _build(self, window_size, step_size):
+        reset_retention_warnings()
+        return create_dataset(
+            self._spikes(), processor_type_x='spike',
+            processor_params_x={'window_size': window_size, 'step_size': step_size})
+
+    def test_fraction_rule_is_what_actually_happens(self):
+        """window 0.5 with step 0.5 gives a 0.25 step, so windows overlap by half."""
+        wm = WindowManager(window_size=0.5, step_size=0.5)
+        assert wm.resolve_step() == pytest.approx(0.25)
+        wm = WindowManager(window_size=0.5, step_size=0.125)
+        assert wm.resolve_step() == pytest.approx(0.0625)
+
+    def test_warns_when_both_readings_are_plausible(self):
+        with pytest.warns(UserWarning, match="read as a fraction of window_size"):
+            self._build(0.5, 0.125)
+
+    def test_warning_names_the_applied_step_and_the_overlap(self):
+        reset_retention_warnings()
+        with pytest.warns(UserWarning) as record:
+            WindowManager(window_size=0.5, step_size=0.125)
+        message = str(record[0].message)
+        assert "step of 0.0625 time units" in message
+        assert "87.5% overlap" in message
+
+    @pytest.mark.parametrize("step, expected", [
+        (0.125, "pass step_size=0.25"),                      # reachable as a fraction
+        (0.5, "pass step_size=None"),                        # exactly one window
+        (0.75, "a 0.75 step cannot be expressed"),    # wider than the window
+    ])
+    def test_remedy_covers_all_three_cases(self, step, expected):
+        reset_retention_warnings()
+        with pytest.warns(UserWarning) as record:
+            WindowManager(window_size=0.5, step_size=step)
+        assert expected in str(record[0].message)
+
+    @pytest.mark.parametrize("window_size, step_size", [
+        (0.5, 1.0),     # >= 1 is absolute, so there is nothing to confuse
+        (0.5, None),    # the default is a full window
+        (1.0, 0.5),     # window at 1, where a sub-1 step cannot be a duration
+        (2.0, 0.5),     # window above 1, same
+    ])
+    def test_silent_when_only_one_reading_is_plausible(self, window_size, step_size):
+        reset_retention_warnings()
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            WindowManager(window_size=window_size, step_size=step_size)
+        assert not [w for w in record if "read as a fraction" in str(w.message)]
+
+    def test_warns_once_per_pair(self):
+        reset_retention_warnings()
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            for _ in range(4):
+                WindowManager(window_size=0.5, step_size=0.25)
+        assert len([w for w in record if "read as a fraction" in str(w.message)]) == 1
+
+    def test_update_parameters_warns_too(self):
+        reset_retention_warnings()
+        wm = WindowManager(window_size=2.0, step_size=1.0)
+        with pytest.warns(UserWarning, match="read as a fraction of window_size"):
+            wm.update_parameters(window_size=0.4, step_size=0.2)
+
+
+class TestSlotsInWindow:
+    """The slot count has to survive a measured period's float error.
+
+    A real 30 Hz time vector's median gap is 0.03333333333333144, so
+    window_size / period is 30.000000000001705 and a bare ceil asked for a 31st
+    slot the window does not contain, which put the boundary sample back into
+    two windows at step_size = window_size.
+    """
+
+    def test_a_measured_period_does_not_gain_a_slot(self):
+        from neural_mi.data.temporal import slots_in_window
+        t = np.arange(0, 300, 1 / 30.)
+        period = float(np.median(np.diff(t)))
+        assert period != 1 / 30.                      # the float error is real
+        assert slots_in_window(1.0, period) == 30
+        assert slots_in_window(2.0, period) == 60
+
+    def test_a_genuine_fraction_still_rounds_up(self):
+        from neural_mi.data.temporal import slots_in_window
+        assert slots_in_window(0.5, 1 / 25.) == 13    # 12.5 samples needs 13 slots
+        assert slots_in_window(0.35, 0.1) == 4
+        assert slots_in_window(0.05, 0.1) == 1        # never fewer than one
+
+    def test_windows_tile_on_a_measured_clock(self):
+        t = np.arange(0, 60, 1 / 30.)
+        ramp = np.arange(len(t), dtype=np.float32)[:, None]
+        ds = create_dataset(ramp, x_time=t, processor_type_x='continuous',
+                            processor_params_x={'window_size': 1.0, 'step_size': 1.0})
+        assert ds.x_window_width == 30
+        first = {round(v) for v in ds.x_data[0, 0].tolist()}
+        second = {round(v) for v in ds.x_data[1, 0].tolist()}
+        assert not first & second

@@ -3,7 +3,7 @@
 
 Each decoder is the approximate inverse of the corresponding encoder in
 ``embeddings.py``.  A decoder takes a low-dimensional embedding
-``z`` (shape ``(batch, embed_dim)``) and reconstructs the original input
+``z`` (shape ``(batch, embedding_dim)``) and reconstructs the original input
 (shape ``(batch, n_channels, window_size)``).
 
 Decoders are used when ``use_decoder=True`` in ``base_params``.  The
@@ -13,11 +13,16 @@ input while maximising mutual information with the other variable (Deep
 Symmetric IB).
 
 Deterministic training objective (``use_variational=False``):
-    L = -MI(Z_X; Z_Y) + w_x * MSE(X, X̂) + w_y * MSE(Y, Ŷ)
+    L = -[MI(Z_X; Z_Y) - λ_x * MSE(X, X̂) - λ_y * MSE(Y, Ŷ)]
 
 Variational training objective (``use_variational=True``):
-    L = KL_X + KL_Y - β * MI(Z_X; Z_Y)
-        + w_x * MSE(X, X̂) + w_y * MSE(Y, Ŷ)
+    L = KL_X + KL_Y
+        - β * [MI(Z_X; Z_Y) - λ_x * MSE(X, X̂) - λ_y * MSE(Y, Ŷ)]
+
+β scales every term the objective is asked to preserve, so each λ
+(``decoder_lambda_x`` / ``decoder_lambda_y``) is measured against the MI term
+and the effective weight on a reconstruction is β * λ when variational and λ
+on its own otherwise.
 
 Output activations (controlled by ``output_activation`` parameter):
     - ``'linear'``  : no activation (float / continuous data).
@@ -28,7 +33,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from typing import Optional
+
+from neural_mi.logger import logger
 
 
 def _get_output_activation(name: str, dim: int = 1):
@@ -60,7 +66,7 @@ class BaseDecoder(nn.Module):
         Parameters
         ----------
         z : torch.Tensor
-            Embedding tensor of shape ``(batch, embed_dim)``.
+            Embedding tensor of shape ``(batch, embedding_dim)``.
 
         Returns
         -------
@@ -71,7 +77,7 @@ class BaseDecoder(nn.Module):
 
     def _init_weights(self):
         for m in self.modules():
-            if isinstance(m, (nn.Linear, nn.Conv1d, nn.ConvTranspose1d)):
+            if isinstance(m, (nn.Linear, nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d)):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
@@ -80,12 +86,12 @@ class BaseDecoder(nn.Module):
 class MLPDecoder(BaseDecoder):
     """Mirror MLP decoder for the :class:`~neural_mi.models.embeddings.MLP` encoder.
 
-    Maps ``embed_dim → hidden_dim → ... → n_channels * window_size``,
+    Maps ``embedding_dim → hidden_dim → ... → n_channels * window_size``,
     then reshapes to ``(batch, n_channels, window_size)``.
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -98,7 +104,7 @@ class MLPDecoder(BaseDecoder):
         self._act = _get_output_activation(output_activation)
         output_dim = n_channels * window_size
 
-        layers = [nn.Linear(embed_dim, hidden_dim), nn.ReLU()]
+        layers = [nn.Linear(embedding_dim, hidden_dim), nn.ReLU()]
         for _ in range(max(0, n_layers - 1)):
             layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
         layers.append(nn.Linear(hidden_dim, output_dim))
@@ -120,7 +126,7 @@ class CNN1DDecoder(BaseDecoder):
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -138,7 +144,7 @@ class CNN1DDecoder(BaseDecoder):
         # Start from a small spatial dimension; expand in two stages.
         self._base_len = max(4, window_size // (2 ** max(1, n_layers - 1)))
         self.expand_linear = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
+            nn.Linear(embedding_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim * self._base_len),
             nn.ReLU(),
@@ -174,7 +180,7 @@ class GRUDecoder(BaseDecoder):
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -186,7 +192,7 @@ class GRUDecoder(BaseDecoder):
         self.window_size = window_size
         self._act = _get_output_activation(output_activation)
 
-        self.input_proj = nn.Linear(embed_dim, hidden_dim)
+        self.input_proj = nn.Linear(embedding_dim, hidden_dim)
         self.gru = nn.GRU(
             input_size=hidden_dim,
             hidden_size=hidden_dim,
@@ -197,7 +203,6 @@ class GRUDecoder(BaseDecoder):
         self._init_weights()
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        B = z.shape[0]
         h = self.input_proj(z)                              # (B, hidden)
         h = h.unsqueeze(1).expand(-1, self.window_size, -1) # (B, W, hidden)
         out, _ = self.gru(h)                               # (B, W, hidden)
@@ -210,7 +215,7 @@ class LSTMDecoder(BaseDecoder):
     """Sequence decoder for the :class:`~neural_mi.models.embeddings.LSTM` encoder."""
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -222,7 +227,7 @@ class LSTMDecoder(BaseDecoder):
         self.window_size = window_size
         self._act = _get_output_activation(output_activation)
 
-        self.input_proj = nn.Linear(embed_dim, hidden_dim)
+        self.input_proj = nn.Linear(embedding_dim, hidden_dim)
         self.lstm = nn.LSTM(
             input_size=hidden_dim,
             hidden_size=hidden_dim,
@@ -233,7 +238,6 @@ class LSTMDecoder(BaseDecoder):
         self._init_weights()
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        B = z.shape[0]
         h = self.input_proj(z)                              # (B, hidden)
         h = h.unsqueeze(1).expand(-1, self.window_size, -1) # (B, W, hidden)
         out, _ = self.lstm(h)                              # (B, W, hidden)
@@ -242,17 +246,55 @@ class LSTMDecoder(BaseDecoder):
         return self._act(out)
 
 
+class LRUDecoder(BaseDecoder):
+    """Sequence decoder for the :class:`~neural_mi.models.embeddings.LRU`
+    encoder. Same shape as :class:`GRUDecoder` (project, repeat, recur,
+    project), with the repeated sequence run through the same
+    :class:`~neural_mi.models.embeddings.LRUBlock` stack the encoder uses,
+    instead of an ``nn.GRU``.
+    """
+    def __init__(
+        self,
+        embedding_dim: int,
+        hidden_dim: int,
+        n_channels: int,
+        window_size: int,
+        n_layers: int = 1,
+        output_activation: str = 'linear',
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        from neural_mi.models.embeddings import LRUBlock
+        self.n_channels = n_channels
+        self.window_size = window_size
+        self._act = _get_output_activation(output_activation)
+
+        self.input_proj = nn.Linear(embedding_dim, hidden_dim)
+        self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout) for _ in range(max(1, n_layers))])
+        self.output_proj = nn.Linear(hidden_dim, n_channels)
+        self._init_weights()
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        h = self.input_proj(z)                              # (B, hidden)
+        h = h.unsqueeze(1).expand(-1, self.window_size, -1) # (B, W, hidden)
+        for block in self.blocks:
+            h = block(h)                                    # (B, W, hidden)
+        out = self.output_proj(h)                           # (B, W, C)
+        out = out.permute(0, 2, 1)                          # (B, C, W)
+        return self._act(out)
+
+
 class TCNDecoder(BaseDecoder):
     """Approximate inverse of the :class:`~neural_mi.models.embeddings.TCN` encoder.
 
     Projects the embedding to a feature map (same shape as TCN output), then
-    uses a sequence of dilated ``Conv1d`` blocks — mirroring the TCN encoder
-    structure — to reconstruct the input.  Upsampling is handled by
+    uses a sequence of dilated ``Conv1d`` blocks, mirroring the TCN encoder
+    structure, to reconstruct the input.  Upsampling is handled by
     ``nn.Upsample`` before the first convolutional block.
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -267,7 +309,7 @@ class TCNDecoder(BaseDecoder):
 
         self._base_len = max(4, window_size // (2 ** max(1, n_layers - 1)))
         self.expand_linear = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
+            nn.Linear(embedding_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim * self._base_len),
             nn.ReLU(),
@@ -325,7 +367,7 @@ class TransformerDecoder(BaseDecoder):
     """
     def __init__(
         self,
-        embed_dim: int,
+        embedding_dim: int,
         hidden_dim: int,
         n_channels: int,
         window_size: int,
@@ -344,7 +386,7 @@ class TransformerDecoder(BaseDecoder):
             if hidden_dim == 0:
                 hidden_dim = nhead
 
-        self.memory_proj = nn.Linear(embed_dim, hidden_dim)
+        self.memory_proj = nn.Linear(embedding_dim, hidden_dim)
         # Learned position queries (one per time step)
         self.pos_queries = nn.Parameter(torch.randn(1, window_size, hidden_dim) * 0.02)
         decoder_layer = nn.TransformerDecoderLayer(
@@ -369,13 +411,70 @@ class TransformerDecoder(BaseDecoder):
         return self._act(out)
 
 
+class CNN2DDecoder(BaseDecoder):
+    """Approximate inverse of the :class:`~neural_mi.models.embeddings.CNN2D` encoder.
+
+    Expands the embedding via linear layers to a small spatial feature map,
+    then uses bilinear upsampling + ``nn.Conv2d`` blocks to reach the target
+    ``(height, width)``.  A final ``Conv2d`` maps to ``n_channels`` outputs.
+    """
+    def __init__(
+        self,
+        embedding_dim: int,
+        hidden_dim: int,
+        n_channels: int,
+        height: int,
+        width: int,
+        n_layers: int = 2,
+        kernel_size: int = 3,
+        output_activation: str = 'linear',
+    ):
+        super().__init__()
+        self.n_channels = n_channels
+        self.height = height
+        self.width = width
+        self._act = _get_output_activation(output_activation)
+        if kernel_size % 2 == 0:
+            kernel_size = kernel_size + 1  # ensure odd for same padding
+
+        # Start from a small spatial grid; upsample to (height, width) before the conv stack.
+        self._base_h = max(2, height // (2 ** max(1, n_layers - 1)))
+        self._base_w = max(2, width // (2 ** max(1, n_layers - 1)))
+        self.expand_linear = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim * self._base_h * self._base_w),
+            nn.ReLU(),
+        )
+
+        pad = kernel_size // 2
+        conv_blocks = []
+        for i in range(n_layers):
+            in_ch = hidden_dim
+            out_ch = hidden_dim if i < n_layers - 1 else n_channels
+            conv_blocks.append(nn.Conv2d(in_ch, out_ch, kernel_size, padding=pad))
+            if i < n_layers - 1:
+                conv_blocks.append(nn.ReLU())
+        self.conv_layers = nn.ModuleList(conv_blocks)
+        self._init_weights()
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        B = z.shape[0]
+        h = self.expand_linear(z)                                   # (B, hidden*base_h*base_w)
+        h = h.view(B, -1, self._base_h, self._base_w)               # (B, hidden, base_h, base_w)
+        h = F.interpolate(h, size=(self.height, self.width), mode='bilinear', align_corners=False)
+        for layer in self.conv_layers:
+            h = layer(h)
+        return self._act(h)
+
+
 # ---------------------------------------------------------------------------
 # Factory function
 # ---------------------------------------------------------------------------
 
 def build_decoder(
     embedding_model: str,
-    embed_dim: int,
+    embedding_dim: int,
     hidden_dim: int,
     n_channels: int,
     window_size: int,
@@ -388,21 +487,24 @@ def build_decoder(
     Parameters
     ----------
     embedding_model : str
-        Name of the encoder (e.g. ``'mlp'``, ``'cnn1d'``, ``'gru'``, …).
-    embed_dim : int
+        Name of the encoder (e.g. ``'mlp'``, ``'cnn'``, ``'gru'``, …).
+    embedding_dim : int
         Embedding dimensionality (output size of the encoder).
     hidden_dim : int
         Hidden dimension to use in the decoder.
     n_channels : int
         Number of output channels (must match the encoder's input channels).
     window_size : int
-        Sequence length of the reconstructed output.
+        Sequence length of the reconstructed output. For ``'cnn2d'``, used
+        only as a fallback (assumed square) when ``height``/``width`` are not
+        given in ``**kwargs``.
     n_layers : int, optional
         Number of decoder layers. Defaults to 2.
     output_activation : str, optional
         Final activation: ``'linear'``, ``'sigmoid'``, or ``'softmax'``.
     **kwargs
-        Forwarded to the decoder constructor (e.g. ``kernel_size``, ``nhead``).
+        Forwarded to the decoder constructor (e.g. ``kernel_size``, ``nhead``,
+        or ``height``/``width`` for ``'cnn2d'``).
 
     Returns
     -------
@@ -410,26 +512,43 @@ def build_decoder(
         The constructed decoder module.
     """
     common = dict(
-        embed_dim=embed_dim,
+        embedding_dim=embedding_dim,
         hidden_dim=hidden_dim,
         n_channels=n_channels,
-        window_size=window_size,
         n_layers=n_layers,
         output_activation=output_activation,
     )
     name = embedding_model.lower()
     if name == 'mlp':
-        return MLPDecoder(**common)
-    elif name == 'cnn1d':
-        return CNN1DDecoder(**common, kernel_size=kwargs.get('kernel_size', 7))
+        return MLPDecoder(**common, window_size=window_size)
+    elif name == 'cnn':
+        return CNN1DDecoder(**common, window_size=window_size, kernel_size=kwargs.get('kernel_size', 7))
+    elif name == 'cnn2d':
+        height, width = kwargs.get('height'), kwargs.get('width')
+        if height is None or width is None:
+            # Caller doesn't know the true (height, width) split -- fall back
+            # to a square spatial layout inferred from window_size (= H*W).
+            side = max(1, int(round(math.sqrt(window_size))))
+            height, width = height or side, width or side
+        return CNN2DDecoder(**common, height=height, width=width,
+                            kernel_size=kwargs.get('kernel_size', 3))
     elif name == 'gru':
-        return GRUDecoder(**common)
+        return GRUDecoder(**common, window_size=window_size)
     elif name == 'lstm':
-        return LSTMDecoder(**common)
+        return LSTMDecoder(**common, window_size=window_size)
+    elif name == 'lru':
+        return LRUDecoder(**common, window_size=window_size, dropout=kwargs.get('dropout', 0.3))
     elif name == 'tcn':
-        return TCNDecoder(**common, kernel_size=kwargs.get('kernel_size', 3))
+        return TCNDecoder(**common, window_size=window_size, kernel_size=kwargs.get('kernel_size', 3))
     elif name == 'transformer':
-        return TransformerDecoder(**common, nhead=kwargs.get('nhead', 4))
+        return TransformerDecoder(**common, window_size=window_size, nhead=kwargs.get('nhead', 4))
     else:
-        # Custom or unknown encoder — use a simple MLP decoder as fallback.
-        return MLPDecoder(**common)
+        # Custom or unknown encoder (e.g. 'pretrained_backbone') has no
+        # dedicated decoder -- fall back to MLP and make that visible, so a
+        # user asking for a decoder doesn't silently get one for a different
+        # architecture than they configured.
+        logger.warning(
+            f"No dedicated decoder exists for embedding_model='{embedding_model}'. "
+            f"MLPDecoder is used for the reconstruction loss."
+        )
+        return MLPDecoder(**common, window_size=window_size)

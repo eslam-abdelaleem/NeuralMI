@@ -1,2 +1,2 @@
-```{include} ../../THEORY.md
+```{include} ../../reference/THEORY.md
 ```

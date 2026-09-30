@@ -17,29 +17,35 @@ BASE_PARAMS_SCHEMA = {
     # (e.g. patience=20 with n_epochs=200).
     'patience': {'type': int, 'min': 0, 'default': 1000},
     'output_units': {'type': str, 'default': 'bits'},
-    'verbose': {'type': bool, 'default': True},
+    # Real-time grids for X and Y, carried so that windowing deferred to the
+    # task layer sees the same grid the eager path gets via create_dataset.
+    'x_time': {'type': (object, type(None))},
+    'y_time': {'type': (object, type(None))},
+    'verbose': {'type': bool, 'default': False},
     'show_progress': {'type': bool, 'default': True},
     'device': {'type': (str, type(None), torch.device), 'default': None},
     'split_mode': {'type': str, 'default': 'blocked'},
-    'random_time_shifting': {'type': bool, 'default': False},
-    'epochs_to_max_shift': {'type': int, 'min': 0, 'default': 5},
+    'shift_time': {'type': bool, 'default': True},
+    # Cheap reslice-based alternative to shift_time for regularly-sampled
+    # data (neural_mi/data/shift_windowing.py); wired up for mode='estimate'
+    # with a real processor only, see run.py's _warn_if_shift_windows_dead.
+    'shift_windows': {'type': bool, 'default': True},
     'smoothing_sigma': {'type': float, 'min': 0.0, 'default': 1.0},
     'median_window': {'type': int, 'min': 1, 'default': 5},
     'min_improvement': {'type': float, 'min': 0.0, 'default': 0.001},
     'max_eval_samples': {'type': int, 'min': 1, 'default': 5000},
     'train_subset_size': {'type': (int, type(None)), 'min': 1, 'default': None},
     'split_gap_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
-    'spectral_mode': {'type': str, 'default': 'none'},  # 'none' | 'summary' | 'full'
-    'track_spectral_metrics': {'type': bool, 'default': False},
-    'spectral_output': {'type': str, 'default': 'default'},
-    'return_spectrum': {'type': bool, 'default': False},
+    'track_spectral_history': {'type': bool, 'default': False},
     'return_embeddings': {'type': bool, 'default': False},
-    'spectral_whitening': {'type': (str, type(None)), 'default': 'std'},
+    # Normalization applied to the embeddings before the cross-covariance SVD
+    # behind both the participation ratios and the rotated embeddings.
+    'whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},
     'use_decoder': {'type': bool, 'default': False},
-    'decoder_weight': {'type': float, 'min': 0.0, 'default': 1.0},
-    'decoder_weight_x': {'type': (float, type(None)), 'default': None},
-    'decoder_weight_y': {'type': (float, type(None)), 'default': None},
+    'decoder_lambda': {'type': float, 'min': 0.0, 'default': 0.001},
+    'decoder_lambda_x': {'type': (float, type(None)), 'min': 0.0, 'default': None},
+    'decoder_lambda_y': {'type': (float, type(None)), 'min': 0.0, 'default': None},
     'decoder_output_activation_x': {'type': str, 'default': 'linear'},
     'decoder_output_activation_y': {'type': str, 'default': 'linear'},
     'gradient_clip_val': {'type': (float, type(None)), 'default': None},
@@ -62,24 +68,27 @@ BASE_PARAMS_SCHEMA = {
     'lr_head_multiplier': {'type': (float, int, type(None)), 'min': 0.0, 'default': None},  # Hybrid only; None → same LR as encoders
     'scheduler': {'type': (str, type, type(None)), 'default': None},
     'scheduler_params': {'type': dict, 'default': {}},
-    'eval_train': {'type': (bool, float, int, type(None)), 'default': False},
+    # Per-epoch train MI tracking, yielding 'train_mi_history'.
+    #   False, no per-epoch train evaluation.
+    #   True, the locked-in train eval subset (capped by max_eval_samples).
+    #   int >= 1, exactly that many training samples.
+    #   float (0, 1), that fraction of the training set.
+    #   1.0 / 'full', the entire training set, uncapped.
+    # An unrecognised value raises instead of silently disabling tracking.
+    'eval_train': {'type': (bool, float, int, str, type(None)), 'default': False},
 
     # Per-epoch embedding tracking.
     # Controls whether embeddings are extracted and stored at every epoch.
     # Mirroring eval_train style:
-    #   False         — no tracking (global default; dimensionality mode defaults to 512).
-    #   True          — track first 512 samples.
-    #   int >= 1      — track exactly that many samples (first N in the dataset).
-    #   float (0, 1)  — track that fraction of the dataset.
-    #   'full'        — track all samples (emits a UserWarning about memory cost).
+    #   False, no tracking (global default; dimensionality mode defaults to 512).
+    #   True, track first 512 samples.
+    #   int >= 1, track exactly that many samples (first N in the dataset).
+    #   float (0, 1), track that fraction of the dataset.
+    #   'full', track all samples (emits a UserWarning about memory cost).
     # The tracked subset is always the *first* N samples so that user-supplied
     # labels (passed to result.animate()) align with the original data ordering.
     'track_embeddings': {'type': (bool, float, int, str, type(None)), 'default': False},
     'return_rotated_embeddings': {'type': bool, 'default': False},
-    # Whitening applied to the cross-covariance before SVD to derive the rotation axes.
-    # Does NOT affect the scale of the returned embeddings (which are always in the
-    # original embedding space, just re-projected).  Matches the default used by PR.
-    'rotated_embeddings_whitening': {'type': (str, type(None)), 'default': 'std'},
     # False (default): one global rotation derived from the best epoch, applied to all
     # tracked epochs uniformly (consistent coordinate system across epochs).
     # True: each tracked epoch gets its own SVD-based rotation (shows structure emerging).
@@ -98,13 +107,28 @@ BASE_PARAMS_SCHEMA = {
     'n_layers_head': {'type': (int, type(None)), 'min': 1, 'default': None},  # Hybrid critic head; None → max(1, n_layers-1)
     'hidden_dim_head': {'type': (int, list, type(None)), 'default': None},  # Hybrid critic head; None → min(64, hidden_dim)
     'critic_type': {'type': str, 'default': 'separable'},
-    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'
+    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'|'deepsets'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
+    # Per-side encoder overrides. None means "same as X" throughout.
+    'embedding_model_y': {'type': str, 'default': None},
+    'embedding_dim_y': {'type': int, 'default': None},
+    'hidden_dim_y': {'type': (int, list), 'default': None},
+    'n_layers_y': {'type': int, 'default': None},
+    'custom_embedding_cls_y': {'type': type, 'default': None},
+    'branch_model': {'type': str, 'default': 'gru'}, # embedding_model='dual_branch' only: each branch's architecture
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
     'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
-    'norm_layer': {'type': (str, type(None)), 'default': None},
+    # 'auto' is layer normalisation for the hybrid critic in mode='dimensionality'
+    # and none otherwise. Layer norm stops the fits of that mode from stalling. It
+    # also divides out each sample's overall scale and the information it carries.
+    'norm_layer': {'type': (str, type(None)), 'default': 'auto'},
+    # Whether embedding layers carry bias terms. Without them the network is
+    # positively homogeneous, so an all-zero input embeds to exactly zero.
+    # A mean-centring `norm_layer` is served by an affine-free RMSNorm when
+    # this is off, since centring would otherwise undo the property.
+    'bias': {'type': (bool, type(None)), 'default': True},
     # PretrainedBackboneEmbedding: torchvision model name and pretrained flag.
     'pytorch_predefined': {'type': (str, type(None)), 'default': None},
     'pretrained': {'type': bool, 'default': False},
@@ -123,13 +147,13 @@ BASE_PARAMS_SCHEMA = {
     'train_indices': {'type': (object, type(None))}, # numpy array
     'test_indices': {'type': (object, type(None))},
     'gamma': {'type': (int, float)}, # Rigorous
-    'min_reliable_samples': {'type': int, 'min': 1, 'default': 1000},
+    'min_reliable_samples': {'type': int, 'min': 1, 'default': None},
     'lag': {'type': int},  # Result label: injected by run_lag_analysis per task; not a user-settable parameter.
-    # Reproducibility — used by run() and task.py workers
+    # Reproducibility, used by run() and task.py workers
     'random_seed': {'type': (int, type(None)), 'default': None},
 
     # Conservative epoch selection:
-    # 1.0 (default) → use the epoch where smoothed test MI is maximised (current behaviour).
+    # 1.0 (default) → use the epoch where smoothed test MI is maximised.
     # < 1.0          → use the first epoch where smoothed test MI ≥ peak_fraction * max_test_mi.
     #                  This gives a more conservative train-MI estimate by avoiding the final
     #                  noisy peak.  When < 1.0, the train MI at the actual peak epoch is also
@@ -137,14 +161,14 @@ BASE_PARAMS_SCHEMA = {
     'peak_fraction': {'type': float, 'min': 0.0, 'default': 1.0},
 
     # Mixed-precision (AMP) training.
-    # 'auto' — enable on CUDA, no-op on CPU/MPS (safe default).
-    # True   — explicitly enable (CUDA only; silently no-ops on other devices).
-    # False  — explicitly disable.
+    # 'auto', enable on CUDA, no-op on CPU/MPS (safe default).
+    # True, explicitly enable (CUDA only; silently no-ops on other devices).
+    # False, explicitly disable.
     'use_amp': {'type': (bool, str), 'default': 'auto'},
 
     # Memory / device layout
-    # 'cpu'  — store dataset tensors on CPU (default; safe for long sweeps).
-    # 'auto' — store on the compute device (faster repeated evaluation, e.g. precision mode).
+    # 'cpu', store dataset tensors on CPU (default; safe for long sweeps).
+    # 'auto', store on the compute device (faster repeated evaluation, e.g. precision mode).
     # Any explicit device string is also accepted.
     # Precision mode overrides this to 'auto' unless the user sets it explicitly.
     'dataset_device': {'type': (str, type(None)), 'default': 'cpu'},
@@ -157,25 +181,35 @@ MODE_KWARGS_SCHEMA = {
     },
     'sweep': {
         'n_workers': {'type': int, 'default': 1},
-        'max_samples_per_task': {'type': int, 'default': None},
     },
     'dimensionality': {
         'n_workers': {'type': int, 'default': 1},
+        # The embedding dimensions to fit. None chooses them from the reference fit.
+        'embedding_dims': {'type': (list, tuple, range, type(None)), 'default': None},
+        'n_restarts': {'type': int, 'min': 1, 'default': 4},
+        'saturation_ratio': {'type': float, 'min': 0.0, 'default': 0.95},
+        # None is 64, refitted larger when its participation ratio comes close to that.
+        'reference_dim': {'type': (int, type(None)), 'min': 2, 'default': None},
         'split_method': {'type': str, 'default': 'random'}, # 'random'|'spatial'|'temporal'|'index'|'horizontal'|'vertical'|'row_interleaved'|'col_interleaved'|'diagonal'|'antidiagonal'
-        'n_splits': {'type': int, 'default': 5},
+        # Random channel splits of X; the other split methods give one split.
+        'n_splits': {'type': (int, type(None)), 'min': 1, 'default': None},
         'lag': {'type': int, 'default': 1}, # if split_method='temporal'
         # Required when split_method='index': list of channel indices assigned to X.
         # Y is automatically the complement (all remaining channels).
         'channel_indices_x': {'type': (list, type(None)), 'default': None},
+        # Warn when the reference fit's MI is this close to its evaluation ceiling.
+        'ceiling_mi_fraction': {'type': float, 'default': 0.85},
     },
     'rigorous': {
         'n_workers': {'type': int, 'default': 1},
-        'delta_threshold': {'type': float, 'default': 0.1},
+        'curvature_t_threshold': {'type': float, 'default': 2.0},
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
-        'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
+        # None = auto-detect from leak_check_window_size (set exactly when a
+        # windowed processor was used); True/False overrides the detector.
+        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'lag': {
         'n_workers': {'type': int, 'default': 1},
@@ -190,38 +224,57 @@ MODE_KWARGS_SCHEMA = {
         'corrupt_target': {'type': str, 'default': 'x'},
         'corruption_method': {'type': str, 'default': 'rounding'},
         'n_noise_samples': {'type': int, 'default': 50},
-        'threshold_ratio': {'type': float, 'default': 0.9},
+        'threshold_ratio': {'type': (float, list, tuple), 'default': 0.9},
     },
     'conditional': {
         'n_workers': {'type': int, 'default': 1},
+        'align': {'type': (str, type(None)), 'default': None},
         'rigorous': {'type': bool, 'default': False},
         'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'delta_threshold': {'type': float, 'default': 0.1},
+        'curvature_t_threshold': {'type': float, 'default': 2.0},
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
-        'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
+        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'transfer': {
         'n_workers': {'type': int, 'default': 1},
         'rigorous': {'type': bool, 'default': False},
         'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'delta_threshold': {'type': float, 'default': 0.1},
+        'curvature_t_threshold': {'type': float, 'default': 2.0},
         'min_gamma_points': {'type': int, 'default': 5},
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
-        'r2_threshold': {'type': float, 'default': 0.90},
         'leverage_threshold': {'type': float, 'default': 0.20},
+        # Transfer entropy is unconditionally temporal (built from
+        # unfold-based history windows); run.py always forces this True for
+        # the transfer path regardless of what's passed here -- exposed in
+        # the schema for consistency/validation, not because it's meant to
+        # be overridden per-call.
+        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
+    },
+    'interaction': {
+        'n_workers': {'type': int, 'default': 1},
+        'rigorous': {'type': bool, 'default': False},
+        'gamma_range': {'type': (range, list, type(None)), 'default': None},
+        'curvature_t_threshold': {'type': float, 'default': 2.0},
+        'min_gamma_points': {'type': int, 'default': 5},
+        'confidence_level': {'type': float, 'default': 0.68},
+        'residual_threshold': {'type': float, 'default': 2.5},
+        'leverage_threshold': {'type': float, 'default': 0.20},
+        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'pairwise': {
         'n_workers': {'type': int, 'default': 1},
+        'pairs': {'type': (list, type(None)), 'default': None},
     },
 }
 
 PROCESSOR_PARAMS_SCHEMA = {
     'continuous': ['window_size', 'step_size', 'min_coverage_fraction', 'sample_rate'],
     'spike': ['window_size', 'step_size', 'max_spikes_per_window', 'n_seconds', 'sample_rate',
-              'no_spike_value', 'bin_size', 'normalize_bins', 'exclude_bursty_neurons', 'burst_threshold_multiplier'],
+              'no_spike_value', 'bin_size', 'normalize_bins', 'exclude_bursty_neurons',
+              'burst_threshold_multiplier', 'drop_empty_windows'],
     'categorical': ['window_size', 'step_size', 'sample_rate', 'min_coverage_fraction', 'encoding'],
 }

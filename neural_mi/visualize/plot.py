@@ -1,5 +1,5 @@
 # neural_mi/visualize/plot.py
-"""Provides plotting functions for visualizing analysis results.
+"""Provides plotting functions for visualising analysis results.
 
 This module contains functions to generate plots for different analysis modes,
 such as hyperparameter sweeps and bias correction fits. These are typically
@@ -13,7 +13,7 @@ import numpy as np
 from scipy.signal import correlate
 from scipy.stats import zscore
 from matplotlib.ticker import MaxNLocator
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
 from scipy.spatial.distance import cdist
 from matplotlib.lines import Line2D
 from neural_mi.logger import logger as _logger
@@ -45,7 +45,7 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     Parameters
     ----------
     summary_df : pd.DataFrame
-        A DataFrame containing the summarized results of the sweep. Must
+        A DataFrame containing the summarised results of the sweep. Must
         contain columns for the parameter, mean MI, and std dev of MI.
     param_col : str
         The name of the column in `summary_df` that contains the swept
@@ -78,7 +78,9 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     plt.Axes
         The axes containing the plot.
     """
-    if ax is None: fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    created_fig = ax is None
+    if created_fig:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     ax.plot(summary_df[param_col], summary_df[mean_col], 'o-', label='Mean MI', **kwargs)
     ax.fill_between(summary_df[param_col], summary_df[mean_col] - summary_df[std_col],
@@ -101,237 +103,219 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     if pd.api.types.is_numeric_dtype(summary_df[param_col]) and all(summary_df[param_col] == np.floor(summary_df[param_col])):
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
-    if 'fig' in locals(): plt.tight_layout()
+    if created_fig: plt.tight_layout()
+    if show: plt.show()
+    return ax
+
+
+def plot_sweep_heatmap(summary_df: pd.DataFrame, param_x: str, param_y: str,
+                       mean_col: str = 'mi_mean', ax: Optional[plt.Axes] = None,
+                       units: str = 'bits', show: bool = True, **kwargs) -> plt.Axes:
+    """Plots a 2-parameter sweep as a heatmap (``param_x`` × ``param_y`` → MI).
+
+    Use this instead of :func:`plot_sweep_curve` when exactly two parameters
+    were swept together, a 1-D line/scatter would otherwise have to collapse
+    one of the two parameters, hiding its effect on MI.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        Must contain ``param_x``, ``param_y``, and ``mean_col`` columns, with
+        one row per ``(param_x, param_y)`` combination (as produced by
+        ``mode='sweep'`` / ``mode='lag'`` with two swept parameters).
+    param_x, param_y : str
+        Column names for the two swept parameters. ``param_x`` becomes the
+        heatmap's columns (horizontal axis), ``param_y`` its rows (vertical
+        axis).
+    mean_col : str, optional
+        Column holding the value to colour by. Defaults to ``'mi_mean'``.
+    ax : plt.Axes, optional
+        Axes to draw on. If ``None``, a new figure is created.
+    units : str, optional
+        MI units for the colourbar label. Defaults to ``'bits'``.
+    show : bool, optional
+        Whether to call ``plt.show()`` at the end. Defaults to ``True``.
+    **kwargs
+        Additional keyword arguments forwarded to ``sns.heatmap`` (e.g.
+        ``cmap``, ``fmt``, ``annot``).
+
+    Returns
+    -------
+    plt.Axes
+    """
+    pivot = summary_df.pivot(index=param_y, columns=param_x, values=mean_col)
+    # Row/column order follows the swept values' natural sort order rather
+    # than groupby's first-seen order, so the grid reads left-to-right /
+    # bottom-to-top as ascending parameter values.
+    pivot = pivot.sort_index(axis=0).sort_index(axis=1)
+
+    created_fig = ax is None
+    if created_fig:
+        figsize = kwargs.pop('figsize', (max(4, pivot.shape[1] * 0.9 + 1.5),
+                                         max(3, pivot.shape[0] * 0.7 + 1.0)))
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+    else:
+        kwargs.pop('figsize', None)
+
+    annot = kwargs.pop('annot', True)
+    fmt = kwargs.pop('fmt', '.3f')
+    cmap = kwargs.pop('cmap', 'viridis')
+
+    sns.heatmap(pivot, annot=annot, fmt=fmt, cmap=cmap,
+               cbar_kws={'label': f'MI ({units})'}, ax=ax, **kwargs)
+    ax.set_xlabel(param_x.replace('_', ' ').title(), fontsize=12)
+    ax.set_ylabel(param_y.replace('_', ' ').title(), fontsize=12)
+    ax.set_title(f"MI vs. {param_x.replace('_', ' ').title()} × "
+                f"{param_y.replace('_', ' ').title()}", fontsize=13)
+
+    if created_fig: plt.tight_layout()
+    if show: plt.show()
+    return ax
+
+
+def plot_sweep_bar(summary_df: pd.DataFrame, param_cols: list, mean_col: str = 'mi_mean',
+                   std_col: str = 'mi_std', ax: Optional[plt.Axes] = None,
+                   units: str = 'bits', show: bool = True, **kwargs) -> plt.Axes:
+    """Plots a 3-or-more-parameter sweep as a bar chart over parameter combinations.
+
+    Each bar is one combination of ``param_cols``, labelled on the x-axis as
+    ``"p1=v1, p2=v2, ..."`` and coloured by ``mean_col`` with error bars from
+    ``std_col``. Intended for sweeps with too many swept parameters for a
+    heatmap (which only has two axes); see :func:`plot_sweep_heatmap` for the
+    2-parameter case.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        Must contain every column in ``param_cols`` plus ``mean_col`` (and
+        ``std_col`` if present), one row per parameter combination.
+    param_cols : list of str
+        Column names of the swept parameters to combine into each bar's label.
+    mean_col : str, optional
+        Column holding the bar height. Defaults to ``'mi_mean'``.
+    std_col : str, optional
+        Column holding the error-bar half-height. Defaults to ``'mi_std'``;
+        silently skipped if absent.
+    ax : plt.Axes, optional
+        Axes to draw on. If ``None``, a new figure is created.
+    units : str, optional
+        MI units for the y-axis label. Defaults to ``'bits'``.
+    show : bool, optional
+        Whether to call ``plt.show()`` at the end. Defaults to ``True``.
+    **kwargs
+        Additional keyword arguments forwarded to ``ax.bar``.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    df = summary_df.sort_values(param_cols).reset_index(drop=True)
+    # Build labels from each column's own native values (via .tolist()) rather
+    # than a row-wise .apply(axis=1), which would construct a per-row Series
+    # spanning all param_cols and upcast integer columns to float wherever
+    # another swept column in the same row is a float (e.g. embedding_dim=4
+    # rendering as "4.0" because a sibling column is a float dropout value).
+    column_values = [df[col].tolist() for col in param_cols]
+    labels = [
+        ', '.join(f'{col}={val}' for col, val in zip(param_cols, combo))
+        for combo in zip(*column_values)
+    ]
+
+    created_fig = ax is None
+    if created_fig:
+        figsize = kwargs.pop('figsize', (max(6, len(df) * 0.6 + 1.5), 5))
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+    else:
+        kwargs.pop('figsize', None)
+
+    yerr = df[std_col] if std_col in df.columns else None
+    color = kwargs.pop('color', 'steelblue')
+    ax.bar(labels, df[mean_col], yerr=yerr, capsize=4, color=color,
+          edgecolor='white', **kwargs)
+    ax.set_ylabel(f'MI ({units})', fontsize=12)
+    ax.set_title(f"MI vs. {', '.join(c.replace('_', ' ').title() for c in param_cols)}",
+                fontsize=13)
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
+    ax.grid(True, axis='y', linestyle=':')
+    sns.despine(ax=ax)
+
+    if created_fig: plt.tight_layout()
     if show: plt.show()
     return ax
 
 
 def plot_dimensionality_curve(
-    summary_df: pd.DataFrame,
-    sweep_var: Optional[str] = None,
-    units: str = 'bits',
-    axes=None,
+    runs: pd.DataFrame,
+    details: Dict[str, Any],
+    ax: Optional[plt.Axes] = None,
     show: bool = True,
+    units: str = 'bits',
     **kwargs,
 ) -> plt.Axes:
-    """Two-panel plot for dimensionality analysis: MI (top) and Participation Ratio (bottom).
+    """MI against embedding dimension, with every restart, the curve and the reading.
 
-    The PR panel plots ``pr_singular`` (the singular-spectrum variant). The
-    eigenvalue/covariance-spectrum variant (``pr_eig``) is also present in
-    ``result.dataframe`` but is not plotted by this function.
-
-    When a sweep variable is present and participation ratio data is available,
-    this function creates a two-panel figure so both metrics are visible side by
-    side.  When no sweep variable is present (scalar result), the values are
-    displayed as annotated single-point plots.
+    Each restart is a faint point. The curve is the running maximum of the best
+    restart over increasing embedding dimension. The dotted line is
+    ``saturation_ratio`` of the plateau and the dashed line the reading,
+    ``dimension_at_most``. With several splits of X each gets its own colour.
 
     Parameters
     ----------
-    summary_df : pd.DataFrame
-        Aggregated dimensionality results.  Expected columns depend on context:
-
-        - With sweep: ``sweep_var``, ``mi_mean``, ``mi_std``,
-          ``pr_singular_mean``, ``pr_singular_std``.
-        - Without sweep (single row): same column names, single row.
-    sweep_var : str, optional
-        Name of the sweep variable column (e.g. ``'embedding_dim'``).  When
-        ``None`` or absent from the DataFrame, a single-point display is used.
-    units : str, optional
-        MI units for axis labels (e.g. ``'bits'``).  Defaults to ``'bits'``.
-    axes : None, plt.Axes, or (plt.Axes, plt.Axes), optional
-        Axes to plot on.
-
-        - ``None`` (default) — create a new figure with one or two subplots.
-        - Single ``plt.Axes`` — use for the MI panel only; PR panel is skipped.
-        - 2-tuple of ``plt.Axes`` — use as ``(ax_mi, ax_pr)``.
-    show : bool, optional
-        Whether to call ``plt.show()`` at the end.  Set to ``False`` when
-        embedding this plot in a larger figure.  Defaults to ``True``.
-    **kwargs
-        Additional keyword arguments forwarded to ``ax.plot`` for the MI curve.
-
-    Returns
-    -------
-    plt.Axes
-        The MI (top) axes.  When a two-panel figure is created internally, the
-        PR axes is accessible via ``ax_mi.figure.axes[1]``.
-    """
-    has_pr = 'pr_singular_mean' in summary_df.columns
-    has_sweep = (
-        sweep_var is not None
-        and sweep_var in summary_df.columns
-        and len(summary_df) > 1
-    )
-    figsize = kwargs.pop('figsize', (8, 8 if has_pr else 5))
-
-    # --- Resolve axes ---
-    if axes is None:
-        if has_pr:
-            fig, (ax_mi, ax_pr) = plt.subplots(
-                2, 1, figsize=figsize,
-                gridspec_kw={'hspace': 0.35},
-                sharex=True if has_sweep else False,
-            )
-        else:
-            fig, ax_mi = plt.subplots(1, 1, figsize=figsize)
-            ax_pr = None
-    elif isinstance(axes, (list, tuple)) and len(axes) == 2:
-        ax_mi, ax_pr = axes
-    else:
-        ax_mi = axes
-        ax_pr = None
-        has_pr = False
-
-    # --- MI panel ---
-    if has_sweep:
-        ax_mi.plot(summary_df[sweep_var], summary_df['mi_mean'],
-                   'o-', label='Mean MI', **kwargs)
-        if 'mi_std' in summary_df.columns:
-            ax_mi.fill_between(
-                summary_df[sweep_var],
-                summary_df['mi_mean'] - summary_df['mi_std'],
-                summary_df['mi_mean'] + summary_df['mi_std'],
-                alpha=0.2, label='±1 Std Dev',
-            )
-        if pd.api.types.is_numeric_dtype(summary_df[sweep_var]) and all(
-            summary_df[sweep_var] == np.floor(summary_df[sweep_var])
-        ):
-            ax_mi.xaxis.set_major_locator(MaxNLocator(integer=True))
-        if not has_pr:
-            ax_mi.set_xlabel(sweep_var.replace('_', ' ').title(), fontsize=11)
-    else:
-        mi_mean = float(summary_df['mi_mean'].iloc[0])
-        mi_std = float(summary_df['mi_std'].iloc[0]) if 'mi_std' in summary_df.columns else 0.0
-        ax_mi.errorbar([0], [mi_mean], yerr=[mi_std], fmt='o', capsize=6,
-                       color='steelblue', markersize=8)
-        ax_mi.annotate(
-            f'{mi_mean:.3f} ± {mi_std:.3f} {units}',
-            xy=(0, mi_mean), xytext=(0.05, 0.80),
-            textcoords='axes fraction', fontsize=10,
-            arrowprops=dict(arrowstyle='->', color='gray', lw=1),
-        )
-        ax_mi.set_xticks([])
-
-    ax_mi.set_ylabel(f'MI ({units})', fontsize=11)
-    ax_mi.set_title('Dimensionality Analysis — MI', fontsize=12)
-    if has_sweep:
-        ax_mi.legend(fontsize=9)
-    ax_mi.grid(True, linestyle=':')
-    sns.despine(ax=ax_mi)
-
-    # --- Participation Ratio panel ---
-    if has_pr and ax_pr is not None:
-        if has_sweep:
-            ax_pr.plot(summary_df[sweep_var], summary_df['pr_singular_mean'],
-                       's-', color='teal', label='Mean PR')
-            if 'pr_singular_std' in summary_df.columns:
-                ax_pr.fill_between(
-                    summary_df[sweep_var],
-                    summary_df['pr_singular_mean'] - summary_df['pr_singular_std'],
-                    summary_df['pr_singular_mean'] + summary_df['pr_singular_std'],
-                    alpha=0.2, color='teal', label='±1 Std Dev',
-                )
-            if pd.api.types.is_numeric_dtype(summary_df[sweep_var]) and all(
-                summary_df[sweep_var] == np.floor(summary_df[sweep_var])
-            ):
-                ax_pr.xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax_pr.set_xlabel(sweep_var.replace('_', ' ').title(), fontsize=11)
-        else:
-            pr_mean = float(summary_df['pr_singular_mean'].iloc[0])
-            pr_std = (
-                float(summary_df['pr_singular_std'].iloc[0])
-                if 'pr_singular_std' in summary_df.columns else 0.0
-            )
-            ax_pr.errorbar([0], [pr_mean], yerr=[pr_std], fmt='s', capsize=6,
-                           color='teal', markersize=8)
-            ax_pr.annotate(
-                f'{pr_mean:.2f} ± {pr_std:.2f}',
-                xy=(0, pr_mean), xytext=(0.05, 0.80),
-                textcoords='axes fraction', fontsize=10,
-                arrowprops=dict(arrowstyle='->', color='gray', lw=1),
-            )
-            ax_pr.set_xticks([])
-
-        ax_pr.set_ylabel('Participation Ratio (Singular)', fontsize=11)
-        ax_pr.set_title('Participation Ratio — pr_singular (Effective Dimensions)', fontsize=12)
-        if has_sweep:
-            ax_pr.legend(fontsize=9)
-        ax_pr.grid(True, linestyle=':')
-        sns.despine(ax=ax_pr)
-
-    if 'fig' in locals():
-        plt.tight_layout()
-    if show:
-        plt.show()
-    return ax_mi
-
-
-def plot_noise_ladder(ladder_df: pd.DataFrame, ax: Optional[plt.Axes] = None,
-                      overlay_mi: bool = False, show: bool = True) -> plt.Axes:
-    """Plots the ceiling-escape noise-injection ladder (both PR variants vs. log(sigma_add)).
-
-    This is the plot for ``noise_injection_dimensionality_spec.md`` Section 6:
-    ``d_hat`` from both ``pr_eig`` and ``pr_singular`` against ``log(sigma_add)``,
-    with the detached band shaded. Not the per-``k_z`` MI curve.
-
-    Parameters
-    ----------
-    ladder_df : pd.DataFrame
-        The per-rung table from ``result.details['sigma_add_ladder']``. Expected
-        columns: ``sigma_add``, ``pr_eig_mean``, ``pr_singular_mean``, ``regime``,
-        and (if ``overlay_mi=True``) ``mi_mean``.
+    runs : pandas.DataFrame
+        ``result.runs`` of one configuration of a ``mode='dimensionality'`` run.
+    details : dict
+        ``result.details`` of the same configuration.
     ax : plt.Axes, optional
         Axes to plot on. Creates a new figure if ``None``.
-    overlay_mi : bool, optional
-        If True, overlays MI vs sigma_add on a secondary y-axis. Defaults to False.
     show : bool, optional
-        Whether to call ``plt.show()``. Defaults to True.
+        Whether to call ``plt.show()`` at the end. Defaults to True.
+    units : str, optional
+        The MI units for the axis label.
+    **kwargs
+        ``figsize`` and ``title``.
 
     Returns
     -------
     plt.Axes
     """
-    df = ladder_df.sort_values('sigma_add').reset_index(drop=True)
-
+    if runs is None or runs.empty or 'mi_curve' not in runs.columns:
+        raise ValueError("Cannot plot: runs holds no fits of a mode='dimensionality' curve.")
+    created_fig = ax is None
     if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 5))
-
-    # Shade the contiguous detached band.
-    detached_mask = (df['regime'] == 'detached').to_numpy()
-    if detached_mask.any():
-        x = df['sigma_add'].to_numpy()
-        idx = np.where(detached_mask)[0]
-        lo, hi = x[idx.min()], x[idx.max()]
-        ax.axvspan(lo, hi, color='mediumseagreen', alpha=0.15, label='Detached band', zorder=0)
-
-    if 'pr_eig_mean' in df.columns:
-        ax.plot(df['sigma_add'], df['pr_eig_mean'], 'o-', color='tab:blue', label=r'$\hat{d}$ (pr_eig)')
-        if 'pr_eig_std' in df.columns:
-            ax.fill_between(df['sigma_add'], df['pr_eig_mean'] - df['pr_eig_std'],
-                            df['pr_eig_mean'] + df['pr_eig_std'], alpha=0.15, color='tab:blue')
-    if 'pr_singular_mean' in df.columns:
-        ax.plot(df['sigma_add'], df['pr_singular_mean'], 's-', color='tab:orange', label=r'$\hat{d}$ (pr_singular)')
-        if 'pr_singular_std' in df.columns:
-            ax.fill_between(df['sigma_add'], df['pr_singular_mean'] - df['pr_singular_std'],
-                            df['pr_singular_mean'] + df['pr_singular_std'], alpha=0.15, color='tab:orange')
-
-    ax.set_xscale('log')
-    ax.set_xlabel(r'$\sigma_{add}$ (log scale, per-channel std units)')
-    ax.set_ylabel(r'Estimated dimension $\hat{d}$')
-    ax.set_title('Noise-Injection Ladder')
+        _, ax = plt.subplots(figsize=kwargs.pop('figsize', (8, 5)))
+    ratio = details.get('saturation_ratio', 0.95)
+    splits = sorted(runs['split_id'].unique())
+    colours = sns.color_palette(n_colors=max(len(splits), 1))
+    for colour, split in zip(colours, splits):
+        fits = runs[runs['split_id'] == split]
+        ax.scatter(fits['embedding_dim'], fits['mi'], color=colour, alpha=0.35, s=18,
+                   edgecolors='none')
+        curve = fits.groupby('embedding_dim')['mi_curve'].first().sort_index()
+        ax.plot(curve.index, curve.values, '-o', color=colour, ms=4,
+                label=f'split {split}' if len(splits) > 1 else 'best restart, running maximum')
+        plateau = (details.get('plateau') or {}).get(split)
+        if plateau is not None:
+            ax.axhline(ratio * plateau, color=colour, linestyle=':', linewidth=1)
+        reading = (details.get('dimension_at_most_per_split') or {}).get(split)
+        if reading is not None:
+            ax.axvline(reading, color=colour, linestyle='--', linewidth=1)
+    ks = sorted(runs['embedding_dim'].unique())
+    ax.set_xscale('log', base=2)
+    ax.set_xticks(ks)
+    ax.set_xticklabels([str(k) for k in ks])
+    ax.set_xlabel('embedding dimension', fontsize=11)
+    ax.set_ylabel(f'MI ({units})', fontsize=11)
+    reading = details.get('dimension_at_most')
+    ax.set_title(kwargs.pop('title', f'at most {reading} embedding dimensions carry '
+                                     f'{ratio:.0%} of the MI'), fontsize=12)
+    ax.plot([], [], color='grey', linestyle=':', label=f'{ratio:.0%} of the plateau')
+    ax.plot([], [], color='grey', linestyle='--', label='reading')
+    ax.legend(fontsize=8)
     ax.grid(True, linestyle=':')
     sns.despine(ax=ax)
-
-    if overlay_mi and 'mi_mean' in df.columns:
-        ax2 = ax.twinx()
-        ax2.plot(df['sigma_add'], df['mi_mean'], 'd--', color='gray', alpha=0.7, label='MI')
-        ax2.set_ylabel('MI')
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2, fontsize=9)
-    else:
-        ax.legend(fontsize=9)
-
+    if created_fig:
+        plt.tight_layout()
     if show:
         plt.show()
     return ax
@@ -339,10 +323,11 @@ def plot_noise_ladder(ladder_df: pd.DataFrame, ax: Optional[plt.Axes] = None,
 
 def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dict[str, Any],
                              ax: Optional[plt.Axes] = None, units: str = 'bits',
-                             show: bool = True, **kwargs):
+                             show: bool = True, label: Optional[str] = None,
+                             color: Optional[str] = None, **kwargs):
     """Plots the results of a rigorous, bias-corrected analysis.
 
-    This function visualizes the extrapolation fit used for bias correction.
+    This function visualises the extrapolation fit used for bias correction.
     It shows the raw MI estimates for each data subset size (gamma), the mean
     MI at each gamma, and the final linear fit extrapolated to an infinite
     dataset size (gamma=0).
@@ -364,29 +349,66 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     show : bool, optional
         Whether to call ``plt.show()`` at the end.  Set to ``False`` when
         embedding this plot in a larger figure.  Defaults to ``True``.
-    """
-    if ax is None: fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    label : str, optional
+        Name for this result, used when overlaying several fits (e.g. from
+        ``Results.compare()``). If given, the raw points/mean line/fit
+        line/corrected-MI marker collapse to a single legend entry under this
+        label instead of each carrying its own generic description. Defaults
+        to None (single-result appearance: three descriptive legend entries).
+    color : str, optional
+        Colour for all of this result's plotted elements (raw points, mean
+        line, fit line, corrected-MI marker). If None, uses the original
+        single-result scheme (grey points, black mean line, red fit/marker).
+        Defaults to None.
 
-    sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color='gray', alpha=0.5)
-    agg = raw_results_df.groupby('gamma')['train_mi'].mean().reset_index()
-    ax.plot(agg['gamma'] - 1, agg['train_mi'], 'o-', color='black', label='Mean MI per Gamma')
+    Returns
+    -------
+    plt.Axes
+    """
+    created_fig = ax is None
+    if created_fig:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+
+    raw_color = 'gray' if color is None else color
+    mean_color = 'black' if color is None else color
+    fit_color = 'red' if color is None else color
+
+    sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color=raw_color, alpha=0.5)
+    # The mean per gamma uses the rungs the fit used. A rung reported as 0
+    # produced nothing and still shows as a point.
+    produced = raw_results_df[raw_results_df['train_mi'] != 0]
+    agg = produced.groupby('gamma')['train_mi'].mean().reset_index()
+
+    # A single label collapses the three elements below to one legend entry
+    # (via the proxy artist added after them) instead of three near-duplicate
+    # ones -- readable when compare() overlays several results on one ax.
+    element_label = '_nolegend_' if label is not None else 'Mean MI per Gamma'
+    ax.plot(agg['gamma'] - 1, agg['train_mi'], 'o-', color=mean_color, label=element_label)
 
     slope, intercept = corrected_result['slope'], corrected_result['mi_corrected']
     mi_error, gammas_used = corrected_result.get('mi_error', 0), corrected_result['gammas_used']
-    
+
     fit_x = np.array([0] + gammas_used)
-    ax.plot(fit_x - 1, slope * fit_x + intercept, 'r--', linewidth=2, label='WLS Extrapolation')
-    
-    ax.errorbar(x=-1, y=intercept, yerr=mi_error, fmt='r*', markersize=15, capsize=5,
-                label=f'Corrected MI = {intercept:.2f} ± {mi_error:.2f} {units}')
-    
+    fit_label = '_nolegend_' if label is not None else 'WLS Extrapolation'
+    ax.plot(fit_x - 1, slope * fit_x + intercept, linestyle='--', color=fit_color,
+             linewidth=2, label=fit_label)
+
+    errorbar_label = ('_nolegend_' if label is not None
+                       else f'Corrected MI = {intercept:.2f} ± {mi_error:.2f} {units}')
+    ax.errorbar(x=-1, y=intercept, yerr=mi_error, marker='*', linestyle='None',
+                color=fit_color, markersize=15, capsize=5, label=errorbar_label)
+
+    if label is not None:
+        # Zero-length proxy artist purely to give this result one legend entry.
+        ax.plot([], [], marker='*', linestyle='--', color=fit_color, markersize=10, label=label)
+
     ax.set_xticks(np.unique(raw_results_df['gamma']) - 1)
     ax.set_xticklabels(np.unique(raw_results_df['gamma']))
     ax.set_xlabel(r"Number of Subsets ($\gamma$)"); ax.set_ylabel(f"MI Estimate ({units})")
     ax.set_title("Bias Correction via Extrapolation"); ax.legend()
     ax.grid(True, linestyle=':'); sns.despine(ax=ax)
 
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
     if show:
         plt.show()
@@ -401,25 +423,25 @@ def plot_embeddings(
     ax: Optional[plt.Axes] = None,
     **kwargs,
 ) -> plt.Axes:
-    """Visualize learned embeddings in 2-D or 3-D.
+    """Visualise learned embeddings in 2-D or 3-D.
 
     Parameters
     ----------
     z : np.ndarray
-        Embedding array of shape ``(n_samples, embed_dim)``.
+        Embedding array of shape ``(n_samples, embedding_dim)``.
     color : np.ndarray, optional
         Length-n array of values used for colouring points.  Continuous arrays
-        produce a colormap; integer / string arrays produce a discrete palette
+        produce a colour map; integer / string arrays produce a discrete palette
         with a legend.  Defaults to None (uniform colour).
     method : {'auto', 'none', 'pca', 'tsne', 'umap'}, default='auto'
         Dimensionality-reduction method applied before plotting:
 
-        - ``'none'`` — use the first ``dim`` dimensions directly (requires
-          ``embed_dim >= dim``).
-        - ``'pca'`` — sklearn PCA (always available).
-        - ``'tsne'`` — sklearn t-SNE.
-        - ``'umap'`` — UMAP (requires the ``umap-learn`` package).
-        - ``'auto'`` — uses ``'none'`` if ``embed_dim <= dim``, else tries
+        - ``'none'``: use the first ``dim`` dimensions directly (requires
+          ``embedding_dim >= dim``).
+        - ``'pca'``: sklearn PCA (always available).
+        - ``'tsne'``: sklearn t-SNE.
+        - ``'umap'``: UMAP (requires the ``umap-learn`` package).
+        - ``'auto'``: uses ``'none'`` if ``embedding_dim <= dim``, else tries
           ``'umap'``, falls back to ``'pca'``.
     dim : {2, 3}, default=2
         Output dimensionality: 2 → 2-D scatter, 3 → 3-D scatter.
@@ -446,28 +468,27 @@ def plot_embeddings(
 
     z = np.asarray(z)
     if z.ndim != 2:
-        raise ValueError(f"z must be 2-D (n_samples, embed_dim), got shape {z.shape}.")
-    n_samples, embed_dim = z.shape
+        raise ValueError(f"z must be 2-D (n_samples, embedding_dim), got shape {z.shape}.")
+    n_samples, embedding_dim = z.shape
 
     if dim not in (2, 3):
         raise ValueError(f"dim must be 2 or 3, got {dim}.")
 
     # --- Resolve method ---
     if method == 'auto':
-        if embed_dim <= dim:
+        if embedding_dim <= dim:
             method = 'none'
         else:
-            try:
-                import umap  # noqa: F401
-                method = 'umap'
-            except ImportError:
-                method = 'pca'
+            import importlib.util
+            # Check availability without importing yet -- the 'umap' branch
+            # below does the real import when it's actually used.
+            method = 'umap' if importlib.util.find_spec('umap') is not None else 'pca'
 
     # --- Apply dimensionality reduction ---
     if method == 'none':
-        if embed_dim < dim:
+        if embedding_dim < dim:
             raise ValueError(
-                f"method='none' requires embed_dim >= dim, but embed_dim={embed_dim} < dim={dim}."
+                f"method='none' requires embedding_dim >= dim and has embedding_dim={embedding_dim} < dim={dim}."
             )
         z_plot = z[:, :dim]
     elif method == 'pca':
@@ -475,7 +496,7 @@ def plot_embeddings(
             from sklearn.decomposition import PCA
         except ImportError:
             raise ImportError(
-                "PCA requires scikit-learn. Install it with: pip install neural_mi[sklearn]"
+                'PCA requires scikit-learn. Install it with: pip install "neural_mi[viz]"'
             )
         z_plot = PCA(n_components=dim).fit_transform(z)
     elif method == 'tsne':
@@ -483,7 +504,7 @@ def plot_embeddings(
             from sklearn.manifold import TSNE
         except ImportError:
             raise ImportError(
-                "t-SNE requires scikit-learn. Install it with: pip install neural_mi[sklearn]"
+                't-SNE requires scikit-learn. Install it with: pip install "neural_mi[viz]"'
             )
         z_plot = TSNE(n_components=dim, **{k: v for k, v in kwargs.items()
                                             if k in ('perplexity', 'learning_rate', 'n_iter',
@@ -515,9 +536,10 @@ def plot_embeddings(
 
     # --- Resolve colour ---
     if color is None:
+        # Without values to map there is no colormap to apply, and matplotlib
+        # warns about one it would ignore. A cmap the caller passed stays in.
         c_arr = None
-        cmap = kwargs.pop('cmap', 'viridis')
-        scatter_kwargs = {'c': None, 'cmap': cmap, **kwargs}
+        scatter_kwargs = dict(kwargs)
         legend_handles = None
     else:
         color = np.asarray(color)
@@ -540,6 +562,7 @@ def plot_embeddings(
             legend_handles = None
 
     # --- Create axes ---
+    created_fig = ax is None
     if ax is None:
         if dim == 3:
             fig = plt.figure(figsize=(8, 6))
@@ -567,7 +590,7 @@ def plot_embeddings(
         ax.set_title(title)
 
     sns.despine(ax=ax)
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
 
     return ax
@@ -598,7 +621,7 @@ def plot_cross_correlation(
         embedding this plot in a larger figure.  Defaults to ``True``.
     xlim : tuple of (float, float), optional
         X-axis limits ``(left, right)``.  When ``None`` the full lag range is
-        shown (previously hard-coded as ``(-100, 100)``).
+        shown.
 
     Returns
     -------
@@ -608,10 +631,11 @@ def plot_cross_correlation(
     lags = np.arange(-len(x[0]) // 2 + 1, len(x[0]) // 2 + 1)
     corr = correlate(zscore(y[0]), zscore(x[0]), mode='same') / len(x[0])
 
-    if ax is None:
+    created_fig = ax is None
+    if created_fig:
         fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(lags, corr)
-    ax.axvline(true_lag + 1, color='r', linestyle='-.', label=f'True Lag ({true_lag})')
+    ax.axvline(true_lag, color='r', linestyle='-.', label=f'True Lag ({true_lag})')
     ax.axvline(lags[np.argmax(corr)], color='g', linestyle=':',
                label=f'Found Lag ({lags[np.argmax(corr)]})')
     ax.set_xlabel('Lag')
@@ -620,7 +644,7 @@ def plot_cross_correlation(
     if xlim is not None:
         ax.set_xlim(xlim)
     ax.legend()
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
     if show:
         plt.show()
@@ -628,6 +652,7 @@ def plot_cross_correlation(
 
 def analyze_mi_heatmap(
     results_df,
+    mi_col: str = 'mi_mean',
     absolute_mi_threshold=0.2,
     contour_rise_fraction=0.1,
     radius_multiplier=1.2,
@@ -645,7 +670,16 @@ def analyze_mi_heatmap(
     Parameters
     ----------
     results_df : pd.DataFrame
-        DataFrame with columns ``'lag'``, ``'window_size'``, and ``'mi'``.
+        DataFrame with columns ``'lag'``, ``'window_size'``, and ``mi_col``.
+        ``mode='lag'`` sweeps ``lag_range`` internally but does not itself
+        sweep ``window_size`` (it is a processor parameter, not one
+        ``mode='lag'``'s own ``sweep_grid`` forwards). Build this shape by
+        calling ``mode='lag'`` once per ``window_size``, tagging each
+        resulting ``result.dataframe`` with that value, and concatenating.
+    mi_col : str, optional
+        Name of the MI column in ``results_df``. Defaults to ``'mi_mean'``,
+        the column produced by sweep-style aggregation. Pass ``'mi'`` (or
+        another column name) if plotting a differently-shaped DataFrame.
     absolute_mi_threshold : float, optional
         Absolute MI value for the "significant" contour.  Defaults to 0.2.
     contour_rise_fraction : float, optional
@@ -654,10 +688,10 @@ def analyze_mi_heatmap(
     radius_multiplier : float, optional
         Scale factor for the Parsimonious Circle radius.  Defaults to 1.2.
     true_lag : float, optional
-        Known true lag — drawn as a reference box when provided together with
+        Known true lag, drawn as a reference box when provided together with
         ``history_duration``.
     history_duration : float, optional
-        Known true history duration — drawn as a reference box when provided
+        Known true history duration, drawn as a reference box when provided
         together with ``true_lag``.
     ax : plt.Axes, optional
         Axes to draw on.  When ``None`` a new figure is created internally.
@@ -672,7 +706,7 @@ def analyze_mi_heatmap(
         contour is found and the function exits early.
     """
     # --- 1. Data Preparation ---
-    heatmap_data = results_df.pivot(index='window_size', columns='lag', values='mi')
+    heatmap_data = results_df.pivot(index='window_size', columns='lag', values=mi_col)
     lags = heatmap_data.columns.values
     windows = heatmap_data.index.values
 
@@ -692,10 +726,11 @@ def analyze_mi_heatmap(
                 causal_contour_c, causal_contour_c,
             )
     else:
-        _logger.info("Causal Contour Analysis: lag=0 not found — skipping Causal Contour estimation.")
+        _logger.info("Causal Contour Analysis: lag=0 not found, skipping Causal Contour estimation.")
 
     # --- 3. Create the main figure for all analysis ---
-    if ax is None:
+    created_fig = ax is None
+    if created_fig:
         fig, ax = plt.subplots(figsize=(11, 8))
 
     lag_edges = np.concatenate([lags - (lags[1] - lags[0])/2, [lags[-1] + (lags[1] - lags[0])/2]])
@@ -709,18 +744,25 @@ def analyze_mi_heatmap(
     cs = ax.contour(lags, windows, heatmap_data.values, levels=[absolute_mi_threshold],
                     colors='red', linewidths=2.5, linestyles='-')
 
-    if not cs.allsegs[0]:
-        _logger.warning("No significant MI contour found at threshold %.3f — try a lower value.",
+    # A non-empty allsegs[0] list can still contain only degenerate (empty or
+    # single-point) segments -- e.g. a threshold that only grazes the grid at
+    # isolated points -- so check the picked segment's own size too, not just
+    # whether the list itself is non-empty.
+    significant_contour_points = (
+        np.array(max(cs.allsegs[0], key=len)) if cs.allsegs[0] else np.empty((0, 2))
+    )
+
+    if significant_contour_points.size == 0:
+        _logger.warning("No significant MI contour found at threshold %.3f, try a lower value.",
                         absolute_mi_threshold)
         ax.set_title('Parsimony-Informed Topological Analysis (No Significant Contour Found)')
         ax.set_xlabel('Lag (Timepoints)')
         ax.set_ylabel('Window Size (Timepoints)')
         if show:
-            plt.tight_layout()
+            if created_fig:
+                plt.tight_layout()
             plt.show()
         return ax
-
-    significant_contour_points = np.array(max(cs.allsegs[0], key=len))
 
     midpoint, radius = None, None
     if causal_contour_c is not None:
@@ -801,7 +843,7 @@ def analyze_mi_heatmap(
     if len(windows) < 25:
         ax.set_yticks(windows)
 
-    if 'fig' in locals():
+    if created_fig:
         plt.tight_layout()
     if show:
         plt.show()

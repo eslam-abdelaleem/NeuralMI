@@ -1,23 +1,23 @@
 # neural_mi/data/views.py
 import torch
 import numpy as np
-from typing import List, Optional, Tuple
 
-from .handler import PairedTemporalDataset
+from .handler import AlignedStreams
 from neural_mi.logger import logger
 
 
 class SubsetView:
     """
     Lightweight view into a PairedDataset or PairedTemporalDataset without copying data.
-    Primarily used to keep track of indexing by time for temporal data. 
-    Will automatically translate between window indices and actual times and sustain.
 
-    Subset by indices, but then time shift data? This will automatically update 
-    when temporal windows change
+    Tracks a subset by window index (static data) or by time region (temporal
+    data); the two representations are kept in sync with each other and with
+    the underlying dataset's windows. When temporal windows are rebuilt (e.g.
+    a time shift), a view holding `times` recomputes its `indices` from the
+    dataset's current window set automatically, via `_on_dataset_updated`.
 
-    Note that if a time shift is applied to temporal data, indexing times will be shifted 
-    by however much x_dataset was shifted by. 
+    If a time shift is applied to the underlying temporal data, this view's
+    stored `times` are shifted by the same offset so indexing stays aligned.
     """
     
     def __init__(self, dataset, indices=None, times=None, channels_x=None, channels_y=None,
@@ -39,7 +39,7 @@ class SubsetView:
             Channel indices to select from Y data
         max_index_reduction : float, optional
             Maximum tolerated fractional drop in the number of valid windows
-            after a dataset rebuild (e.g. due to random_time_shifting).
+            after a dataset rebuild (e.g. due to shift_time).
             If the window count drops by more than this fraction, a warning is
             emitted with the old and new counts. Default is 0.05 (5%).
             Set to 1.0 to suppress warnings entirely.
@@ -47,7 +47,7 @@ class SubsetView:
         self.dataset = dataset
         self.channels_x = channels_x
         self.channels_y = channels_y
-        self.is_temporal = isinstance(dataset, PairedTemporalDataset)
+        self.is_temporal = isinstance(dataset, AlignedStreams)
         self.time_offset = 0
         self.max_index_reduction = max_index_reduction
         
@@ -110,11 +110,17 @@ class SubsetView:
         if window_times is None or len(window_times) == 0:
              self.indices = torch.tensor([], device='cpu', dtype=torch.long)
         else:
-            # Use 'right' for start to include windows starting at or before the start time
-            # (conceptually we want windows overlapping the interval, so windows starting before 'start'
-            # but ending after 'start' are covered if we just pick based on window start?
-            # Actually, standard behavior: Select windows whose start times are in [start, end).
-            # If we want strict overlap, it's more complex. Here we approximate by window starts.)
+            # Selection uses window START time only, not each window's full
+            # [start, start+window_size) span. The included range runs from the
+            # window whose start is the LARGEST value <= query_start, through the
+            # window whose start is the LARGEST value < query_end. For
+            # non-overlapping windows (step_size >= window_size) this exactly
+            # matches true span-overlap with [query_start, query_end). For
+            # overlapping windows (step_size < window_size), only that single
+            # nearest preceding window is used as the start of the range -- an
+            # earlier window whose span also overlaps the query is excluded even
+            # though its start precedes query_start, because window_size isn't
+            # available here to test spans directly.
 
             # Using 'right' for start: finds index i where window_times[i] > start.
             # We subtract 1 to get index where window_times[i] <= start.
@@ -172,7 +178,7 @@ class SubsetView:
         If the number of valid windows drops by more than
         `max_index_reduction` (default 5%) after the rebuild, a warning is
         emitted with the old and new counts. This makes silent dataset shrinkage
-        visible when random_time_shifting pushes windows out of valid range.
+        visible when shift_time pushes windows out of valid range.
         """
         if not self.is_temporal or self.times is None:
             return
@@ -193,11 +199,10 @@ class SubsetView:
                 logger.warning(
                     f"SubsetView: window count dropped from {old_count} to "
                     f"{new_count} ({reduction:.1%} reduction) after dataset "
-                    f"rebuild. This usually means random_time_shifting moved "
-                    f"windows outside the valid recording range. Consider "
-                    f"reducing the shift magnitude, or set "
-                    f"max_index_reduction > {self.max_index_reduction:.0%} "
-                    f"to suppress this warning."
+                    f"rebuild. This usually means shift_time moved "
+                    f"windows outside the valid recording range. Reduce the "
+                    f"shift magnitude or set max_index_reduction above "
+                    f"{self.max_index_reduction:.0%} to suppress this warning."
                 )
     
     def __len__(self):

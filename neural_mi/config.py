@@ -25,11 +25,12 @@ Design notes
   forced to import these classes.
 """
 from dataclasses import dataclass, fields
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 __all__ = [
     "Model", "Training", "Split", "Estimator", "Output", "Processing",
     "Rigorous", "Precision", "Lag", "Transfer", "Dimensionality", "Conditional",
+    "Interaction", "Pairwise",
     "as_config",
 ]
 
@@ -71,7 +72,7 @@ def as_config(value: Union[None, "T", Dict[str, Any]], cls: Type[T]) -> Optional
             )
         return cls(**value)
     raise TypeError(
-        f"Expected {cls.__name__}, a dict, or None; got {type(value).__name__}."
+        f"Expected {cls.__name__}, a dict or None. Got {type(value).__name__}."
     )
 
 
@@ -82,32 +83,43 @@ def as_config(value: Union[None, "T", Dict[str, Any]], cls: Type[T]) -> Optional
 @dataclass
 class Model:
     """Model architecture: embedding network + critic."""
-    embedding_model: Optional[str] = None          # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'
+    embedding_model: Optional[str] = None          # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'|'deepsets'
     embedding_dim: Optional[int] = None
     hidden_dim: Optional[Union[int, List[int]]] = None
     n_layers: Optional[int] = None
+    # The Y side follows X unless given its own. Unset means "same as X", the
+    # convention processor_type_y already uses. embedding_dim_y needs
+    # critic_type='hybrid', which concatenates the two embeddings; 'separable'
+    # takes their dot product and needs one width.
+    embedding_model_y: Optional[str] = None
+    embedding_dim_y: Optional[int] = None
+    hidden_dim_y: Optional[Union[int, List[int]]] = None
+    n_layers_y: Optional[int] = None
     n_layers_head: Optional[int] = None
     hidden_dim_head: Optional[Union[int, List[int]]] = None
     critic_type: Optional[str] = None              # 'separable'|'concat'|'hybrid'
     kernel_size: Optional[int] = None              # CNN/TCN
     bidirectional: Optional[bool] = None           # RNN
     nhead: Optional[int] = None                    # Transformer
+    branch_model: Optional[str] = None             # embedding_model='dual_branch' only: each branch's own architecture, defaults to 'gru'
     dropout: Optional[float] = None
-    norm_layer: Optional[str] = None               # 'layer'|'batch'|None
+    norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
+    bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None
     max_n_batches: Optional[int] = None            # critic chunking
     custom_critic: Optional[Any] = None            # torch.nn.Module
     custom_embedding_cls: Optional[type] = None
+    custom_embedding_cls_y: Optional[type] = None
     pytorch_predefined: Optional[str] = None       # torchvision backbone name
     pretrained: Optional[bool] = None
     use_variational: Optional[bool] = None
     beta: Optional[float] = None
     # Optional decoder / information-bottleneck head
     use_decoder: Optional[bool] = None
-    decoder_weight: Optional[float] = None
-    decoder_weight_x: Optional[float] = None
-    decoder_weight_y: Optional[float] = None
+    decoder_lambda: Optional[float] = None       # reconstruction weight measured against the MI term; effective weight is beta * lambda when variational
+    decoder_lambda_x: Optional[float] = None
+    decoder_lambda_y: Optional[float] = None
     decoder_output_activation_x: Optional[str] = None
     decoder_output_activation_y: Optional[str] = None
 
@@ -117,7 +129,7 @@ class Model:
 
 @dataclass
 class Training:
-    """Optimization loop: epochs, optimizer, scheduler, evaluation, augmentation."""
+    """Optimisation loop: epochs, optimizer, scheduler, evaluation, augmentation."""
     n_epochs: Optional[int] = None
     learning_rate: Optional[float] = None
     batch_size: Optional[int] = None
@@ -128,7 +140,7 @@ class Training:
     scheduler_params: Optional[Dict[str, Any]] = None
     gradient_clip_val: Optional[float] = None
     use_amp: Optional[Union[bool, str]] = None
-    eval_train: Optional[Union[bool, float, int]] = None
+    eval_train: Optional[Union[bool, float, int, str]] = None   # True | 'full' | 1.0 | frac | count
     peak_fraction: Optional[float] = None
     smoothing_sigma: Optional[float] = None
     median_window: Optional[int] = None
@@ -137,8 +149,8 @@ class Training:
     train_subset_size: Optional[int] = None
     lr_head_multiplier: Optional[float] = None
     save_best_model_path: Optional[str] = None
-    random_time_shifting: Optional[bool] = None
-    epochs_to_max_shift: Optional[int] = None
+    shift_time: Optional[bool] = None
+    shift_windows: Optional[bool] = None
     augmentation_params: Optional[Dict[str, Any]] = None
     augmentation_params_x: Optional[Dict[str, Any]] = None
     augmentation_params_y: Optional[Dict[str, Any]] = None
@@ -179,21 +191,19 @@ class Estimator:
 class Output:
     """Result units, spectral tracking, embedding returns, and display labels."""
     units: Optional[str] = None                    # 'bits'|'nats'
-    spectral_mode: Optional[str] = None            # 'none'|'summary'|'full'
+    track_spectral_history: Optional[bool] = None  # per-epoch pr_eig/pr_singular/spectrum
     max_index_reduction: Optional[float] = None
     return_embeddings: Optional[bool] = None
     track_embeddings: Optional[Union[bool, float, int, str]] = None
     return_rotated_embeddings: Optional[bool] = None
-    rotated_embeddings_whitening: Optional[str] = None
+    whitening: Optional[str] = None                # 'std'|'zca'|None, for spectra and rotations
     rotated_embeddings_per_epoch: Optional[bool] = None
     return_rotation_matrices: Optional[bool] = None
-    # Display-only labels (not part of base_params; carried in result.params)
-    x_name: Optional[str] = None
-    y_name: Optional[str] = None
+    # Channel labels for the pairwise heatmap (not part of base_params)
     channel_names_x: Optional[List[str]] = None
     channel_names_y: Optional[List[str]] = None
 
-    _LABEL_FIELDS = ("x_name", "y_name", "channel_names_x", "channel_names_y")
+    _LABEL_FIELDS = ("channel_names_x", "channel_names_y")
 
     def to_base_params(self) -> Dict[str, Any]:
         d = _non_none(self)
@@ -210,18 +220,28 @@ class Output:
 
 @dataclass
 class Processing:
-    """Raw-data processors for X and Y (and their time vectors)."""
+    """How each raw stream is read: its processor, parameters and clock.
+
+    ``w`` is the third stream of ``mode='conditional'``, ``'interaction'`` and
+    ``'transfer'`` and of the named quantities that take one. A stream whose
+    processor is unset reads with X's, and one whose parameters are unset reads
+    with X's parameters. Every stream of a call is built on one window grid.
+    """
     x: Optional[str] = None                        # processor_type_x
     x_params: Optional[Dict[str, Any]] = None
     y: Optional[str] = None                        # processor_type_y
     y_params: Optional[Dict[str, Any]] = None
+    w: Optional[str] = None                        # w_processor_type
+    w_params: Optional[Dict[str, Any]] = None
     x_time: Optional[Any] = None
     y_time: Optional[Any] = None
+    w_time: Optional[Any] = None
 
     def to_kwargs(self) -> Dict[str, Any]:
         return _non_none(self, rename={
             "x": "processor_type_x", "x_params": "processor_params_x",
             "y": "processor_type_y", "y_params": "processor_params_y",
+            "w": "w_processor_type", "w_params": "w_processor_params",
         })
 
 
@@ -233,12 +253,12 @@ class Processing:
 class Rigorous:
     """Parameters for ``mode='rigorous'`` bias-corrected extrapolation."""
     gamma_range: Optional[Any] = None
-    delta_threshold: Optional[float] = None
+    curvature_t_threshold: Optional[float] = None
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
-    r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
+    temporal_chunking: Optional[bool] = None
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         return _non_none(self)
@@ -251,7 +271,7 @@ class Precision:
     corrupt_target: Optional[str] = None           # 'x'|'y'|'both'
     corruption_method: Optional[str] = None        # 'rounding'|'noise'
     n_noise_samples: Optional[int] = None
-    threshold_ratio: Optional[float] = None
+    threshold_ratio: Optional[Union[float, List[float]]] = None
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         return _non_none(self)
@@ -269,33 +289,60 @@ class Lag:
 
 @dataclass
 class Transfer:
-    """Parameters for ``mode='transfer'`` transfer entropy."""
+    """Parameters for ``mode='transfer'`` transfer entropy.
+
+    ``w_data`` adds a third signal to the conditioning side, computing
+    conditional transfer entropy TE(X->Y|W) = I(Y_0; X_past | Y_past, W_past)
+    instead of plain TE(X->Y) = I(Y_0; X_past | Y_past). Leave ``w_data=None``
+    (the default) for plain transfer entropy.
+
+    ``stride`` is the distance in samples between consecutive rows of the
+    history/future arrays this mode builds. It defaults to 1, every valid position, so neighbouring rows share ``history_window - 1`` of
+    their samples.
+    """
     history_window: Optional[int] = None
     prediction_horizon: Optional[int] = None
+    stride: Optional[int] = None
     bidirectional: Optional[bool] = None
+    w_data: Optional[Any] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
-    delta_threshold: Optional[float] = None
+    curvature_t_threshold: Optional[float] = None
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
-    r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
+    # w_data is a dedicated run argument; the rest are analysis kwargs. How W
+    # is read (processor, parameters, clock) belongs to Processing.
+    _W_FIELDS = ("w_data",)
+
+    def to_w_kwargs(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}
+
     def to_analysis_kwargs(self) -> Dict[str, Any]:
-        return _non_none(self)
+        d = _non_none(self)
+        for k in self._W_FIELDS:
+            d.pop(k, None)
+        return d
 
 
 @dataclass
 class Dimensionality:
-    """Parameters for ``mode='dimensionality'`` latent-dimensionality analysis."""
+    """Parameters for ``mode='dimensionality'``: the MI against embedding
+    dimension, and the smallest embedding dimension that carries
+    ``saturation_ratio`` of it. Between X and Y when ``y_data`` is given, and
+    between two halves of X otherwise. See ``THEORY.md``.
+    """
+    embedding_dims: Optional[Union[List[int], range]] = None
+    n_restarts: Optional[int] = None
+    saturation_ratio: Optional[float] = None
+    reference_dim: Optional[int] = None
     split_method: Optional[str] = None
     n_splits: Optional[int] = None
     lag: Optional[int] = None
     channel_indices_x: Optional[List[int]] = None
-    sigma_add: Optional[Any] = None
-    sigma_add_units: Optional[str] = None
-    stabilize_counts: Optional[bool] = None
+    ceiling_mi_fraction: Optional[float] = None
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         return _non_none(self)
@@ -303,28 +350,78 @@ class Dimensionality:
 
 @dataclass
 class Conditional:
-    """Parameters for ``mode='conditional'`` conditional MI (the Z variable)."""
-    z_data: Optional[Any] = None
-    z_time: Optional[Any] = None
-    z_processor_type: Optional[str] = None
-    z_processor_params: Optional[Dict[str, Any]] = None
+    """Parameters for ``mode='conditional'`` conditional MI (the W variable).
+
+    ``align='dual_branch'`` is for the case where W genuinely differs from
+    X in window length (MI rate, instantaneous exchange, directed
+    information rate, see ``THEORY.md``), beyond the small trim tolerance
+    the default path applies. It routes W into a
+    ``DualBranchEmbedding``-based ``custom_embedding_cls`` (set separately
+    via ``Model(...)``) instead of concatenating X and W at the data level.
+    Leave unset (``None``) unless you know you need it.
+    """
+    w_data: Optional[Any] = None
+    align: Optional[str] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
-    delta_threshold: Optional[float] = None
+    curvature_t_threshold: Optional[float] = None
     min_gamma_points: Optional[int] = None
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
-    r2_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
 
-    # z_* are consumed as dedicated run arguments; the rest are analysis kwargs.
-    _Z_FIELDS = ("z_data", "z_time", "z_processor_type", "z_processor_params")
+    # w_data is a dedicated run argument; the rest are analysis kwargs. How W
+    # is read (processor, parameters, clock) belongs to Processing.
+    _W_FIELDS = ("w_data",)
 
-    def to_z_kwargs(self) -> Dict[str, Any]:
-        return {k: getattr(self, k) for k in self._Z_FIELDS if getattr(self, k) is not None}
+    def to_w_kwargs(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         d = _non_none(self)
-        for k in self._Z_FIELDS:
+        for k in self._W_FIELDS:
             d.pop(k, None)
         return d
+
+
+@dataclass
+class Interaction:
+    """Parameters for ``mode='interaction'`` interaction information (the W variable).
+
+    II = I(X,W;Y) - I(X;Y) - I(W;Y): how much shared information between X
+    and Y changes once a third population W is also observed. The one
+    quantity in the taxonomy built from three separate MI estimates combined
+    by a formula instead of a single conditional MI call. See ``THEORY.md``.
+    """
+    w_data: Optional[Any] = None
+    rigorous: Optional[bool] = None
+    gamma_range: Optional[Any] = None
+    curvature_t_threshold: Optional[float] = None
+    min_gamma_points: Optional[int] = None
+    confidence_level: Optional[float] = None
+    residual_threshold: Optional[float] = None
+    leverage_threshold: Optional[float] = None
+
+    # w_data is a dedicated run argument; the rest are analysis kwargs. How W
+    # is read (processor, parameters, clock) belongs to Processing.
+    _W_FIELDS = ("w_data",)
+
+    def to_w_kwargs(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self._W_FIELDS if getattr(self, k) is not None}
+
+    def to_analysis_kwargs(self) -> Dict[str, Any]:
+        d = _non_none(self)
+        for k in self._W_FIELDS:
+            d.pop(k, None)
+        return d
+
+
+@dataclass
+class Pairwise:
+    """Parameters for ``mode='pairwise'`` channel-pair MI matrix."""
+    pairs: Optional[List[Tuple[int, int]]] = None
+
+    def to_analysis_kwargs(self) -> Dict[str, Any]:
+        return _non_none(self)
+
+

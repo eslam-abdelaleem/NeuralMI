@@ -1,22 +1,23 @@
-API Reference
+API reference
 =============
 
-The Core `run()` Function
--------------------------
+The ``run()`` function
+----------------------
 
-The ``run()`` function is the main entry point for all analyses in the library. It is a unified interface that orchestrates data processing, model training, and results aggregation based on the specified ``mode``.
+``run()`` is the entry point for every analysis. It prepares the data, trains
+the networks and assembles the ``Results`` for the chosen ``mode``.
 
 .. autofunction:: neural_mi.run
 
-Configuration Objects
+Configuration objects
 ---------------------
 
 Every call to ``run()`` is configured with grouped, typed dataclasses. The
-**shared** configs apply to every mode; the **per-mode** configs carry options
-specific to one analysis mode. All are importable directly from ``neural_mi``
-(e.g. ``from neural_mi import Model, Training``). The signature of each class
-lists its fields; see the *Config Fields Reference* in ``NEURALMI_REFERENCE.md``
-for a description of every field.
+shared configs apply to every mode, and each per-mode config carries the options
+of one analysis mode. All are importable from ``neural_mi``, as in
+``from neural_mi import Model, Training``, and a plain ``dict`` with the same keys
+works wherever a config is accepted. :doc:`PARAMETERS` describes every field
+with its default.
 
 Shared configs:
 
@@ -35,46 +36,83 @@ Per-mode configs:
 .. autoclass:: neural_mi.Transfer
 .. autoclass:: neural_mi.Dimensionality
 .. autoclass:: neural_mi.Conditional
+.. autoclass:: neural_mi.Interaction
+.. autoclass:: neural_mi.Pairwise
 
-The Results Object
-------------------
+Named quantities (``quantities``)
+---------------------------------
 
-All calls to ``run()`` return a ``Results`` object. This object acts as a container for all the outputs of an analysis, providing convenient access to the final MI estimate, the raw data, and a built-in plotting method.
+Functions for the standard information-theoretic quantities. Each builds the
+arrays its offset pattern needs and calls ``run()``, so every one takes the
+keyword arguments of ``run()`` and returns the same ``Results``. None adds
+estimation logic of its own. All are importable from ``neural_mi``, as in
+``from neural_mi import transfer_entropy``.
+
+A quantity's own parameter (``k``, ``history_window``, ``window_size``, ``h``,
+``half_width``) takes a scalar or an iterable. An iterable runs every value, in
+parallel across ``n_workers``, and returns one ``Results`` with a configuration
+per value. ``rigorous=True`` extrapolates each repeat to infinite data.
+
+The conditional quantities are chain-rule differences of larger estimates and
+report an ``amplification_factor`` in ``result.dataframe``. :doc:`THEORY`
+explains how to read it before quoting a small value.
+
+.. automodule:: neural_mi.quantities
+   :members:
+   :undoc-members:
+
+The ``Results`` object
+----------------------
+
+Every call to ``run()`` and every named quantity returns a ``Results``.
+``runs`` holds one row per repeat, ``dataframe`` one row per configuration and
+axis value, ``mi_estimate`` the headline when there is exactly one such row,
+``details`` the structured diagnostics of each configuration, and ``params`` the
+full configuration of the call. :doc:`USING` describes each field.
 
 .. autoclass:: neural_mi.results.Results
-   :members: plot
-   :undoc-members:
+   :members:
    :show-inheritance:
 
-Data Generation (`generators`)
-------------------------------
+Saved models are reloaded with ``extract_embeddings``.
 
-This module provides functions to generate synthetic datasets with known properties. These are useful for testing estimators, validating models, and following the tutorials.
+.. autofunction:: neural_mi.extract_embeddings
+
+Data generation (``generators``)
+--------------------------------
+
+Synthetic data for testing estimators and validating models. Every generator
+reports the quantity an estimate should be checked against, whether that is a
+mutual information or a lag.
 
 .. automodule:: neural_mi.generators
-   :members: generate_correlated_gaussians, generate_nonlinear_from_latent, generate_linear_data, generate_nonlinear_data, generate_temporally_convolved_data, generate_xor_data, generate_event_related_data, generate_linear_data, generate_nonlinear_data, generate_history_data, generate_full_data
+   :members:
    :undoc-members:
 
-Visualization (`visualize`)
----------------------------
+Visualisation (``visualize``)
+-----------------------------
 
-This module contains helper functions for creating publication-quality plots of analysis results. These functions are typically called automatically by the ``Results.plot()`` method but can also be used directly.
+The functions behind ``Results.plot()`` and ``Results.animate()``, each also
+callable on its own.
 
 .. automodule:: neural_mi.visualize
-   :members: plot_sweep_curve, plot_bias_correction_fit, plot_cross_correlation, analyze_mi_heatmap
+   :members:
    :undoc-members:
 
 Logging
 -------
 
-Use this function to control the library's logging output level.
+These functions set the library's logging level and group repeated warnings.
 
+.. autofunction:: neural_mi.logger.set_verbose
 .. autofunction:: neural_mi.logger.set_verbosity
+.. autofunction:: neural_mi.logger.grouped_warnings
 
 Exceptions
 ----------
 
-These are the custom exceptions raised by the library to signal specific errors.
+The library's own exceptions, all derived from ``NeuralMIError``, and ``CombinationWarning``
+for the warnings about a quantity combined from several estimates.
 
 .. automodule:: neural_mi.exceptions
    :members:

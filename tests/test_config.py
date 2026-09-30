@@ -62,10 +62,10 @@ def test_estimator_renames():
 
 
 def test_output_units_and_labels_split():
-    o = cfg.Output(units="nats", x_name="LFP", channel_names_x=["a", "b"])
+    o = cfg.Output(units="nats", channel_names_x=["a", "b"])
     bp = o.to_base_params()
     assert bp == {"output_units": "nats"}          # units renamed, labels excluded
-    assert o.to_labels() == {"x_name": "LFP", "channel_names_x": ["a", "b"]}
+    assert o.to_labels() == {"channel_names_x": ["a", "b"]}
 
 
 def test_processing_renames():
@@ -73,9 +73,9 @@ def test_processing_renames():
     assert d == {"processor_type_x": "continuous", "processor_params_x": {"window_size": 1}}
 
 
-def test_conditional_splits_z_from_analysis():
-    c = cfg.Conditional(z_data=[1, 2], rigorous=True, confidence_level=0.9)
-    assert c.to_z_kwargs() == {"z_data": [1, 2]}
+def test_conditional_splits_w_from_analysis():
+    c = cfg.Conditional(w_data=[1, 2], rigorous=True, confidence_level=0.9)
+    assert c.to_w_kwargs() == {"w_data": [1, 2]}
     assert c.to_analysis_kwargs() == {"rigorous": True, "confidence_level": 0.9}
 
 
@@ -95,19 +95,21 @@ def test_shared_config_keys_are_valid_schema_keys(cls):
 def test_processing_keys_are_run_processor_keys():
     emitted = set(_fill_all(cfg.Processing).to_kwargs())
     expected = {"processor_type_x", "processor_params_x",
-                "processor_type_y", "processor_params_y", "x_time", "y_time"}
+                "processor_type_y", "processor_params_y", "x_time", "y_time",
+                "w_processor_type", "w_processor_params", "w_time"}
     assert emitted == expected
 
 
 @pytest.mark.parametrize("cls,mode", [
     (cfg.Precision, "precision"),
     (cfg.Lag, "lag"),
+    (cfg.Dimensionality, "dimensionality"),
 ])
 def test_mode_config_keys_are_valid_mode_kwargs(cls, mode):
-    # Precision and Lag map exactly onto MODE_KWARGS_SCHEMA. (Rigorous/Transfer/
-    # Dimensionality/Conditional also carry keys consumed directly by their
-    # analysis functions -- e.g. gamma_range, sigma_add -- so they are not
-    # asserted against the schema here; their lowering mechanics are covered above.)
+    # Precision, Lag, and Dimensionality map exactly onto MODE_KWARGS_SCHEMA.
+    # (Rigorous/Transfer/Conditional also carry keys consumed directly by their
+    # analysis functions, such as gamma_range, so they are not asserted against
+    # the schema here; their lowering is covered above.)
     emitted = set(_fill_all(cls).to_analysis_kwargs())
     allowed = set(MODE_KWARGS_SCHEMA[mode])
     unknown = emitted - allowed

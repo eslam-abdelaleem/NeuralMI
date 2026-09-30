@@ -1,9 +1,8 @@
 # tests/test_amp_and_names.py
-"""Tests for use_amp (Feature 3) and named variable support (Feature 5)."""
+"""Tests for use_amp and named variable support."""
 from dataclasses import fields
 
 import numpy as np
-import pytest
 
 import neural_mi as nmi
 from neural_mi import Model, Training, Output
@@ -18,7 +17,7 @@ def _training(**over):
 
 
 class TestAMP:
-    """Tests for the use_amp parameter (Feature 3)."""
+    """Tests for the use_amp parameter."""
 
     def test_use_amp_auto_cpu_completes(self):
         """use_amp='auto' on CPU runs without error and returns a finite MI."""
@@ -73,37 +72,13 @@ class TestAMP:
 
 
 class TestNamedVariables:
-    """Tests for x_name, y_name, channel_names_x, channel_names_y (Feature 5)."""
-
-    def test_x_name_stored_in_params(self):
-        """x_name is stored in result.params when provided."""
-        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
-        r = nmi.run(x, y, mode='estimate',
-                    model=_MODEL, training=_training(), output=Output(x_name='LFP'), n_workers=1)
-        assert r.params.get('x_name') == 'LFP'
-
-    def test_y_name_stored_in_params(self):
-        """y_name is stored in result.params when provided."""
-        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
-        r = nmi.run(x, y, mode='estimate',
-                    model=_MODEL, training=_training(), output=Output(y_name='MUA'), n_workers=1)
-        assert r.params.get('y_name') == 'MUA'
-
-    def test_both_names_stored_together(self):
-        """x_name and y_name can be provided together and both appear in params."""
-        x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
-        r = nmi.run(x, y, mode='estimate', model=_MODEL, training=_training(),
-                    output=Output(x_name='LFP', y_name='spikes'), n_workers=1)
-        assert r.params['x_name'] == 'LFP'
-        assert r.params['y_name'] == 'spikes'
+    """Tests for channel_names_x and channel_names_y."""
 
     def test_no_names_leaves_params_clean(self):
         """Omitting names does not add spurious keys to result.params."""
         x, y = nmi.generators.generate_correlated_gaussians(N, dim=2, mi=0.5)
         r = nmi.run(x, y, mode='estimate',
                     model=_MODEL, training=_training(), n_workers=1)
-        assert 'x_name' not in r.params
-        assert 'y_name' not in r.params
         assert 'channel_names_x' not in r.params
 
     def test_channel_names_x_in_pairwise_details_self(self):
@@ -113,8 +88,8 @@ class TestNamedVariables:
         r = nmi.run(x_3ch, mode='pairwise',
                     model=_MODEL, training=_training(),
                     output=Output(channel_names_x=names), n_workers=1)
-        assert r.details.get('variable_names_x') == names
-        assert r.details.get('variable_names_y') == names
+        assert r.get('variable_names_x') == names
+        assert r.get('variable_names_y') == names
 
     def test_channel_names_fallback_integer_when_omitted(self):
         """Without channel_names, pairwise details contain no variable_names keys."""
@@ -122,8 +97,8 @@ class TestNamedVariables:
         r = nmi.run(x_3ch, mode='pairwise',
                     model=_MODEL, training=_training(), n_workers=1)
         # The details should not have variable_names_x injected
-        assert 'variable_names_x' not in r.details
-        assert 'variable_names_y' not in r.details
+        assert 'variable_names_x' not in r.details[0]
+        assert 'variable_names_y' not in r.details[0]
 
     def test_channel_names_are_output_fields(self):
         """channel_names_x/y are fields on the Output config."""

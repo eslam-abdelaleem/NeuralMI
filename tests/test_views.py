@@ -57,7 +57,7 @@ class TestSubsetView:
         # Times must be (n_regions, 2)
         times = np.array([[0, 20]])
         view = SubsetView(temporal_dataset, times=times)
-        # With the fix (side='left' for end), end=20 should align with start of window 2 [20, 30).
+        # The end is searched with side='left', so end=20 aligns with the start of window 2 [20, 30).
         # 20 <= 20. index 2. Range 0 to 2 (exclusive). indices 0, 1.
         # So len should be 2.
         assert len(view) == 2

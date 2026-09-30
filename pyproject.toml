@@ -1,55 +1,92 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "neural_mi"
 version = "1.0.0"
-description = "A Python toolbox for rigorous mutual information estimation in neuroscience"
+description = "A Python toolbox for information-theoretic analysis of neural data at scale"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Eslam Abdelaleem" },
+    { name = "Leo Wood" },
+    { name = "Audrey Sederberg" },
 ]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+# Each floor is the first release that works with numpy 1.26 and numpy 2. torch
+# needs 2.4 for nn.RMSNorm. CI runs the test suite with every package at its floor
+# (the floors job in .github/workflows/tests.yml) and at its latest release.
 dependencies = [
-    "matplotlib>=3.5.0",
-    "numpy>=1.23.0",
-    "pandas>=1.4.0",
-    "scipy>=1.9.0",
-    "seaborn>=0.12.0",
-    "statsmodels>=0.13.0",
-    "torch>=2.0.0",
+    "matplotlib>=3.8.4",
+    "numpy>=1.26.0",
+    "pandas>=2.2.2",
+    "scipy>=1.13.0",
+    "seaborn>=0.13.2",
+    "statsmodels>=0.14.2",
+    "torch>=2.4.0",
     "tqdm>=4.60.0",
 ]
 
 [project.optional-dependencies]
-# Extra plotting backends used only by visualisation helpers
-# (PCA / t-SNE / UMAP embedding projections). Both are imported lazily
-# inside neural_mi.visualize, so the core library runs without them.
-# Install with: pip install "neural_mi[viz]"
+# Each option adds one capability, and options combine, as in ".[viz,tutorials]".
+#
+# PCA, t-SNE and UMAP projections of the learned embeddings. neural_mi.visualize
+# imports both packages only when one of those plots is drawn.
 viz = [
-    "scikit-learn>=1.0.0",
-    "umap-learn>=0.5.0",
+    "scikit-learn>=1.4.2",
+    "umap-learn>=0.5.6",
 ]
-# torchvision is required only for PretrainedBackboneEmbedding.
-# Install with: pip install "neural_mi[vision]"
-vision = ["torchvision>=0.15.0"]
-# Everything needed to develop, test, and build the docs.
-# Install with: pip install -e ".[dev]"
-dev = [
-    "neural_mi[viz]",
+# Pretrained image networks as encoders (embedding_model='pretrained_backbone').
+vision = ["torchvision>=0.19.0"]
+# Running the tutorial notebooks. benchmark-mi provides the KSG estimator that
+# notebook 01 compares against, and it brings in JAX, a large install.
+tutorials = [
+    "jupyterlab>=4.0",
+    "ipykernel>=6.0.0",
+    "benchmark-mi>=0.1.3",
+]
+# Building the documentation site. nbsphinx also needs pandoc, which comes from
+# the system package manager (brew install pandoc, apt install pandoc).
+docs = [
+    "sphinx>=7.2,<8.0",
+    "sphinx-rtd-theme>=2.0,<3.0",
+    "sphinx-copybutton>=0.5,<0.6",
+    "myst-parser>=2.0,<3.0",
+    "nbsphinx>=0.9.3,<0.10",
+    "nbsphinx-link>=1.3,<2.0",
+    "linkify-it-py>=2.0",
+]
+# Running the test suite, with the optional packages its tests exercise.
+test = [
+    "neural_mi[viz,vision]",
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
     "pytest-xdist>=3.0.0",
-    "ipykernel>=6.0.0",
-    "myst-parser>=0.18.0",
+]
+# Everything above, for working on the library: pip install -e ".[dev]"
+dev = [
+    "neural_mi[test,tutorials,docs]",
 ]
 
 [project.urls]
 Homepage = "https://github.com/eslam-abdelaleem/NeuralMI"
 Documentation = "https://eslam-abdelaleem.github.io/NeuralMI/"
 Repository = "https://github.com/eslam-abdelaleem/NeuralMI"
+Issues = "https://github.com/eslam-abdelaleem/NeuralMI/issues"
+Changelog = "https://github.com/eslam-abdelaleem/NeuralMI/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["neural_mi*"]

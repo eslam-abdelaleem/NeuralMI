@@ -1,0 +1,24 @@
+name: Feature request
+description: A quantity, mode, architecture or diagnostic that is missing
+labels: [enhancement]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: The question you are trying to answer
+      description: |
+        What you want to measure, rather than the API you imagine for it. A
+        quantity is often already reachable through an offset pattern that
+        `reference/USING.md` documents.
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: What the data looks like
+      description: Shapes, sampling rates, and how much of it you have.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried
+      description: Which existing mode or quantity came closest, and where it fell short.

@@ -5,14 +5,13 @@ This module contains the `run_lag_analysis` function, which orchestrates the
 process of estimating mutual information between two variables, X and Y, across
 a range of specified time lags using the nonlinear cross-correlation method.
 """
-import torch
-import numpy as np
-import pandas as pd
 from typing import List, Dict, Any, Optional
 
-from neural_mi.analysis.sweep import ParameterSweep, _product_dict
+from neural_mi.analysis.sweep import ParameterSweep, _product_dict, merge_grid_values
 from neural_mi.logger import logger
+from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import _shift_data
+from neural_mi.data.shift_windowing import n_windows_if_deferred, shift_family
 
 
 def run_lag_analysis(
@@ -59,10 +58,11 @@ def run_lag_analysis(
     """
     all_tasks = []
 
+    proc_type_x = base_params.get('processor_type_x')
     proc_type_y = base_params.get('processor_type_y')
     if proc_type_y is None:
-        proc_type_y = base_params.get('processor_type_x')
-        logger.info("`processor_type_y` not specified in `base_params`, using the same as for x.")
+        proc_type_y = proc_type_x
+        logger.info("Processing(y=...) is not set and Y is read with X's processor.")
 
     # Infer sample_rate from processor_params to resolve unit ambiguity
     sample_rate = base_params.get('processor_params_x', {}).get('sample_rate', None)
@@ -83,13 +83,13 @@ def run_lag_analysis(
                     f"[{int(round(min(lag_range)*sample_rate))}, "
                     f"{int(round(max(lag_range)*sample_rate))}] samples.")
     else:
-        logger.info(f"Lag units: samples (no sample_rate provided).")
+        logger.info("Lag units: samples (no sample_rate provided).")
 
     # Pre-compute shifted arrays for all lags to measure n_windows per lag,
     # then optionally equalize to the minimum across lags.
     shifted_pairs = {}
     for lag in lag_range:
-        x_sh, y_sh = _shift_data(x_data, y_data, lag, proc_type_y, sample_rate=sample_rate)
+        x_sh, y_sh = _shift_data(x_data, y_data, lag, proc_type_x, proc_type_y, sample_rate=sample_rate)
         shifted_pairs[lag] = (x_sh, y_sh)
 
     def _n_items(data):
@@ -110,20 +110,29 @@ def run_lag_analysis(
 
     for lag in lag_range:
         x_shifted, y_shifted = shifted_pairs[lag]
-        n_windows_this_lag = _n_items(x_shifted)
-
         for i, other_params in enumerate(param_combinations):
-            task_params = {**base_params, **other_params, 'lag': lag,
-                           '_n_windows_lag': n_windows_this_lag}
+            task_params = merge_grid_values(base_params, other_params)
+            # The window count this lag trains on, for a task that does not
+            # report its own. Counted with the configuration's parameters,
+            # since a grid over window_size or step_size changes it. Only a
+            # regular grid can be counted before windowing.
+            n_windows_this_lag = None
+            if shift_family(proc_type_x, proc_type_y) == 'regular':
+                n_windows_this_lag = n_windows_if_deferred(x_shifted, y_shifted, task_params)
+            task_params.update({'lag': lag, '_n_windows_lag': n_windows_this_lag})
+            task_params = with_model_labels(task_params, **other_params, lag=lag)
             run_id = other_params.get('run_id', f"lag{lag}_combo{i}")
             all_tasks.append((x_shifted, y_shifted, task_params, run_id))
 
     sweep_runner = ParameterSweep(x_data=None, y_data=None, base_params=base_params)
     results_list = sweep_runner._run_parallel(all_tasks, n_workers=n_workers)
 
-    # Propagate n_windows into each result dict so it appears in the dataframe
+    # Every lag reports the windows it trained on: the task's own count when it
+    # windowed the data itself, the count made above otherwise.
     for result, task in zip(results_list, all_tasks):
         if isinstance(result, dict):
-            result['n_windows'] = task[2].get('_n_windows_lag', None)
+            if result.get('n_windows_built') is None:
+                result['n_windows_built'] = task[2].get('_n_windows_lag')
+            result.pop('_n_windows_lag', None)
 
     return results_list

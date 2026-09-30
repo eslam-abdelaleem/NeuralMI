@@ -1,6 +1,5 @@
 # tests/test_pairwise.py
 """Tests for the pairwise MI matrix analysis mode."""
-import pytest
 import numpy as np
 import pandas as pd
 import torch
@@ -44,7 +43,7 @@ class TestPairwiseMI:
         for col in ('ch_x', 'ch_y', 'mi_mean', 'mi_std'):
             assert col in results.dataframe.columns, f"Missing column: {col}"
         assert 'mi_estimate' not in results.dataframe.columns, (
-            "Old column 'mi_estimate' should no longer be present; use 'mi_mean'."
+            "The per-pair column is 'mi_mean', as in every mode."
         )
 
     def test_pairwise_cross_returns_full_matrix(self):
@@ -70,7 +69,9 @@ class TestPairwiseMI:
             n_workers=1,
         )
         assert np.all(np.isfinite(results.dataframe['mi_mean'].values))
-        assert np.all(results.dataframe['mi_std'].values >= 0)
+        # One run per pair: there is no spread to report, so mi_std is NaN.
+        assert results.dataframe['mi_std'].isna().all()
+        assert (results.dataframe['n_runs'] == 1).all()
 
     def test_pairwise_mode_field(self):
         """Results.mode should be 'pairwise'."""
@@ -82,3 +83,64 @@ class TestPairwiseMI:
             n_workers=1,
         )
         assert results.mode == 'pairwise'
+
+    def test_pairwise_deferred_windowing_preserves_channel_identity(self):
+        """Reachability for shift_windows/shift_time defers windowing to each
+        pair's own dispatch (raw per-channel slices, not a pre-windowed
+        array). A slicing bug in that path could silently swap or misalign
+        channels; a real, channel-selective correlation structure would catch
+        it, unlike the finite-value-only checks above."""
+        np.random.seed(0)
+        torch.manual_seed(0)
+        T = 4000
+        shared = np.random.randn(T, 1).astype('float32')
+        ch0 = shared + 0.05 * np.random.randn(T, 1).astype('float32')
+        ch1 = shared + 0.05 * np.random.randn(T, 1).astype('float32')
+        ch2 = np.random.randn(T, 1).astype('float32')  # independent of ch0/ch1
+        x = np.concatenate([ch0, ch1, ch2], axis=1)
+
+        proc = nmi.Processing(x='continuous', x_params={'window_size': 10, 'step_size': 10})
+        training = Training(n_epochs=15, patience=5, batch_size=64, learning_rate=1e-3)
+        results = nmi.run(x, mode='pairwise', processing=proc,
+                          model=_MODEL, training=training,
+                          n_workers=1, show_progress=False, seed=0)
+
+        df = results.dataframe.set_index(['ch_x', 'ch_y'])
+        mi_01 = df.loc[(0, 1), 'mi_mean']
+        mi_02 = df.loc[(0, 2), 'mi_mean']
+        mi_12 = df.loc[(1, 2), 'mi_mean']
+        assert mi_01 > mi_02 and mi_01 > mi_12, (
+            f"Correlated pair (0,1)={mi_01} should exceed independent pairs "
+            f"(0,2)={mi_02}, (1,2)={mi_12} -- a channel-slicing bug in the "
+            f"deferred windowing path would break this."
+        )
+
+
+class TestEmbeddingsAreKeptPerPair:
+    """Every channel pair is its own network, so a pairwise repeat is one pair
+    and one run, and that is what its embeddings are kept under."""
+
+    @staticmethod
+    def _x():
+        rng = np.random.default_rng(0)
+        latent = rng.standard_normal((N, 2))
+        return (latent @ rng.standard_normal((2, N_CH))
+                + 0.3 * rng.standard_normal((N, N_CH))).astype(np.float32)
+
+    def test_embeddings_are_kept_per_pair_and_run(self):
+        from neural_mi import Output
+        result = nmi.run(x_data=self._x(), mode='pairwise', model=_MODEL,
+                         training=_TRAINING, output=Output(return_embeddings=True),
+                         n_workers=1, show_progress=False)
+        embeddings = result.details[0]['embeddings']
+        pairs = [(i, j) for i in range(N_CH) for j in range(i + 1, N_CH)]
+        assert sorted(embeddings) == sorted((i, j, 0) for i, j in pairs)
+        for entry in embeddings.values():
+            assert entry['embeddings_x'].shape[0] > 0
+        # The matrix itself is unaffected.
+        assert result.get('mi_matrix').shape == (N_CH, N_CH)
+
+    def test_no_embeddings_are_kept_unless_asked_for(self):
+        result = nmi.run(x_data=self._x(), mode='pairwise', model=_MODEL,
+                         training=_TRAINING, n_workers=1, show_progress=False)
+        assert 'embeddings' not in result.details[0]
