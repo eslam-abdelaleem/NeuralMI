@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/source/_static/logo/neuralmi_logo_full.png" alt="NeuralMI" width="420"></p>
+
 # NeuralMI: information-theoretic analysis of neural data at scale
 
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen)](https://eslam-abdelaleem.github.io/NeuralMI/)

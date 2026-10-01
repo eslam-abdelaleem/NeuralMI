@@ -126,7 +126,7 @@ The networks that embed X and Y and score their pairing.
 | `nhead` | `4` | Attention heads of the transformer encoder. |
 | `branch_model` | `'gru'` | Each branch's encoder under `embedding_model='dual_branch'`. |
 | `dropout` | `0.0` | Dropout after each hidden layer (MLP) or inside each block (LRU). |
-| `norm_layer` | `'auto'` | Normalisation in the MLP encoder: `'layer'`, `'batch'` or `'none'`. `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries (8% of a 6-D Gaussian carrying 3 bits). |
+| `norm_layer` | `'auto'` | Normalisation in the MLP encoder: `'layer'`, `'batch'` or `'none'`. `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries. |
 | `use_spectral_norm` | `True` | Spectral normalisation of the MLP's hidden layers. |
 | `bias` | `True` | Bias terms in the encoder's layers. |
 | `shared_encoder` | `False` | One encoder for X and Y. `mode='dimensionality'` without `y_data` uses `True` when unset. |

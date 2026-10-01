@@ -39,7 +39,7 @@ the networks and returns rows that the shared assembly layer turns into a
 | `permutation.py` | `shift_x` (moving X for a null trial), `permutation_nulls` (running the trials), `attach_nulls` (the null columns and `p_value`) |
 | `sweep.py` | `ParameterSweep`, the engine that trains one network per grid point and repeat; `amplification_factor` |
 | `task.py` | `run_training_task` (one training run from parameters to a record) and a small cache of static datasets |
-| `rigorous.py` | the gamma ladder, `_find_linear_region`, `_extrapolate_mi` and the fit diagnostics, for `mode='rigorous'` and for the rigorous difference quantities |
+| `rigorous.py` | the $\gamma$ ladder, `_find_linear_region`, `_extrapolate_mi` and the fit diagnostics, for `mode='rigorous'` and for the rigorous difference quantities |
 | `lag.py`, `precision.py`, `pairwise.py`, `dimensionality.py` | the mode-specific procedures the producers call |
 | `conditional.py`, `interaction.py`, `transfer.py` | the component trainings of the difference quantities |
 | `offsets.py` | the past and future builders of the named quantities, `grid_rows` (streams onto one grid, then rows) and `one_step_rows` (rows one time step wide, for transfer entropy) |

@@ -1,0 +1,5 @@
+/* The header is white for the logo. The phone top bar needs dark text and a dark menu icon. */
+.wy-nav-top a,
+.wy-nav-top i {
+    color: #404040;
+}

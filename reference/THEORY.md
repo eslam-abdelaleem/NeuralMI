@@ -733,8 +733,8 @@ $$
 describe how spread its spectrum is. They count constructed directions along
 with true ones. The mode uses $\mathrm{PR}_{\text{singular}}$ only to size the grid as it's less conservative.
 When twice $\mathrm{PR}_{\text{singular}}$ is at most 10 the grid is 1 to 10. Up to 20 it is 1 to 20.
-Beyond 20 it is 10 values on a log scale from 1 to twice the ratio. A reference whose ratio reaches three eighths of its size is (75\% of 2*$\mathrm{PR}_{\text{singular}}$) refitted at
-four times the ratio (4*$\mathrm{PR}_{\text{singular}}$). The grid is fitted three values at a time and stops once
+Beyond 20 it is 10 values on a log scale from 1 to twice the ratio. A reference is refitted at $4\,\mathrm{PR}_{\text{singular}}$ when
+$2\,\mathrm{PR}_{\text{singular}}$ reaches 75% of its size. The grid is fitted three values at a time and stops once
 three values in a row reach the threshold on every split. A curve that is still
 short of the threshold at the end of the grid gets one extension on a log scale
 up to the reference. `embedding_dims` replaces the grid and fits every value.
@@ -846,9 +846,7 @@ The concat critic has one network scoring each pair and no separate embedding of
 X or Y. Its variational layer sits on that network's output and turns each score
 into a draw from a Gaussian whose mean and variance the network produces. The KL
 term regularises the critic by pulling every score toward the prior. The
-information-bottleneck reading needs the separable or hybrid critic. On
-correlated Gaussians with 2.00 bits the concat critic gave 1.87 bits without the
-layer, 1.94 with it at the default $\beta$ and 1.51 at $\beta = 1$.
+information-bottleneck reading needs the separable or hybrid critic.
 
 ### Reconstruction decoders
 
