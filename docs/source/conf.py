@@ -65,9 +65,14 @@ suppress_warnings = ['misc.highlighting_failure', 'ref.ref']
 
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
+html_favicon = '_static/logo/favicon.ico'
+# The logo carries the name. Its colours read on a white header.
+html_logo = '_static/logo/neuralmi_logo_horizontal.png'
+html_css_files = ['header.css']
 html_baseurl = 'https://eslam-abdelaleem.github.io/NeuralMI/'
 html_theme_options = {
-    'logo_only': False,
+    'logo_only': True,
+    'style_nav_header_background': 'white',
     'prev_next_buttons_location': 'bottom',
     'style_external_links': True,
     'collapse_navigation': True,

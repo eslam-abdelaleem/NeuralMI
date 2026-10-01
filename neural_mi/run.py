@@ -527,7 +527,7 @@ def run(
         Already-processed data (``processing=None``) is shape
         ``(n_samples, n_channels, window_size)`` (3-D) or ``(n_samples, n_channels)``
         (2-D, treated as a trailing window size of 1).
-    mode : {'estimate','sweep','rigorous','dimensionality','lag','precision','conditional','interaction','transfer','pairwise'}
+    mode : {'estimate', 'sweep', 'rigorous', 'lag', 'precision', 'conditional', 'interaction', 'transfer', 'pairwise', 'dimensionality'}, default='estimate'
         The analysis to run.
     processing : Processing or dict, optional
         Raw-data processors, e.g. ``Processing(x='continuous', x_params={'window_size': 1})``.

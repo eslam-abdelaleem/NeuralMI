@@ -357,9 +357,7 @@ per evaluation (one per noise draw under `'noise'`).
 
 Past the threshold the curve leaves the region where the estimator can be read.
 Because the frozen critic saw only clean inputs, a lower bound such as InfoNCE
-can fall arbitrarily far below zero on the corrupted ones. On hippocampal
-position data the measured curve reached about $-100$ bits on one session and
-$-165$ bits on another, against baselines of about 3 and 2 bits. Points below
+can fall arbitrarily far below zero on the corrupted ones. Points below
 zero are reported as 0 with a warning and keep their measured values in
 `mi_raw`. The reading is the $\tau$ at which the curve crosses the threshold.
 
@@ -677,7 +675,7 @@ The width a window ends up with depends on the processor:
 | continuous | $w$ samples, covering $[t, t+w)$ |
 | categorical | the number of categories, under `encoding='majority_vote'` and `'probability'`; categories times samples under `'full_trajectory'` |
 | spike, spike times | `max_spikes_per_window`, set by the densest window |
-| spike, with `bin_size` | $w / \text{bin\_size}$ bins |
+| spike, with `bin_size` | $w / \mathrm{bin\_size}$ bins |
 
 `x_window_width` and `y_window_width` on a dataset built by `create_dataset`
 give the widths directly.
@@ -686,7 +684,7 @@ give the widths directly.
 
 A stream with a clock (`x_time`, `y_time`, `w_time`) is windowed in the clock's
 units. A continuous or categorical stream with a `sample_rate` and no clock is
-windowed in seconds on the clock $t_i = i / \text{sample\_rate}$. A continuous
+windowed in seconds on the clock $t_i = i / \mathrm{sample\_rate}$. A continuous
 or categorical stream with neither is windowed in samples. Spike times are read
 as seconds. `window_size` and `step_size` are in these units. The lags of
 `mode='lag'` are in seconds for spike data and for streams with a `sample_rate`.
@@ -1111,10 +1109,9 @@ hybrid critic then trains in about the time the separable critic takes and the
 concat critic in a few times that. The concat critic has no `embedding_dim`.
 `mode='dimensionality'` uses the hybrid critic.
 
-`Model(norm_layer='layer')` lifts the hybrid critic on wide data from 0.50 to
-1.05 of the true value (the data of tutorial 02). It also divides out each
-sample's overall scale. Where that scale carries information the estimate reads
-lower (8% on a 6-D Gaussian carrying 3 bits).
+`Model(norm_layer='layer')` helps the hybrid critic train on wide data. It also
+divides out each sample's overall scale. Where that scale carries information
+the estimate reads lower.
 
 ### Custom encoders and critics
 

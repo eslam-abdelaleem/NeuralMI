@@ -27,8 +27,7 @@ from neural_mi.logger import logger, user_stacklevel
 from neural_mi.utils import _ensure_cpu, mi_report_units
 
 # The first grid reaches twice the reference fit's participation ratio. The ratio
-# fell below the true dimension at 8 and 16 latent dimensions in the tests. The
-# factor of two leaves room for that.
+# can fall below the true dimension. The factor of two leaves room for that.
 _GRID_SMALL, _GRID_MEDIUM, _LOG_POINTS = 10, 20, 10
 # When twice the reference fit's participation ratio reaches this fraction of its
 # size, the reference may be too small to hold every direction. It is refitted at

@@ -29,7 +29,7 @@ samples they are evaluated on. A value near its ceiling may have been limited by
 the bound and not by the data.
 
 **`InfoNCE estimate is near its ceiling`**
-The reported MI is within 15% of $\log(\text{train\_eval\_size})$ or of the
+The reported MI is within 15% of $\log(\mathrm{train\_eval\_size})$ or of the
 held-out ceiling. The true value may be higher. A curve that flattens here has
 probably flattened against the bound. Raise `max_eval_samples` (and
 `train_subset_size` if set) or use the less biased `estimator='smile'` at the cost of more variance.
@@ -391,8 +391,8 @@ default is the hybrid critic.
 
 **`Dimensionality: the grid runs over embedding_dim 1 to ... because the reference fit has a participation ratio of ...`**, **`Dimensionality: the grid runs over ... values of embedding_dim from 1 to ... on a log scale`**
 The default grid reaches twice the participation ratio of the reference fit.
-The ratio ran below the true dimension in the tests (14.6 for 16 latent
-dimensions). The factor of two leaves room for that. When twice the ratio is at
+The ratio can run below the true dimension. The factor of two leaves room for
+that. When twice the ratio is at
 most 10 the grid is 1 to 10 with no message. Up to 20 it is 1 to 20.
 Past 20 it is 10 values on a log scale up to twice the ratio. The reading is
 then one of those values. Pass `embedding_dims` as a list or a range for a
@@ -434,8 +434,7 @@ reading may be too high. Raise `n_restarts`.
 **`Dimensionality: at the reference fit the held-out MI (...) is more than ... below the plateau`**
 The plateau is the training-side MI. A held-out value far below it means the
 data hold few samples for the information each dimension carries. The training
-side then keeps rising with the embedding size and pushes the reading up. In
-the tests a gap of 28% came with a reading of 20 for 16 latent dimensions. The
+side then keeps rising with the embedding size and pushes the reading up. The
 reading still bounds the dimension from above. More data tightens it.
 
 **`split_method='...' on an odd channel count`**, **`split_method='index' with unequal channel counts`**, **`split_method='...' on non-square input`**, **`split_method='...' produced unequal halves`**

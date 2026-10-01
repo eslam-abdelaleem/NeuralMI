@@ -492,8 +492,8 @@ def transfer_entropy(
 ) -> Results:
     r"""Transfer entropy :math:`\text{TE}_{X\to Y} = I(Y_0; X_{past} \mid Y_{past})`.
 
-    How much of $Y$'s present is predicted by $X$'s past beyond what $Y$'s own
-    past already predicts. Runs ``mode='transfer'``.
+    How much of :math:`Y`'s present is predicted by :math:`X`'s past beyond what
+    :math:`Y`'s own past already predicts. Runs ``mode='transfer'``.
 
     TE is a difference of two separately trained MI estimates, and on real
     recordings the difference is often small relative to both. The result's
@@ -547,8 +547,8 @@ def conditional_transfer_entropy(
     r"""Conditional transfer entropy :math:`\text{TE}_{X\to Y}(W) = I(Y_0; X_{past} \mid Y_{past}, W_{past})`.
 
     Transfer entropy with a third signal's history on the conditioning side,
-    which controls for how much of $X$'s apparent influence on $Y$ a third
-    process $W$ already explains. Runs ``mode='transfer'`` with ``w_data``.
+    which controls for how much of :math:`X`'s apparent influence on :math:`Y` a
+    third process :math:`W` already explains. Runs ``mode='transfer'`` with ``w_data``.
 
     Parameters
     ----------
