@@ -134,3 +134,47 @@ the paper is accepted, `CITATION.cff` should cite it.
 **Give the internal docstrings a language pass.** The printed messages and the
 docstrings rendered in the API reference have had one. The other docstrings are
 developer notes and have not.
+
+**Correct the sign of the block-MI offset and the direction of the history
+bias.** The docs give one sign for the offset of block MI and one direction for
+the bias of a short history in `mi_rate`. The maths fixes neither. The
+derivation and an exact Gaussian check are in the uncommitted notebook
+`notes/information_rate_derivation.ipynb`.
+
+The offset of $I_w = \bar{I}w + b$ is $b = E_X + E_Y - E_{XY}$ in terms of the
+excess entropies of $X$, of $Y$ and of the pair. Each $E$ is non-negative and
+their combination takes either sign. With independent $X_t$ and
+$Y_t = X_{t-1} + \nu_t$ the block MI is exactly $(w-1)\,I(X_0; X_0 + \nu_1)$
+and $b$ is negative. Dividing a windowed value by $w$ can then read low.
+
+For the history $h$ of $f(h) = I(X_{-L:L}; Y_0 \mid Y_{-h:-1})$ the chain rule
+gives
+
+$$
+f(h) - f(h+1) = I(X_{-L:L}; Y_{-h-1} \mid Y_{-h:-1}) - I(X_{-L:L}; Y_{-h-1} \mid Y_{-h:0}).
+$$
+
+Both terms on the right are non-negative and either can be the larger. A short
+history reads high when the memory of $Y$ comes from what it shares with $X$. It
+can read low when $Y$ carries private memory that its own past would cancel.
+With $Y = X + U$ and $U$ a slow noise independent of $X$ the value at $h = 0$
+lies below the rate. A narrow window on $X$ always reads low because adding
+variables never lowers mutual information. The advice to sweep one window past
+its knee and then the other still holds because the estimate converges to the
+rate in every case.
+
+- In "What the number is per" of `reference/THEORY.md` the sentence saying $b$
+  came out positive because the chain-rule increments decrease toward $\bar{I}$
+  gives way to the formula for $b$ and its two signs. In "Getting a rate" the
+  words "$b$ nonzero" become "$b$ generally nonzero" and the residual $b/w$
+  takes the sign of $b$.
+- In the MI rate paragraph of `reference/THEORY.md` the sentences "The two
+  windows bias the estimate in opposite directions" and "Too small an $h$ ...
+  reads high" state one case as the rule. The window on $X$ reads low in every
+  case and the history reads high or low.
+- The paragraph after the `mi_rate` example in `reference/USING.md` makes the
+  same claim.
+- In `neural_mi/quantities.py` the `half_width` entry of the `mi_rate`
+  docstring and the `ValueError` raised for two iterables make the same claim.
+  The docstring of `TestMiRateSweepsEitherWindow` in
+  `tests/test_quantities_sweep.py` repeats it.
