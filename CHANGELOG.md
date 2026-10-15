@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The terms of a difference quantity (`mode='conditional'`, `'transfer'`,
+  `'interaction'`, `rigorous=True` on them, their permutation trials, and the
+  named quantities built on them) split and evaluate the same rows whether or
+  not a seed is passed. Without a seed, each term used to draw its own split
+  and evaluation rows, so the difference compared two different training sets.
+  A call without a seed now draws one from NumPy's global state and records it
+  in `Results.params['random_seed']`, and the trainer draws its split and
+  evaluation rows from a generator of its own seeded per task, so other random
+  draws cannot desynchronise the terms.
+
 ## [1.0.0] - 2026-09-30
 
 First public release. NeuralMI estimates mutual information from neural

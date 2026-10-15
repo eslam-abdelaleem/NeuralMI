@@ -566,7 +566,9 @@ def run(
         task, and in what order, does not affect the result. Verified
         bit-identical between ``n_workers=1`` and ``n_workers=3`` for the shared
         task path, ``mode='dimensionality'``'s fits over splits, sizes and restarts, and
-        ``mode='pairwise'``'s per-pair dispatch.
+        ``mode='pairwise'``'s per-pair dispatch. Without a seed one is drawn and
+        recorded in ``Results.params['random_seed']``: the terms of a difference
+        quantity share their split and evaluation rows through it.
     verbose : bool, optional
         True logs informational messages for this call and False only warnings
         and errors. None, the default, keeps the level set by
@@ -699,6 +701,16 @@ def run(
     # Runtime / dispatch args (always forwarded).
     flat['mode'] = mode
     flat['sweep_grid'] = sweep_grid
+    # The terms of a difference quantity (conditional MI, transfer entropy,
+    # interaction information and the named quantities built on them) are
+    # separate training runs. They are trained and evaluated on the same rows
+    # only because every run draws its split, its evaluation rows and its shifts
+    # from generators seeded by the call's seed, so a call without one gets one.
+    # It is drawn from NumPy's global state, so a session seeded globally
+    # (np.random.seed) still reproduces its calls.
+    if seed is None:
+        seed = int(np.random.randint(2 ** 31))
+        logger.info(f"No seed was given: using seed={seed}, recorded in Results.params['random_seed'].")
     flat['random_seed'] = seed
     flat['verbose'] = verbose
     flat['show_progress'] = show_progress

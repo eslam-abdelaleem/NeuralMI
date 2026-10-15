@@ -134,6 +134,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # "task_seed" -- and therefore the whole run -- different on every call
     # even with an explicit, fixed random_seed and n_workers=1.
     base_seed = params.get('random_seed', None)
+    task_seed = None
     if base_seed is not None:
         import hashlib
         seed_key = params.get('_seed_key', run_id)
@@ -388,6 +389,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         n_test_blocks=params.get('n_test_blocks', 5),
         shift_time=params.get('shift_time', True),
         shift_seed=base_seed,
+        split_seed=task_seed,
         shift_windows=params.get('shift_windows', True),
         patience=params['patience'],
         smoothing_sigma=params.get('smoothing_sigma', 1.0),

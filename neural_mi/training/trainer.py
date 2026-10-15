@@ -36,16 +36,25 @@ def _ranks(sample: np.ndarray) -> List[int]:
     indices = sorted(range(len(sample)), key=lambda i: sample[i])
     return sorted(indices, key=lambda i: indices[i])
 
-def _sample_with_minimum_distance(n: int, k: int, d: int) -> np.ndarray:
-    """Sample k block start positions in [0, n) with pairwise distance >= d.
+def _sample_with_minimum_distance(n: int, k: int, d: int, rng=np.random) -> np.ndarray:
+    """Sample k block start positions in [0, n) with pairwise distance >= d, drawn from rng.
 
     Draws k values from a compressed range of size n - (k-1)*(d-1), then
     spreads them out by each value's rank so consecutive picks are always
     at least d apart. This is what keeps the blocked test-split's blocks
     from overlapping or sitting adjacent to each other.
     """
-    sample = np.random.choice(n - (k - 1) * (d - 1), k, replace=False)
+    sample = rng.choice(n - (k - 1) * (d - 1), k, replace=False)
     return np.array([s + (d - 1) * r for s, r in zip(sample, _ranks(sample))])
+
+
+def _rng_of(trainer):
+    """The generator a trainer draws its split and evaluation rows from.
+
+    Some callers use the split helpers on a bare instance or as plain functions
+    (``Trainer._create_blocked_split(None, ...)``); they get NumPy's global state.
+    """
+    return getattr(trainer, '_rng', np.random)
 
 
 def _batch_size_of(x) -> int:
@@ -103,7 +112,11 @@ class Trainer:
                  use_amp: Union[bool, str] = 'auto',
                  augmentation_params_x: Optional[Dict[str, Any]] = None,
                  augmentation_params_y: Optional[Dict[str, Any]] = None):
-        
+
+        # The split, the evaluation rows and their subsampling are drawn from
+        # self._rng: NumPy's global state, or a generator of its own once
+        # train() is given a split_seed.
+        self._rng = np.random
         """
         Parameters
         ----------
@@ -189,6 +202,7 @@ class Trainer:
               shift_time: bool = False,
               shift_windows: bool = False,
               shift_seed: Optional[int] = None,
+              split_seed: Optional[int] = None,
               patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5,
               min_improvement: float = 0.001,
               save_best_model_path: Optional[str] = None,
@@ -243,6 +257,14 @@ class Trainer:
             `_window_shifter` (`neural_mi/data/shift_windowing.py`); a
             no-op otherwise. Mutually exclusive in practice with
             `shift_time` (they gate on different dataset types).
+        shift_seed : int, optional
+            Seeds the generator the shifts are drawn from.
+        split_seed : int, optional
+            Seeds a generator of the run's own for the train/test split, the
+            evaluation rows and their subsampling. Runs given the same
+            split_seed share all three, whatever else draws random numbers
+            before or during training, which is what pairs the terms of a
+            difference quantity. Without it they come from NumPy's global state.
         patience : int, optional
             Epochs to wait for improvement before early stopping. Defaults to 10.
         smoothing_sigma : float, optional
@@ -371,6 +393,7 @@ class Trainer:
             A dictionary containing the results of the training run.
         """
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
+        self._rng = np.random.RandomState(int(split_seed) % (2 ** 31)) if split_seed is not None else np.random
         # Any bundle carrying a window grid is temporal, not only the
         # two-stream subclass: a three-stream conditional bundle has the same
         # grid and the same time_shift, and testing the subclass would leave
@@ -1164,7 +1187,7 @@ class Trainer:
 
         if n_samples > max_samples:
             # Sample once
-            idx = np.random.choice(n_samples, max_samples, replace=False)
+            idx = _rng_of(self).choice(n_samples, max_samples, replace=False)
             idx_t = torch.from_numpy(idx)
             x = _index_batch(x, idx_t)
             y = y[idx_t]
@@ -1236,7 +1259,7 @@ class Trainer:
         return hist
         
     def _create_random_split(self, n: int, frac: float) -> Tuple[np.ndarray, np.ndarray]:
-        indices = np.random.permutation(n)
+        indices = _rng_of(self).permutation(n)
         n_train = int(n * frac)
         return indices[:n_train], indices[n_train:]
 
@@ -1255,9 +1278,9 @@ class Trainer:
                 "Falling back to random split. Consider reducing n_test_blocks or "
                 "increasing your dataset size."
             )
-            indices = np.random.permutation(n)
+            indices = _rng_of(self).permutation(n)
             return indices[n_test:], indices[:n_test]
-        starts = _sample_with_minimum_distance(n - block, k, block + 1)
+        starts = _sample_with_minimum_distance(n - block, k, block + 1, _rng_of(self))
         test_idx = np.concatenate([
             np.arange(s, s + block + (1 if i < rem else 0))
             for i, s in enumerate(starts)
@@ -1331,7 +1354,7 @@ class Trainer:
         if target_size >= len(train_idx):
             return train_idx.copy()
         if not is_temporal:
-            return np.random.choice(train_idx, target_size, replace=False)
+            return _rng_of(self).choice(train_idx, target_size, replace=False)
 
         sorted_idx = np.sort(train_idx)
         breaks = np.where(np.diff(sorted_idx) > 1)[0]
@@ -1361,7 +1384,7 @@ class Trainer:
                 continue
             # A random contiguous window within the segment (not always its
             # own start), so repeated runs don't all sample the same edge.
-            offset = np.random.randint(0, len(seg) - n_take + 1)
+            offset = _rng_of(self).randint(0, len(seg) - n_take + 1)
             chosen.append(seg[offset:offset + n_take])
         return np.concatenate(chosen) if chosen else np.array([], dtype=train_idx.dtype)
 

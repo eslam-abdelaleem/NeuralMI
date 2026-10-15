@@ -31,7 +31,7 @@ The arguments of `nmi.run()` itself, beside the config objects.
 | `mode` | `'estimate'` | The analysis: `'estimate'`, `'sweep'`, `'rigorous'`, `'lag'`, `'precision'`, `'conditional'`, `'interaction'`, `'transfer'`, `'pairwise'` or `'dimensionality'`. |
 | `sweep_grid` | `None` | A dict of setting names to the values to run. A list, tuple, range or array gives one configuration per value and a single value fixes the setting. Every combination is one configuration and `run_id` in the grid repeats each one. The keys are the settings of `Model`, `Training`, `Split` and `Estimator` and the processor parameters. `Split(mode=...)`, `Split(gap_fraction=...)`, `Estimator(name=...)` and `Estimator(params=...)` are named `split_mode`, `split_gap_fraction`, `estimator_name` and `estimator_params`. |
 | `n_workers` | `1` | Worker processes. Tasks run in parallel across repeats, configurations, chunks, pairs or permutation trials. Results do not depend on the count. |
-| `seed` | `None` | Seed for Python, NumPy and PyTorch. Each task re-seeds from it and a fixed per-task key. A seeded call gives the same result at any `n_workers`. |
+| `seed` | `None` | Seed for Python, NumPy and PyTorch. Each task re-seeds from it and a fixed per-task key. A seeded call gives the same result at any `n_workers`. Without one, a seed is drawn from NumPy's global state and recorded in `Results.params['random_seed']`. |
 | `verbose` | `None` | `True` logs informational messages for the call and `False` only warnings and errors. `None` keeps the level set by `nmi.set_verbosity()`. |
 | `show_progress` | `True` | Show progress bars. |
 | `device` | `None` | Compute device, `'cpu'`, `'cuda'` or `'mps'`. `None` picks the fastest available. |

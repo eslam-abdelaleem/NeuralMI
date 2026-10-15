@@ -620,7 +620,15 @@ null because moving X would move both sides of each pair.
 configurations, lags, pairs, chunks of the rigorous ladder, splits, and
 permutation trials. With `seed` set, each task reseeds from the seed and a fixed
 key of its own. A seeded call therefore returns the same numbers at any
-`n_workers`.
+`n_workers`. A call without a seed draws one from NumPy's global state and
+records it in `result.params['random_seed']`, so passing that seed back
+reproduces the call.
+
+The terms of a difference quantity (conditional MI, transfer entropy,
+interaction information and the named quantities built on them) are separate
+trainings. They split and evaluate the same rows because every term of a repeat
+draws its split and evaluation rows from a generator seeded with the same key,
+with or without a seed passed to the call.
 
 A script that runs with `n_workers` above 1 needs a `__main__` guard. The
 workers start by re-importing the module that launched them. A top-level
