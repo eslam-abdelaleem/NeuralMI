@@ -16,10 +16,22 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `max_eval_samples` rows whose values are averaged, instead of on one random
   subset of `max_eval_samples` rows, and logs that it did. `runs` reports the
   number of blocks as `train_eval_blocks`, and the train-side ceiling is set by
-  the rows of one block. Held-out evaluation is unchanged.
+  the rows of one block.
+- `Training(test_subset_size=...)` sets how many held-out rows are evaluated at
+  every epoch: a count, `'full'` for all of them, or `None` (the default) for
+  `min(n_test, max_eval_samples)`. A set larger than `max_eval_samples` is
+  evaluated in blocks like the training side, the trainer logs it, and `runs`
+  reports `test_eval_blocks`.
 
 ### Fixed
 
+- Every epoch evaluates the same held-out rows. When the held-out set was larger
+  than `max_eval_samples`, each epoch drew a fresh random subset of it, so the
+  held-out curve that picks the epoch carried the noise of changing rows, and
+  settings that drew other random numbers first (such as `train_subset_size`)
+  changed which rows were drawn. The rows are now drawn once, right after the
+  split, from the run's own generator: one contiguous stretch per held-out block
+  for a blocked split, random rows for a random split.
 - The terms of a difference quantity (`mode='conditional'`, `'transfer'`,
   `'interaction'`, `rigorous=True` on them, their permutation trials, and the
   named quantities built on them) split and evaluate the same rows whether or

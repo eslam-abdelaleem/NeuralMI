@@ -405,6 +405,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         max_eval_samples=params.get('max_eval_samples', 5000),
         split_gap_fraction=params.get('split_gap_fraction', 0.5),
         train_subset_size=params.get('train_subset_size'),
+        test_subset_size=params.get('test_subset_size'),
         track_spectral_history=params.get('track_spectral_history', False),
         max_index_reduction=params.get('max_index_reduction', 0.05),
         eval_train=params.get('eval_train', False),

@@ -778,7 +778,8 @@ def _run_flat(
     min_gamma_points: int = 5,
     confidence_level: float = 0.68,
     max_eval_samples: int = 5000,
-    train_subset_size: Optional[int] = None,
+    train_subset_size: Optional[Union[int, str]] = None,
+    test_subset_size: Optional[Union[int, str]] = None,
     track_spectral_history: bool = False,
     max_index_reduction: float = 0.05,
     tau_grid: Optional[List[float]] = None,
@@ -929,6 +930,7 @@ def _run_flat(
         # Trainer arguments
         _inject(base_params, 'max_eval_samples', max_eval_samples)
         _inject(base_params, 'train_subset_size', train_subset_size)
+        _inject(base_params, 'test_subset_size', test_subset_size)
         _inject(base_params, 'use_spectral_norm', use_spectral_norm)
         _inject(base_params, 'gradient_clip_val', gradient_clip_val)
         _inject(base_params, 'optimizer', optimizer)

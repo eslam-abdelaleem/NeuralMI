@@ -28,7 +28,7 @@ from neural_mi.logger import user_stacklevel
 NETWORK_KEYS: Tuple[str, ...] = (
     'train_mi', 'test_mi', 'raw_train_mi', 'best_epoch',
     'conservative_epoch', 'train_mi_at_peak', 'all_mi_negative',
-    'eval_size', 'train_eval_size', 'train_eval_blocks', 'test_ceiling_mi', 'train_ceiling_mi',
+    'eval_size', 'test_eval_blocks', 'train_eval_size', 'train_eval_blocks', 'test_ceiling_mi', 'train_ceiling_mi',
     'test_saturation', 'train_saturation', 'test_trace_saturated_fraction',
     'pr_eig', 'pr_singular', 'spectrum', 'decoder_recon_loss',
     'window_retention', 'n_windows_built', 'n_windows_retained',

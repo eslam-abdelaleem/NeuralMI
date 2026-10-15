@@ -34,7 +34,7 @@ def _data(n=1200, seed=0):
 def rows(monkeypatch):
     """Every split and every set of evaluation rows the trainer draws, in order."""
     seen = {'split': [], 'eval': []}
-    split, select = Trainer._create_blocked_split, Trainer._select_train_eval_indices
+    split, select = Trainer._create_blocked_split, Trainer._select_eval_indices
 
     def spy_split(self, *args, **kwargs):
         out = split(self, *args, **kwargs)
@@ -47,7 +47,7 @@ def rows(monkeypatch):
         return out
 
     monkeypatch.setattr(Trainer, '_create_blocked_split', spy_split)
-    monkeypatch.setattr(Trainer, '_select_train_eval_indices', spy_select)
+    monkeypatch.setattr(Trainer, '_select_eval_indices', spy_select)
     return seen
 
 
@@ -64,12 +64,12 @@ CALLS = {
 def test_terms_share_their_rows_without_a_seed(rows, name):
     call, n_terms = CALLS[name]
     call(*_data())
-    assert len(rows['split']) == len(rows['eval']) == n_terms
+    assert len(rows['split']) == n_terms and len(rows['eval']) == 2 * n_terms   # held-out rows, then training rows
     train, test = rows['split'][0]
     for other_train, other_test in rows['split'][1:]:
         assert np.array_equal(train, other_train) and np.array_equal(test, other_test)
-    for other in rows['eval'][1:]:
-        assert np.array_equal(rows['eval'][0], other)
+    for i, other in enumerate(rows['eval'][2:]):
+        assert np.array_equal(rows['eval'][i % 2], other)
 
 
 def test_repeats_differ_and_pair_term_by_term(rows):

@@ -48,6 +48,12 @@ def _sample_with_minimum_distance(n: int, k: int, d: int, rng=np.random) -> np.n
     return np.array([s + (d - 1) * r for s, r in zip(sample, _ranks(sample))])
 
 
+def _blocks_of(n_rows: int, max_rows: int) -> Tuple[int, int]:
+    """Blocks of at most max_rows that n_rows are evaluated in, and the rows of the largest."""
+    n_blocks = -(-n_rows // max_rows)
+    return n_blocks, -(-n_rows // n_blocks)
+
+
 def _rng_of(trainer):
     """The generator a trainer draws its split and evaluation rows from.
 
@@ -211,7 +217,8 @@ class Trainer:
               train_indices: Optional[np.ndarray] = None,
               test_indices: Optional[np.ndarray] = None,
               max_eval_samples: int = 5000,
-              train_subset_size: Optional[int] = None,
+              train_subset_size: Optional[Union[int, str]] = None,
+              test_subset_size: Optional[Union[int, str]] = None,
               split_gap_fraction: float = 0.5,
               track_spectral_history: bool = False,
               max_index_reduction: float = 0.05,
@@ -295,15 +302,22 @@ class Trainer:
             An array of specific indices to use for the test set. If provided,
             `split_mode` and `train_fraction` are ignored.
         max_eval_samples : int, optional
-            Maximum number of samples to use when evaluating MI on the validation set.
-            If the test set is larger than this, a random subset will be used for evaluation.
-            Defaults to 5000.
-        train_subset_size : int, optional
+            The most rows a single evaluation uses, which bounds its memory.
+            A larger set is evaluated in blocks of at most this many rows whose
+            values are averaged. Defaults to 5000.
+        train_subset_size : int or 'full', optional
             Size of the fixed subset of training samples the reported,
-            training-side MI is evaluated on. Training itself uses every
-            training sample. The evaluation is further capped at
-            ``max_eval_samples``. Defaults to None, which takes
-            ``min(n_train, max_eval_samples)``.
+            training-side MI is evaluated on, or 'full' for all of them.
+            Training itself uses every training sample. Defaults to None,
+            which takes ``min(n_train, max_eval_samples)``.
+        test_subset_size : int or 'full', optional
+            Size of the fixed subset of held-out samples evaluated at every
+            epoch and at the end, or 'full' for all of them. It is drawn once,
+            right after the split, so every epoch scores the same rows and runs
+            given the same ``split_seed`` score the same rows. A blocked split
+            takes one contiguous stretch per held-out block, a random split
+            random rows. Defaults to None, which takes
+            ``min(n_test, max_eval_samples)``.
         split_gap_fraction : float, optional
             When using 'blocked' split_mode, this fraction of the data will be left as a gap between training and test blocks to reduce leakage.
         leak_check_window_size, leak_check_step : float, optional
@@ -394,7 +408,6 @@ class Trainer:
         """
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         self._rng = np.random.RandomState(int(split_seed) % (2 ** 31)) if split_seed is not None else np.random
-        self._blocked_eval = None   # (rows, blocks, rows per block) once a train-side evaluation runs in blocks
         # Any bundle carrying a window grid is temporal, not only the
         # two-stream subclass: a three-stream conditional bundle has the same
         # grid and the same time_shift, and testing the subclass would leave
@@ -474,7 +487,41 @@ class Trainer:
             raise ValueError(f"batch_size must be >= 2, got {batch_size}.")
 
         train_view = SubsetView(dataset, indices=train_idx, max_index_reduction=max_index_reduction)
-        test_view = SubsetView(dataset, indices=test_idx, max_index_reduction=max_index_reduction)
+
+        # Lock in the held-out rows every evaluation scores. Drawn once, before
+        # anything else draws from the run's generator, so every epoch scores the
+        # same rows, and the terms of a difference (same split_seed) score the
+        # same rows whatever their other settings. A blocked split takes one
+        # contiguous stretch per held-out block, a random split random rows,
+        # like the split itself.
+        if isinstance(test_subset_size, str):
+            if test_subset_size != 'full':
+                raise ValueError(
+                    f"test_subset_size={test_subset_size!r} is not a recognised value. Use an int >= 1, "
+                    f"'full' for the whole held-out set, or None for min(n_test, max_eval_samples)."
+                )
+            test_subset_size = len(test_idx)
+        if test_subset_size is not None and test_subset_size > len(test_idx):
+            warnings.warn(
+                f"test_subset_size={test_subset_size} exceeds the number of held-out samples "
+                f"({len(test_idx)}). Clamping to {len(test_idx)}.",
+                UserWarning,
+                stacklevel=user_stacklevel(),
+            )
+        actual_test_subset_size = min(test_subset_size or max_eval_samples, len(test_idx))
+        test_eval_idx = self._select_eval_indices(test_idx, actual_test_subset_size,
+                                                  is_temporal or split_mode != 'random')
+        test_eval_view = SubsetView(dataset, indices=test_eval_idx, max_index_reduction=max_index_reduction)
+        if actual_test_subset_size > max_eval_samples:
+            _blocks, _per_block = _blocks_of(actual_test_subset_size, max_eval_samples)
+            logger.warning(
+                f"Held-out MI evaluated on all {actual_test_subset_size} rows in {_blocks} blocks of at most "
+                f"{_per_block} rows at every epoch, averaged. A single evaluation is limited to "
+                f"max_eval_samples={max_eval_samples}. Each block uses its own rows as negatives, so the "
+                f"ceiling is log({_per_block}) and the precision is that of all {actual_test_subset_size} rows. "
+                f"Every epoch costs {_blocks} evaluations. Raise max_eval_samples to evaluate in fewer, "
+                f"larger blocks if memory allows."
+            )
 
         # 2. Lock in a Train Evaluation Subset (to prevent OOM/slowdown during train_mi tracking)
         # Deliberately NOT coupled to len(test_idx): the reported train-side MI's
@@ -500,7 +547,7 @@ class Trainer:
             )
         # Clamp to available training samples to avoid ValueError from np.random.choice
         actual_train_subset_size = min(actual_train_subset_size, len(train_idx))
-        train_eval_idx = self._select_train_eval_indices(train_idx, actual_train_subset_size, is_temporal)
+        train_eval_idx = self._select_eval_indices(train_idx, actual_train_subset_size, is_temporal)
         train_eval_view = SubsetView(dataset, indices=train_eval_idx, max_index_reduction=max_index_reduction)
 
         # Determine the subset for per-epoch train MI tracking (eval_train parameter)
@@ -529,8 +576,8 @@ class Trainer:
                     f"for that many samples."
                 )
             if _do_epoch_train_eval:
-                epoch_train_eval_idx = self._select_train_eval_indices(train_idx, epoch_train_n, is_temporal)
-                # Wrapped in a SubsetView (like train_view/test_view/train_eval_view)
+                epoch_train_eval_idx = self._select_eval_indices(train_idx, epoch_train_n, is_temporal)
+                # Wrapped in a SubsetView (like train_view/test_eval_view/train_eval_view)
                 # instead of indexed as a plain fixed array -- for temporal data a
                 # shift_time rebuild can shrink window_manager.n_windows (windows
                 # failing min_coverage_fraction after the shift get dropped),
@@ -632,14 +679,14 @@ class Trainer:
         if _shifting_active:
             _eval_x_source = _detach_clone(dataset.x_dataset.data)
             _eval_y_source = dataset.y_dataset.data.detach().clone()
-            _eval_test_idx = torch.as_tensor(test_idx, dtype=torch.long)
+            _eval_test_idx = torch.as_tensor(test_eval_idx, dtype=torch.long)
             _eval_train_eval_idx = torch.as_tensor(train_eval_idx, dtype=torch.long)
             if _do_epoch_train_eval:
                 _eval_epoch_train_eval_idx = torch.as_tensor(epoch_train_eval_idx, dtype=torch.long)
         else:
             _eval_x_source = dataset.x_dataset
             _eval_y_source = dataset.y_dataset
-            _eval_test_idx = test_view.indices
+            _eval_test_idx = test_eval_view.indices
             _eval_train_eval_idx = train_eval_view.indices
             if _do_epoch_train_eval:
                 _eval_epoch_train_eval_idx = epoch_train_eval_view.indices
@@ -742,7 +789,7 @@ class Trainer:
             with torch.no_grad():
                 x_test = _index_batch(_eval_x_source, _eval_test_idx)
                 y_test = _eval_y_source[_eval_test_idx, ...]
-                mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples)
+                mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples, all_rows=True)
 
                 if _do_epoch_train_eval:
                     x_etrain = _index_batch(_eval_x_source, _eval_epoch_train_eval_idx)
@@ -871,7 +918,7 @@ class Trainer:
         with torch.no_grad():
             final_test_mi = self._safe_eval_mi(
                 _index_batch(_eval_x_source, _eval_test_idx),
-                _eval_y_source[_eval_test_idx, ...], max_eval_samples)
+                _eval_y_source[_eval_test_idx, ...], max_eval_samples, all_rows=True)
             final_train_mi = self._safe_eval_mi(
                 _index_batch(_eval_x_source, _eval_train_eval_idx),
                 _eval_y_source[_eval_train_eval_idx, ...], max_eval_samples, all_rows=True)
@@ -882,23 +929,25 @@ class Trainer:
 
         # Ceiling diagnostics, for every estimator: even one without a hard
         # ceiling is informative about its distance from log(n_eval).
-        # `eval_size` is the test-side sample count, and `train_eval_size` the
+        # `eval_size` is the held-out sample count, and `train_eval_size` the
         # count behind the reported estimate (`train_mi`). They can differ, so
-        # each has its own name and ceiling.
-        _eval_size = min(len(test_idx), max_eval_samples) if len(test_idx) > 0 else None
-        # The train-side estimate is evaluated on every row of its subset, in
-        # blocks of at most max_eval_samples rows when the subset is larger. Each
-        # block's rows are its own negatives, so the rows of one block set the ceiling.
+        # each has its own name and ceiling. Each side evaluates every row of its
+        # subset, in blocks of at most max_eval_samples rows when the subset is
+        # larger. Each block's rows are its own negatives, so the rows of one
+        # block set the ceiling.
+        _eval_size = actual_test_subset_size if actual_test_subset_size > 0 else None
+        _test_blocks, _test_block_size = _blocks_of(_eval_size, max_eval_samples) if _eval_size else (1, None)
         _train_eval_size = actual_train_subset_size if actual_train_subset_size > 0 else None
-        _train_blocks = -(-actual_train_subset_size // max_eval_samples) if _train_eval_size else 1
-        _train_block_size = -(-actual_train_subset_size // _train_blocks) if _train_eval_size else None
-        _test_ceiling_mi = (np.log(_eval_size) * _scale) if _eval_size and _eval_size >= 2 else None
+        _train_blocks, _train_block_size = (_blocks_of(_train_eval_size, max_eval_samples)
+                                            if _train_eval_size else (1, None))
+        _test_ceiling_mi = (np.log(_test_block_size) * _scale) if _test_block_size and _test_block_size >= 2 else None
         _train_ceiling_mi = (np.log(_train_block_size) * _scale) if _train_block_size and _train_block_size >= 2 else None
         _test_saturation = (final_test_mi * _scale / _test_ceiling_mi) if _test_ceiling_mi else None
         _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
 
-        if getattr(self, '_blocked_eval', None) is not None:
-            _rows, _blocks, _per_block = self._blocked_eval
+        _rows = max(actual_train_subset_size, epoch_train_n if _do_epoch_train_eval else 0)
+        if _rows > max_eval_samples:
+            _blocks, _per_block = _blocks_of(_rows, max_eval_samples)
             logger.warning(
                 f"Train-side MI evaluated on all {_rows} rows in {_blocks} blocks of at most {_per_block} "
                 f"rows, averaged. A single evaluation is limited to max_eval_samples={max_eval_samples}. "
@@ -910,7 +959,7 @@ class Trainer:
             _tripped = []
             if _test_ceiling_mi is not None and final_test_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _test_ceiling_mi:
                 _tripped.append(f"test MI ({final_test_mi * _scale:.3f} {_units}) vs. test ceiling "
-                                f"log(test_eval_size={_eval_size})={_test_ceiling_mi:.3f} {_units}")
+                                f"log(rows per evaluation={_test_block_size})={_test_ceiling_mi:.3f} {_units}")
             if _train_ceiling_mi is not None and final_train_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _train_ceiling_mi:
                 _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) vs. train-eval ceiling "
                                 f"log(rows per evaluation={_train_block_size})={_train_ceiling_mi:.3f} {_units}")
@@ -1061,10 +1110,10 @@ class Trainer:
             results['_frozen_eval_x'] = _eval_x_source
             results['_frozen_eval_y'] = _eval_y_source
         if _eval_size is not None:
-            # eval_size = min(len(test_idx), max_eval_samples), the test-side
-            # evaluation count. Its ceiling is log(eval_size), not
-            # log(batch_size).
+            # eval_size, the held-out rows every evaluation scores. Its ceiling
+            # is log(rows per block), not log(batch_size).
             results['eval_size'] = _eval_size
+            results['test_eval_blocks'] = _test_blocks
             results['test_ceiling_mi'] = _test_ceiling_mi
             results['test_saturation'] = _test_saturation
         if _train_eval_size is not None:
@@ -1223,7 +1272,6 @@ class Trainer:
                 values.append(self._eval_mi(_index_batch(x, idx_t), y[idx_t]))
                 sizes.append(len(idx_t))
             result = float(np.average(values, weights=sizes))
-            self._blocked_eval = (n_samples, n_blocks, max(sizes))
 
         if np.isnan(result):
             logger.warning(
@@ -1343,13 +1391,15 @@ class Trainer:
 
         return train_idx, test_idx
 
-    def _select_train_eval_indices(self, train_idx: np.ndarray, target_size: int,
-                                   is_temporal: bool) -> np.ndarray:
-        """Select a representative subset of ``train_idx`` for train-MI
-        evaluation (the final report, and per-epoch tracking via
-        ``eval_train``).
+    def _select_eval_indices(self, idx: np.ndarray, target_size: int, contiguous: bool) -> np.ndarray:
+        """Select a fixed, representative subset of ``idx`` for evaluation:
+        the training rows behind the reported estimate and the per-epoch
+        training curve (``eval_train``), or the held-out rows scored every epoch.
 
-        For static data a plain random subsample is fine. There's no
+        ``contiguous`` takes one contiguous stretch per segment of ``idx``
+        instead of random rows: always for temporal data, for the reason
+        below, and on the held-out side for a blocked split, like the split.
+        For static training rows a plain random subsample is fine. There's no
         temporal structure whose contiguity needs to survive anything.
 
         For temporal data, a *scattered* random subsample is wrong even
@@ -1368,7 +1418,7 @@ class Trainer:
         regardless of shift magnitude once the subset is scattered enough.
 
         The fix is to never *construct* a scattered temporal subset in the
-        first place: ``train_idx`` for temporal data is itself a union of a
+        first place: ``idx`` for temporal data is itself a union of a
         handful of contiguous segments (whatever's left after
         ``_create_blocked_split`` carves out test blocks + gap buffers).
         Pick one contiguous sub-chunk per segment, sized proportionally to
@@ -1383,12 +1433,12 @@ class Trainer:
         dominate" reasoning behind the contiguous-chunking fix in
         `analysis/rigorous.py`).
         """
-        if target_size >= len(train_idx):
-            return train_idx.copy()
-        if not is_temporal:
-            return _rng_of(self).choice(train_idx, target_size, replace=False)
+        if target_size >= len(idx):
+            return idx.copy()
+        if not contiguous:
+            return _rng_of(self).choice(idx, target_size, replace=False)
 
-        sorted_idx = np.sort(train_idx)
+        sorted_idx = np.sort(idx)
         breaks = np.where(np.diff(sorted_idx) > 1)[0]
         seg_starts = np.concatenate([[0], breaks + 1])
         seg_ends = np.concatenate([breaks + 1, [len(sorted_idx)]])  # exclusive
@@ -1418,6 +1468,6 @@ class Trainer:
             # own start), so repeated runs don't all sample the same edge.
             offset = _rng_of(self).randint(0, len(seg) - n_take + 1)
             chosen.append(seg[offset:offset + n_take])
-        return np.concatenate(chosen) if chosen else np.array([], dtype=train_idx.dtype)
+        return np.concatenate(chosen) if chosen else np.array([], dtype=idx.dtype)
 
 

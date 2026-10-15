@@ -106,7 +106,7 @@ and is never an interval on the population value
 
 `runs` has one row per repeat holding the repeat's value `mi` and the
 diagnostics of the network behind it: `test_mi`, `best_epoch`, `eval_size`,
-`train_eval_size`, the ceilings `train_ceiling_mi` and `test_ceiling_mi`, how
+`train_eval_size` and their blocks (`test_eval_blocks`, `train_eval_blocks`), the ceilings `train_ceiling_mi` and `test_ceiling_mi`, how
 close each side came to its ceiling (`train_saturation`, `test_saturation`),
 `window_retention` and the window counts for windowed data, and the held-out MI
 at every epoch in `test_mi_history`. A repeat that trains several networks (the
@@ -1040,12 +1040,14 @@ into a bound on the MI
 | `'smile'` | lower bias, higher variance | none |
 
 InfoNCE cannot report more than the log of the number of samples it is evaluated
-on. That number is `eval_size` on the held-out side, capped by
-`max_eval_samples`. On the reported training side, `train_eval_size` rows are
-evaluated in `train_eval_blocks` blocks of at most `max_eval_samples` rows, and
-the ceiling is set by the rows of one block. `Training(train_subset_size='full')`
-evaluates the reported estimate on every training row this way, with the
-precision of all of them and the memory of one block. `runs` reports each side's
+on. On the held-out side `eval_size` rows, drawn once and scored at every
+epoch, are evaluated in `test_eval_blocks` blocks of at most `max_eval_samples`
+rows. On the reported training side, `train_eval_size` rows are evaluated in
+`train_eval_blocks` blocks the same way. On each side the ceiling is set by the
+rows of one block. `Training(train_subset_size='full')` evaluates the reported
+estimate on every training row this way, with the precision of all of them and
+the memory of one block, and `Training(test_subset_size='full')` does the same
+for the held-out curve at every epoch. `runs` reports each side's
 ceiling and how close the estimate came to it (`train_saturation`,
 `test_saturation`). `batch_size` sets how many negatives each training step sees
 and places no cap on the reported value. An estimate near its ceiling calls for

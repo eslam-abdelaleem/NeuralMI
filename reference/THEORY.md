@@ -60,8 +60,9 @@ distribution-free lower bound on MI from $N$ samples is limited to order $\log
 N$ ([McAllester and Stratos,
 2020](https://proceedings.mlr.press/v108/mcallester20a.html)). The reported
 values are evaluated on `train_eval_size` training samples and `eval_size`
-held-out samples. A training subset larger than `max_eval_samples` is evaluated
-in blocks of at most that size whose values are averaged. Each block is an
+held-out samples. The held-out rows are drawn once and scored at every epoch.
+A subset larger than `max_eval_samples` is evaluated in blocks of at most that
+size whose values are averaged. Each block is an
 ordinary evaluation with its own rows as negatives, so the average keeps the
 bound and the ceiling of one block and gains the precision of all the rows. For
 weak dependence a block of $B$ rows sits below an evaluation on all $N$ rows by

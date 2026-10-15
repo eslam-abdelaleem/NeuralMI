@@ -227,13 +227,13 @@ class TestEvalTrain:
         """
         trainer = self._trainer()
         seen = []
-        original = trainer._select_train_eval_indices
+        original = trainer._select_eval_indices
 
         def spy(train_idx, n, is_temporal):
             seen.append((len(train_idx), n))
             return original(train_idx, n, is_temporal)
 
-        monkeypatch.setattr(trainer, '_select_train_eval_indices', spy)
+        monkeypatch.setattr(trainer, '_select_eval_indices', spy)
         trainer.train(self._dataset(), n_epochs=2, batch_size=20,
                       eval_train=value, verbose=False)
 
@@ -403,7 +403,7 @@ class TestSelectTrainEvalIndices:
     """
 
     def _select(self, train_idx, target_size, is_temporal):
-        return Trainer.__new__(Trainer)._select_train_eval_indices(train_idx, target_size, is_temporal)
+        return Trainer.__new__(Trainer)._select_eval_indices(train_idx, target_size, is_temporal)
 
     def test_static_data_uses_plain_random_choice(self):
         np.random.seed(0)
@@ -463,7 +463,7 @@ class TestSelectTrainEvalIndices:
         target = 200
         np.random.seed(0)
         scattered = np.random.choice(train_idx, target, replace=False)
-        chunked = t._select_train_eval_indices(train_idx, target, is_temporal=True)
+        chunked = t._select_eval_indices(train_idx, target, contiguous=True)
 
         view_old = SubsetView(ptd, indices=scattered)
         view_new = SubsetView(ptd, indices=chunked)

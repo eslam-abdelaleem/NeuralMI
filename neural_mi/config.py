@@ -147,6 +147,7 @@ class Training:
     min_improvement: Optional[float] = None
     max_eval_samples: Optional[int] = None
     train_subset_size: Optional[Union[int, str]] = None   # count | 'full'
+    test_subset_size: Optional[Union[int, str]] = None    # count | 'full'
     lr_head_multiplier: Optional[float] = None
     save_best_model_path: Optional[str] = None
     shift_time: Optional[bool] = None

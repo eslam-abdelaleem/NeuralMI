@@ -122,6 +122,18 @@ averaged, weighted by block size. The precision is that of all the rows and the
 InfoNCE ceiling that of one block. Raising `max_eval_samples` evaluates in fewer,
 larger blocks, at a memory cost that grows with the square of the block.
 
+**`test_subset_size=... exceeds the number of held-out samples`**
+The subset is clamped to the held-out set, and every sample of it is evaluated
+at every epoch, in blocks of at most `max_eval_samples` when there are more.
+
+**`Held-out MI evaluated on all ... rows in ... blocks of at most ... rows at every epoch, averaged`**
+The held-out subset (`test_subset_size`) is larger than `max_eval_samples`, the
+most rows one evaluation may use. Each block is evaluated on its own and the
+values are averaged, weighted by block size, at every epoch. The precision is
+that of all the rows and the InfoNCE ceiling that of one block. Every epoch
+costs one evaluation per block. Raising `max_eval_samples` evaluates in fewer,
+larger blocks, at a memory cost that grows with the square of the block.
+
 **`Only ... reach the estimator`**
 Whether the fewer than 200 samples or windows that reach the estimator are
 enough depends on the data. The samples an estimate needs grow roughly as $N
