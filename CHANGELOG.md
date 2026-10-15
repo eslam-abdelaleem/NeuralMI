@@ -25,6 +25,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The reported value comes from the network at `best_epoch`. The epoch was the
+  peak of the held-out curve smoothed after training, but the network evaluated
+  was the one saved during training at the last epoch where the running
+  smoothed curve, which cannot see later epochs, still improved. The two
+  differed by an epoch or more on most noisy curves, and on a curve that falls
+  after its peak the later network had already started to overfit. The trainer
+  now keeps copies of the network for the epochs that can still turn out to be
+  the peak and evaluates the one at `best_epoch`. `peak_fraction < 1` likewise
+  evaluates the first epoch whose smoothed held-out MI reaches that fraction of
+  the peak, and an epoch whose held-out value is NaN is never chosen.
 - Every epoch evaluates the same held-out rows. When the held-out set was larger
   than `max_eval_samples`, each epoch drew a fresh random subset of it, so the
   held-out curve that picks the epoch carried the noise of changing rows, and

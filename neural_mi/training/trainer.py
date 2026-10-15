@@ -274,6 +274,10 @@ class Trainer:
             difference quantity. Without it they come from NumPy's global state.
         patience : int, optional
             Epochs to wait for improvement before early stopping. Defaults to 10.
+            Early stopping decides when training ends. The network evaluated is
+            the one at the peak of the held-out curve smoothed after training
+            (``best_epoch``), whichever epoch that is: copies of the network are
+            kept for the epochs that can still turn out to be that peak.
         smoothing_sigma : float, optional
             Standard deviation for the Gaussian smoothing kernel on validation MI.
             Defaults to 1.0.
@@ -367,8 +371,8 @@ class Trainer:
             Controls how the best epoch is selected for reporting train MI.
 
             - ``1.0`` (default), use the epoch where smoothed test MI is maximised.
-            - ``< 1.0``: use the *first improvement checkpoint* where smoothed test
-              MI reaches ``peak_fraction × max_test_mi``.  This gives a
+            - ``< 1.0``: use the first epoch whose smoothed test MI reaches
+              ``peak_fraction`` of its peak.  This gives a
               conservative estimate that avoids the noisiest tail of training.
               Both the conservative and best-epoch estimates are obtained via
               fresh full evaluations at the end of training (no per-epoch train
@@ -699,11 +703,17 @@ class Trainer:
         _rotation_singular_values_history: list = []
         _rotation_history_x: list = []
         _rotation_history_y: list = []
-        best_model_state = None
-        # Improvement checkpoints: saved only when peak_fraction < 1.0 to avoid
-        # unnecessary memory use.  Each entry is (epoch, smoothed_mi, state_dict).
-        # The list is monotonically increasing in smoothed_mi by construction.
-        _improvement_checkpoints = []
+        # Copies of the network at every epoch that can still turn out to be the
+        # one evaluated: the peak of the held-out curve smoothed after training,
+        # or for peak_fraction < 1 the first epoch to reach that fraction of it.
+        # An epoch's smoothed value depends on up to _reach epochs after it. Once
+        # it is final, the epoch is kept only if it beats every earlier final
+        # epoch (the first epoch to reach any fraction of the peak always does),
+        # and with peak_fraction = 1 it replaces the one it beats. A custom
+        # smoothing function has no known reach, so every epoch is kept.
+        _states: Dict[int, Any] = {}
+        _reach = None if self.custom_smoothing_fn else self._smoothing_reach(smoothing_sigma, median_window)
+        _record, _record_ep = -np.inf, None
         nan_streak = 0
         
         display_progress = show_progress if show_progress is not None else verbose
@@ -847,6 +857,17 @@ class Trainer:
             else:
                 nan_streak = 0
             history.append(mi_nats)
+            _states[epoch] = copy.deepcopy(self.model.state_dict())
+            _final_ep = epoch - _reach if _reach is not None else -1
+            if (_final_ep >= 0 and len(history) >= median_window
+                    and not np.isnan(history[max(0, _final_ep - _reach):]).any()):
+                _value = self._smooth(history, smoothing_sigma, median_window)[_final_ep]
+                if _value > _record:
+                    if peak_fraction >= 1.0 and _record_ep is not None:
+                        del _states[_record_ep]
+                    _record, _record_ep = _value, _final_ep
+                else:
+                    del _states[_final_ep]
 
             # Smoothing (Custom or Default)
             if self.custom_smoothing_fn:
@@ -892,14 +913,10 @@ class Trainer:
                 else:
                     scheduler.step()
 
-            # In-Memory Early Stopping
-            if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi) or best_model_state is None):
+            # Early stopping on the running smoothed curve. It decides when to
+            # stop, not which network is evaluated.
+            if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi)):
                 best_mi, no_improve = smoothed_nats, 0
-                best_model_state = copy.deepcopy(self.model.state_dict())
-                if peak_fraction < 1.0:
-                    # best_model_state is a fresh deepcopy; appending it is safe —
-                    # the next improvement will create a new deepcopy, not mutate this one.
-                    _improvement_checkpoints.append((epoch, smoothed_nats, best_model_state))
             else:
                 no_improve += 1
                 
@@ -907,10 +924,15 @@ class Trainer:
                 logger.debug(f"Early stopping at epoch {epoch+1}.")
                 break
         
-        if best_model_state is None:
+        # 4. Finalization: the network at the peak of the smoothed held-out curve
+        _smoothed_history = np.asarray(
+            self.custom_smoothing_fn(history) if self.custom_smoothing_fn
+            else self._smooth(history, smoothing_sigma, median_window)
+        )
+        if np.isnan(_smoothed_history).all():
             raise TrainingError("Training failed to produce a valid model checkpoint.")
-
-        # 4. Finalization
+        best_ep = int(np.nanargmax(_smoothed_history))
+        best_model_state = _states[best_ep]
         self.model.load_state_dict(best_model_state)
         if save_best_model_path:
             torch.save(best_model_state, save_best_model_path)
@@ -973,12 +995,8 @@ class Trainer:
 
         # Does peak-epoch selection distinguish epochs at all? When the
         # smoothed test trace rides near its ceiling for most of training, the
-        # argmax below is close to a coin flip over flat noise, and the
-        # reported best_epoch is arbitrary.
-        _smoothed_history = np.asarray(
-            self.custom_smoothing_fn(history) if self.custom_smoothing_fn
-            else self._smooth(history, smoothing_sigma, median_window)
-        )
+        # argmax is close to a coin flip over flat noise, and the reported
+        # best_epoch is arbitrary.
         _test_trace_saturated_fraction = None
         if _test_ceiling_mi is not None and _smoothed_history.size > 0:
             _valid = _smoothed_history[~np.isnan(_smoothed_history)]
@@ -995,8 +1013,6 @@ class Trainer:
                         f"riding near its ceiling, the epoch with the (noisy) maximum is "
                         f"close to arbitrary. Consider increasing max_eval_samples."
                     )
-
-        best_ep = np.argmax(_smoothed_history)
 
         # Early stopping is effectively off by default (patience defaults to
         # 1000), so nothing else signals "training simply ran out of epochs while
@@ -1021,29 +1037,17 @@ class Trainer:
         # At this point the model is loaded at best_ep; final_train_mi is the fresh eval there.
         _best_ep_train_mi = final_train_mi  # save for train_mi_at_peak reporting
 
-        # Conservative epoch selection via improvement checkpoints.
-        # Finds the first checkpoint where smoothed test MI >= peak_fraction * final_max,
-        # loads that state, does a fresh full evaluation, then restores the best-epoch model.
+        # Conservative epoch: the first epoch whose smoothed test MI reaches
+        # peak_fraction of the peak. Its network is evaluated afresh, then the
+        # best-epoch network is restored.
         _conservative_ep = None
         _conservative_train_mi = None
-        if peak_fraction < 1.0 and _improvement_checkpoints:
-            _cons_state = None
-            _max_smoothed = _improvement_checkpoints[-1][1]  # monotonically last = highest
-            if _max_smoothed > 0:
-                _threshold = peak_fraction * _max_smoothed
-                for _ckpt_ep, _ckpt_sm, _ckpt_state in _improvement_checkpoints:
-                    if _ckpt_sm >= _threshold:
-                        _conservative_ep = _ckpt_ep
-                        _cons_state = _ckpt_state
-                        break
-                if _cons_state is None:
-                    # All checkpoints below threshold (shouldn't happen, but be safe)
-                    _conservative_ep = best_ep
-            else:
-                _conservative_ep = best_ep  # no positive peak; conservative == best
-
-            if _conservative_ep != best_ep and _cons_state is not None:
-                self.model.load_state_dict(_cons_state)
+        if peak_fraction < 1.0:
+            _peak = _smoothed_history[best_ep]
+            _conservative_ep = (int(np.flatnonzero(_smoothed_history >= peak_fraction * _peak)[0])
+                                if _peak > 0 else best_ep)
+            if _conservative_ep != best_ep:
+                self.model.load_state_dict(_states[_conservative_ep])
                 with torch.no_grad():
                     _conservative_train_mi = self._safe_eval_mi(
                         _index_batch(_eval_x_source, _eval_train_eval_idx),
@@ -1323,6 +1327,12 @@ class Trainer:
         }
             
         return results
+
+    @staticmethod
+    def _smoothing_reach(sigma: float, med_win: int) -> int:
+        """How many later epochs the smoothed value at an epoch depends on (see _smooth):
+        half the median window plus the Gaussian's radius, which scipy cuts at 4 sigma."""
+        return (med_win // 2 if med_win > 1 else 0) + (int(4.0 * sigma + 0.5) if sigma > 0 else 0)
 
     def _smooth(self, arr: List[float], sigma: float, med_win: int) -> np.ndarray:
         hist = np.array(arr)

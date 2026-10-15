@@ -154,7 +154,7 @@ The optimisation loop and what is evaluated after it.
 | `n_epochs` | `50` | Training epochs. |
 | `learning_rate` | `0.0005` | Optimiser learning rate. |
 | `batch_size` | `128` | Training batch size. It sets how many negatives each training step sees and does not cap the reported estimate. |
-| `patience` | `1000` | Epochs without improvement before training stops. The default exceeds `n_epochs` and keeps early stopping off until this is lowered. |
+| `patience` | `1000` | Epochs without improvement before training stops. The default exceeds `n_epochs` and keeps early stopping off until this is lowered. Stopping decides only when training ends: the network evaluated is always the one at `best_epoch`. |
 | `min_improvement` | `0.001` | Rise in the smoothed test MI that counts as an improvement for `patience`. |
 | `median_window` | `5` | Width of the median filter on the test-MI curve before its peak is read. |
 | `smoothing_sigma` | `1.0` | Width of the Gaussian filter applied after the median filter. |
