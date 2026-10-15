@@ -394,6 +394,7 @@ class Trainer:
         """
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         self._rng = np.random.RandomState(int(split_seed) % (2 ** 31)) if split_seed is not None else np.random
+        self._blocked_eval = None   # (rows, blocks, rows per block) once a train-side evaluation runs in blocks
         # Any bundle carrying a window grid is temporal, not only the
         # two-stream subclass: a three-stream conditional bundle has the same
         # grid and the same time_shift, and testing the subclass would leave
@@ -481,6 +482,13 @@ class Trainer:
         # reason to let a small test split (e.g. 10-20% of windows by default)
         # needlessly shrink that ceiling. Only max_eval_samples and the available
         # training pool bound it.
+        if isinstance(train_subset_size, str):
+            if train_subset_size != 'full':
+                raise ValueError(
+                    f"train_subset_size={train_subset_size!r} is not a recognised value. Use an int >= 1, "
+                    f"'full' for the whole training set, or None for min(n_train, max_eval_samples)."
+                )
+            train_subset_size = len(train_idx)
         actual_train_subset_size = train_subset_size or min(len(train_idx), max_eval_samples)
         if train_subset_size is not None and train_subset_size > len(train_idx):
             warnings.warn(
@@ -739,7 +747,7 @@ class Trainer:
                 if _do_epoch_train_eval:
                     x_etrain = _index_batch(_eval_x_source, _eval_epoch_train_eval_idx)
                     y_etrain = _eval_y_source[_eval_epoch_train_eval_idx, ...]
-                    train_mi_nats = self._safe_eval_mi(x_etrain, y_etrain, max_eval_samples)
+                    train_mi_nats = self._safe_eval_mi(x_etrain, y_etrain, max_eval_samples, all_rows=True)
                     train_history.append(train_mi_nats)
 
                 # Per-epoch spectral history if requested (can be expensive, so optional)
@@ -866,7 +874,7 @@ class Trainer:
                 _eval_y_source[_eval_test_idx, ...], max_eval_samples)
             final_train_mi = self._safe_eval_mi(
                 _index_batch(_eval_x_source, _eval_train_eval_idx),
-                _eval_y_source[_eval_train_eval_idx, ...], max_eval_samples)
+                _eval_y_source[_eval_train_eval_idx, ...], max_eval_samples, all_rows=True)
         
         from neural_mi.estimators import infonce_lower_bound
         _scale = nats_to_bits  # 1/ln(2) for bits, 1.0 for nats -- same scale as every other reported MI
@@ -878,15 +886,26 @@ class Trainer:
         # count behind the reported estimate (`train_mi`). They can differ, so
         # each has its own name and ceiling.
         _eval_size = min(len(test_idx), max_eval_samples) if len(test_idx) > 0 else None
-        # The train-side estimate is evaluated on at most max_eval_samples rows of
-        # its subset, so that is the count its ceiling is set by.
-        _train_eval_size = (min(actual_train_subset_size, max_eval_samples)
-                            if actual_train_subset_size > 0 else None)
+        # The train-side estimate is evaluated on every row of its subset, in
+        # blocks of at most max_eval_samples rows when the subset is larger. Each
+        # block's rows are its own negatives, so the rows of one block set the ceiling.
+        _train_eval_size = actual_train_subset_size if actual_train_subset_size > 0 else None
+        _train_blocks = -(-actual_train_subset_size // max_eval_samples) if _train_eval_size else 1
+        _train_block_size = -(-actual_train_subset_size // _train_blocks) if _train_eval_size else None
         _test_ceiling_mi = (np.log(_eval_size) * _scale) if _eval_size and _eval_size >= 2 else None
-        _train_ceiling_mi = (np.log(_train_eval_size) * _scale) if _train_eval_size and _train_eval_size >= 2 else None
+        _train_ceiling_mi = (np.log(_train_block_size) * _scale) if _train_block_size and _train_block_size >= 2 else None
         _test_saturation = (final_test_mi * _scale / _test_ceiling_mi) if _test_ceiling_mi else None
         _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
 
+        if getattr(self, '_blocked_eval', None) is not None:
+            _rows, _blocks, _per_block = self._blocked_eval
+            logger.warning(
+                f"Train-side MI evaluated on all {_rows} rows in {_blocks} blocks of at most {_per_block} "
+                f"rows, averaged. A single evaluation is limited to max_eval_samples={max_eval_samples}. "
+                f"Each block uses its own rows as negatives, so the ceiling is log({_per_block}) "
+                f"and the precision is that of all {_rows} rows. Raise max_eval_samples to evaluate "
+                f"in fewer, larger blocks if memory allows."
+            )
         if self.estimator_fn is infonce_lower_bound:
             _tripped = []
             if _test_ceiling_mi is not None and final_test_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _test_ceiling_mi:
@@ -894,7 +913,7 @@ class Trainer:
                                 f"log(test_eval_size={_eval_size})={_test_ceiling_mi:.3f} {_units}")
             if _train_ceiling_mi is not None and final_train_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _train_ceiling_mi:
                 _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) vs. train-eval ceiling "
-                                f"log(train_eval_size={_train_eval_size})={_train_ceiling_mi:.3f} {_units}")
+                                f"log(rows per evaluation={_train_block_size})={_train_ceiling_mi:.3f} {_units}")
             if _tripped:
                 logger.warning(
                     f"InfoNCE estimate is near its ceiling: {'; '.join(_tripped)}. "
@@ -980,7 +999,7 @@ class Trainer:
                     _conservative_train_mi = self._safe_eval_mi(
                         _index_batch(_eval_x_source, _eval_train_eval_idx),
                         _eval_y_source[_eval_train_eval_idx, ...],
-                        max_eval_samples,
+                        max_eval_samples, all_rows=True,
                     )
                 self.model.load_state_dict(best_model_state)
             else:
@@ -1053,6 +1072,7 @@ class Trainer:
             # (train_mi). It can exceed eval_size, and it is the ceiling that
             # applies to the number the caller is shown.
             results['train_eval_size'] = _train_eval_size
+            results['train_eval_blocks'] = _train_blocks
             results['train_ceiling_mi'] = _train_ceiling_mi
             results['train_saturation'] = _train_saturation
         if _test_trace_saturated_fraction is not None:
@@ -1165,34 +1185,46 @@ class Trainer:
             # 'linear' or 'sigmoid': MSE is appropriate.
             return nn.functional.mse_loss(recon, target)
 
-    def _safe_eval_mi(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> float:
-        """Evaluates MI on at most max_samples samples, drawn as a single random subset.
-        If the dataset exceeds max_samples, draw ONE random
-        subset of size max_samples and evaluate MI on that single set. This gives a
-        valid (if higher-variance) unbiased estimate.
+    def _safe_eval_mi(self, x: torch.Tensor, y: torch.Tensor, max_samples: int, all_rows: bool = False) -> float:
+        """Evaluates the MI on the given rows, never on more than max_samples at once.
+
+        Up to max_samples rows are evaluated in one go. Above that, the held-out
+        side (``all_rows=False``) draws one random subset of max_samples rows, and
+        the train side (``all_rows=True``) evaluates every row in blocks of at most
+        max_samples and averages the blocks, weighted by their sizes. Row r goes to
+        block r % n_blocks, so every block spans the whole set. Each block is an
+        ordinary evaluation whose own rows are its negatives: the average keeps
+        the bound and the ceiling of one block, log(rows per block), and the
+        precision of all the rows.
 
         Parameters
         ----------
-        x : torch.Tensor
-            Test set X data.
-        y : torch.Tensor
-            Test set Y data.
+        x, y : torch.Tensor
+            The rows to evaluate.
         max_samples : int
-            Maximum number of samples for a single evaluation call. If the dataset
-            is larger, a random subset of this size is drawn once.
+            The most rows a single evaluation uses, which bounds its memory.
+        all_rows : bool, optional
+            Evaluate every row, in blocks if needed, instead of a random subset.
         """
         n_samples = _batch_size_of(x)
         if n_samples < 2:
             return float('nan')
 
-        if n_samples > max_samples:
-            # Sample once
-            idx = _rng_of(self).choice(n_samples, max_samples, replace=False)
-            idx_t = torch.from_numpy(idx)
-            x = _index_batch(x, idx_t)
-            y = y[idx_t]
+        if n_samples <= max_samples:
+            result = self._eval_mi(x, y)
+        elif not all_rows:
+            idx_t = torch.from_numpy(_rng_of(self).choice(n_samples, max_samples, replace=False))
+            result = self._eval_mi(_index_batch(x, idx_t), y[idx_t])
+        else:
+            n_blocks = -(-n_samples // max_samples)
+            values, sizes = [], []
+            for b in range(n_blocks):
+                idx_t = torch.arange(b, n_samples, n_blocks)
+                values.append(self._eval_mi(_index_batch(x, idx_t), y[idx_t]))
+                sizes.append(len(idx_t))
+            result = float(np.average(values, weights=sizes))
+            self._blocked_eval = (n_samples, n_blocks, max(sizes))
 
-        result = self._eval_mi(x, y)
         if np.isnan(result):
             logger.warning(
                 "MI evaluation returned NaN. This may indicate numerical instability, "

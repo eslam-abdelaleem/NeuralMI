@@ -1040,9 +1040,13 @@ into a bound on the MI
 | `'smile'` | lower bias, higher variance | none |
 
 InfoNCE cannot report more than the log of the number of samples it is evaluated
-on. That number is `eval_size` on the held-out side and `train_eval_size` on the
-reported training side, both capped by `max_eval_samples`. `runs` reports each
-side's ceiling and how close the estimate came to it (`train_saturation`,
+on. That number is `eval_size` on the held-out side, capped by
+`max_eval_samples`. On the reported training side, `train_eval_size` rows are
+evaluated in `train_eval_blocks` blocks of at most `max_eval_samples` rows, and
+the ceiling is set by the rows of one block. `Training(train_subset_size='full')`
+evaluates the reported estimate on every training row this way, with the
+precision of all of them and the memory of one block. `runs` reports each side's
+ceiling and how close the estimate came to it (`train_saturation`,
 `test_saturation`). `batch_size` sets how many negatives each training step sees
 and places no cap on the reported value. An estimate near its ceiling calls for
 a larger `max_eval_samples` or for SMILE.

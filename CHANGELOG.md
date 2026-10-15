@@ -8,6 +8,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Training(train_subset_size='full')` evaluates the reported estimate on every
+  training row. A train-side evaluation larger than `max_eval_samples` (from
+  `train_subset_size` or `eval_train`) now runs in blocks of at most
+  `max_eval_samples` rows whose values are averaged, instead of on one random
+  subset of `max_eval_samples` rows, and logs that it did. `runs` reports the
+  number of blocks as `train_eval_blocks`, and the train-side ceiling is set by
+  the rows of one block. Held-out evaluation is unchanged.
+
 ### Fixed
 
 - The terms of a difference quantity (`mode='conditional'`, `'transfer'`,

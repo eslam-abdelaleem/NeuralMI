@@ -210,7 +210,7 @@ class ParameterValidator:
             _check_type(value, expected_type, key, "Parameter")
 
             # Min value check (skip for non-scalar types like list/dict)
-            if 'min' in schema and value is not None and not isinstance(value, (list, dict)) and value < schema['min']:
+            if 'min' in schema and value is not None and not isinstance(value, (list, dict, str)) and value < schema['min']:
                 raise ValueError(f"Parameter '{key}' must be >= {schema['min']}.")
 
             # Allowed values check. If a parameter accepts a class (e.g. a custom

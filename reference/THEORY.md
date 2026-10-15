@@ -60,8 +60,13 @@ distribution-free lower bound on MI from $N$ samples is limited to order $\log
 N$ ([McAllester and Stratos,
 2020](https://proceedings.mlr.press/v108/mcallester20a.html)). The reported
 values are evaluated on `train_eval_size` training samples and `eval_size`
-held-out samples up to the caps set by `max_eval_samples` and by the size of the
-split. During training $N$ is the batch size and shapes the gradients without
+held-out samples. A training subset larger than `max_eval_samples` is evaluated
+in blocks of at most that size whose values are averaged. Each block is an
+ordinary evaluation with its own rows as negatives, so the average keeps the
+bound and the ceiling of one block and gains the precision of all the rows. For
+weak dependence a block of $B$ rows sits below an evaluation on all $N$ rows by
+about $\chi^2(1/B - 1/N)/2$ nats, with $\chi^2 \approx 2I$ the chi-square
+divergence of the joint from the product of the marginals. During training $N$ is the batch size and shapes the gradients without
 capping the reported value. A short recording, a large `window_size` or a small
 held-out fraction all shrink $N$. Along a sweep over `window_size` the ceiling
 falls because fewer windows fit in the recording. Since the windowed MI grows

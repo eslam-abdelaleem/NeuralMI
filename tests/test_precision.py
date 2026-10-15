@@ -75,9 +75,9 @@ def test_precision_mode_never_corrupts_unused_spike_slots(monkeypatch):
     seen = []
     original = Trainer._safe_eval_mi
 
-    def spy(self, x_eval, y_eval, max_eval):
+    def spy(self, x_eval, y_eval, max_eval, **kwargs):
         seen.append(x_eval.detach().cpu())
-        return original(self, x_eval, y_eval, max_eval)
+        return original(self, x_eval, y_eval, max_eval, **kwargs)
 
     monkeypatch.setattr(Trainer, '_safe_eval_mi', spy)
     nmi.run(x, y, mode='precision',

@@ -166,9 +166,9 @@ The optimisation loop and what is evaluated after it.
 | `lr_head_multiplier` | `None` | Learning-rate multiplier for the hybrid critic's head. |
 | `gradient_clip_val` | `None` | Clip the gradient norm to this value. |
 | `use_amp` | `'auto'` | Mixed precision: `'auto'` uses it on CUDA only. |
-| `max_eval_samples` | `5000` | Most samples any single evaluation uses, test-side or train-side. |
-| `train_subset_size` | `None` | Size of the fixed training subset the reported estimate is evaluated on; `None` takes `min(n_train, max_eval_samples)`. Training uses every training sample either way. |
-| `eval_train` | `False` | Also record the train-side MI every epoch: `True`, a fraction, a sample count, or `'full'`. |
+| `max_eval_samples` | `5000` | Most samples any single evaluation uses, test-side or train-side. A larger held-out set is evaluated on one random subset of this size. A larger train-side set is evaluated in blocks of at most this size whose values are averaged, so every row counts and the ceiling is that of one block. |
+| `train_subset_size` | `None` | Size of the fixed training subset the reported estimate is evaluated on: a count, or `'full'` for the whole training set; `None` takes `min(n_train, max_eval_samples)`. A subset larger than `max_eval_samples` is evaluated in blocks. Training uses every training sample either way. |
+| `eval_train` | `False` | Also record the train-side MI every epoch: `True`, a fraction, a sample count, or `'full'`. A set larger than `max_eval_samples` is evaluated in blocks. |
 | `shift_time` | `True` | Temporal data: re-tile the windows from a fresh random time offset every epoch. |
 | `shift_windows` | `True` | The cheaper re-slicing form of `shift_time`, for regularly sampled continuous and categorical data. |
 | `augmentation_params` | `{}` | Augmentations applied to both X and Y during training (listed in [USING.md](USING.md)). |

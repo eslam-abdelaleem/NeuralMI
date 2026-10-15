@@ -111,8 +111,16 @@ batches need more training samples: a longer recording, a smaller `window_size`
 or a smaller `step_size`.
 
 **`train_subset_size=... exceeds the number of available training samples`**
-The subset is clamped to the training set. The reported value is evaluated on at
-most `max_eval_samples` of those samples.
+The subset is clamped to the training set, and every sample of it is evaluated,
+in blocks of at most `max_eval_samples` when there are more.
+
+**`Train-side MI evaluated on all ... rows in ... blocks of at most ... rows, averaged`**
+The training subset behind the reported estimate (`train_subset_size`, or the
+per-epoch set of `eval_train`) is larger than `max_eval_samples`, the most rows
+one evaluation may use. Each block is evaluated on its own and the values are
+averaged, weighted by block size. The precision is that of all the rows and the
+InfoNCE ceiling that of one block. Raising `max_eval_samples` evaluates in fewer,
+larger blocks, at a memory cost that grows with the square of the block.
 
 **`Only ... reach the estimator`**
 Whether the fewer than 200 samples or windows that reach the estimator are

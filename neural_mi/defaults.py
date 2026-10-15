@@ -34,7 +34,7 @@ BASE_PARAMS_SCHEMA = {
     'median_window': {'type': int, 'min': 1, 'default': 5},
     'min_improvement': {'type': float, 'min': 0.0, 'default': 0.001},
     'max_eval_samples': {'type': int, 'min': 1, 'default': 5000},
-    'train_subset_size': {'type': (int, type(None)), 'min': 1, 'default': None},
+    'train_subset_size': {'type': (int, str, type(None)), 'min': 1, 'default': None},  # count | 'full'
     'split_gap_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
     'track_spectral_history': {'type': bool, 'default': False},
     'return_embeddings': {'type': bool, 'default': False},
