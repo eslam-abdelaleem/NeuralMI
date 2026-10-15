@@ -88,7 +88,8 @@ class TestTrainSubsetSize:
 
 
 class TestHeldOutRows:
-    """The held-out rows are fixed once per run, follow the split, and can be all of them."""
+    """The held-out rows are fixed once per run, follow the split, and can be all of them.
+    The training subset follows the split the same way."""
 
     N = 2000          # rows; y carries each row's index so the rows of every evaluation can be read back
 
@@ -97,7 +98,8 @@ class TestHeldOutRows:
         return PairedDataset(x, torch.stack([torch.arange(self.N, dtype=torch.float32) / self.N, x[:, 0]], 1))
 
     def _held_out_rows(self, monkeypatch, n_held_out_eval, **kwargs):
-        """Train once and return the rows of every held-out evaluation, told apart by their count."""
+        """Train once and return the rows of every evaluation of n_held_out_eval rows (the held-out
+        ones, told apart by their count), the results, and the trainer."""
         seen, n = [], self.N
         evaluate = Trainer._safe_eval_mi
 
@@ -115,28 +117,35 @@ class TestHeldOutRows:
         kwargs = {'n_epochs': 3, 'batch_size': 64, 'split_seed': 3, 'max_eval_samples': 100,
                   'verbose': False, 'show_progress': False, **kwargs}
         results = trainer.train(self._data(), **kwargs)
-        return seen, results
+        return seen, results, trainer
 
     def test_every_epoch_scores_the_same_rows(self, monkeypatch):
-        seen, _ = self._held_out_rows(monkeypatch, 100, train_subset_size=150)
+        seen, _, _ = self._held_out_rows(monkeypatch, 100, train_subset_size=150)
         assert len(seen) == 4                                           # three epochs and the final value
         assert all(np.array_equal(seen[0], other) for other in seen[1:])
 
     def test_rows_do_not_depend_on_other_settings(self, monkeypatch):
-        first, _ = self._held_out_rows(monkeypatch, 100, train_subset_size=150)
-        second, _ = self._held_out_rows(monkeypatch, 100, train_subset_size='full')
+        first, _, _ = self._held_out_rows(monkeypatch, 100, train_subset_size=150)
+        second, _, _ = self._held_out_rows(monkeypatch, 100, train_subset_size='full')
         assert np.array_equal(first[0], second[0])
 
     @pytest.mark.parametrize('split_mode, contiguous', [('blocked', True), ('random', False)])
     def test_rows_follow_the_split(self, monkeypatch, split_mode, contiguous):
-        seen, _ = self._held_out_rows(monkeypatch, 100, train_subset_size=150, split_mode=split_mode)
+        seen, _, _ = self._held_out_rows(monkeypatch, 100, train_subset_size=150, split_mode=split_mode)
         runs = np.sum(np.diff(seen[0]) > 1) + 1
         assert (runs == 5) if contiguous else (runs > 20)               # one stretch per held-out block
+
+    @pytest.mark.parametrize('split_mode, contiguous', [('blocked', True), ('random', False)])
+    def test_training_subset_follows_the_split_too(self, monkeypatch, split_mode, contiguous):
+        seen, _, trainer = self._held_out_rows(monkeypatch, 150, train_subset_size=150, split_mode=split_mode)
+        runs = np.sum(np.diff(seen[-1]) > 1) + 1                        # the reported value's rows
+        segments = np.sum(np.diff(np.sort(trainer.last_train_indices)) > 1) + 1
+        assert (runs == segments) if contiguous else (runs > 20)       # one stretch per training segment
 
     def test_full_evaluates_every_held_out_row_in_blocks(self, monkeypatch, caplog):
         n_test = int(self.N * (1 - 0.9))                                # the blocked split's held-out rows
         with caplog.at_level('WARNING', logger='neural_mi'):
-            seen, results = self._held_out_rows(monkeypatch, n_test, test_subset_size='full', train_subset_size=150)
+            seen, results, _ = self._held_out_rows(monkeypatch, n_test, test_subset_size='full', train_subset_size=150)
         assert len(seen) == 4 and len(seen[0]) == n_test
         assert results['eval_size'] == n_test and results['test_eval_blocks'] == 2
         assert results['test_ceiling_mi'] == pytest.approx(math.log(100))

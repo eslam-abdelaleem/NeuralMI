@@ -312,8 +312,10 @@ class Trainer:
         train_subset_size : int or 'full', optional
             Size of the fixed subset of training samples the reported,
             training-side MI is evaluated on, or 'full' for all of them.
-            Training itself uses every training sample. Defaults to None,
-            which takes ``min(n_train, max_eval_samples)``.
+            Training itself uses every training sample. Like the held-out
+            subset, a blocked split takes one contiguous stretch per training
+            segment, a random split random rows. Defaults to None, which takes
+            ``min(n_train, max_eval_samples)``.
         test_subset_size : int or 'full', optional
             Size of the fixed subset of held-out samples evaluated at every
             epoch and at the end, or 'full' for all of them. It is drawn once,
@@ -492,12 +494,15 @@ class Trainer:
 
         train_view = SubsetView(dataset, indices=train_idx, max_index_reduction=max_index_reduction)
 
+        # Evaluation subsets follow the split on both sides: one contiguous
+        # stretch per segment for a blocked split, random rows for a random one.
+        # Temporal data always takes stretches (see _select_eval_indices).
+        _contiguous = is_temporal or split_mode != 'random'
+
         # Lock in the held-out rows every evaluation scores. Drawn once, before
         # anything else draws from the run's generator, so every epoch scores the
         # same rows, and the terms of a difference (same split_seed) score the
-        # same rows whatever their other settings. A blocked split takes one
-        # contiguous stretch per held-out block, a random split random rows,
-        # like the split itself.
+        # same rows whatever their other settings.
         if isinstance(test_subset_size, str):
             if test_subset_size != 'full':
                 raise ValueError(
@@ -513,8 +518,7 @@ class Trainer:
                 stacklevel=user_stacklevel(),
             )
         actual_test_subset_size = min(test_subset_size or max_eval_samples, len(test_idx))
-        test_eval_idx = self._select_eval_indices(test_idx, actual_test_subset_size,
-                                                  is_temporal or split_mode != 'random')
+        test_eval_idx = self._select_eval_indices(test_idx, actual_test_subset_size, _contiguous)
         test_eval_view = SubsetView(dataset, indices=test_eval_idx, max_index_reduction=max_index_reduction)
         if actual_test_subset_size > max_eval_samples:
             _blocks, _per_block = _blocks_of(actual_test_subset_size, max_eval_samples)
@@ -551,7 +555,7 @@ class Trainer:
             )
         # Clamp to available training samples to avoid ValueError from np.random.choice
         actual_train_subset_size = min(actual_train_subset_size, len(train_idx))
-        train_eval_idx = self._select_eval_indices(train_idx, actual_train_subset_size, is_temporal)
+        train_eval_idx = self._select_eval_indices(train_idx, actual_train_subset_size, _contiguous)
         train_eval_view = SubsetView(dataset, indices=train_eval_idx, max_index_reduction=max_index_reduction)
 
         # Determine the subset for per-epoch train MI tracking (eval_train parameter)
@@ -580,7 +584,7 @@ class Trainer:
                     f"for that many samples."
                 )
             if _do_epoch_train_eval:
-                epoch_train_eval_idx = self._select_eval_indices(train_idx, epoch_train_n, is_temporal)
+                epoch_train_eval_idx = self._select_eval_indices(train_idx, epoch_train_n, _contiguous)
                 # Wrapped in a SubsetView (like train_view/test_eval_view/train_eval_view)
                 # instead of indexed as a plain fixed array -- for temporal data a
                 # shift_time rebuild can shrink window_manager.n_windows (windows
@@ -1407,10 +1411,10 @@ class Trainer:
         training curve (``eval_train``), or the held-out rows scored every epoch.
 
         ``contiguous`` takes one contiguous stretch per segment of ``idx``
-        instead of random rows: always for temporal data, for the reason
-        below, and on the held-out side for a blocked split, like the split.
-        For static training rows a plain random subsample is fine. There's no
-        temporal structure whose contiguity needs to survive anything.
+        instead of random rows: for a blocked split, like the split itself, and
+        always for temporal data, for the reason below. Under a random split
+        of static data a plain random subsample is fine. There's no temporal
+        structure whose contiguity needs to survive anything.
 
         For temporal data, a *scattered* random subsample is wrong even
         when ``shift_time``/``shift_windows`` never fires

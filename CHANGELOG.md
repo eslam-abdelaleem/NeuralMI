@@ -42,6 +42,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   changed which rows were drawn. The rows are now drawn once, right after the
   split, from the run's own generator: one contiguous stretch per held-out block
   for a blocked split, random rows for a random split.
+- Evaluation subsets on the training side (`train_subset_size`, `eval_train`)
+  follow the split like the held-out rows: one contiguous stretch per training
+  segment for a blocked split, random rows for a random split. Under a blocked
+  split of non-temporal data they used to be random rows.
 - The terms of a difference quantity (`mode='conditional'`, `'transfer'`,
   `'interaction'`, `rigorous=True` on them, their permutation trials, and the
   named quantities built on them) split and evaluate the same rows whether or
