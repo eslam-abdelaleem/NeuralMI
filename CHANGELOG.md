@@ -25,6 +25,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `Model(n_layers=0)` builds a linear MLP, the input mapped straight to the
+  embedding, as the parameter's minimum of 0 implies. It used to build one
+  hidden layer anyway. The other encoders, which cannot have zero layers,
+  refuse it with a message naming the encoder instead of crashing (CNN),
+  failing inside torch (GRU, LSTM) or building no layers (transformer).
 - The reported value comes from the network at `best_epoch`. The epoch was the
   peak of the held-out curve smoothed after training, but the network evaluated
   was the one saved during training at the last epoch where the running

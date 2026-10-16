@@ -113,7 +113,7 @@ The networks that embed X and Y and score their pairing.
 | `embedding_model` | `'mlp'` | The encoder: `'mlp'`, `'cnn'`, `'cnn2d'`, `'gru'`, `'lstm'`, `'lru'`, `'tcn'`, `'transformer'`, `'deepsets'`, `'pretrained_backbone'` or `'dual_branch'`. |
 | `embedding_dim` | `64` | Size of each embedding. `mode='dimensionality'` sets it from [`Dimensionality`](#dimensionality) and ignores this value. |
 | `hidden_dim` | `64` | Hidden width. A list such as `[256, 1024, 256]` sets each layer and overrides `n_layers` (MLP, CNN, CNN2D and TCN). |
-| `n_layers` | `2` | Encoder depth. |
+| `n_layers` | `2` | Encoder depth. For the MLP, 0 gives a linear encoder (the input mapped straight to the embedding); the other encoders need at least one layer. |
 | `embedding_model_y` | X's | Y's encoder, when it differs from X's. |
 | `embedding_dim_y` | X's | Y's embedding size. |
 | `hidden_dim_y` | X's | Y's hidden width. |

@@ -649,3 +649,28 @@ class TestPerSideEncoders:
                     model=Model(embedding_model='mlp', embedding_model_y='gru',
                                 embedding_dim=8, hidden_dim=16, n_layers=1),
                     training=Training(n_epochs=1), n_workers=1, show_progress=False)
+
+
+class TestZeroLayers:
+    """n_layers=0 is a linear MLP; encoders that cannot have zero layers refuse it."""
+
+    def test_mlp_with_zero_layers_is_linear(self):
+        net = MLP(input_dim=12, hidden_dim=64, embedding_dim=4, n_layers=0)
+        assert len(net.network) == 0
+        assert sum(p.numel() for p in net.parameters()) == 12 * 4 + 4
+        x = torch.randn(5, 3, 4)
+        assert torch.allclose(net(x), net.output_layer(x.reshape(5, -1)))
+
+    @pytest.mark.parametrize('model', ['cnn', 'gru', 'transformer'])
+    def test_other_encoders_refuse_zero_layers(self, model):
+        x = np.random.default_rng(0).standard_normal((300, 2, 4)).astype('float32')   # windows, as rows
+        with pytest.raises(ValueError, match='n_layers=0'):
+            nmi.run(x, x, model=nmi.Model(embedding_model=model, n_layers=0),
+                    training=nmi.Training(n_epochs=1), show_progress=False, verbose=False)
+
+    def test_zero_layers_reaches_the_mlp_through_run(self):
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((400, 3))
+        result = nmi.run(x, x + rng.standard_normal((400, 3)), model=nmi.Model(n_layers=0),
+                         training=nmi.Training(n_epochs=2), seed=0, show_progress=False, verbose=False)
+        assert np.isfinite(result.mi_estimate)

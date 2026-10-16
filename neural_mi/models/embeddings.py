@@ -154,7 +154,8 @@ class MLP(_BaseMLP):
         embedding_dim : int
             The dimensionality of the output embedding.
         n_layers : int
-            The number of hidden layers in the network.  Ignored when
+            The number of hidden layers in the network.  0 gives a linear
+            encoder, the input mapped straight to the embedding.  Ignored when
             ``hidden_dim`` is a list.
         activation : str, optional
             The activation function to use. One of 'relu', 'gelu', 'tanh',
@@ -192,12 +193,9 @@ class MLP(_BaseMLP):
                 block.append(nn.Dropout(p=dropout))
             return block
 
-        dims = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * max(1, n_layers)
-        layers = _make_hidden_block(input_dim, dims[0])
-        for i in range(1, len(dims)):
-            layers.extend(_make_hidden_block(dims[i - 1], dims[i]))
-        self.network = nn.Sequential(*layers)
-        self.output_layer = nn.Linear(dims[-1], embedding_dim, bias=bias)
+        widths = [input_dim, *(hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers)]
+        self.network = nn.Sequential(*[m for a, b in zip(widths, widths[1:]) for m in _make_hidden_block(a, b)])
+        self.output_layer = nn.Linear(widths[-1], embedding_dim, bias=bias)
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

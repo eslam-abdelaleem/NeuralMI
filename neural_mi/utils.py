@@ -575,6 +575,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     def _resolve_side(spec, side):
         """The class, the ``input_dim`` it expects, and its kwargs, for one side."""
+        if (spec['n_layers'] == 0 and not spec['custom_cls'] and spec['model_type'] != 'mlp'
+                and not isinstance(spec['hidden_dim'], list)):
+            raise ValueError(
+                f"n_layers=0 builds a linear encoder, which only the MLP can be. "
+                f"embedding_model={spec['model_type']!r} needs at least one layer."
+            )
         if spec['custom_cls']:
             EmbeddingModel = spec['custom_cls']
         elif spec['model_type'] in _EMBEDDING_CLASSES:
