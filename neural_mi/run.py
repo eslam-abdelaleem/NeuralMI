@@ -195,7 +195,7 @@ def _check_grid_keys(mode: str, sweep_grid: Optional[dict]) -> None:
 
 # Settings that only take effect with particular encoders, read the way
 # utils.build_critic routes them to each side's model.
-_ENCODER_SETTINGS = {'kernel_size': ('cnn', 'cnn2d', 'tcn'), 'bidirectional': ('gru', 'lstm'),
+_ENCODER_SETTINGS = {'kernel_size': ('cnn', 'cnn2d', 'tcn'), 'cnn_pooling': ('cnn',), 'bidirectional': ('gru', 'lstm'),
                      'nhead': ('transformer',), 'pytorch_predefined': ('pretrained_backbone',),
                      'pretrained': ('pretrained_backbone',), 'branch_model': ('dual_branch',)}
 _HEAD_SETTINGS = ('n_layers_head', 'hidden_dim_head')

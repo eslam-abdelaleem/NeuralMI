@@ -1069,7 +1069,7 @@ outputs `(batch, embedding_dim)`.
 | `embedding_model` | input | for |
 |---|---|---|
 | `'mlp'` (default) | `(N, C, W)`, flattened | a general default |
-| `'cnn'` | `(N, C, W)` | local patterns along the window |
+| `'cnn'` | `(N, C, W)` | local patterns along the window, kept at their positions (`cnn_pooling='mean'` averages them over the window) |
 | `'cnn2d'` | `(N, C, H, W)` | image-like input of any size |
 | `'gru'`, `'lstm'` | `(N, C, W)` | sequences, optionally bidirectional |
 | `'lru'` | `(N, C, W)` | long sequences (a linear recurrent unit) |

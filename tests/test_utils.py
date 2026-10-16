@@ -131,7 +131,7 @@ def test_build_critic_dual_branch_default_branch_model():
     branches, no custom_embedding_cls needed."""
     from neural_mi.models.embeddings import DualBranchEmbedding, GRU
     params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'dual_branch',
-              'n_channels_x': (3, 2)}
+              'n_channels_x': (3, 2), 'input_dim_x': (3 * 7, 2 * 4)}     # as task.py sets them
     critic = build_critic('separable', params)
     assert isinstance(critic.embedding_net_x, DualBranchEmbedding)
     assert isinstance(critic.embedding_net_x.branch_a, GRU)
@@ -145,7 +145,7 @@ def test_build_critic_dual_branch_custom_branch_model():
     """branch_model picks which built-in class each branch uses."""
     from neural_mi.models.embeddings import LSTM
     params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'dual_branch',
-              'branch_model': 'lstm', 'n_channels_x': (3, 2)}
+              'branch_model': 'lstm', 'n_channels_x': (3, 2), 'input_dim_x': (3 * 7, 2 * 4)}
     critic = build_critic('separable', params)
     assert isinstance(critic.embedding_net_x.branch_a, LSTM)
     assert isinstance(critic.embedding_net_x.branch_c, LSTM)
@@ -165,7 +165,7 @@ def test_build_critic_dual_branch_custom_embedding_cls_still_works():
     """
     from neural_mi.models.embeddings import DualBranchEmbedding, GRU
     params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'gru',
-              'n_channels_x': (3, 2)}
+              'n_channels_x': (3, 2), 'input_dim_x': (3 * 7, 2 * 4)}
     critic = build_critic('separable', params, custom_embedding_cls=DualBranchEmbedding)
     assert isinstance(critic.embedding_net_x, DualBranchEmbedding)
     assert isinstance(critic.embedding_net_x.branch_a, GRU)

@@ -17,11 +17,23 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   subset of `max_eval_samples` rows, and logs that it did. `runs` reports the
   number of blocks as `train_eval_blocks`, and the train-side ceiling is set by
   the rows of one block.
+- A class that names `window_size` in its `__init__`, built in or custom, now
+  receives the window length, and a custom class that names `dropout` or
+  `use_spectral_norm` receives those settings. A custom class used to get only
+  its sizes.
 - `Training(test_subset_size=...)` sets how many held-out rows are evaluated at
   every epoch: a count, `'full'` for all of them, or `None` (the default) for
   `min(n_test, max_eval_samples)`. A set larger than `max_eval_samples` is
   evaluated in blocks like the training side, the trainer logs it, and `runs`
   reports `test_eval_blocks`.
+
+### Changed
+
+- The CNN encoder (`embedding_model='cnn'`) reads its convolutions at every
+  position of the window by default, so it keeps where in the window a pattern
+  occurs. It used to average them over the window, which discards the lag of a
+  history window. `Model(cnn_pooling='mean')` restores the average. Results of
+  CNN encoders change, and the CNN's last layers grow with the window length.
 
 ### Fixed
 

@@ -1,5 +1,6 @@
 # neural_mi/models/embeddings.py
 
+import inspect
 import torch
 import torch.nn as nn
 import math
@@ -207,17 +208,20 @@ class MLP(_BaseMLP):
 class CNN1D(BaseEmbedding):
     """A 1D CNN embedding network for sequential data.
 
-    This network uses 1D convolutions followed by global average pooling to
-    produce a fixed-size embedding, regardless of input sequence length. Using
-    ``AdaptiveAvgPool1d`` instead of lazy linear layers makes the model fully
-    picklable at construction time (important for multiprocessing).
+    This network runs 1D convolutions along the window, then reads their output
+    at every position of the window (``pooling='flatten'``, the default) or
+    averages it over the window (``pooling='mean'``). Flattening keeps where in
+    the window a pattern occurs, which a lag or a history window needs, and
+    takes the window length from ``window_size``. Averaging makes the encoder
+    indifferent to where a pattern occurs and to the window length.
 
     Attributes
     ----------
     conv_layers : nn.Sequential
         The sequence of convolutional layers.
     final_layers : nn.Sequential
-        The pooling and fully-connected layers that map to the embedding.
+        The flattening or pooling and the fully-connected layers that map to the
+        embedding.
     embedding_dim : int
         The dimensionality of the output embedding.
     hidden_dim : int
@@ -226,7 +230,8 @@ class CNN1D(BaseEmbedding):
     input_style = 'channels'
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = 7, bias: bool = True):
+                 activation: str = 'relu', kernel_size: int = 7, bias: bool = True,
+                 window_size: Optional[int] = None, pooling: str = 'flatten'):
         """
         Parameters
         ----------
@@ -247,8 +252,22 @@ class CNN1D(BaseEmbedding):
             Defaults to 'relu'.
         kernel_size : int, optional
             The size of the convolutional kernel. Must be an odd number. Defaults to 7.
+        window_size : int, optional
+            The window length. ``build_critic`` passes it. Needed by
+            ``pooling='flatten'``.
+        pooling : {'flatten', 'mean'}, optional
+            Read the convolutions' output at every position of the window
+            (``'flatten'``, the default) or average it over the window
+            (``'mean'``).
         """
         super().__init__()
+        if pooling not in ('flatten', 'mean'):
+            raise ValueError(f"pooling={pooling!r} is not a recognised value. Use 'flatten' or 'mean'.")
+        if pooling == 'flatten' and window_size is None:
+            raise ValueError(
+                "pooling='flatten' reads every position of the window and needs window_size, the window "
+                "length. Pass it, or pooling='mean' to average over the window."
+            )
         if kernel_size % 2 == 0:
             raise ValueError("kernel_size must be an odd number for 'same' padding.")
 
@@ -267,12 +286,12 @@ class CNN1D(BaseEmbedding):
                 activation_fn()
             ])
         self.conv_layers = nn.Sequential(*layers)
-        # AdaptiveAvgPool1d(1) collapses any sequence length → (batch, ch[-1], 1),
-        # giving a fixed-size representation that is fully picklable at construction time.
+        # 'same' padding keeps the window length, so flattening gives ch[-1] * window_size
+        # features, one set per position. Averaging collapses any length to ch[-1].
+        reduce = [nn.Flatten()] if pooling == 'flatten' else [nn.AdaptiveAvgPool1d(1), nn.Flatten()]
         self.final_layers = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1),
-            nn.Flatten(),
-            nn.Linear(ch[-1], ch[-1], bias=bias),
+            *reduce,
+            nn.Linear(ch[-1] * (window_size if pooling == 'flatten' else 1), ch[-1], bias=bias),
             nn.ReLU(),
             nn.Linear(ch[-1], embedding_dim, bias=bias)
         )
@@ -1172,11 +1191,19 @@ class DualBranchEmbedding(BaseEmbedding):
 
     def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers,
                  branch_cls: Optional[type] = None, fusion_hidden_dim: Optional[int] = None,
-                 bias: bool = True,
+                 bias: bool = True, window_size=None,
                  **branch_kwargs):
         super().__init__()
         branch_cls = branch_cls or GRU
         self._is_dual = isinstance(input_dim, (tuple, list))
+        # A branch class that names window_size gets its own branch's length:
+        # window_size is (len_a, len_c) for the compound input, an int otherwise.
+        _windows = 'window_size' in inspect.signature(branch_cls.__init__).parameters
+        if _windows and window_size is not None:
+            _window_a, _window_c = window_size if self._is_dual else (window_size, None)
+            _kw_a, _kw_c = dict(branch_kwargs, window_size=_window_a), dict(branch_kwargs, window_size=_window_c)
+        else:
+            _kw_a = _kw_c = branch_kwargs
         if self._is_dual:
             if len(input_dim) != 2:
                 raise ValueError(
@@ -1184,8 +1211,8 @@ class DualBranchEmbedding(BaseEmbedding):
                     f"or a plain int, got a {len(input_dim)}-element sequence: {input_dim!r}."
                 )
             dim_a, dim_c = input_dim
-            self.branch_a = branch_cls(dim_a, hidden_dim, embedding_dim, n_layers, bias=bias, **branch_kwargs)
-            self.branch_c = branch_cls(dim_c, hidden_dim, embedding_dim, n_layers, bias=bias, **branch_kwargs)
+            self.branch_a = branch_cls(dim_a, hidden_dim, embedding_dim, n_layers, bias=bias, **_kw_a)
+            self.branch_c = branch_cls(dim_c, hidden_dim, embedding_dim, n_layers, bias=bias, **_kw_c)
             _fusion_hidden = fusion_hidden_dim or embedding_dim
             self.fusion = nn.Sequential(
                 nn.Linear(embedding_dim * 2, _fusion_hidden, bias=bias),
@@ -1195,7 +1222,7 @@ class DualBranchEmbedding(BaseEmbedding):
         else:
             # Plain int input_dim: build_critic's Y-role call site (see class
             # docstring). Behave as a single ordinary branch_cls embedding.
-            self.branch_single = branch_cls(input_dim, hidden_dim, embedding_dim, n_layers, bias=bias, **branch_kwargs)
+            self.branch_single = branch_cls(input_dim, hidden_dim, embedding_dim, n_layers, bias=bias, **_kw_a)
 
     def forward(self, x) -> torch.Tensor:
         """Embed either a 2-tuple ``(a_batch, c_batch)`` (compound X-role) or

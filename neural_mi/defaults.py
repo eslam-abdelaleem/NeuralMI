@@ -110,6 +110,7 @@ BASE_PARAMS_SCHEMA = {
     'critic_type': {'type': str, 'default': 'separable'},
     'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'|'deepsets'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
+    'cnn_pooling': {'type': str, 'default': 'flatten'},   # CNN: 'flatten' keeps every position, 'mean' averages
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
     # Per-side encoder overrides. None means "same as X" throughout.

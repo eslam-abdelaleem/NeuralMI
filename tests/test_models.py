@@ -49,7 +49,7 @@ def mlp_embedding():
 
 @pytest.fixture
 def cnn1d_embedding():
-    return CNN1D(input_dim=1, hidden_dim=16, embedding_dim=8, n_layers=2)
+    return CNN1D(input_dim=1, hidden_dim=16, embedding_dim=8, n_layers=2, window_size=128)
 
 # --- Embedding Model Tests ---
 
@@ -82,7 +82,7 @@ class TestUnifiedActivationHandling:
 
     @pytest.mark.parametrize("activation", SHARED_ACTIVATIONS)
     def test_cnn1d_accepts_all_shared_activations(self, activation, x_data_cnn):
-        model = CNN1D(input_dim=1, hidden_dim=8, embedding_dim=4, n_layers=1, activation=activation)
+        model = CNN1D(input_dim=1, hidden_dim=8, embedding_dim=4, n_layers=1, activation=activation, window_size=128)
         out = model(x_data_cnn)
         assert out.shape == (10, 4)
 
@@ -100,7 +100,8 @@ class TestUnifiedActivationHandling:
     def test_cnn1d_unknown_activation_raises_clean_value_error(self):
         """An unknown activation raises a ValueError that lists the supported ones."""
         with pytest.raises(ValueError, match="Unknown activation.*Supported"):
-            CNN1D(input_dim=1, hidden_dim=8, embedding_dim=4, n_layers=1, activation='not_a_real_activation')
+            CNN1D(input_dim=1, hidden_dim=8, embedding_dim=4, n_layers=1, activation='not_a_real_activation',
+                  window_size=128)
 
     def test_cnn2d_unknown_activation_raises_clean_value_error(self):
         from neural_mi.models.embeddings import CNN2D
@@ -112,7 +113,7 @@ class TestUnifiedActivationHandling:
                 projection head has its own fixed ReLU whatever `activation` is; that
                 is a separate design choice.)
         """
-        model = CNN1D(input_dim=1, hidden_dim=8, embedding_dim=4, n_layers=1, activation='gelu')
+        model = CNN1D(input_dim=1, hidden_dim=8, embedding_dim=4, n_layers=1, activation='gelu', window_size=128)
         has_gelu_in_conv = any(isinstance(m, nn.GELU) for m in model.conv_layers.modules())
         assert has_gelu_in_conv
 
@@ -204,7 +205,8 @@ class TestVariationalWrapperAllEncoders:
         self._check_variational_output(wrapper, mlp_input, self.EMBED_DIM)
 
     def test_cnn1d_variational(self, seq_input):
-        base = CNN1D(input_dim=4, hidden_dim=self.HIDDEN_DIM, embedding_dim=self.EMBED_DIM, n_layers=2, kernel_size=3)
+        base = CNN1D(input_dim=4, hidden_dim=self.HIDDEN_DIM, embedding_dim=self.EMBED_DIM, n_layers=2, kernel_size=3,
+                     window_size=20)
         wrapper = VariationalWrapper(base, embedding_dim=self.EMBED_DIM)
         self._check_variational_output(wrapper, seq_input, self.EMBED_DIM)
 
@@ -674,3 +676,72 @@ class TestZeroLayers:
         result = nmi.run(x, x + rng.standard_normal((400, 3)), model=nmi.Model(n_layers=0),
                          training=nmi.Training(n_epochs=2), seed=0, show_progress=False, verbose=False)
         assert np.isfinite(result.mi_estimate)
+
+
+class TestWindowPositions:
+    """The CNN reads every position of its window by default; build_critic passes the window length to
+    classes that name window_size, and dropout and use_spectral_norm to custom classes that name them."""
+
+    def _pair(self):
+        """Two windows holding the same pattern at different positions, away from the edges."""
+        a, b = torch.zeros(1, 1, 24), torch.zeros(1, 1, 24)
+        a[0, 0, 8:11] = torch.tensor([1.0, -2.0, 1.0])
+        b[0, 0, 13:16] = torch.tensor([1.0, -2.0, 1.0])
+        return a, b
+
+    def test_flatten_keeps_where_a_pattern_is_and_mean_does_not(self):
+        torch.manual_seed(0)
+        a, b = self._pair()
+        flat = CNN1D(1, 8, 4, 1, kernel_size=3, window_size=24).eval()
+        mean = CNN1D(1, 8, 4, 1, kernel_size=3, pooling='mean').eval()
+        assert not torch.allclose(flat(a), flat(b))
+        assert torch.allclose(mean(a), mean(b), atol=1e-6)
+
+    def test_flatten_needs_the_window_length(self):
+        with pytest.raises(ValueError, match='needs window_size'):
+            CNN1D(1, 8, 4, 1)
+        with pytest.raises(ValueError, match='not a recognised value'):
+            CNN1D(1, 8, 4, 1, window_size=10, pooling='max')
+
+    def _seen(self, monkeypatch, cls):
+        seen = {}
+        build = cls.__init__
+
+        def spy(self, *args, **kwargs):
+            seen.setdefault('kwargs', kwargs)
+            build(self, *args, **kwargs)
+
+        monkeypatch.setattr(cls, '__init__', spy)
+        spy.__signature__ = __import__('inspect').signature(build)
+        return seen
+
+    def test_run_builds_the_cnn_with_its_window_and_pooling(self, monkeypatch):
+        seen = self._seen(monkeypatch, CNN1D)
+        x = np.random.default_rng(0).standard_normal((200, 2, 12)).astype('float32')
+        nmi.run(x, x, model=nmi.Model(embedding_model='cnn', hidden_dim=8, embedding_dim=4, n_layers=1),
+                training=nmi.Training(n_epochs=1), seed=0, show_progress=False, verbose=False)
+        assert seen['kwargs']['window_size'] == 12 and seen['kwargs']['pooling'] == 'flatten'
+
+    def test_custom_class_gets_what_it_names(self):
+        seen = {}
+
+        class Recorder(MLP):
+            def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers, window_size=None,
+                         dropout=0.0, use_spectral_norm=True):
+                seen.setdefault('kwargs', dict(window_size=window_size, dropout=dropout,
+                                               use_spectral_norm=use_spectral_norm))
+                super().__init__(input_dim, hidden_dim, embedding_dim, n_layers, dropout=dropout,
+                                 use_spectral_norm=use_spectral_norm)
+
+        x = np.random.default_rng(0).standard_normal((200, 3, 5)).astype('float32')
+        nmi.run(x, x, model=nmi.Model(custom_embedding_cls=Recorder, hidden_dim=8, embedding_dim=4,
+                                      dropout=0.3, use_spectral_norm=False),
+                training=nmi.Training(n_epochs=1), seed=0, show_progress=False, verbose=False)
+        assert seen['kwargs'] == dict(window_size=5, dropout=0.3, use_spectral_norm=False)
+
+    def test_dual_branch_gives_each_cnn_branch_its_own_window(self):
+        from neural_mi.models.embeddings import DualBranchEmbedding
+        net = DualBranchEmbedding((2, 3), 8, 4, 1, branch_cls=CNN1D, window_size=(5, 7))
+        assert net.branch_a.final_layers[1].in_features == 8 * 5
+        assert net.branch_c.final_layers[1].in_features == 8 * 7
+        assert net((torch.randn(4, 2, 5), torch.randn(4, 3, 7))).shape == (4, 4)

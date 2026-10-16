@@ -612,6 +612,8 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             if model_type in ('cnn', 'tcn', 'cnn2d'):
                 model_kwargs['kernel_size'] = embedding_params.get(
                     'kernel_size', 7 if model_type == 'cnn' else 3)
+            if model_type == 'cnn':
+                model_kwargs['pooling'] = embedding_params.get('cnn_pooling', 'flatten')
             if model_type in ('gru', 'lstm'):
                 model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
             if model_type == 'transformer':
@@ -709,6 +711,24 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 f"the signature and pass it to the layers to support this.",
                 UserWarning, stacklevel=user_stacklevel(),
             )
+
+    # A class that names window_size gets the window length, the flattened size
+    # over the channel count (a pair of them for a compound input), so it need
+    # not average over the window to stay independent of its length. A custom
+    # class that names dropout or use_spectral_norm gets those too: the minimal
+    # contract above passes it only its sizes.
+    def _names(cls, key):
+        return key in inspect.signature(cls.__init__).parameters
+
+    for Model_, kwargs, spec, side in ((Model_x, model_kwargs, spec_x, 'x'), (Model_y, model_kwargs_y, spec_y, 'y')):
+        n_ch, flat = embedding_params.get(f'n_channels_{side}'), embedding_params.get(f'input_dim_{side}')
+        if _names(Model_, 'window_size') and n_ch is not None and flat is not None:
+            kwargs['window_size'] = (tuple(f // c for f, c in zip(flat, n_ch)) if isinstance(n_ch, tuple)
+                                     else flat // n_ch)
+        if spec['custom_cls']:
+            for key, default in (('dropout', 0.0), ('use_spectral_norm', True)):
+                if _names(Model_, key):
+                    kwargs[key] = embedding_params.get(key, default)
 
     # DeepSets masks padded slots, so it needs the sentinel the processor used.
     # Taken per side, since X and Y can be processed differently.

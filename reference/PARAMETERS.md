@@ -122,6 +122,7 @@ The networks that embed X and Y and score their pairing.
 | `hidden_dim_head` | `None` | Width of the hybrid critic's head; `None` takes `min(64, hidden_dim)`. |
 | `n_layers_head` | `None` | Depth of the hybrid critic's head; `None` takes `max(1, n_layers - 1)`. |
 | `kernel_size` | `3` | Kernel width of the CNN, CNN2D and TCN encoders. |
+| `cnn_pooling` | `'flatten'` | How the CNN encoder reads its convolutions: at every position of the window (`'flatten'`), which keeps where a pattern occurs, as a lag or a history window needs, or averaged over the window (`'mean'`), which ignores where it occurs. |
 | `bidirectional` | `False` | Bidirectional GRU or LSTM. |
 | `nhead` | `4` | Attention heads of the transformer encoder. |
 | `branch_model` | `'gru'` | Each branch's encoder under `embedding_model='dual_branch'`. |

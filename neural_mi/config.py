@@ -99,6 +99,7 @@ class Model:
     hidden_dim_head: Optional[Union[int, List[int]]] = None
     critic_type: Optional[str] = None              # 'separable'|'concat'|'hybrid'
     kernel_size: Optional[int] = None              # CNN/TCN
+    cnn_pooling: Optional[str] = None              # CNN: 'flatten' (every position) | 'mean'
     bidirectional: Optional[bool] = None           # RNN
     nhead: Optional[int] = None                    # Transformer
     branch_model: Optional[str] = None             # embedding_model='dual_branch' only: each branch's own architecture, defaults to 'gru'
