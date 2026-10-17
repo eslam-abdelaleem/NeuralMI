@@ -29,6 +29,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The reported values are read at the earliest epoch at the top of the smoothed
+  held-out curve (`Training(epoch_rule='plateau_start')`, the default), within
+  half the curve's own noise of the top's level, not at its maximum. On a clean
+  peak the two agree. On a plateau the maximum landed wherever the noise was
+  highest, often many epochs into a stretch where the network only fitted its
+  training rows further, which raised the training-side value.
+  `epoch_rule='peak'` reads the maximum as before. `runs` gives the maximum as
+  `peak_epoch` and a diagnosis of the curve as `curve_diagnosis`, and a curve
+  that cannot support the choice warns: a top that does not stand clearly above
+  the noise, a curve still rising when training ends (this replaces the warning
+  for a best epoch at the final epoch), a top reached within the smoothing's
+  reach of the start, or an approach so slow that the start of the top is
+  uncertain. `peak_fraction` below 1 applies with `epoch_rule='peak'`.
 - The CNN encoder (`embedding_model='cnn'`) reads its convolutions at every
   position of the window by default, so it keeps where in the window a pattern
   occurs. It used to average them over the window, which discards the lag of a

@@ -161,6 +161,9 @@ BASE_PARAMS_SCHEMA = {
     #                  noisy peak.  When < 1.0, the train MI at the actual peak epoch is also
     #                  returned in details as 'train_mi_at_peak'.
     'peak_fraction': {'type': float, 'min': 0.0, 'default': 1.0},
+    # Which epoch of the held-out curve the reported values are read at: the earliest at its top
+    # ('plateau_start') or its maximum ('peak'). See neural_mi/training/epochs.py.
+    'epoch_rule': {'type': str, 'default': 'plateau_start'},
 
     # Mixed-precision (AMP) training.
     # 'auto', enable on CUDA, no-op on CPU/MPS (safe default).

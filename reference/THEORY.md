@@ -115,9 +115,24 @@ compared with the log of the evaluation size.
 
 A training run splits the samples into a training set and a held-out set,
 evaluates the MI on the held-out set at every epoch, smooths that curve, and
-takes the epoch at its peak. The critic's weights at that epoch are then
+takes the earliest epoch at its top. The critic's weights at that epoch are then
 evaluated on the training samples to give `mi_estimate`. The held-out value at
 the same epoch is `test_mi` in `runs`.
+
+The earliest epoch at the top, not the maximum, because the held-out curve is
+noisy. On a curve that rises and falls the two agree. On a plateau the maximum
+lands wherever the noise happens to be highest, often many epochs into a stretch
+where the network no longer improves on held-out data and only fits its training
+rows further, which raises the training-side value. The curve's noise is
+measured from the curve itself, from its changes between epochs with smooth
+trends removed. The level of the top is the median of the smoothed curve within
+twice that noise of its maximum, and the epoch read is the first whose smoothed
+value comes within half the noise of that level (`epoch_rule='plateau_start'`;
+`'peak'` reads the maximum). `curve_diagnosis` says when the curve cannot
+support the choice: a top that does not stand clearly above the noise, a curve
+still rising when training ends, a top reached within the smoothing's reach of
+the start, or an approach so slow that the start of the top is uncertain. These
+thresholds were set on simulated curves of known shape.
 
 The held-out curve plays the part a bandwidth choice plays in kernel density
 estimation. On the training side the critic can fit ever finer structure. The

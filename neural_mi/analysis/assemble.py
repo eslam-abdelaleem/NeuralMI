@@ -26,7 +26,7 @@ from neural_mi.logger import user_stacklevel
 # carries these as columns of ``runs``; a multi-network repeat keeps them per
 # network under ``details[config_id]['trainings']``.
 NETWORK_KEYS: Tuple[str, ...] = (
-    'train_mi', 'test_mi', 'raw_train_mi', 'best_epoch',
+    'train_mi', 'test_mi', 'raw_train_mi', 'best_epoch', 'peak_epoch', 'curve_diagnosis',
     'conservative_epoch', 'train_mi_at_peak', 'all_mi_negative',
     'eval_size', 'test_eval_blocks', 'train_eval_size', 'train_eval_blocks', 'test_ceiling_mi', 'train_ceiling_mi',
     'test_saturation', 'train_saturation', 'test_trace_saturated_fraction',

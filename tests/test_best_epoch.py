@@ -1,11 +1,12 @@
 # tests/test_best_epoch.py
 """The network evaluated is the one at the reported best epoch.
 
-The best epoch is the peak of the held-out curve smoothed after training, and
-the smoothed value at an epoch depends on the epochs after it. The trainer keeps
-copies of the network for every epoch that can still turn out to be the peak
-(or, for peak_fraction < 1, the first epoch to reach that fraction of it), and
-evaluates that epoch's network. These tests script the held-out curve, record
+The best epoch is read from the held-out curve smoothed after training: its
+peak (epoch_rule='peak'), or the earliest epoch at its top ('plateau_start', the
+default). The smoothed value at an epoch depends on the epochs after it, so the
+trainer keeps copies of the network for every epoch that can still turn out to
+be the one read (for peak_fraction < 1, the first epoch to reach that fraction
+of the peak), and evaluates that epoch's network. These tests script the held-out curve, record
 the network at every epoch, and check which network the reported value came from.
 """
 import numpy as np
@@ -16,6 +17,7 @@ from neural_mi.data import PairedDataset
 from neural_mi.estimators import infonce_lower_bound
 from neural_mi.models.critics import SeparableCritic
 from neural_mi.models.embeddings import MLP
+from neural_mi.training.epochs import choose_epoch
 from neural_mi.training.trainer import Trainer
 
 N, N_TEST, N_EPOCHS = 400, 40, 40          # a random split holds out 40 of 400 rows
@@ -64,14 +66,14 @@ def _train(monkeypatch, curve, custom_smoothing_fn=None, **kwargs):
 @pytest.mark.parametrize('seed', range(5))
 def test_evaluated_network_is_the_one_at_best_epoch(monkeypatch, seed):
     curve = _curve(seed)
-    results, at_epoch, train_side = _train(monkeypatch, curve)
+    results, at_epoch, train_side = _train(monkeypatch, curve, epoch_rule='peak')
     assert results['best_epoch'] == int(np.argmax(Trainer._smooth(None, list(curve), 1.0, 5)))
     assert train_side[-1] == at_epoch[results['best_epoch']]
 
 
 def test_conservative_epoch_evaluates_its_own_network(monkeypatch):
     curve = _curve(0)
-    results, at_epoch, train_side = _train(monkeypatch, curve, peak_fraction=0.5)
+    results, at_epoch, train_side = _train(monkeypatch, curve, peak_fraction=0.5, epoch_rule='peak')
     smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
     expected = int(np.flatnonzero(smoothed >= 0.5 * smoothed.max())[0])
     assert results['conservative_epoch'] == expected < results['best_epoch']
@@ -80,7 +82,7 @@ def test_conservative_epoch_evaluates_its_own_network(monkeypatch):
 
 def test_a_nan_epoch_is_never_chosen(monkeypatch):
     curve = _curve(1, nan_at=12)
-    results, at_epoch, train_side = _train(monkeypatch, curve)
+    results, at_epoch, train_side = _train(monkeypatch, curve, epoch_rule='peak')
     smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
     assert results['best_epoch'] == int(np.nanargmax(smoothed)) != 12
     assert train_side[-1] == at_epoch[results['best_epoch']]
@@ -88,9 +90,22 @@ def test_a_nan_epoch_is_never_chosen(monkeypatch):
 
 def test_custom_smoothing_keeps_every_epoch(monkeypatch):
     curve = _curve(2)
-    results, at_epoch, train_side = _train(monkeypatch, curve, custom_smoothing_fn=np.asarray)
+    results, at_epoch, train_side = _train(monkeypatch, curve, custom_smoothing_fn=np.asarray, epoch_rule='peak')
     assert results['best_epoch'] == int(np.argmax(curve))
     assert train_side[-1] == at_epoch[results['best_epoch']]
+
+
+def test_plateau_start_reads_and_evaluates_the_start_of_the_top(monkeypatch):
+    """The default rule reads the earliest epoch at the top of a plateau, and that epoch's network is evaluated."""
+    e = np.arange(N_EPOCHS)
+    curve = 0.3 * (1 - np.exp(-(e + 1) / 2)) + 0.005 * np.random.default_rng(4).standard_normal(N_EPOCHS)
+    results, at_epoch, train_side = _train(monkeypatch, curve)
+    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
+    expected, peak, diagnosis = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5),
+                                             ran_to_limit=True)
+    assert results['best_epoch'] == expected < results['peak_epoch'] == peak
+    assert results['curve_diagnosis'] == diagnosis
+    assert train_side[-1] == at_epoch[expected]
 
 
 def test_reach_covers_the_smoothing():

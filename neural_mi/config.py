@@ -143,6 +143,7 @@ class Training:
     use_amp: Optional[Union[bool, str]] = None
     eval_train: Optional[Union[bool, float, int, str]] = None   # True | 'full' | 1.0 | frac | count
     peak_fraction: Optional[float] = None
+    epoch_rule: Optional[str] = None               # 'plateau_start' | 'peak'
     smoothing_sigma: Optional[float] = None
     median_window: Optional[int] = None
     min_improvement: Optional[float] = None

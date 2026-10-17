@@ -811,6 +811,7 @@ def _run_flat(
     scheduler_params: Optional[Dict[str, Any]] = None,
     eval_train: Union[bool, float, int] = False,
     peak_fraction: float = 1.0,
+    epoch_rule: str = 'plateau_start',
     dropout: Optional[float] = None,
     norm_layer: Optional[str] = None,
     use_amp: Union[bool, str] = 'auto',
@@ -940,6 +941,7 @@ def _run_flat(
         _inject(base_params, 'scheduler_params', scheduler_params)
         _inject(base_params, 'eval_train', eval_train)
         _inject(base_params, 'peak_fraction', peak_fraction)
+        _inject(base_params, 'epoch_rule', epoch_rule)
         _inject(base_params, 'dropout', dropout)
         _inject(base_params, 'norm_layer', norm_layer)
         _inject(base_params, 'use_amp', use_amp)

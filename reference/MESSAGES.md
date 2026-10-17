@@ -151,9 +151,33 @@ is wide. With long windows and few samples it commonly overfits. Reduce
 `window_size` or `hidden_dim`. An encoder that reads the window axis itself
 (`cnn`, `gru`, `tcn`, `lru`) also helps.
 
-**`Training completed all ... epoch(s) without early stopping and the best (smoothed) test MI occurred at the final epoch`**
-The reported value may be under-trained because the MI may still have been
-rising when training stopped. Raise `n_epochs`.
+**`The held-out MI was still rising when training reached n_epochs=...`**
+Training used every epoch it was allowed, and the smoothed held-out curve rose
+by more than 3 times its own noise over the last 20 epochs. The reported value
+may be under-trained. Raise `n_epochs`. A `patience` below `n_epochs` then ends
+training once the curve stops improving.
+
+**`The held-out MI curve does not rise clearly above its own epoch-to-epoch noise`**
+The top of the smoothed held-out curve stands less than 8 times the curve's
+noise above zero. The noise is measured from the curve itself, from its changes
+between epochs with any smooth trend removed. The data then settle neither the
+epoch the estimate is read at nor the estimate. A curve whose values are all
+non-positive gets the message below instead.
+
+**`The held-out MI reached its top at epoch ... and fell clearly soon after`**
+The earliest epoch at the top of the smoothed curve lies within the smoothing's
+reach of the start (6 epochs at the default `median_window` and
+`smoothing_sigma`), and the curve falls by more than 3 noise units within 8
+epochs after it. The smoothing reflects the curve at its start, so the start of
+the curve placed that epoch. A lower `learning_rate` spreads the rise over more
+epochs.
+
+**`The held-out MI approached its top so slowly that where the top starts is uncertain by several epochs`**
+The smoothed curve took 8 or more epochs to climb its last 2.5 noise units to
+the level of its top. The start of such a top cannot be located to within a few
+epochs, and the reported value, read on the training side at that epoch, can
+depend on where it is placed. `result.plot()` shows the curve with the epoch
+read and the peak.
 
 **`All test MI values in the training history are non-positive`**
 Because the network learned nothing that generalises, the reported value is 0.

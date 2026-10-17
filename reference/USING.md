@@ -47,9 +47,9 @@ result.summary()
 ```
 
 `run()` holds out 10% of the samples in contiguous blocks, trains a critic
-network on the rest, finds the epoch at which the smoothed MI on the held-out
-blocks peaks, and reports the MI on the training samples at that epoch as
-`mi_estimate`. The value is in bits unless `Output(units='nats')` asks for
+network on the rest, finds the earliest epoch at which the smoothed MI on the
+held-out blocks reaches its top, and reports the MI on the training samples at
+that epoch as `mi_estimate`. The value is in bits unless `Output(units='nats')` asks for
 nats. [THEORY.md](THEORY.md#the-reported-number) explains why the training side
 is the value reported.
 
@@ -105,7 +105,8 @@ and is never an interval on the population value
 ([THEORY.md](THEORY.md#the-spread-over-repeats)).
 
 `runs` has one row per repeat holding the repeat's value `mi` and the
-diagnostics of the network behind it: `test_mi`, `best_epoch`, `eval_size`,
+diagnostics of the network behind it: `test_mi`, `best_epoch` (the epoch read)
+and `peak_epoch` (the maximum of the smoothed held-out curve), `curve_diagnosis`, `eval_size`,
 `train_eval_size` and their blocks (`test_eval_blocks`, `train_eval_blocks`), the ceilings `train_ceiling_mi` and `test_ceiling_mi`, how
 close each side came to its ceiling (`train_saturation`, `test_saturation`),
 `window_retention` and the window counts for windowed data, and the held-out MI

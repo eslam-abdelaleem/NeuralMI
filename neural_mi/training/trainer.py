@@ -19,6 +19,7 @@ from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
                             AlignedStreams)
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
+from neural_mi.training.epochs import EPOCH_RULES, choose_epoch, warn_about_curve
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks)
 from neural_mi.augmentations import apply_augmentations
@@ -224,6 +225,7 @@ class Trainer:
               max_index_reduction: float = 0.05,
               eval_train: Union[bool, float, int] = False,
               peak_fraction: float = 1.0,
+              epoch_rule: str = 'plateau_start',
               scheduler: Optional[Any] = None,
               track_embeddings: Union[bool, float, int, str] = False,
               return_rotated_embeddings: bool = False,
@@ -370,7 +372,8 @@ class Trainer:
 
             An unrecognised value raises ``ValueError``.
         peak_fraction : float, optional
-            Controls how the best epoch is selected for reporting train MI.
+            With ``epoch_rule='peak'``, how the epoch for reporting train MI is
+            taken relative to the peak.
 
             - ``1.0`` (default), use the epoch where smoothed test MI is maximised.
             - ``< 1.0``: use the first epoch whose smoothed test MI reaches
@@ -382,6 +385,15 @@ class Trainer:
               ``'conservative_epoch'`` (the epoch used) and
               ``'train_mi_at_peak'`` (train MI at the actual peak epoch, for
               comparison).
+        epoch_rule : {'plateau_start', 'peak'}, optional
+            Which epoch the reported values are read at (``best_epoch``), from
+            the smoothed held-out curve. ``'plateau_start'`` (default) reads the
+            earliest epoch at its top, within half the curve's own noise of the
+            top's level: the peak of a clean peak, the start of a plateau.
+            ``'peak'`` reads the smoothed maximum. Either way the results give
+            the maximum as ``peak_epoch`` and a diagnosis of the curve as
+            ``curve_diagnosis``, and warn when the curve cannot support the
+            choice (``neural_mi/training/epochs.py``).
         scheduler : torch.optim.lr_scheduler instance, optional
             A PyTorch learning-rate scheduler to step at the end of each epoch.
             ``ReduceLROnPlateau`` is stepped with the current test MI as the metric
@@ -412,6 +424,14 @@ class Trainer:
         Dict[str, Any]
             A dictionary containing the results of the training run.
         """
+        if epoch_rule not in EPOCH_RULES:
+            raise ValueError(f"epoch_rule={epoch_rule!r} is not a recognised value. Use one of {EPOCH_RULES}.")
+        if peak_fraction < 1.0 and epoch_rule != 'peak':
+            raise ValueError(
+                f"peak_fraction={peak_fraction} takes a fraction of the peak and applies with "
+                f"epoch_rule='peak'. epoch_rule={epoch_rule!r} already reads the earliest epoch at the "
+                f"top of the held-out curve."
+            )
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         self._rng = np.random.RandomState(int(split_seed) % (2 ** 31)) if split_seed is not None else np.random
         # Any bundle carrying a window grid is temporal, not only the
@@ -709,12 +729,13 @@ class Trainer:
         _rotation_history_y: list = []
         # Copies of the network at every epoch that can still turn out to be the
         # one evaluated: the peak of the held-out curve smoothed after training,
-        # or for peak_fraction < 1 the first epoch to reach that fraction of it.
-        # An epoch's smoothed value depends on up to _reach epochs after it. Once
-        # it is final, the epoch is kept only if it beats every earlier final
-        # epoch (the first epoch to reach any fraction of the peak always does),
-        # and with peak_fraction = 1 it replaces the one it beats. A custom
-        # smoothing function has no known reach, so every epoch is kept.
+        # or the first epoch to reach a threshold below it (epoch_rule
+        # 'plateau_start', or peak_fraction < 1). An epoch's smoothed value
+        # depends on up to _reach epochs after it. Once it is final, the epoch is
+        # kept only if it beats every earlier final epoch (the first epoch to
+        # reach any threshold always does), and when only the peak is read it
+        # replaces the one it beats. A custom smoothing function has no known
+        # reach, so every epoch is kept.
         _states: Dict[int, Any] = {}
         _reach = None if self.custom_smoothing_fn else self._smoothing_reach(smoothing_sigma, median_window)
         _record, _record_ep = -np.inf, None
@@ -867,7 +888,7 @@ class Trainer:
                     and not np.isnan(history[max(0, _final_ep - _reach):]).any()):
                 _value = self._smooth(history, smoothing_sigma, median_window)[_final_ep]
                 if _value > _record:
-                    if peak_fraction >= 1.0 and _record_ep is not None:
+                    if epoch_rule == 'peak' and peak_fraction >= 1.0 and _record_ep is not None:
                         del _states[_record_ep]
                     _record, _record_ep = _value, _final_ep
                 else:
@@ -935,7 +956,8 @@ class Trainer:
         )
         if np.isnan(_smoothed_history).all():
             raise TrainingError("Training failed to produce a valid model checkpoint.")
-        best_ep = int(np.nanargmax(_smoothed_history))
+        best_ep, peak_ep, curve_diagnosis = choose_epoch(history, _smoothed_history, epoch_rule, _reach,
+                                                         ran_to_limit=len(history) == n_epochs)
         best_model_state = _states[best_ep]
         self.model.load_state_dict(best_model_state)
         if save_best_model_path:
@@ -1018,25 +1040,14 @@ class Trainer:
                         f"close to arbitrary. Consider increasing max_eval_samples."
                     )
 
-        # Early stopping is effectively off by default (patience defaults to
-        # 1000), so nothing else signals "training simply ran out of epochs while
-        # test MI was still climbing." Since these are lower-bound estimators,
-        # under-training always biases the reported value downward -- the
-        # dangerous direction -- silently.
-        if no_improve < patience and len(history) > 1 and best_ep >= len(history) - 1:
-            warnings.warn(
-                f"Training completed all {len(history)} epoch(s) without early "
-                f"stopping and the best (smoothed) test MI occurred at the final "
-                f"epoch. MI may still have been rising when training stopped. The "
-                f"reported estimate may then be an under-trained lower bound. Raise "
-                f"n_epochs or lower patience to let early stopping act.",
-                UserWarning,
-                stacklevel=user_stacklevel(),
-            )
-
         # All-negative flag (from test MI history; warning deferred until _raw_train_mi is set)
         valid_history = [v for v in history if not np.isnan(v)]
         _all_mi_negative = bool(valid_history and max(valid_history) <= 0)
+
+        # What the held-out curve says about the epoch read. A curve that never
+        # rose above zero has its own message below.
+        if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
+            warn_about_curve(curve_diagnosis, best_ep, peak_ep, _reach, n_epochs)
 
         # At this point the model is loaded at best_ep; final_train_mi is the fresh eval there.
         _best_ep_train_mi = final_train_mi  # save for train_mi_at_peak reporting
@@ -1105,6 +1116,8 @@ class Trainer:
             'raw_train_mi': _raw_train_mi,
             'test_mi': final_test_mi,
             'best_epoch': best_ep,
+            'peak_epoch': peak_ep,
+            'curve_diagnosis': curve_diagnosis,
             'test_mi_history': history,
             'all_mi_negative': _all_mi_negative,
         }

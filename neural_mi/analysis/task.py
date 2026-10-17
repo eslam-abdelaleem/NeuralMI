@@ -410,6 +410,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         max_index_reduction=params.get('max_index_reduction', 0.05),
         eval_train=params.get('eval_train', False),
         peak_fraction=params.get('peak_fraction', 1.0),
+        epoch_rule=params.get('epoch_rule', 'plateau_start'),
         scheduler=scheduler,
         track_embeddings=params.get('track_embeddings', False),
         return_rotated_embeddings=params.get('return_rotated_embeddings', False),

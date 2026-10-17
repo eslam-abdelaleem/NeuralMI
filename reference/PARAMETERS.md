@@ -157,9 +157,10 @@ The optimisation loop and what is evaluated after it.
 | `batch_size` | `128` | Training batch size. It sets how many negatives each training step sees and does not cap the reported estimate. |
 | `patience` | `1000` | Epochs without improvement before training stops. The default exceeds `n_epochs` and keeps early stopping off until this is lowered. Stopping decides only when training ends: the network evaluated is always the one at `best_epoch`. |
 | `min_improvement` | `0.001` | Rise in the smoothed test MI that counts as an improvement for `patience`. |
-| `median_window` | `5` | Width of the median filter on the test-MI curve before its peak is read. |
+| `median_window` | `5` | Width of the median filter on the test-MI curve before the epoch is read from it. |
 | `smoothing_sigma` | `1.0` | Width of the Gaussian filter applied after the median filter. |
-| `peak_fraction` | `1.0` | Below 1, report the first epoch whose smoothed test MI reaches this fraction of the peak. The chosen epoch is `conservative_epoch` in `runs`. |
+| `epoch_rule` | `'plateau_start'` | Which epoch of the smoothed held-out curve the reported values are read at (`best_epoch`): the earliest at its top, within half the curve's own noise of the top's level (`'plateau_start'`), or its maximum (`'peak'`). On a clean peak the two agree; on a plateau `'plateau_start'` reads its start, before the network fits its training rows further. `runs` gives the maximum as `peak_epoch` and a diagnosis of the curve as `curve_diagnosis`. |
+| `peak_fraction` | `1.0` | With `epoch_rule='peak'`: below 1, report the first epoch whose smoothed test MI reaches this fraction of the peak. The chosen epoch is `conservative_epoch` in `runs`. |
 | `optimizer` | `'adam'` | `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`, or a `torch.optim.Optimizer` class. |
 | `optimizer_params` | `{}` | Extra arguments for the optimiser, such as `{'weight_decay': 1e-4}`. |
 | `scheduler` | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or a `torch.optim.lr_scheduler` class. |
