@@ -157,8 +157,11 @@ is wide. With long windows and few samples it commonly overfits. Reduce
 **`The held-out MI was still rising when training reached n_epochs=...`**
 Training used every epoch it was allowed, and the smoothed held-out curve rose
 by more than 3 times its own noise over the last 20 epochs. The reported value
-may be under-trained. Raise `n_epochs`. A `patience` below `n_epochs` then ends
-training once the curve stops improving.
+may be under-trained. Raise `n_epochs`, and a `patience` below `n_epochs` then
+ends training once the curve stops improving. A higher `learning_rate` gets
+further in each epoch instead. Raised too far, it brings the top into the first
+few epochs, which the message about a top reached at epoch ... and gone soon
+after reports.
 
 **`The held-out MI curve does not rise clearly above its own epoch-to-epoch noise`**
 The top of the smoothed held-out curve stands less than 8 times the curve's

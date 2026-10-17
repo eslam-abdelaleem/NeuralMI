@@ -99,7 +99,8 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
     elif diagnosis == 'still rising':
         warnings.warn(
             f"The held-out MI was still rising when training reached n_epochs={n_epochs}. The estimate may then "
-            f"be an under-trained lower bound. Raise n_epochs.", UserWarning, stacklevel=user_stacklevel())
+            f"be an under-trained lower bound. Raise n_epochs, or learning_rate so that each epoch goes further.",
+            UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'too fast':
         warnings.warn(
             f"The held-out MI reached its top at epoch {peak} and fell clearly soon after. A top this early lies "
