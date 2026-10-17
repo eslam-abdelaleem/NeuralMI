@@ -117,3 +117,16 @@ def test_reach_covers_the_smoothing():
         b = a.copy()
         b[30 + reach + 1:] += 10 * rng.standard_normal(60 - 31 - reach)
         assert Trainer._smooth(None, list(a), sigma, window)[30] == Trainer._smooth(None, list(b), sigma, window)[30]
+
+
+def test_peak_fraction_steps_back_from_a_saturating_top_under_either_rule(monkeypatch):
+    """peak_fraction reads the first epoch at that fraction of the maximum when it is earlier than the epoch read,
+    as on a curve that saturates at the estimator's ceiling."""
+    e = np.arange(N_EPOCHS)
+    curve = 0.3 * (1 - np.exp(-(e + 1) / 4)) + 0.002 * np.random.default_rng(5).standard_normal(N_EPOCHS)
+    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
+    expected = int(np.flatnonzero(smoothed >= 0.8 * smoothed.max())[0])
+    for rule in ('plateau_start', 'peak'):
+        results, at_epoch, train_side = _train(monkeypatch, curve, peak_fraction=0.8, epoch_rule=rule)
+        assert results['conservative_epoch'] == expected < results['best_epoch']
+        assert at_epoch[expected] in train_side

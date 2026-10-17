@@ -160,7 +160,7 @@ The optimisation loop and what is evaluated after it.
 | `median_window` | `5` | Width of the median filter on the test-MI curve before the epoch is read from it. |
 | `smoothing_sigma` | `1.0` | Width of the Gaussian filter applied after the median filter. |
 | `epoch_rule` | `'plateau_start'` | Which epoch of the smoothed held-out curve the reported values are read at (`best_epoch`): the earliest at its top, within half the curve's own noise of the top's level (`'plateau_start'`), or its maximum (`'peak'`). On a clean peak the two agree; on a plateau `'plateau_start'` reads its start, before the network fits its training rows further. `runs` gives the maximum as `peak_epoch` and a diagnosis of the curve as `curve_diagnosis`. |
-| `peak_fraction` | `1.0` | With `epoch_rule='peak'`: below 1, report the first epoch whose smoothed test MI reaches this fraction of the peak. The chosen epoch is `conservative_epoch` in `runs`. |
+| `peak_fraction` | `1.0` | Below 1, report the first epoch whose smoothed test MI reaches this fraction of its maximum, when that is earlier than the epoch `epoch_rule` reads. Meant for a curve that saturates, whose top may be the estimator's ceiling rather than the information; the value is then read before the curve reaches its top. The chosen epoch is `conservative_epoch` in `runs`. |
 | `optimizer` | `'adam'` | `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`, or a `torch.optim.Optimizer` class. |
 | `optimizer_params` | `{}` | Extra arguments for the optimiser, such as `{'weight_decay': 1e-4}`. |
 | `scheduler` | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or a `torch.optim.lr_scheduler` class. |

@@ -36,8 +36,11 @@ probably flattened against the bound. Raise `max_eval_samples` (and
 
 **`Peak-epoch selection may be unreliable`**
 When much of the smoothed held-out MI curve sits near its ceiling, the epoch
-with the largest value and the value reported at it are close to arbitrary.
-Raise `max_eval_samples` so the curve has room to separate.
+with the largest value and the value reported at it are close to arbitrary, and
+the top may be the ceiling rather than the information. Raise
+`max_eval_samples` so the curve has room to separate, or set `peak_fraction`
+below 1 to read the value at an earlier epoch, before the curve reaches its
+top.
 
 **`Rigorous fit uses the saturated gamma=...`**
 The deep rungs of the ladder have the smallest chunks and the lowest ceilings.

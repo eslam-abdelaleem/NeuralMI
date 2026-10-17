@@ -41,7 +41,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   the noise, a curve still rising when training ends (this replaces the warning
   for a best epoch at the final epoch), a top reached within the smoothing's
   reach of the start, or an approach so slow that the start of the top is
-  uncertain. `peak_fraction` below 1 applies with `epoch_rule='peak'`.
+  uncertain. `peak_fraction` below 1 takes its fraction of the maximum and
+  reads that epoch when it is earlier than the epoch the rule reads.
 - The CNN encoder (`embedding_model='cnn'`) reads its convolutions at every
   position of the window by default, so it keeps where in the window a pattern
   occurs. It used to average them over the window, which discards the lag of a

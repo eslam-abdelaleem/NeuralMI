@@ -372,13 +372,14 @@ class Trainer:
 
             An unrecognised value raises ``ValueError``.
         peak_fraction : float, optional
-            With ``epoch_rule='peak'``, how the epoch for reporting train MI is
-            taken relative to the peak.
+            A conservative epoch for a held-out curve that saturates, where its
+            top may be the estimator's ceiling rather than the information.
 
-            - ``1.0`` (default), use the epoch where smoothed test MI is maximised.
+            - ``1.0`` (default), use the epoch the ``epoch_rule`` reads.
             - ``< 1.0``: use the first epoch whose smoothed test MI reaches
-              ``peak_fraction`` of its peak.  This gives a
-              conservative estimate that avoids the noisiest tail of training.
+              ``peak_fraction`` of its maximum, when that is earlier than the
+              epoch the rule reads.  The reported value is then read before the
+              curve reaches its top.
               Both the conservative and best-epoch estimates are obtained via
               fresh full evaluations at the end of training (no per-epoch train
               tracking is needed).  The results dict will contain
@@ -426,12 +427,6 @@ class Trainer:
         """
         if epoch_rule not in EPOCH_RULES:
             raise ValueError(f"epoch_rule={epoch_rule!r} is not a recognised value. Use one of {EPOCH_RULES}.")
-        if peak_fraction < 1.0 and epoch_rule != 'peak':
-            raise ValueError(
-                f"peak_fraction={peak_fraction} takes a fraction of the peak and applies with "
-                f"epoch_rule='peak'. epoch_rule={epoch_rule!r} already reads the earliest epoch at the "
-                f"top of the held-out curve."
-            )
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         self._rng = np.random.RandomState(int(split_seed) % (2 ** 31)) if split_seed is not None else np.random
         # Any bundle carrying a window grid is temporal, not only the
@@ -1037,7 +1032,8 @@ class Trainer:
                         f"history sits above {TEST_TRACE_SATURATION_THRESHOLD:.0%} of the "
                         f"test ceiling ({_test_ceiling_mi:.3f} {_units}). With the trace "
                         f"riding near its ceiling, the epoch with the (noisy) maximum is "
-                        f"close to arbitrary. Consider increasing max_eval_samples."
+                        f"close to arbitrary. Consider increasing max_eval_samples, or a peak_fraction "
+                        f"below 1 to read the value before the curve reaches its ceiling."
                     )
 
         # All-negative flag (from test MI history; warning deferred until _raw_train_mi is set)
@@ -1053,13 +1049,13 @@ class Trainer:
         _best_ep_train_mi = final_train_mi  # save for train_mi_at_peak reporting
 
         # Conservative epoch: the first epoch whose smoothed test MI reaches
-        # peak_fraction of the peak. Its network is evaluated afresh, then the
-        # best-epoch network is restored.
+        # peak_fraction of the maximum, when that is earlier than the epoch read.
+        # Its network is evaluated afresh, then the best-epoch network is restored.
         _conservative_ep = None
         _conservative_train_mi = None
         if peak_fraction < 1.0:
-            _peak = _smoothed_history[best_ep]
-            _conservative_ep = (int(np.flatnonzero(_smoothed_history >= peak_fraction * _peak)[0])
+            _peak = _smoothed_history[peak_ep]
+            _conservative_ep = (min(best_ep, int(np.flatnonzero(_smoothed_history >= peak_fraction * _peak)[0]))
                                 if _peak > 0 else best_ep)
             if _conservative_ep != best_ep:
                 self.model.load_state_dict(_states[_conservative_ep])
