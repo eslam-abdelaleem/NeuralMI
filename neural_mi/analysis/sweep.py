@@ -18,7 +18,7 @@ from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.device import with_device
 from neural_mi.estimators import NONPARAMETRIC_CONDITIONAL
 from neural_mi.parallel import worker_pool
-from neural_mi.embeddings_io import with_model_labels
+from neural_mi.embeddings_io import saved_paths, with_model_labels
 from neural_mi.utils import mi_report_units
 from neural_mi.utils import _ensure_cpu
 from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
@@ -392,6 +392,15 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
             f"true value is small.",
             CombinationWarning, stacklevel=user_stacklevel(),
         )
+
+
+def rung(raw: Dict[str, Any], terms) -> Any:
+    """One rung of a rigorous ladder of a difference quantity, from its call's result: the signed
+    combination of the ``(key, sign)`` terms as measured, a measurement whatever its sign, with the saved
+    networks' paths when there are any."""
+    value = float(sum(sign * raw[key] for key, sign in terms))
+    paths = saved_paths(raw)
+    return (value, paths) if paths else value
 
 
 def combined_spread(value_lists, signs) -> Optional[float]:

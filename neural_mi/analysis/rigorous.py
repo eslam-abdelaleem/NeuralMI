@@ -213,9 +213,9 @@ def _unfittable_ladder(kept: pd.DataFrame, where: str) -> Optional[Dict[str, Any
 def _drop_zero_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int]:
     """The ladder without its rungs reported as 0, and how many there were.
 
-    A rung is 0 when its network learned nothing that generalises or its value
-    came out negative. Either way it produced nothing, like a failed chunk, and
-    the fit leaves it out. A gamma with no rung left drops out of the fit, where
+    A rung is 0 when the networks behind it learned nothing that generalises (a
+    rung of a difference carries its signed measured value otherwise). It
+    produced nothing, like a failed chunk, and the fit leaves it out. A gamma with no rung left drops out of the fit, where
     ``min_gamma_points`` decides whether enough remain.
     """
     is_zero = group['train_mi'] == 0
@@ -228,8 +228,8 @@ def _drop_zero_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int
     warnings.warn(
         f"{where}{int(is_zero.sum())} of {len(group)} rungs of the gamma ladder produced "
         f"nothing (reported as 0) and are left out of the fit ({counts}). A rung produces "
-        f"nothing when its network learned nothing that generalises or its value came out "
-        f"negative. runs counts them in zero_rungs.",
+        f"nothing when the networks behind it learned nothing that generalises. runs counts "
+        f"them in zero_rungs.",
         UserWarning, stacklevel=user_stacklevel()
     )
     half = [int(g) for g, r in per_gamma.iterrows() if r['sum'] >= 0.5 * r['count']]

@@ -14,11 +14,10 @@ from typing import Dict, Any, Optional
 
 from neural_mi.data.shift_windowing import (SHIFT_PACK_CONCAT, SHIFT_PACK_SECOND,
                                             _REGULAR_GRID_PROCESSOR_TYPES)
-from neural_mi.analysis.sweep import (combined_spread, _joint_marginal_difference,
+from neural_mi.analysis.sweep import (combined_spread, rung, _joint_marginal_difference,
                                       amplification_factor)
 import warnings
 from neural_mi.logger import user_stacklevel
-from neural_mi.embeddings_io import saved_paths
 
 # Continuous windowing adds a deliberate "+1" sample as an interpolation
 # safety buffer at window edges (ContinuousWindowDataset._compute_max_samples_
@@ -484,5 +483,4 @@ def _cmi_rigorous_scalar(x_s, y_s, bp, w_data=None, sweep_grid=None,
     raw = run_conditional_mi(x_s, y_s, w_data, bp, sweep_grid=sweep_grid,
                              n_workers=1, align=align, c_data=c_data,
                              raw_deferred=raw_deferred, w_processor_type=w_processor_type)
-    paths = saved_paths(raw)
-    return (raw['cmi_estimate'], paths) if paths else raw['cmi_estimate']
+    return rung(raw, (('mi_xw_y', 1), ('mi_w_y', -1)))

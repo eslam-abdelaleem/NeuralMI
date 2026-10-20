@@ -96,9 +96,12 @@ of the whole procedure on the same data. Repeats are indexed by `run_id`.
 
 `dataframe` always has `config_id`, the grid and axis keys, `mi_mean`, `mi_std`,
 `n_runs` and `n_zero`, followed by the columns of the mode (listed per mode in
-[Choosing the analysis](#choosing-the-analysis)). `mi_mean` and `mi_std` use the
-repeats that produced a value. A repeat reported as 0 produced nothing and is
-counted in `n_zero` ([THEORY.md](THEORY.md#the-spread-over-repeats)). `mi_std`
+[Choosing the analysis](#choosing-the-analysis)). For a difference quantity or a
+rigorous fit, `mi_mean` and `mi_std` use every repeat's measured value,
+negative ones included, `mi_mean` is reported as 0 when it is negative, and
+`mi_raw_mean` keeps the measured mean. For a single network they use the
+repeats that produced a value, and a repeat reported as 0 produced nothing and
+is counted in `n_zero` ([THEORY.md](THEORY.md#the-spread-over-repeats)). `mi_std`
 is the spread over repeats of the procedure on the same data and is NaN below
 two repeats. It says how much the estimate moves when the networks are retrained
 and is never an interval on the population value

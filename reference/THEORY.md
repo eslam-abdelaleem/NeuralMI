@@ -259,9 +259,11 @@ entropy formed from two networks, an extrapolated value from `mode='rigorous'`
 and a point of a precision curve are 0 when they come out negative. The library
 warns in every case and keeps the measured value in `runs` under `raw_train_mi`
 for a network and under `mi_raw` or `te_yx_raw` otherwise. Interaction
-information is signed and is reported as measured. Averages over repeats treat a
-value reported as 0 as a run that produced nothing and leave it out ([the spread
-over repeats](#the-spread-over-repeats)).
+information is signed and is reported as measured. An average over repeats of a
+single network treats a value reported as 0 as a run that produced nothing and
+leaves it out. A repeat of a combination or a fit is a measurement whatever its
+sign, so its average uses every repeat's measured value
+([the spread over repeats](#the-spread-over-repeats)).
 
 ### Finite-sampling bias
 
@@ -304,9 +306,11 @@ largest values of $\gamma$ until the quadratic term's t-statistic $|a_2| /
 that reaches `min_gamma_points` with the trend still curved stops there and sets
 `linear_region_found` to `False`.
 
-The fit treats a rung reported as 0 ([the reported
-number](#the-reported-number)) as a failed chunk that produced nothing and
-counts it in `zero_rungs`. `min_gamma_points` then decides whether enough values
+The fit treats a rung reported as 0, one whose networks learned nothing that
+generalises ([the reported number](#the-reported-number)), as a failed chunk
+that produced nothing and counts it in `zero_rungs`. A rung of a difference
+carries its signed measured value, a negative one included, since leaving out
+the negative rungs of a small difference would push its fit up. `min_gamma_points` then decides whether enough values
 of $\gamma$ remain once those with no rung left have dropped out. The fit warns
 about zero rungs and warns again where they make up half or more of a $\gamma$.
 
@@ -334,9 +338,14 @@ the truth.
 ### The spread over repeats
 
 `mi_mean` and `mi_std` are the mean and standard deviation of the result over
-repeats that retrain the networks from new initialisations on the same data.
-Repeats that produced nothing are reported as 0, counted in `n_zero` and left
-out of both statistics. A row reports 0 only when all of its repeats produced
+repeats that retrain the networks from new initialisations on the same data. A
+repeat of a difference quantity or of a rigorous fit is a measurement whatever
+its sign: a negative one is the spread of a small value crossing zero, and
+leaving it out would select the positive repeats and read high. Their row
+averages every repeat's measured value, reports the mean as 0 when it is
+negative and keeps it as `mi_raw_mean`. A single network's repeat reported as 0
+learned nothing that generalises: it is counted in `n_zero` and left out of both
+statistics, and a row reports 0 only when all of its repeats produced
 nothing. Among clearly positive repeats a zero is most likely a failed run. When
 every repeat is near zero the quantity itself may be near zero. Since the
 repeats share their data, the spread says nothing about how the estimate would

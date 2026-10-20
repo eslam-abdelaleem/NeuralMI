@@ -4,6 +4,7 @@ import math
 import os
 
 import numpy as np
+import pandas as pd
 import pytest
 import matplotlib.pyplot as plt
 from unittest.mock import patch
@@ -350,9 +351,22 @@ class TestRepeatsThatProducedNothing:
         assert row['mi_mean'] == 0.0 and messages == []
 
     def test_the_null_is_averaged_the_same_way(self):
+        """A trial's row is summarised over the same repeats as the observed row."""
         from neural_mi.analysis.permutation import row_values
         produced = {'rows': [{'config_id': 0, 'run_id': r, 'mi': v, 'raw_train_mi': v - 0.1}
                              for r, v in enumerate([0.3, 0.0, 0.5])],
                     'details': {}, 'axis_keys': []}
         mi, raw = row_values('estimate', produced)[(0,)]
-        assert mi == pytest.approx(0.4) and raw == pytest.approx(0.1666667)
+        assert mi == pytest.approx(0.4) and raw == pytest.approx(0.3)
+
+    def test_measured_repeats_count_whatever_their_sign(self):
+        """A difference's repeats carry their measured value: a negative one is part of the mean and the
+        spread, and a negative mean is reported as 0 and kept in mi_raw_mean."""
+        from neural_mi.analysis.assemble import aggregate
+        runs = pd.DataFrame({'config_id': 0, 'run_id': range(3), 'mi': [0.075, 0.0, 0.0],
+                             'mi_raw': [0.075, -0.25, -0.30], 'te_yx': [0.1, 0.0, 0.2],
+                             'te_yx_raw': [0.1, -0.4, 0.2]})
+        row = aggregate(runs, ['config_id'], mean_cols=['te_yx']).iloc[0]
+        assert row['mi_raw_mean'] == pytest.approx(-0.475 / 3) and row['mi_mean'] == 0.0
+        assert row['mi_std'] == pytest.approx(np.std([0.075, -0.25, -0.30], ddof=1)) and row['n_zero'] == 0
+        assert row['te_yx_mean'] == 0.0                                  # the mean of -0.1 is floored

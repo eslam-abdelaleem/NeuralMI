@@ -100,10 +100,12 @@ result is one conditional estimate, and a negative value is a true value near
 zero read with the estimator's bias and spread.
 
 **`... repeats produced nothing (reported as 0) and are left out of mi_mean and mi_std`**, **`... rows of dataframe hold ... of their ... repeats that produced nothing`**
-A repeat is reported as 0 when its network learned nothing that generalises or
-its value came out negative. `mi_mean` and `mi_std` average the other repeats,
-`n_zero` counts the zeros in each row, and a row whose repeats all produced
-nothing reports 0. Among clearly positive repeats a zero is most likely a failed
+A single network's repeat is reported as 0 when it learned nothing that
+generalises or its value came out negative. `mi_mean` and `mi_std` average the
+other repeats, `n_zero` counts the zeros in each row, and a row whose repeats
+all produced nothing reports 0. A repeat of a difference quantity or a rigorous
+fit is a measurement whatever its sign and is never left out: its row averages
+every repeat's measured value. Among clearly positive repeats a zero is most likely a failed
 run. When every repeat is near zero the quantity itself may be near zero. `runs`
 keeps every repeat with its measured value.
 
@@ -325,9 +327,10 @@ straight. Use a smaller `gamma_range` or more data.
 `Training(min_reliable_samples=...)` moves the point at which this fires.
 
 **`... of ... rungs of the gamma ladder produced nothing`**
-Those rungs learned nothing that generalises or came out negative. The fit
-leaves them out like failed chunks and counts them in the `zero_rungs` column of
-`runs`. The message gives the count at each $\gamma$.
+The networks behind those rungs learned nothing that generalises. A rung of a
+difference quantity carries its signed measured value otherwise, a negative one
+included. The fit leaves them out like failed chunks and counts them in the
+`zero_rungs` column of `runs`. The message gives the count at each $\gamma$.
 
 **`...half or more of the rungs produced nothing at gamma=...`**
 The chunks at those values of $\gamma$ are likely too small to estimate the

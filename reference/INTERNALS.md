@@ -100,11 +100,14 @@ above zero or its training-side value came out negative. The measured value
 stays in `raw_train_mi`. A combined value gets the same rule where it is formed,
 through `modes._floor_at_zero`: in `_difference_rows` for conditional MI and
 transfer entropy, in `_fit_row` for an extrapolation, and in the precision rows.
-`modes._floor_at_zero` keeps the measured value as `<key>_raw`. Because
-`_joint_marginal_difference` returns the difference floored the same way, a rung
-of a rigorous ladder follows the rule too. `assemble.aggregate` leaves the
-values reported as 0 out of `mi_mean` and `mi_std` and counts them in `n_zero`.
-`rigorous._drop_zero_rungs` leaves the rungs reported as 0 out of the fit.
+`modes._floor_at_zero` keeps the measured value as `<key>_raw`. `assemble.aggregate` averages the
+measured values (`mi_raw`, or `<col>_raw` for a column in `mean_cols`) wherever a
+repeat carries one, and floors only the mean. Elsewhere it leaves the values
+reported as 0 out of `mi_mean` and `mi_std` and counts them in `n_zero`. The
+permutation test summarises each trial with `aggregate` too. A rung of a
+difference's rigorous ladder is its signed measured value (`sweep.rung`), and
+`rigorous._drop_zero_rungs` leaves out only the rungs reported as 0, whose
+networks learned nothing.
 Interaction information is signed and is left as measured.
 
 ### Processor parameters in a grid

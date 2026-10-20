@@ -169,11 +169,17 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
               std_cols: Iterable[str] = ()) -> pd.DataFrame:
     """One row per group: ``mi_mean``, ``mi_std``, ``n_runs``, ``n_zero`` and column means.
 
-    A repeat reported as 0 produced nothing: its network learned nothing that
-    generalises, or its value came out negative. The means and spreads use the
-    repeats that produced a value, and ``n_zero`` counts the others. A group
-    whose repeats all produced nothing reports 0. ``mi_std`` is the sample
-    standard deviation across the repeats used and is NaN below two, never 0. ``mean_cols`` are averaged into
+    A repeat that carries its measured value in ``mi_raw`` (a difference of
+    networks, a rigorous fit) is a measurement whatever its sign, and a
+    negative one is part of the spread of a small value: ``mi_mean`` is the
+    mean of every repeat's measured value, reported as 0 when it is negative
+    and kept in ``mi_raw_mean``, and ``mi_std`` is their spread. Any column in
+    ``mean_cols`` with a ``_raw`` companion is averaged the same way. A single
+    network's repeat reported as 0 produced nothing (it learned nothing that
+    generalises): the means and spreads use the repeats that produced a value,
+    ``n_zero`` counts the others, and a group whose repeats all produced
+    nothing reports 0. ``mi_std`` is the sample standard deviation across the
+    repeats used and is NaN below two, never 0. ``mean_cols`` are averaged into
     ``<col>_mean`` and ``std_cols`` spread into ``<col>_std`` the same way;
     ``first_cols`` are constant within a group and copied. ``n_runs`` counts
     every repeat, including one that could not produce a number (NaN).
@@ -196,27 +202,36 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
         keyed[col] = key
     key_cols = [keyed[c] for c in group_cols]
 
+    measured = 'mi_raw' in work.columns
     rows, zero_groups = [], []
     grouper = key_cols[0] if len(key_cols) == 1 else key_cols
     for _, group in work.groupby(grouper, sort=False, dropna=False):
-        values = pd.to_numeric(group[value_col], errors='coerce')
         n_rows = len(group)
-        n = int(values.notna().sum())
-        n_zero = int((values == 0).sum())
-        if n_zero < n:
-            used = values.notna() & (values != 0)
-            group, values = group[used.values], values[used.values]
+        if measured:
+            values, n_zero = pd.to_numeric(group['mi_raw'], errors='coerce'), 0
+        else:
+            values = pd.to_numeric(group[value_col], errors='coerce')
+            n = int(values.notna().sum())
+            n_zero = int((values == 0).sum())
+            if n_zero < n:
+                used = values.notna() & (values != 0)
+                group, values = group[used.values], values[used.values]
+            if n >= 2 and n_zero:
+                zero_groups.append((n_zero, n))
         row = {col: group[col].iloc[0] for col in group_cols}
         n_used = int(values.notna().sum())
-        row['mi_mean'] = float(values.mean()) if n_used else math.nan
+        mean = float(values.mean()) if n_used else math.nan
+        row['mi_mean'] = max(mean, 0.0) if measured and n_used else mean
+        if measured:
+            row['mi_raw_mean'] = mean
         row['mi_std'] = float(values.std(ddof=1)) if n_used >= 2 else math.nan
         row['n_runs'] = n_rows
         row['n_zero'] = n_zero
-        if n >= 2 and n_zero:
-            zero_groups.append((n_zero, n))
         for col in mean_cols:
-            col_values = pd.to_numeric(group[col], errors='coerce')
-            row[f'{col}_mean'] = float(col_values.mean()) if col_values.notna().any() else math.nan
+            raw = f'{col}_raw' in group.columns
+            col_values = pd.to_numeric(group[f'{col}_raw' if raw else col], errors='coerce')
+            col_mean = float(col_values.mean()) if col_values.notna().any() else math.nan
+            row[f'{col}_mean'] = max(col_mean, 0.0) if raw and not math.isnan(col_mean) else col_mean
         for col in std_cols:
             col_values = pd.to_numeric(group[col], errors='coerce')
             row[f'{col}_std'] = float(col_values.std(ddof=1)) if col_values.notna().sum() >= 2 else math.nan

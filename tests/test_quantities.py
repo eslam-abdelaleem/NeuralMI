@@ -553,14 +553,9 @@ class TestConditionalQuantitiesReportTheirSpread:
                 n_workers=1, **self._cheap()),
         }
         result = calls[quantity]()
-        spread = result.get('mi_std')
-        # The spread of the per-repeat differences, from the runs table, over the
-        # repeats that produced a value.
-        produced = result.runs['mi'][result.runs['mi'] != 0]
-        if len(produced) >= 2:
-            assert spread == pytest.approx(produced.std(ddof=1))
-        else:
-            assert np.isnan(spread)
+        # The spread of every repeat's measured difference, from the runs table.
+        measured = result.runs['mi_raw' if 'mi_raw' in result.runs else 'mi']
+        assert result.get('mi_std') == pytest.approx(measured.std(ddof=1))
 
     def test_a_single_run_reports_no_spread_rather_than_zero(self):
         x, y, _ = self._data()

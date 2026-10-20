@@ -124,8 +124,8 @@ class TestTransferRigorous:
             mode='transfer',
             transfer=Transfer(history_window=5, rigorous=True,
                               gamma_range=range(1, 4), min_gamma_points=2),
-            model=_MODEL, training=_TRAINING,
-            verbose=False, show_progress=False,
+            model=_MODEL, training=Training(n_epochs=30, learning_rate=1e-3, batch_size=32, patience=10),
+            verbose=False, show_progress=False, seed=0,
         )
         assert result.mi_estimate is not None, "rigorous transfer should set mi_estimate"
         assert result.dataframe is not None, "rigorous transfer should set dataframe"

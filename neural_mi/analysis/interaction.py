@@ -19,11 +19,11 @@ from neural_mi.data.shift_windowing import (SHIFT_PACK_CONCAT, SHIFT_PACK_FIRST,
                                             SHIFT_PACK_SECOND,
                                             _REGULAR_GRID_PROCESSOR_TYPES)
 from neural_mi.analysis.conditional import _merge_raw_blocks
-from neural_mi.analysis.sweep import (combined_spread, ParameterSweep, _joint_marginal_difference,
+from neural_mi.analysis.sweep import (combined_spread, rung, ParameterSweep, _joint_marginal_difference,
                                       warn_combination, amplification_factor)
 import warnings
 from neural_mi.logger import logger, user_stacklevel
-from neural_mi.embeddings_io import saved_paths, with_model_labels
+from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import mi_report_units
 
 # Mirrors conditional.py's identical constants exactly -- both modes window
@@ -327,5 +327,4 @@ def _ii_rigorous_scalar(x_s, y_s, bp, w_data=None, sweep_grid=None, raw_deferred
     """
     raw = run_interaction_information(x_s, y_s, w_data, bp, sweep_grid=sweep_grid, n_workers=1,
                                       raw_deferred=raw_deferred, w_processor_type=w_processor_type)
-    paths = saved_paths(raw)
-    return (raw['interaction_info'], paths) if paths else raw['interaction_info']
+    return rung(raw, (('mi_xw_y', 1), ('mi_x_y', -1), ('mi_w_y', -1)))

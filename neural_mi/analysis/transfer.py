@@ -14,10 +14,9 @@ sliding windows controlled by ``history_window`` and ``prediction_horizon``.
 import torch
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import (combined_spread, _joint_marginal_difference,
+from neural_mi.analysis.sweep import (combined_spread, rung, _joint_marginal_difference,
                                       amplification_factor)
 from neural_mi.logger import logger
-from neural_mi.embeddings_io import saved_paths
 from neural_mi.utils import validate_stride
 
 
@@ -321,5 +320,4 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
         w_data=w_data,
         stride=stride,
     )
-    paths = saved_paths(raw)
-    return (raw['te_estimate'], paths) if paths else raw['te_estimate']
+    return rung(raw, (('i_xypast_yfuture', 1), ('i_ypast_yfuture', -1)))

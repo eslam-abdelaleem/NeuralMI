@@ -147,11 +147,23 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A repeat of a difference quantity (conditional MI, transfer entropy and the
+  reverse direction) or of a rigorous fit that came out negative was reported as
+  0 and then left out of `mi_mean` and `mi_std` as a repeat that produced
+  nothing. Averaging only the positive repeats of a small difference read high:
+  in tutorial 03, transfer entropy with an exact 0.040 bits reported a single
+  positive repeat of 0.075 with no spread, while the mean of its three repeats
+  was negative. Such a row now averages every repeat's measured value, reports
+  the mean as 0 when it is negative and keeps it as `mi_raw_mean`, and `mi_std`
+  is the spread of every repeat. The rungs of a difference's rigorous ladder
+  carry their signed measured value too, so the fit no longer drops the
+  negative ones. A single network's repeat reported as 0, which learned nothing
+  that generalises, is still left out and counted in `n_zero`. The permutation
+  test summarises each trial with the same function as the observed row.
 - `estimator='ksg'` in conditional MI and interaction information with
   windowing through `Processing`: the joint term's conditioning set is now
   named by the quantity, where KSG used to look for it in data it does not see
   on that path. KSG also takes the pair of `Conditional(align='dual_branch')`.
-
 - The documentation of the block-MI offset and of `mi_rate`'s two windows. The
   offset $b$ of $I_w = \bar{I}w + b$ is $E_X + E_Y - E_{XY}$ in excess
   entropies and takes either sign. The docs gave it as positive, so that
