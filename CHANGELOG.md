@@ -29,6 +29,26 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A message that needs the user's attention is a Python warning with a
+  category, and logging carries only what the library did. Fifty-six of the 75
+  `logger.warning` messages became warnings, so filters and tests can act on
+  them: unreliable rigorous fits, truncated or mismatched data, ignored
+  settings, leakage, NaN values and the ceiling among them. Messages that only
+  report what the library did as asked moved to the info level: blockwise
+  evaluation, the dimensionality grid, the decoder fallback, relabelled
+  categories, sorted spikes, excluded bursty neurons, the networks saved under
+  labels, the backbone's channel adapter, the cost of a permutation test over a
+  grid, and windows a `shift_time` epoch moved out of range. The count of a
+  repeated message comes through the channel of the message it counts, a
+  warning of the same category or a log line at the same level. The four
+  messages for unequal dimensionality halves are one, a warning when the user
+  set `shared_encoder` and info when the mode's default is turned off. `Split`
+  settings that custom `train_indices` and `test_indices` replace are named in
+  the warning about settings with no effect, which replaces a message that
+  fired with or without them. The amplification warning no longer tells every
+  caller to check the ceiling, and says that its factor assumes independent
+  errors in the components. `reference/MESSAGES.md` states the rule and lists
+  the informational messages in a section of their own.
 - A call that names no device trains on the CPU unless a GPU is clearly faster
   for it (`neural_mi.device`). It used to take CUDA, then MPS, whenever one was
   present. On the small networks typical of neural data an Apple GPU trained

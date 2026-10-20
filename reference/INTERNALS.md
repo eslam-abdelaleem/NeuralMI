@@ -120,8 +120,8 @@ task.
 
 Every loop of independent work, whether configurations, repeats, lags, pairs,
 rigorous chunks, splits or permutation trials, runs in a `spawn` pool when
-`n_workers` is above 1. The named quantities use `parallel.dispatch_tasks` and
-the analysis modules start their own pools. Each pool wraps its task function in
+`n_workers` is above 1. Every pool opens through `parallel.worker_pool`; the
+named quantities dispatch to one with `parallel.dispatch_tasks`. Each pool wraps its task function in
 `logger.CapturedTask` and reads the results through `logger.released`. A worker
 then hands back the warnings and log messages of its task, and they are raised
 again in the calling process at the caller's line. `logger.collect_repeats`
@@ -129,7 +129,16 @@ around every `run()`, named quantity and `create_dataset()` shows each kind of
 message once per call and counts the rest. In IPython the count is shared by every call of a cell. On import,
 `logger._group_repeats_by_cell` registers `pre_run_cell` and `post_run_cell`
 hooks that open and close it. `grouped_warnings()` opens the same shared count
-over a block. When an outer loop runs in parallel, any loop inside one of its units runs
+over a block. The count of a repeated warning is raised as a warning of the same
+category, and the count of a log message is logged at its level.
+
+A message that needs the user's attention (a result that may be off, a setting
+not used as given, data the library changed) is a `warnings.warn` with a
+category, and is documented in `reference/MESSAGES.md`. Logging carries only
+what the library did, at the info or debug level, and errors. `logger.warning`
+is not used, which `test_docs_drift.py` checks.
+
+When an outer loop runs in parallel, any loop inside one of its units runs
 with `n_workers=1` so that a pool never starts inside a pool. Each task seeds itself
 from the call's `seed` and a key fixed by its position in the grid so that the
 result does not depend on which worker ran it or when.

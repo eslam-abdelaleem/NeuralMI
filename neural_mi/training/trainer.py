@@ -546,7 +546,7 @@ class Trainer:
         test_eval_view = SubsetView(dataset, indices=test_eval_idx, max_index_reduction=max_index_reduction)
         if actual_test_subset_size > max_eval_samples:
             _blocks, _per_block = _blocks_of(actual_test_subset_size, max_eval_samples)
-            logger.warning(
+            logger.info(
                 f"Held-out MI evaluated on all {actual_test_subset_size} rows in {_blocks} blocks of at most "
                 f"{_per_block} rows at every epoch, averaged. A single evaluation is limited to "
                 f"max_eval_samples={max_eval_samples}. Each block uses its own rows as negatives, so the "
@@ -814,10 +814,11 @@ class Trainer:
                         f"numerical instability (for example exploding gradients or "
                         f"zero-variance channels)."
                     )
-                logger.warning(
+                warnings.warn(
                     f"NaN MI detected at epoch {epoch + 1} (consecutive NaN streak: "
                     f"{nan_streak}/3). This step will be skipped for early stopping. "
-                    f"If this persists, check your data and hyperparameters."
+                    f"If this persists, check your data and hyperparameters.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
             else:
                 nan_streak = 0
@@ -936,7 +937,7 @@ class Trainer:
         _rows = max(actual_train_subset_size, epoch_train_n if _do_epoch_train_eval else 0)
         if _rows > max_eval_samples:
             _blocks, _per_block = _blocks_of(_rows, max_eval_samples)
-            logger.warning(
+            logger.info(
                 f"Train-side MI evaluated on all {_rows} rows in {_blocks} blocks of at most {_per_block} "
                 f"rows, averaged. A single evaluation is limited to max_eval_samples={max_eval_samples}. "
                 f"Each block uses its own rows as negatives, so the ceiling is log({_per_block}) "
@@ -952,11 +953,12 @@ class Trainer:
                 _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) vs. train-eval ceiling "
                                 f"log(rows per evaluation={_train_block_size})={_train_ceiling_mi:.3f} {_units}")
             if _tripped:
-                logger.warning(
+                warnings.warn(
                     f"InfoNCE estimate is near its ceiling: {'; '.join(_tripped)}. "
                     f"The true MI may be higher. Consider increasing max_eval_samples "
                     f"(and train_subset_size, if set) or switching to the 'smile' "
-                    f"estimator for high-MI scenarios."
+                    f"estimator for high-MI scenarios.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
         # Does peak-epoch selection distinguish epochs at all? When the
@@ -971,14 +973,15 @@ class Trainer:
                     np.mean((_valid * _scale) > TEST_TRACE_SATURATION_THRESHOLD * _test_ceiling_mi)
                 )
                 if _test_trace_saturated_fraction > TEST_TRACE_SATURATED_EPOCH_FRACTION_THRESHOLD:
-                    logger.warning(
+                    warnings.warn(
                         f"Peak-epoch selection may be unreliable: "
                         f"{_test_trace_saturated_fraction:.0%} of the smoothed test-MI "
                         f"history sits above {TEST_TRACE_SATURATION_THRESHOLD:.0%} of the "
                         f"test ceiling ({_test_ceiling_mi:.3f} {_units}). With the trace "
                         f"riding near its ceiling, the epoch with the (noisy) maximum is "
                         f"close to arbitrary. Consider increasing max_eval_samples, or a peak_fraction "
-                        f"below 1 to read the value before the curve reaches its ceiling."
+                        f"below 1 to read the value before the curve reaches its ceiling.",
+                        UserWarning, stacklevel=user_stacklevel()
                     )
 
         # All-negative flag (from test MI history; warning deferred until _raw_train_mi is set)
@@ -1313,29 +1316,32 @@ class Trainer:
             result = float(np.average(values, weights=sizes))
 
         if np.isnan(result):
-            logger.warning(
+            warnings.warn(
                 "MI evaluation returned NaN. This may indicate numerical instability, "
                 "a degenerate batch or exploding gradients. Check your learning_rate, "
-                "batch_size and input data for anomalies."
+                "batch_size and input data for anomalies.",
+                UserWarning, stacklevel=user_stacklevel()
             )
         return result
 
     def _eval_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
         scores, _ = self.model(_to_device(x, self.device), y.to(self.device))
         if torch.isnan(scores).any():
-            logger.warning(
+            warnings.warn(
                 "Score matrix contains NaN values during evaluation. "
                 "Returning NaN for this step. Check for exploding gradients or "
-                "degenerate embeddings."
+                "degenerate embeddings.",
+                UserWarning, stacklevel=user_stacklevel()
             )
             return float('nan')
         if torch.isinf(scores).any():
             dtype = scores.dtype
             safe_max = torch.finfo(dtype).max / 2
             scores = torch.clamp(scores, min=-safe_max, max=safe_max)
-            logger.warning(
+            warnings.warn(
                 f"Score matrix contains Inf values. Clamping to ±{safe_max:.3e} "
-                f"(dtype={dtype}, machine-epsilon-aware bound)."
+                f"(dtype={dtype}, machine-epsilon-aware bound).",
+                UserWarning, stacklevel=user_stacklevel()
             )
         return self.estimator_fn(scores, **self.estimator_params).item()
 
@@ -1398,10 +1404,11 @@ class Trainer:
             k = n_test
         block, rem = divmod(n_test, k) if k > 0 else (0, 0)
         if n - block < k:
-            logger.warning(
+            warnings.warn(
                 "Blocked split parameters produced an invalid configuration. "
                 "Falling back to random split. Consider reducing n_test_blocks or "
-                "increasing your dataset size."
+                "increasing your dataset size.",
+                UserWarning, stacklevel=user_stacklevel()
             )
             indices = _rng_of(self).permutation(n)
             return indices[n_test:], indices[:n_test]

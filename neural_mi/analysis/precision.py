@@ -16,7 +16,8 @@ from typing import Dict, Any, List, Union
 from neural_mi.analysis.task import run_training_task
 from neural_mi.device import with_device
 from neural_mi.data.corruption import corrupt, METHODS
-from neural_mi.logger import logger
+import warnings
+from neural_mi.logger import logger, user_stacklevel
 from neural_mi.validation import ParameterValidator
 
 
@@ -195,7 +196,7 @@ def run_precision_analysis(
         # output_units, so an absolute figure here would not match the curve the
         # caller prints.
         _depth = abs(_worst) / baseline_mi if baseline_mi else float('inf')
-        logger.warning(
+        warnings.warn(
             f"mode='precision': MI goes negative from tau={_first['tau']:g} onward and "
             f"reaches roughly {_depth:.0f}x the baseline in the opposite direction. "
             f"Past this point the frozen critic is evaluated on inputs it was never "
@@ -203,7 +204,8 @@ def run_precision_analysis(
             f"depth of the fall measures how badly the bound has broken. MI cannot be "
             f"negative. Those values are reported as 0 and the measured ones are kept "
             f"as mi_raw in result.runs. The threshold crossing is read before that "
-            f"point and is unaffected."
+            f"point and is unaffected.",
+            UserWarning, stacklevel=user_stacklevel()
         )
 
     # 4. Find Precision Threshold(s)
@@ -222,9 +224,10 @@ def run_precision_analysis(
                 tau_i = row['tau']
                 break
         if tau_i is None:
-            logger.warning(
+            warnings.warn(
                 f"MI never dropped below {ratio*100:.0f}% of baseline. "
-                f"Consider extending the tau_grid."
+                f"Consider extending the tau_grid.",
+                UserWarning, stacklevel=user_stacklevel()
             )
         precision_thresholds[ratio] = {
             'precision_tau': tau_i,

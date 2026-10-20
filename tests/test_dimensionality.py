@@ -65,17 +65,17 @@ def analyse(monkeypatch, fake, x, y=None, **kwargs):
 
 class TestGrid:
     def test_a_small_participation_ratio_runs_one_to_ten(self, caplog):
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             assert dim._default_grid(3.0) == list(range(1, 11))
         assert not caplog.records
 
     def test_a_middle_ratio_runs_one_to_twenty_and_says_so(self, caplog):
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             assert dim._default_grid(7.0) == list(range(1, 21))
         assert '1 to 20' in caplog.text
 
     def test_a_large_ratio_runs_a_log_grid_to_twice_the_ratio(self, caplog):
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             grid = dim._default_grid(15.0)
         assert grid[0] == 1 and grid[-1] == 30 and len(grid) <= 10
         assert 'log scale' in caplog.text and 'embedding_dims' in caplog.text
@@ -121,7 +121,7 @@ class TestProcedure:
 
     def test_the_default_grid_stops_after_three_values_at_the_threshold(self, monkeypatch, xy, caplog):
         fake = FakeFits(saturating_at(3))
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             _, info = analyse(monkeypatch, fake, *xy)
         assert fake.calls[1:] == [[1, 2, 3], [4, 5, 6]]
         assert info['stopped_early'] and info['embedding_dims'] == [1, 2, 3, 4, 5, 6, 64]
@@ -135,7 +135,7 @@ class TestProcedure:
 
     def test_a_reference_close_to_its_ratio_is_refitted_larger(self, monkeypatch, xy, caplog):
         fake = FakeFits(saturating_at(3), pr=40.0)
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             _, info = analyse(monkeypatch, fake, *xy, embedding_dims=[1, 2, 3, 4])
         assert fake.calls[:2] == [[64], [160]] and info['reference_dim'] == 160
         assert any('refitted at embedding_dim=160' in r.getMessage() for r in caplog.records)
@@ -147,7 +147,7 @@ class TestProcedure:
 
     def test_a_curve_still_climbing_past_the_grid_extends_it(self, monkeypatch, xy, caplog):
         fake = FakeFits(saturating_at(30), pr=3.0)
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             _, info = analyse(monkeypatch, fake, *xy)
         assert any('The grid is extended' in r.getMessage() for r in caplog.records)
         assert 28 <= info['dimension_at_most'] < 64
@@ -298,12 +298,18 @@ class TestHalves:
         [(a, b, _)] = dim._halves(x, {}, 'index', 1, {'channel_indices_x': [0, 2, 4]})
         assert torch.equal(a, x[:, [0, 2, 4], ...]) and torch.equal(b, x[:, [1, 3, 5], ...])
 
-    def test_unequal_index_halves_turn_off_a_shared_encoder(self, caplog):
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    def test_unequal_halves_turn_off_a_shared_encoder_the_user_chose_with_a_warning(self):
+        with pytest.warns(UserWarning, match='produced unequal halves'):
             [(_, _, params)] = dim._halves(torch.randn(20, 5), {'shared_encoder': True}, 'index', 1,
-                                           {'channel_indices_x': [0, 1]})
+                                           {'channel_indices_x': [0, 1]}, shared_chosen=True)
         assert params['shared_encoder'] is False
-        assert 'unequal channel counts' in caplog.text
+
+    def test_unequal_halves_turn_off_the_modes_shared_encoder_quietly(self, caplog, recwarn):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            [(_, _, params)] = dim._halves(torch.randn(20, 5), {'shared_encoder': True}, 'spatial', 1, {},
+                                           shared_chosen=False)
+        assert params['shared_encoder'] is False
+        assert 'produced unequal halves' in caplog.text and not recwarn
 
     @pytest.mark.parametrize('indices, match', [
         (None, "requires a 'channel_indices_x'"), ([0, 9], 'must be integers in'),

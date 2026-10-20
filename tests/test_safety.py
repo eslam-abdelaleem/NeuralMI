@@ -203,7 +203,7 @@ def test_separable_critic_embedding_dim_sweep_does_not_raise():
 import re
 
 
-def test_blocked_split_leakage_warns_on_small_gap_fraction(caplog):
+def test_blocked_split_leakage_warns_on_small_gap_fraction():
     """Overlapping windows + a too-small split_gap_fraction must warn, naming
     the minimum gap_fraction that clears the check -- and that value must
     actually clear it when used."""
@@ -214,41 +214,43 @@ def test_blocked_split_leakage_warns_on_small_gap_fraction(caplog):
                           y='continuous', y_params={'window_size': 200, 'step_size': 10})
     train_cfg = Training(n_epochs=1, patience=1)
 
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         nmi.run(x, y, mode='estimate', processing=proc,
                split=nmi.Split(mode='blocked', gap_fraction=0.05, n_test_blocks=3),
                training=train_cfg, n_workers=1, show_progress=False, seed=0)
-    leak_msgs = [r.message for r in caplog.records if 'may leak' in r.message]
-    assert leak_msgs, f"Expected a leakage warning; got: {[r.message for r in caplog.records]}"
+    leak_msgs = [str(w.message) for w in caught if 'may leak' in str(w.message)]
+    assert leak_msgs, f"Expected a leakage warning; got: {[str(w.message) for w in caught]}"
     match = re.search(r"at least ([\d.]+)", leak_msgs[0])
     assert match, f"Expected a recommended gap_fraction in the message: {leak_msgs[0]}"
     recommended_gap_fraction = float(match.group(1))
 
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         nmi.run(x, y, mode='estimate', processing=proc,
                split=nmi.Split(mode='blocked', gap_fraction=min(recommended_gap_fraction, 0.99),
                                n_test_blocks=3),
                training=train_cfg, n_workers=1, show_progress=False, seed=0)
-    leak_msgs_after = [r.message for r in caplog.records if 'may leak' in r.message]
+    leak_msgs_after = [str(w.message) for w in caught if 'may leak' in str(w.message)]
     assert not leak_msgs_after, (
         f"Recommended gap_fraction={recommended_gap_fraction} should clear the check, "
         f"but it warned again: {leak_msgs_after}"
     )
 
 
-def test_blocked_split_leakage_no_warning_with_large_gap_fraction(caplog):
+def test_blocked_split_leakage_no_warning_with_large_gap_fraction():
     """A sufficiently large split_gap_fraction must not trigger the leakage warning."""
     np.random.seed(0)
     x = np.random.randn(20000, 2).astype('float32')
     y = np.random.randn(20000, 2).astype('float32')
     proc = nmi.Processing(x='continuous', x_params={'window_size': 200, 'step_size': 10},
                           y='continuous', y_params={'window_size': 200, 'step_size': 10})
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         nmi.run(x, y, mode='estimate', processing=proc,
                split=nmi.Split(mode='blocked', gap_fraction=0.9, n_test_blocks=3),
                training=Training(n_epochs=1, patience=1), n_workers=1, show_progress=False, seed=0)
-    leak_msgs = [r.message for r in caplog.records if 'may leak' in r.message]
+    leak_msgs = [str(w.message) for w in caught if 'may leak' in str(w.message)]
     assert not leak_msgs, f"Did not expect a leakage warning; got: {leak_msgs}"
 
 
@@ -256,31 +258,33 @@ def test_blocked_split_leakage_no_warning_with_large_gap_fraction(caplog):
 # Blocked-split leakage check, transfer-entropy path
 # ---------------------------------------------------------------------------
 
-def test_transfer_path_leakage_warns_when_history_window_exceeds_gap(caplog):
+def test_transfer_path_leakage_warns_when_history_window_exceeds_gap():
     """mode='transfer' builds windows via stride-1 unfold (step=1), bypassing
     WindowManager entirely -- the leakage check must still fire when
     history_window exceeds the time-domain gap."""
     np.random.seed(0)
     x = np.random.randn(3000, 2).astype('float32')
     y = np.random.randn(3000, 2).astype('float32')
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=50, prediction_horizon=1),
                split=nmi.Split(mode='blocked', gap_fraction=0.1, n_test_blocks=3),
                training=Training(n_epochs=1, patience=1), n_workers=1, show_progress=False, seed=0)
-    leak_msgs = [r.message for r in caplog.records if 'may leak' in r.message]
-    assert leak_msgs, f"Expected a leakage warning on the transfer path; got: {[r.message for r in caplog.records]}"
+    leak_msgs = [str(w.message) for w in caught if 'may leak' in str(w.message)]
+    assert leak_msgs, f"Expected a leakage warning on the transfer path; got: {[str(w.message) for w in caught]}"
 
 
-def test_transfer_path_leakage_no_warning_with_large_gap(caplog):
+def test_transfer_path_leakage_no_warning_with_large_gap():
     """A large enough split_gap_fraction must not warn on the transfer path either."""
     np.random.seed(0)
     x = np.random.randn(3000, 2).astype('float32')
     y = np.random.randn(3000, 2).astype('float32')
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=50, prediction_horizon=1),
                split=nmi.Split(mode='blocked', gap_fraction=0.95, n_test_blocks=3),
                training=Training(n_epochs=1, patience=1), n_workers=1, show_progress=False, seed=0)
-    leak_msgs = [r.message for r in caplog.records if 'may leak' in r.message]
+    leak_msgs = [str(w.message) for w in caught if 'may leak' in str(w.message)]
     assert not leak_msgs, f"Did not expect a leakage warning; got: {leak_msgs}"
 
 
@@ -303,7 +307,7 @@ def test_blocked_split_leakage_check_skips_on_static_path():
 # The ceiling warning keys on the train-side evaluation size
 # ---------------------------------------------------------------------------
 
-def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size(caplog):
+def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size():
     """With train_subset_size set explicitly larger than the (small) test
     split, train_eval_size and eval_size diverge -- the near-ceiling warning
     must be evaluated against train_eval_size for the reported (train_mi)
@@ -312,7 +316,8 @@ def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size
     n = 20000
     x = np.random.randn(n, 4).astype('float32')
     y = (x + 0.3 * np.random.randn(n, 4).astype('float32')).astype('float32')
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         result = nmi.run(
             x, y, mode='estimate',
             processing=nmi.Processing(x='continuous', x_params={'window_size': 50, 'step_size': None},
@@ -326,8 +331,8 @@ def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size
         "The scenario needs train_eval_size larger than eval_size; otherwise "
         "it does not exercise the divergence this test checks."
     )
-    ceiling_msgs = [r.message for r in caplog.records if 'near its ceiling' in r.message]
-    assert ceiling_msgs, f"Expected a near-ceiling warning; got: {[r.message for r in caplog.records]}"
+    ceiling_msgs = [str(w.message) for w in caught if 'near its ceiling' in str(w.message)]
+    assert ceiling_msgs, f"Expected a near-ceiling warning; got: {[str(w.message) for w in caught]}"
     assert 'train-eval ceiling' in ceiling_msgs[0], (
         f"Expected the warning to name the train-eval ceiling specifically: {ceiling_msgs[0]}"
     )
@@ -337,14 +342,15 @@ def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size
 # Saturation warning before peak-epoch selection
 # ---------------------------------------------------------------------------
 
-def test_saturated_test_trace_warns_and_records_fraction(caplog):
+def test_saturated_test_trace_warns_and_records_fraction():
     """A synthetic high-MI, small-n_eval run must fire the peak-epoch-selection
     saturation warning and record test_trace_saturated_fraction."""
     np.random.seed(0)
     n = 20000
     x = np.random.randn(n, 4).astype('float32')
     y = (x + 0.3 * np.random.randn(n, 4).astype('float32')).astype('float32')
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         result = nmi.run(
             x, y, mode='estimate',
             processing=nmi.Processing(x='continuous', x_params={'window_size': 50, 'step_size': None},
@@ -780,13 +786,14 @@ class TestPermutationAndProcessingGuards:
         )
         assert len(r.get('null_distribution')) == 2
 
-    def test_permutation_test_warns_and_computes_no_null_for_dimensionality(self, caplog):
+    def test_permutation_test_warns_and_computes_no_null_for_dimensionality(self):
         """dimensionality reports a curve and not one MI value, so there is
         no statistic for a null to sit under. The request warns instead of
         being dropped in silence."""
         rng = np.random.default_rng(1)
         x = rng.standard_normal((400, 6)).astype('float32')
-        with caplog.at_level(logging.WARNING):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
             r = nmi.run(
                 x, mode='dimensionality',
                 dimensionality=Dimensionality(n_splits=2, n_restarts=1, reference_dim=2,
@@ -795,7 +802,7 @@ class TestPermutationAndProcessingGuards:
                 training=Training(n_epochs=1, batch_size=64, patience=1),
                 permutation_test=True, n_workers=1, show_progress=False,
             )
-        assert "has no effect for mode='dimensionality'" in caplog.text
+        assert "has no effect for mode='dimensionality'" in ' '.join(str(w.message) for w in caught)
         assert 'null_distribution' not in r.details
 
 

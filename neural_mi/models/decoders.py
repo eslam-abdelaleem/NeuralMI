@@ -547,7 +547,7 @@ def build_decoder(
         # dedicated decoder -- fall back to MLP and make that visible, so a
         # user asking for a decoder doesn't silently get one for a different
         # architecture than they configured.
-        logger.warning(
+        logger.info(
             f"No dedicated decoder exists for embedding_model='{embedding_model}'. "
             f"MLPDecoder is used for the reconstruction loss."
         )

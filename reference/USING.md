@@ -1283,11 +1283,16 @@ the largest block of the score matrix computed at once.
 moves each batch to the device. `'auto'` keeps the data on the device and is
 faster when they fit in its memory.
 
-NeuralMI logs warnings and errors by default. `nmi.set_verbosity(level)` sets the
-logging level for the session and `nmi.set_verbose(True)` shows informational
-messages beside the warnings. A
-call keeps that level unless it passes `verbose=True` (informational messages
-for this call) or `verbose=False` (warnings and errors only). [MESSAGES.md](MESSAGES.md) is keyed by the text of each message.
+A message that needs your attention is a Python warning: a result that may be
+off, a setting that was not used as given, or data the library had to change.
+`warnings.filterwarnings` silences a category or turns it into an error, and
+each kind is shown once per call, notebook cell or `nmi.grouped_warnings()`
+block, with a count of its repeats. What the library did as asked is logged at
+the info level and hidden by default. `nmi.set_verbosity(level)` sets the
+logging level for the session and `nmi.set_verbose(True)` shows the
+informational messages. A call keeps that level unless it passes `verbose=True`
+(informational messages for this call) or `verbose=False` (errors only).
+[MESSAGES.md](MESSAGES.md) is keyed by the text of each message.
 The library's own exceptions derive from `nmi.NeuralMIError`:
 `nmi.DataShapeError` for a shape a processor cannot read,
 `nmi.InsufficientDataError` for too little data for the request, and

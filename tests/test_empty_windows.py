@@ -13,6 +13,8 @@ and must keep working regardless, which is what allows a timestamped
 continuous variable to mask genuinely unobserved stretches while silent spike
 windows are retained.
 """
+import warnings
+
 import numpy as np
 import pytest
 
@@ -166,10 +168,11 @@ class TestRetentionReporting:
         from neural_mi.data.handler import reset_retention_warnings
         reset_retention_warnings()
         spikes = _sparse_spikes(n_neurons=1, duration=60.0, rate=0.2, seed=3)
-        with caplog.at_level('WARNING'):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
             create_dataset(x_data=spikes, processor_type_x='spike',
                            processor_params_x={'window_size': 0.2})
-        msgs = [r.message for r in caplog.records if 'Window coverage validation kept' in r.message]
+        msgs = [str(w.message) for w in caught if 'Window coverage validation kept' in str(w.message)]
         assert msgs, "low retention should warn"
         assert 'drop_empty_windows' in msgs[0], "the warning should name the remedy"
 
@@ -231,28 +234,21 @@ class TestMixedUnitWarning:
     """
 
     def _warns(self, y_time=None, y_params=None):
-        import io, logging
         from neural_mi.data.handler import create_dataset
-        from neural_mi.logger import logger
         rng = np.random.default_rng(0)
         spikes = _sparse_spikes(n_neurons=3, duration=30.0, rate=5.0)
         n = 400
         values = rng.normal(size=(n, 1)).astype('float32')
         times = np.linspace(0, 30.0, n)
-        buf = io.StringIO()
-        handler = logging.StreamHandler(buf)
-        handler.setLevel(logging.WARNING)
-        logger.addHandler(handler)
-        try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
             create_dataset(x_data=spikes, y_data=values,
                            processor_type_x='spike',
                            processor_params_x={'window_size': 1.0},
                            processor_type_y='continuous',
                            processor_params_y=y_params or {'window_size': 1.0},
                            y_time=times if y_time else None)
-        finally:
-            logger.removeHandler(handler)
-        return "mixes 'spike'" in buf.getvalue()
+        return any("mixes 'spike'" in str(w.message) for w in caught)
 
     def test_explicit_time_vector_suppresses_the_warning(self):
         assert not self._warns(y_time=True)

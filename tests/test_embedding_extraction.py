@@ -305,13 +305,15 @@ def test_one_network_is_saved_to_the_path_as_given(tmp_path):
     assert result.get('model_path') == str(path.resolve())
 
 
-def test_every_network_of_a_grid_is_saved_under_its_labels(tmp_path):
+def test_every_network_of_a_grid_is_saved_under_its_labels(tmp_path, caplog):
+    import logging
     import neural_mi as nmi
     path = tmp_path / 'best.pt'
-    with pytest.warns(UserWarning, match="saves every one"):
+    with caplog.at_level(logging.INFO, logger='neural_mi'):
         result = _save_call(tmp_path, mode='sweep', sweep_grid={'embedding_dim': [4, 8], 'run_id': [0, 1]},
                             training=nmi.Training(n_epochs=1, batch_size=64,
                                                   save_best_model_path=str(path)))
+    assert 'saves every one' in caplog.text
     names = sorted(p.name for p in tmp_path.iterdir())
     assert names == ['best_embedding_dim-4_run_id-0.pt', 'best_embedding_dim-4_run_id-1.pt',
                      'best_embedding_dim-8_run_id-0.pt', 'best_embedding_dim-8_run_id-1.pt']

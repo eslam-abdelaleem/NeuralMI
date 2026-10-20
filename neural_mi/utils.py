@@ -8,7 +8,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as _lr_sched
 import torch.nn as nn
 from collections import OrderedDict
-from typing import Dict, Any, Optional, Union, Tuple
+from typing import Dict, Any, Optional, Tuple
 import numpy as np
 
 import multiprocessing as mp
@@ -393,11 +393,12 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
             # silently. This mirrors how the sample_rate ambiguity above is
             # handled: pick the documented reading and say so.
             if x_data.ndim >= 3:
-                logger.warning(
+                warnings.warn(
                     f"Lag on pre-processed data with shape {x_data.shape}. Axis 0 counts "
                     f"windows. lag={lag} shifts by {lag} windows ({lag} x step_size "
                     f"timepoints). Pass unwindowed data with "
-                    f"processing=Processing(x='continuous', ...) for a lag in timepoints."
+                    f"processing=Processing(x='continuous', ...) for a lag in timepoints.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
             else:
                 logger.info(
@@ -410,12 +411,13 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
             lag_samples = int(round(lag * sample_rate))
         else:
             # No sample_rate given: treat lag as a raw sample-index offset, but warn
-            logger.warning(
+            warnings.warn(
                 f"Lag units for '{y_processor_type}' data are ambiguous without a sample_rate. "
                 f"Treating lag={lag} as samples (index offset). "
                 f"To specify lag in seconds, set 'sample_rate' in Processing(x_params=...). "
                 f"Spike data always use seconds. Mixing processor types without "
-                f"sample_rate gives inconsistent lag scales."
+                f"sample_rate gives inconsistent lag scales.",
+                UserWarning, stacklevel=user_stacklevel()
             )
             lag_samples = int(lag)
 
@@ -757,7 +759,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     _input_dim_x_total = sum(input_dim_x) if isinstance(input_dim_x, tuple) else input_dim_x
     first_layer_params = _input_dim_x_total * _first_hidden
     if first_layer_params > 500_000:
-        logger.warning(
+        logger.info(
             f"Large first embedding layer detected: input_dim_x={input_dim_x} x "
             f"hidden_dim={hidden_dim} = {first_layer_params:,} parameters. "
             f"It may overfit small datasets. A smaller window_size or hidden_dim or "
@@ -1045,12 +1047,13 @@ def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
         return False
     min_gap_fraction = (window_size / (block * step)) if (block > 0 and step > 0) else float('inf')
     _where = f" ({path_label})" if path_label else ""
-    logger.warning(
+    warnings.warn(
         f"Blocked split may leak raw samples between train and test{_where}. "
         f"gap_size={gap_size} windows x step={step} gives {buffer:.3g} samples of "
         f"buffer against a window_size of {window_size}. Train and test windows can "
         f"share up to {window_size - buffer:.3g} samples. Increase "
         f"Split(gap_fraction=...) to at least {min_gap_fraction:.4f} "
-        f"(currently {gap_fraction}) to eliminate this."
+        f"(currently {gap_fraction}) to eliminate this.",
+        UserWarning, stacklevel=user_stacklevel()
     )
     return True

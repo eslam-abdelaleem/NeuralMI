@@ -73,7 +73,7 @@ class TestTrainSubsetSize:
         assert results['train_ceiling_mi'] == pytest.approx(math.log(50))
 
     def test_full_evaluates_every_training_row_in_blocks(self, caplog):
-        with caplog.at_level('WARNING', logger='neural_mi'):
+        with caplog.at_level('INFO', logger='neural_mi'):
             results = self._train(max_eval_samples=50, train_subset_size='full')
         n_train = 360                                                   # train_fraction 0.9 of 400
         assert results['train_eval_size'] == n_train
@@ -144,7 +144,7 @@ class TestHeldOutRows:
 
     def test_full_evaluates_every_held_out_row_in_blocks(self, monkeypatch, caplog):
         n_test = int(self.N * (1 - 0.9))                                # the blocked split's held-out rows
-        with caplog.at_level('WARNING', logger='neural_mi'):
+        with caplog.at_level('INFO', logger='neural_mi'):
             seen, results, _ = self._held_out_rows(monkeypatch, n_test, test_subset_size='full', train_subset_size=150)
         assert len(seen) == 4 and len(seen[0]) == n_test
         assert results['eval_size'] == n_test and results['test_eval_blocks'] == 2

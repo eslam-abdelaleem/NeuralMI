@@ -154,7 +154,8 @@ def set_verbose(verbose: bool):
     ----------
     verbose : bool
         If True, sets the logger to INFO level so informational messages are shown.
-        If False, sets the logger to WARNING level so only warnings and errors appear.
+        If False, sets the logger to WARNING level so only errors are logged.
+        Warnings are Python warnings and do not depend on the level.
     """
     set_verbosity(3 if verbose else 2)
 
@@ -189,15 +190,16 @@ def _kind(source: str, text: str) -> tuple:
 
 
 class _Repeats:
-    """First text and count of each kind of message raised during one call."""
+    """Count, first text and channel of each kind of message raised during one call. The channel is
+    the warning's category, or the log level of a log message."""
 
     def __init__(self):
         self.seen = {}
 
-    def first(self, kind: tuple, text: str) -> bool:
+    def first(self, kind: tuple, text: str, channel) -> bool:
         entry = self.seen.get(kind)
         if entry is None:
-            self.seen[kind] = [1, text]
+            self.seen[kind] = [1, text, channel]
             return True
         entry[0] += 1
         return False
@@ -212,7 +214,7 @@ class _RepeatFilter(logging.Filter):
         if record.levelno < logging.WARNING:
             return True
         text = record.getMessage()
-        return self.repeats.first(_kind('log', text), text)
+        return self.repeats.first(_kind('log', text), text, record.levelno)
 
 
 def _pass_on(previous, message, category, filename, lineno, file=None, line=None):
@@ -233,10 +235,16 @@ def _snippet(text: str, width: int = 90) -> str:
 
 
 def _summarise(repeats: _Repeats, scope: str) -> None:
-    for count, text in repeats.seen.values():
+    """One line per repeated kind, through the channel of the message it counts: a warning of the
+    same category, so that a filter on the category covers its count too, or a log line at the
+    same level."""
+    for count, text, channel in repeats.seen.values():
         if count > 1:
-            logger.warning(f"'{_snippet(text)}' was raised {count} times in this {scope} "
-                           f"and shown once.")
+            line = f"'{_snippet(text)}' was raised {count} times in this {scope} and shown once."
+            if isinstance(channel, type):
+                _warnings.warn(line, channel, stacklevel=user_stacklevel())
+            else:
+                logger.log(channel, line)
 
 
 @_contextmanager
@@ -258,7 +266,7 @@ def collect_repeats():
 
     def show(message, category, filename, lineno, file=None, line=None):
         text = str(message)
-        if repeats.first(_kind(category.__name__, text), text):
+        if repeats.first(_kind(category.__name__, text), text, category):
             _pass_on(previous, message, category, filename, lineno, file, line)
 
     log_filter = _RepeatFilter(repeats)

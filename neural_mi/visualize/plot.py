@@ -16,7 +16,8 @@ from matplotlib.ticker import MaxNLocator
 from typing import Optional, Dict, Any
 from scipy.spatial.distance import cdist
 from matplotlib.lines import Line2D
-from neural_mi.logger import logger as _logger
+import warnings
+from neural_mi.logger import logger as _logger, user_stacklevel
 
 def set_publication_style():
     """Applies a professional, publication-ready style to matplotlib plots.
@@ -753,8 +754,8 @@ def analyze_mi_heatmap(
     )
 
     if significant_contour_points.size == 0:
-        _logger.warning("No significant MI contour found at threshold %.3f, try a lower value.",
-                        absolute_mi_threshold)
+        warnings.warn(f"No significant MI contour found at threshold {absolute_mi_threshold:.3f}, "
+                      f"try a lower value.", UserWarning, stacklevel=user_stacklevel())
         ax.set_title('Parsimony-Informed Topological Analysis (No Significant Contour Found)')
         ax.set_xlabel('Lag (Timepoints)')
         ax.set_ylabel('Window Size (Timepoints)')

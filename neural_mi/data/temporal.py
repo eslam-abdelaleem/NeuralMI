@@ -4,7 +4,8 @@ import numpy as np
 from torch.utils.data import Dataset
 from abc import ABC, abstractmethod
 from neural_mi.utils import get_device
-from neural_mi.logger import logger
+import warnings
+from neural_mi.logger import logger, user_stacklevel
 from neural_mi.data.corruption import corrupt
 
 
@@ -37,7 +38,7 @@ def relabel_categorical_data(data) -> np.ndarray:
         original_dtype = arr.dtype
         unique_labels, indices = np.unique(arr, return_inverse=True)
         arr = indices.reshape(arr.shape)
-        logger.warning(
+        logger.info(
             f"CategoricalWindowDataset: input data has dtype {original_dtype}, not an "
             f"integer type. Automatically relabeled to consecutive integer category "
             f"codes 0..{len(unique_labels) - 1}, assigned in ascending sorted order of "
@@ -317,11 +318,11 @@ class ContinuousWindowDataset(TemporalWindowDataset):
         if len(diffs) > 1:
             first_two = float(self.time_vector[1] - self.time_vector[0])
             if not np.isclose(first_two, self.period, rtol=0.05):
-                from neural_mi.logger import logger as _logger
-                _logger.warning(
+                warnings.warn(
                     f"ContinuousWindowDataset: first inter-sample interval "
                     f"({first_two:.6g}) differs from the median ({self.period:.6g}) by "
-                    f">5%. Using the median. Check your time vector for boundary artifacts."
+                    f">5%. Using the median. Check your time vector for boundary artifacts.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
         # An explicit sample_rate overrides the inferred period.
@@ -414,13 +415,13 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             # Find which windows are affected
             oob_windows = np.unique(np.where(out_of_bounds.reshape(
                 self.window_manager.n_windows, self.max_samples_per_window))[0])
-            log_fn = logger.warning if oob_frac > 0.1 else logger.debug
-            log_fn(
-                f"ContinuousWindowDataset: {n_oob}/{total} interpolated time points "
-                f"({oob_frac:.1%}) are zero-padded due to data gaps. "
-                f"Affects {len(oob_windows)} window(s). "
-                f"{'Consider checking your time vector for large gaps.' if oob_frac > 0.1 else ''}"
-            )
+            text = (f"ContinuousWindowDataset: {n_oob}/{total} interpolated time points "
+                    f"({oob_frac:.1%}) are zero-padded due to data gaps. Affects {len(oob_windows)} window(s).")
+            if oob_frac > 0.1:
+                warnings.warn(text + " Consider checking your time vector for large gaps.",
+                              UserWarning, stacklevel=user_stacklevel())
+            else:
+                logger.debug(text)
 
         # min_coverage_fraction only counts source *timestamps* per window (see
         # validate_window_coverage) -- it says nothing about whether an
@@ -516,14 +517,15 @@ class ContinuousWindowDataset(TemporalWindowDataset):
             _flagged = _retained_frac > 0.3
             _n_flagged = int(_flagged.sum())
             if _n_flagged > 0:
-                logger.warning(
+                warnings.warn(
                     f"ContinuousWindowDataset: {_n_flagged}/{len(_retained_frac)} retained "
                     f"window(s) have over 30% of their samples bridged by interpolation "
                     f"across a gap more than 3x the typical inter-sample period. These "
                     f"windows passed min_coverage_fraction (enough raw timestamps are "
                     f"nearby) but much of their content may be fabricated by np.interp. "
                     f"Consider raising min_coverage_fraction or pre-collapsing large gaps "
-                    f"in your data."
+                    f"in your data.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
     def get_temporal_extent(self):
@@ -637,7 +639,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
             bursty = np.where(per_neuron_max > threshold)[0]
             if len(bursty) > 0:
                 self._excluded_neurons = bursty.tolist()
-                logger.warning(
+                logger.info(
                     f"Excluding {len(bursty)} bursty neuron(s) "
                     f"(indices: {bursty.tolist()}) whose peak spike count "
                     f"exceeds {self.burst_threshold_multiplier}x the median "
@@ -655,19 +657,21 @@ class SpikeWindowDataset(TemporalWindowDataset):
         if self._max_spikes_cap is not None:
             capped = max(1, int(self._max_spikes_cap))
             if self.max_samples_per_window > capped:
-                logger.warning(
+                warnings.warn(
                     f"SpikeWindowDataset: max_spikes_per_window cap applied "
                     f"({self.max_samples_per_window} → {capped} slots). "
-                    "Spikes beyond the cap within any window will be dropped."
+                    "Spikes beyond the cap within any window will be dropped.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
             self.max_samples_per_window = min(self.max_samples_per_window, capped)
 
         if median_max > 0 and self.max_samples_per_window > self.burst_threshold_multiplier * median_max:
             worst_neuron = int(np.argmax(per_neuron_max))
-            logger.warning(
+            warnings.warn(
                 f"Spike tensor allocation dominated by burst: neuron {worst_neuron} "
                 f"has peak {self.max_samples_per_window} spikes/window vs. median "
-                f"{median_max:.1f}. Consider exclude_bursty_neurons=True."
+                f"{median_max:.1f}. Consider exclude_bursty_neurons=True.",
+                UserWarning, stacklevel=user_stacklevel()
             )
 
     def get_temporal_extent(self):
@@ -1023,11 +1027,12 @@ class CategoricalWindowDataset(TemporalWindowDataset):
             ))
             enc_dim = self.n_categories * max_samples
             if enc_dim > 500:
-                logger.warning(
+                warnings.warn(
                     f"CategoricalWindowDataset: encoding='full_trajectory' will produce "
                     f"a {enc_dim}-dimensional input per window "
                     f"({self.n_categories} categories × ~{max_samples} timesteps). "
-                    f"Consider encoding='majority_vote' for large windows."
+                    f"Consider encoding='majority_vote' for large windows.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
         self.min_coverage_fraction = min_coverage_fraction
 

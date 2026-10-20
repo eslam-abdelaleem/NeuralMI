@@ -352,10 +352,10 @@ class TestSpatialSplits:
         assert torch.equal(a, flat[:, :, (rows + cols <= 3).reshape(-1)])
 
     def test_uneven_split_disables_shared_encoder(self, caplog):
-        with caplog.at_level('WARNING', logger='neural_mi'):
+        with caplog.at_level('INFO', logger='neural_mi'):
             [(_, _, params)] = self._split(self._4d(h=4, w=5), 'diagonal', {'shared_encoder': True})
         assert params['shared_encoder'] is False
-        assert 'non-square' in caplog.text
+        assert 'produced unequal halves' in caplog.text
 
     def test_even_split_keeps_shared_encoder(self):
         [(_, _, params)] = self._split(self._4d(), 'horizontal', {'shared_encoder': True})

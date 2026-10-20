@@ -157,24 +157,22 @@ def _text(node, env):
     return None
 
 
-def _is_warning_call(func, aliases):
+def _is_warning_call(func):
+    """'warning' for warnings.warn, 'other' for an info or error log line, None otherwise."""
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
         if func.attr == 'warn' and func.value.id in ('warnings', '_warnings'):
             return 'warning'
-        if func.value.id in ('logger', '_logger') and func.attr in ('warning', 'info', 'error'):
-            return 'warning' if func.attr == 'warning' else 'other'
-    if isinstance(func, ast.Name) and func.id in aliases:
-        return 'warning'
+        if func.value.id in ('logger', '_logger') and func.attr in ('info', 'error'):
+            return 'other'
     return None
 
 
 def _emitted_messages():
     """``[(level, 'file:line', text)]`` for every message the package emits.
 
-    Read from the source: every ``warnings.warn`` and ``logger`` call, with the
-    literal parts of its message kept and each formatted value replaced by a
-    placeholder. A local chosen between logger methods (``log = logger.warning
-    if ... else logger.debug``) counts as a warning.
+    Read from the source: every ``warnings.warn`` and info or error ``logger``
+    call, with the literal parts of its message kept and each formatted value
+    replaced by a placeholder.
     """
     found = {}
     for path in sorted(PACKAGE.rglob('*.py')):
@@ -184,9 +182,6 @@ def _emitted_messages():
                 continue
             assigns = [n for n in ast.walk(scope) if isinstance(n, ast.Assign)
                        and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)]
-            aliases = {n.targets[0].id for n in assigns
-                       if any(isinstance(a, ast.Attribute) and a.attr == 'warning'
-                              for a in ast.walk(n.value))}
             env = {}
             for n in assigns:
                 text = _text(n.value, env)
@@ -195,7 +190,7 @@ def _emitted_messages():
             for node in ast.walk(scope):
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
-                level = _is_warning_call(node.func, aliases)
+                level = _is_warning_call(node.func)
                 if level is None:
                     continue
                 where = f"{path.relative_to(PACKAGE.parent)}:{node.lineno}"
@@ -216,6 +211,16 @@ def _key_matches(key, message):
 
 MESSAGES = _emitted_messages()
 KEYS = _documented_keys()
+
+
+def test_no_message_is_logged_as_a_warning():
+    """A message that needs the user's attention is a warnings.warn with a category, which filters
+    and tests can act on. Logging carries only what the library did (MESSAGES.md, the opening)."""
+    logged = [f"{path.relative_to(PACKAGE.parent)}:{node.lineno}"
+              for path in sorted(PACKAGE.rglob('*.py')) for node in ast.walk(ast.parse(path.read_text()))
+              if isinstance(node, ast.Attribute) and node.attr == 'warning'
+              and isinstance(node.value, ast.Name) and node.value.id in ('logger', '_logger')]
+    assert not logged, f"logger.warning used at {logged}; raise a warning or log at the info level"
 
 
 def test_every_message_argument_is_readable():

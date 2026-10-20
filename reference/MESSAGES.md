@@ -6,6 +6,14 @@ entries `...` stands for the values that change from call to call. Each entry
 says what the message means, why it fired, and what to do about it. The ceiling,
 amplification and coverage warnings change how a result should be reported.
 
+A warning means the call or its result needs your attention: a result that may
+be off, a setting that was not used as given, or data the library had to change.
+Every warning is raised through Python's `warnings` module, so a filter can
+silence a category or turn it into an error, and each kind is shown once per
+call, notebook cell or `nmi.grouped_warnings()` block. What the library did as
+asked is logged at the info level instead and listed at the end, under
+[Informational messages](#informational-messages).
+
 ## Contents
 
 - [Ceiling and capacity](#ceiling-and-capacity)
@@ -19,6 +27,7 @@ amplification and coverage warnings change how a result should be reported.
 - [Settings that had no effect](#settings-that-had-no-effect)
 - [Performance](#performance)
 - [Other](#other)
+- [Informational messages](#informational-messages)
 
 ---
 
@@ -69,9 +78,10 @@ this section share the `UserWarning` subclass `nmi.CombinationWarning` so that
 **`... has an error-amplification factor of ...x`**
 Because the result is a small residual of much larger estimates (two for a
 conditional quantity, three for interaction information), a 1% error on each
-component becomes roughly the factor in percent on the result. Report the
-components beside the point estimate, check the joint network for ceiling
-saturation, and read the spread over several repeats before drawing a
+component would become roughly the factor in percent on the result if the
+components' errors were independent. They are trained on the same rows and
+partly err together, which cancels some of that. Report the components beside
+the point estimate and read the spread over several repeats before drawing a
 conclusion.
 
 **`... estimate is negative (...). The quantity cannot be negative`**
@@ -117,25 +127,9 @@ or a smaller `step_size`.
 The subset is clamped to the training set, and every sample of it is evaluated,
 in blocks of at most `max_eval_samples` when there are more.
 
-**`Train-side MI evaluated on all ... rows in ... blocks of at most ... rows, averaged`**
-The training subset behind the reported estimate (`train_subset_size`, or the
-per-epoch set of `eval_train`) is larger than `max_eval_samples`, the most rows
-one evaluation may use. Each block is evaluated on its own and the values are
-averaged, weighted by block size. The precision is that of all the rows and the
-InfoNCE ceiling that of one block. Raising `max_eval_samples` evaluates in fewer,
-larger blocks, at a memory cost that grows with the square of the block.
-
 **`test_subset_size=... exceeds the number of held-out samples`**
 The subset is clamped to the held-out set, and every sample of it is evaluated
 at every epoch, in blocks of at most `max_eval_samples` when there are more.
-
-**`Held-out MI evaluated on all ... rows in ... blocks of at most ... rows at every epoch, averaged`**
-The held-out subset (`test_subset_size`) is larger than `max_eval_samples`, the
-most rows one evaluation may use. Each block is evaluated on its own and the
-values are averaged, weighted by block size, at every epoch. The precision is
-that of all the rows and the InfoNCE ceiling that of one block. Every epoch
-costs one evaluation per block. Raising `max_eval_samples` evaluates in fewer,
-larger blocks, at a memory cost that grows with the square of the block.
 
 **`Only ... reach the estimator`**
 Whether the fewer than 200 samples or windows that reach the estimator are
@@ -147,12 +141,6 @@ information nor the information $I$ itself is known before estimating.
 `mode='rigorous'` tests whether the estimate still moves with the sample size
 ([THEORY.md](THEORY.md#finite-sampling-bias)). The message also lists the
 regularisation settings not yet in use.
-
-**`Large first embedding layer detected`**
-The first layer holds more than 500,000 parameters because the flattened input
-is wide. With long windows and few samples it commonly overfits. Reduce
-`window_size` or `hidden_dim`. An encoder that reads the window axis itself
-(`cnn`, `gru`, `tcn`, `lru`) also helps.
 
 **`The held-out MI was still rising when training reached n_epochs=...`**
 Training used every epoch it was allowed, and the smoothed held-out curve rose
@@ -225,11 +213,6 @@ lambda`.
 With $n$ trials no p-value can fall below $1/(n+1)$. A reliable p-value usually
 needs 100 trials or more. The message also states what the test costs.
 
-**`Each permutation reruns the whole call`**
-Because every null trial repeats the full call with every configuration of the
-grid, the test costs `n_permutations` times the call. It is a warning when the
-grid has several configurations.
-
 **`Permutation trial failed`**, **`All ... permutation trials for mode='...' failed and left no null distribution`**
 One trial raised an exception or every trial did. Without a null the test is
 inconclusive. The log shows each failure.
@@ -301,16 +284,6 @@ cap if the dropped spikes matter.
 **`Spike tensor allocation dominated by burst`**
 The unused width costs memory because one neuron's peak count sets the tensor
 width for every neuron. `exclude_bursty_neurons=True` leaves such neurons out.
-
-**`Excluding ... bursty neuron(s)`**
-The exclusion is active and leaves the listed neurons out of the estimate.
-
-**`SubsetView: window count dropped from ... to ...`**
-A time shift moved windows outside the valid recording range. A large drop means
-the shifted windows cover a different subset from the unshifted ones.
-
-**`Tried to time-shift a non-windowed dataset, skipping`**
-The shift did nothing because there is no window grid to move.
 
 **`time_shift got offset_x=... != offset_y=...`**
 Only `offset_x` is applied because every stream shares one window grid.
@@ -389,20 +362,9 @@ without that chunk while at least `min_gamma_points` remain.
 
 ## Data shape and type
 
-**`CategoricalWindowDataset: input data has dtype ..., not an integer type`**
-The labels were mapped to consecutive integer codes in sorted order of the
-distinct values. Pass integer codes to choose the mapping yourself.
-
 **`... have different numbers of samples (...). Truncating ... to ... samples`**, **`X (...) and Y (...) differ in sample count`**
 Both were cut to the shorter length. A large cut means the variables do not
 cover the same interval. Fix the mismatch at its source.
-
-**`x_data has ... channels, y_data has ...`**
-Different neuron counts in spike-type X and Y are usually on purpose and
-occasionally come from a mis-built list.
-
-**`... spike times are not sorted`**
-The message is harmless because the library sorts them automatically.
 
 **`ContinuousWindowDataset: first inter-sample interval (...) differs from the median`**
 The library uses the median period because the first gap in the time vector is
@@ -425,10 +387,6 @@ image-shaped input.
 **`Spatial augmentations ... require 4-D input`**
 The image augmentations are skipped because the batch is not image-shaped.
 
-**`PretrainedBackboneEmbedding: input has ... channel(s) but backbone '...' expects ...`**, **`PretrainedBackboneEmbedding: input spatial size (...) does not match`**
-A trainable channel adapter or an upsampling layer was inserted so the backbone
-can run. Both add parameters that are not in the pretrained model.
-
 ---
 
 ## Dimensionality
@@ -438,30 +396,6 @@ A dot-product critic scores a pair by the inner product of its two embeddings.
 Representing a nonlinear dependence that way takes more dimensions than the
 shared structure has. The reading then overstates the dimension. The mode's
 default is the hybrid critic.
-
-**`Dimensionality: the grid runs over embedding_dim 1 to ... because the reference fit has a participation ratio of ...`**, **`Dimensionality: the grid runs over ... values of embedding_dim from 1 to ... on a log scale`**
-The default grid reaches twice the participation ratio of the reference fit.
-The ratio can run below the true dimension. The factor of two leaves room for
-that. When twice the ratio is at
-most 10 the grid is 1 to 10 with no message. Up to 20 it is 1 to 20.
-Past 20 it is 10 values on a log scale up to twice the ratio. The reading is
-then one of those values. Pass `embedding_dims` as a list or a range for a
-finer grid.
-
-**`Dimensionality: the participation ratio of the reference fit (...) is close to its embedding_dim=...`**
-A reference whose participation ratio reaches three eighths of its size may be
-too small to hold every shared direction. It is refitted once at four times the
-ratio. A `reference_dim` you set is kept as given.
-
-**`Dimensionality: the grid stopped at embedding_dim=... once ... consecutive values reached ...`**
-The default grid is fitted three values at a time. Three values in a row at the
-threshold confirm the reading against the plateau the reference fit sets. The
-values above them are skipped. Pass `embedding_dims` to fit every value.
-
-**`Dimensionality: the curve of split(s) ... did not reach ... of its plateau by embedding_dim=...`**
-The default grid ended below the threshold. It is extended once with values on
-a log scale up to one below the reference. A curve still short of the threshold
-after the extension reads the reference and raises the next message.
 
 **`Dimensionality: the curve of split(s) ... reached ... of its plateau only at the reference embedding_dim=...`**
 No fitted value below the reference reached the threshold. The reading equals
@@ -487,9 +421,10 @@ data hold few samples for the information each dimension carries. The training
 side then keeps rising with the embedding size and pushes the reading up. The
 reading still bounds the dimension from above. More data tightens it.
 
-**`split_method='...' on an odd channel count`**, **`split_method='index' with unequal channel counts`**, **`split_method='...' on non-square input`**, **`split_method='...' produced unequal halves`**
+**`split_method='...' produced unequal halves`**
 The two halves differ in size. `shared_encoder=True` needs equal halves and is
-turned off for the run.
+turned off for the run. This is a warning when you set `shared_encoder`, and
+is logged at the info level when the mode's own default is turned off.
 
 **`... was set for mode='dimensionality'. The mode's two sides are two halves of the same recording`**
 A Y-side encoder setting (`embedding_model_y`, `custom_embedding_cls_y`,
@@ -530,15 +465,9 @@ used as given. Every other `Model` setting is ignored. Of the `Output` settings,
 `rotated_embeddings_per_epoch` needs both `track_embeddings` and
 `return_rotated_embeddings`, and `return_rotation_matrices` needs
 `return_rotated_embeddings`. `mode='dimensionality'` sets `embedding_dim`
-itself. A setting spelled out at its default does not count.
-
-**`Custom train_indices and test_indices were provided`**
-`Split`'s `mode`, `train_fraction`, `n_test_blocks` and `gap_fraction` are
-ignored in favour of the given indices. The indices address the rows the network
-trains on. The call refuses them where those rows are not the ones passed:
-`mode='rigorous'`, `'lag'` and `'transfer'`, `rigorous=True`, a dimensionality
-`lag`, data windowed through `Processing`, and the named quantities that build
-their own rows.
+itself. With `train_indices` and `test_indices` the `Split` settings `mode`,
+`train_fraction`, `n_test_blocks` and `gap_fraction` have no effect. A setting
+spelled out at its default does not count.
 
 **`'lag' in sweep_grid is ignored when using mode='lag'`**
 The mode sets the lag itself.
@@ -550,13 +479,6 @@ it can ([USING.md](USING.md#window-shifting)).
 **`return_rotated_embeddings=True has no effect for critic_type='concat'`**, **`return_rotated_embeddings=True was requested and this trainer's model exposes no embedding_net_x`**
 The concat critic has no separate encoders whose embeddings could be rotated.
 
-**`No dedicated decoder exists for embedding_model='...'`**
-The reconstruction uses a generic decoder for this encoder.
-
-**`Both indices and times provided, using times only`**
-A subset of a temporal dataset given both window indices and time ranges is
-defined by the time ranges.
-
 **`panels includes 'embeddings' but this repeat holds no 'embedding_history_x'`**
 The animation drops its embedding panel. Set `Output(track_embeddings=...)` before
 the run to record embeddings every epoch.
@@ -567,13 +489,6 @@ the run to record embeddings every epoch.
 
 **`n_workers=... has no effect here`**
 The call trains one network and has nothing to run in parallel.
-
-**`save_best_model_path: this call trains several networks and saves every one of them`**
-The call saves every network under the path with its identifying labels added
-and records each path as `model_path`. Because every file holds a whole network,
-a large grid or rigorous ladder can take a lot of disk space. To keep one model,
-rerun the configuration you want on its own with this path
-([USING.md](USING.md#saving-the-trained-networks)).
 
 **`Running ... sequential tasks with dataset_device='...'`**
 Freed tensors can linger in an accelerator's cache across many tasks. Use
@@ -597,6 +512,9 @@ or log message many times. The first one was shown when it happened. Later ones
 that differed only in their numbers were counted and not shown. The count covers
 one call, one notebook cell or one `nmi.grouped_warnings()` block. The message
 quotes the start of the first one.
+The line comes through the channel of the message it counts: a warning of the
+same category, so a filter on that category covers its count too, or a log
+line at the same level.
 
 **`Lag on pre-processed data with shape .... Axis 0 counts windows`**
 Because the data were already windowed, a lag of $n$ shifts by $n$ windows and
@@ -634,3 +552,88 @@ Install ffmpeg to write MP4.
 **`No significant MI contour found at threshold ...`**
 `analyze_mi_heatmap` found no region above its threshold. Lower
 `absolute_mi_threshold`.
+
+---
+
+## Informational messages
+
+These report what the library did. They are logged at the info level, shown
+with `verbose=True` or `nmi.set_verbose(True)`, and ask for no action.
+
+**`Dimensionality: the grid runs over embedding_dim 1 to ... because the reference fit has a participation ratio of ...`**, **`Dimensionality: the grid runs over ... values of embedding_dim from 1 to ... on a log scale`**
+The default grid reaches twice the participation ratio of the reference fit.
+The ratio can run below the true dimension. The factor of two leaves room for
+that. When twice the ratio is at
+most 10 the grid is 1 to 10 with no message. Up to 20 it is 1 to 20.
+Past 20 it is 10 values on a log scale up to twice the ratio. The reading is
+then one of those values. Pass `embedding_dims` as a list or a range for a
+finer grid.
+
+**`Dimensionality: the participation ratio of the reference fit (...) is close to its embedding_dim=...`**
+A reference whose participation ratio reaches three eighths of its size may be
+too small to hold every shared direction. It is refitted once at four times the
+ratio. A `reference_dim` you set is kept as given.
+
+**`Dimensionality: the grid stopped at embedding_dim=... once ... consecutive values reached ...`**
+The default grid is fitted three values at a time. Three values in a row at the
+threshold confirm the reading against the plateau the reference fit sets. The
+values above them are skipped. Pass `embedding_dims` to fit every value.
+
+**`Dimensionality: the curve of split(s) ... did not reach ... of its plateau by embedding_dim=...`**
+The default grid ended below the threshold. It is extended once with values on
+a log scale up to one below the reference. A curve still short of the threshold
+after the extension reads the reference and raises the next message.
+
+**`CategoricalWindowDataset: input data has dtype ..., not an integer type`**
+The labels were mapped to consecutive integer codes in sorted order of the
+distinct values. Pass integer codes to choose the mapping yourself.
+
+**`Excluding ... bursty neuron(s)`**
+The exclusion is active and leaves the listed neurons out of the estimate.
+
+**`No dedicated decoder exists for embedding_model='...'`**
+The reconstruction uses a generic decoder for this encoder.
+
+**`Held-out MI evaluated on all ... rows in ... blocks of at most ... rows at every epoch, averaged`**
+The held-out subset (`test_subset_size`) is larger than `max_eval_samples`, the
+most rows one evaluation may use. Each block is evaluated on its own and the
+values are averaged, weighted by block size, at every epoch. The precision is
+that of all the rows and the InfoNCE ceiling that of one block. Every epoch
+costs one evaluation per block. Raising `max_eval_samples` evaluates in fewer,
+larger blocks, at a memory cost that grows with the square of the block.
+
+**`Train-side MI evaluated on all ... rows in ... blocks of at most ... rows, averaged`**
+The training subset behind the reported estimate (`train_subset_size`, or the
+per-epoch set of `eval_train`) is larger than `max_eval_samples`, the most rows
+one evaluation may use. Each block is evaluated on its own and the values are
+averaged, weighted by block size. The precision is that of all the rows and the
+InfoNCE ceiling that of one block. Raising `max_eval_samples` evaluates in fewer,
+larger blocks, at a memory cost that grows with the square of the block.
+
+**`Large first embedding layer detected`**
+The first layer holds more than 500,000 parameters because the flattened input
+is wide. With long windows and few samples it commonly overfits. Reduce
+`window_size` or `hidden_dim`. An encoder that reads the window axis itself
+(`cnn`, `gru`, `tcn`, `lru`) also helps.
+
+**`... spike times are not sorted`**
+The message is harmless because the library sorts them automatically.
+
+**`save_best_model_path: this call trains several networks and saves every one of them`**
+The call saves every network under the path with its identifying labels added
+and records each path as `model_path`. Because every file holds a whole network,
+a large grid or rigorous ladder can take a lot of disk space. To keep one model,
+rerun the configuration you want on its own with this path
+([USING.md](USING.md#saving-the-trained-networks)).
+
+**`PretrainedBackboneEmbedding: input has ... channel(s) but backbone '...' expects ...`**, **`PretrainedBackboneEmbedding: input spatial size (...) does not match`**
+A trainable channel adapter or an upsampling layer was inserted so the backbone
+can run. Both add parameters that are not in the pretrained model.
+
+**`Each permutation reruns the whole call`**
+Because every null trial repeats the full call with every configuration of the
+grid, the test costs `n_permutations` times the call.
+
+**`SubsetView: window count dropped from ... to ...`**
+`shift_time` moved windows outside the valid recording range, so that epoch
+trained on fewer windows. Evaluation reads the unshifted windows.

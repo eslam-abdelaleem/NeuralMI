@@ -106,22 +106,27 @@ def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int)
 
 
 def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
-            n_splits: int, kwargs: Dict[str, Any]) -> List[Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]]:
+            n_splits: int, kwargs: Dict[str, Any],
+            shared_chosen: bool = False) -> List[Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]]:
     """The two halves of X for each split, with the parameters that fit them.
 
     Only ``'random'`` draws a new channel assignment per split. Every other
-    method has one fixed assignment and so gives one split.
+    method has one fixed assignment and so gives one split. ``shared_chosen``
+    is whether the user set ``shared_encoder``, as opposed to the mode's default.
     """
     n_channels = x_data.shape[1]
 
     def unequal(a, b):
-        # Halves of different sizes cannot share one encoder.
+        # Halves of different sizes cannot share one encoder. Turning off a shared
+        # encoder the user asked for warns; turning off the mode's default only logs.
         if params.get('shared_encoder', False) and int(np.prod(a.shape[1:])) != int(np.prod(b.shape[1:])):
-            logger.warning(
-                f"split_method='{split_method}' produced unequal halves "
-                f"(X: {tuple(a.shape[1:])}, Y: {tuple(b.shape[1:])}). shared_encoder=True needs "
-                f"equal halves and is turned off for this run."
-            )
+            text = (f"split_method='{split_method}' produced unequal halves "
+                    f"(X: {tuple(a.shape[1:])}, Y: {tuple(b.shape[1:])}). shared_encoder=True needs "
+                    f"equal halves and is turned off for this run.")
+            if shared_chosen:
+                warnings.warn(text, UserWarning, stacklevel=user_stacklevel())
+            else:
+                logger.info(text)
             return {**params, 'shared_encoder': False}
         return params
 
@@ -144,15 +149,7 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
         for _ in range(n_splits if split_method == 'random' else 1):
             order = np.random.permutation(n_channels) if split_method == 'random' else np.arange(n_channels)
             x_a, x_b = x_data[:, order[:half], ...], x_data[:, order[half:], ...]
-            if half != n_channels - half and params.get('shared_encoder', False):
-                logger.warning(
-                    f"split_method='{split_method}' on an odd channel count ({n_channels}) "
-                    f"produces unequal halves (X: {half}, Y: {n_channels - half}), incompatible "
-                    f"with shared_encoder=True. Disabling shared_encoder for this run."
-                )
-                out.append((x_a, x_b, {**params, 'shared_encoder': False}))
-            else:
-                out.append((x_a, x_b, params))
+            out.append((x_a, x_b, unequal(x_a, x_b)))
         return out
 
     if split_method == 'index':
@@ -175,15 +172,7 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
         if not channel_indices_x:
             raise ValueError("channel_indices_x is empty and leaves X empty.")
         x_a, x_b = x_data[:, channel_indices_x, ...], x_data[:, channel_indices_y, ...]
-        if len(channel_indices_x) != len(channel_indices_y) and params.get('shared_encoder', False):
-            logger.warning(
-                f"split_method='index' with unequal channel counts "
-                f"(X: {len(channel_indices_x)}, Y: {len(channel_indices_y)}) is "
-                f"incompatible with shared_encoder=True. Disabling shared_encoder "
-                f"for this run."
-            )
-            return [(x_a, x_b, {**params, 'shared_encoder': False})]
-        return [(x_a, x_b, params)]
+        return [(x_a, x_b, unequal(x_a, x_b))]
 
     # The image splits.
     if x_data.ndim != 4:
@@ -215,12 +204,6 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
                 f"tensors. embedding_model='{embedding_model}' requires rectangular 2-D spatial "
                 "input. Use embedding_model='mlp' for geometric diagonal splits."
             )
-        if H != W:
-            logger.warning(
-                f"split_method='{split_method}' on non-square input (H={H}, W={W}): "
-                "the two triangular halves will have unequal pixel counts. "
-                "shared_encoder will be disabled automatically if flat dims differ."
-            )
         rows = torch.arange(H, device=x_data.device).unsqueeze(1)
         cols = torch.arange(W, device=x_data.device).unsqueeze(0)
         if split_method == 'diagonal':
@@ -249,14 +232,14 @@ def _default_grid(pr: float) -> List[int]:
     if reach <= _GRID_SMALL:
         return list(range(1, _GRID_SMALL + 1))
     if reach <= _GRID_MEDIUM:
-        logger.warning(
+        logger.info(
             f"Dimensionality: the grid runs over embedding_dim 1 to {_GRID_MEDIUM} because the "
             f"reference fit has a participation ratio of {pr:.1f}. Pass embedding_dims to choose "
             f"the grid.")
         return list(range(1, _GRID_MEDIUM + 1))
     top = int(math.ceil(reach))
     grid = _log_grid(1, top)
-    logger.warning(
+    logger.info(
         f"Dimensionality: the grid runs over {len(grid)} values of embedding_dim from 1 to {top} "
         f"on a log scale ({grid}) because the reference fit has a participation ratio of "
         f"{pr:.1f}. Pass embedding_dims as a list or a range for a finer grid.")
@@ -342,7 +325,7 @@ def _run_grid(views, grid: List[int], n_restarts: int, n_workers: int, ratio: fl
             plateau = max(best.values())
             confirmed.append(_confirmed(best, done, ratio * plateau))
         if all(c is not None for c in confirmed) and len(done) < len(grid):
-            logger.warning(
+            logger.info(
                 f"Dimensionality: the grid stopped at embedding_dim={done[-1]} once {_CONFIRM} "
                 f"consecutive values reached {ratio:.0%} of the plateau. The rest of the grid "
                 f"({grid[len(done)]} to {grid[-1]}) was not fitted. Pass embedding_dims to fit "
@@ -473,7 +456,7 @@ def run_dimensionality_analysis(
     if y_data is not None:
         pairs = [(x_data, y_data, params)]
     else:
-        pairs = _halves(x_data, params, split_method, n_splits or 5, kwargs)
+        pairs = _halves(x_data, params, split_method, n_splits or 5, kwargs, 'shared_encoder' in user_set)
     # One held-out set for every fit of the call.
     first_a, first_b, _ = pairs[0]
     n_rows = _n_samples_for_shared_split(first_a, first_b if y_data is not None else None, params)
@@ -497,7 +480,7 @@ def run_dimensionality_analysis(
     pr = _median([f.get('pr_singular') for f in fits])
     if not reference_given and np.isfinite(pr) and 2 * pr >= _REFERENCE_FILL * reference_dim:
         larger = int(math.ceil(4 * pr))
-        logger.warning(
+        logger.info(
             f"Dimensionality: the participation ratio of the reference fit ({pr:.1f}) is close to "
             f"its embedding_dim={reference_dim}. The reference is refitted at embedding_dim={larger}."
         )
@@ -523,7 +506,7 @@ def run_dimensionality_analysis(
                    if _reading(_best(fits, s), saturation_ratio)[0] == reference_dim]
     if unsaturated and embedding_dims is None and grid and grid[-1] + 1 < reference_dim:
         extra = [k for k in _log_grid(grid[-1] + 1, reference_dim - 1) if k not in grid]
-        logger.warning(
+        logger.info(
             f"Dimensionality: the curve of split(s) {unsaturated} did not reach "
             f"{saturation_ratio:.0%} of its plateau by embedding_dim={grid[-1]}. The grid is "
             f"extended over {extra}."

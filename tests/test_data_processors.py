@@ -58,9 +58,10 @@ def test_continuous_window_warns_on_heavily_gap_interpolated_retained_window(cap
     t = np.concatenate([np.arange(0, 10, 1.0), np.arange(90, 100, 1.0)])
     data = np.random.randn(len(t), 1)
     x_dataset = ContinuousWindowDataset(data, time_vector=t, min_coverage_fraction=0.2)
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         PairedTemporalDataset(x_dataset, window_size=20.0, t_start=0.0, t_end=80.0)
-    assert any('bridged by interpolation' in r.message for r in caplog.records)
+    assert any('bridged by interpolation' in str(w.message) for w in caught)
 
 
 def test_continuous_window_no_gap_warning_for_clean_data(caplog):
@@ -69,9 +70,10 @@ def test_continuous_window_no_gap_warning_for_clean_data(caplog):
     t = np.arange(0, 100, 1.0)
     data = np.random.randn(len(t), 1)
     x_dataset = ContinuousWindowDataset(data, time_vector=t)
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         PairedTemporalDataset(x_dataset, window_size=10.0, t_start=0.0, t_end=90.0)
-    assert not any('bridged by interpolation' in r.message for r in caplog.records)
+    assert not any('bridged by interpolation' in str(w.message) for w in caught)
 
 
 def test_continuous_window_with_jumps():
@@ -131,28 +133,28 @@ def test_categorical_window_dataset_float_labels_still_relabeled():
     dataset = CategoricalWindowDataset(data, time)
     assert dataset.data_orig.min() >= 0
 
-def test_categorical_window_dataset_non_integer_relabel_warns_and_is_consistent(caplog):
+def test_categorical_window_dataset_non_integer_relabel_says_so_and_is_consistent(caplog):
     """Non-integer input (a float array the caller forgot to .astype(int))
         needs no pre-cast: DataValidator lets it through (see
         tests/test_validation.py), and CategoricalWindowDataset relabels it to
-        consecutive integer codes, with a warning. The relabeling is a bijection in
+        consecutive integer codes and logs it. The relabeling is a bijection in
         ascending value order: 1.5 -> 0, 2.5 -> 1, 3.5 -> 2.
     """
     import logging
     data = np.array([1.5, 2.5, 3.5, 2.5, 1.5], dtype=np.float64)
     time = np.arange(5)
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with caplog.at_level(logging.INFO, logger='neural_mi'):
         dataset = CategoricalWindowDataset(data, time)
     assert any('relabeled to consecutive integer category codes' in r.message
               for r in caplog.records)
     np.testing.assert_array_equal(dataset.data_orig.flatten(), [0, 1, 2, 1, 0])
 
 def test_categorical_window_dataset_integer_labels_no_relabel_warning(caplog):
-    """Already-integer-typed data must not trigger the relabeling warning."""
+    """Already-integer-typed data must not trigger the relabeling message."""
     import logging
     data = np.array([0, 1, 2, 1, 0], dtype=np.int64)
     time = np.arange(5)
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with caplog.at_level(logging.INFO, logger='neural_mi'):
         CategoricalWindowDataset(data, time)
     assert not any('relabeled to consecutive integer category codes' in r.message
                   for r in caplog.records)
@@ -350,9 +352,8 @@ def test_paired_time_shift_mismatched_offsets_warns_and_uses_x(continuous_data, 
     paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
     n_windows = len(paired_dataset)
 
-    with caplog.at_level('WARNING'):
+    with pytest.warns(UserWarning, match='offset_x=3.0 != offset_y=7.0'):
         paired_dataset.time_shift(offset_x=3.0, offset_y=7.0)
-    assert any('offset_x' in rec.message and 'offset_y' in rec.message for rec in caplog.records)
     assert paired_dataset.window_manager.t_start == paired_dataset._base_t_start + 3.0
     assert len(paired_dataset) == n_windows
 

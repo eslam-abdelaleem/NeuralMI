@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 from typing import Any, Dict, List, Optional, Tuple
 
 from neural_mi.analysis.task import run_training_task
-from neural_mi.logger import CapturedTask, logger, released
+from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.device import with_device
 from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
@@ -194,12 +194,13 @@ def _unfittable_ladder(kept: pd.DataFrame, where: str) -> Optional[Dict[str, Any
     if len(gammas) >= 2:
         return None
     if not gammas:
-        logger.warning(f"{where}every rung of the gamma ladder produced nothing. The fit "
-                       f"reports 0 and is unreliable.")
+        warnings.warn(f"{where}every rung of the gamma ladder produced nothing. The fit "
+                      f"reports 0 and is unreliable.", UserWarning, stacklevel=user_stacklevel())
         value = 0.0
     else:
-        logger.warning(f"{where}only gamma={gammas[0]} has rungs that produced a value. A line "
-                       f"needs two values of gamma. The fit reports NaN and is unreliable.")
+        warnings.warn(f"{where}only gamma={gammas[0]} has rungs that produced a value. A line "
+                      f"needs two values of gamma. The fit reports NaN and is unreliable.",
+                      UserWarning, stacklevel=user_stacklevel())
         value = float('nan')
     nan = float('nan')
     return {'mi_corrected': value, 'mi_error': nan, 'mi_error_pred': nan, 'slope': nan,
@@ -223,19 +224,21 @@ def _drop_zero_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int
     hit = per_gamma[per_gamma['sum'] > 0]
     counts = ', '.join(f"gamma {int(g)}: {int(r['sum'])} of {int(r['count'])}"
                        for g, r in hit.iterrows())
-    logger.warning(
+    warnings.warn(
         f"{where}{int(is_zero.sum())} of {len(group)} rungs of the gamma ladder produced "
         f"nothing (reported as 0) and are left out of the fit ({counts}). A rung produces "
         f"nothing when its network learned nothing that generalises or its value came out "
-        f"negative. runs counts them in zero_rungs."
+        f"negative. runs counts them in zero_rungs.",
+        UserWarning, stacklevel=user_stacklevel()
     )
     half = [int(g) for g, r in per_gamma.iterrows() if r['sum'] >= 0.5 * r['count']]
     if half:
-        logger.warning(
+        warnings.warn(
             f"{where}half or more of the rungs produced nothing at gamma={half}. The chunks "
             f"there are likely too small to estimate this quantity. A gamma with no rung left "
             f"drops out of the fit. The fit is unreliable with fewer than min_gamma_points "
-            f"values of gamma."
+            f"values of gamma.",
+            UserWarning, stacklevel=user_stacklevel()
         )
     return group[~is_zero], int(is_zero.sum())
 
@@ -389,13 +392,14 @@ def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) 
             if g in gammas_used and mean_sat == mean_sat and mean_sat > SATURATION_WARNING_THRESHOLD:
                 saturated_gammas.append(g)
     if saturated_gammas:
-        logger.warning(
+        warnings.warn(
             f"Rigorous fit uses the saturated gamma={sorted(saturated_gammas)} "
             f"(mean train_saturation above {SATURATION_WARNING_THRESHOLD:.0%} "
             f"of their own ceiling). An extrapolation anchored on saturated "
             f"rungs cannot be trusted. The fitted slope reflects the ceiling "
             f"as much as the true bias. Raise max_eval_samples or narrow "
-            f"gamma_range to leave these out."
+            f"gamma_range to leave these out.",
+            UserWarning, stacklevel=user_stacklevel()
         )
         out['saturated_gammas'] = sorted(saturated_gammas)
     else:
@@ -450,12 +454,15 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             enough_gamma_points = len(gammas_used) >= min_gamma_points
             is_reliable = enough_gamma_points and linear_region_found
             if not enough_gamma_points:
-                logger.warning(f"Fit for {_fit_target(param_dict)} is unreliable (final gamma points < {min_gamma_points}).")
+                warnings.warn(f"Fit for {_fit_target(param_dict)} is unreliable "
+                              f"(final gamma points < {min_gamma_points}).",
+                              UserWarning, stacklevel=user_stacklevel())
             elif not linear_region_found:
-                logger.warning(
+                warnings.warn(
                     f"Fit for {_fit_target(param_dict)} is unreliable. No linear region was found down to "
                     f"min_gamma_points={min_gamma_points}. The fit uses gamma={gammas_used} "
-                    f"without having satisfied the curvature criterion."
+                    f"without having satisfied the curvature criterion.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
             mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
@@ -469,9 +476,10 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
 
             if diagnostics['leverage_warning']:
                 is_reliable = False
-                logger.warning(
+                warnings.warn(
                     f"Fit diagnostics triggered for {_fit_target(param_dict)}: "
-                    f"leverage_warning={diagnostics['leverage_warning']}."
+                    f"leverage_warning={diagnostics['leverage_warning']}.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
             # fit_quality_warning is informational only; does not affect is_reliable
             if diagnostics['fit_quality_warning']:
@@ -490,9 +498,10 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
             # exists to catch.
             if per_gamma_diagnostics['saturated_gammas']:
                 is_reliable = False
-                logger.warning(
+                warnings.warn(
                     f"Fit for {_fit_target(param_dict)} marked unreliable: gamma="
-                    f"{per_gamma_diagnostics['saturated_gammas']} used in the fit are ceiling-saturated."
+                    f"{per_gamma_diagnostics['saturated_gammas']} used in the fit are ceiling-saturated.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
             param_dict.update({
@@ -613,11 +622,12 @@ class AnalysisWorkflow:
             *(param_grid or {}).values()))) or 1)
         expected_total = expected_per_combo * n_combos
         if len(tasks) != expected_total:
-            logger.warning(
+            warnings.warn(
                 f"Rigorous analysis expected {expected_total} tasks "
                 f"({n_combos} combo(s) x sum(gamma_range)={expected_per_combo}) "
                 f"and created {len(tasks)}. The gamma ladder may be truncated. "
-                f"Check it before trusting the extrapolation."
+                f"Check it before trusting the extrapolation.",
+                UserWarning, stacklevel=user_stacklevel()
             )
 
         if n_workers <= 1:
@@ -767,7 +777,7 @@ class AnalysisWorkflow:
                     _held_out = max(1.0 - float(_train_frac), 1e-6)
                     min_reliable_samples = int(np.ceil(_bs / _held_out))
                 if min_chunk_size < min_reliable_samples:
-                    logger.warning(
+                    warnings.warn(
                         f"gamma={gamma}: the smallest data subset has {min_chunk_size} "
                         f"samples. Below about {min_reliable_samples} the held-out partition "
                         f"of a chunk cannot fill one evaluation batch "
@@ -777,7 +787,8 @@ class AnalysisWorkflow:
                         f"straight line through noisy rungs still looks straight and the "
                         f"linearity check cannot catch it. Use a smaller gamma_range or "
                         f"more data. Set Training(min_reliable_samples=...) to move this "
-                        f"line."
+                        f"line.",
+                        UserWarning, stacklevel=user_stacklevel()
                     )
 
                 for i_subset, subset_indices in enumerate(chunks):
@@ -1180,7 +1191,8 @@ def run_rigorous_scalar_analysis(
     rows = []
     for r in raw_rows:
         if r['_error'] is not None:
-            logger.warning(f"Rigorous fit (rigorous=True): the estimate for one chunk failed: {r['_error']}")
+            warnings.warn(f"Rigorous fit (rigorous=True): the estimate for one chunk failed: {r['_error']}",
+                          UserWarning, stacklevel=user_stacklevel())
         else:
             row = {'gamma': r['gamma'], 'chunk': r['chunk'], 'train_mi': r['train_mi']}
             if r.get('model_path'):
@@ -1216,10 +1228,10 @@ def run_rigorous_scalar_analysis(
         # the result as unreliable so callers are warned.
         gammas_used = sorted(df['gamma'].unique().tolist())
         linear_region_found = False
-        logger.warning(
-            "Rigorous fit (rigorous=True): the linear region is too small after "
-            "pruning. The fit falls back to all %d gamma values and is_reliable is False.",
-            len(gammas_used),
+        warnings.warn(
+            f"Rigorous fit (rigorous=True): the linear region is too small after "
+            f"pruning. The fit falls back to all {len(gammas_used)} gamma values and is_reliable is False.",
+            UserWarning, stacklevel=user_stacklevel()
         )
         mi_corrected, mi_error, mi_error_pred, slope = _extrapolate_mi(
             df, gammas_used, confidence_level
@@ -1230,16 +1242,18 @@ def run_rigorous_scalar_analysis(
     enough_gamma_points = len(gammas_used) >= min_gamma_points
     is_reliable = enough_gamma_points and linear_region_found
     if enough_gamma_points and not linear_region_found:
-        logger.warning(
-            "Rigorous fit (rigorous=True): no linear region was found down to "
-            "min_gamma_points=%d. The fit uses gamma=%s without having satisfied "
-            "the curvature criterion.", min_gamma_points, gammas_used,
+        warnings.warn(
+            f"Rigorous fit (rigorous=True): no linear region was found down to "
+            f"min_gamma_points={min_gamma_points}. The fit uses gamma={gammas_used} without having "
+            f"satisfied the curvature criterion.",
+            UserWarning, stacklevel=user_stacklevel()
         )
     if diagnostics['leverage_warning']:
         is_reliable = False
-        logger.warning(
+        warnings.warn(
             f"Rigorous fit (rigorous=True): fit diagnostics triggered: "
-            f"leverage_warning={diagnostics['leverage_warning']}."
+            f"leverage_warning={diagnostics['leverage_warning']}.",
+            UserWarning, stacklevel=user_stacklevel()
         )
     # fit_quality_warning is informational only; does not affect is_reliable
     if diagnostics['fit_quality_warning']:

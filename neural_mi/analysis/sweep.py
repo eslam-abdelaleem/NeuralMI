@@ -110,7 +110,8 @@ class ParameterSweep:
         Executes a list of prepared tasks in parallel.
         """
         if not tasks:
-            logger.warning("No tasks to run. Your sweep_grid might be empty.")
+            warnings.warn("No tasks to run. Your sweep_grid might be empty.",
+                          UserWarning, stacklevel=user_stacklevel())
             return []
 
         # Default to sequential if n_workers is not specified or is 1
@@ -266,7 +267,7 @@ def amplification_factor(components: Sequence[float], result: float) -> float:
 
     which for the two-term case is the ``(t1 + t2) / (t1 - t2)`` given in
     ``THEORY.md``.  A component-wise relative error of ``eps`` becomes roughly
-    ``kappa * eps`` on the result.
+    ``kappa * eps`` on the result when the components' errors are independent.
 
     Interpreting it:
 
@@ -366,12 +367,12 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
         warnings.warn(
             f"{quantity_name} has an error-amplification factor of {amp:.1f}x. It is a "
             f"small residual ({result * _scale:.4f} {_units}) of {count} much larger estimates "
-            f"({listing}). A relative error of eps on each component becomes roughly "
-            f"{amp:.0f}*eps on the result (about {amp:.0f}% for a 1% component error). "
-            f"Report the components ({keys}) beside the point estimate. The joint term is "
-            f"the largest. It reaches its ceiling first and then biases the result downward. "
-            f"Check it for ceiling saturation. Look for more data or more training "
-            f"before concluding that the true value is small.",
+            f"({listing}). If their errors were independent, a relative error of eps on each "
+            f"would become roughly {amp:.0f}*eps on the result (about {amp:.0f}% for a 1% "
+            f"component error). The components are trained on the same rows and partly err "
+            f"together, which cancels some of that. Report the components ({keys}) beside the "
+            f"point estimate. Look for more data or more training before concluding that the "
+            f"true value is small.",
             CombinationWarning, stacklevel=user_stacklevel(),
         )
 

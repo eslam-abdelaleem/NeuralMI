@@ -1,4 +1,6 @@
 """Tests for rigorous-mode diagnostics: fit-quality warnings and the scalar-analysis engine."""
+import warnings
+
 import pytest
 import numpy as np
 import pandas as pd
@@ -411,7 +413,7 @@ class TestRigorousShiftWindowsEndToEnd:
     (caught by the task-count check already built into AnalysisWorkflow.run,
     which warns if len(tasks) != expected_total)."""
 
-    def test_rigorous_shift_windows_no_crash_and_expected_task_count(self, caplog):
+    def test_rigorous_shift_windows_no_crash_and_expected_task_count(self):
         import neural_mi as nmi
         from neural_mi import Training, Rigorous
 
@@ -421,14 +423,16 @@ class TestRigorousShiftWindowsEndToEnd:
         y = np.random.randn(4000, 2).astype('float32')
         proc = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
                               y='continuous', y_params={'window_size': 20, 'step_size': 20})
-        results = nmi.run(
-            x, y, mode='rigorous', processing=proc,
-            training=Training(n_epochs=1, batch_size=16, shift_windows=True,
-                              min_reliable_samples=1),
-            rigorous=Rigorous(gamma_range=range(1, 4)),
-            n_workers=1, show_progress=False, seed=0,
-        )
-        assert "may be truncated" not in caplog.text
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            results = nmi.run(
+                x, y, mode='rigorous', processing=proc,
+                training=Training(n_epochs=1, batch_size=16, shift_windows=True,
+                                  min_reliable_samples=1),
+                rigorous=Rigorous(gamma_range=range(1, 4)),
+                n_workers=1, show_progress=False, seed=0,
+            )
+        assert "may be truncated" not in ' '.join(str(w.message) for w in caught)
         ladder = results.details[0]['trainings']
         assert len(ladder) == sum(range(1, 4))  # 1 + 2 + 3 = 6 networks
         assert np.all(np.isfinite(ladder['train_mi'].values))
@@ -558,7 +562,7 @@ class TestRigorousShiftTimeSpikeEndToEnd:
     crash or silently create wrong-sized chunks (caught by the task-count
     check already built into AnalysisWorkflow.run)."""
 
-    def test_rigorous_shift_time_spike_no_crash_and_expected_task_count(self, caplog):
+    def test_rigorous_shift_time_spike_no_crash_and_expected_task_count(self):
         import neural_mi as nmi
         from neural_mi import Training, Rigorous
 
@@ -566,16 +570,18 @@ class TestRigorousShiftTimeSpikeEndToEnd:
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=600, window_size=0.05, seed=0)
-        results = nmi.run(
-            x_spikes, y_spikes, mode='rigorous',
-            processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
-            model=nmi.Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=1, batch_size=16, shift_time=True,
-                              min_reliable_samples=1),
-            rigorous=Rigorous(gamma_range=range(1, 4)),
-            n_workers=1, show_progress=False, seed=0,
-        )
-        assert "may be truncated" not in caplog.text
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            results = nmi.run(
+                x_spikes, y_spikes, mode='rigorous',
+                processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
+                model=nmi.Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+                training=Training(n_epochs=1, batch_size=16, shift_time=True,
+                                  min_reliable_samples=1),
+                rigorous=Rigorous(gamma_range=range(1, 4)),
+                n_workers=1, show_progress=False, seed=0,
+            )
+        assert "may be truncated" not in ' '.join(str(w.message) for w in caught)
         ladder = results.details[0]['trainings']
         assert len(ladder) == sum(range(1, 4))  # 1 + 2 + 3 = 6 networks
         assert np.all(np.isfinite(ladder['train_mi'].values))
@@ -641,19 +647,20 @@ def test_a_fractional_step_cuts_each_chunk_with_the_step_the_windows_use():
     assert steps and set(steps) == {10}
 
 
-def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma(caplog):
+def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma():
     """A rung at 0 produced nothing. The fit leaves it out and says how many per gamma,
     and warns again where half or more of a gamma's rungs produced nothing."""
     from neural_mi.analysis.rigorous import _drop_zero_rungs
     ladder = _make_df([1, 2, 2, 3, 3, 3], [0.5, 0.4, 0.0, 0.3, 0.0, 0.0])
-    with caplog.at_level('WARNING', logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         kept, n = _drop_zero_rungs(ladder, "Rigorous fit: ")
     assert n == 3 and list(kept['train_mi']) == [0.5, 0.4, 0.3]
-    messages = [r.message for r in caplog.records]
+    messages = [str(w.message) for w in caught]
     assert any(m.startswith("Rigorous fit: 3 of 6 rungs") and "gamma 2: 1 of 2, gamma 3: 2 of 3" in m
                for m in messages)
     assert any("half or more of the rungs produced nothing at gamma=[2, 3]" in m for m in messages)
-    caplog.clear()
-    with caplog.at_level('WARNING', logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         kept, n = _drop_zero_rungs(_make_df([1, 2], [0.5, 0.4]), "")
-    assert n == 0 and len(kept) == 2 and not caplog.records
+    assert n == 0 and len(kept) == 2 and not caught

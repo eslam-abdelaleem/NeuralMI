@@ -55,7 +55,7 @@ from neural_mi.analysis.offsets import (build_past_future, build_cross_offset, g
                                         resolve_stream_processing)
 from neural_mi.analysis.transfer import _build_te_arrays
 from neural_mi.utils import validate_stride
-from neural_mi.embeddings_io import model_file, resolve_model_path, warn_saving_several
+from neural_mi.embeddings_io import model_file, resolve_model_path, announce_saving_several
 
 
 # The fit settings a Rigorous config carries into a difference quantity's own
@@ -202,7 +202,7 @@ def _named_run(quantity: str, param: str, value, build, *, run_kwargs: Dict[str,
     save_path = _save_path(run_kwargs)
     if save_path:
         root, ext = os.path.splitext(save_path)
-        warn_saving_several(f"{root}_{param}-<value>{ext}")
+        announce_saving_several(f"{root}_{param}-<value>{ext}")
     tasks = [(*build(v), _with_save_path(run_kwargs, quantity, **{param: v}), rigorous, show_progress)
              for v in values]
     parts = dispatch_tasks(tasks, _task, n_workers=n_workers, show_progress=show_progress,

@@ -299,7 +299,9 @@ $$
 
 which for two terms is $(|t_1| + |t_2|) / |t_1 - t_2|$. A relative error
 $\epsilon$ on each component becomes roughly $\text{amp}\,\epsilon$ on the
-result.
+result if the components' errors are independent. The library trains the terms
+of a difference on the same rows, so part of their errors is shared and cancels
+in the subtraction, and the error of the result is smaller than that.
 
 | factor | reading |
 |---|---|

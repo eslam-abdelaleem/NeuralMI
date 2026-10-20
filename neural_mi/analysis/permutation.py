@@ -251,7 +251,7 @@ def _trial(args) -> Optional[Dict[tuple, Tuple[float, float]]]:
             produced = produce(mode, x_null, y, w, base_params, grid, ctx=ctx, to_bits=to_bits,
                                n_workers=1)
     except Exception as exc:
-        logger.warning(f"Permutation trial failed: {exc}")
+        warnings.warn(f"Permutation trial failed: {exc}", UserWarning, stacklevel=user_stacklevel())
         return None
     return row_values(mode, produced)
 

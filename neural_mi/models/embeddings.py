@@ -8,7 +8,7 @@ import numpy as np
 from typing import Optional, Tuple
 from torch.nn.utils import spectral_norm as _spectral_norm
 
-from neural_mi.logger import user_stacklevel
+from neural_mi.logger import logger, user_stacklevel
 
 # Shared activation set for every embedding model below (MLP, CNN1D, CNN2D).
 # One consistent set for every model here, so an unknown name raises a clean
@@ -923,13 +923,10 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
 
         # --- Channel adapter: trainable 1×1 conv when input_dim != backbone_in_ch ---
         if input_dim != _backbone_in_ch:
-            import warnings as _warnings
-            _warnings.warn(
+            logger.info(
                 f"PretrainedBackboneEmbedding: input has {input_dim} channel(s) but "
                 f"backbone '{pytorch_predefined}' expects {_backbone_in_ch}. "
-                f"Adding a trainable 1×1 conv channel adapter.",
-                UserWarning,
-                stacklevel=user_stacklevel(),
+                f"Adding a trainable 1×1 conv channel adapter."
             )
             self._channel_adapt: Optional[nn.Module] = nn.Conv2d(
                 input_dim, _backbone_in_ch, kernel_size=1, bias=False

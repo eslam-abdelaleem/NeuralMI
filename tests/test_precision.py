@@ -131,18 +131,19 @@ def test_precision_mode_uses_the_callers_split(monkeypatch):
     assert np.array_equal(received['train'], train) and np.array_equal(received['test'], test)
 
 
-def test_a_split_the_library_chooses_raises_no_custom_split_warning(caplog):
-    import logging
+def test_a_split_the_library_chooses_raises_no_split_warning():
+    import warnings
     import neural_mi as nmi
     rng = np.random.default_rng(0)
     x = rng.standard_normal((300, 2))
-    with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         nmi.run(x, x + 0.5 * rng.standard_normal((300, 2)), mode='precision',
                 model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
                 training=nmi.Training(n_epochs=1, batch_size=64),
                 precision=nmi.Precision(tau_grid=[0.5]),
                 show_progress=False, seed=0, device='cpu')
-    assert 'Custom train_indices' not in caplog.text
+    assert not any('replace the split' in str(w.message) for w in caught)
 
 
 def test_run_precision_analysis_end_to_end():

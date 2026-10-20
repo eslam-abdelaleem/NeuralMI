@@ -8,7 +8,8 @@ a range of specified time lags using the nonlinear cross-correlation method.
 from typing import List, Dict, Any, Optional
 
 from neural_mi.analysis.sweep import ParameterSweep, _product_dict, merge_grid_values
-from neural_mi.logger import logger
+import warnings
+from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import _shift_data
 from neural_mi.data.shift_windowing import n_windows_if_deferred, shift_family
@@ -71,7 +72,8 @@ def run_lag_analysis(
 
     other_sweep_grid = sweep_grid.copy() if sweep_grid is not None else {}
     if 'lag' in other_sweep_grid:
-        logger.warning("'lag' in sweep_grid is ignored when using mode='lag'.")
+        warnings.warn("'lag' in sweep_grid is ignored when using mode='lag'.",
+                      UserWarning, stacklevel=user_stacklevel())
         other_sweep_grid.pop('lag')
 
     param_combinations = _product_dict(**other_sweep_grid) if other_sweep_grid else [{}]

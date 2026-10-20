@@ -124,13 +124,15 @@ class TestReproducibilityUnderParallelism:
         parallel = nmi.run(x, y, n_workers=2, **kw).runs['mi'].tolist()
         assert serial == parallel
 
-    def test_no_reproducibility_warning_is_emitted(self, caplog):
+    def test_no_reproducibility_warning_is_emitted(self):
+        import warnings
         x, y = _make_data()
-        with caplog.at_level('WARNING', logger='neural_mi'):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
             nmi.run(x, y, mode='sweep', model=_MODEL, training=_TRAINING,
                     split=_SPLIT, seed=42, n_workers=2, sweep_grid={'run_id': [0, 1]},
                     show_progress=False)
-        assert not any('eproducibility' in r.message for r in caplog.records)
+        assert not any('eproducibility' in str(w.message) for w in caught)
 
     def test_dimensionality_matches_between_serial_and_parallel(self):
         from neural_mi import Dimensionality

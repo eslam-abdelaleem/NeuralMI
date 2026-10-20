@@ -16,7 +16,8 @@ from neural_mi.data.shift_windowing import (SHIFT_PACK_CONCAT, SHIFT_PACK_SECOND
                                             _REGULAR_GRID_PROCESSOR_TYPES)
 from neural_mi.analysis.sweep import (combined_spread, _joint_marginal_difference,
                                       amplification_factor)
-from neural_mi.logger import logger
+import warnings
+from neural_mi.logger import user_stacklevel
 from neural_mi.embeddings_io import saved_paths
 
 # Continuous windowing adds a deliberate "+1" sample as an interpolation
@@ -185,7 +186,7 @@ def run_conditional_mi(
           ``(|I(XW;Y)| + |I(W;Y)|) / |CMI|``.  CMI is a difference of two
           separately-trained estimates, so a relative error of ``eps`` on each
           component becomes roughly ``amplification_factor * eps`` on the
-          result.  Values near 1 are safe; values >= 10 mean the point
+          result when their errors are independent.  Values near 1 are safe; values >= 10 mean the point
           estimate should not be read without its components.  See
           :func:`neural_mi.analysis.sweep.amplification_factor`.
         - ``'raw_xw_y'`` : list of result dicts from the XW→Y sweep.
@@ -382,7 +383,7 @@ def run_conditional_mi(
     if x_data.shape[0] != w_data.shape[0]:
         if abs(x_data.shape[0] - w_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
             min_n = min(x_data.shape[0], w_data.shape[0])
-            logger.warning(
+            warnings.warn(
                 f"mode='conditional': x_data and y_data have {x_data.shape[0]} windows and w_data "
                 f"has {w_data.shape[0]}. All three are truncated to the first {min_n}. This is "
                 f"correct only if the extra window is at an edge. A window missing in the "
@@ -390,7 +391,8 @@ def run_conditional_mi(
                 f"streams by "
                 f"window time first and never reaches this. Reaching it means raw tensors were "
                 f"passed to the engine directly without window times to align on. Pass arrays "
-                f"that already agree in length if the ordering matters."
+                f"that already agree in length if the ordering matters.",
+                UserWarning, stacklevel=user_stacklevel()
             )
             x_data = x_data[:min_n]
             y_data = y_data[:min_n]
@@ -410,13 +412,14 @@ def run_conditional_mi(
             w_data = w_data.expand(-1, -1, x_data.shape[2])
         elif abs(x_data.shape[2] - w_data.shape[2]) <= _WINDOW_SIZE_TRIM_TOLERANCE:
             min_w = min(x_data.shape[2], w_data.shape[2])
-            logger.warning(
+            warnings.warn(
                 f"mode='conditional': x_data window size ({x_data.shape[2]}) and w_data window size "
                 f"({w_data.shape[2]}) differ by {abs(x_data.shape[2] - w_data.shape[2])} "
                 f"sample(s). Every processor emits window_size slots for a window of "
                 f"window_size. Check that Processing(x_params=...) and Processing(w_params=...) "
                 f"agree on window_size and sample_rate. Both are trimmed to their first "
-                f"{min_w} samples."
+                f"{min_w} samples.",
+                UserWarning, stacklevel=user_stacklevel()
             )
             x_data = x_data[:, :, :min_w]
             w_data = w_data[:, :, :min_w]

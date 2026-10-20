@@ -23,7 +23,7 @@ from .data.shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
-from .embeddings_io import model_file, resolve_model_path, warn_saving_several
+from .embeddings_io import model_file, resolve_model_path, announce_saving_several
 from .defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 import inspect as _inspect
 from .config import (
@@ -224,8 +224,8 @@ def _rotation_settings_ignored(output: Optional[Output]) -> List[str]:
 
 
 def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Optional[Training],
-                               output: Optional[Output] = None) -> None:
-    """Warn about Model, Training and Output settings that this call would ignore.
+                               output: Optional[Output] = None, split: Optional[Split] = None) -> None:
+    """Warn about Model, Training, Output and Split settings that this call would ignore.
 
     Only values the caller set away from their default count, so a setting
     that is spelled out at its default does not warn.
@@ -266,6 +266,13 @@ def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Opti
         ignored.append("embedding_dim (mode='dimensionality' sets it from "
                        "Dimensionality(embedding_dims=...))")
     ignored += _rotation_settings_ignored(output)
+    if split is not None and (split.train_indices is not None or split.test_indices is not None):
+        keys = {'mode': 'split_mode', 'train_fraction': 'train_fraction', 'n_test_blocks': 'n_test_blocks',
+                'gap_fraction': 'split_gap_fraction'}
+        replaced = [name for name, key in keys.items()
+                    if getattr(split, name) not in (None, BASE_PARAMS_SCHEMA[key]['default'])]
+        if replaced:
+            ignored.append(f"Split {', '.join(replaced)} (train_indices and test_indices replace the split)")
     if ignored:
         warnings.warn(
             f"These settings have no effect in this call and are ignored: {'; '.join(ignored)}.",
@@ -377,12 +384,10 @@ def _announce_call(mode: str, sweep_grid: Optional[dict], permutation_test: bool
                 f"A reliable p-value usually needs 100 or more permutations. {cost}",
                 UserWarning, stacklevel=user_stacklevel(),
             )
-        elif n_configs > 1:
-            warnings.warn(cost, UserWarning, stacklevel=user_stacklevel())
         else:
             logger.info(cost)
     if save_path and not _trains_one_network(mode, n_configs, len(run_ids)):
-        warn_saving_several(save_path)
+        announce_saving_several(save_path)
     n_workers = analysis_kwargs.get('n_workers') or 1
     if (n_workers > 1 and not permutation_test
             and _trains_one_network(mode, n_configs, len(run_ids))):
@@ -569,8 +574,8 @@ def run(
         recorded in ``Results.params['random_seed']``: the terms of a difference
         quantity share their split and evaluation rows through it.
     verbose : bool, optional
-        True logs informational messages for this call and False only warnings
-        and errors. None, the default, keeps the level set by
+        True logs informational messages for this call and False only errors.
+        Warnings are Python warnings and do not depend on it. None, the default, keeps the level set by
         ``nmi.set_verbosity()``.
     show_progress : bool
         Progress bars.
@@ -630,7 +635,7 @@ def run(
         estimator = Estimator(name=estimator)
     else:
         estimator = as_config(estimator, Estimator)
-    _warn_ineffective_settings(mode, model, training, output)
+    _warn_ineffective_settings(mode, model, training, output, split)
     _check_estimator_params(estimator)
 
     # Named engine parameters (computed once at import, see _ENGINE_PARAMS) decide
@@ -920,11 +925,6 @@ def _run_flat(
                                 processed=any(p is not None for p in
                                               (processor_type_x, processor_type_y, w_processor_type)),
                                 analysis_kwargs=analysis_kwargs)
-            logger.warning(
-                "Custom train_indices and test_indices were provided. "
-                "Split(mode, train_fraction, n_test_blocks, gap_fraction) "
-                "will be ignored for this run."
-            )
         # Trainer arguments
         _inject(base_params, 'max_eval_samples', max_eval_samples)
         _inject(base_params, 'train_subset_size', train_subset_size)
@@ -998,11 +998,12 @@ def _run_flat(
         # (Conditional/Interaction/Transfer all name it identically, see
         # config.py) -- one variable, three possible roles, dispatched by mode.
         if w_data is not None and mode not in ('conditional', 'interaction', 'transfer'):
-            logger.warning(
+            warnings.warn(
                 f"w_data was provided but mode='{mode}' does not use it. "
                 f"w_data is only consumed by mode='conditional' (conditional MI), "
                 f"mode='interaction' (interaction information) and mode='transfer' "
-                f"(conditional transfer entropy)."
+                f"(conditional transfer entropy).",
+                UserWarning, stacklevel=user_stacklevel()
             )
 
         # Validate parameters and apply defaults to base_params
@@ -1271,9 +1272,10 @@ def _run_flat(
             y_run_data = _to_tensor(y_data) if y_data is not None else None
             if y_run_data is not None and x_run_data.shape[0] != y_run_data.shape[0]:
                 _min_n = min(x_run_data.shape[0], y_run_data.shape[0])
-                logger.warning(
+                warnings.warn(
                     f"X ({x_run_data.shape[0]}) and Y ({y_run_data.shape[0]}) differ in sample count. "
-                    f"Both are truncated to {_min_n}."
+                    f"Both are truncated to {_min_n}.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
                 x_run_data = x_run_data[:_min_n]
                 y_run_data = y_run_data[:_min_n]
@@ -1571,17 +1573,19 @@ def _run_flat(
                                row_scalars=produced['row_scalars'])
         if permutation_test:
             if mode == 'dimensionality':
-                logger.warning(
+                warnings.warn(
                     "permutation_test=True has no effect for mode='dimensionality'. The mode "
                     "reports a curve over embedding dimensions and the dimension at which it "
-                    "saturates. Neither has a null distribution. No null is computed."
+                    "saturates. Neither has a null distribution. No null is computed.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
             elif mode == 'pairwise' and y_run is None:
-                logger.warning(
+                warnings.warn(
                     "permutation_test=True has no effect for mode='pairwise' without y_data. "
                     "Every pair is two channels of X. Moving X moves both sides of each pair "
                     "together and leaves no null to compute. Cross-pairwise MI with y_data "
-                    "supports permutation testing."
+                    "supports permutation testing.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
             else:
                 trials = permutation_nulls(
