@@ -168,6 +168,10 @@ def test_a_notebook_cell_shows_a_warning_repeated_across_calls_once():
         warnings.simplefilter('always')
         shell.run_cell(_three_calls)
     assert _shown_and_summary(caught, 'cell') == (1, 1)
+    # The count names the line the warning first named, not the code that ends the cell.
+    [shown] = _messages(caught, 'reach the estimator')
+    [summary] = _messages(caught, 'was raised 3 times in this cell', counts=True)
+    assert (summary.filename, summary.lineno) == (shown.filename, shown.lineno)
 
 
 def test_a_cell_leaves_warnings_outside_neural_mi_calls_alone():

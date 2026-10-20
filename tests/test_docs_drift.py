@@ -158,9 +158,9 @@ def _text(node, env):
 
 
 def _is_warning_call(func):
-    """'warning' for warnings.warn, 'other' for an info or error log line, None otherwise."""
+    """'warning' for warnings.warn or warn_explicit, 'other' for an info or error log line, None otherwise."""
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        if func.attr == 'warn' and func.value.id in ('warnings', '_warnings'):
+        if func.attr in ('warn', 'warn_explicit') and func.value.id in ('warnings', '_warnings'):
             return 'warning'
         if func.value.id in ('logger', '_logger') and func.attr in ('info', 'error'):
             return 'other'
@@ -170,9 +170,11 @@ def _is_warning_call(func):
 def _emitted_messages():
     """``[(level, 'file:line', text)]`` for every message the package emits.
 
-    Read from the source: every ``warnings.warn`` and info or error ``logger``
-    call, with the literal parts of its message kept and each formatted value
-    replaced by a placeholder.
+    Read from the source: every ``warnings.warn``, ``warnings.warn_explicit`` and
+    info or error ``logger`` call, with the literal parts of its message kept and
+    each formatted value replaced by a placeholder. A call whose message is a loop
+    variable relays messages captured elsewhere, such as a worker's, and composes
+    none, so it is left out.
     """
     found = {}
     for path in sorted(PACKAGE.rglob('*.py')):
@@ -187,11 +189,13 @@ def _emitted_messages():
                 text = _text(n.value, env)
                 if text is not None:
                     env[n.targets[0].id] = HOLE if n.targets[0].id in env else text
+            relayed = {n.id for loop in ast.walk(scope) if isinstance(loop, ast.For)
+                       for n in ast.walk(loop.target) if isinstance(n, ast.Name)}
             for node in ast.walk(scope):
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
                 level = _is_warning_call(node.func)
-                if level is None:
+                if level is None or (isinstance(node.args[0], ast.Name) and node.args[0].id in relayed):
                     continue
                 where = f"{path.relative_to(PACKAGE.parent)}:{node.lineno}"
                 found[where] = (level, where, _text(node.args[0], env))

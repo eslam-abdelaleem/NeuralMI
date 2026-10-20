@@ -190,16 +190,17 @@ def _kind(source: str, text: str) -> tuple:
 
 
 class _Repeats:
-    """Count, first text and channel of each kind of message raised during one call. The channel is
-    the warning's category, or the log level of a log message."""
+    """Count, first text, channel and place of each kind of message raised during one call. The
+    channel is the warning's category, or the log level of a log message. The place is the file and
+    line a warning was shown at, None for a log message."""
 
     def __init__(self):
         self.seen = {}
 
-    def first(self, kind: tuple, text: str, channel) -> bool:
+    def first(self, kind: tuple, text: str, channel, where=None) -> bool:
         entry = self.seen.get(kind)
         if entry is None:
-            self.seen[kind] = [1, text, channel]
+            self.seen[kind] = [1, text, channel, where]
             return True
         entry[0] += 1
         return False
@@ -237,12 +238,14 @@ def _snippet(text: str, width: int = 90) -> str:
 def _summarise(repeats: _Repeats, scope: str) -> None:
     """One line per repeated kind, through the channel of the message it counts: a warning of the
     same category, so that a filter on the category covers its count too, or a log line at the
-    same level."""
-    for count, text, channel in repeats.seen.values():
+    same level. A warning's count names the line its first occurrence named. At the end of a
+    notebook cell no line of the caller's is running any more, and the count would otherwise name
+    IPython's own file."""
+    for count, text, channel, where in repeats.seen.values():
         if count > 1:
             line = f"'{_snippet(text)}' was raised {count} times in this {scope} and shown once."
             if isinstance(channel, type):
-                _warnings.warn(line, channel, stacklevel=user_stacklevel())
+                _warnings.warn_explicit(line, channel, *where)
             else:
                 logger.log(channel, line)
 
@@ -266,7 +269,7 @@ def collect_repeats():
 
     def show(message, category, filename, lineno, file=None, line=None):
         text = str(message)
-        if repeats.first(_kind(category.__name__, text), text, category):
+        if repeats.first(_kind(category.__name__, text), text, category, (filename, lineno)):
             _pass_on(previous, message, category, filename, lineno, file, line)
 
     log_filter = _RepeatFilter(repeats)

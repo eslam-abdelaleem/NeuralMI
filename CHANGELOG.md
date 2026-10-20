@@ -147,6 +147,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The count that ends a notebook cell ("... was raised 3 times in this cell
+  and shown once") named IPython's own file in the environment's
+  site-packages, since no line of the cell is running when the cell ends. A
+  count now names the line the first warning of its kind named, in a cell, a
+  call or a `grouped_warnings()` block alike.
 - The held-out curve was smoothed with its ends mirrored, so the first epoch
   took the median of the epochs after it. On a curve that rises within one or
   two epochs and then falls, epoch 0 became the start of the top and its
