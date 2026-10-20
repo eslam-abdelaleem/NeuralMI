@@ -232,7 +232,8 @@ of the start. These thresholds were set on simulated curves of known shape. A
 slow approach to the top is measured instead: the training-side value is read
 also at the first epoch within three noise units of the top, on the same rows,
 and the start of the top is uncertain when the two readings differ by more than
-twice the estimate's standard error (`approach_shift` keeps the difference).
+`FUZZY_SE` of the estimate's standard errors (`approach_shift` keeps the
+difference). `FUZZY_SE` is set in `neural_mi/training/epochs.py`.
 
 The held-out curve plays the part a bandwidth choice plays in kernel density
 estimation. On the training side the critic can fit ever finer structure. The
@@ -467,26 +468,23 @@ Two simpler forms do worse.
 
 - **One encoder over all of X** mixes $C$ with $A$ from the first layer. The joint
   term learns $C$'s part differently from the conditioning term and trains longer
-  before it is read, and by then $A$'s inputs have fitted noise in the training
-  rows. In transfer entropy on linear-Gaussian data, with 64 source neurons over
-  10 bins of history and $2\times10^5$ samples, the transfer read from sources
-  shifted in time, where it is zero, was 12.0 and 12.8 millibits for two targets
-  with one encoder and 0.2 and 0.9 with branches. The second target's true
-  transfer, 4.7 millibits, could not be told from the shifted sources with one
-  encoder.
+  before it is read. By then $A$'s inputs have fitted noise in the training rows.
+  In transfer entropy on linear-Gaussian data, with 64 source neurons over 10
+  bins of history and $2\times10^5$ samples, one encoder read a clear transfer
+  from sources shifted in time, where it is zero, and could not tell a small true
+  transfer from it. Branches read the shifted sources near zero.
 - **Branches in the joint term only**, with a bare encoder in the conditioning
   term, leave $C$'s path one head deeper in the joint term. With $W$ a copy of
   X, where the two terms are equal, one-layer encoders on a small spike data set
-  read $I(X,W;Y)$ at 0.41 to 0.46 bits against $I(W;Y)$ at 0.07. With the head in
-  both terms they read 0.23 to 0.27 against 0.16 to 0.21.
+  read $I(X,W;Y)$ several times above $I(W;Y)$. With the head in both terms the
+  two came close.
 
-In conditional MI on independent rows (10 channels each for X, Y and W, exact
-26 millibits, $2\times10^4$ rows, 10 recordings), branches read 25.8 ± 3.1
-millibits on average, and −1.3 ± 3.3 with X shuffled, where one encoder read
-34.7 ± 3.7 and 7.2 ± 3.8. The aligned transfer from 64 sources still read high
-with branches, 36.9 against 30.9 millibits, as it did with one encoder: an MLP
-over all 640 source inputs fits the training rows. Reading every lag with one
-small readout brought it to 32.1 in a pilot.
+In conditional MI on independent rows (10 channels each for X, Y and W,
+$2\times10^4$ rows, 10 recordings), branches recovered the exact value on
+average and read near zero with X shuffled. One encoder read high in both. The
+aligned transfer from 64 sources still read high with branches, as it did with
+one encoder. An MLP over all 640 source inputs fits the training rows. Reading
+every lag with one small readout brought it closer in a pilot.
 
 ---
 

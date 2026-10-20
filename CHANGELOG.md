@@ -50,11 +50,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `custom_embedding_cls`. The conditioning set then takes the same path in
   every term, so the errors the terms make on it cancel in the difference. In
   transfer entropy from 64 linear-Gaussian source neurons over 10 bins of
-  history, the estimate from time-shifted sources fell from 12.0 and 12.8
-  millibits to 0.2 and 0.9 for two targets. In conditional MI on independent
-  rows it fell from 7.2 to -1.3 millibits, against an exact value of 26 for the
-  unshuffled data, which now reads 25.8 against 34.7 before. Results of these
-  quantities change. The conditioning term now trains first, and the joint term
+  history, the estimate from time-shifted sources, where the transfer is zero,
+  fell from a clear positive value to near zero. In conditional MI on
+  independent rows the estimate with X shuffled fell to near zero, and the
+  unshuffled estimate came down from above the exact value to it. Results of
+  these quantities change. The conditioning term now trains first, and the joint term
   reads the conditioning set's width from it. `shared_encoder=True` is refused
   for a term of a difference.
 - With shifted windows, a categorical stream estimated alone in a difference
@@ -64,7 +64,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   of the held-out curve. The trainer reads the training-side value also at the
   start of the curve's approach to its top, the first epoch within 3 noise units
   of it, on the same rows, and diagnoses a fuzzy start when the two readings
-  differ by more than twice the estimate's standard error: the spread of its
+  differ by more than `FUZZY_SE` of the estimate's standard errors: the spread of its
   evaluation blocks over the root of their count, or $\sqrt{2I/N}$ for a single
   block. The per-network records report the difference as `approach_shift`. The
   shape rule fired on every slow approach, whether or not it moved the
@@ -150,19 +150,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - The held-out curve was smoothed with its ends mirrored, so the first epoch
   took the median of the epochs after it. On a curve that rises within one or
   two epochs and then falls, epoch 0 became the start of the top and its
-  undertrained network was read. In tutorial 03 the joint network of
-  conditional transfer entropy was read at epoch 0 in two of three repeats
-  (0.50 and 0.58 bits held out, against 0.77 and 0.81 two epochs later), and
-  the repeats came out at -0.30 and -0.22 bits against an exact 0.026. The
-  curve is now held at its end values beyond its ends, and the repeats read
-  -0.05, 0.05 and 0.01 bits.
+  undertrained network was read. In tutorial 03 this read the joint network
+  of conditional transfer entropy at epoch 0 and turned its repeats strongly
+  negative against a small positive exact value. The curve is now held at its
+  end values beyond its ends, and those repeats scatter around the exact value.
 - A repeat of a difference quantity (conditional MI, transfer entropy and the
   reverse direction) or of a rigorous fit that came out negative was reported as
   0 and then left out of `mi_mean` and `mi_std` as a repeat that produced
-  nothing. Averaging only the positive repeats of a small difference read high:
-  in tutorial 03, transfer entropy with an exact 0.040 bits reported a single
-  positive repeat of 0.075 with no spread, while the mean of its three repeats
-  was negative. Such a row now averages every repeat's measured value, reports
+  nothing. Averaging only the positive repeats of a small difference read high.
+  In tutorial 03, transfer entropy reported its one positive repeat with no
+  spread while the mean of its repeats was negative. Such a row now averages every repeat's measured value, reports
   the mean as 0 when it is negative and keeps it as `mi_raw_mean`, and `mi_std`
   is the spread of every repeat. The rungs of a difference's rigorous ladder
   carry their signed measured value too, so the fit no longer drops the

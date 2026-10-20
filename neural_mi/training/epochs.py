@@ -22,7 +22,7 @@ Where a curve's approach to its top starts is measured, not judged from its
 shape. The approach starts at the first epoch within three noise units of the
 top. The trainer reads the training-side value there as well, on the same rows,
 and calls the start uncertain ('fuzzy start') when the two readings differ by
-more than twice the estimate's standard error.
+more than FUZZY_SE of the estimate's standard errors.
 """
 import warnings
 from typing import Optional, Tuple
@@ -128,5 +128,5 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
         warnings.warn(
             f"The held-out MI approached its top slowly, so where the top starts is uncertain. Read at the start "
             f"of the approach (epoch {approach}) instead of epoch {epoch}, the estimate moves by {shift:.4f} "
-            f"{units}, more than twice its standard error of {se:.4f} {units}. Check the curve with result.plot().",
+            f"{units}, more than {FUZZY_SE:g} times its standard error of {se:.4f} {units}. Check the curve with result.plot().",
             UserWarning, stacklevel=user_stacklevel())

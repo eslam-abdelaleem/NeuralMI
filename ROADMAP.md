@@ -128,11 +128,11 @@ epoch, so that errors in the shared pathway enter both terms alike.
 bins, $2\times10^5$ samples, one recording, each term reported on its training
 rows as the library reports it. With each term read at the peak of its own
 held-out curve, sharing the target's-past encoder between the terms gave the
-values of training them apart: 0.6 and 0.4 millibits from time-shifted sources
-against -0.3 and -0.1, and aligned values within 0.4 millibits. Reading both
-terms at one epoch raised the shifted-source values to 1.2 to 2.2 millibits: on
-a shifted source the joint term peaks within 10 epochs and the conditioning
-term after 20 to 40. Sharing every weight changed nothing further.
+values of training them apart, from time-shifted sources and from aligned ones.
+Reading both terms at one epoch raised the shifted-source values clearly above
+zero. On a shifted source the joint term peaks within a few epochs and the
+conditioning term much later, so no single epoch suits both. Sharing every
+weight changed nothing further.
 
 **Why not.** The branched encoder (`BranchedEmbedding`) already gives the
 conditioning set the same architecture in every term, and that is what made

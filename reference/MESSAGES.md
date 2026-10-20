@@ -176,7 +176,7 @@ epochs.
 **`The held-out MI approached its top slowly, so where the top starts is uncertain`**
 The smoothed curve climbed its last 3 noise units to the level of its top over
 several epochs, and the training-side value read at the first of them differs
-from the reported one by more than twice the estimate's standard error (the
+from the reported one by more than `FUZZY_SE` of the estimate's standard errors (the
 spread of its evaluation blocks over the root of their count, or
 $\sqrt{2I/N}$ for a single block). The estimate then depends on where the top
 is taken to start. `runs` keeps the difference as `approach_shift`.
