@@ -516,3 +516,19 @@ class TestDeepSets:
         b = a.clone()                      # same 3 spikes; the rest is sentinel either way
         b[:, :, 3:] = -1.0
         assert torch.allclose(net(a), net(b), atol=1e-6)
+
+
+
+def test_tqdms_ipywidgets_warning_is_silenced():
+    """A notebook without ipywidgets raises it when tqdm.auto is imported; the text bar works anyway.
+    Checked in a fresh process: pytest restores the warning filters after collecting the tests, which
+    removes the one neural_mi installs when a test module imports it."""
+    import subprocess
+    import sys
+    code = ("import warnings, neural_mi\n"
+            "from tqdm import TqdmWarning\n"
+            "from tqdm.notebook import WARN_NOIPYW\n"
+            "with warnings.catch_warnings(record=True) as caught:\n"
+            "    warnings.warn(WARN_NOIPYW, TqdmWarning)\n"
+            "print(len(caught))\n")
+    assert subprocess.run([sys.executable, '-c', code], capture_output=True, text=True).stdout.strip() == '0'

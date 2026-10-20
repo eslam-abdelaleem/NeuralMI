@@ -64,6 +64,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- tqdm's "IProgress not found" warning, which a notebook without ipywidgets
+  raises when the library is imported, is silenced as intended. The filter
+  named `UserWarning`, and tqdm raises its own `TqdmWarning`.
 - Worker processes (`n_workers` above 1) each get an equal share of the CPU
   threads, `os.cpu_count() // n_workers` and at least one. Each worker used to
   start PyTorch's full thread pool, so ten workers ran sixty threads on a

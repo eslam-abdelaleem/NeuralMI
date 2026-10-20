@@ -145,7 +145,7 @@ Each file covers one functional area. Run
 
 | file | covers |
 |---|---|
-| `test_utils.py` | device selection, `build_critic`, the cross-covariance spectrum, participation ratio, effective rank |
+| `test_utils.py` | device selection, the filter for tqdm's ipywidgets warning, `build_critic`, the cross-covariance spectrum, participation ratio, effective rank |
 
 ### Results and visualisation
 
