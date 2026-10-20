@@ -29,6 +29,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `SharedLatentGaussian` is replaced by `LatentGaussian`, the general
+  linear-Gaussian latent model: latent dynamics `Phi` that can couple
+  components, an innovation covariance `Q`, a readout matrix per process and
+  noise per channel. One group of latents can then drive another, so transfer
+  has a direction, and a process can carry memory of its own.
+  `LatentGaussian.shared(...)` takes the arguments `SharedLatentGaussian` took
+  and builds the same model: the same samples bit for bit and the same exact
+  values to floating-point precision. A spec can name channel indices in place
+  of a process. `storage_transfer(target, sources, k=None)` gives active
+  information storage and transfer entropy from `k` bins of history or, with
+  `k=None`, from the infinite past through the steady-state Kalman filter.
+  `mi_rate` integrates the spectral density of any `Phi`, and `phi` and `tau`
+  are the memory and correlation time of the slowest latent mode.
 - A message that needs the user's attention is a Python warning with a
   category, and logging carries only what the library did. Fifty-six of the 75
   `logger.warning` messages became warnings, so filters and tests can act on

@@ -195,7 +195,7 @@ class TestTransferEntropy:
 class TestConditionalTransferEntropy:
     """`conditional_transfer_entropy`, exported from the package top level.
 
-        A contract test, not an accuracy test. Against SharedLatentGaussian this
+        A contract test, not an accuracy test. Against LatentGaussian this
         quantity carries an amplification factor near 100 and a seed-to-seed
         spread larger than its own value, so it is not distinguishable from zero at
         any sample size a test can afford. What is pinned is that it runs, returns
@@ -409,8 +409,8 @@ class TestIterableAndGridCompose:
 
     @staticmethod
     def _data():
-        from neural_mi.generators import SharedLatentGaussian
-        oracle = SharedLatentGaussian(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
+        from neural_mi.generators import LatentGaussian
+        oracle = LatentGaussian.shared(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
                                       phi=0.9, coupling=0.4, noise=1.0, seed=0)
         s = oracle.sample(T=1200, seed=0)
         return tuple(s[k].astype('float32') for k in ('x', 'y', 'w'))
@@ -494,8 +494,8 @@ class TestConditionalQuantitiesReportTheirSpread:
 
     @staticmethod
     def _data():
-        from neural_mi.generators import SharedLatentGaussian
-        oracle = SharedLatentGaussian(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
+        from neural_mi.generators import LatentGaussian
+        oracle = LatentGaussian.shared(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
                                       phi=0.9, coupling=0.4, noise=1.0, seed=0)
         s = oracle.sample(T=1500, seed=0)
         return tuple(s[k].astype('float32') for k in ('x', 'y', 'w'))

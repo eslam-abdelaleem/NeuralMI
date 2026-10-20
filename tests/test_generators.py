@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from neural_mi.generators import (
-    SharedLatentGaussian,
+    LatentGaussian,
     generate_categorical_pair,
     generate_correlated_gaussians,
     generate_lagged_pair,
@@ -203,7 +203,7 @@ class TestLaggedPair:
 
     def test_reported_mi_is_the_value_at_the_peak(self):
         x, y, mi = generate_lagged_pair(n_samples=2000, lag=15, seed=0)
-        ref = SharedLatentGaussian(dims={'x': 1, 'y': 1}, d=1, phi=0.95,
+        ref = LatentGaussian.shared(dims={'x': 1, 'y': 1}, d=1, phi=0.95,
                                    noise=0.5, coupling=3.0, seed=0)
         assert mi == pytest.approx(ref.exact(A=[('x', 0)], B=[('y', 0)]))
 

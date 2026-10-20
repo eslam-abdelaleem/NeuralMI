@@ -75,7 +75,7 @@ Each file covers one functional area. Run
 
 | file | covers |
 |---|---|
-| `test_oracle.py` | `SharedLatentGaussian`: the exact identities, sampling, SNR, error paths, and agreement between the offset builder and the named quantities |
+| `test_oracle.py` | `LatentGaussian`: the exact identities, sampling, SNR, error paths, latent dynamics that couple components (lagged covariance against a sample, the rate against the block-MI slope, the infinite past against long histories, channel specs), and agreement between the offset builder and the named quantities |
 | `test_generators.py` | every synthetic generator in numpy and torch modes |
 
 ### Models

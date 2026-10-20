@@ -871,14 +871,14 @@ nmi.run(x, y, mode='estimate',
 With shifting on, a window spans two independent draws and can carry more than
 `exact`. An estimate above `exact` points to the setup.
 
-`SharedLatentGaussian` gives the exact value of $I(A;B \mid C)$ for any choice
-of processes and time offsets. Every temporal quantity then has a number to
-check against:
+`LatentGaussian` gives the exact value of $I(A;B \mid C)$ for any choice of
+processes and time offsets. Every temporal quantity then has a number to check
+against:
 
 ```python
-from neural_mi.generators import SharedLatentGaussian
+from neural_mi.generators import LatentGaussian
 
-oracle = SharedLatentGaussian(dims={'x': 8, 'y': 8, 'w': 8}, d=2, phi=0.9)
+oracle = LatentGaussian.shared(dims={'x': 8, 'y': 8, 'w': 8}, d=2, phi=0.9)
 data = oracle.sample(T=20000, seed=0)                # {'x': (20000, 8), 'y': ..., 'w': ...}
 
 past = lambda v, k=25: [(v, s) for s in range(-k, 0)]
@@ -888,9 +888,11 @@ oracle.exact([('x', 0)], [('y', 0)], past('x') + past('y'))      # instantaneous
 oracle.block_mi(30)                                              # grows without bound in w
 oracle.mi_rate()                                                 # bits per step
 oracle.affine_fit(30, 60)                                        # slope and intercept of I_w
+oracle.storage_transfer('y', 'x')                                # storage of Y, transfer X to Y, infinite past
 ```
 
-The processes share one AR(1) latent with correlation time $\tau = -1/\log\phi$.
+`LatentGaussian.shared` builds processes sharing one AR(1) latent with
+correlation time $\tau = -1/\log\phi$.
 Because the shared latent violates Massey's no-feedback condition, the directed
 quantities converge below the symmetric MI rate that only a two-sided window
 over X recovers ([THEORY.md](THEORY.md#temporal-information-quantities)).
@@ -900,6 +902,26 @@ Because the projections are random, the channels of one process can differ in
 SNR by two orders of magnitude. A channel to display is best chosen by its SNR.
 `generate_shared_latent_gaussian(T, ...)` returns the data and the oracle
 together.
+
+The general model takes the latent dynamics, a readout matrix per process and
+the noise: `LatentGaussian(Phi, proj, noise, Q)`, with $Z_t = \Phi Z_{t-1} +
+\eta_t$, $\eta_t \sim N(0, Q)$ and $V_t = M_V Z_t + \epsilon_V$. A $\Phi$ that
+couples components lets one group of latents drive another, so transfer has a
+direction, and a latent read by one process only gives it memory of its own.
+A spec can name channel indices into the stacked processes in place of a
+process name, to ask about single channels.
+
+```python
+import numpy as np
+
+Phi = np.array([[0.9, 0.0],                          # X's latent, with memory
+                [0.5, 0.6]])                         # Y's latent, driven by X's at lag 1
+proj = {'x': np.c_[np.ones((4, 1)), np.zeros((4, 1))],
+        'y': np.c_[np.zeros((4, 1)), np.ones((4, 1))]}
+directed = LatentGaussian(Phi, proj, noise=1.0)
+directed.storage_transfer('y', 'x', k=10)            # from 10 bins of history
+directed.exact([(0, -1)], [(4, 0)])                  # one channel of X to one of Y
+```
 
 ---
 

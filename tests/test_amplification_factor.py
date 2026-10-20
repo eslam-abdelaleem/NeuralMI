@@ -7,7 +7,7 @@ import pytest
 import neural_mi as nmi
 from neural_mi.analysis.sweep import (amplification_factor,
                                       AMPLIFICATION_WARN_THRESHOLD)
-from neural_mi.generators.oracle import SharedLatentGaussian
+from neural_mi.generators.oracle import LatentGaussian
 
 
 class TestAmplificationFactorMath:
@@ -44,7 +44,7 @@ class TestAmplificationFactorMath:
 
 
 def _oracle_sample(w_noise, n=4000, seed=1):
-    orc = SharedLatentGaussian(dims={'x': 4, 'y': 4, 'w': 8}, d=2, phi=0.0,
+    orc = LatentGaussian.shared(dims={'x': 4, 'y': 4, 'w': 8}, d=2, phi=0.0,
                                noise={'x': 1.0, 'y': 1.0, 'w': w_noise},
                                coupling=1.0, seed=0)
     return orc, orc.sample(n, seed=seed)
