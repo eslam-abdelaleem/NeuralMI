@@ -964,10 +964,11 @@ r = nmi.mi_rate(x, y, h=[0, 5, 10, 20], half_width=20, model=model,
                 training=Training(n_epochs=100), n_workers=4)
 ```
 
-`h` and `half_width` bias the MI rate in opposite directions. Too little
-history on Y leaves Y's own storage in and reads high. Too narrow a window on X
-leaves signal out and reads low. Sweep one, fix it past its knee, then
-sweep the other. An iterable for both raises.
+Too narrow a window on X (`half_width`) leaves signal out and reads low. Too
+little history on Y (`h`) can read high or low: high when Y's memory comes from
+what it shares with X, low when Y has private memory that its own past would
+cancel ([THEORY.md](THEORY.md#temporal-information-quantities)). Sweep one, fix
+it past its knee, then sweep the other. An iterable for both raises.
 
 ### Sweeps, repeats and rigour
 

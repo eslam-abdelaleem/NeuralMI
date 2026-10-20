@@ -363,11 +363,13 @@ with the growing input.
 Extensivity is the separate, stronger claim that the curve rises linearly, $I_w
 = \bar{I}w + b$, once $w$ exceeds the dependence timescale of the two processes.
 Below that timescale the curve still bends. The rate $\bar{I}$ is the slope of
-the linear part. The offset $b$ has come out positive in every case examined
-because the chain-rule increments decrease toward $\bar{I}$ and their partial
-sums sit above $\bar{I}w$. It is the subextensive part of the block MI, similar
-in shape to a single process's excess entropy ([temporal information
-quantities](#temporal-information-quantities)) without being the same quantity.
+the linear part. The offset is the subextensive part of the block MI. Writing
+each block entropy as its rate times $w$ plus an excess entropy ([temporal
+information quantities](#temporal-information-quantities)) gives
+$b = E_X + E_Y - E_{XY}$, the excess entropies of X, of Y and of the pair. Each
+is non-negative and their combination takes either sign. With independent $X_t$
+and $Y_t = X_{t-1} + \nu_t$ the block MI is exactly $(w-1)\,I(X_0; X_0 + \nu_1)$:
+the first sample of Y pairs with an X outside the window, and $b$ is negative.
 
 A larger window generically reports a larger raw MI because it is built from
 more data, whether or not the coupling changed. Windowed values at different
@@ -388,8 +390,9 @@ on average 3 bits of uncertainty about X.
 
 ### Getting a rate
 
-Since $I_w = \bar{I}w + b$ with $b$ nonzero, dividing one windowed value by its
-duration leaves a residual $b/w$ that changes with the window. The rate comes
+Since $I_w = \bar{I}w + b$ with $b$ generally nonzero, dividing one windowed
+value by its duration leaves a residual $b/w$ that changes with the window and
+takes the sign of $b$, so the quotient can read high or low. The rate comes
 either from the direct per-step estimate of `mi_rate` ([temporal information
 quantities](#temporal-information-quantities)) or from the slope of block MI
 against window size over a suitable range of $w$. That range needs $w$ large
@@ -533,11 +536,23 @@ information rate between X and Y
 ([Gelfand and Yaglom, 1959](https://doi.org/10.1090/trans2/012)). It asks how
 much X in a symmetric window around the present tells about Y's present, once
 enough of Y's past is controlled for. The quantity is the joint limit
-$L \to \infty$ and $h \to \infty$. The two windows bias the estimate in
-opposite directions. Too small an $h$ leaves Y's own dependence uncontrolled and
-reads high. Too narrow an $L$ leaves signal out and reads low. A curve that
-has flattened along one window can therefore sit at a converged-looking wrong
-value set by the other. Sweep one, fix it past its knee, then sweep the other.
+$L \to \infty$ and $h \to \infty$. Too narrow an $L$ leaves signal out and
+always reads low, since observing fewer variables never raises mutual
+information. The history can bias either way. For
+$f(h) = I(X_{-L:L}; Y_0 \mid Y_{-h:-1})$ the chain rule gives
+
+$$
+f(h) - f(h+1) = I(X_{-L:L}; Y_{-h-1} \mid Y_{-h:-1}) - I(X_{-L:L}; Y_{-h-1} \mid Y_{-h:0}),
+$$
+
+two non-negative terms of which either can be the larger. Too short a history
+reads high when Y's memory comes from what it shares with X, and can read low
+when Y carries private memory that its own past would cancel: with $Y = X + U$
+and $U$ a slow noise independent of X, the value at $h = 0$ lies below the rate.
+A curve that has flattened along one window can therefore sit at a
+converged-looking wrong value set by the other. The estimate converges to the
+rate as both windows grow, so sweep one, fix it past its knee, then sweep the
+other.
 
 $X_{all}$ is two-sided because the MI rate is the chain-rule decomposition of
 the symmetric block MI. Its term at time $t$ conditions on the whole of X before

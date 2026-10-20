@@ -747,11 +747,12 @@ def mi_rate(
     half_width : int or iterable of int, default=20
         X_all's half-width; the full window spans ``2 * half_width + 1`` steps.
         Either ``h`` or ``half_width`` may be an iterable, and the other stays
-        fixed. Both windows change the answer, and they bias it in opposite
-        directions. A curve that has flattened along one of them is therefore
-        no evidence on its own. Too little conditioning history leaves Y's own
-        storage in and reads high, and too narrow a window on X omits signal
-        and reads low. Sweep one, fix it past its knee, then sweep the other.
+        fixed. Both windows change the answer. A curve that has flattened along
+        one of them is therefore no evidence on its own. Too narrow a window on
+        X omits signal and reads low. Too little conditioning history reads high
+        when Y's memory comes from what it shares with X and low when Y has
+        private memory its own past would cancel. Sweep one, fix it past its
+        knee, then sweep the other.
         Passing iterables for both raises, since the grid multiplies training
         runs for a reading two sequential sweeps already give.
     stride : int, default=1
@@ -769,7 +770,7 @@ def mi_rate(
     if _is_sweep(h) and _is_sweep(half_width):
         raise ValueError(
             "mi_rate takes an iterable for h or for half_width and refuses one for both. "
-            "The two windows bias the estimate in opposite directions. Sweep one, fix it "
+            "Both windows change the estimate. Sweep one, fix it "
             "past its knee and then sweep the other. A grid over both costs "
             "len(h) * len(half_width) training runs for the same conclusion."
         )

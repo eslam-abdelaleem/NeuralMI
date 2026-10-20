@@ -84,6 +84,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The documentation of the block-MI offset and of `mi_rate`'s two windows. The
+  offset $b$ of $I_w = \bar{I}w + b$ is $E_X + E_Y - E_{XY}$ in excess
+  entropies and takes either sign. The docs gave it as positive, so that
+  dividing a windowed value by its length would always read high. A narrow
+  window on X reads low in every case, and a short history on Y reads high or
+  low. The docs said the two windows bias in opposite directions, a short
+  history always high. THEORY.md derives both, with a case of each sign. The
+  advice to sweep one window past its knee and then the other stands.
 - tqdm's "IProgress not found" warning, which a notebook without ipywidgets
   raises when the library is imported, is silenced as intended. The filter
   named `UserWarning`, and tqdm raises its own `TqdmWarning`.

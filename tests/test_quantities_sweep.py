@@ -62,10 +62,10 @@ class TestQuantitySweep:
 class TestMiRateSweepsEitherWindow:
     """`mi_rate` carries two windows and both change the answer.
 
-    They bias in opposite directions, so a curve that has flattened along one
-    of them proves nothing on its own: too little conditioning history reads
-    high, too narrow a window on X reads low. Sweeping either one has to be
-    possible for that check to be doable at all.
+    A curve that has flattened along one of them proves nothing on its own: too
+    narrow a window on X reads low, and too little conditioning history reads
+    high or low. Sweeping either one has to be possible for that check to be
+    doable at all.
     """
 
     @staticmethod
