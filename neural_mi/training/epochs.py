@@ -35,7 +35,7 @@ EPOCH_RULES = ('plateau_start', 'peak')
 RESOLVED_NOISE = 8      # the top must stand this many noise units above zero
 FAST_EPOCHS = 8         # an early top that falls clearly within this many epochs came too fast
 APPROACH_NOISE = 3      # the approach to the top starts this many noise units below it
-FUZZY_SE = 2            # readings at the approach and at the epoch read this many standard errors apart
+FUZZY_SE = 3            # readings at the approach and at the epoch read this many standard errors apart
 RISING_EPOCHS = 20      # a curve that rose by RISING_NOISE noise units over this many final epochs
 RISING_NOISE = 3        # when training ran to its limit was still rising
 
