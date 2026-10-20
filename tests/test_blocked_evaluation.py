@@ -101,14 +101,14 @@ class TestHeldOutRows:
         """Train once and return the rows of every evaluation of n_held_out_eval rows (the held-out
         ones, told apart by their count), the results, and the trainer."""
         seen, n = [], self.N
-        evaluate = Trainer._safe_eval_mi
+        evaluate = Trainer._eval_blocks
 
-        def spy(trainer, x, y, max_samples, all_rows=False):
+        def spy(trainer, x, y, max_samples):
             if len(y) == n_held_out_eval:
                 seen.append(np.sort(np.rint(y[:, 0].numpy() * n).astype(int)))
-            return evaluate(trainer, x, y, max_samples, all_rows)
+            return evaluate(trainer, x, y, max_samples)
 
-        monkeypatch.setattr(Trainer, '_safe_eval_mi', spy)
+        monkeypatch.setattr(Trainer, '_eval_blocks', spy)
         net = MLP(input_dim=3, hidden_dim=8, embedding_dim=4, n_layers=1)
         y_net = MLP(input_dim=2, hidden_dim=8, embedding_dim=4, n_layers=1)
         trainer = Trainer(SeparableCritic(embedding_net_x=net, embedding_net_y=y_net), infonce_lower_bound,

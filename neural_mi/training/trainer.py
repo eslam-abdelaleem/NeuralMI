@@ -20,7 +20,7 @@ from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
                             AlignedStreams)
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
-from neural_mi.training.epochs import EPOCH_RULES, choose_epoch, warn_about_curve
+from neural_mi.training.epochs import EPOCH_RULES, FUZZY_SE, choose_epoch, standard_error, warn_about_curve
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks)
 from neural_mi.augmentations import apply_augmentations
@@ -897,20 +897,27 @@ class Trainer:
         )
         if np.isnan(_smoothed_history).all():
             raise TrainingError("Training failed to produce a valid model checkpoint.")
-        best_ep, peak_ep, curve_diagnosis = choose_epoch(history, _smoothed_history, epoch_rule, _reach,
-                                                         ran_to_limit=len(history) == n_epochs)
+        best_ep, peak_ep, curve_diagnosis, approach_ep = choose_epoch(
+            history, _smoothed_history, epoch_rule, _reach, ran_to_limit=len(history) == n_epochs)
+        _train_x = _index_batch(_eval_x_source, _eval_train_eval_idx)
+        _train_y = _eval_y_source[_eval_train_eval_idx, ...]
+        # The network at the start of the curve's approach to its top, read on
+        # the same rows, before the network reported (epochs.py).
+        _at_approach = None
+        if approach_ep < best_ep and approach_ep in _states:
+            self.model.load_state_dict(_states[approach_ep])
+            with torch.no_grad():
+                _at_approach, _ = self._train_side(_train_x, _train_y, max_eval_samples)
         best_model_state = _states[best_ep]
         self.model.load_state_dict(best_model_state)
         if save_best_model_path:
             torch.save(best_model_state, save_best_model_path)
-            
+
         with torch.no_grad():
             final_test_mi = self._safe_eval_mi(
                 _index_batch(_eval_x_source, _eval_test_idx),
                 _eval_y_source[_eval_test_idx, ...], max_eval_samples, all_rows=True)
-            final_train_mi = self._safe_eval_mi(
-                _index_batch(_eval_x_source, _eval_train_eval_idx),
-                _eval_y_source[_eval_train_eval_idx, ...], max_eval_samples, all_rows=True)
+            final_train_mi, _train_se = self._train_side(_train_x, _train_y, max_eval_samples)
         
         from neural_mi.estimators import infonce_lower_bound
         _scale = nats_to_bits  # 1/ln(2) for bits, 1.0 for nats -- same scale as every other reported MI
@@ -988,11 +995,6 @@ class Trainer:
         valid_history = [v for v in history if not np.isnan(v)]
         _all_mi_negative = bool(valid_history and max(valid_history) <= 0)
 
-        # What the held-out curve says about the epoch read. A curve that never
-        # rose above zero has its own message below.
-        if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
-            warn_about_curve(curve_diagnosis, best_ep, peak_ep, _reach, n_epochs)
-
         # At this point the model is loaded at best_ep; final_train_mi is the fresh eval there.
         _best_ep_train_mi = final_train_mi  # save for train_mi_at_peak reporting
 
@@ -1008,11 +1010,7 @@ class Trainer:
             if _conservative_ep != best_ep:
                 self.model.load_state_dict(_states[_conservative_ep])
                 with torch.no_grad():
-                    _conservative_train_mi = self._safe_eval_mi(
-                        _index_batch(_eval_x_source, _eval_train_eval_idx),
-                        _eval_y_source[_eval_train_eval_idx, ...],
-                        max_eval_samples, all_rows=True,
-                    )
+                    _conservative_train_mi, _ = self._train_side(_train_x, _train_y, max_eval_samples)
                 self.model.load_state_dict(best_model_state)
             else:
                 _conservative_train_mi = _best_ep_train_mi
@@ -1023,6 +1021,20 @@ class Trainer:
             _raw_train_mi = _conservative_train_mi
         else:
             _raw_train_mi = _best_ep_train_mi  # peak_fraction == 1.0 path
+
+        # What the held-out curve says about the epoch read: its shape, and
+        # whether reading at the start of the approach to its top moves the
+        # estimate by more than FUZZY_SE standard errors. A curve that never
+        # rose above zero has its own message below.
+        _read_ep = best_ep if _conservative_ep is None else _conservative_ep
+        _approach_shift = (_raw_train_mi - _at_approach
+                           if _at_approach is not None and approach_ep < _read_ep else None)
+        if curve_diagnosis == 'ok' and _approach_shift is not None and abs(_approach_shift) > FUZZY_SE * _train_se:
+            curve_diagnosis = 'fuzzy start'
+        if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
+            warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,
+                             None if _approach_shift is None else _approach_shift * _scale,
+                             _train_se * _scale, _units)
 
         # All-negative warning and zeroing (now that _raw_train_mi is correctly set)
         if _all_mi_negative:
@@ -1062,6 +1074,7 @@ class Trainer:
             'best_epoch': best_ep,
             'peak_epoch': peak_ep,
             'curve_diagnosis': curve_diagnosis,
+            'approach_shift': _approach_shift,
             'test_mi_history': history,
             'all_mi_negative': _all_mi_negative,
         }
@@ -1301,19 +1314,14 @@ class Trainer:
         if n_samples < 2:
             return float('nan')
 
-        if n_samples <= max_samples:
+        if all_rows:
+            values, sizes = self._eval_blocks(x, y, max_samples)
+            result = float(np.average(values, weights=sizes))
+        elif n_samples <= max_samples:
             result = self._eval_mi(x, y)
-        elif not all_rows:
+        else:
             idx_t = torch.from_numpy(_rng_of(self).choice(n_samples, max_samples, replace=False))
             result = self._eval_mi(_index_batch(x, idx_t), y[idx_t])
-        else:
-            n_blocks = -(-n_samples // max_samples)
-            values, sizes = [], []
-            for b in range(n_blocks):
-                idx_t = torch.arange(b, n_samples, n_blocks)
-                values.append(self._eval_mi(_index_batch(x, idx_t), y[idx_t]))
-                sizes.append(len(idx_t))
-            result = float(np.average(values, weights=sizes))
 
         if np.isnan(result):
             warnings.warn(
@@ -1323,6 +1331,20 @@ class Trainer:
                 UserWarning, stacklevel=user_stacklevel()
             )
         return result
+
+    def _eval_blocks(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> Tuple[np.ndarray, np.ndarray]:
+        """The MI of every row in blocks of at most max_samples rows, and the blocks' sizes. Row r goes to
+        block r % n_blocks, so every block spans the whole set."""
+        n_samples = _batch_size_of(x)
+        n_blocks = -(-n_samples // max_samples)
+        blocks = [torch.arange(b, n_samples, n_blocks) for b in range(n_blocks)]
+        return (np.array([self._eval_mi(_index_batch(x, idx), y[idx]) for idx in blocks]),
+                np.array([len(idx) for idx in blocks]))
+
+    def _train_side(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> Tuple[float, float]:
+        """The training-side estimate on every row, and its standard error."""
+        values, sizes = self._eval_blocks(x, y, max_samples)
+        return float(np.average(values, weights=sizes)), standard_error(values, int(sizes.sum()))
 
     def _eval_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
         scores, _ = self.model(_to_device(x, self.device), y.to(self.device))

@@ -60,6 +60,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - With shifted windows, a categorical stream estimated alone in a difference
   quantity is laid out on the channel axis as it is inside the joint term, so
   both terms read it the same way.
+- `curve_diagnosis='fuzzy start'` is measured instead of read from the shape
+  of the held-out curve. The trainer reads the training-side value also at the
+  start of the curve's approach to its top, the first epoch within 3 noise units
+  of it, on the same rows, and diagnoses a fuzzy start when the two readings
+  differ by more than twice the estimate's standard error: the spread of its
+  evaluation blocks over the root of their count, or $\sqrt{2I/N}$ for a single
+  block. The per-network records report the difference as `approach_shift`. The
+  shape rule fired on every slow approach, whether or not it moved the
+  estimate.
 
 - `SharedLatentGaussian` is replaced by `LatentGaussian`, the general
   linear-Gaussian latent model: latent dynamics `Phi` that can couple

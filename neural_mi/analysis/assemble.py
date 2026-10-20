@@ -26,7 +26,7 @@ from neural_mi.logger import user_stacklevel
 # carries these as columns of ``runs``; a multi-network repeat keeps them per
 # network under ``details[config_id]['trainings']``.
 NETWORK_KEYS: Tuple[str, ...] = (
-    'train_mi', 'test_mi', 'raw_train_mi', 'best_epoch', 'peak_epoch', 'curve_diagnosis',
+    'train_mi', 'test_mi', 'raw_train_mi', 'best_epoch', 'peak_epoch', 'curve_diagnosis', 'approach_shift',
     'conservative_epoch', 'train_mi_at_peak', 'all_mi_negative',
     'eval_size', 'test_eval_blocks', 'train_eval_size', 'train_eval_blocks', 'test_ceiling_mi', 'train_ceiling_mi',
     'test_saturation', 'train_saturation', 'test_trace_saturated_fraction',
@@ -49,7 +49,7 @@ REPEAT_KEYS: Tuple[str, ...] = ('run_id', 'noise_sample')
 # caller asked for bits. Ceilings arrive already in the requested units, and
 # saturations and participation ratios have none.
 MI_KEYS: Tuple[str, ...] = (
-    'mi', 'mi_raw', 'train_mi', 'test_mi', 'raw_train_mi', 'train_mi_at_peak',
+    'mi', 'mi_raw', 'train_mi', 'test_mi', 'raw_train_mi', 'train_mi_at_peak', 'approach_shift',
     'mi_error', 'mi_error_pred', 'slope',
     'mi_xw_y', 'mi_w_y', 'mi_x_y', 'te_yx', 'te_yx_raw',
     'i_xypast_yfuture', 'i_ypast_yfuture', 'i_yxpast_xfuture', 'i_xpast_xfuture',

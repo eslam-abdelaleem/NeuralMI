@@ -171,12 +171,14 @@ epochs after it. The smoothing reflects the curve at its start, so the start of
 the curve placed that epoch. A lower `learning_rate` spreads the rise over more
 epochs.
 
-**`The held-out MI approached its top so slowly that where the top starts is uncertain by several epochs`**
-The smoothed curve took 8 or more epochs to climb its last 2.5 noise units to
-the level of its top. The start of such a top cannot be located to within a few
-epochs, and the reported value, read on the training side at that epoch, can
-depend on where it is placed. `result.plot()` shows the curve with the epoch
-read and the peak.
+**`The held-out MI approached its top slowly, so where the top starts is uncertain`**
+The smoothed curve climbed its last 3 noise units to the level of its top over
+several epochs, and the training-side value read at the first of them differs
+from the reported one by more than twice the estimate's standard error (the
+spread of its evaluation blocks over the root of their count, or
+$\sqrt{2I/N}$ for a single block). The estimate then depends on where the top
+is taken to start. `runs` keeps the difference as `approach_shift`.
+`result.plot()` shows the curve with the epoch read and the peak.
 
 **`All test MI values in the training history are non-positive`**
 Because the network learned nothing that generalises, the reported value is 0.

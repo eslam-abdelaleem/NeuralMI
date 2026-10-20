@@ -227,9 +227,12 @@ twice that noise of its maximum, and the epoch read is the first whose smoothed
 value comes within half the noise of that level (`epoch_rule='plateau_start'`;
 `'peak'` reads the maximum). `curve_diagnosis` says when the curve cannot
 support the choice: a top that does not stand clearly above the noise, a curve
-still rising when training ends, a top reached within the smoothing's reach of
-the start, or an approach so slow that the start of the top is uncertain. These
-thresholds were set on simulated curves of known shape.
+still rising when training ends, or a top reached within the smoothing's reach
+of the start. These thresholds were set on simulated curves of known shape. A
+slow approach to the top is measured instead: the training-side value is read
+also at the first epoch within three noise units of the top, on the same rows,
+and the start of the top is uncertain when the two readings differ by more than
+twice the estimate's standard error (`approach_shift` keeps the difference).
 
 The held-out curve plays the part a bandwidth choice plays in kernel density
 estimation. On the training side the critic can fit ever finer structure. The

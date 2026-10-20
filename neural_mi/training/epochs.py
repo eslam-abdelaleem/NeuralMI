@@ -17,6 +17,12 @@ The diagnosis says when the curve cannot support the choice. The thresholds were
 set on simulated curves of known shape: a peak, a fast or slow plateau, a
 plateau that declines or drifts up, an early collapse, a curve still rising when
 training ends, and one that never rises, with and without early stopping.
+
+Where a curve's approach to its top starts is measured, not judged from its
+shape. The approach starts at the first epoch within three noise units of the
+top. The trainer reads the training-side value there as well, on the same rows,
+and calls the start uncertain ('fuzzy start') when the two readings differ by
+more than twice the estimate's standard error.
 """
 import warnings
 from typing import Optional, Tuple
@@ -28,7 +34,8 @@ from neural_mi.logger import user_stacklevel
 EPOCH_RULES = ('plateau_start', 'peak')
 RESOLVED_NOISE = 8      # the top must stand this many noise units above zero
 FAST_EPOCHS = 8         # an early top that falls clearly within this many epochs came too fast
-FUZZY_EPOCHS = 8        # an approach to the top slower than this leaves its start uncertain
+APPROACH_NOISE = 3      # the approach to the top starts this many noise units below it
+FUZZY_SE = 2            # readings at the approach and at the epoch read this many standard errors apart
 RISING_EPOCHS = 20      # a curve that rose by RISING_NOISE noise units over this many final epochs
 RISING_NOISE = 3        # when training ran to its limit was still rising
 
@@ -47,8 +54,17 @@ def curve_noise(history) -> float:
     return float(np.median(np.abs(d)) / (0.6745 * np.sqrt(6))) if len(d) else 0.0
 
 
-def choose_epoch(history, smoothed, rule: str, reach: Optional[int], ran_to_limit: bool) -> Tuple[int, int, str]:
-    """The epoch to read, the epoch of the smoothed maximum, and the diagnosis of the curve.
+def standard_error(block_values, n_rows: int) -> float:
+    """Standard error of an estimate averaged over evaluation blocks: their spread over the root of their
+    count, or sqrt(2 I / N) for a single block of N rows reading I nats."""
+    v = np.asarray(block_values, dtype=float)
+    return float(v.std(ddof=1) / np.sqrt(len(v))) if len(v) > 1 else float(np.sqrt(2 * max(v[0], 0.0) / n_rows))
+
+
+def choose_epoch(history, smoothed, rule: str, reach: Optional[int],
+                 ran_to_limit: bool) -> Tuple[int, int, str, int]:
+    """The epoch to read, the epoch of the smoothed maximum, the diagnosis of the curve, and the first epoch of
+    its approach to the top.
 
     ``history`` is the raw held-out curve and ``smoothed`` the smoothed one.
     ``reach`` is how many epochs the smoothing looks ahead, None when unknown (a
@@ -61,8 +77,9 @@ def choose_epoch(history, smoothed, rule: str, reach: Optional[int], ran_to_limi
       rising clearly over its last epochs.
     - ``'too fast'``: the curve reached its top within the smoothing's reach of
       the start and fell clearly soon after, so the start of the curve placed it.
-    - ``'fuzzy start'``: the curve approached its top so slowly that where the top
-      starts is uncertain by several epochs.
+
+    The trainer adds ``'fuzzy start'`` when the value read at the start of the
+    approach moves the estimate (see the module docstring).
     """
     s = np.asarray(smoothed, dtype=float)
     peak = int(np.nanargmax(s))
@@ -70,7 +87,8 @@ def choose_epoch(history, smoothed, rule: str, reach: Optional[int], ran_to_limi
     level = float(np.median(s[s >= s[peak] - 2 * noise]))
     start = int(np.flatnonzero(s >= level - 0.5 * noise)[0])
     epoch = start if rule == 'plateau_start' else peak
-    return epoch, peak, _diagnose(s, start, level, noise, reach, ran_to_limit)
+    approach = int(np.flatnonzero(s >= level - APPROACH_NOISE * noise)[0])
+    return epoch, peak, _diagnose(s, start, level, noise, reach, ran_to_limit), approach
 
 
 def _diagnose(s, start, level, noise, reach, ran_to_limit) -> str:
@@ -83,14 +101,14 @@ def _diagnose(s, start, level, noise, reach, ran_to_limit) -> str:
     drop = np.flatnonzero(s[start:] < level - 3 * noise)
     if reach is not None and start < reach and len(drop) and drop[0] < FAST_EPOCHS:
         return 'too fast'
-    if start - int(np.flatnonzero(s >= level - 3 * noise)[0]) >= FUZZY_EPOCHS:
-        return 'fuzzy start'
     return 'ok'
 
 
-def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int], n_epochs: int) -> None:
+def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int], n_epochs: int,
+                     approach: Optional[int] = None, shift: Optional[float] = None, se: Optional[float] = None,
+                     units: str = 'bits') -> None:
     """Warn when the diagnosis is not 'ok'. The texts differ between networks only in their numbers, so the
-    library shows each kind once per call and counts the rest."""
+    library shows each kind once per call and counts the rest. ``shift`` and ``se`` are in ``units``."""
     if diagnosis == 'not resolved':
         warnings.warn(
             "The held-out MI curve does not rise clearly above its own epoch-to-epoch noise, so the data do not "
@@ -108,6 +126,7 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
             f"learning_rate to spread the rise over more epochs.", UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'fuzzy start':
         warnings.warn(
-            f"The held-out MI approached its top so slowly that where the top starts is uncertain by several "
-            f"epochs. The estimate is read at epoch {epoch}, and the training-side value can depend on that "
-            f"choice. Check the curve with result.plot().", UserWarning, stacklevel=user_stacklevel())
+            f"The held-out MI approached its top slowly, so where the top starts is uncertain. Read at the start "
+            f"of the approach (epoch {approach}) instead of epoch {epoch}, the estimate moves by {shift:.4f} "
+            f"{units}, more than twice its standard error of {se:.4f} {units}. Check the curve with result.plot().",
+            UserWarning, stacklevel=user_stacklevel())

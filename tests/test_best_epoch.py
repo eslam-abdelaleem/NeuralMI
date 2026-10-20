@@ -38,19 +38,23 @@ def _fingerprint(model):
 
 def _train(monkeypatch, curve, custom_smoothing_fn=None, **kwargs):
     """Train with the held-out values replaced by `curve`. Returns the results, the network's
-    fingerprint at every epoch, and the fingerprints behind every train-side evaluation."""
+    fingerprint at every epoch, and the fingerprints behind every train-side evaluation, in order."""
     at_epoch, train_side = [], []
-    evaluate = Trainer._safe_eval_mi
+    evaluate, blocks = Trainer._safe_eval_mi, Trainer._eval_blocks
 
-    def spy(trainer, x, y, max_samples, all_rows=False):
+    def held_out(trainer, x, y, max_samples, all_rows=False):
         if len(y) == N_TEST and len(at_epoch) < len(curve):
             at_epoch.append(_fingerprint(trainer.model))
             return float(curve[len(at_epoch) - 1])
-        if len(y) != N_TEST:
-            train_side.append(_fingerprint(trainer.model))
         return evaluate(trainer, x, y, max_samples, all_rows)
 
-    monkeypatch.setattr(Trainer, '_safe_eval_mi', spy)
+    def train(trainer, x, y, max_samples):
+        if len(y) != N_TEST:
+            train_side.append(_fingerprint(trainer.model))
+        return blocks(trainer, x, y, max_samples)
+
+    monkeypatch.setattr(Trainer, '_safe_eval_mi', held_out)
+    monkeypatch.setattr(Trainer, '_eval_blocks', train)
     torch.manual_seed(0)
     net = MLP(input_dim=3, hidden_dim=8, embedding_dim=4, n_layers=1)
     trainer = Trainer(SeparableCritic(embedding_net_x=net), infonce_lower_bound,
@@ -101,11 +105,27 @@ def test_plateau_start_reads_and_evaluates_the_start_of_the_top(monkeypatch):
     curve = 0.3 * (1 - np.exp(-(e + 1) / 2)) + 0.005 * np.random.default_rng(4).standard_normal(N_EPOCHS)
     results, at_epoch, train_side = _train(monkeypatch, curve)
     smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
-    expected, peak, diagnosis = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5),
-                                             ran_to_limit=True)
+    expected, peak, diagnosis, _ = choose_epoch(curve, smoothed, 'plateau_start',
+                                                Trainer._smoothing_reach(1.0, 5), ran_to_limit=True)
     assert results['best_epoch'] == expected < results['peak_epoch'] == peak
-    assert results['curve_diagnosis'] == diagnosis
+    assert results['curve_diagnosis'] in (diagnosis, 'fuzzy start')
     assert train_side[-1] == at_epoch[expected]
+
+
+@pytest.mark.parametrize('se, diagnosis', [(0.0, 'fuzzy start'), (np.inf, 'ok')])
+def test_a_slow_approach_is_fuzzy_when_its_start_moves_the_estimate(monkeypatch, se, diagnosis):
+    """The network at the start of the approach to the top is read on the same rows before the network
+    reported, and the start is uncertain when the two readings differ by more than two standard errors."""
+    from neural_mi.training import trainer as trainer_module
+    monkeypatch.setattr(trainer_module, 'standard_error', lambda values, n: se)
+    e = np.arange(N_EPOCHS)
+    curve = 0.3 * (1 - np.exp(-(e + 1) / 4)) + 0.002 * np.random.default_rng(4).standard_normal(N_EPOCHS)
+    results, at_epoch, train_side = _train(monkeypatch, curve)
+    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
+    approach = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5), True)[3]
+    assert approach < results['best_epoch']
+    assert train_side[-2:] == [at_epoch[approach], at_epoch[results['best_epoch']]]
+    assert results['approach_shift'] != 0 and results['curve_diagnosis'] == diagnosis
 
 
 def test_reach_covers_the_smoothing():

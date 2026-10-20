@@ -106,7 +106,8 @@ and is never an interval on the population value
 
 `runs` has one row per repeat holding the repeat's value `mi` and the
 diagnostics of the network behind it: `test_mi`, `best_epoch` (the epoch read)
-and `peak_epoch` (the maximum of the smoothed held-out curve), `curve_diagnosis`, `eval_size`,
+and `peak_epoch` (the maximum of the smoothed held-out curve), `curve_diagnosis`, `approach_shift` (how
+much the value moves when read at the start of the curve's approach to its top), `eval_size`,
 `train_eval_size` and their blocks (`test_eval_blocks`, `train_eval_blocks`), the ceilings `train_ceiling_mi` and `test_ceiling_mi`, how
 close each side came to its ceiling (`train_saturation`, `test_saturation`),
 `window_retention` and the window counts for windowed data, and the held-out MI
