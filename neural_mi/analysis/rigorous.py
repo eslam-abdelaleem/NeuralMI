@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import CapturedTask, logger, released
+from neural_mi.device import with_device
 from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.exceptions import CombinationWarning, InsufficientDataError, TrainingError
@@ -599,7 +600,8 @@ class AnalysisWorkflow:
         n_workers = n_workers if n_workers is not None else 1
         show_progress = self.base_params.get('show_progress', True)
         logger.info(f"Starting rigorous analysis with {n_workers} workers...")
-        tasks = self._prepare_tasks(param_grid, gamma_range, temporal_chunking=temporal_chunking)
+        tasks = with_device(self._prepare_tasks(param_grid, gamma_range, temporal_chunking=temporal_chunking),
+                            n_workers)
         if not tasks:
             return {"corrected_results": [], "raw_results_df": pd.DataFrame()}
 

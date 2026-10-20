@@ -14,6 +14,7 @@ from typing import Dict, Any, Tuple, Optional, List, Callable, Union
 import torch.nn as nn
 import copy
 import contextlib
+import time
 
 from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
                             AlignedStreams)
@@ -76,6 +77,14 @@ def _to_device(x, device):
     if isinstance(x, tuple):
         return tuple(t.to(device) for t in x)
     return x.to(device)
+
+
+def _synchronize(device: torch.device) -> None:
+    """Wait for the work queued on a GPU, so that a clock read after it has the work done."""
+    if device.type == 'cuda':
+        torch.cuda.synchronize(device)
+    elif device.type == 'mps':
+        torch.mps.synchronize()
 
 
 def _index_batch(x, idx):
@@ -669,12 +678,7 @@ class Trainer:
             elif _do_embed_tracking:
                 _do_rotation = True
 
-        # AMP: only active on CUDA; silently no-ops on CPU/MPS.
-        _amp_active = (
-            self.device.type == 'cuda'
-            and (self.use_amp is True or self.use_amp == 'auto')
-        )
-        _scaler = torch.amp.GradScaler('cuda') if _amp_active else None
+        _scaler = self._amp_scaler()
 
         # shift_time/shift_windows are training-time augmentations only:
         # evaluation always reads a frozen, pre-shift snapshot (both the
@@ -742,73 +746,14 @@ class Trainer:
         
         # 3. Epoch Loop
         for epoch in epoch_iterator:
-            self.model.train()
-            if self.decoder_x is not None:
-                self.decoder_x.train()
-            if self.decoder_y is not None:
-                self.decoder_y.train()
-            
+            self._train_mode()
+
             # Manual batching for efficiency and temporal shifting support
             current_train_idx = train_view.indices
             shuffled_train_idx = current_train_idx[torch.randperm(current_train_idx.nelement())]
             
             for batch_idx in shuffled_train_idx.split(batch_size):
-                self.optimizer.zero_grad()
-                x_batch = _to_device(dataset.x_dataset[batch_idx, ...], self.device)
-                y_batch = dataset.y_dataset[batch_idx, ...].to(self.device)
-                if self.aug_params_x:
-                    x_batch = apply_augmentations(x_batch, self.aug_params_x)
-                if self.aug_params_y:
-                    y_batch = apply_augmentations(y_batch, self.aug_params_y)
-                _fwd_ctx = (torch.autocast(device_type='cuda')
-                            if _amp_active else contextlib.nullcontext())
-                with _fwd_ctx:
-                    scores, kl_loss = self.model(x_batch, y_batch)
-                    mi_estimate = self.estimator_fn(scores, **self.estimator_params)
-                    # In the bottleneck Lagrangian beta scales everything on the
-                    # relevance side, the MI term and both reconstructions alike.
-                    # Keeping the reconstructions inside it is what lets the
-                    # lambdas stay relative to the MI term: without it, changing
-                    # beta would silently re-weight reconstruction against MI.
-                    mi_coeff = self.beta if self.use_variational else 1.0
-                    if self.use_variational:
-                        loss = kl_loss - self.beta * mi_estimate
-                    else:
-                        loss = -mi_estimate
-                    # Optional decoder reconstruction loss
-                    if self.decoder_x is not None or self.decoder_y is not None:
-                        z_x, z_y = self.model.get_training_embeddings(x_batch, y_batch)
-                        if self.decoder_x is not None:
-                            recon_x = self.decoder_x(z_x)
-                            loss = loss + mi_coeff * self.decoder_lambda_x * self._decoder_loss(
-                                recon_x, x_batch, self.decoder_output_activation_x)
-                        if self.decoder_y is not None:
-                            recon_y = self.decoder_y(z_y)
-                            loss = loss + mi_coeff * self.decoder_lambda_y * self._decoder_loss(
-                                recon_y, y_batch, self.decoder_output_activation_y)
-                if _amp_active:
-                    _scaler.scale(loss).backward()
-                    if self.gradient_clip_val is not None:
-                        all_params = list(self.model.parameters())
-                        if self.decoder_x is not None:
-                            all_params.extend(self.decoder_x.parameters())
-                        if self.decoder_y is not None:
-                            all_params.extend(self.decoder_y.parameters())
-                        _scaler.unscale_(self.optimizer)
-                        nn.utils.clip_grad_norm_(all_params, self.gradient_clip_val)
-                    _scaler.step(self.optimizer)
-                    _scaler.update()
-                else:
-                    loss.backward()
-                    if self.gradient_clip_val is not None:
-                        # Clip gradients across model + decoder parameters
-                        all_params = list(self.model.parameters())
-                        if self.decoder_x is not None:
-                            all_params.extend(self.decoder_x.parameters())
-                        if self.decoder_y is not None:
-                            all_params.extend(self.decoder_y.parameters())
-                        nn.utils.clip_grad_norm_(all_params, self.gradient_clip_val)
-                    self.optimizer.step()
+                self._step(dataset, batch_idx, _scaler)
 
             # Fast evaluation using safety chunking
             self.model.eval()
@@ -1217,6 +1162,83 @@ class Trainer:
         results.update(metrics_final)
 
         return results
+
+    def _amp_scaler(self):
+        """A gradient scaler when mixed precision is on, which it can be only on CUDA, else None."""
+        if self.device.type == 'cuda' and (self.use_amp is True or self.use_amp == 'auto'):
+            return torch.amp.GradScaler('cuda')
+        return None
+
+    def _train_mode(self) -> None:
+        for net in (self.model, self.decoder_x, self.decoder_y):
+            if net is not None:
+                net.train()
+
+    def _step(self, dataset, batch_idx: torch.Tensor, scaler) -> None:
+        """One optimisation step on the rows ``batch_idx``, with :meth:`_amp_scaler`'s scaler."""
+        self.optimizer.zero_grad()
+        x_batch = _to_device(dataset.x_dataset[batch_idx, ...], self.device)
+        y_batch = dataset.y_dataset[batch_idx, ...].to(self.device)
+        if self.aug_params_x:
+            x_batch = apply_augmentations(x_batch, self.aug_params_x)
+        if self.aug_params_y:
+            y_batch = apply_augmentations(y_batch, self.aug_params_y)
+        _fwd_ctx = (torch.autocast(device_type='cuda')
+                    if scaler is not None else contextlib.nullcontext())
+        with _fwd_ctx:
+            scores, kl_loss = self.model(x_batch, y_batch)
+            mi_estimate = self.estimator_fn(scores, **self.estimator_params)
+            # In the bottleneck Lagrangian beta scales everything on the
+            # relevance side, the MI term and both reconstructions alike.
+            # Keeping the reconstructions inside it is what lets the
+            # lambdas stay relative to the MI term: without it, changing
+            # beta would silently re-weight reconstruction against MI.
+            mi_coeff = self.beta if self.use_variational else 1.0
+            if self.use_variational:
+                loss = kl_loss - self.beta * mi_estimate
+            else:
+                loss = -mi_estimate
+            # Optional decoder reconstruction loss
+            if self.decoder_x is not None or self.decoder_y is not None:
+                z_x, z_y = self.model.get_training_embeddings(x_batch, y_batch)
+                if self.decoder_x is not None:
+                    recon_x = self.decoder_x(z_x)
+                    loss = loss + mi_coeff * self.decoder_lambda_x * self._decoder_loss(
+                        recon_x, x_batch, self.decoder_output_activation_x)
+                if self.decoder_y is not None:
+                    recon_y = self.decoder_y(z_y)
+                    loss = loss + mi_coeff * self.decoder_lambda_y * self._decoder_loss(
+                        recon_y, y_batch, self.decoder_output_activation_y)
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+        if self.gradient_clip_val is not None:
+            # Clip gradients across model + decoder parameters
+            if scaler is not None:
+                scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad_norm_([p for net in (self.model, self.decoder_x, self.decoder_y)
+                                      if net is not None for p in net.parameters()], self.gradient_clip_val)
+        if scaler is not None:
+            scaler.step(self.optimizer)
+            scaler.update()
+        else:
+            self.optimizer.step()
+
+    def seconds_per_step(self, dataset, batch_size: int, n_steps: int = 20, n_warmup: int = 5) -> float:
+        """Wall time of one training step on this trainer's device, after ``n_warmup`` untimed
+        steps that let the device settle. The steps train the network, so time a trainer that
+        is thrown away afterwards."""
+        scaler = self._amp_scaler()
+        rows = torch.randperm(len(dataset))
+        self._train_mode()
+        for k in range(n_warmup + n_steps):
+            if k == n_warmup:
+                _synchronize(self.device)
+                start = time.perf_counter()
+            self._step(dataset, rows[(torch.arange(batch_size) + k * batch_size) % len(rows)], scaler)
+        _synchronize(self.device)
+        return (time.perf_counter() - start) / n_steps
 
     @staticmethod
     def _decoder_loss(recon: torch.Tensor, target: torch.Tensor, activation: str) -> torch.Tensor:

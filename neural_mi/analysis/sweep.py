@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Optional, Sequence
 from neural_mi.analysis.task import run_training_task
 from neural_mi.exceptions import CombinationWarning
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
+from neural_mi.device import with_device
 from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import mi_report_units
@@ -238,7 +239,7 @@ class ParameterSweep:
     def run(self, sweep_grid: Dict[str, List], is_proc_sweep: Optional[bool] = None, n_workers: Optional[int] = None,
             **kwargs) -> List[Dict[str, Any]]:
         """Executes the hyperparameter sweep in parallel."""
-        tasks = self._prepare_tasks(sweep_grid, is_proc_sweep, **kwargs)
+        tasks = with_device(self._prepare_tasks(sweep_grid, is_proc_sweep, **kwargs), n_workers or 1)
         results = self._run_parallel(tasks, n_workers)
         logger.info("Parameter sweep finished.")
         return results

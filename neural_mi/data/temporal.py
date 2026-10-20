@@ -138,7 +138,7 @@ class TemporalWindowDataset(Dataset, ABC):
             ``'auto'`` to co-locate data with the compute device.
         """
         self.window_manager = window_manager
-        self.device = get_device() if not device else torch.device(str(device))
+        self.device = get_device(device)
         if data_device == 'auto':
             self.data_device = self.device
         elif data_device is None or str(data_device) == 'cpu':

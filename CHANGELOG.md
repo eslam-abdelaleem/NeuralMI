@@ -29,6 +29,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A call that names no device trains on the CPU unless a GPU is clearly faster
+  for it (`neural_mi.device`). It used to take CUDA, then MPS, whenever one was
+  present. On the small networks typical of neural data an Apple GPU trained
+  several times more slowly than the CPU, and parallel workers all trained on
+  the one GPU and waited for each other. Before the trainings start, the
+  library times a few training steps of the first network on the CPU, with the
+  threads each worker will get. A call whose trainings would take under two
+  minutes there stays on the CPU. Otherwise the steps are timed on the GPU,
+  which is used only if it is at least 1.5 times faster than the CPU workers
+  together. A worker process trains on the CPU unless the call names a device.
+  The decision is logged at the info level, and each network's `device` is
+  recorded in `runs` or the trainings table. Datasets and loaded models
+  without a device also default to the CPU now.
 - The reported values are read at the earliest epoch at the top of the smoothed
   held-out curve (`Training(epoch_rule='plateau_start')`, the default), within
   half the curve's own noise of the top's level, not at its maximum. On a clean

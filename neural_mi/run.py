@@ -22,7 +22,6 @@ from .data.handler import create_dataset
 from .data.shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from .results import Results
 from .validation import ParameterValidator, DataValidator
-from .utils import get_device
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
 from .embeddings_io import model_file, resolve_model_path, warn_saving_several
 from .defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
@@ -899,8 +898,6 @@ def _run_flat(
         _inject(base_params, 'verbose', verbose)
         _inject(base_params, 'show_progress', show_progress)
         _inject(base_params, 'device', device)
-        if 'device' not in base_params:
-            base_params['device'] = get_device()
         _inject(base_params, 'estimator_name', estimator)
         # No `or {}` here: an unset argument must leave base_params alone, and
         # apply_defaults() fills the key when neither sets it.

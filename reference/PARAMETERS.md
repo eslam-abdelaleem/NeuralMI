@@ -34,7 +34,7 @@ The arguments of `nmi.run()` itself, beside the config objects.
 | `seed` | `None` | Seed for Python, NumPy and PyTorch. Each task re-seeds from it and a fixed per-task key. A seeded call gives the same result at any `n_workers`. Without one, a seed is drawn from NumPy's global state and recorded in `Results.params['random_seed']`. |
 | `verbose` | `None` | `True` logs informational messages for the call and `False` only warnings and errors. `None` keeps the level set by `nmi.set_verbosity()`. |
 | `show_progress` | `True` | Show progress bars. |
-| `device` | `None` | Compute device, `'cpu'`, `'cuda'` or `'mps'`. `None` picks the fastest available. |
+| `device` | `None` | Compute device, `'cpu'`, `'cuda'` or `'mps'`. `None` trains on the CPU unless a GPU, timed on the call's first network, is clearly faster ([USING.md](USING.md#speed-memory-and-logging)). |
 | `permutation_test` | `False` | Test every row of the result against a null built by rerunning the call with X moved in time. Adds a `p_value` column. |
 | `n_permutations` | `10` | Number of null trials. The smallest p-value reachable is `1 / (n_permutations + 1)`. |
 | `permutation_shuffle` | `'circular'` | How X is moved: `'circular'` shifts it by one random offset with wrap-around, excluding offsets within 10% of the recording's length of zero; `'block'` reorders contiguous blocks one window long. |

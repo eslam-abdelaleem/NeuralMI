@@ -138,6 +138,7 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_reproducibility.py` | seeded reproducibility in estimate, sweep and rigorous modes, and under parallelism |
+| `test_device.py` | the device a call trains on when it names none: a named device kept, no GPU timed without a GPU, in a worker or for a short call, the GPU chosen only when it beats the CPU workers together by the margin, and the timing path and the recorded `device` end to end |
 | `test_parallel.py` | `dispatch_tasks`: empty and single-task shortcuts, order preservation, and the parallel path matching the sequential one. `worker_pool`: each worker's share of the CPU threads, and a count set through `OMP_NUM_THREADS` kept |
 
 ### Utilities

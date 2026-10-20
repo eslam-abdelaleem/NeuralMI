@@ -376,6 +376,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         augmentation_params_y=aug_y,
     )
 
+    if params.get('_time_steps'):
+        # neural_mi.device.choose_device times this network's training steps instead of training it.
+        n_train = int(len(dataset) * params.get('train_fraction', 0.9))
+        return {'seconds_per_step': trainer.seconds_per_step(dataset, params['batch_size']),
+                'steps_per_epoch': -(-n_train // params['batch_size'])}
+
     # Intercept save_best_model_path to use the extended format
     # which includes build_params alongside state_dict for later extract_embeddings()
     _save_path = params.get('save_best_model_path')
@@ -419,6 +425,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         leak_check_window_size=params.get('leak_check_window_size'),
         leak_check_step=params.get('leak_check_step'),
     )
+    results['device'] = str(device)
 
     # Save the best epoch's network with what rebuilding it needs, under a name
     # that carries the labels identifying this network within the call.

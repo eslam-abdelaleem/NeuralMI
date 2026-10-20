@@ -32,7 +32,7 @@ NETWORK_KEYS: Tuple[str, ...] = (
     'test_saturation', 'train_saturation', 'test_trace_saturated_fraction',
     'pr_eig', 'pr_singular', 'spectrum', 'decoder_recon_loss',
     'window_retention', 'n_windows_built', 'n_windows_retained',
-    'leak_check_window_size', 'leak_check_step', 'model_path',
+    'leak_check_window_size', 'leak_check_step', 'model_path', 'device',
     'test_mi_history', 'train_mi_history', 'spectral_metrics_history',
 )
 

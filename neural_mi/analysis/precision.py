@@ -14,6 +14,7 @@ import pandas as pd
 from typing import Dict, Any, List, Union
 
 from neural_mi.analysis.task import run_training_task
+from neural_mi.device import with_device
 from neural_mi.data.corruption import corrupt, METHODS
 from neural_mi.logger import logger
 from neural_mi.validation import ParameterValidator
@@ -118,7 +119,8 @@ def run_precision_analysis(
     # run() does, so a direct call trains exactly what run() would.
     params = dict(base_params)
     ParameterValidator({'base_params': params}).apply_defaults()
-    baseline_results = run_training_task((x_data, y_data, {**params, '_keep_trained': True}, 'precision'))
+    [task] = with_device([(x_data, y_data, {**params, '_keep_trained': True}, 'precision')], 1)
+    baseline_results = run_training_task(task)
     trainer = baseline_results.pop('_trainer')
     dataset = baseline_results.pop('_dataset')
     train_idx = trainer.last_train_indices

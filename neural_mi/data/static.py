@@ -23,7 +23,7 @@ class BaseStaticDataset(Dataset, ABC):
             the same dataset is evaluated many times without reloading, e.g.
             precision analysis).
         """
-        self.device = get_device() if not device else torch.device(str(device))
+        self.device = get_device(device)
         # Resolve data storage device separately from compute device.
         if data_device == 'auto':
             self.data_device = self.device

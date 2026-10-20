@@ -34,12 +34,9 @@ def test_get_device(target_device: str):
     assert isinstance(device, torch.device)
     assert device.type == target_device
 
-def test_get_device_auto_selection():
-    """
-    Tests the auto-selection logic of get_device when no device is specified.
-    """
-    device = get_device()
-    assert isinstance(device, torch.device)
+def test_get_device_without_a_name_is_the_cpu():
+    """Which device a call trains on when it names none is chosen in neural_mi.device."""
+    assert get_device() == torch.device('cpu')
 
 # A dummy set of parameters for building models
 # Must include all defaults enforced by strict validation

@@ -1262,11 +1262,19 @@ than one network is refused with the keys to pass.
 
 ## Speed, memory and logging
 
-`device=None` picks CUDA, then Apple's MPS, then the CPU. Because MPS pays a
-fixed cost for every GPU operation, the CPU can be several times faster on small
-networks and batches. MPS starts to win on larger networks. Small synthetic checks run
-faster with `device='cpu'`. `Training(use_amp='auto')` uses mixed precision on
-CUDA.
+A call that names no device trains on the CPU unless a GPU is clearly faster for
+it. A GPU pays a fixed cost for every operation, so on the small networks and
+batches typical of neural data the CPU can be several times faster, and parallel
+workers that share one GPU wait for each other, while each worker gets its own
+share of the CPU. Before the trainings start, NeuralMI times a few training steps
+of the first network on the CPU, with the threads each worker will get. If all the
+trainings would take under two minutes there, it stays on the CPU. Otherwise it
+times the same steps on the GPU (CUDA, else Apple's MPS) and uses the GPU only if
+it is at least 1.5 times faster than the CPU workers together. The decision is
+logged at the info level, and `runs` or the trainings table records each
+network's `device`. A worker process started by `n_workers` trains on the CPU
+unless the call names a device. `device='cpu'`, `'cuda'` or `'mps'` skips all
+of this. `Training(use_amp='auto')` uses mixed precision on CUDA.
 
 `Training(max_eval_samples=...)` bounds memory through the largest number of
 samples any one evaluation uses. `Model(max_n_batches=...)` bounds it through
