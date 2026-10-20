@@ -42,7 +42,7 @@ def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
 ALLOWED_VALUES = {
     'critic_type': ['separable', 'concat', 'hybrid'],
     'embedding_model': ['mlp', 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                        'pretrained_backbone', 'lru', 'dual_branch', 'deepsets'],
+                        'pretrained_backbone', 'lru', 'deepsets'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
     'estimator_name': [*ESTIMATORS, *NONPARAMETRIC],  # 'infonce', 'smile', 'ksg'

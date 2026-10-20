@@ -270,13 +270,14 @@ def run_interaction_information(
         joint_bp, sweep_grid, n_workers,
         quantity_name="Interaction information",
         joint_label="X,W;Y", marginal_label="X;Y",
-        joint_key="mi_xw_y", marginal_key="mi_x_y",
+        joint_key="mi_xw_y", marginal_key="mi_x_y", condition_at='first',
         is_proc_sweep=raw_deferred,
         marginal_base_params=marginal_x_bp,
         reported=False,
     )
     mi_w_y, raw_w_y, _w_vals = _single_mi_mean(
-        w_role, y_data, with_model_labels(marginal_w_bp, component='mi_w_y'), sweep_grid, n_workers,
+        w_role, y_data, {**with_model_labels(marginal_w_bp, component='mi_w_y'), '_difference_term': True},
+        sweep_grid, n_workers,
         quantity_name="Interaction information", label="W;Y",
         is_proc_sweep=raw_deferred,
     )

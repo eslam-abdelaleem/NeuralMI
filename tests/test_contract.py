@@ -120,7 +120,8 @@ def _check(result, mode, grid_name):
     if n_repeats == 1:
         assert df['mi_std'].isna().all()
     if len(df) == 1:
-        assert result.mi_estimate == pytest.approx(df['mi_mean'].iloc[0])
+        mean = df['mi_mean'].iloc[0]          # a value that could not be estimated is no headline
+        assert result.mi_estimate is None if np.isnan(mean) else result.mi_estimate == pytest.approx(mean)
     else:
         assert result.mi_estimate is None
     assert set(result.details) <= set(range(n_configs))

@@ -396,7 +396,7 @@ class TestSweepShowProgressPropagation:
 
         monkeypatch.setattr(nmi.quantities, 'run', _spy)
         x, y = torch.randn(300, 1), torch.randn(300, 1)
-        model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16, n_layers=1)
+        model = Model(embedding_dim=8, hidden_dim=16, n_layers=1)
         nmi.mi_rate(x, y, h=[0, 3], half_width=5, model=model, training=Training(n_epochs=2, patience=1),
                    n_workers=1, show_progress=False)
         assert received and all(v is False for v in received)

@@ -145,7 +145,7 @@ def run_conditional_mi(
         ``'dual_branch'``: for MI rate, instantaneous exchange, and directed
         information rate, where A and C genuinely differ in window length.
         Builds ``(x_data, c_data)`` as a tuple instead of concatenating, for
-        a ``DualBranchEmbedding``-based ``custom_embedding_cls`` (set
+        a ``BranchedEmbedding``-based ``custom_embedding_cls`` (set
         separately via ``Model(...)``, this function doesn't inject it) to
         process each at its own length. See ``THEORY.md``.
     c_data : torch.Tensor, optional
@@ -340,7 +340,7 @@ def run_conditional_mi(
             joint_bp, sweep_grid, n_workers,
             quantity_name="Conditional MI",
             joint_label="XW;Y", marginal_label="W;Y",
-            joint_key="mi_xw_y", marginal_key="mi_w_y",
+            joint_key="mi_xw_y", marginal_key="mi_w_y", condition_at='last',
             is_proc_sweep=True,
             marginal_base_params=marginal_bp,
         )
@@ -441,7 +441,7 @@ def run_conditional_mi(
         base_params, sweep_grid, n_workers,
         quantity_name="Conditional MI",
         joint_label="XW;Y", marginal_label="W;Y",
-        joint_key="mi_xw_y", marginal_key="mi_w_y",
+        joint_key="mi_xw_y", marginal_key="mi_w_y", condition_at='last',
     )
 
     return {

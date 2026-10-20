@@ -86,10 +86,10 @@ class ParameterSweep:
                 **kwargs
             })
         elif isinstance(x_data, tuple) and isinstance(x_data[0], torch.Tensor) and x_data[0].ndim == 3:
-            # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
+            # Compound "X-role" data (BranchedEmbedding's two-tensor input,
             # mode='conditional'(align='dual_branch')) -- dims become a
             # matching 2-tuple instead of a single int, exactly what
-            # DualBranchEmbedding's constructor expects as `input_dim`. Only
+            # BranchedEmbedding's constructor expects as `input_dim`. Only
             # when already windowed (3-D): a raw (2-D) tuple -- shift_windows
             # reachability for dual_branch, X and C not yet windowed -- has
             # no `.shape[2]` to read yet either, and falls through to the
@@ -425,28 +425,6 @@ def combined_spread(value_lists, signs) -> Optional[float]:
     return float(np.std(combined, ddof=1))
 
 
-def _condition_block(joint, marginal) -> tuple:
-    """Where the marginal term's channels sit among the joint term's, ``('first' | 'last', count)``.
-
-    A nonparametric conditional estimate splits the joint term's X into the
-    conditioning set and the rest. Every difference quantity builds its joint X
-    by joining the marginal's channels before or after the others.
-    """
-    n = len(marginal) if isinstance(marginal, list) else marginal.shape[1]
-    if isinstance(joint, list):
-        same = lambda part: all(a is b for a, b in zip(part, marginal))
-        first, last = joint[:n], joint[-n:]
-    else:
-        same = lambda part: np.array_equal(np.asarray(part), np.asarray(marginal))
-        first, last = joint[:, :n], joint[:, -n:]
-    if same(last):
-        return 'last', n
-    if same(first):
-        return 'first', n
-    raise ValueError("The marginal term's channels are not a block at either end of the joint term's channels, "
-                     "so the conditional estimate cannot tell the conditioning set apart.")
-
-
 def _joint_marginal_difference(
     joint_x, joint_y, marginal_x, marginal_y,
     base_params: Dict[str, Any], sweep_grid: Optional[Dict[str, Any]], n_workers: int,
@@ -454,6 +432,7 @@ def _joint_marginal_difference(
     quantity_name: str,
     joint_label: str, marginal_label: str,
     joint_key: str, marginal_key: str,
+    condition_at: Optional[str] = None,
     is_proc_sweep: bool = False,
     marginal_base_params: Optional[Dict[str, Any]] = None,
     reported: bool = True,
@@ -483,6 +462,15 @@ def _joint_marginal_difference(
     joint_key, marginal_key : str
         The caller's result-dict key names for the two component MI values,
         named in the negative-value warning so a user knows where to find them.
+    condition_at : {'first', 'last'}, optional
+        Where the marginal term's X sits among the joint term's channels, when
+        the caller joined them into one tensor. The conditioning term runs
+        first, and the joint term carries ``_condition = (condition_at, n)``,
+        ``n`` the channel count the conditioning term's network was built on.
+        Its X encoder then reads that block on a branch of its own
+        (``BranchedEmbedding``), and a nonparametric estimator conditions on
+        it. ``None`` for a joint X that arrives as the pair (rest, conditioning
+        set), which carries the split itself.
     is_proc_sweep : bool, optional
         Pass ``True`` when ``joint_x``/``marginal_x`` are raw, unwindowed
         data (shift_windows/shift_time reachability. The caller has
@@ -514,18 +502,20 @@ def _joint_marginal_difference(
         values one row per run. :func:`combined_spread` turns those into the
         spread of the difference.
     """
-    logger.info(f"{quantity_name}: estimating I({joint_label})...")
-    joint_params = with_model_labels(base_params, component=joint_key)
-    if base_params.get('estimator_name') in NONPARAMETRIC_CONDITIONAL:
-        joint_params = {**joint_params, '_condition': _condition_block(joint_x, marginal_x)}
-    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
-    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
-
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
-                                    base_params=with_model_labels(marginal_base_params or base_params,
-                                                                  component=marginal_key).copy())
+                                    base_params={**with_model_labels(marginal_base_params or base_params,
+                                                                     component=marginal_key),
+                                                 '_difference_term': True})
     results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
+
+    logger.info(f"{quantity_name}: estimating I({joint_label})...")
+    joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True}
+    if condition_at is not None:
+        n = next(r['n_channels_x'] for r in results_marginal if 'n_channels_x' in r)
+        joint_params = {**joint_params, '_condition': (condition_at, n)}
+    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
+    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
     marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]

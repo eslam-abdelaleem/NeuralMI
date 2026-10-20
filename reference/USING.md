@@ -386,9 +386,9 @@ measured difference in `mi_raw`. `dataframe` adds the component means and the
 relative error. A factor of 10 or more warns because a difference that small
 should be read with its components ([THEORY.md](THEORY.md#amplification)).
 
-`Conditional(align='dual_branch')` embeds W in its own branch, for a W whose
-window length differs from X's. It needs `Model(embedding_model='dual_branch')`.
-The named quantities that use it set `align` themselves and ask for the model
+`Conditional(align='dual_branch')` passes X and W to the joint term as a pair,
+each at its own window length, for a W whose window length differs from X's.
+The named quantities that need it set `align` themselves
 ([the named quantities](#the-named-quantities)).
 
 ### `interaction`
@@ -972,16 +972,14 @@ means. Gaps stay visible through the coverage warnings. Keep
 `window_size`, merges it into the `Processing` given, and reads continuous
 data when given none.
 
-`mi_rate`, `instantaneous_exchange` and `directed_information_rate` embed their
-conditioning set in its own branch because it has a different window length from
-the other group. They need `Model(embedding_model='dual_branch', ...)` and raise
-at once without it. At `h=0` or `k=0` nothing is conditioned on and any model
-works.
+`mi_rate`, `instantaneous_exchange` and `directed_information_rate` condition
+on a group with a window length of its own, which reaches the joint term beside
+the other group as a pair ([the encoder of a difference](#the-encoder-of-a-difference)).
 
 ```python
 from neural_mi import Model, Training
 
-model = Model(embedding_model='dual_branch', branch_model='gru', embedding_dim=16)
+model = Model(embedding_model='gru', embedding_dim=16)
 r = nmi.mi_rate(x, y, h=[0, 5, 10, 20], half_width=20, model=model,
                 training=Training(n_epochs=100), n_workers=4)
 ```
@@ -1044,8 +1042,7 @@ spec = {'A': [('x', s) for s in range(-10, 0)],     # X's past
 a, b, c, n_valid = build_offset_arrays({'x': x, 'y': y}, spec, stride=1)
 
 r = nmi.run(a, b, mode='conditional',
-            conditional=Conditional(w_data=c, align='dual_branch'),
-            model=Model(embedding_model='dual_branch'))
+            conditional=Conditional(w_data=c, align='dual_branch'))
 ```
 
 Offsets count rows with negative offsets in the past and zero at the present.
@@ -1127,13 +1124,11 @@ outputs `(batch, embedding_dim)`.
 | `'transformer'` | `(N, C, W)` | self-attention over the window with `nhead` heads |
 | `'deepsets'` | `(N, C, W)` | raw spike times, invariant to the order of a window's spikes |
 | `'pretrained_backbone'` | `(N, C, H, W)` | a frozen torchvision network with a trainable head |
-| `'dual_branch'` | two inputs of different lengths | the conditioning set of `align='dual_branch'` |
 
 The encoder classes in the table are importable from `neural_mi.models`.
 `pretrained_backbone` takes the torchvision name in `pytorch_predefined` and
 ImageNet weights with `pretrained=True`. Input of a size other than 224 by 224
 pixels is resized by bilinear upsampling on the first forward pass and warns.
-`dual_branch` builds each branch from `branch_model`, `'gru'` by default.
 
 `embedding_model` sets the encoder of both sides. `embedding_model_y`,
 `custom_embedding_cls_y`, `hidden_dim_y`, `n_layers_y` and `embedding_dim_y`
@@ -1157,6 +1152,23 @@ away from zero. Spectral normalisation is unaffected. Because the transformer's
 positional encoding and a pretrained backbone's frozen biases add terms that do
 not depend on the input, these two encoders warn that the setting cannot fully
 apply.
+
+### The encoder of a difference
+
+Conditional MI, transfer entropy, interaction information and the named
+quantities built on them subtract a term that sees the conditioning set alone
+from a joint term that sees it beside the rest of X. Every term of such a
+difference encodes X with one branch per part of X under one small MLP head
+(`BranchedEmbedding`): two branches in the joint term, one in every other term.
+Each branch is the encoder `embedding_model` or `custom_embedding_cls` names.
+The conditioning set then takes the same path, branch then head, in every term
+that sees it, so the terms learn what they share the same way and their errors
+on it cancel in the difference
+([THEORY.md](THEORY.md#the-encoder-of-a-difference)). Each term keeps its own
+weights, training and epoch. A joint X joined along the channels is split where
+the quantity put the conditioning set, and a pair (`align='dual_branch'`)
+arrives split. `shared_encoder=True` is refused for these terms, since X's
+encoder is branched and Y's is not.
 
 ### Critics
 

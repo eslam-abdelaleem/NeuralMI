@@ -86,7 +86,7 @@ Each file covers one functional area. Run
 | `test_models.py` | every encoder, `VariationalWrapper` for each, all three critics, chunking equivalence, gradients, `get_embeddings()` |
 | `test_critic_scoring.py` | the block scoring of the hybrid and concat critics against the pair-by-pair route, scores and gradients |
 | `test_cnn2d.py` | the 2-D encoder, its `build_critic` path, 4-D input handling, the image splits of `mode='dimensionality'` |
-| `test_dual_branch_embedding.py` | `DualBranchEmbedding`, its integration through `run()`, the quantities that require it, and accuracy against the oracle |
+| `test_branched_embedding.py` | `BranchedEmbedding`, the X encoder of every term of a difference: its parts and split, the encoder each term gets, the pair of different window lengths, and the quantities that use it against the oracle |
 | `test_decoders.py` | decoder dispatch and the reconstruction-loss path end to end |
 | `test_shared_encoder.py` | weight identity, parameter count, the concat incompatibility, the dimensionality-mode default |
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |
@@ -168,7 +168,7 @@ Each file covers one functional area. Run
 | a reference page that no longer matches the code | `test_docs_drift.py` |
 | a permutation null or p-value | `test_permutation.py` |
 | windowing, alignment or a split | `test_data_processors.py`, `test_shift_windowing.py` |
-| an encoder's output shape or gradients | `test_models.py`, `test_cnn2d.py`, `test_dual_branch_embedding.py` |
+| an encoder's output shape or gradients | `test_models.py`, `test_cnn2d.py`, `test_branched_embedding.py` |
 | the training loop | `test_trainer.py` |
 | a `run()` API error | `test_run.py`, `test_validation.py`, `test_config.py` |
 | a named quantity | `test_quantities.py`, `test_quantities_sweep.py` |

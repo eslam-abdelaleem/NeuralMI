@@ -1,6 +1,5 @@
 # neural_mi/models/embeddings.py
 
-import inspect
 import torch
 import torch.nn as nn
 import math
@@ -1090,7 +1089,7 @@ class VariationalWrapper(nn.Module):
         if isinstance(x, (tuple, list)):
             raise NotImplementedError(
                 "use_variational=True is not supported with a compound (tuple) "
-                "embedding input such as DualBranchEmbedding in mode='conditional' "
+                "embedding input such as BranchedEmbedding in mode='conditional' "
                 "with align='dual_branch'. The variational wrapper reads "
                 "x.shape[0] from the input itself. A tuple input has no shape. "
                 "Use use_variational=False for this path."
@@ -1112,147 +1111,63 @@ class VariationalWrapper(nn.Module):
         return z, kl_loss
 
 
-class DualBranchEmbedding(BaseEmbedding):
-    """Two independent sub-embedding networks for inputs of different window
-    lengths, fused into one ``embedding_dim`` vector.
+def conditioning_parts(x, condition=None):
+    """The joint term's X as ``(rest, conditioning set)``: the pair as given, or one array whose first or last
+    ``n`` channels are the conditioning set, ``condition = ('first' | 'last', n)``."""
+    if condition is None:
+        return tuple(x)
+    where, n = condition
+    return (x[:, :-n], x[:, -n:]) if where == 'last' else (x[:, n:], x[:, :n])
 
-    Exists for the case where a conditional-MI quantity's ``A`` and ``C``
-    genuinely differ in window length beyond ``mode='conditional'``'s
-    small trim tolerance (MI rate, instantaneous exchange, directed
-    information rate, see ``THEORY.md``). Each branch processes its own
-    input at its own length, independently, so there is no length-matching
-    requirement between them at all; this replaces zero-padding one array
-    out to match the other's length, which forces the network to learn on
-    its own to ignore the padded region.
 
-    Used via ``custom_embedding_cls=DualBranchEmbedding`` (or a subclass, see
-    below), the existing extension point ``build_critic`` already supports
-    with no changes of its own. ``build_critic`` passes whatever
-    ``input_dim`` it computes straight through to a custom class unchanged,
-    so this class is invoked with ``input_dim`` as a 2-tuple
-    ``(dim_a, dim_c)`` instead of the usual single int; the conditional-mode
-    ``align='dual_branch'`` data path (``analysis/conditional.py``) is what
-    arranges for this by making the "X-role" data itself a 2-tuple of
-    tensors, which flows through as a matching 2-tuple ``n_channels``.
+class BranchedEmbedding(BaseEmbedding):
+    """The X encoder of every term of a difference quantity: each part of X on a branch of its own, and one MLP
+    head over the branches' embeddings.
 
-    ``custom_embedding_cls`` is shared by ``build_critic`` between *both*
-    the X-role and Y-role embeddings (one class, two independent instances),
-    but only the X-role side is ever compound here, Y is a plain population.
-    So this class also accepts a plain int ``input_dim`` (Y's case) and
-    behaves as a single, ordinary ``branch_cls`` embedding then, no fusion,
-    ``forward`` taking a plain tensor instead of a 2-tuple. This isn't a
-    special case bolted on, it's what makes one class usable on both sides
-    of the critic the way any other embedding class already is.
+    A difference such as conditional MI, transfer entropy or interaction information subtracts a term that sees
+    the conditioning set ``C`` alone from a joint term that sees ``C`` beside the rest of X, ``A``. The joint
+    term's encoder has a branch for ``A`` and one for ``C``; the other term's has the branch for ``C``. Both end
+    in the same head, so the path ``C`` takes is the same network in both terms, the conditioning term's being
+    the joint term's with ``A``'s branch removed. Both terms then learn their shared part the same way, and the
+    errors they make on it largely cancel in the difference (``THEORY.md``, amplification). ``build_critic``
+    builds it for every term of a difference, with the call's X encoder (the built-in ``embedding_model`` or
+    ``custom_embedding_cls``) as ``branch_cls``.
+
+    A joint X arrives as one tensor whose first or last ``n`` channels are ``C`` (``condition``), or as the pair
+    ``(a, c)`` when ``C`` has a window length of its own (MI rate, instantaneous exchange, directed information
+    rate, ``Conditional(align='dual_branch')``).
 
     Parameters
     ----------
-    input_dim : tuple of (int, int), or int
-        ``(dim_a, dim_c)`` for the compound (X-role) case, the channel
-        counts for the two branches. A plain ``int`` for the ordinary
-        (Y-role) case, handled as a single ``branch_cls`` embedding.
+    input_dim : int or tuple of (int, int)
+        The input size of each part, ``(dim_a, dim_c)`` for a joint X, in ``branch_cls``'s own convention.
     hidden_dim, embedding_dim, n_layers
-        Forwarded to both branches, same as any other embedding model.
-    branch_cls : type, optional
-        The embedding class used for each branch. Defaults to :class:`GRU`.
-        ``custom_embedding_cls`` only ever receives the fixed
-        ``(input_dim, hidden_dim, embedding_dim, n_layers)`` contract (arbitrary
-        extra kwargs like a different ``branch_cls`` are not threaded
-        through from ``Model(...)``), so a non-default branch architecture
-        (e.g. a custom LRU) needs its own thin subclass with ``branch_cls``
-        hardcoded, the same pattern already used elsewhere in this codebase
-        for a custom class that needs a construction-time option
-        ``build_critic`` has no whitelisted channel for::
-
-            class DualBranchLRUEmbedding(DualBranchEmbedding):
-                def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers, **kwargs):
-                    super().__init__(input_dim, hidden_dim, embedding_dim, n_layers,
-                                      branch_cls=MyLRUEmbedding, **kwargs)
-    fusion_hidden_dim : int, optional
-        Hidden width of the two-layer fusion MLP. Defaults to ``embedding_dim``.
+        Passed to every branch.
+    branch_cls : type
+        The encoder class of every branch.
+    window_size : int or tuple of (int, int), optional
+        The parts' window lengths, for a ``branch_cls`` that takes ``window_size``.
+    condition : tuple of (str, int), optional
+        ``('first' | 'last', n)`` for a joint X passed as one tensor.
     **branch_kwargs
-        Forwarded to both branch constructors (e.g. ``bidirectional`` for a
-        GRU/LSTM ``branch_cls``).
-
-    Notes
-    -----
-    ``use_variational=True`` is not supported with this class, see
-    ``VariationalWrapper.forward``'s explicit check. ``use_decoder=True`` is
-    not supported either, reconstructing a compound ``(A, C)`` input from
-    one fused embedding has no single well-defined decoder architecture; see
-    ``task.py``'s explicit check. Nor is ``shared_encoder=True``, X's role
-    needs the dual (tuple-input) branch, Y's role needs the single
-    (plain-tensor) branch, and one encoder instance can't be both; see
-    ``build_critic``'s explicit check.
+        Passed to every branch. ``use_spectral_norm``, ``dropout`` and ``bias`` also set the head's.
     """
     input_style = 'channels'
 
-    def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers,
-                 branch_cls: Optional[type] = None, fusion_hidden_dim: Optional[int] = None,
-                 bias: bool = True, window_size=None,
-                 **branch_kwargs):
+    def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers, branch_cls,
+                 window_size=None, condition=None, **branch_kwargs):
         super().__init__()
-        branch_cls = branch_cls or GRU
-        self._is_dual = isinstance(input_dim, (tuple, list))
-        # A branch class that names window_size gets its own branch's length:
-        # window_size is (len_a, len_c) for the compound input, an int otherwise.
-        _windows = 'window_size' in inspect.signature(branch_cls.__init__).parameters
-        if _windows and window_size is not None:
-            _window_a, _window_c = window_size if self._is_dual else (window_size, None)
-            _kw_a, _kw_c = dict(branch_kwargs, window_size=_window_a), dict(branch_kwargs, window_size=_window_c)
-        else:
-            _kw_a = _kw_c = branch_kwargs
-        if self._is_dual:
-            if len(input_dim) != 2:
-                raise ValueError(
-                    f"DualBranchEmbedding expects input_dim as a 2-tuple (dim_a, dim_c) "
-                    f"or a plain int, got a {len(input_dim)}-element sequence: {input_dim!r}."
-                )
-            dim_a, dim_c = input_dim
-            self.branch_a = branch_cls(dim_a, hidden_dim, embedding_dim, n_layers, bias=bias, **_kw_a)
-            self.branch_c = branch_cls(dim_c, hidden_dim, embedding_dim, n_layers, bias=bias, **_kw_c)
-            _fusion_hidden = fusion_hidden_dim or embedding_dim
-            self.fusion = nn.Sequential(
-                nn.Linear(embedding_dim * 2, _fusion_hidden, bias=bias),
-                nn.ReLU(),
-                nn.Linear(_fusion_hidden, embedding_dim, bias=bias),
-            )
-        else:
-            # Plain int input_dim: build_critic's Y-role call site (see class
-            # docstring). Behave as a single ordinary branch_cls embedding.
-            self.branch_single = branch_cls(input_dim, hidden_dim, embedding_dim, n_layers, bias=bias, **_kw_a)
+        self.condition = condition
+        dims = input_dim if isinstance(input_dim, tuple) else (input_dim,)
+        windows = window_size if isinstance(window_size, tuple) else (window_size,) * len(dims)
+        self.branches = nn.ModuleList(
+            branch_cls(dim, hidden_dim, embedding_dim, n_layers,
+                       **(branch_kwargs if window is None else dict(branch_kwargs, window_size=window)))
+            for dim, window in zip(dims, windows))
+        self.head = MLP(len(dims) * embedding_dim, embedding_dim, embedding_dim, 1,
+                        use_spectral_norm=branch_kwargs.get('use_spectral_norm', True),
+                        dropout=branch_kwargs.get('dropout', 0.0), bias=branch_kwargs.get('bias', True))
 
     def forward(self, x) -> torch.Tensor:
-        """Embed either a 2-tuple ``(a_batch, c_batch)`` (compound X-role) or
-        a plain tensor (ordinary Y-role) into one ``(batch, embedding_dim)`` tensor.
-
-        Parameters
-        ----------
-        x : tuple of (torch.Tensor, torch.Tensor), or torch.Tensor
-            Compound case: ``a_batch`` shape ``(batch, dim_a, len_a)``,
-            ``c_batch`` shape ``(batch, dim_c, len_c)``. ``len_a`` and
-            ``len_c`` need not match, that's the entire point of this class.
-            Plain case: a single ``(batch, dim, len)`` tensor.
-
-        Returns
-        -------
-        torch.Tensor
-            Shape ``(batch, embedding_dim)``.
-        """
-        if isinstance(x, (tuple, list)):
-            if not self._is_dual:
-                raise ValueError(
-                    "DualBranchEmbedding.forward received a tuple input but was "
-                    "constructed with a plain int input_dim (the Y-role / "
-                    "single-branch case). Construction and forward must agree."
-                )
-            a_batch, c_batch = x
-            z_a = self.branch_a(a_batch)
-            z_c = self.branch_c(c_batch)
-            return self.fusion(torch.cat([z_a, z_c], dim=-1))
-        if self._is_dual:
-            raise ValueError(
-                "DualBranchEmbedding.forward received a plain tensor input but was "
-                "constructed with a 2-tuple input_dim (the compound X-role case). "
-                "Construction and forward must agree."
-            )
-        return self.branch_single(x)
+        parts = conditioning_parts(x, self.condition) if len(self.branches) == 2 else (x,)
+        return self.head(torch.cat([branch(part) for branch, part in zip(self.branches, parts)], dim=-1))

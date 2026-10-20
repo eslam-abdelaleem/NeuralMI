@@ -20,15 +20,12 @@ from neural_mi.models.embeddings import (
     DeepSets,
     MLP, VariationalWrapper,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
-    PretrainedBackboneEmbedding, LRUEmbedding, DualBranchEmbedding,
+    PretrainedBackboneEmbedding, LRUEmbedding, BranchedEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
 from neural_mi.logger import logger, user_stacklevel
 
-# Single source of truth for every built-in embedding_model string -> class,
-# reused both by build_critic's main dispatch and by 'dual_branch's own
-# branch_model lookup (a DualBranchEmbedding's two sub-networks are picked
-# from this same set).
+# Every built-in embedding_model string -> class.
 _EMBEDDING_CLASSES = {
     'mlp': MLP,
     'cnn': CNN1D,
@@ -40,7 +37,6 @@ _EMBEDDING_CLASSES = {
     'pretrained_backbone': PretrainedBackboneEmbedding,
     'lru': LRUEmbedding,
     'deepsets': DeepSets,
-    'dual_branch': DualBranchEmbedding,
 }
 
 def _ensure_cpu(data):
@@ -50,7 +46,7 @@ def _ensure_cpu(data):
     every tensor before adding it to a Pool task tuple.
 
     Non-tensor inputs (numpy arrays, None, etc.) are returned unchanged.
-    A tuple (DualBranchEmbedding's compound "X-role" data) is mapped over
+    A tuple (BranchedEmbedding's compound "X-role" data) is mapped over
     element-wise, so a GPU/MPS-resident element inside it actually gets
     moved before crossing the spawn boundary too.
     """
@@ -553,12 +549,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 f"instance cannot also be a second, different one. Set "
                 f"shared_encoder=False to give the two sides their own encoders."
             )
-        if spec_y['model_type'] == 'dual_branch' and not _y_custom:
-            raise ValueError(
-                "embedding_model_y='dual_branch' is not a usable combination. "
-                "DualBranchEmbedding exists for a compound (tuple) X-role input. "
-                "The Y role is always a single plain population."
-            )
     if (embedding_params.get('embedding_dim_y') is not None
             and spec_y['embedding_dim'] != spec_x['embedding_dim']
             and critic_type == 'separable'):
@@ -620,18 +610,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
             if model_type == 'lru':
                 model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-            if model_type == 'dual_branch' and not spec['custom_cls']:
-                # custom_embedding_cls (a DualBranchEmbedding subclass hardcoding
-                # its own branch_cls, see the class docstring) always takes
-                # priority -- this only resolves branch_cls for the plain
-                # Model(embedding_model='dual_branch', branch_model=...) form.
-                branch_model = embedding_params.get('branch_model') or 'gru'
-                if branch_model not in _EMBEDDING_CLASSES:
-                    raise ValueError(
-                        f"Unknown branch_model: {branch_model!r}. Built-in options: "
-                        f"{sorted(_EMBEDDING_CLASSES)}."
-                    )
-                model_kwargs['branch_cls'] = _EMBEDDING_CLASSES[branch_model]
         else:  # MLP or a custom class, both take the fully-flattened input_dim
             input_dim = embedding_params[f'input_dim_{side}']
             if not spec['custom_cls']:
@@ -662,14 +640,14 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             "ConcatCritic operates on raw concatenated inputs and has no separate "
             "embedding networks to share. Switch to critic_type='separable' or 'hybrid'."
         )
-    if shared_encoder and isinstance(input_dim_x, tuple):
+    # A term of a difference quantity: its X encoder reads each part of X on a
+    # branch of its own, under one head (BranchedEmbedding).
+    difference_term = embedding_params.get('_difference_term', False)
+    if shared_encoder and difference_term:
         raise ValueError(
-            "shared_encoder=True is incompatible with a compound (tuple) X-role "
-            "input, e.g. DualBranchEmbedding used via mode='conditional'"
-            "(align='dual_branch'). One encoder instance can't simultaneously be "
-            "the dual (tuple-input) branch X needs and the single (plain-tensor) "
-            "branch Y needs -- they're structurally different forward() paths on "
-            "the same class. Set shared_encoder=False for this path."
+            "shared_encoder=True cannot serve a term of a difference quantity. Its X encoder reads the "
+            "conditioning set and the rest of X on branches of their own under one head (BranchedEmbedding), "
+            "and cannot also be Y's encoder. Set shared_encoder=False."
         )
 
     # Bias terms in the embedding layers. Both encoders get the same value.
@@ -735,7 +713,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             params = embedding_params.get(key) or {}
             kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
 
-    net_x_base = Model_x(input_dim_x, **model_kwargs)
+    net_x_base = (_branched(Model_x, input_dim_x, model_kwargs, embedding_params['n_channels_x'],
+                            embedding_params.get('_condition'))
+                  if difference_term else Model_x(input_dim_x, **model_kwargs))
     net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
 
     # Optionally wrap with VariationalWrapper, works for every encoder type
@@ -752,10 +732,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # sample counts are modest. 500k is a practical threshold, not a hard limit.
     _first_hidden = hidden_dim[0] if isinstance(hidden_dim, list) else hidden_dim
     _last_hidden  = hidden_dim[-1] if isinstance(hidden_dim, list) else hidden_dim
-    # input_dim_x is a 2-tuple (dim_a, dim_c) for DualBranchEmbedding's compound
-    # X-role input (mode='conditional'(align='dual_branch')) -- sum the two
-    # branches' sizes for this warning's purposes, same total parameter count
-    # either way (two smaller first layers vs. one combined estimate).
+    # A pair of inputs counts with both branches' sizes.
     _input_dim_x_total = sum(input_dim_x) if isinstance(input_dim_x, tuple) else input_dim_x
     first_layer_params = _input_dim_x_total * _first_hidden
     if first_layer_params > 500_000:
@@ -789,6 +766,23 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         return ConcatCritic(embedding_net=concat_net, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
+
+
+def _branched(branch_cls, input_dim, kwargs, n_channels, condition) -> BranchedEmbedding:
+    """The X encoder of a term of a difference, with ``branch_cls`` built as the call's X encoder for each part.
+
+    A joint term's X arrives as a pair with its two sizes, or as one tensor
+    split by ``condition = ('first' | 'last', n)``: its first or last ``n``
+    channels are the conditioning set, in a size convention of ``input_dim``
+    per ``n_channels`` channels, at one window length. Any other term's X is
+    one part.
+    """
+    if condition is not None:
+        per_channel, n = input_dim // n_channels, condition[1]
+        input_dim = ((n_channels - n) * per_channel, n * per_channel)
+        if 'window_size' in kwargs:
+            kwargs = {**kwargs, 'window_size': (kwargs['window_size'],) * 2}
+    return BranchedEmbedding(input_dim, branch_cls=branch_cls, condition=condition, **kwargs)
 
 
 _OPTIMIZERS = {

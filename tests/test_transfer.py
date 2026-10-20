@@ -212,21 +212,22 @@ class TestConditionalTransferEntropy:
         w_past = _build_w_past(w, history_window=H, n_valid=x_past.shape[0])
         assert w_past.shape == (x_past.shape[0], 1, H)
 
-    def test_w_data_changes_conditioning_dimensionality(self):
-        """Providing w_data must concatenate W_past into the conditioning
-        arrays (verified via the diagnostics' implied dimensionality is not
-        directly exposed, so check indirectly: the run must succeed with W
-        present and produce a different point estimate than without it on
-        data where W is genuinely informative)."""
+    def test_w_data_joins_the_conditioning_set(self, monkeypatch):
+        """W's past joins the conditioning set: the joint term splits off Y's and W's channels."""
+        from neural_mi.analysis import task as task_module
+        build, conditions = task_module.build_critic, []
+
+        def spy(critic_type, params, custom_cls=None):
+            conditions.append(params.get('_condition'))
+            return build(critic_type, params, custom_cls)
+        monkeypatch.setattr(task_module, 'build_critic', spy)
         oracle = _SharedLatentTripleOracle()
         x, y, w = oracle.sample(600, seed=1)
-        r_plain = nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=5),
-                          model=_MODEL, training=_TRAINING, n_workers=1, seed=0,
-                          show_progress=False)
-        r_cond = nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=5, w_data=w),
-                         model=_MODEL, training=_TRAINING, n_workers=1, seed=0,
-                         show_progress=False)
-        assert r_plain.mi_estimate != r_cond.mi_estimate
+        for w_data in (None, w):
+            nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=5, w_data=w_data),
+                    model=_MODEL, training=_TRAINING, n_workers=1, seed=0, show_progress=False)
+        split = sorted({c for c in conditions if c is not None})
+        assert split == [('last', y.shape[1]), ('last', y.shape[1] + w.shape[1])]
 
     @pytest.mark.slow
     def test_conditional_te_explains_away_shared_latent(self):
@@ -266,5 +267,4 @@ class TestConditionalTransferEntropy:
                    transfer=Transfer(history_window=5, w_data=w, rigorous=True,
                                      gamma_range=range(1, 4)),
                    model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
-        assert r.mi_estimate is not None
-        assert np.isfinite(r.mi_estimate)
+        assert r.runs['n_tasks_created'].iloc[0] == 6      # gamma 1 to 3, every subset with W

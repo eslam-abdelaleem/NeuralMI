@@ -10,6 +10,7 @@ import torch
 import numpy as np
 from typing import Dict, Any
 
+from neural_mi.models.embeddings import conditioning_parts
 from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device, compute_cross_covariance_rotation
 from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC, NONPARAMETRIC_CONDITIONAL
 from neural_mi.training.trainer import Trainer
@@ -129,28 +130,22 @@ def _nonparametric(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
     """A nonparametric estimate (``estimator_name='ksg'``) on every row of the dataset, in nats.
 
     No network is trained, so there is no split, epoch or held-out value. The
-    joint term of a difference carries ``_condition``, where the conditioning
-    set sits among X's channels and how many channels it has. It estimates the
-    conditioning set's own MI with Y plus the conditional MI of the rest given
-    it (Frenzel and Pompe). Its marginal term estimates that same MI on the same
-    rows, so the difference of the two is the conditional estimate itself.
+    joint term of a difference, whose X is the pair (rest, conditioning set) or
+    carries ``_condition``, estimates the conditioning set's own MI with Y plus
+    the conditional MI of the rest given it (Frenzel and Pompe). Its
+    conditioning term estimates that same MI on the same rows, so the
+    difference of the two is the conditional estimate itself.
     """
-    x, y = dataset.x_data, dataset.y_data
-    if isinstance(x, tuple):
-        raise ValueError(
-            f"estimator='{params['estimator_name']}' does not take the two-branch input of "
-            f"Conditional(align='dual_branch'). Leave align at its default."
-        )
-    x, y = (t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t) for t in (x, y))
+    as_array = lambda t: t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t)
+    x, y = dataset.x_data, as_array(dataset.y_data)
     settings = dict(params.get('estimator_params') or {}, seed=params.get('random_seed'))
-    name = params['estimator_name']
-    if params.get('_condition') is None:
-        value = NONPARAMETRIC[name](x, y, **settings)
-    else:
-        where, n = params['_condition']
-        z, rest = (x[:, -n:], x[:, :-n]) if where == 'last' else (x[:, :n], x[:, n:])
+    name, condition = params['estimator_name'], params.get('_condition')
+    if isinstance(x, tuple) or condition is not None:
+        rest, z = (as_array(part) for part in conditioning_parts(x, condition))
         value = NONPARAMETRIC[name](z, y, **settings) + NONPARAMETRIC_CONDITIONAL[name](rest, y, z, **settings)
-    return {'train_mi': value, 'eval_size': len(x), 'train_eval_size': len(x)}
+    else:
+        value = NONPARAMETRIC[name](as_array(x), y, **settings)
+    return {'train_mi': value, 'eval_size': len(y), 'train_eval_size': len(y)}
 
 
 def run_training_task(args: tuple) -> Dict[str, Any]:
@@ -245,9 +240,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         else:
             logger.debug("Dataset cache hit, reusing pre-built dataset.")
 
-    if params.get('estimator_name') in NONPARAMETRIC:
-        return {**_reported(params), **_nonparametric(dataset, params)}
-
     # Models that natively support 4-D input (N, C, H, W):
     #   'cnn2d', Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
     #   'mlp', flattens C*H*W into a feature vector; spatial structure ignored.
@@ -259,12 +251,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     _4D_NATIVE = {'cnn2d', 'mlp', 'pretrained_backbone'}
 
     if isinstance(dataset.x_data, tuple):
-        # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
+        # Compound "X-role" data (BranchedEmbedding's two-tensor input,
         # mode='conditional'(align='dual_branch')) -- dims become a matching
         # 2-tuple instead of a single int. The hasattr(..., 'shape') guard
         # below is False for a tuple, so without this branch the whole
         # dim-computation block would be silently skipped and
-        # DualBranchEmbedding would never receive the dims it needs.
+        # BranchedEmbedding would never receive the dims it needs.
         _a, _c = dataset.x_data
         params['n_channels_x'] = (_a.shape[1], _c.shape[1])
         params['input_dim_x'] = (_a.shape[1] * _a.shape[2], _c.shape[1] * _c.shape[2])
@@ -305,6 +297,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         else:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2]
 
+    if params.get('estimator_name') in NONPARAMETRIC:
+        return {**_reported(params), **_nonparametric(dataset, params)}
+
     if params.get('custom_critic') is not None:
         critic = params['custom_critic']
         logger.debug("Using the custom critic as given, so the Model(...) architecture settings are ignored.")
@@ -323,7 +318,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         if isinstance(_n_channels_x, tuple):
             raise NotImplementedError(
                 "use_decoder=True is not supported with a compound (tuple) "
-                "embedding input such as DualBranchEmbedding in mode='conditional' "
+                "embedding input such as BranchedEmbedding in mode='conditional' "
                 "with align='dual_branch'. Reconstructing a compound (A, C) input "
                 "from one fused embedding has no single well-defined decoder "
                 "architecture. Use use_decoder=False for this path."
@@ -491,7 +486,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             )
         else:
             trainer.model.eval()
-            # _all_x may be a plain tensor or a tuple (DualBranchEmbedding's
+            # _all_x may be a plain tensor or a tuple (BranchedEmbedding's
             # compound "X-role" data, mode='conditional'(align='dual_branch')).
             _is_tuple_x = isinstance(_all_x, tuple)
             _n = (_all_x[0] if _is_tuple_x else _all_x).shape[0]

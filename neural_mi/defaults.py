@@ -108,7 +108,7 @@ BASE_PARAMS_SCHEMA = {
     'n_layers_head': {'type': (int, type(None)), 'min': 1, 'default': None},  # Hybrid critic head; None → max(1, n_layers-1)
     'hidden_dim_head': {'type': (int, list, type(None)), 'default': None},  # Hybrid critic head; None → min(64, hidden_dim)
     'critic_type': {'type': str, 'default': 'separable'},
-    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'|'deepsets'
+    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'deepsets'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
     'cnn_pooling': {'type': str, 'default': 'flatten'},   # CNN: 'flatten' keeps every position, 'mean' averages
     'bidirectional': {'type': bool, 'default': False}, # RNN
@@ -119,7 +119,6 @@ BASE_PARAMS_SCHEMA = {
     'hidden_dim_y': {'type': (int, list), 'default': None},
     'n_layers_y': {'type': int, 'default': None},
     'custom_embedding_cls_y': {'type': type, 'default': None},
-    'branch_model': {'type': str, 'default': 'gru'}, # embedding_model='dual_branch' only: each branch's architecture
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
     'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
     # 'auto' is layer normalisation for the hybrid critic in mode='dimensionality'

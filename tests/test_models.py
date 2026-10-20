@@ -633,13 +633,10 @@ class TestPerSideEncoders:
     @pytest.mark.parametrize("kwargs,match", [
         (dict(critic_type='concat'), "no separate embedding"),
         (dict(shared_encoder=True), "cannot also be a second"),
-        (dict(embedding_model_y='dual_branch'), "compound"),
     ])
     def test_the_combinations_that_cannot_work_are_refused(self, kwargs, match):
         from neural_mi import Model
-        base = dict(embedding_model='mlp', embedding_dim=8, hidden_dim=16, n_layers=1)
-        if 'embedding_model_y' not in kwargs:
-            base['embedding_model_y'] = 'cnn'
+        base = dict(embedding_model='mlp', embedding_model_y='cnn', embedding_dim=8, hidden_dim=16, n_layers=1)
         with pytest.raises(ValueError, match=match):
             self._go(Model(**base, **kwargs))
 
@@ -739,9 +736,9 @@ class TestWindowPositions:
                 training=nmi.Training(n_epochs=1), seed=0, show_progress=False, verbose=False)
         assert seen['kwargs'] == dict(window_size=5, dropout=0.3, use_spectral_norm=False)
 
-    def test_dual_branch_gives_each_cnn_branch_its_own_window(self):
-        from neural_mi.models.embeddings import DualBranchEmbedding
-        net = DualBranchEmbedding((2, 3), 8, 4, 1, branch_cls=CNN1D, window_size=(5, 7))
-        assert net.branch_a.final_layers[1].in_features == 8 * 5
-        assert net.branch_c.final_layers[1].in_features == 8 * 7
+    def test_branches_give_each_cnn_its_own_window(self):
+        from neural_mi.models.embeddings import BranchedEmbedding
+        net = BranchedEmbedding((2, 3), 8, 4, 1, branch_cls=CNN1D, window_size=(5, 7))
+        assert net.branches[0].final_layers[1].in_features == 8 * 5
+        assert net.branches[1].final_layers[1].in_features == 8 * 7
         assert net((torch.randn(4, 2, 5), torch.randn(4, 3, 7))).shape == (4, 4)

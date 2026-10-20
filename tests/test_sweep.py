@@ -166,18 +166,16 @@ class TestJointMarginalDifference:
     """
 
     def _patch_sweep(self, monkeypatch, joint_vals, marginal_vals):
-        """Make ParameterSweep.run() return canned train_mi values in
-        sequence: joint_vals on the first call, marginal_vals on the second."""
+        """Make ParameterSweep.run() return canned train_mi values in sequence: marginal_vals on the first call
+        (the conditioning term trains first), joint_vals on the second."""
         from neural_mi.analysis import sweep as sweep_module
         calls = {'n': 0}
 
         def fake_run(self, sweep_grid=None, n_workers=1, is_proc_sweep=False, **kwargs):
             calls['n'] += 1
-            vals = joint_vals if calls['n'] == 1 else marginal_vals
-            return [{'train_mi': v} for v in vals]
+            return [{'train_mi': v} for v in (marginal_vals if calls['n'] == 1 else joint_vals)]
 
         monkeypatch.setattr(sweep_module.ParameterSweep, 'run', fake_run)
-        return calls
 
     def test_computes_correct_difference(self, monkeypatch):
         from neural_mi.analysis.sweep import _joint_marginal_difference

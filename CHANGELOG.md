@@ -41,6 +41,26 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Every term of a difference quantity (`mode='conditional'`, `'transfer'` and
+  `'interaction'`, with or without `rigorous=True`, their permutation trials,
+  and the named quantities built on them) encodes X with one branch per part of
+  X under one small MLP head (`BranchedEmbedding`). The joint term has a branch
+  for the conditioning set and one for the rest of X, and the other terms one
+  branch. Each branch is the call's X encoder, `embedding_model` or
+  `custom_embedding_cls`. The conditioning set then takes the same path in
+  every term, so the errors the terms make on it cancel in the difference. In
+  transfer entropy from 64 linear-Gaussian source neurons over 10 bins of
+  history, the estimate from time-shifted sources fell from 12.0 and 12.8
+  millibits to 0.2 and 0.9 for two targets. In conditional MI on independent
+  rows it fell from 7.2 to -1.3 millibits, against an exact value of 26 for the
+  unshuffled data, which now reads 25.8 against 34.7 before. Results of these
+  quantities change. The conditioning term now trains first, and the joint term
+  reads the conditioning set's width from it. `shared_encoder=True` is refused
+  for a term of a difference.
+- With shifted windows, a categorical stream estimated alone in a difference
+  quantity is laid out on the channel axis as it is inside the joint term, so
+  both terms read it the same way.
+
 - `SharedLatentGaussian` is replaced by `LatentGaussian`, the general
   linear-Gaussian latent model: latent dynamics `Phi` that can couple
   components, an innovation covariance `Q`, a readout matrix per process and
@@ -107,7 +127,21 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   history window. `Model(cnn_pooling='mean')` restores the average. Results of
   CNN encoders change, and the CNN's last layers grow with the window length.
 
+### Removed
+
+- `embedding_model='dual_branch'` and `Model(branch_model=...)`. A joint X whose
+  parts have different window lengths (`Conditional(align='dual_branch')`,
+  `mi_rate`, `instantaneous_exchange`, `directed_information_rate`) is branched
+  like every other, with `embedding_model` as each branch, and these quantities
+  no longer require a particular model. `DualBranchEmbedding` is now
+  `BranchedEmbedding`.
+
 ### Fixed
+
+- `estimator='ksg'` in conditional MI and interaction information with
+  windowing through `Processing`: the joint term's conditioning set is now
+  named by the quantity, where KSG used to look for it in data it does not see
+  on that path. KSG also takes the pair of `Conditional(align='dual_branch')`.
 
 - The documentation of the block-MI offset and of `mi_rate`'s two windows. The
   offset $b$ of $I_w = \bar{I}w + b$ is $E_X + E_Y - E_{XY}$ in excess

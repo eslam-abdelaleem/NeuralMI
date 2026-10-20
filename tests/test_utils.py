@@ -123,49 +123,20 @@ def test_build_critic_lru():
     assert out.shape == (3, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
 
 
-def test_build_critic_dual_branch_default_branch_model():
-    """embedding_model='dual_branch' with no branch_model defaults to GRU
-    branches, no custom_embedding_cls needed."""
-    from neural_mi.models.embeddings import DualBranchEmbedding, GRU
-    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'dual_branch',
-              'n_channels_x': (3, 2), 'input_dim_x': (3 * 7, 2 * 4)}     # as task.py sets them
-    critic = build_critic('separable', params)
-    assert isinstance(critic.embedding_net_x, DualBranchEmbedding)
-    assert isinstance(critic.embedding_net_x.branch_a, GRU)
-    assert isinstance(critic.embedding_net_x.branch_c, GRU)
-    a_batch, c_batch = torch.randn(3, 3, 7), torch.randn(3, 2, 4)
-    out = critic.embedding_net_x((a_batch, c_batch))
-    assert out.shape == (3, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
-
-
-def test_build_critic_dual_branch_custom_branch_model():
-    """branch_model picks which built-in class each branch uses."""
-    from neural_mi.models.embeddings import LSTM
-    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'dual_branch',
-              'branch_model': 'lstm', 'n_channels_x': (3, 2), 'input_dim_x': (3 * 7, 2 * 4)}
-    critic = build_critic('separable', params)
-    assert isinstance(critic.embedding_net_x.branch_a, LSTM)
-    assert isinstance(critic.embedding_net_x.branch_c, LSTM)
-
-
-def test_build_critic_dual_branch_unknown_branch_model_raises():
-    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'dual_branch',
-              'branch_model': 'not_a_real_model', 'n_channels_x': (3, 2)}
-    with pytest.raises(ValueError, match="branch_model"):
-        build_critic('separable', params)
-
-
-def test_build_critic_dual_branch_custom_embedding_cls_still_works():
-    """custom_embedding_cls=DualBranchEmbedding, with embedding_model set
-        purely as a shape hint, works: custom_embedding_cls always takes priority
-        over model_type.
-    """
-    from neural_mi.models.embeddings import DualBranchEmbedding, GRU
-    params = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'gru',
-              'n_channels_x': (3, 2), 'input_dim_x': (3 * 7, 2 * 4)}
-    critic = build_critic('separable', params, custom_embedding_cls=DualBranchEmbedding)
-    assert isinstance(critic.embedding_net_x, DualBranchEmbedding)
-    assert isinstance(critic.embedding_net_x.branch_a, GRU)
+def test_build_critic_branches_a_difference_term_with_the_x_encoder():
+    """A term of a difference gets one branch per part of X, of the call's X encoder class: two for a joint X that
+    arrives as a pair, or as one tensor split at its conditioning block, and one otherwise."""
+    from neural_mi.models.embeddings import BranchedEmbedding, LSTM
+    base = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'lstm', '_difference_term': True}
+    pair = build_critic('separable', {**base, 'n_channels_x': (3, 2), 'input_dim_x': (3 * 7, 2 * 4)})
+    split = build_critic('separable', {**base, 'n_channels_x': 5, 'input_dim_x': 5 * 7, '_condition': ('last', 2)})
+    alone = build_critic('separable', {**base, 'n_channels_x': 2, 'input_dim_x': 2 * 7})
+    for critic, n in ((pair, 2), (split, 2), (alone, 1)):
+        net = critic.embedding_net_x
+        assert isinstance(net, BranchedEmbedding) and len(net.branches) == n
+        assert all(isinstance(b, LSTM) for b in net.branches)
+    assert pair.embedding_net_x((torch.randn(3, 3, 7), torch.randn(3, 2, 4))).shape == (3, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
+    assert split.embedding_net_x(torch.randn(3, 5, 7)).shape == (3, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
 
 
 def test_build_critic_unknown_embedding_model_lists_options():

@@ -83,7 +83,7 @@ def as_config(value: Union[None, "T", Dict[str, Any]], cls: Type[T]) -> Optional
 @dataclass
 class Model:
     """Model architecture: embedding network + critic."""
-    embedding_model: Optional[str] = None          # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'|'deepsets'
+    embedding_model: Optional[str] = None          # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'deepsets'
     embedding_dim: Optional[int] = None
     hidden_dim: Optional[Union[int, List[int]]] = None
     n_layers: Optional[int] = None
@@ -102,7 +102,6 @@ class Model:
     cnn_pooling: Optional[str] = None              # CNN: 'flatten' (every position) | 'mean'
     bidirectional: Optional[bool] = None           # RNN
     nhead: Optional[int] = None                    # Transformer
-    branch_model: Optional[str] = None             # embedding_model='dual_branch' only: each branch's own architecture, defaults to 'gru'
     dropout: Optional[float] = None
     norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
@@ -358,9 +357,8 @@ class Conditional:
     ``align='dual_branch'`` is for the case where W genuinely differs from
     X in window length (MI rate, instantaneous exchange, directed
     information rate, see ``THEORY.md``), beyond the small trim tolerance
-    the default path applies. It routes W into a
-    ``DualBranchEmbedding``-based ``custom_embedding_cls`` (set separately
-    via ``Model(...)``) instead of concatenating X and W at the data level.
+    the default path applies. X and W then reach the joint term as a pair,
+    each at its own window length, instead of joined along the channels.
     Leave unset (``None``) unless you know you need it.
     """
     w_data: Optional[Any] = None

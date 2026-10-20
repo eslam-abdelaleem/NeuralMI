@@ -12,7 +12,8 @@ every setting.
 - [The reported number](#the-reported-number):
   [finite-sampling bias](#finite-sampling-bias), [correcting it](#correcting-it),
   [the spread over repeats](#the-spread-over-repeats),
-  [the permutation null](#the-permutation-null), [amplification](#amplification)
+  [the permutation null](#the-permutation-null), [amplification](#amplification),
+  [the encoder of a difference](#the-encoder-of-a-difference)
 - [Quantities and units](#quantities-and-units):
   [what the number is per](#what-the-number-is-per), [rates](#getting-a-rate),
   [silent windows](#silent-windows),
@@ -436,6 +437,45 @@ therefore belongs beside any small value. The factor says how fragile the
 arithmetic is. Whether the result is distinguishable from zero is settled by the
 spread over repeats or by a permutation test.
 
+### The encoder of a difference
+
+Only the errors the two terms make the same way cancel in the subtraction. Both
+terms must learn what the conditioning set $C$ says about $Y$, and the joint term
+must also learn what the rest of X, $A$, adds. Every term of a difference
+therefore encodes X with one branch per part of X under one small MLP head
+(`BranchedEmbedding`): branches for $A$ and $C$ in the joint term, a branch for
+$C$ alone in the conditioning term, each branch the call's encoder. $C$ takes the
+same path, branch then head, in both terms. Each term keeps its own weights,
+training and epoch, read from its own held-out curve. The terms share their
+architecture and their rows. Sharing the encoder of $C$ between the terms or
+training them on one loss did not improve on this in a pilot
+([ROADMAP](https://github.com/eslam-abdelaleem/NeuralMI/blob/main/ROADMAP.md)).
+
+Two simpler forms do worse.
+
+- **One encoder over all of X** mixes $C$ with $A$ from the first layer. The joint
+  term learns $C$'s part differently from the conditioning term and trains longer
+  before it is read, and by then $A$'s inputs have fitted noise in the training
+  rows. In transfer entropy on linear-Gaussian data, with 64 source neurons over
+  10 bins of history and $2\times10^5$ samples, the transfer read from sources
+  shifted in time, where it is zero, was 12.0 and 12.8 millibits for two targets
+  with one encoder and 0.2 and 0.9 with branches. The second target's true
+  transfer, 4.7 millibits, could not be told from the shifted sources with one
+  encoder.
+- **Branches in the joint term only**, with a bare encoder in the conditioning
+  term, leave $C$'s path one head deeper in the joint term. With $W$ a copy of
+  X, where the two terms are equal, one-layer encoders on a small spike data set
+  read $I(X,W;Y)$ at 0.41 to 0.46 bits against $I(W;Y)$ at 0.07. With the head in
+  both terms they read 0.23 to 0.27 against 0.16 to 0.21.
+
+In conditional MI on independent rows (10 channels each for X, Y and W, exact
+26 millibits, $2\times10^4$ rows, 10 recordings), branches read 25.8 ± 3.1
+millibits on average, and −1.3 ± 3.3 with X shuffled, where one encoder read
+34.7 ± 3.7 and 7.2 ± 3.8. The aligned transfer from 64 sources still read high
+with branches, 36.9 against 30.9 millibits, as it did with one encoder: an MLP
+over all 640 source inputs fits the training rows. Reading every lag with one
+small readout brought it to 32.1 in a pilot.
+
 ---
 
 ## Quantities and units
@@ -685,9 +725,9 @@ and leaves the decomposition to check the result.
 
 The MI rate, instantaneous exchange and the directed information rate have $A$
 and $C$ groups of different lengths. Concatenating them would mean zero-padding
-the shorter one and leaving the network to learn to ignore the padding. They
-embed the two groups in separate branches of one network
-(`Model(embedding_model='dual_branch')`) and fuse the results.
+the shorter one and leaving the network to learn to ignore the padding. The two
+groups reach the joint term as a pair, each read on its own branch
+([the encoder of a difference](#the-encoder-of-a-difference)).
 
 #### Identities the catalogue satisfies
 

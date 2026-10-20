@@ -71,7 +71,7 @@ class TestMiRateSweepsEitherWindow:
     @staticmethod
     def _cfg():
         from neural_mi import Model, Training
-        return dict(model=Model(embedding_model='dual_branch', embedding_dim=4,
+        return dict(model=Model(embedding_dim=4,
                                 hidden_dim=16, n_layers=1),
                     training=Training(n_epochs=1), n_workers=1, show_progress=False)
 

@@ -67,7 +67,7 @@ def _rng_of(trainer):
 
 def _batch_size_of(x) -> int:
     """Leading (sample) dim of x, whether x is a plain tensor or a tuple
-    (DualBranchEmbedding's compound "X-role" data, mode='conditional'
+    (BranchedEmbedding's compound "X-role" data, mode='conditional'
     (align='dual_branch')) sharing that dimension."""
     return (x[0] if isinstance(x, tuple) else x).shape[0]
 

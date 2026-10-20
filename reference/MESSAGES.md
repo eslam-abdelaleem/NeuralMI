@@ -461,8 +461,8 @@ Only `conditional`, `interaction` and `transfer` read a third variable.
 Each listed setting applies only with an encoder, critic or switch that this
 call does not use and that the message names. `kernel_size` applies to `'cnn'`,
 `'cnn2d'` and `'tcn'`, `bidirectional` to `'gru'` and `'lstm'`, `nhead` to
-`'transformer'`, `pytorch_predefined` and `pretrained` to
-`'pretrained_backbone'`, and `branch_model` to `'dual_branch'`. The head
+`'transformer'`, and `pytorch_predefined` and `pretrained` to
+`'pretrained_backbone'`. The head
 settings apply to `critic_type='hybrid'`, `beta` to `use_variational=True`, and
 the decoder settings to `use_decoder=True`. With `custom_critic` the critic is
 used as given. Every other `Model` setting is ignored. Of the `Output` settings,

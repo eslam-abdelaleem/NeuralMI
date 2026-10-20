@@ -110,7 +110,7 @@ The networks that embed X and Y and score their pairing.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `embedding_model` | `'mlp'` | The encoder: `'mlp'`, `'cnn'`, `'cnn2d'`, `'gru'`, `'lstm'`, `'lru'`, `'tcn'`, `'transformer'`, `'deepsets'`, `'pretrained_backbone'` or `'dual_branch'`. |
+| `embedding_model` | `'mlp'` | The encoder: `'mlp'`, `'cnn'`, `'cnn2d'`, `'gru'`, `'lstm'`, `'lru'`, `'tcn'`, `'transformer'`, `'deepsets'` or `'pretrained_backbone'`. In a difference quantity it encodes each part of X on a branch of its own ([USING.md](USING.md#the-encoder-of-a-difference)). |
 | `embedding_dim` | `64` | Size of each embedding. `mode='dimensionality'` sets it from [`Dimensionality`](#dimensionality) and ignores this value. |
 | `hidden_dim` | `64` | Hidden width. A list such as `[256, 1024, 256]` sets each layer and overrides `n_layers` (MLP, CNN, CNN2D and TCN). |
 | `n_layers` | `2` | Encoder depth. For the MLP, 0 gives a linear encoder (the input mapped straight to the embedding); the other encoders need at least one layer. |
@@ -125,7 +125,6 @@ The networks that embed X and Y and score their pairing.
 | `cnn_pooling` | `'flatten'` | How the CNN encoder reads its convolutions: at every position of the window (`'flatten'`), which keeps where a pattern occurs, as a lag or a history window needs, or averaged over the window (`'mean'`), which ignores where it occurs. |
 | `bidirectional` | `False` | Bidirectional GRU or LSTM. |
 | `nhead` | `4` | Attention heads of the transformer encoder. |
-| `branch_model` | `'gru'` | Each branch's encoder under `embedding_model='dual_branch'`. |
 | `dropout` | `0.0` | Dropout after each hidden layer (MLP) or inside each block (LRU). |
 | `norm_layer` | `'auto'` | Normalisation in the MLP encoder: `'layer'`, `'batch'` or `'none'`. `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries. |
 | `use_spectral_norm` | `True` | Spectral normalisation of the MLP's hidden layers. |
@@ -133,7 +132,7 @@ The networks that embed X and Y and score their pairing.
 | `shared_encoder` | `False` | One encoder for X and Y. `mode='dimensionality'` without `y_data` uses `True` when unset. |
 | `max_n_batches` | `512` | Most samples an encoder embeds at once, to bound memory. A custom decision head or a variational concat critic also scores at most this many pairs at once. |
 | `custom_critic` | `None` | A `torch.nn.Module` used as the whole critic; the architecture settings above are then ignored. |
-| `custom_embedding_cls` | `None` | An encoder class to use in place of `embedding_model`. |
+| `custom_embedding_cls` | `None` | An encoder class to use in place of `embedding_model`, as each branch in a difference quantity. |
 | `custom_embedding_cls_y` | X's | Y's encoder class. |
 | `pytorch_predefined` | `None` | A torchvision model name, such as `'resnet18'`, for `embedding_model='pretrained_backbone'`. |
 | `pretrained` | `False` | Load that backbone's ImageNet weights. |
@@ -279,7 +278,7 @@ For `mode='conditional'`.
 | Parameter | Default | Meaning |
 |--|--|----|
 | `w_data` | required | The conditioning variable $W$ in $I(X;Y \mid W)$. |
-| `align` | `None` | `'dual_branch'` embeds W apart from X, for a W whose window length differs from X's. |
+| `align` | `None` | `'dual_branch'` passes X and W to the joint term as a pair, for a W whose window length differs from X's. |
 | `rigorous` | `False` | Extrapolate each repeat to infinite data. |
 | `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
 

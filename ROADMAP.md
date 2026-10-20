@@ -118,48 +118,32 @@ so need a major version. It is for later, after items 1 to 3.
 
 ## Estimation
 
-### Train the terms of a difference together
+### Train the terms of a difference together (considered, not planned)
 
-**Now.** A difference quantity (`mode='conditional'`, `'transfer'`,
-`'interaction'` and the named quantities built on them) trains one network per
-term and subtracts their estimates. The terms share their rows and their
-settings and nothing else, although they share most of what they have to
-learn. In transfer entropy both terms must learn what the target's own past
-says about its present, and the difference asks only what the source adds. Each
-network makes its own errors on that shared part, and the subtraction adds them
-where it should cancel them. The amplification factor
-$(t_1 + t_2)/(t_1 - t_2)$ is the worst case of exactly this. When the joint
-network learns the shared part less well than the conditioning network does,
-the difference comes out negative.
+**Idea.** One model per difference, the conditioning set's pathway shared by
+the terms, one training on the sum of their losses, and both terms read at one
+epoch, so that errors in the shared pathway enter both terms alike.
 
-**Proposal.** One model per difference, with a pathway shared by the terms and
-a pathway for what only the joint term sees. For transfer entropy, a pathway
-$f_T$ for the target's past and a pathway $f_S$ for the source's past: the
-conditioning term scores from $f_T$, the joint term from $f_T$ and $f_S$, one
-training minimises the sum of the two losses, and both terms are read at one
-epoch on the same rows. Errors in $f_T$ then enter both terms alike and largely
-cancel in the difference. Conditional and interaction information have the same
-structure, with the conditioning set in place of the target's past. Every
-quantity measured between two sets of variables that share a part is a
-candidate.
+**Pilot.** Transfer entropy on linear-Gaussian data, 64 source neurons over 10
+bins, $2\times10^5$ samples, one recording, each term reported on its training
+rows as the library reports it. With each term read at the peak of its own
+held-out curve, sharing the target's-past encoder between the terms gave the
+values of training them apart: 0.6 and 0.4 millibits from time-shifted sources
+against -0.3 and -0.1, and aligned values within 0.4 millibits. Reading both
+terms at one epoch raised the shifted-source values to 1.2 to 2.2 millibits: on
+a shifted source the joint term peaks within 10 epochs and the conditioning
+term after 20 to 40. Sharing every weight changed nothing further.
 
-**Open questions.** Whether sharing biases the conditioning term, whose pathway
-is shaped by both objectives. Which held-out curve chooses the epoch: the joint
-term's, the difference's, or each term's own from shared checkpoints. How
-permutation tests and `rigorous=True` carry over.
+**Why not.** The branched encoder (`BranchedEmbedding`) already gives the
+conditioning set the same architecture in every term, and that is what made
+the errors cancel. Sharing weights would add a summed loss with a weight
+between the terms, tie the terms to one training loop, and narrow what the
+conditioning set's encoder can learn for the joint term, which matters where
+the conditioning set acts only together with the rest. A loss on the difference
+itself is not a bound and reads high by construction.
 
-**Evidence so far.** In a pilot on linear-Gaussian data, an encoder that gives
-the target's past its own path and reads the sources the same way at every lag
-cut the transfer reported from time-shifted sources from about 15 to about 3
-millibits, for 64 source neurons over 10 bins and $2\times10^5$ samples. Sharing
-the target's pathway between the two terms is the next step of the same idea.
-
-**Public interface.** A new option on `Conditional`, `Transfer` and
-`Interaction`, off by default until it is validated.
-
-**Verification.** Exact linear-Gaussian cases with known conditional
-information, comparing paired and separate training on bias, spread across
-recordings and the null from shifted sources.
+**Revisit if** the two terms' encoders of a large conditioning set are seen to
+learn it differently.
 
 ## Smaller items
 

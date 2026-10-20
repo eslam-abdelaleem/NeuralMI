@@ -885,10 +885,10 @@ def try_build_shift_windows_dataset_tuple(x_data, y_data, params: dict,
         pack = lambda w: ((w['x'], w['second']), w['y'])
     elif pack_kind == SHIFT_PACK_CONCAT:
         pack = lambda w: (_concat_x_and_second(w), w['y'])
-    elif pack_kind == SHIFT_PACK_SECOND:
-        pack = lambda w: (w['second'], w['y'])
+    elif pack_kind == SHIFT_PACK_SECOND:          # laid out as in the joint leg, for the same network
+        pack = lambda w: (_lay_out(w['second'], _spec_second), w['y'])
     elif pack_kind == SHIFT_PACK_FIRST:
-        pack = lambda w: (w['x'], w['y'])
+        pack = lambda w: (_lay_out(w['x'], _spec_x), w['y'])
     else:
         raise ValueError(f"Unknown _shift_pack {pack_kind!r}.")
 
