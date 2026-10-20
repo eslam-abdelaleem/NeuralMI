@@ -181,8 +181,8 @@ class Split:
 
 @dataclass
 class Estimator:
-    """MI lower-bound estimator selection."""
-    name: Optional[str] = None                     # 'infonce'|'smile'
+    """MI estimator selection: a critic's lower bound, or KSG, which trains nothing."""
+    name: Optional[str] = None                     # 'infonce'|'smile'|'ksg'
     params: Optional[Dict[str, Any]] = None
 
     def to_base_params(self) -> Dict[str, Any]:

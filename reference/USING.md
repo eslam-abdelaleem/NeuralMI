@@ -1062,11 +1062,13 @@ shape `(n_valid, n_channels, n_offsets)`. Without a `C` group, the pair goes to
 The critic scores every pairing of a batch. The estimator turns the score matrix
 into a bound on the MI
 ([THEORY.md](THEORY.md#estimating-mutual-information-with-a-critic)).
+`'ksg'` trains no critic and estimates from nearest neighbours instead.
 
 | `Estimator(name=...)` | bias and variance | ceiling |
 |---|---|---|
 | `'infonce'` (default) | low variance, biased low near its ceiling | $\log N$ nats, $N$ the number of samples evaluated |
 | `'smile'` | lower bias, higher variance | none |
+| `'ksg'` | no training; reads low at large MI and in many dimensions | none |
 
 InfoNCE cannot report more than the log of the number of samples it is evaluated
 on. On the held-out side `eval_size` rows, drawn once and scored at every
@@ -1089,6 +1091,25 @@ InfoNCE trained on every one of those draws. InfoNCE's read-out is bounded by
 construction where SMILE's clipped density ratio is bounded in variance only.
 `Estimator(name='smile', params={'clip': 5.0})` sets the clip. A lower clip
 lowers the variance and raises the bias.
+
+`estimator='ksg'` is the Kraskov-Stögbauer-Grassberger estimator
+([THEORY.md](THEORY.md#estimating-mutual-information-from-neighbours-ksg)). It
+trains no network and estimates on every row, so the `Model`, `Training` and
+`Split` settings have no effect, and a call that sets any of them warns. It runs
+in every mode except `'dimensionality'` and `'precision'`, which read the
+embeddings of a trained critic. Conditional MI, transfer entropy, interaction
+information and the named quantities built on them use its conditional form on
+the same rows. `Estimator(name='ksg', params=...)` takes `k`, the neighbour count
+(default 4), `gaussianize` (default True), which maps each column through its
+ranks to a standard normal first, and `exclude` (default `'auto'`), the
+separation in rows below which two rows are never neighbours, `'auto'` for the
+autocorrelation time of the rows. `runs` reports the value as `train_mi`.
+Repeats on the same rows return the same value, and `mode='rigorous'` gives the
+spread and corrects the bias. The neighbour search uses a k-d tree up to 20
+dimensions and compares every pair of rows beyond that, at a cost that grows
+with the square of the rows: 5000 rows of 1000 dimensions took about 15 s on a
+laptop CPU. `neural_mi.estimators.ksg_mi(x, y)` and `ksg_cmi(x, y, z)` take
+arrays directly and return nats.
 
 ### Encoders
 

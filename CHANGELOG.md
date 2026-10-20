@@ -10,6 +10,18 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `estimator='ksg'`, the Kraskov-Stögbauer-Grassberger estimator, which trains
+  no network. Conditional MI, transfer entropy, interaction information and the
+  quantities built on them use its conditional form (Frenzel and Pompe) on the
+  same rows, so their result is one conditional estimate. Each column is first
+  mapped through its ranks to a standard normal (Holmes and Nemenman), and rows
+  closer in time than their autocorrelation time are never counted as
+  neighbours. It runs in every mode except `'dimensionality'` and
+  `'precision'`, and a call that sets `Model`, `Training` or `Split` settings
+  warns that they have no effect. `neural_mi.estimators.ksg_mi` and `ksg_cmi`
+  take arrays directly. Tutorial 01 and the README figures use it, and the
+  `tutorials` extra no longer installs `benchmark-mi`.
+
 - `Training(train_subset_size='full')` evaluates the reported estimate on every
   training row. A train-side evaluation larger than `max_eval_samples` (from
   `train_subset_size` or `eval_train`) now runs in blocks of at most

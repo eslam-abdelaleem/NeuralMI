@@ -8,6 +8,7 @@ every setting.
 
 - [Estimating mutual information with a critic](#estimating-mutual-information-with-a-critic):
   [InfoNCE](#infonce), [SMILE](#smile)
+- [Estimating mutual information from neighbours (KSG)](#estimating-mutual-information-from-neighbours-ksg)
 - [The reported number](#the-reported-number):
   [finite-sampling bias](#finite-sampling-bias), [correcting it](#correcting-it),
   [the spread over repeats](#the-spread-over-repeats),
@@ -107,6 +108,101 @@ compared with the log of the evaluation size.
 - Jiaming Song and Stefano Ermon. Understanding the limitations of variational mutual information estimators. *International Conference on Learning Representations*, 2020. [arxiv.org/abs/1910.06222](https://arxiv.org/abs/1910.06222)
 - Mohamed Ishmael Belghazi, Aristide Baratin, Sai Rajeshwar, Sherjil Ozair, Yoshua Bengio, Aaron Courville and R Devon Hjelm. Mutual information neural estimation. *Proceedings of the 35th International Conference on Machine Learning*, PMLR 80, 2018. [proceedings.mlr.press/v80/belghazi18a](https://proceedings.mlr.press/v80/belghazi18a.html)
 - Eslam Abdelaleem, K. Michael Martini and Ilya Nemenman. Accurate estimation of mutual information in high dimensional data. arXiv:2506.00330, 2025. [arxiv.org/abs/2506.00330](https://arxiv.org/abs/2506.00330)
+:::
+
+---
+
+## Estimating mutual information from neighbours (KSG)
+
+`estimator='ksg'` trains no critic. The Kraskov-Stögbauer-Grassberger estimator
+reads the information from the distances between rows. For each row $i$ it finds
+the distance $\epsilon_i$ to its $k$-th nearest neighbour in the joint space of
+$X$ and $Y$ under the max norm, and counts the rows strictly closer than
+$\epsilon_i$ in each marginal space, $n_x(i)$ and $n_y(i)$:
+
+$$
+\hat I(X;Y) = \psi(k) + \psi(N) - \left\langle \psi(n_x + 1) + \psi(n_y + 1) \right\rangle,
+$$
+
+with $\psi$ the digamma function and $\langle\cdot\rangle$ the mean over rows.
+The joint neighbour sets one length scale for all three density estimates, so
+most of their biases cancel. KSG is accurate in a few dimensions. It reads low
+when the information is large or the dimension high, because the $k$-th
+neighbour is then far away and the counts are no longer local. A small `k` is
+noisier and a large one less local. The implementation was checked against
+`bmi` (Czyż et al., 2023), JIDT (Lizier, 2014) and scikit-learn's
+`mutual_info_regression`, whose value it returns with `gaussianize=False` and
+`exclude=0`.
+
+### The conditional form
+
+Frenzel and Pompe (2007) estimate $I(X;Y \mid Z)$ from one neighbour search in
+the space of all three variables,
+
+$$
+\hat I(X;Y \mid Z) = \psi(k) - \left\langle \psi(n_{xz} + 1) + \psi(n_{yz} + 1) - \psi(n_z + 1) \right\rangle,
+$$
+
+so the terms share one length scale and their biases cancel inside the
+estimate. Conditional MI, transfer entropy and the quantities built on them use
+it: the joint term is $\hat I(Z;Y) + \hat I(X;Y \mid Z)$ and the conditioning
+term is $\hat I(Z;Y)$ on the same rows, so their difference is the conditional
+estimate itself and the [amplification](#amplification) of separately trained
+terms does not apply. Interaction information becomes
+$\hat I(W;Y \mid X) - \hat I(W;Y)$, a difference of two estimates.
+
+### Preparing the rows
+
+Each column is scaled to unit variance and given tie-breaking noise of $10^{-8}$
+standard deviations from a seeded generator, so a seeded call is reproducible.
+With `gaussianize=True`, the default, each column is then replaced by the
+standard normal quantile of its rank (Holmes and Nemenman, 2019). A monotone
+change of one column then leaves the estimate unchanged, as it leaves the
+information, and KSG is less biased on the Gaussian marginals that result than
+on skewed or heavy-tailed ones.
+
+### Rows of a time series
+
+Rows close in time resemble each other. A row's nearest neighbours can then be
+its own neighbours in time, and their resemblance reads as dependence between
+$X$ and $Y$. Rows fewer than `exclude` steps apart are never counted as
+neighbours (Theiler, 1986), and $\psi(N)$ becomes the mean of $\psi(M_i + 1)$,
+with $M_i$ the number of rows row $i$ may count. `exclude='auto'` takes the
+autocorrelation time of the rows: the first lag at which the correlation of
+each column with itself that many rows later, averaged over the columns, falls
+below $1/e$, minus one. Independent rows give 0. The rule assumes the rows are
+in time order. For two independent first-order autoregressive series with
+coefficient 0.98 and 5000 rows, the estimate without the window was 0.085 nats
+and with it -0.009 nats. A recording that spans few autocorrelation times holds
+few independent rows, and the estimate is noisy whichever the window.
+
+### Spread and bias
+
+KSG is deterministic on a given set of rows, so repeats of one call return the
+same value. `mode='rigorous'` estimates on $\gamma$ disjoint subsets of the rows
+and extrapolates in $1/N$, which gives both the spread and the bias correction,
+as Holmes and Nemenman (2019) do for KSG. The permutation test works as for the
+critic estimators.
+
+:::{admonition} Choosing
+:class: tip
+
+KSG suits variables of up to about ten dimensions, where it also checks the
+critic estimators. In tens or hundreds of dimensions its bias dominates, and a
+critic, which first learns a low-dimensional embedding, is the better choice.
+Tutorial 01 shows both on 500 channels that carry 10 shared dimensions.
+:::
+
+:::{admonition} References
+:class: note
+
+- Alexander Kraskov, Harald Stögbauer and Peter Grassberger. Estimating mutual information. *Physical Review E* 69, 066138, 2004. [doi.org/10.1103/PhysRevE.69.066138](https://doi.org/10.1103/PhysRevE.69.066138)
+- Stefan Frenzel and Bernd Pompe. Partial mutual information for coupling analysis of multivariate time series. *Physical Review Letters* 99, 204101, 2007. [doi.org/10.1103/PhysRevLett.99.204101](https://doi.org/10.1103/PhysRevLett.99.204101)
+- Caroline M. Holmes and Ilya Nemenman. Estimation of mutual information for real-valued data with error bars and controlled bias. *Physical Review E* 100, 022404, 2019. [arxiv.org/abs/1903.09280](https://arxiv.org/abs/1903.09280)
+- James Theiler. Spurious dimension from correlation algorithms applied to limited time-series data. *Physical Review A* 34, 2427, 1986. [doi.org/10.1103/PhysRevA.34.2427](https://doi.org/10.1103/PhysRevA.34.2427)
+- Shuyang Gao, Greg Ver Steeg and Aram Galstyan. Efficient estimation of mutual information for strongly dependent variables. *Proceedings of the 18th International Conference on Artificial Intelligence and Statistics*, PMLR 38:277-286, 2015. [proceedings.mlr.press/v38/gao15](https://proceedings.mlr.press/v38/gao15.html)
+- Paweł Czyż, Frederic Grabowski, Julia E. Vogt, Niko Beerenwinkel and Alexander Marx. Beyond normal: on the evaluation of mutual information estimators. *Advances in Neural Information Processing Systems* 36, 2023. [arxiv.org/abs/2306.11078](https://arxiv.org/abs/2306.11078)
+- Joseph T. Lizier. JIDT: an information-theoretic toolkit for studying the dynamics of complex systems. *Frontiers in Robotics and AI* 1:11, 2014. [doi.org/10.3389/frobt.2014.00011](https://doi.org/10.3389/frobt.2014.00011)
 :::
 
 ---

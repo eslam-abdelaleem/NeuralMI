@@ -16,6 +16,7 @@ from neural_mi.analysis.task import run_training_task
 from neural_mi.exceptions import CombinationWarning
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.device import with_device
+from neural_mi.estimators import NONPARAMETRIC_CONDITIONAL
 from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import mi_report_units
@@ -322,8 +323,24 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
     factor. ``signed`` marks a quantity whose negative values are meaningful,
     such as interaction information. Any other quantity is reported as 0 when
     it comes out negative, with the measured value kept under ``raw_key``.
+
+    A nonparametric estimator with a conditional form builds the joint term from
+    the conditioning term and the conditional estimate on the same rows, so the
+    terms do not err separately: only a negative value is reported.
     """
     _scale, _units = mi_report_units(base_params)
+    name = base_params.get('estimator_name')
+    if name in NONPARAMETRIC_CONDITIONAL:
+        if result < 0 and not signed:
+            warnings.warn(
+                f"{quantity_name} estimate is negative ({result * _scale:.4f} {_units}). The "
+                f"quantity cannot be negative. It is reported as 0 {_units} and the measured value "
+                f"is kept as {raw_key} in result.runs. With estimator='{name}' it is a single "
+                f"conditional estimate, and a negative one is a value near zero read with the "
+                f"estimator's bias and spread.",
+                CombinationWarning, stacklevel=user_stacklevel(),
+            )
+        return
     j_label, j_value, _ = joint
     terms = [joint, *marginals]
     keys = ', '.join(f"'{key}'" for _, _, key in terms)
@@ -408,6 +425,28 @@ def combined_spread(value_lists, signs) -> Optional[float]:
     return float(np.std(combined, ddof=1))
 
 
+def _condition_block(joint, marginal) -> tuple:
+    """Where the marginal term's channels sit among the joint term's, ``('first' | 'last', count)``.
+
+    A nonparametric conditional estimate splits the joint term's X into the
+    conditioning set and the rest. Every difference quantity builds its joint X
+    by joining the marginal's channels before or after the others.
+    """
+    n = len(marginal) if isinstance(marginal, list) else marginal.shape[1]
+    if isinstance(joint, list):
+        same = lambda part: all(a is b for a, b in zip(part, marginal))
+        first, last = joint[:n], joint[-n:]
+    else:
+        same = lambda part: np.array_equal(np.asarray(part), np.asarray(marginal))
+        first, last = joint[:, :n], joint[:, -n:]
+    if same(last):
+        return 'last', n
+    if same(first):
+        return 'first', n
+    raise ValueError("The marginal term's channels are not a block at either end of the joint term's channels, "
+                     "so the conditional estimate cannot tell the conditioning set apart.")
+
+
 def _joint_marginal_difference(
     joint_x, joint_y, marginal_x, marginal_y,
     base_params: Dict[str, Any], sweep_grid: Optional[Dict[str, Any]], n_workers: int,
@@ -476,8 +515,10 @@ def _joint_marginal_difference(
         spread of the difference.
     """
     logger.info(f"{quantity_name}: estimating I({joint_label})...")
-    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y,
-                                 base_params=with_model_labels(base_params, component=joint_key).copy())
+    joint_params = with_model_labels(base_params, component=joint_key)
+    if base_params.get('estimator_name') in NONPARAMETRIC_CONDITIONAL:
+        joint_params = {**joint_params, '_condition': _condition_block(joint_x, marginal_x)}
+    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
     results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")

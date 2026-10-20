@@ -195,13 +195,13 @@ How samples are divided into training and test sets.
 
 ## `Estimator`
 
-The bound the critic is trained on. A bare name, `estimator='smile'`, is accepted
-too.
+The bound the critic is trained on, or KSG, which trains no critic. A bare name,
+`estimator='smile'`, is accepted too.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `name` | `'infonce'` | `'infonce'` (low variance, capped at the log of the evaluation sample count) or `'smile'` (lower bias, higher variance). |
-| `params` | `{}` | Extra arguments for the bound. SMILE takes `clip`, default 5.0. |
+| `name` | `'infonce'` | `'infonce'` (low variance, capped at the log of the evaluation sample count), `'smile'` (lower bias, higher variance) or `'ksg'` (nearest neighbours, no training; see [USING.md](USING.md#estimators)). |
+| `params` | `{}` | Extra arguments for the estimator. SMILE takes `clip`, default 5.0. KSG takes `k` (4), `gaussianize` (True) and `exclude` (`'auto'`). |
 
 ## `Output`
 

@@ -23,6 +23,7 @@ from typing import List, Optional
 
 import torch
 
+from neural_mi.estimators import NONPARAMETRIC
 from neural_mi.logger import logger
 from neural_mi.parallel import threads_per_worker
 
@@ -50,8 +51,8 @@ def with_device(tasks: List[tuple], n_workers: int) -> List[tuple]:
 def choose_device(tasks: List[tuple], n_workers: int) -> str:
     """The device for these training tasks, run ``n_workers`` at a time."""
     gpu = accelerator()
-    if gpu is None or mp.parent_process() is not None:
-        return 'cpu'
+    if gpu is None or mp.parent_process() is not None or tasks[0][2].get('estimator_name') in NONPARAMETRIC:
+        return 'cpu'                    # no GPU, a worker, or an estimator that trains nothing
     n_parallel = max(1, min(n_workers, len(tasks)))
     threads = threads_per_worker(n_parallel) if n_parallel > 1 else None
     cpu_step, steps_per_epoch = _time(tasks[0], 'cpu', threads)

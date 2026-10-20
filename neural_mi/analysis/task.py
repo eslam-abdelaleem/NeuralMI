@@ -11,7 +11,7 @@ import numpy as np
 from typing import Dict, Any
 
 from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device, compute_cross_covariance_rotation
-from neural_mi.estimators import ESTIMATORS
+from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC, NONPARAMETRIC_CONDITIONAL
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import save_network
@@ -119,6 +119,40 @@ def _decoder_lambda(params: Dict[str, Any], axis: str) -> float:
     return 0.001 if value is None else float(value)
 
 
+def _reported(params: Dict[str, Any]) -> Dict[str, Any]:
+    """The task's settings as its result carries them, without the objects and private keys."""
+    return {k: v for k, v in params.items()
+            if k not in ('custom_critic', 'custom_embedding_cls', '_seed_key', '_keep_trained')}
+
+
+def _nonparametric(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
+    """A nonparametric estimate (``estimator_name='ksg'``) on every row of the dataset, in nats.
+
+    No network is trained, so there is no split, epoch or held-out value. The
+    joint term of a difference carries ``_condition``, where the conditioning
+    set sits among X's channels and how many channels it has. It estimates the
+    conditioning set's own MI with Y plus the conditional MI of the rest given
+    it (Frenzel and Pompe). Its marginal term estimates that same MI on the same
+    rows, so the difference of the two is the conditional estimate itself.
+    """
+    x, y = dataset.x_data, dataset.y_data
+    if isinstance(x, tuple):
+        raise ValueError(
+            f"estimator='{params['estimator_name']}' does not take the two-branch input of "
+            f"Conditional(align='dual_branch'). Leave align at its default."
+        )
+    x, y = (t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t) for t in (x, y))
+    settings = dict(params.get('estimator_params') or {}, seed=params.get('random_seed'))
+    name = params['estimator_name']
+    if params.get('_condition') is None:
+        value = NONPARAMETRIC[name](x, y, **settings)
+    else:
+        where, n = params['_condition']
+        z, rest = (x[:, -n:], x[:, :-n]) if where == 'last' else (x[:, :n], x[:, n:])
+        value = NONPARAMETRIC[name](z, y, **settings) + NONPARAMETRIC_CONDITIONAL[name](rest, y, z, **settings)
+    return {'train_mi': value, 'eval_size': len(x), 'train_eval_size': len(x)}
+
+
 def run_training_task(args: tuple) -> Dict[str, Any]:
     """A top-level function that can be pickled for multiprocessing."""
     import random as _random
@@ -210,6 +244,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 logger.debug("Temporal dataset, skipping cache (mutable via time_shift).")
         else:
             logger.debug("Dataset cache hit, reusing pre-built dataset.")
+
+    if params.get('estimator_name') in NONPARAMETRIC:
+        return {**_reported(params), **_nonparametric(dataset, params)}
 
     # Models that natively support 4-D input (N, C, H, W):
     #   'cnn2d', Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
@@ -501,12 +538,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     frozen_x = results.pop('_frozen_eval_x', None)
     frozen_y = results.pop('_frozen_eval_y', None)
 
-    return_params = params.copy()
-    return_params.pop('custom_critic', None)
-    return_params.pop('custom_embedding_cls', None)
-    return_params.pop('_seed_key', None)
-    return_params.pop('_keep_trained', None)
-    final_result = {**return_params, **results}
+    final_result = {**_reported(params), **results}
     if params.get('_keep_trained'):
         # mode='precision' evaluates this network again on corrupted copies of
         # its training rows, so it needs the trainer, the dataset and, when the

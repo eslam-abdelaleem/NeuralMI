@@ -51,7 +51,7 @@ pip install .
 # Optional parts, which combine, as in ".[viz,tutorials]":
 #   pip install ".[viz]"        # PCA, t-SNE and UMAP plots of the embeddings
 #   pip install ".[vision]"     # pretrained image networks as encoders
-#   pip install ".[tutorials]"  # JupyterLab and benchmark-mi, to run the tutorials
+#   pip install ".[tutorials]"  # JupyterLab, to run the tutorials
 #   pip install ".[docs]"       # the docs toolchain (building also needs pandoc)
 #   pip install ".[test]"       # the test suite
 

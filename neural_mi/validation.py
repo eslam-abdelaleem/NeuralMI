@@ -11,7 +11,7 @@ import torch
 import warnings
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import DataShapeError
-from neural_mi.estimators import ESTIMATORS
+from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
 def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
@@ -45,7 +45,7 @@ ALLOWED_VALUES = {
                         'pretrained_backbone', 'lru', 'dual_branch', 'deepsets'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
-    'estimator_name': list(ESTIMATORS.keys()),  # 'infonce', 'smile'
+    'estimator_name': [*ESTIMATORS, *NONPARAMETRIC],  # 'infonce', 'smile', 'ksg'
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
     'norm_layer': [None, 'auto', 'none', 'batch', 'layer'],

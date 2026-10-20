@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.device import with_device
+from neural_mi.estimators import NONPARAMETRIC
 from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.exceptions import CombinationWarning, InsufficientDataError, TrainingError
@@ -769,14 +770,16 @@ class AnalysisWorkflow:
                 # placed where a chunk's held-out partition can no longer fill a
                 # single evaluation batch, which is the point below which a
                 # per-chunk MI value stops being a measurement of anything.
-                # Move it with Training(min_reliable_samples=...).
+                # Move it with Training(min_reliable_samples=...). A nonparametric
+                # estimator holds nothing out, so the line does not apply to it.
                 min_reliable_samples = current_params.get('min_reliable_samples')
                 if min_reliable_samples is None:
                     _bs = current_params.get('batch_size', 128)
                     _train_frac = current_params.get('train_fraction', 0.9)
                     _held_out = max(1.0 - float(_train_frac), 1e-6)
                     min_reliable_samples = int(np.ceil(_bs / _held_out))
-                if min_chunk_size < min_reliable_samples:
+                if (min_chunk_size < min_reliable_samples
+                        and current_params.get('estimator_name') not in NONPARAMETRIC):
                     warnings.warn(
                         f"gamma={gamma}: the smallest data subset has {min_chunk_size} "
                         f"samples. Below about {min_reliable_samples} the held-out partition "

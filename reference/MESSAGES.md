@@ -73,7 +73,10 @@ The reading can then fall below the dimension it is meant to bound. Raise
 A quantity formed as a difference of estimates inherits their errors while being
 much smaller than either ([THEORY.md](THEORY.md#amplification)). The warnings in
 this section share the `UserWarning` subclass `nmi.CombinationWarning` so that
-`warnings.filterwarnings` can silence them as a group.
+`warnings.filterwarnings` can silence them as a group. With `estimator='ksg'`
+the terms are not separate estimates
+([THEORY.md](THEORY.md#the-conditional-form)), and only a negative estimate is
+reported.
 
 **`... has an error-amplification factor of ...x`**
 Because the result is a small residual of much larger estimates (two for a
@@ -92,7 +95,9 @@ are close and component noise flipped their order around a true value near zero.
 Without more repeats (`sweep_grid={'run_id': range(n)}`) or more data the
 quantity is not resolved at this sample size. At a low factor the gap is larger
 than noise explains because one network fell short. That network is usually the
-joint one and needs longer training or more capacity.
+joint one and needs longer training or more capacity. With `estimator='ksg'` the
+result is one conditional estimate, and a negative value is a true value near
+zero read with the estimator's bias and spread.
 
 **`... repeats produced nothing (reported as 0) and are left out of mi_mean and mi_std`**, **`... rows of dataframe hold ... of their ... repeats that produced nothing`**
 A repeat is reported as 0 when its network learned nothing that generalises or
@@ -465,7 +470,8 @@ used as given. Every other `Model` setting is ignored. Of the `Output` settings,
 `rotated_embeddings_per_epoch` needs both `track_embeddings` and
 `return_rotated_embeddings`, and `return_rotation_matrices` needs
 `return_rotated_embeddings`. `mode='dimensionality'` sets `embedding_dim`
-itself. With `train_indices` and `test_indices` the `Split` settings `mode`,
+itself. With `estimator='ksg'` nothing is trained, and every `Model`, `Training`
+and `Split` setting is listed. With `train_indices` and `test_indices` the `Split` settings `mode`,
 `train_fraction`, `n_test_blocks` and `gap_fraction` have no effect. A setting
 spelled out at its default does not count.
 

@@ -224,15 +224,32 @@ def _rotation_settings_ignored(output: Optional[Output]) -> List[str]:
 
 
 def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Optional[Training],
-                               output: Optional[Output] = None, split: Optional[Split] = None) -> None:
+                               output: Optional[Output] = None, split: Optional[Split] = None,
+                               estimator: Optional[Estimator] = None) -> None:
     """Warn about Model, Training, Output and Split settings that this call would ignore.
 
     Only values the caller set away from their default count, so a setting
     that is spelled out at its default does not warn.
     """
+    from .estimators import NONPARAMETRIC
+
     def set_away(cfg, name):
         value = getattr(cfg, name, None) if cfg is not None else None
-        return value is not None and value != BASE_PARAMS_SCHEMA.get(name, {}).get('default')
+        if value is None or not np.isscalar(value):
+            return value is not None
+        return value != BASE_PARAMS_SCHEMA.get(name, {}).get('default')
+
+    if estimator is not None and estimator.name in NONPARAMETRIC:
+        # Nothing is trained: every Model, Training and Split setting goes unread.
+        unread = sorted(f.name for cfg in (model, training, split) if cfg is not None
+                        for f in fields(cfg) if set_away(cfg, f.name))
+        if unread:
+            warnings.warn(
+                f"These settings have no effect in this call and are ignored: {', '.join(unread)} "
+                f"(estimator='{estimator.name}' trains no network and estimates on every row).",
+                UserWarning, stacklevel=user_stacklevel(),
+            )
+        return
 
     chosen = {f.name for f in fields(model) if set_away(model, f.name)} if model is not None else set()
     ignored = []
@@ -282,14 +299,14 @@ def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Opti
 
 def _check_estimator_params(estimator: Optional[Estimator]) -> None:
     """Refuse estimator parameters the chosen estimator does not take, before any work."""
-    from .estimators import ESTIMATORS
+    from .estimators import ESTIMATORS, NONPARAMETRIC
     if estimator is None or not estimator.params:
         return
     name = estimator.name or BASE_PARAMS_SCHEMA['estimator_name']['default']
-    bound = ESTIMATORS.get(name)
+    bound = ESTIMATORS.get(name) or NONPARAMETRIC.get(name)
     if bound is None:
         return  # an unknown name is refused with the other settings
-    takes = [p for p in _inspect.signature(bound).parameters if p != 'scores']
+    takes = [p for p in _inspect.signature(bound).parameters if p not in ('scores', 'x', 'y', 'seed')]
     unknown = sorted(set(estimator.params) - set(takes))
     if unknown:
         allowed = ', '.join(repr(p) for p in takes) or 'no parameters'
@@ -635,8 +652,14 @@ def run(
         estimator = Estimator(name=estimator)
     else:
         estimator = as_config(estimator, Estimator)
-    _warn_ineffective_settings(mode, model, training, output, split)
+    _warn_ineffective_settings(mode, model, training, output, split, estimator)
     _check_estimator_params(estimator)
+    from .estimators import NONPARAMETRIC
+    if estimator is not None and estimator.name in NONPARAMETRIC and mode in ('dimensionality', 'precision'):
+        raise ValueError(
+            f"mode='{mode}' reads the embeddings of a trained critic, and estimator='{estimator.name}' "
+            f"trains none. Use a critic estimator ('infonce' or 'smile') for this mode."
+        )
 
     # Named engine parameters (computed once at import, see _ENGINE_PARAMS) decide
     # each lowered key's bucket: a named engine kwarg vs the base_params dict /
