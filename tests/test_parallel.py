@@ -1,11 +1,19 @@
 # tests/test_parallel.py
-"""Tests for neural_mi/parallel.py's dispatch_tasks helper."""
-from neural_mi.parallel import dispatch_tasks
+"""Tests for neural_mi/parallel.py: dispatch_tasks and the workers of worker_pool."""
+import os
+
+import torch
+
+from neural_mi.parallel import dispatch_tasks, worker_pool
 
 
 def _square(x: int) -> int:
     """Module-level (picklable) function for the n_workers>1 spawn path."""
     return x * x
+
+
+def _threads(_) -> int:
+    return torch.get_num_threads()
 
 
 class TestDispatchTasks:
@@ -33,3 +41,18 @@ class TestDispatchTasks:
         parallel = dispatch_tasks(tasks, _square, n_workers=4, show_progress=False)
         assert parallel == sequential
         assert parallel == [x * x for x in tasks]
+
+
+class TestWorkerThreads:
+    """Workers that each started PyTorch's full thread pool would oversubscribe the cores."""
+
+    def test_each_worker_gets_its_share_of_the_cores(self, monkeypatch):
+        monkeypatch.delenv('OMP_NUM_THREADS', raising=False)
+        with worker_pool(2) as pool:
+            assert set(pool.map(_threads, range(4))) == {max(1, os.cpu_count() // 2)}
+
+    def test_threads_set_by_the_user_are_kept(self, monkeypatch):
+        monkeypatch.setenv('OMP_NUM_THREADS', '3')
+        monkeypatch.delenv('MKL_NUM_THREADS', raising=False)      # set to 1 in xdist workers (conftest.py)
+        with worker_pool(2) as pool:
+            assert set(pool.map(_threads, range(4))) == {3}

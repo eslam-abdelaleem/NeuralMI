@@ -135,27 +135,16 @@ def set_verbosity(level: Union[int, str]):
 
 
 def _worker_log_init(level: int) -> None:
-    """Pool initializer that gives a worker the parent's logging level.
+    """Give a worker process the parent's logging level.
 
     A ``spawn`` worker imports this module fresh and starts at the library's
     default level. Without this, a level the parent chose would not reach the
     workers, and a parent at INFO or ERROR would get the workers' output at
-    WARNING. Runs once per worker process.
+    WARNING. Runs once per worker process, from :func:`neural_mi.parallel.worker_pool`.
     """
     logger.setLevel(level)
     for handler in logger.handlers:
         handler.setLevel(level)
-
-
-def worker_init_args():
-    """``(initializer, initargs)`` propagating the current level to a Pool.
-
-    Returns
-    -------
-    tuple
-        Pass straight through to ``Pool(initializer=..., initargs=...)``.
-    """
-    return _worker_log_init, (logger.level,)
 
 
 def set_verbose(verbose: bool):

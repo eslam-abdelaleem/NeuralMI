@@ -8,17 +8,17 @@ import warnings
 import torch
 import itertools
 import uuid
-import torch.multiprocessing as mp
 import numpy as np
 from tqdm.auto import tqdm
 from typing import List, Dict, Any, Optional, Sequence
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.exceptions import CombinationWarning
-from neural_mi.logger import CapturedTask, logger, released, user_stacklevel, worker_init_args
+from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
+from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import mi_report_units
-from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
+from neural_mi.utils import _ensure_cpu
 from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
@@ -147,14 +147,7 @@ class ParameterSweep:
             all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sweep", disable=not show_progress or len(tasks) == 1)]
         else:
             logger.info(f"Starting parameter sweep with {effective_workers} workers...")
-            _configure_multiprocessing()
-            # Use 'spawn' start method for cross-platform safety.
-            # On macOS and Windows, 'fork' is either unavailable or unsafe with
-            # PyTorch's CUDA context. On Linux, 'spawn' is slightly slower than
-            # 'fork' but avoids deadlocks in multi-threaded environments.
-            _log_init, _log_args = worker_init_args()
-            with mp.get_context("spawn").Pool(processes=effective_workers,
-                                          initializer=_log_init, initargs=_log_args) as pool:
+            with worker_pool(effective_workers) as pool:
                 all_results = list(tqdm(
                     released(pool.imap(CapturedTask(run_training_task), tasks)), total=len(tasks),
                     desc="Sweep", unit="task", disable=not show_progress

@@ -1,20 +1,48 @@
 # neural_mi/parallel.py
-"""Shared task-dispatch helper for parallelising independent work across a pool.
+"""The worker pools the library runs work in, and a helper that dispatches tasks to one.
 
-This is the same ``mp.get_context('spawn').Pool(n_workers)`` idiom already
-used independently in ``analysis/rigorous.py`` (x2), ``analysis/dimensionality.py``'s
-``_dispatch_splits``, ``analysis/pairwise.py``'s ``_dispatch_pairs``,
-``analysis/sweep.py``'s ``ParameterSweep._run_parallel``, and ``run.py``'s
-permutation-test dispatch, factored into one place for ``neural_mi/quantities.py``
-to use instead of adding a seventh independent copy.
+Every parallel path (sweeps, rigorous ladders, permutation tests, pairwise
+channels, the terms and values of the named quantities) opens its pool with
+:func:`worker_pool`, so every worker starts the same way: with the parent's
+logging level, and with its share of the CPU threads.
 """
-import multiprocessing as mp
-from typing import Any, Callable, List
+import os
+from typing import Any, Callable, List, Optional
 
+import torch
+import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 
 from neural_mi.utils import _configure_multiprocessing
-from neural_mi.logger import CapturedTask, logger, released, worker_init_args
+from neural_mi.logger import CapturedTask, _worker_log_init, logger, released
+
+
+def threads_per_worker(n_processes: int) -> Optional[int]:
+    """CPU threads for each of ``n_processes`` workers, None to keep the threads a user set.
+
+    PyTorch gives every process a pool of threads sized to the machine. Workers
+    that each start such a pool oversubscribe the cores, and small networks then
+    train more slowly in parallel than they would with one thread each. A worker
+    therefore gets an equal share of the cores, unless ``OMP_NUM_THREADS`` is
+    set, which a spawned worker's PyTorch reads on its own.
+    """
+    if 'OMP_NUM_THREADS' in os.environ:
+        return None
+    return max(1, (os.cpu_count() or 1) // n_processes)
+
+
+def _init_worker(level: int, n_threads: Optional[int]) -> None:
+    _worker_log_init(level)
+    if n_threads is not None:
+        torch.set_num_threads(n_threads)
+
+
+def worker_pool(n_processes: int):
+    """A ``spawn`` pool of ``n_processes`` workers, each with the parent's logging level and
+    :func:`threads_per_worker` threads. Use it as a context manager."""
+    _configure_multiprocessing()
+    return mp.get_context('spawn').Pool(processes=n_processes, initializer=_init_worker,
+                                        initargs=(logger.level, threads_per_worker(n_processes)))
 
 
 def dispatch_tasks(
@@ -28,7 +56,7 @@ def dispatch_tasks(
 
     Sequential (optionally ``tqdm``-wrapped) when ``n_workers <= 1`` or there
     is only one task, since a pool has nothing to gain in either case.
-    Otherwise dispatches via a ``spawn``-context ``Pool(n_workers)``, using
+    Otherwise dispatches to a :func:`worker_pool` of ``n_workers``, using
     ``imap`` to preserve task order.
 
     Parameters
@@ -65,10 +93,7 @@ def dispatch_tasks(
         ]
 
     logger.info(f"Dispatching {n_tasks} tasks across {n_workers} workers...")
-    _configure_multiprocessing()
-    _log_init, _log_args = worker_init_args()
-    with mp.get_context('spawn').Pool(processes=n_workers,
-                                      initializer=_log_init, initargs=_log_args) as pool:
+    with worker_pool(n_workers) as pool:
         return list(tqdm(
             released(pool.imap(CapturedTask(fn), tasks)), total=n_tasks, desc=desc, disable=not show_progress
         ))

@@ -16,16 +16,16 @@ import numpy as np
 import pandas as pd
 import itertools
 import uuid
-import torch.multiprocessing as mp
 import statsmodels.api as sm
 from tqdm.auto import tqdm
 from typing import Any, Dict, List, Optional, Tuple
 
 from neural_mi.analysis.task import run_training_task
-from neural_mi.logger import CapturedTask, logger, released, worker_init_args
+from neural_mi.logger import CapturedTask, logger, released
+from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.exceptions import CombinationWarning, InsufficientDataError, TrainingError
-from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
+from neural_mi.utils import _ensure_cpu
 from neural_mi.data.shift_windowing import (
     n_windows_if_deferred, shift_family, chunk_window_range_to_raw, seconds_to_samples,
     spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
@@ -626,10 +626,7 @@ class AnalysisWorkflow:
                                  unit="task", disable=not show_progress)
             ]
         else:
-            _configure_multiprocessing()
-            _log_init, _log_args = worker_init_args()
-            with mp.get_context('spawn').Pool(processes=n_workers,
-                                          initializer=_log_init, initargs=_log_args) as pool:
+            with worker_pool(n_workers) as pool:
                 raw_results = list(tqdm(
                     released(pool.imap(CapturedTask(run_training_task), tasks)), total=len(tasks),
                     desc="Rigorous analysis", unit="task", disable=not show_progress
@@ -1172,10 +1169,7 @@ def run_rigorous_scalar_analysis(
             f"Parallelising {len(tasks)} rigorous scalar-analysis tasks across "
             f"{effective_workers} workers..."
         )
-        _configure_multiprocessing()
-        _log_init, _log_args = worker_init_args()
-        with mp.get_context('spawn').Pool(processes=effective_workers,
-                                      initializer=_log_init, initargs=_log_args) as pool:
+        with worker_pool(effective_workers) as pool:
             raw_rows = list(tqdm(
                 released(pool.imap(CapturedTask(_run_scalar_fn_task), tasks)), total=len(tasks),
                 desc="Rigorous scalar analysis", unit="task", disable=not show_progress

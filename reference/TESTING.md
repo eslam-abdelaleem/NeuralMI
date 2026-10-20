@@ -138,7 +138,7 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_reproducibility.py` | seeded reproducibility in estimate, sweep and rigorous modes, and under parallelism |
-| `test_parallel.py` | `dispatch_tasks`: empty and single-task shortcuts, order preservation, and the parallel path matching the sequential one |
+| `test_parallel.py` | `dispatch_tasks`: empty and single-task shortcuts, order preservation, and the parallel path matching the sequential one. `worker_pool`: each worker's share of the CPU threads, and a count set through `OMP_NUM_THREADS` kept |
 
 ### Utilities
 

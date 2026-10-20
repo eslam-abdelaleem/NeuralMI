@@ -26,14 +26,14 @@ Results are returned as a :class:`pandas.DataFrame` with columns
 import torch
 import numpy as np
 import pandas as pd
-import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 from typing import Dict, Any, Optional, List, Tuple
 
 from neural_mi.analysis.sweep import ParameterSweep
-from neural_mi.logger import CapturedTask, logger, released, worker_init_args
+from neural_mi.logger import CapturedTask, logger, released
+from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
-from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
+from neural_mi.utils import _ensure_cpu
 
 
 def _n_channels_of(data) -> int:
@@ -123,10 +123,7 @@ def _dispatch_pairs(pair_tasks: List[tuple], n_workers: int, show_progress: bool
         return records
 
     logger.info(f"Parallelising {n_pairs} channel pairs across {n_workers} workers...")
-    _configure_multiprocessing()
-    _log_init, _log_args = worker_init_args()
-    with mp.get_context('spawn').Pool(processes=n_workers,
-                                      initializer=_log_init, initargs=_log_args) as pool:
+    with worker_pool(n_workers) as pool:
         records = list(tqdm(
             released(pool.imap(CapturedTask(_run_pair_task_for_pool), pair_tasks)), total=n_pairs,
             desc="Pairwise MI", disable=not show_progress

@@ -28,11 +28,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 
 from neural_mi.analysis.assemble import _hashable
-from neural_mi.logger import CapturedTask, logger, released, user_stacklevel, worker_init_args
+from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
+from neural_mi.parallel import worker_pool
 
 # Offsets closer than this fraction of the recording to zero, in either
 # direction, are excluded from a circular shift.
@@ -280,9 +280,7 @@ def permutation_nulls(mode: str, x, y, w, base_params: Dict[str, Any], grid, *, 
     logger.info(f"Permutation test: {n_permutations} trials for mode='{mode}' across "
                 f"{n_workers} worker(s).")
     if n_workers > 1 and n_permutations > 1:
-        _log_init, _log_args = worker_init_args()
-        with mp.get_context('spawn').Pool(processes=min(n_workers, n_permutations),
-                                          initializer=_log_init, initargs=_log_args) as pool:
+        with worker_pool(min(n_workers, n_permutations)) as pool:
             trials = list(tqdm(released(pool.imap(CapturedTask(_trial), args)), total=n_permutations,
                                desc="Permutation test", leave=False, disable=not show_progress))
     else:

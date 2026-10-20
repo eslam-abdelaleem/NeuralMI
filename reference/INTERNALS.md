@@ -26,7 +26,7 @@ the networks and returns rows that the shared assembly layer turns into a
 | `neural_mi/validation.py` | `ParameterValidator`, the allowed values, and the per-stream processor checks |
 | `neural_mi/results.py` | the `Results` object: `get`, `summary`, `plot`, `compare`, `animate`, `save`, `load`, `to_dict`, `to_json` |
 | `neural_mi/quantities.py` | the named quantities, on one engine: `_named` expands an iterable parameter into configurations, `_call` runs one configuration through `run()`, `_task` is the unit sent to a worker |
-| `neural_mi/parallel.py` | `dispatch_tasks`, the one worker pool (`spawn` context) every parallel loop uses |
+| `neural_mi/parallel.py` | `worker_pool`, the one worker pool every parallel loop opens (`spawn` context, the parent's logging level, a share of the CPU threads per worker), and `dispatch_tasks` |
 | `neural_mi/embeddings_io.py` | `extract_embeddings` (reloads a saved critic) |
 | `neural_mi/utils.py` | `build_critic` and `build_optimizer_and_scheduler`, `cross_covariance_svd` (the one whitening and SVD behind the participation ratios and the rotated embeddings), `build_offset_arrays`, `get_device` |
 

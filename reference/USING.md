@@ -625,6 +625,11 @@ key of its own. A seeded call therefore returns the same numbers at any
 records it in `result.params['random_seed']`, so passing that seed back
 reproduces the call.
 
+Each worker gets an equal share of the CPU threads, `os.cpu_count() // n_workers`
+and at least one. Workers that each used every core would compete for them, and
+the small networks typical here would train more slowly in parallel than with
+one thread each. Setting `OMP_NUM_THREADS` before the call keeps your own count.
+
 The terms of a difference quantity (conditional MI, transfer entropy,
 interaction information and the named quantities built on them) are separate
 trainings. They split and evaluate the same rows because every term of a repeat
