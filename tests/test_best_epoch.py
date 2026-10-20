@@ -128,6 +128,15 @@ def test_a_slow_approach_is_fuzzy_when_its_start_moves_the_estimate(monkeypatch,
     assert results['approach_shift'] != 0 and results['curve_diagnosis'] == diagnosis
 
 
+def test_a_curve_that_rises_at_once_is_not_read_at_its_first_epoch():
+    """A curve that reaches its top within two epochs and then falls is read at the top, not at the first
+    epoch. Mirrored ends gave the first epoch the median of the epochs after it."""
+    curve = [0.497, 0.694, 0.716, 0.698, 0.668, 0.671, 0.664, 0.631, 0.578, 0.586, 0.511, 0.443, 0.339, 0.329]
+    smoothed = Trainer._smooth(None, curve, 1.0, 5)
+    epoch, peak, _, _ = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5), False)
+    assert 0 < epoch <= peak <= 3
+
+
 def test_reach_covers_the_smoothing():
     """Changing epochs beyond the reach leaves an epoch's smoothed value unchanged."""
     rng = np.random.default_rng(0)

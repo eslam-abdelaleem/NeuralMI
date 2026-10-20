@@ -184,8 +184,8 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d, median_filter
 
 smoothed_test = gaussian_filter1d(
-    median_filter(np.array(test_history), size=5, mode='reflect'),
-    sigma=1.0, mode='reflect')
+    median_filter(np.array(test_history), size=5, mode='nearest'),
+    sigma=1.0, mode='nearest')
 best_epoch = int(np.argmax(smoothed_test))
 
 print(f"best epoch             : {best_epoch}")

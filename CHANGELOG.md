@@ -147,6 +147,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The held-out curve was smoothed with its ends mirrored, so the first epoch
+  took the median of the epochs after it. On a curve that rises within one or
+  two epochs and then falls, epoch 0 became the start of the top and its
+  undertrained network was read. In tutorial 03 the joint network of
+  conditional transfer entropy was read at epoch 0 in two of three repeats
+  (0.50 and 0.58 bits held out, against 0.77 and 0.81 two epochs later), and
+  the repeats came out at -0.30 and -0.22 bits against an exact 0.026. The
+  curve is now held at its end values beyond its ends, and the repeats read
+  -0.05, 0.05 and 0.01 bits.
 - A repeat of a difference quantity (conditional MI, transfer entropy and the
   reverse direction) or of a rigorous fit that came out negative was reported as
   0 and then left out of `mi_mean` and `mi_std` as a repeat that produced

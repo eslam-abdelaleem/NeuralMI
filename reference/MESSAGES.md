@@ -169,8 +169,8 @@ non-positive gets the message below instead.
 The earliest epoch at the top of the smoothed curve lies within the smoothing's
 reach of the start (6 epochs at the default `median_window` and
 `smoothing_sigma`), and the curve falls by more than 3 noise units within 8
-epochs after it. The smoothing reflects the curve at its start, so the start of
-the curve placed that epoch. A lower `learning_rate` spreads the rise over more
+epochs after it. The smoothing holds the curve at its first value before it
+begins, so the start of the curve placed that epoch. A lower `learning_rate` spreads the rise over more
 epochs.
 
 **`The held-out MI approached its top slowly, so where the top starts is uncertain`**

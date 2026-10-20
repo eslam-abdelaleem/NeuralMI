@@ -1404,10 +1404,13 @@ class Trainer:
         valid_hist = hist[~nan_mask]
         if len(valid_hist) == 0: return hist
         hist[nan_mask] = valid_hist[-1]
+        # Beyond its ends the curve is held at its end values. Mirroring it would
+        # give the first epoch the values of the epochs after it, so a curve that
+        # rises within an epoch or two would put its top at an undertrained epoch.
         if med_win > 1 and len(hist) >= med_win:
-            hist = median_filter(hist, size=med_win, mode='reflect')
-        if sigma > 0: 
-            hist = gaussian_filter1d(hist, sigma=sigma, mode='reflect')
+            hist = median_filter(hist, size=med_win, mode='nearest')
+        if sigma > 0:
+            hist = gaussian_filter1d(hist, sigma=sigma, mode='nearest')
         hist[nan_mask] = np.nan
         return hist
         
