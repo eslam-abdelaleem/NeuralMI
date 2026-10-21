@@ -35,13 +35,16 @@ class TestConditionalRigorous:
         x = _make_random_3d(N, 2, 8, seed=1)
         y = x + _make_random_3d(N, 2, 8, seed=2)      # X carries information about Y beyond W
         w = _make_random_3d(N, 2, 8, seed=3)
+        # A rung whose two networks both learn nothing is left out of the fit, so the joint
+        # network has to find X's dependence within the chunks' few steps per epoch.
         result = nmi.run(
             x, y,
             mode='conditional',
             conditional=Conditional(w_data=w, rigorous=True,
                                     gamma_range=range(1, 4), min_gamma_points=2),
-            model=_MODEL, training=_TRAINING,
-            verbose=False, show_progress=False,
+            model=_MODEL,
+            training=Training(n_epochs=5, batch_size=64, patience=1000, learning_rate=1e-2),
+            verbose=False, show_progress=False, seed=0,
         )
         assert result.mi_estimate is not None, "rigorous conditional should set mi_estimate"
         assert result.dataframe is not None, "rigorous conditional should set dataframe"
