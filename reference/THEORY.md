@@ -461,8 +461,7 @@ $C$ alone in the conditioning term, each branch the call's encoder. $C$ takes th
 same path, branch then head, in both terms. Each term keeps its own weights,
 training and epoch, read from its own held-out curve. The terms share their
 architecture and their rows. Sharing the encoder of $C$ between the terms or
-training them on one loss did not improve on this in a pilot
-([ROADMAP](https://github.com/eslam-abdelaleem/NeuralMI/blob/main/ROADMAP.md)).
+training them on one loss did not improve on this in a pilot.
 
 Two simpler forms do worse.
 
