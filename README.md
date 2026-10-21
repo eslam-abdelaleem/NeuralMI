@@ -16,7 +16,7 @@ Correlation is the usual way to ask whether two signals are related or not. Howe
 
 Mutual information sees that relationship because it captures linear and nonlinear dependencies alike. It also answers questions a correlation has no form for: how much a population's past says about its own future, what one area adds about another beyond what that area already predicts of itself, or what a pair of signals carries that neither carries alone.
 
-<img src="docs/source/_static/sample_sweep.png" alt="Estimate against sample count at 1000 channels per side: NeuralMI reaches the true 4 bits by 1000 samples, KSG stays under 2" style="float: right; max-width: 50%; margin-right: 15px; margin-bottom: 10px;">
+<img src="docs/source/_static/sample_sweep.png" alt="Estimate against sample count at 1000 channels per side: NeuralMI stays close to the true 4 bits at every sample size, KSG stays far below it" style="float: right; max-width: 50%; margin-right: 15px; margin-bottom: 10px;">
 
 
 The obstacle to applying information-theoretic measures to large, multimodal neuroscience datasets is the curse of dimensionality. Classical estimators need samples in proportion to the dimensions they are handed. Past ~10 dimensions they outrun any recording of realistic size. Information-theoretic analysis has mostly been limited to a handful of channels for that reason.
