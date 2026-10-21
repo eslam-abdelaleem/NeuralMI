@@ -7,7 +7,7 @@ channels, the terms and values of the named quantities) opens its pool with
 logging level, and with its share of the CPU threads.
 """
 import os
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List
 
 import torch
 import torch.multiprocessing as mp
@@ -17,24 +17,24 @@ from neural_mi.utils import _configure_multiprocessing
 from neural_mi.logger import CapturedTask, _worker_log_init, logger, released
 
 
-def threads_per_worker(n_processes: int) -> Optional[int]:
-    """CPU threads for each of ``n_processes`` workers, None to keep the threads a user set.
+def threads_per_worker(n_processes: int) -> int:
+    """CPU threads for each of ``n_processes`` workers.
 
     PyTorch gives every process a pool of threads sized to the machine. Workers
     that each start such a pool oversubscribe the cores, and small networks then
     train more slowly in parallel than they would with one thread each. A worker
-    therefore gets an equal share of the cores, unless ``OMP_NUM_THREADS`` is
-    set, which a spawned worker's PyTorch reads on its own.
+    therefore gets an equal share of the cores, or the ``OMP_NUM_THREADS`` a user
+    set. The count is set in each worker explicitly: how PyTorch reads
+    ``OMP_NUM_THREADS`` on its own differs between platforms.
     """
     if 'OMP_NUM_THREADS' in os.environ:
-        return None
+        return int(os.environ['OMP_NUM_THREADS'])
     return max(1, (os.cpu_count() or 1) // n_processes)
 
 
-def _init_worker(level: int, n_threads: Optional[int]) -> None:
+def _init_worker(level: int, n_threads: int) -> None:
     _worker_log_init(level)
-    if n_threads is not None:
-        torch.set_num_threads(n_threads)
+    torch.set_num_threads(n_threads)
 
 
 def worker_pool(n_processes: int):

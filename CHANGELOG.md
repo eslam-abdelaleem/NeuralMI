@@ -109,10 +109,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   several times more slowly than the CPU, and parallel workers all trained on
   the one GPU and waited for each other. Before the trainings start, the
   library times a few training steps of the first network on the CPU, with the
-  threads each worker will get. A call whose trainings would take under two
-  minutes there stays on the CPU. Otherwise the steps are timed on the GPU,
-  which is used only if it is at least 1.5 times faster than the CPU workers
-  together. A worker process trains on the CPU unless the call names a device.
+  threads each worker will get. A call whose trainings would take less than
+  `GPU_WORTH_SECONDS` there stays on the CPU. Otherwise the steps are timed on
+  the GPU, which is used only if it beats the CPU workers together by the
+  factor `GPU_MARGIN`. A worker process trains on the CPU unless the call names a device.
   The decision is logged at the info level, and each network's `device` is
   recorded in `runs` or the trainings table. Datasets and loaded models
   without a device also default to the CPU now.
@@ -188,9 +188,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   named `UserWarning`, and tqdm raises its own `TqdmWarning`.
 - Worker processes (`n_workers` above 1) each get an equal share of the CPU
   threads, `os.cpu_count() // n_workers` and at least one. Each worker used to
-  start PyTorch's full thread pool, so ten workers ran sixty threads on a
-  twelve-core machine, and small networks trained about half as fast as with
-  one thread per worker. A count set through `OMP_NUM_THREADS` is kept. All
+  start PyTorch's full thread pool, so the workers together ran several threads
+  per core, and small networks trained more slowly than with one thread per
+  worker. A count set through `OMP_NUM_THREADS` is kept, and every worker sets
+  its count explicitly, since PyTorch's own reading of `OMP_NUM_THREADS`
+  differs between platforms. All
   pools now open through one helper, `neural_mi.parallel.worker_pool`.
 - `Model(n_layers=0)` builds a linear MLP, the input mapped straight to the
   embedding, as the parameter's minimum of 0 implies. It used to build one

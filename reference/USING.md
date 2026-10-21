@@ -1328,9 +1328,10 @@ batches typical of neural data the CPU can be several times faster, and parallel
 workers that share one GPU wait for each other, while each worker gets its own
 share of the CPU. Before the trainings start, NeuralMI times a few training steps
 of the first network on the CPU, with the threads each worker will get. If all the
-trainings would take under two minutes there, it stays on the CPU. Otherwise it
-times the same steps on the GPU (CUDA, else Apple's MPS) and uses the GPU only if
-it is at least 1.5 times faster than the CPU workers together. The decision is
+trainings would take less than `GPU_WORTH_SECONDS` there, it stays on the CPU.
+Otherwise it times the same steps on the GPU (CUDA, else Apple's MPS) and uses
+the GPU only if it beats the CPU workers together by the factor `GPU_MARGIN`.
+Both are set in `neural_mi/device.py`. The decision is
 logged at the info level, and `runs` or the trainings table records each
 network's `device`. A worker process started by `n_workers` trains on the CPU
 unless the call names a device. `device='cpu'`, `'cuda'` or `'mps'` skips all
