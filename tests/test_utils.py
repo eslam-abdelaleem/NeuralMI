@@ -496,10 +496,13 @@ def test_tqdms_ipywidgets_warning_is_silenced():
     removes the one neural_mi installs when a test module imports it."""
     import subprocess
     import sys
+    if not hasattr(pytest.importorskip('tqdm.notebook'), 'WARN_NOIPYW'):
+        pytest.skip("this tqdm issues no ipywidgets warning")
     code = ("import warnings, neural_mi\n"
             "from tqdm import TqdmWarning\n"
             "from tqdm.notebook import WARN_NOIPYW\n"
             "with warnings.catch_warnings(record=True) as caught:\n"
             "    warnings.warn(WARN_NOIPYW, TqdmWarning)\n"
             "print(len(caught))\n")
-    assert subprocess.run([sys.executable, '-c', code], capture_output=True, text=True).stdout.strip() == '0'
+    out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+    assert out.stdout.strip() == '0', out.stderr

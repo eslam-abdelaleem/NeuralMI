@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-10-20
+## [1.0.0] - 2026-10-21
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
