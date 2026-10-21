@@ -13,7 +13,7 @@ from typing import Any, Optional, Tuple
 
 def _batch_size_of(x) -> int:
     """Batch size of x, whether x is a plain tensor or a tuple/list of
-    tensors sharing a leading (sample) dimension, DualBranchEmbedding's
+    tensors sharing a leading (sample) dimension, BranchedEmbedding's
     compound ``(a_batch, c_batch)`` input, in particular."""
     return (x[0] if isinstance(x, (tuple, list)) else x).shape[0]
 
@@ -243,7 +243,7 @@ class HybridCritic(BaseCritic):
         self.use_variational = use_variational
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # x may be a plain tensor or a tuple (DualBranchEmbedding's compound
+        # x may be a plain tensor or a tuple (BranchedEmbedding's compound
         # (a_batch, c_batch) input) -- _batch_size_of handles both.
         batch_size = _batch_size_of(x)
 

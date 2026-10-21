@@ -2,6 +2,7 @@
 """Tests for neural_mi/data/shift_windowing.py: pair classification, the
 sample-rate-aware unit conversion, the categorical reslice+encode path, and
 the vectorized spike windowing it sits alongside (data/temporal.py)."""
+import warnings
 import numpy as np
 import torch
 import pytest
@@ -271,36 +272,39 @@ class TestCreateDatasetCrossUnitWarning:
         rng = np.random.default_rng(seed)
         return [np.sort(rng.uniform(0, seconds, rng.poisson(seconds * rate))) for _ in range(n)]
 
-    def test_warns_without_sample_rate(self, caplog):
+    def test_warns_without_sample_rate(self):
         from neural_mi.data.handler import create_dataset
         x = np.random.randn(3000, 2).astype('float32')
-        with caplog.at_level("WARNING", logger="neural_mi"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
             create_dataset(x, self._spikes(), processor_type_x='continuous',
                            processor_params_x={'window_size': 20, 'step_size': 20},
                            processor_type_y='spike',
                            processor_params_y={'window_size': 5.0, 'step_size': 5.0})
-        assert any('sample_rate' in r.message and 'meaningless' in r.message for r in caplog.records)
+        assert any('sample_rate' in str(w.message) and 'meaningless' in str(w.message) for w in caught)
 
-    def test_silent_with_sample_rate(self, caplog):
+    def test_silent_with_sample_rate(self):
         from neural_mi.data.handler import create_dataset
         x = np.random.randn(3000, 2).astype('float32')
-        with caplog.at_level("WARNING", logger="neural_mi"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
             create_dataset(x, self._spikes(), processor_type_x='continuous',
                            processor_params_x={'window_size': 5.0, 'step_size': 5.0, 'sample_rate': 100.0},
                            processor_type_y='spike',
                            processor_params_y={'window_size': 5.0, 'step_size': 5.0})
-        assert not any('meaningless' in r.message for r in caplog.records)
+        assert not any('meaningless' in str(w.message) for w in caught)
 
-    def test_silent_for_non_mixed_pairs(self, caplog):
+    def test_silent_for_non_mixed_pairs(self):
         from neural_mi.data.handler import create_dataset
         x = np.random.randn(3000, 2).astype('float32')
         y = np.random.randn(3000, 2).astype('float32')
-        with caplog.at_level("WARNING", logger="neural_mi"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
             create_dataset(x, y, processor_type_x='continuous',
                            processor_params_x={'window_size': 20, 'step_size': 20},
                            processor_type_y='continuous',
                            processor_params_y={'window_size': 20, 'step_size': 20})
-        assert not any('meaningless' in r.message for r in caplog.records)
+        assert not any('meaningless' in str(w.message) for w in caught)
 
 
 class TestVectorizedSpikeWindowingMatchesReference:

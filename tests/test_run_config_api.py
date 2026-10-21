@@ -133,6 +133,19 @@ def test_ineffective_setting_warns(capture_engine, model, training, named):
         nmi.run([[1]], [[1]], mode='estimate', model=model, training=training)
 
 
+def test_split_settings_that_custom_indices_replace_warn(capture_engine):
+    split = Split(mode='random', train_fraction=0.8, train_indices=np.arange(8), test_indices=np.arange(8, 10))
+    with pytest.warns(UserWarning, match="no effect in this call.*Split mode, train_fraction"):
+        nmi.run([[1]], [[1]], mode='estimate', split=split)
+
+
+def test_custom_indices_alone_are_quiet(capture_engine):
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings('error', message="These settings have no effect")
+        nmi.run([[1]], [[1]], mode='estimate', split=Split(train_indices=np.arange(8), test_indices=np.arange(8, 10)))
+
+
 @pytest.mark.parametrize('mode, model', [
     ('estimate', Model(embedding_model='cnn', kernel_size=5)),
     ('estimate', Model(critic_type='hybrid', n_layers_head=3)),

@@ -7,11 +7,15 @@ there is nothing in this package that fails to provide one.
 
 **Exact mutual information**
 
-- :class:`SharedLatentGaussian` is the most general, a set of jointly Gaussian
-  processes driven by a shared autoregressive latent that exposes the exact
-  ``I(A; B | C)`` for any choice of processes and time offsets. Every quantity in the temporal
-  taxonomy has an exact number to check against, and ``block_mi(w)`` gives the
-  exact windowed MI at window size ``w``.
+- :class:`LatentGaussian` is the most general, a set of jointly Gaussian
+  processes read out from a linear latent, which exposes the exact
+  ``I(A; B | C)`` for any choice of processes, channels and time offsets. Every
+  quantity in the temporal taxonomy has an exact number to check against,
+  ``block_mi(w)`` gives the exact windowed MI at window size ``w``, and
+  ``storage_transfer`` gives storage and transfer from a finite or infinite
+  past. ``LatentGaussian.shared`` builds processes sharing one autoregressive
+  latent; the latent dynamics can also couple components, so one group of
+  latents drives another or a process carries memory of its own.
 - :func:`generate_correlated_gaussians` fixes the MI of an IID pair directly.
 - :func:`generate_windowed_oscillatory` and
   :func:`generate_windowed_multichannel` return windowed data alongside the
@@ -41,7 +45,7 @@ or a window spans two independent latent draws and can carry more.
 """
 from .oracle import (
     # Exact ground truth for any I(A;B|C) over time offsets, and windowed MI
-    SharedLatentGaussian,
+    LatentGaussian,
     generate_shared_latent_gaussian,
     # Closed-form MI by construction
     mi_to_rho,
@@ -60,7 +64,7 @@ from .oracle import (
 )
 
 __all__ = [
-    'SharedLatentGaussian',
+    'LatentGaussian',
     'generate_shared_latent_gaussian',
     'mi_to_rho',
     'generate_correlated_gaussians',

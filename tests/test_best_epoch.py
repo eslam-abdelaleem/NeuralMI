@@ -1,0 +1,161 @@
+# tests/test_best_epoch.py
+"""The network evaluated is the one at the reported best epoch.
+
+The best epoch is read from the held-out curve smoothed after training: its
+peak (epoch_rule='peak'), or the earliest epoch at its top ('plateau_start', the
+default). The smoothed value at an epoch depends on the epochs after it, so the
+trainer keeps copies of the network for every epoch that can still turn out to
+be the one read (for peak_fraction < 1, the first epoch to reach that fraction
+of the peak), and evaluates that epoch's network. These tests script the held-out curve, record
+the network at every epoch, and check which network the reported value came from.
+"""
+import numpy as np
+import pytest
+import torch
+
+from neural_mi.data import PairedDataset
+from neural_mi.estimators import infonce_lower_bound
+from neural_mi.models.critics import SeparableCritic
+from neural_mi.models.embeddings import MLP
+from neural_mi.training.epochs import choose_epoch
+from neural_mi.training.trainer import Trainer
+
+N, N_TEST, N_EPOCHS = 400, 40, 40          # a random split holds out 40 of 400 rows
+
+
+def _curve(seed, nan_at=None):
+    """A noisy held-out curve that rises to a peak and falls, in nats."""
+    e = np.arange(N_EPOCHS)
+    curve = 0.3 * np.exp(-0.5 * ((e - 12) / 4) ** 2) + 0.05 * np.random.default_rng(seed).standard_normal(N_EPOCHS)
+    if nan_at is not None:
+        curve[nan_at] = np.nan
+    return curve
+
+
+def _fingerprint(model):
+    return float(sum(p.detach().double().sum() for p in model.parameters()))
+
+
+def _train(monkeypatch, curve, custom_smoothing_fn=None, **kwargs):
+    """Train with the held-out values replaced by `curve`. Returns the results, the network's
+    fingerprint at every epoch, and the fingerprints behind every train-side evaluation, in order."""
+    at_epoch, train_side = [], []
+    evaluate, blocks = Trainer._safe_eval_mi, Trainer._eval_blocks
+
+    def held_out(trainer, x, y, max_samples, all_rows=False):
+        if len(y) == N_TEST and len(at_epoch) < len(curve):
+            at_epoch.append(_fingerprint(trainer.model))
+            return float(curve[len(at_epoch) - 1])
+        return evaluate(trainer, x, y, max_samples, all_rows)
+
+    def train(trainer, x, y, max_samples):
+        if len(y) != N_TEST:
+            train_side.append(_fingerprint(trainer.model))
+        return blocks(trainer, x, y, max_samples)
+
+    monkeypatch.setattr(Trainer, '_safe_eval_mi', held_out)
+    monkeypatch.setattr(Trainer, '_eval_blocks', train)
+    torch.manual_seed(0)
+    net = MLP(input_dim=3, hidden_dim=8, embedding_dim=4, n_layers=1)
+    trainer = Trainer(SeparableCritic(embedding_net_x=net), infonce_lower_bound,
+                      torch.optim.Adam(net.parameters(), lr=1e-2), torch.device('cpu'),
+                      custom_smoothing_fn=custom_smoothing_fn)
+    x = torch.randn(N, 3)
+    results = trainer.train(PairedDataset(x, x + torch.randn(N, 3)), n_epochs=len(curve), batch_size=32,
+                            patience=1000, split_mode='random', split_seed=0, verbose=False,
+                            show_progress=False, **kwargs)
+    return results, at_epoch, train_side
+
+
+@pytest.mark.parametrize('seed', range(5))
+def test_evaluated_network_is_the_one_at_best_epoch(monkeypatch, seed):
+    curve = _curve(seed)
+    results, at_epoch, train_side = _train(monkeypatch, curve, epoch_rule='peak')
+    assert results['best_epoch'] == int(np.argmax(Trainer._smooth(None, list(curve), 1.0, 5)))
+    assert train_side[-1] == at_epoch[results['best_epoch']]
+
+
+def test_conservative_epoch_evaluates_its_own_network(monkeypatch):
+    curve = _curve(0)
+    results, at_epoch, train_side = _train(monkeypatch, curve, peak_fraction=0.5, epoch_rule='peak')
+    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
+    expected = int(np.flatnonzero(smoothed >= 0.5 * smoothed.max())[0])
+    assert results['conservative_epoch'] == expected < results['best_epoch']
+    assert at_epoch[expected] in train_side and at_epoch[results['best_epoch']] in train_side
+
+
+def test_a_nan_epoch_is_never_chosen(monkeypatch):
+    curve = _curve(1, nan_at=12)
+    results, at_epoch, train_side = _train(monkeypatch, curve, epoch_rule='peak')
+    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
+    assert results['best_epoch'] == int(np.nanargmax(smoothed)) != 12
+    assert train_side[-1] == at_epoch[results['best_epoch']]
+
+
+def test_custom_smoothing_keeps_every_epoch(monkeypatch):
+    curve = _curve(2)
+    results, at_epoch, train_side = _train(monkeypatch, curve, custom_smoothing_fn=np.asarray, epoch_rule='peak')
+    assert results['best_epoch'] == int(np.argmax(curve))
+    assert train_side[-1] == at_epoch[results['best_epoch']]
+
+
+def test_plateau_start_reads_and_evaluates_the_start_of_the_top(monkeypatch):
+    """The default rule reads the earliest epoch at the top of a plateau, and that epoch's network is evaluated."""
+    e = np.arange(N_EPOCHS)
+    curve = 0.3 * (1 - np.exp(-(e + 1) / 2)) + 0.005 * np.random.default_rng(4).standard_normal(N_EPOCHS)
+    results, at_epoch, train_side = _train(monkeypatch, curve)
+    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
+    expected, peak, diagnosis, _ = choose_epoch(curve, smoothed, 'plateau_start',
+                                                Trainer._smoothing_reach(1.0, 5), ran_to_limit=True)
+    assert results['best_epoch'] == expected < results['peak_epoch'] == peak
+    assert results['curve_diagnosis'] in (diagnosis, 'fuzzy start')
+    assert train_side[-1] == at_epoch[expected]
+
+
+@pytest.mark.parametrize('se, diagnosis', [(0.0, 'fuzzy start'), (np.inf, 'ok')])
+def test_a_slow_approach_is_fuzzy_when_its_start_moves_the_estimate(monkeypatch, se, diagnosis):
+    """The network at the start of the approach to the top is read on the same rows before the network
+    reported, and the start is uncertain when the two readings differ by more than two standard errors."""
+    from neural_mi.training import trainer as trainer_module
+    monkeypatch.setattr(trainer_module, 'standard_error', lambda values, n: se)
+    e = np.arange(N_EPOCHS)
+    curve = 0.3 * (1 - np.exp(-(e + 1) / 4)) + 0.002 * np.random.default_rng(4).standard_normal(N_EPOCHS)
+    results, at_epoch, train_side = _train(monkeypatch, curve)
+    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
+    approach = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5), True)[3]
+    assert approach < results['best_epoch']
+    assert train_side[-2:] == [at_epoch[approach], at_epoch[results['best_epoch']]]
+    assert results['approach_shift'] != 0 and results['curve_diagnosis'] == diagnosis
+
+
+def test_a_curve_that_rises_at_once_is_not_read_at_its_first_epoch():
+    """A curve that reaches its top within two epochs and then falls is read at the top, not at the first
+    epoch. Mirrored ends gave the first epoch the median of the epochs after it."""
+    curve = [0.497, 0.694, 0.716, 0.698, 0.668, 0.671, 0.664, 0.631, 0.578, 0.586, 0.511, 0.443, 0.339, 0.329]
+    smoothed = Trainer._smooth(None, curve, 1.0, 5)
+    epoch, peak, _, _ = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5), False)
+    assert 0 < epoch <= peak <= 3
+
+
+def test_reach_covers_the_smoothing():
+    """Changing epochs beyond the reach leaves an epoch's smoothed value unchanged."""
+    rng = np.random.default_rng(0)
+    for sigma, window in ((1.0, 5), (2.0, 3), (0.0, 5), (1.0, 1), (0.5, 4)):
+        reach = Trainer._smoothing_reach(sigma, window)
+        a = rng.standard_normal(60)
+        b = a.copy()
+        b[30 + reach + 1:] += 10 * rng.standard_normal(60 - 31 - reach)
+        assert Trainer._smooth(None, list(a), sigma, window)[30] == Trainer._smooth(None, list(b), sigma, window)[30]
+
+
+def test_peak_fraction_steps_back_from_a_saturating_top_under_either_rule(monkeypatch):
+    """peak_fraction reads the first epoch at that fraction of the maximum when it is earlier than the epoch read,
+    as on a curve that saturates at the estimator's ceiling."""
+    e = np.arange(N_EPOCHS)
+    curve = 0.3 * (1 - np.exp(-(e + 1) / 4)) + 0.002 * np.random.default_rng(5).standard_normal(N_EPOCHS)
+    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
+    expected = int(np.flatnonzero(smoothed >= 0.8 * smoothed.max())[0])
+    for rule in ('plateau_start', 'peak'):
+        results, at_epoch, train_side = _train(monkeypatch, curve, peak_fraction=0.8, epoch_rule=rule)
+        assert results['conservative_epoch'] == expected < results['best_epoch']
+        assert at_epoch[expected] in train_side

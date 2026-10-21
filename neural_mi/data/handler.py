@@ -378,7 +378,7 @@ class AlignedStreams(_NamedStreams, Dataset):
                     f"{name.upper()} ({int((~valid).sum())})"
                     for name, valid in per_stream_valid.items() if not valid.all()
                 ]
-                logger.warning(
+                warnings.warn(
                     f"Window coverage validation kept {self.n_windows_retained} of "
                     f"{self.n_windows_built} windows ({self.window_retention:.1%}). "
                     f"Dropped per stream: {' and '.join(dropped_by) or 'coverage rules'}. "
@@ -388,7 +388,8 @@ class AlignedStreams(_NamedStreams, Dataset):
                     f"parameters keeps silent windows and estimates the unrestricted "
                     f"quantity. Retention falls quickly as more variables are required "
                     f"to be simultaneously valid. This is reported once per run. The "
-                    f"per-task values are in result.runs as 'window_retention'."
+                    f"per-task values are in result.runs as 'window_retention'.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
             # Step 3: Update WindowManager's tracking
@@ -581,10 +582,11 @@ class StreamBundle(_PairAccessors, AlignedStreams):
         and does not touch.
         """
         if offset_y != offset_x:
-            logger.warning(
+            warnings.warn(
                 f"time_shift got offset_x={offset_x} != offset_y={offset_y}. Only "
                 f"offset_x is used. It shifts the single window grid every stream "
-                f"shares."
+                f"shares.",
+                UserWarning, stacklevel=user_stacklevel()
             )
         self.shift_grid(offset_x)
 
@@ -670,10 +672,11 @@ class AlignedStaticStreams(_NamedStreams, Dataset):
         names = " and ".join(name.upper() for name in lengths)
         counts = ", ".join("%s: %d" % (name.upper(), n) for name, n in lengths.items())
         every = "both" if len(lengths) == 2 else "all"
-        logger.warning(
+        warnings.warn(
             f"{names} have different numbers of samples ({counts}). "
             f"Truncating {every} to {min_len} samples "
-            f"({lost} samples discarded, {pct:.1f}% of the larger dataset lost)."
+            f"({lost} samples discarded, {pct:.1f}% of the larger dataset lost).",
+            UserWarning, stacklevel=user_stacklevel()
         )
         for dataset in self._streams.values():
             dataset.data = _truncate_leading(dataset.data, min_len)
@@ -809,7 +812,7 @@ def _warn_on_mixed_units(specs):
         if kind not in _REGULAR_GRID_TYPES or spec.get('time') is not None:
             continue
         if not (spec.get('processor_params') or {}).get('sample_rate'):
-            logger.warning(
+            warnings.warn(
                 f"processor_type mixes 'spike' ({', '.join(spikes)}) with "
                 f"'{kind}' on stream {name!r} without a 'sample_rate' on it. "
                 f"'spike' timestamps are always in seconds. '{kind}' is in raw "
@@ -817,7 +820,8 @@ def _warn_on_mixed_units(specs):
                 f"boundaries may then cover different real times and make the "
                 f"alignment meaningless. Set {{'sample_rate': ...}} in the processor "
                 f"parameters of {name!r} or give it a time vector to put them on a "
-                f"shared time unit."
+                f"shared time unit.",
+                UserWarning, stacklevel=user_stacklevel()
             )
 
 
@@ -924,19 +928,21 @@ def create_dataset(x_data, y_data=None,
             if window_size is None:
                 window_size = this_window
             elif this_window != window_size:
-                logger.warning(
+                warnings.warn(
                     f"Stream {name!r} specifies window_size={this_window}. Every "
                     f"stream shares a single WindowManager and must use the same "
-                    f"window size. window_size={window_size} is used."
+                    f"window size. window_size={window_size} is used.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
         if this_step is not None:
             if step_size is None:
                 step_size = this_step
             elif this_step != step_size:
-                logger.warning(
+                warnings.warn(
                     f"Stream {name!r} specifies step_size={this_step} against the "
                     f"{step_size} already set by an earlier stream. One grid carries "
-                    f"one step. Using step_size={step_size}."
+                    f"one step. Using step_size={step_size}.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
     datasets = OrderedDict()

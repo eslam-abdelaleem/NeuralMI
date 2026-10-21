@@ -58,7 +58,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from neural_mi.logger import logger
+import warnings
+from neural_mi.logger import user_stacklevel
 
 
 _REGULAR_GRID_PROCESSOR_TYPES = frozenset({'continuous', 'categorical'})
@@ -583,12 +584,13 @@ def _build_shifted_dataset(stream_defs, params, data_device, pack_roles, shifter
     for name, (_, _, proc_params, _, _) in stream_defs.items():
         period = stream_period(proc_params, times[name])
         if period is None:
-            logger.warning(
+            warnings.warn(
                 f"shift_windows is off for this run because stream {name!r} was given "
                 f"a time vector whose sampling is irregular. The reslice route needs "
                 f"one period for the whole recording. The eager route builds the "
                 f"windows here and checks each one against the timestamps. Set {{'sample_rate': ...}} in that stream's processor "
-                f"parameters to state a period and keep the reslice route."
+                f"parameters to state a period and keep the reslice route.",
+                UserWarning, stacklevel=user_stacklevel()
             )
             return None
         periods[name] = period
@@ -599,11 +601,12 @@ def _build_shifted_dataset(stream_defs, params, data_device, pack_roles, shifter
     starts = [float(np.asarray(t, dtype=float).ravel()[0])
               for t in times.values() if t is not None and len(np.asarray(t)) > 0]
     if starts and max(starts) - min(starts) > 0.5 * max(periods.values()):
-        logger.warning(
+        warnings.warn(
             f"shift_windows is off for this run because the streams' time vectors "
             f"start {max(starts) - min(starts):.4g} s apart. The reslice route lines "
             f"them up by sample number. The eager route builds the windows here and "
-            f"starts the grid at the latest start among them."
+            f"starts the grid at the latest start among them.",
+            UserWarning, stacklevel=user_stacklevel()
         )
         return None
 
@@ -882,10 +885,10 @@ def try_build_shift_windows_dataset_tuple(x_data, y_data, params: dict,
         pack = lambda w: ((w['x'], w['second']), w['y'])
     elif pack_kind == SHIFT_PACK_CONCAT:
         pack = lambda w: (_concat_x_and_second(w), w['y'])
-    elif pack_kind == SHIFT_PACK_SECOND:
-        pack = lambda w: (w['second'], w['y'])
+    elif pack_kind == SHIFT_PACK_SECOND:          # laid out as in the joint leg, for the same network
+        pack = lambda w: (_lay_out(w['second'], _spec_second), w['y'])
     elif pack_kind == SHIFT_PACK_FIRST:
-        pack = lambda w: (w['x'], w['y'])
+        pack = lambda w: (_lay_out(w['x'], _spec_x), w['y'])
     else:
         raise ValueError(f"Unknown _shift_pack {pack_kind!r}.")
 

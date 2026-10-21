@@ -19,10 +19,11 @@ from neural_mi.data.shift_windowing import (SHIFT_PACK_CONCAT, SHIFT_PACK_FIRST,
                                             SHIFT_PACK_SECOND,
                                             _REGULAR_GRID_PROCESSOR_TYPES)
 from neural_mi.analysis.conditional import _merge_raw_blocks
-from neural_mi.analysis.sweep import (combined_spread, ParameterSweep, _joint_marginal_difference,
+from neural_mi.analysis.sweep import (combined_spread, rung, ParameterSweep, _joint_marginal_difference,
                                       warn_combination, amplification_factor)
-from neural_mi.logger import logger
-from neural_mi.embeddings_io import saved_paths, with_model_labels
+import warnings
+from neural_mi.logger import logger, user_stacklevel
+from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import mi_report_units
 
 # Mirrors conditional.py's identical constants exactly -- both modes window
@@ -128,7 +129,7 @@ def run_interaction_information(
           combines *three* separately-trained estimates, so it amplifies
           component error more readily than a two-term difference; a relative
           error of ``eps`` on each component becomes roughly
-          ``amplification_factor * eps`` on II.  Values >= 10 mean the sign of
+          ``amplification_factor * eps`` on II when their errors are independent.  Values >= 10 mean the sign of
           II may not be determined by the data.  See
           :func:`neural_mi.analysis.sweep.amplification_factor`.
         - ``'raw_xw_y'``, ``'raw_x_y'``, ``'raw_w_y'`` : list of result dicts.
@@ -216,7 +217,7 @@ def run_interaction_information(
         if x_data.shape[0] != w_data.shape[0]:
             if abs(x_data.shape[0] - w_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
                 min_n = min(x_data.shape[0], w_data.shape[0])
-                logger.warning(
+                warnings.warn(
                     f"mode='interaction': x_data and y_data have {x_data.shape[0]} windows and w_data "
                     f"has {w_data.shape[0]}. All three are truncated to the first {min_n}. This is "
                     f"correct only if the extra window is at an edge. A window missing in the "
@@ -224,7 +225,8 @@ def run_interaction_information(
                     f"streams by "
                     f"window time first and never reaches this. Reaching it means raw tensors were "
                     f"passed to the engine directly without window times to align on. Pass arrays "
-                    f"that already agree in length if the ordering matters."
+                    f"that already agree in length if the ordering matters.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
                 x_data = x_data[:min_n]
                 y_data = y_data[:min_n]
@@ -243,13 +245,14 @@ def run_interaction_information(
                 w_data = w_data.expand(-1, -1, x_data.shape[2])
             elif abs(x_data.shape[2] - w_data.shape[2]) <= _WINDOW_SIZE_TRIM_TOLERANCE:
                 min_w = min(x_data.shape[2], w_data.shape[2])
-                logger.warning(
+                warnings.warn(
                     f"mode='interaction': x_data window size ({x_data.shape[2]}) and w_data window size "
                     f"({w_data.shape[2]}) differ by {abs(x_data.shape[2] - w_data.shape[2])} "
                     f"sample(s). Every processor emits window_size slots for a window of "
                     f"window_size. Check that Processing(x_params=...) and Processing(w_params=...) "
                     f"agree on window_size and sample_rate. Both are trimmed to their first "
-                    f"{min_w} samples."
+                    f"{min_w} samples.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
                 x_data = x_data[:, :, :min_w]
                 w_data = w_data[:, :, :min_w]
@@ -267,13 +270,14 @@ def run_interaction_information(
         joint_bp, sweep_grid, n_workers,
         quantity_name="Interaction information",
         joint_label="X,W;Y", marginal_label="X;Y",
-        joint_key="mi_xw_y", marginal_key="mi_x_y",
+        joint_key="mi_xw_y", marginal_key="mi_x_y", condition_at='first',
         is_proc_sweep=raw_deferred,
         marginal_base_params=marginal_x_bp,
         reported=False,
     )
     mi_w_y, raw_w_y, _w_vals = _single_mi_mean(
-        w_role, y_data, with_model_labels(marginal_w_bp, component='mi_w_y'), sweep_grid, n_workers,
+        w_role, y_data, {**with_model_labels(marginal_w_bp, component='mi_w_y'), '_difference_term': True},
+        sweep_grid, n_workers,
         quantity_name="Interaction information", label="W;Y",
         is_proc_sweep=raw_deferred,
     )
@@ -323,5 +327,4 @@ def _ii_rigorous_scalar(x_s, y_s, bp, w_data=None, sweep_grid=None, raw_deferred
     """
     raw = run_interaction_information(x_s, y_s, w_data, bp, sweep_grid=sweep_grid, n_workers=1,
                                       raw_deferred=raw_deferred, w_processor_type=w_processor_type)
-    paths = saved_paths(raw)
-    return (raw['interaction_info'], paths) if paths else raw['interaction_info']
+    return rung(raw, (('mi_xw_y', 1), ('mi_x_y', -1), ('mi_w_y', -1)))

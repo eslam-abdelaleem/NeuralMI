@@ -227,13 +227,13 @@ class TestEvalTrain:
         """
         trainer = self._trainer()
         seen = []
-        original = trainer._select_train_eval_indices
+        original = trainer._select_eval_indices
 
         def spy(train_idx, n, is_temporal):
             seen.append((len(train_idx), n))
             return original(train_idx, n, is_temporal)
 
-        monkeypatch.setattr(trainer, '_select_train_eval_indices', spy)
+        monkeypatch.setattr(trainer, '_select_eval_indices', spy)
         trainer.train(self._dataset(), n_epochs=2, batch_size=20,
                       eval_train=value, verbose=False)
 
@@ -277,7 +277,7 @@ class TestTrackEmbeddings:
 
 
 class TestPeakFraction:
-    """Tests for the improvement-checkpoint-based peak_fraction feature."""
+    """Tests for peak_fraction, which takes a fraction of the peak and applies with epoch_rule='peak'."""
 
     def _dataset(self, n=200):
         x = torch.randn(n, 4)
@@ -294,7 +294,7 @@ class TestPeakFraction:
         """peak_fraction < 1.0 must add conservative_epoch and train_mi_at_peak to results."""
         results = self._trainer().train(
             self._dataset(), n_epochs=6, batch_size=20,
-            peak_fraction=0.5, verbose=False,
+            peak_fraction=0.5, epoch_rule='peak', verbose=False,
         )
         assert 'conservative_epoch' in results, "conservative_epoch missing"
         assert 'train_mi_at_peak' in results, "train_mi_at_peak missing"
@@ -303,7 +303,7 @@ class TestPeakFraction:
         """train_mi and train_mi_at_peak are both proper fresh evaluations (finite floats)."""
         results = self._trainer().train(
             self._dataset(), n_epochs=6, batch_size=20,
-            peak_fraction=0.5, verbose=False,
+            peak_fraction=0.5, epoch_rule='peak', verbose=False,
         )
         assert isinstance(results['train_mi'], float)
         assert isinstance(results['train_mi_at_peak'], float)
@@ -314,7 +314,7 @@ class TestPeakFraction:
         """The conservative epoch must not be later than the best epoch."""
         results = self._trainer().train(
             self._dataset(), n_epochs=6, batch_size=20,
-            peak_fraction=0.5, verbose=False,
+            peak_fraction=0.5, epoch_rule='peak', verbose=False,
         )
         if 'conservative_epoch' in results:
             assert results['conservative_epoch'] <= results['best_epoch']
@@ -331,7 +331,7 @@ class TestPeakFraction:
         """peak_fraction < 1.0 must not need eval_train; no per-epoch train history produced."""
         results = self._trainer().train(
             self._dataset(), n_epochs=6, batch_size=20,
-            peak_fraction=0.7, eval_train=False, verbose=False,
+            peak_fraction=0.7, epoch_rule='peak', eval_train=False, verbose=False,
         )
         # Proper train_mi must be present
         assert isinstance(results['train_mi'], float)
@@ -367,12 +367,14 @@ class TestUnderTrainingWarning:
         return Trainer(dummy_model, dummy_estimator, optimizer, torch.device('cpu'),
                        custom_smoothing_fn=custom_smoothing_fn)
 
-    def test_fires_when_best_epoch_is_the_last_one(self, dummy_data, dummy_model):
-        """Monotonically 'improving' smoothed MI with no early stopping -> warn."""
-        increasing = lambda history: np.arange(1, len(history) + 1, dtype=float)
-        trainer = self._trainer(dummy_model, increasing)
+    def test_fires_when_the_curve_is_still_rising_at_the_epoch_limit(self, dummy_data, dummy_model, monkeypatch):
+        """A held-out curve still rising when training reaches n_epochs -> warn."""
+        rising = iter(0.05 * np.arange(1, 31) + 0.001 * np.random.default_rng(0).standard_normal(30))
+        evaluate = Trainer._safe_eval_mi
+        monkeypatch.setattr(Trainer, '_safe_eval_mi', lambda self, *a, **k: next(rising, None) or evaluate(self, *a, **k))
+        trainer = self._trainer(dummy_model, None)
         with pytest.warns(UserWarning, match="under-trained lower bound"):
-            trainer.train(dummy_data, n_epochs=3, batch_size=20, patience=10, verbose=False)
+            trainer.train(dummy_data, n_epochs=30, batch_size=20, patience=1000, verbose=False)
 
     def test_absent_when_peak_is_not_the_last_epoch(self, dummy_data, dummy_model):
         """Smoothed MI peaks mid-training then declines -> no warning."""
@@ -403,7 +405,7 @@ class TestSelectTrainEvalIndices:
     """
 
     def _select(self, train_idx, target_size, is_temporal):
-        return Trainer.__new__(Trainer)._select_train_eval_indices(train_idx, target_size, is_temporal)
+        return Trainer.__new__(Trainer)._select_eval_indices(train_idx, target_size, is_temporal)
 
     def test_static_data_uses_plain_random_choice(self):
         np.random.seed(0)
@@ -463,7 +465,7 @@ class TestSelectTrainEvalIndices:
         target = 200
         np.random.seed(0)
         scattered = np.random.choice(train_idx, target, replace=False)
-        chunked = t._select_train_eval_indices(train_idx, target, is_temporal=True)
+        chunked = t._select_eval_indices(train_idx, target, contiguous=True)
 
         view_old = SubsetView(ptd, indices=scattered)
         view_new = SubsetView(ptd, indices=chunked)

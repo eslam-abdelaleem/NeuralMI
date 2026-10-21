@@ -8,9 +8,10 @@ before starting a potentially long-running analysis.
 from typing import Dict, Any, Optional
 import numpy as np
 import torch
-from neural_mi.logger import logger
+import warnings
+from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import DataShapeError
-from neural_mi.estimators import ESTIMATORS
+from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
 def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
@@ -41,10 +42,10 @@ def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
 ALLOWED_VALUES = {
     'critic_type': ['separable', 'concat', 'hybrid'],
     'embedding_model': ['mlp', 'cnn', 'cnn2d', 'gru', 'lstm', 'tcn', 'transformer',
-                        'pretrained_backbone', 'lru', 'dual_branch', 'deepsets'],
+                        'pretrained_backbone', 'lru', 'deepsets'],
     'split_mode': ['blocked', 'random'],
     'output_units': ['bits', 'nats'],
-    'estimator_name': list(ESTIMATORS.keys()),  # 'infonce', 'smile'
+    'estimator_name': [*ESTIMATORS, *NONPARAMETRIC],  # 'infonce', 'smile', 'ksg'
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
     'norm_layer': [None, 'auto', 'none', 'batch', 'layer'],
@@ -142,7 +143,7 @@ class DataValidator:
                 if len(spikes) > 0 and np.any(spikes < 0):
                     raise ValueError(f"{name}[{i}] contains negative spike times.")
                 if len(spikes) > 1 and not np.all(spikes[:-1] <= spikes[1:]):
-                    logger.warning(
+                    logger.info(
                         f"{name}[{i}] spike times are not sorted. "
                         "SpikeWindowDataset sorts them."
                     )
@@ -161,7 +162,7 @@ class DataValidator:
         
         if self.proc_type_x == 'spike' and self.proc_type_y == 'spike':
             if is_x_list and is_y_list and len(self.x_data) != len(self.y_data):
-                logger.warning(f"x_data has {len(self.x_data)} channels, y_data has {len(self.y_data)}.")
+                logger.debug(f"x_data has {len(self.x_data)} channels, y_data has {len(self.y_data)}.")
         elif not is_x_list and not is_y_list:
             if self.x_data.ndim == 3 and self.y_data.ndim == 3 and self.x_data.shape[0] != self.y_data.shape[0]:
                 raise DataShapeError(
@@ -210,7 +211,7 @@ class ParameterValidator:
             _check_type(value, expected_type, key, "Parameter")
 
             # Min value check (skip for non-scalar types like list/dict)
-            if 'min' in schema and value is not None and not isinstance(value, (list, dict)) and value < schema['min']:
+            if 'min' in schema and value is not None and not isinstance(value, (list, dict, str)) and value < schema['min']:
                 raise ValueError(f"Parameter '{key}' must be >= {schema['min']}.")
 
             # Allowed values check. If a parameter accepts a class (e.g. a custom
@@ -358,11 +359,12 @@ class ParameterValidator:
                                    'hidden_dim_y', 'n_layers_y', 'embedding_dim_y')
                        if _bp.get(k) is not None]
             if _y_side:
-                logger.warning(
+                warnings.warn(
                     f"{_y_side[0]} was set for mode='dimensionality'. The mode's two "
                     f"sides are two halves of the same recording. An encoder that differs "
                     f"between the halves makes the curve hard to read. Leave the Y "
-                    f"overrides unset unless you mean the halves to be read differently."
+                    f"overrides unset unless you mean the halves to be read differently.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
         # Rigorous mode: validate curvature_t_threshold and confidence_level

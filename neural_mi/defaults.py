@@ -34,7 +34,8 @@ BASE_PARAMS_SCHEMA = {
     'median_window': {'type': int, 'min': 1, 'default': 5},
     'min_improvement': {'type': float, 'min': 0.0, 'default': 0.001},
     'max_eval_samples': {'type': int, 'min': 1, 'default': 5000},
-    'train_subset_size': {'type': (int, type(None)), 'min': 1, 'default': None},
+    'train_subset_size': {'type': (int, str, type(None)), 'min': 1, 'default': None},  # count | 'full'
+    'test_subset_size': {'type': (int, str, type(None)), 'min': 1, 'default': None},   # count | 'full'
     'split_gap_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
     'track_spectral_history': {'type': bool, 'default': False},
     'return_embeddings': {'type': bool, 'default': False},
@@ -107,8 +108,9 @@ BASE_PARAMS_SCHEMA = {
     'n_layers_head': {'type': (int, type(None)), 'min': 1, 'default': None},  # Hybrid critic head; None → max(1, n_layers-1)
     'hidden_dim_head': {'type': (int, list, type(None)), 'default': None},  # Hybrid critic head; None → min(64, hidden_dim)
     'critic_type': {'type': str, 'default': 'separable'},
-    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'dual_branch'|'deepsets'
+    'embedding_model': {'type': str, 'default': 'mlp'},  # 'mlp'|'cnn'|'cnn2d'|'gru'|'lstm'|'tcn'|'transformer'|'pretrained_backbone'|'lru'|'deepsets'
     'kernel_size': {'type': int, 'min': 1, 'default': 3}, # CNN/TCN
+    'cnn_pooling': {'type': str, 'default': 'flatten'},   # CNN: 'flatten' keeps every position, 'mean' averages
     'bidirectional': {'type': bool, 'default': False}, # RNN
     'nhead': {'type': int, 'min': 1, 'default': 4}, # Transformer
     # Per-side encoder overrides. None means "same as X" throughout.
@@ -117,7 +119,6 @@ BASE_PARAMS_SCHEMA = {
     'hidden_dim_y': {'type': (int, list), 'default': None},
     'n_layers_y': {'type': int, 'default': None},
     'custom_embedding_cls_y': {'type': type, 'default': None},
-    'branch_model': {'type': str, 'default': 'gru'}, # embedding_model='dual_branch' only: each branch's architecture
     'max_n_batches': {'type': int, 'min': 1, 'default': 512}, # Critic chunking
     'dropout': {'type': float, 'min': 0.0, 'default': 0.0},
     # 'auto' is layer normalisation for the hybrid critic in mode='dimensionality'
@@ -159,6 +160,9 @@ BASE_PARAMS_SCHEMA = {
     #                  noisy peak.  When < 1.0, the train MI at the actual peak epoch is also
     #                  returned in details as 'train_mi_at_peak'.
     'peak_fraction': {'type': float, 'min': 0.0, 'default': 1.0},
+    # Which epoch of the held-out curve the reported values are read at: the earliest at its top
+    # ('plateau_start') or its maximum ('peak'). See neural_mi/training/epochs.py.
+    'epoch_rule': {'type': str, 'default': 'plateau_start'},
 
     # Mixed-precision (AMP) training.
     # 'auto', enable on CUDA, no-op on CPU/MPS (safe default).

@@ -23,7 +23,7 @@ class BaseStaticDataset(Dataset, ABC):
             the same dataset is evaluated many times without reloading, e.g.
             precision analysis).
         """
-        self.device = get_device() if not device else torch.device(str(device))
+        self.device = get_device(device)
         # Resolve data storage device separately from compute device.
         if data_device == 'auto':
             self.data_device = self.device
@@ -72,7 +72,7 @@ class StaticDataset(BaseStaticDataset):
             Data of shape (n_observations, n_channels, ...). A 2-tuple
             ``(a_data, c_data)`` is the compound "X-role" input used by
             ``mode='conditional'``'s ``align='dual_branch'`` path (paired
-            with ``DualBranchEmbedding``, see ``THEORY.md``): each element is
+            with ``BranchedEmbedding``, see ``THEORY.md``): each element is
             processed exactly like a single-array ``data`` would be, then
             stored as a matching tuple, so the two can have different
             trailing (window) shapes while sharing the leading (sample)

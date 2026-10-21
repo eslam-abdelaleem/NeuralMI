@@ -25,7 +25,7 @@ import numpy as np
 import torch
 from typing import Dict, Any, Optional, Tuple
 
-from neural_mi.logger import logger, user_stacklevel
+from neural_mi.logger import logger
 from neural_mi.utils import build_critic, get_device
 
 
@@ -85,11 +85,10 @@ def model_file(params: Dict[str, Any]) -> Optional[str]:
     return f"{root}_{suffix}{ext}"
 
 
-def warn_saving_several(save_path: str) -> None:
+def announce_saving_several(save_path: str) -> None:
     """Say that a call will save every network it trains, where, and at what cost."""
-    import warnings
     root, ext = os.path.splitext(save_path)
-    warnings.warn(
+    logger.info(
         f"save_best_model_path: this call trains several networks and saves every one of "
         f"them as {root}_<labels>{ext}. The labels name each network by its grid values and "
         f"run_id, plus its gamma and chunk, component, lag, channel pair or split where the "
@@ -97,8 +96,7 @@ def warn_saving_several(save_path: str) -> None:
         f"Where a repeat trains several networks the paths are in "
         f"result.details[config_id]['trainings']. Every file holds a whole network and the "
         f"files can take a lot of disk space. To keep one model, rerun the configuration you "
-        f"want on its own with this path.",
-        UserWarning, stacklevel=user_stacklevel(),
+        f"want on its own with this path."
     )
 
 

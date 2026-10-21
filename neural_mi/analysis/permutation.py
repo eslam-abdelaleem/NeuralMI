@@ -27,12 +27,13 @@ import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
-import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 
-from neural_mi.analysis.assemble import _hashable
-from neural_mi.logger import CapturedTask, logger, released, user_stacklevel, worker_init_args
+from neural_mi.analysis.assemble import _hashable, aggregate
+from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
+from neural_mi.parallel import worker_pool
 
 # Offsets closer than this fraction of the recording to zero, in either
 # direction, are excluded from a circular shift.
@@ -190,49 +191,15 @@ def shift_x(x_data: Any, base_params: Dict[str, Any], permutation_shuffle: str,
 # ---------------------------------------------------------------------------
 
 def row_values(mode: str, produced: Dict[str, Any]) -> Dict[tuple, Tuple[float, float]]:
-    """A producer's repeats averaged into one ``(mi, mi_raw)`` per ``dataframe`` row.
-
-    ``mi`` follows the reported convention, as ``aggregate`` forms ``mi_mean``:
-    repeats reported as 0 produced nothing and are left out, and a row with no
-    other repeat is 0. ``mi_raw`` averages every repeat's measured value.
-    """
-    from neural_mi.analysis.modes import _DIFFERENCES
-
+    """A producer's repeats summarised into one ``(mi, mi_raw)`` per ``dataframe`` row, by ``aggregate`` as
+    the observed call's rows are. ``mi_raw`` is the mean of the repeats' measured values where they carry
+    one, and of a single network's training-side value otherwise."""
     keys = ['config_id', *produced['axis_keys']]
-    raw_by_repeat: Dict[tuple, float] = {}
-    if mode in _DIFFERENCES:
-        signs = {col: sign for col, _, sign in _DIFFERENCES[mode]}
-        for cid, entry in produced['details'].items():
-            trainings = entry.get('trainings')
-            if trainings is None or len(trainings) == 0 or 'component' not in trainings:
-                continue
-            for record in trainings.to_dict(orient='records'):
-                sign = signs.get(record['component'])
-                if sign is None:
-                    continue
-                key = (cid, record.get('run_id'))
-                raw_by_repeat[key] = raw_by_repeat.get(key, 0.0) + sign * record.get('raw_train_mi', math.nan)
-
-    grouped: Dict[tuple, List[Tuple[float, float]]] = {}
-    for row in produced['rows']:
-        key = tuple(_hashable(row.get(k)) for k in keys)
-        if mode in _DIFFERENCES:
-            raw = raw_by_repeat.get((row['config_id'], row.get('run_id')), math.nan)
-        else:
-            raw = row.get('raw_train_mi', row.get('mi'))
-        grouped.setdefault(key, []).append((row.get('mi'), raw))
-
-    out = {}
-    for key, pairs in grouped.items():
-        mi = np.array([math.nan if v is None else v for v, _ in pairs], dtype=float)
-        raw = np.array([math.nan if v is None else v for _, v in pairs], dtype=float)
-        produced = mi[np.isfinite(mi) & (mi != 0)]
-        if produced.size:
-            mi_value = float(produced.mean())
-        else:
-            mi_value = 0.0 if np.isfinite(mi).any() else math.nan
-        out[key] = (mi_value, float(np.nanmean(raw)) if np.isfinite(raw).any() else math.nan)
-    return out
+    runs = pd.DataFrame(produced['rows'])
+    frame = aggregate(runs, [k for k in keys if k in runs.columns], mean_cols=['raw_train_mi'])
+    return {tuple(_hashable(row.get(k)) for k in keys):
+            (row['mi_mean'], row.get('mi_raw_mean', row.get('raw_train_mi_mean', row['mi_mean'])))
+            for row in frame.to_dict(orient='records')}
 
 
 def _trial(args) -> Optional[Dict[tuple, Tuple[float, float]]]:
@@ -251,7 +218,7 @@ def _trial(args) -> Optional[Dict[tuple, Tuple[float, float]]]:
             produced = produce(mode, x_null, y, w, base_params, grid, ctx=ctx, to_bits=to_bits,
                                n_workers=1)
     except Exception as exc:
-        logger.warning(f"Permutation trial failed: {exc}")
+        warnings.warn(f"Permutation trial failed: {exc}", UserWarning, stacklevel=user_stacklevel())
         return None
     return row_values(mode, produced)
 
@@ -280,9 +247,7 @@ def permutation_nulls(mode: str, x, y, w, base_params: Dict[str, Any], grid, *, 
     logger.info(f"Permutation test: {n_permutations} trials for mode='{mode}' across "
                 f"{n_workers} worker(s).")
     if n_workers > 1 and n_permutations > 1:
-        _log_init, _log_args = worker_init_args()
-        with mp.get_context('spawn').Pool(processes=min(n_workers, n_permutations),
-                                          initializer=_log_init, initargs=_log_args) as pool:
+        with worker_pool(min(n_workers, n_permutations)) as pool:
             trials = list(tqdm(released(pool.imap(CapturedTask(_trial), args)), total=n_permutations,
                                desc="Permutation test", leave=False, disable=not show_progress))
     else:

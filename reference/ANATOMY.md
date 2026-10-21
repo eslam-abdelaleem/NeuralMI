@@ -184,8 +184,8 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d, median_filter
 
 smoothed_test = gaussian_filter1d(
-    median_filter(np.array(test_history), size=5, mode='reflect'),
-    sigma=1.0, mode='reflect')
+    median_filter(np.array(test_history), size=5, mode='nearest'),
+    sigma=1.0, mode='nearest')
 best_epoch = int(np.argmax(smoothed_test))
 
 print(f"best epoch             : {best_epoch}")
@@ -202,8 +202,17 @@ The training value at the chosen epoch lands close to the exact 4 bits. Reading
 the training curve at the last epoch would report whatever the critic had
 memorised by then.
 
-The library keeps the weights of the chosen epoch and reports a fresh
-evaluation of the training partition with them. `Training(patience=...)` can
+The library reads the earliest epoch at the top of the smoothed curve, not its
+maximum. On a curve like this one, which rises and falls, the two agree. On a
+plateau the maximum lands on whichever epoch the noise lifted highest, and the
+earliest epoch at the top is the network that generalises as well with less of
+its training sample memorised ([THEORY.md](THEORY.md#the-reported-number)).
+The smoothed value at an epoch depends on the epochs after it, so the top is
+known only once training has moved past it. The library keeps copies of the
+network for the epochs that can still turn out to be the peak (a handful at
+any time), takes the peak of the curve smoothed after training as `best_epoch`,
+and reports a fresh evaluation of the training partition with that epoch's
+network. `Training(patience=...)` can
 also stop the run once the smoothed held-out curve has not improved for that
 many epochs. The default patience of 1000 epochs outlasts the default 50-epoch
 run and leaves early stopping off.

@@ -62,16 +62,16 @@ class TestQuantitySweep:
 class TestMiRateSweepsEitherWindow:
     """`mi_rate` carries two windows and both change the answer.
 
-    They bias in opposite directions, so a curve that has flattened along one
-    of them proves nothing on its own: too little conditioning history reads
-    high, too narrow a window on X reads low. Sweeping either one has to be
-    possible for that check to be doable at all.
+    A curve that has flattened along one of them proves nothing on its own: too
+    narrow a window on X reads low, and too little conditioning history reads
+    high or low. Sweeping either one has to be possible for that check to be
+    doable at all.
     """
 
     @staticmethod
     def _cfg():
         from neural_mi import Model, Training
-        return dict(model=Model(embedding_model='dual_branch', embedding_dim=4,
+        return dict(model=Model(embedding_dim=4,
                                 hidden_dim=16, n_layers=1),
                     training=Training(n_epochs=1), n_workers=1, show_progress=False)
 

@@ -8,7 +8,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as _lr_sched
 import torch.nn as nn
 from collections import OrderedDict
-from typing import Dict, Any, Optional, Union, Tuple
+from typing import Dict, Any, Optional, Tuple
 import numpy as np
 
 import multiprocessing as mp
@@ -20,15 +20,12 @@ from neural_mi.models.embeddings import (
     DeepSets,
     MLP, VariationalWrapper,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
-    PretrainedBackboneEmbedding, LRUEmbedding, DualBranchEmbedding,
+    PretrainedBackboneEmbedding, LRUEmbedding, BranchedEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
 from neural_mi.logger import logger, user_stacklevel
 
-# Single source of truth for every built-in embedding_model string -> class,
-# reused both by build_critic's main dispatch and by 'dual_branch's own
-# branch_model lookup (a DualBranchEmbedding's two sub-networks are picked
-# from this same set).
+# Every built-in embedding_model string -> class.
 _EMBEDDING_CLASSES = {
     'mlp': MLP,
     'cnn': CNN1D,
@@ -40,7 +37,6 @@ _EMBEDDING_CLASSES = {
     'pretrained_backbone': PretrainedBackboneEmbedding,
     'lru': LRUEmbedding,
     'deepsets': DeepSets,
-    'dual_branch': DualBranchEmbedding,
 }
 
 def _ensure_cpu(data):
@@ -50,7 +46,7 @@ def _ensure_cpu(data):
     every tensor before adding it to a Pool task tuple.
 
     Non-tensor inputs (numpy arrays, None, etc.) are returned unchanged.
-    A tuple (DualBranchEmbedding's compound "X-role" data) is mapped over
+    A tuple (BranchedEmbedding's compound "X-role" data) is mapped over
     element-wise, so a GPU/MPS-resident element inside it actually gets
     moved before crossing the spawn boundary too.
     """
@@ -62,14 +58,9 @@ def _ensure_cpu(data):
 
 
 def get_device(device_str: Optional[str] = None) -> torch.device:
-    """Selects the appropriate device, including 'mps' for Apple Silicon."""
-    if device_str:
-        return torch.device(device_str)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+    """The device named, or the CPU when none is. Which device a call trains on when it
+    names none is chosen before its tasks run (:mod:`neural_mi.device`)."""
+    return torch.device(device_str or 'cpu')
 
 _mp_configured = False
 
@@ -398,11 +389,12 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
             # silently. This mirrors how the sample_rate ambiguity above is
             # handled: pick the documented reading and say so.
             if x_data.ndim >= 3:
-                logger.warning(
+                warnings.warn(
                     f"Lag on pre-processed data with shape {x_data.shape}. Axis 0 counts "
                     f"windows. lag={lag} shifts by {lag} windows ({lag} x step_size "
                     f"timepoints). Pass unwindowed data with "
-                    f"processing=Processing(x='continuous', ...) for a lag in timepoints."
+                    f"processing=Processing(x='continuous', ...) for a lag in timepoints.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
             else:
                 logger.info(
@@ -415,12 +407,13 @@ def _shift_data(x_data: Any, y_data: Any, lag: int,
             lag_samples = int(round(lag * sample_rate))
         else:
             # No sample_rate given: treat lag as a raw sample-index offset, but warn
-            logger.warning(
+            warnings.warn(
                 f"Lag units for '{y_processor_type}' data are ambiguous without a sample_rate. "
                 f"Treating lag={lag} as samples (index offset). "
                 f"To specify lag in seconds, set 'sample_rate' in Processing(x_params=...). "
                 f"Spike data always use seconds. Mixing processor types without "
-                f"sample_rate gives inconsistent lag scales."
+                f"sample_rate gives inconsistent lag scales.",
+                UserWarning, stacklevel=user_stacklevel()
             )
             lag_samples = int(lag)
 
@@ -556,12 +549,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 f"instance cannot also be a second, different one. Set "
                 f"shared_encoder=False to give the two sides their own encoders."
             )
-        if spec_y['model_type'] == 'dual_branch' and not _y_custom:
-            raise ValueError(
-                "embedding_model_y='dual_branch' is not a usable combination. "
-                "DualBranchEmbedding exists for a compound (tuple) X-role input. "
-                "The Y role is always a single plain population."
-            )
     if (embedding_params.get('embedding_dim_y') is not None
             and spec_y['embedding_dim'] != spec_x['embedding_dim']
             and critic_type == 'separable'):
@@ -575,6 +562,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     def _resolve_side(spec, side):
         """The class, the ``input_dim`` it expects, and its kwargs, for one side."""
+        if (spec['n_layers'] == 0 and not spec['custom_cls'] and spec['model_type'] != 'mlp'
+                and not isinstance(spec['hidden_dim'], list)):
+            raise ValueError(
+                f"n_layers=0 builds a linear encoder, which only the MLP can be. "
+                f"embedding_model={spec['model_type']!r} needs at least one layer."
+            )
         if spec['custom_cls']:
             EmbeddingModel = spec['custom_cls']
         elif spec['model_type'] in _EMBEDDING_CLASSES:
@@ -606,6 +599,8 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             if model_type in ('cnn', 'tcn', 'cnn2d'):
                 model_kwargs['kernel_size'] = embedding_params.get(
                     'kernel_size', 7 if model_type == 'cnn' else 3)
+            if model_type == 'cnn':
+                model_kwargs['pooling'] = embedding_params.get('cnn_pooling', 'flatten')
             if model_type in ('gru', 'lstm'):
                 model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
             if model_type == 'transformer':
@@ -615,18 +610,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
             if model_type == 'lru':
                 model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-            if model_type == 'dual_branch' and not spec['custom_cls']:
-                # custom_embedding_cls (a DualBranchEmbedding subclass hardcoding
-                # its own branch_cls, see the class docstring) always takes
-                # priority -- this only resolves branch_cls for the plain
-                # Model(embedding_model='dual_branch', branch_model=...) form.
-                branch_model = embedding_params.get('branch_model') or 'gru'
-                if branch_model not in _EMBEDDING_CLASSES:
-                    raise ValueError(
-                        f"Unknown branch_model: {branch_model!r}. Built-in options: "
-                        f"{sorted(_EMBEDDING_CLASSES)}."
-                    )
-                model_kwargs['branch_cls'] = _EMBEDDING_CLASSES[branch_model]
         else:  # MLP or a custom class, both take the fully-flattened input_dim
             input_dim = embedding_params[f'input_dim_{side}']
             if not spec['custom_cls']:
@@ -657,14 +640,14 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             "ConcatCritic operates on raw concatenated inputs and has no separate "
             "embedding networks to share. Switch to critic_type='separable' or 'hybrid'."
         )
-    if shared_encoder and isinstance(input_dim_x, tuple):
+    # A term of a difference quantity: its X encoder reads each part of X on a
+    # branch of its own, under one head (BranchedEmbedding).
+    difference_term = embedding_params.get('_difference_term', False)
+    if shared_encoder and difference_term:
         raise ValueError(
-            "shared_encoder=True is incompatible with a compound (tuple) X-role "
-            "input, e.g. DualBranchEmbedding used via mode='conditional'"
-            "(align='dual_branch'). One encoder instance can't simultaneously be "
-            "the dual (tuple-input) branch X needs and the single (plain-tensor) "
-            "branch Y needs -- they're structurally different forward() paths on "
-            "the same class. Set shared_encoder=False for this path."
+            "shared_encoder=True cannot serve a term of a difference quantity. Its X encoder reads the "
+            "conditioning set and the rest of X on branches of their own under one head (BranchedEmbedding), "
+            "and cannot also be Y's encoder. Set shared_encoder=False."
         )
 
     # Bias terms in the embedding layers. Both encoders get the same value.
@@ -704,6 +687,24 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 UserWarning, stacklevel=user_stacklevel(),
             )
 
+    # A class that names window_size gets the window length, the flattened size
+    # over the channel count (a pair of them for a compound input), so it need
+    # not average over the window to stay independent of its length. A custom
+    # class that names dropout or use_spectral_norm gets those too: the minimal
+    # contract above passes it only its sizes.
+    def _names(cls, key):
+        return key in inspect.signature(cls.__init__).parameters
+
+    for Model_, kwargs, spec, side in ((Model_x, model_kwargs, spec_x, 'x'), (Model_y, model_kwargs_y, spec_y, 'y')):
+        n_ch, flat = embedding_params.get(f'n_channels_{side}'), embedding_params.get(f'input_dim_{side}')
+        if _names(Model_, 'window_size') and n_ch is not None and flat is not None:
+            kwargs['window_size'] = (tuple(f // c for f, c in zip(flat, n_ch)) if isinstance(n_ch, tuple)
+                                     else flat // n_ch)
+        if spec['custom_cls']:
+            for key, default in (('dropout', 0.0), ('use_spectral_norm', True)):
+                if _names(Model_, key):
+                    kwargs[key] = embedding_params.get(key, default)
+
     # DeepSets masks padded slots, so it needs the sentinel the processor used.
     # Taken per side, since X and Y can be processed differently.
     for Model_, kwargs, key in ((Model_x, model_kwargs, 'processor_params_x'),
@@ -712,7 +713,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             params = embedding_params.get(key) or {}
             kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
 
-    net_x_base = Model_x(input_dim_x, **model_kwargs)
+    net_x_base = (_branched(Model_x, input_dim_x, model_kwargs, embedding_params['n_channels_x'],
+                            embedding_params.get('_condition'))
+                  if difference_term else Model_x(input_dim_x, **model_kwargs))
     net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
 
     # Optionally wrap with VariationalWrapper, works for every encoder type
@@ -729,14 +732,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # sample counts are modest. 500k is a practical threshold, not a hard limit.
     _first_hidden = hidden_dim[0] if isinstance(hidden_dim, list) else hidden_dim
     _last_hidden  = hidden_dim[-1] if isinstance(hidden_dim, list) else hidden_dim
-    # input_dim_x is a 2-tuple (dim_a, dim_c) for DualBranchEmbedding's compound
-    # X-role input (mode='conditional'(align='dual_branch')) -- sum the two
-    # branches' sizes for this warning's purposes, same total parameter count
-    # either way (two smaller first layers vs. one combined estimate).
+    # A pair of inputs counts with both branches' sizes.
     _input_dim_x_total = sum(input_dim_x) if isinstance(input_dim_x, tuple) else input_dim_x
     first_layer_params = _input_dim_x_total * _first_hidden
     if first_layer_params > 500_000:
-        logger.warning(
+        logger.info(
             f"Large first embedding layer detected: input_dim_x={input_dim_x} x "
             f"hidden_dim={hidden_dim} = {first_layer_params:,} parameters. "
             f"It may overfit small datasets. A smaller window_size or hidden_dim or "
@@ -766,6 +766,23 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         return ConcatCritic(embedding_net=concat_net, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
+
+
+def _branched(branch_cls, input_dim, kwargs, n_channels, condition) -> BranchedEmbedding:
+    """The X encoder of a term of a difference, with ``branch_cls`` built as the call's X encoder for each part.
+
+    A joint term's X arrives as a pair with its two sizes, or as one tensor
+    split by ``condition = ('first' | 'last', n)``: its first or last ``n``
+    channels are the conditioning set, in a size convention of ``input_dim``
+    per ``n_channels`` channels, at one window length. Any other term's X is
+    one part.
+    """
+    if condition is not None:
+        per_channel, n = input_dim // n_channels, condition[1]
+        input_dim = ((n_channels - n) * per_channel, n * per_channel)
+        if 'window_size' in kwargs:
+            kwargs = {**kwargs, 'window_size': (kwargs['window_size'],) * 2}
+    return BranchedEmbedding(input_dim, branch_cls=branch_cls, condition=condition, **kwargs)
 
 
 _OPTIMIZERS = {
@@ -1024,12 +1041,13 @@ def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
         return False
     min_gap_fraction = (window_size / (block * step)) if (block > 0 and step > 0) else float('inf')
     _where = f" ({path_label})" if path_label else ""
-    logger.warning(
+    warnings.warn(
         f"Blocked split may leak raw samples between train and test{_where}. "
         f"gap_size={gap_size} windows x step={step} gives {buffer:.3g} samples of "
         f"buffer against a window_size of {window_size}. Train and test windows can "
         f"share up to {window_size - buffer:.3g} samples. Increase "
         f"Split(gap_fraction=...) to at least {min_gap_fraction:.4f} "
-        f"(currently {gap_fraction}) to eliminate this."
+        f"(currently {gap_fraction}) to eliminate this.",
+        UserWarning, stacklevel=user_stacklevel()
     )
     return True

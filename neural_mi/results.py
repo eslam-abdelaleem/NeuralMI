@@ -453,6 +453,10 @@ class Results:
                     ax.axvline(best, color=colour if len(runs) > 1 else 'tomato',
                                linestyle='--', linewidth=1.2,
                                label=f'Best epoch ({best})' if len(runs) == 1 else None)
+                    peak = rep.get('peak_epoch')
+                    if len(runs) == 1 and peak is not None and not pd.isna(peak) and int(peak) != best:
+                        ax.axvline(int(peak), color='grey', linestyle=':', linewidth=1.2,
+                                   label=f'Peak of the smoothed curve ({int(peak)})')
                 conservative = rep.get('conservative_epoch')
                 if (len(runs) == 1 and conservative is not None and not pd.isna(conservative)
                         and 0 <= int(conservative) < len(history)):

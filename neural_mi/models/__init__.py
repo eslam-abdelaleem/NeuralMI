@@ -8,7 +8,7 @@ It is organized into two main submodules:
 from .embeddings import (
     MLP, VariationalWrapper, BaseEmbedding, CNN1D, CNN2D,
     GRU, LSTM, LRUEmbedding, TCN, Transformer, DeepSets,
-    PretrainedBackboneEmbedding, DualBranchEmbedding,
+    PretrainedBackboneEmbedding, BranchedEmbedding,
 )
 from .critics import (
     SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
@@ -18,6 +18,6 @@ __all__ = [
     'MLP', 'VariationalWrapper', 'BaseEmbedding', 'CNN1D', 'CNN2D',
     'GRU', 'LSTM', 'LRUEmbedding', 'TCN', 'Transformer', 'PretrainedBackboneEmbedding',
     'DeepSets',
-    'DualBranchEmbedding',
+    'BranchedEmbedding',
     'SeparableCritic', 'ConcatCritic', 'BaseCritic', 'HybridCritic',
 ]

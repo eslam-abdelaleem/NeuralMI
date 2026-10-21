@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-09-30
+## [1.0.0] - 2026-10-20
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
@@ -45,30 +45,39 @@ independent samples.
 
 ### Estimators and models
 
-The estimator is InfoNCE or SMILE, selectable per run. The library builds eleven
-embedding architectures (`mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn`,
-`transformer`, `lru`, `deepsets`, `dual_branch` and `pretrained_backbone`) and
-three critics (`separable`, `concat` and `hybrid`). Custom critics and embedding
-classes are supported. The two sides of a critic can carry different encoders
-through the `_y` settings.
+The estimator is InfoNCE, SMILE or KSG (Kraskov, Stögbauer and Grassberger),
+selectable per run. KSG trains no network and takes the difference quantities
+through its conditional form. The library builds ten embedding architectures
+(`mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn`, `transformer`, `lru`, `deepsets`
+and `pretrained_backbone`) and three critics (`separable`, `concat` and
+`hybrid`). Custom critics and embedding classes are supported. The two sides of
+a critic can carry different encoders through the `_y` settings. Every term of a
+difference quantity encodes each part of X on its own branch of the chosen
+encoder under one small head. The terms then learn the conditioning set the
+same way.
 
 ### Reading a number honestly
 
-Because the estimators are variational lower bounds, the library reports what
-bounds its own answer. Every estimate carries the ceiling of the partition it
+Because the neural estimators are variational lower bounds, the library reports
+what bounds its own answer. The reported value is read at the earliest epoch at
+the top of the smoothed held-out curve. `curve_diagnosis` says when the curve
+cannot support that choice. Every estimate carries the ceiling of the partition it
 was evaluated on. Difference quantities carry an `amplification_factor` saying
 how much component error the answer inherits. `mode='rigorous'` reports
 `is_reliable` and `mi_error` alongside the corrected estimate. Optional
 permutation testing gives a null distribution where the mode supports one. A
 quantity that cannot be negative is never reported below zero and keeps its
-measured value beside the reported one. Averages over repeats and rigorous fits
-leave out the repeats and chunks that produced nothing. A setting that would
+measured value beside the reported one. Averages over the repeats of a
+difference or a rigorous fit use every repeat's measured value with its sign. A
+single network's repeat that learned nothing that generalises is left out and
+counted. A setting that would
 have no effect is named in a warning. The call refuses settings it cannot
 honour: an estimator parameter the estimator does not take, or custom split
 indices on a mode that builds its own rows.
 
-Every message the library can emit is documented by its text in
-`reference/MESSAGES.md`.
+A message that needs attention is a Python warning, shown once per kind in a
+call or a notebook cell and counted after. Every message the library can emit
+is documented by its text in `reference/MESSAGES.md`.
 
 ### Documentation
 

@@ -120,17 +120,27 @@ def _check(result, mode, grid_name):
     if n_repeats == 1:
         assert df['mi_std'].isna().all()
     if len(df) == 1:
-        assert result.mi_estimate == pytest.approx(df['mi_mean'].iloc[0])
+        mean = df['mi_mean'].iloc[0]          # a value that could not be estimated is no headline
+        assert result.mi_estimate is None if np.isnan(mean) else result.mi_estimate == pytest.approx(mean)
     else:
         assert result.mi_estimate is None
     assert set(result.details) <= set(range(n_configs))
-    # Each configuration's mean is the mean of its own repeats that produced a
-    # value. A repeat reported as 0 produced nothing and is counted in n_zero,
-    # and a row whose repeats all produced nothing reports 0.
+    # A repeat that carries a measured value (mi_raw) counts whatever its sign:
+    # the mean of every repeat's measured value, reported as 0 when negative.
+    # Otherwise each configuration's mean is the mean of its own repeats that
+    # produced a value, a repeat reported as 0 produced nothing and is counted
+    # in n_zero, and a row whose repeats all produced nothing reports 0.
     for _, row in df.iterrows():
         mask = runs['config_id'] == row['config_id']
         for axis in AXIS.get(mode, []):
             mask &= runs[axis] == row[axis]
+        if 'mi_raw' in runs.columns:
+            measured = runs.loc[mask, 'mi_raw'].astype(float).dropna()
+            assert row['n_zero'] == 0
+            if len(measured):
+                assert row['mi_raw_mean'] == pytest.approx(measured.mean())
+                assert row['mi_mean'] == pytest.approx(max(measured.mean(), 0.0))
+            continue
         values = runs.loc[mask, 'mi'].astype(float)
         produced = values[values.notna() & (values != 0)]
         assert row['n_zero'] == int((values == 0).sum())

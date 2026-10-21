@@ -2,18 +2,20 @@
 """Exact ground truth for temporal information quantities.
 
 Most generators in this package produce data whose mutual information is known
-for one specific pairing. :class:`SharedLatentGaussian` is stronger: it exposes
+for one specific pairing. :class:`LatentGaussian` is stronger: it exposes
 the exact value of ``I(A; B | C)`` for *any* choice of processes and time
 offsets, so every quantity in the temporal taxonomy (active information
 storage, excess entropy, MI rate, transfer entropy, instantaneous exchange,
 directed information rate, conditional TE, interaction information) has an
 exact number to check an estimate against.
 
-The model is a set of observed processes driven by one shared autoregressive
-latent::
+The model is a set of observed processes read out from one linear latent::
 
-    Z_t = phi * Z_{t-1} + eta_t            eta ~ N(0, I),  Z_t in R^d
-    V_t = M_V Z_t + eps_V                  eps_V ~ N(0, s_V^2 I)   for each V
+    Z_t = Phi Z_{t-1} + eta_t              eta ~ N(0, Q),  Z_t in R^d
+    V_t = M_V Z_t + eps_V                  eps_V ~ N(0, diag(s_V^2))   for each V
+
+:meth:`LatentGaussian.shared` is the case ``Phi = phi I`` and ``Q = I``, one
+latent every process reads.
 
 Everything is jointly Gaussian and jointly stationary, so every quantity is a
 log-determinant of a covariance block and is exact up to floating point. The
@@ -34,13 +36,14 @@ from contextlib import contextmanager
 
 import numpy as np
 import torch
+from scipy.linalg import solve_discrete_are, solve_discrete_lyapunov
 
 LOG2 = np.log(2.0)
 
 # numpy 2.x renamed trapz to trapezoid; support both.
 _TRAPZ = getattr(np, "trapezoid", None) or np.trapz
 
-Spec = Sequence[Tuple[str, int]]
+Spec = Sequence[Tuple[object, int]]     # (process name or channel indices, offset)
 
 
 @contextmanager
@@ -61,8 +64,9 @@ def _torch_seed(seed: int):
 
 
 def _slogdet(matrix: np.ndarray) -> float:
+    """Log-determinant of a positive-definite matrix, real symmetric or complex Hermitian."""
     sign, logdet = np.linalg.slogdet(matrix)
-    if sign <= 0:
+    if np.real(sign) <= 0:
         raise np.linalg.LinAlgError(
             f"Covariance block is not positive definite (slogdet sign={sign}). "
             f"This usually means a process was given zero observation noise or "
@@ -71,78 +75,121 @@ def _slogdet(matrix: np.ndarray) -> float:
     return float(logdet)
 
 
-class SharedLatentGaussian:
-    """Jointly Gaussian processes sharing one AR(1) latent, with exact MI.
+class LatentGaussian:
+    """Jointly Gaussian processes read out from one linear latent, with exact information values.
+
+    The latent evolves as ``Z_t = Phi Z_{t-1} + eta_t`` with ``eta ~ N(0, Q)``,
+    and each named process reads it through its own matrix with independent
+    noise, ``V_t = M_V Z_t + eps_V``. ``Phi`` can couple latent components, so
+    one group of latents can drive another (directed influence), a process can
+    read a latent of its own (private memory), and components can have
+    different timescales. :meth:`shared` builds the common case of one latent
+    of ``d`` independent AR(1) components shared by every process.
 
     Parameters
     ----------
-    dims : dict of str to int, optional
-        Observed dimensionality of each process, keyed by name. Defaults to
-        ``{'x': 8, 'y': 8}``. Add a third entry (conventionally ``'w'``) for
-        interaction information or conditional transfer entropy. Both need a
-        third process to be defined at all.
-    d : int, optional
-        Dimensionality of the shared latent, so the true number of shared
-        factors. Defaults to 2.
-    phi : float, optional
-        AR(1) coefficient of the latent, in ``[0, 1)``. Sets the correlation
-        timescale ``tau = -1 / log(phi)``, so ``phi=0.9`` gives roughly 9.5
-        bins. Defaults to 0.9.
-    noise : float or dict of str to float, optional
-        Observation-noise standard deviation, either one value shared by all
-        processes or one per process. Defaults to 1.0.
-    coupling : float, optional
-        Scales every projection matrix. Larger values raise the mutual
-        information without changing the timescale. Defaults to 1.0.
-    seed : int, optional
-        Seeds the projection matrices. Defaults to 0.
+    Phi : array_like of shape (d, d)
+        Latent dynamics. Every eigenvalue must lie inside the unit circle for a
+        stationary latent.
+    proj : dict of str to array_like
+        Each process's readout matrix ``M_V``, of shape ``(n_channels, d)``,
+        keyed by name in the order the processes are stacked.
+    noise : float or dict of str to float or array_like, optional
+        Observation-noise standard deviation: one value for every channel, or
+        per process a value or one per channel. Defaults to 1.0.
+    Q : array_like of shape (d, d), optional
+        Covariance of the latent innovations. Defaults to the identity.
 
     Attributes
     ----------
-    tau : float
-        Correlation time of the latent, in bins.
+    dims : dict of str to int
+        Channels of each process.
     names : tuple of str
-        Process names, in the order given.
+        Process names, in order.
+    d : int
+        Latent dimensionality.
+    Sigma_Z : ndarray
+        Stationary covariance of the latent.
+    phi, tau : float
+        Memory per bin of the slowest latent mode (the spectral radius of
+        ``Phi``) and its correlation time ``-1 / log(phi)`` in bins.
 
     Examples
     --------
-    >>> from neural_mi.generators import SharedLatentGaussian
-    >>> oracle = SharedLatentGaussian(dims={'x': 8, 'y': 8}, d=2, phi=0.9)
+    >>> from neural_mi.generators import LatentGaussian
+    >>> oracle = LatentGaussian.shared(dims={'x': 8, 'y': 8}, d=2, phi=0.9)
     >>> ais = oracle.exact(A=[('x', s) for s in range(-10, 0)], B=[('x', 0)])
     >>> samples = oracle.sample(T=20000, seed=0)
     >>> samples['x'].shape
     (20000, 8)
     """
 
-    def __init__(self, dims: Optional[Dict[str, int]] = None, d: int = 2,
-                 phi: float = 0.9, noise=1.0, coupling: float = 1.0,
-                 seed: int = 0):
+    def __init__(self, Phi, proj: Dict[str, np.ndarray], noise=1.0, Q=None):
+        if not proj:
+            raise ValueError("proj must name at least one process.")
+        self.Phi = np.atleast_2d(np.asarray(Phi, dtype=float))
+        self.d = self.Phi.shape[0]
+        self.Q = np.eye(self.d) if Q is None else np.asarray(Q, dtype=float)
+        self.phi = float(np.max(np.abs(np.linalg.eigvals(self.Phi))))
+        if self.phi >= 1.0:
+            raise ValueError(f"Phi has spectral radius {self.phi:.3g}; a stationary latent needs it below 1.")
+        self.tau = -1.0 / np.log(self.phi) if self.phi > 0 else 0.0
+        self.proj = OrderedDict((v, np.atleast_2d(np.asarray(m, dtype=float))) for v, m in proj.items())
+        self.dims = OrderedDict((v, m.shape[0]) for v, m in self.proj.items())
+        self.names = tuple(self.dims)
+        if isinstance(noise, dict):
+            missing = set(self.dims) - set(noise)
+            if missing:
+                raise ValueError(f"noise dict is missing entries for {sorted(missing)}.")
+            self.noise = {v: noise[v] for v in self.dims}
+        else:
+            self.noise = {v: noise for v in self.dims}
+        self.Sigma_Z = solve_discrete_lyapunov(self.Phi, self.Q)
+
+        # Every process stacked into one set of channels, for channel-level specs and the infinite past.
+        self._C = np.vstack(list(self.proj.values()))
+        self._r = np.concatenate([np.broadcast_to(np.asarray(self.noise[v], dtype=float) ** 2, (n,))
+                                  for v, n in self.dims.items()])
+        bounds = np.cumsum([0, *self.dims.values()])
+        self._index = {v: np.arange(lo, hi) for v, lo, hi in zip(self.names, bounds[:-1], bounds[1:])}
+
+    @classmethod
+    def shared(cls, dims: Optional[Dict[str, int]] = None, d: int = 2, phi: float = 0.9,
+               noise=1.0, coupling: float = 1.0, seed: int = 0) -> 'LatentGaussian':
+        """Processes sharing one latent of ``d`` independent AR(1) components with memory ``phi``.
+
+        Parameters
+        ----------
+        dims : dict of str to int, optional
+            Observed dimensionality of each process, keyed by name. Defaults to
+            ``{'x': 8, 'y': 8}``. Add a third entry (conventionally ``'w'``) for
+            interaction information or conditional transfer entropy. Both need a
+            third process to be defined at all.
+        d : int, optional
+            Dimensionality of the shared latent, so the true number of shared
+            factors. Defaults to 2.
+        phi : float, optional
+            AR(1) coefficient of the latent, in ``[0, 1)``. Sets the correlation
+            timescale ``tau = -1 / log(phi)``, so ``phi=0.9`` gives roughly 9.5
+            bins. Defaults to 0.9.
+        noise : float or dict of str to float, optional
+            Observation-noise standard deviation, either one value shared by all
+            processes or one per process. Defaults to 1.0.
+        coupling : float, optional
+            Scales every projection matrix. Larger values raise the mutual
+            information without changing the timescale. Defaults to 1.0.
+        seed : int, optional
+            Seeds the projection matrices. Defaults to 0.
+        """
         if dims is None:
             dims = {'x': 8, 'y': 8}
         if not dims:
             raise ValueError("dims must name at least one process.")
         if not 0.0 <= phi < 1.0:
             raise ValueError(f"phi must lie in [0, 1) for a stationary latent, got {phi}.")
-
         rng = np.random.default_rng(seed)
-        self.dims = OrderedDict(dims)
-        self.names = tuple(self.dims)
-        self.d = d
-        self.phi = phi
-        self.coupling = coupling
-
-        if isinstance(noise, dict):
-            missing = set(self.dims) - set(noise)
-            if missing:
-                raise ValueError(f"noise dict is missing entries for {sorted(missing)}.")
-            self.noise = {v: float(noise[v]) for v in self.dims}
-        else:
-            self.noise = {v: float(noise) for v in self.dims}
-
-        self.proj = {v: coupling * rng.normal(size=(n, d)) / np.sqrt(d)
-                     for v, n in self.dims.items()}
-        self.Sigma_Z = np.eye(d) / (1.0 - phi ** 2)
-        self.tau = -1.0 / np.log(phi) if phi > 0 else 0.0
+        proj = {v: coupling * rng.normal(size=(n, d)) / np.sqrt(d) for v, n in dims.items()}
+        return cls(phi * np.eye(d), proj, noise)
 
     # ------------------------------------------------------------------
     # covariance machinery
@@ -154,7 +201,7 @@ class SharedLatentGaussian:
         except KeyError:
             raise KeyError(
                 f"Unknown process {name!r}. This oracle defines {list(self.dims)}. "
-                f"Pass a larger dims dict to the constructor to add one."
+                f"Pass more processes to the constructor to add one."
             ) from None
 
     def snr(self, name: str) -> np.ndarray:
@@ -162,9 +209,9 @@ class SharedLatentGaussian:
 
         Channel ``c`` of process ``V`` has latent-driven variance
         ``[M_V Sigma_Z M_V^T]_cc`` and observation-noise variance ``s_V^2``,
-        and this returns their ratio for every channel. The projections are
-        random, so channels of the same process can differ by two orders of
-        magnitude in how much of the latent they carry.
+        and this returns their ratio for every channel. Random projections let
+        channels of the same process differ by orders of magnitude in how much
+        of the latent they carry.
 
         Returns
         -------
@@ -172,36 +219,38 @@ class SharedLatentGaussian:
             One ratio per channel, of shape ``(n_channels,)``. Infinite where
             the process was given zero observation noise.
         """
-        self.dim(name)
-        proj = self.proj[name]
-        signal = np.diag(proj @ self.Sigma_Z @ proj.T)
-        sigma2 = self.noise[name] ** 2
-        if sigma2 == 0.0:
-            return np.full(signal.shape, np.inf)
-        return signal / sigma2
+        channels = self._channels(name)
+        signal = np.einsum('ij,jk,ik->i', self._C[channels], self.Sigma_Z, self._C[channels])
+        with np.errstate(divide='ignore'):
+            return np.where(self._r[channels] == 0.0, np.inf, signal / self._r[channels])
+
+    def _channels(self, process) -> np.ndarray:
+        """The stacked channels of a process name, or channel indices as given."""
+        if isinstance(process, str):
+            self.dim(process)
+            return self._index[process]
+        return np.atleast_1d(np.asarray(process, dtype=int))
 
     def _latent_cov(self, lag: int) -> np.ndarray:
-        return (self.phi ** abs(lag)) * self.Sigma_Z
-
-    def _cross_cov(self, v1: str, v2: str, lag: int) -> np.ndarray:
-        """``E[v1_t v2_{t+lag}^T]``, including observation noise on the diagonal."""
-        block = self.proj[v1] @ self._latent_cov(lag) @ self.proj[v2].T
-        if v1 == v2 and lag == 0:
-            block = block + (self.noise[v1] ** 2) * np.eye(self.dims[v1])
-        return block
+        """``E[Z_t Z_{t+lag}^T]``."""
+        power = np.linalg.matrix_power(self.Phi, abs(lag))
+        return self.Sigma_Z @ power.T if lag >= 0 else power @ self.Sigma_Z
 
     def _cov_from_spec(self, spec: Spec) -> np.ndarray:
-        # Validate up front so an unknown name reports which processes exist,
-        # instead of surfacing a bare KeyError from the projection lookup.
-        for (v, _) in spec:
-            self.dim(v)
+        items = [(self._channels(v), o) for (v, o) in spec]
         rows = []
-        for (v1, o1) in spec:
-            rows.append(np.hstack([self._cross_cov(v1, v2, o2 - o1) for (v2, o2) in spec]))
+        for (c1, o1) in items:
+            row = []
+            for (c2, o2) in items:
+                block = self._C[c1] @ self._latent_cov(o2 - o1) @ self._C[c2].T
+                if o1 == o2:
+                    block = block + (c1[:, None] == c2[None, :]) * self._r[c1][:, None]
+                row.append(block)
+            rows.append(np.hstack(row))
         return np.vstack(rows)
 
     def _width(self, spec: Spec) -> int:
-        return sum(self.dim(v) for (v, _) in spec)
+        return sum(len(self._channels(v)) for (v, _) in spec)
 
     # ------------------------------------------------------------------
     # the primitive
@@ -212,7 +261,9 @@ class SharedLatentGaussian:
         Each of ``A``, ``B`` and ``C`` is a sequence of ``(process, offset)``
         pairs, where offset is measured in time bins relative to a common
         reference. Negative offsets are past, zero is present, positive is
-        future. An empty ``C`` gives the unconditional ``I(A; B)``.
+        future. A process is a name, or channel indices into the processes
+        stacked in order, to pick single channels. An empty ``C`` gives the
+        unconditional ``I(A; B)``.
 
         Every named quantity in the taxonomy is this function under a different
         offset pattern. Active information storage is
@@ -222,9 +273,9 @@ class SharedLatentGaussian:
 
         Parameters
         ----------
-        A, B : sequence of (str, int)
+        A, B : sequence of (str or int or array_like, int)
             The two groups whose shared information is measured.
-        C : sequence of (str, int), optional
+        C : sequence of (str or int or array_like, int), optional
             The conditioning group. Empty by default.
 
         Returns
@@ -252,7 +303,35 @@ class SharedLatentGaussian:
     # ------------------------------------------------------------------
     # named conveniences
     # ------------------------------------------------------------------
-    def block_mi(self, w: int, a: Optional[str] = None, b: Optional[str] = None) -> float:
+    def storage_transfer(self, target, sources, k: Optional[int] = None) -> Tuple[float, float]:
+        """Active information storage of ``target`` and transfer entropy from ``sources`` into it, in bits.
+
+        Both are per step, from ``k`` bins of history, or from the infinite past
+        when ``k`` is None. The infinite-past values come from the steady-state
+        Kalman filter: storage is ``log det Var(target) - log det E_own`` and
+        transfer ``log det E_own - log det E_joint``, halved and in bits, where
+        ``E`` is the one-step prediction error of the target given its own past,
+        or its past and the sources' past. ``target`` and ``sources`` are
+        process names or channel indices, as in :meth:`exact`.
+        """
+        tgt, src = self._channels(target), self._channels(sources)
+        if k is not None:
+            own = [(tgt, -j) for j in range(1, k + 1)]
+            return (self.exact(own, [(tgt, 0)]),
+                    self.exact([(src, -j) for j in range(1, k + 1)], [(tgt, 0)], own))
+        variance = self._C[tgt] @ self.Sigma_Z @ self._C[tgt].T + np.diag(self._r[tgt])
+        own = self._innovation(tgt)
+        joint = self._innovation(np.r_[tgt, src])[:len(tgt), :len(tgt)]
+        return ((_slogdet(variance) - _slogdet(own)) / (2.0 * LOG2),
+                (_slogdet(own) - _slogdet(joint)) / (2.0 * LOG2))
+
+    def _innovation(self, channels: np.ndarray) -> np.ndarray:
+        """One-step prediction-error covariance of ``channels`` given their whole joint past."""
+        C, R = self._C[channels], np.diag(self._r[channels])
+        P = solve_discrete_are(self.Phi.T, C.T, self.Q, R)
+        return C @ P @ C.T + R
+
+    def block_mi(self, w: int, a=None, b=None) -> float:
         """Exact ``I(A_1^w; B_1^w)`` in bits, the extensive block quantity.
 
         Grows without bound as ``w`` increases, approaching ``rate * w + b``.
@@ -262,35 +341,37 @@ class SharedLatentGaussian:
         offsets = range(w)
         return self.exact(A=[(a, o) for o in offsets], B=[(b, o) for o in offsets])
 
-    def mi_rate(self, a: Optional[str] = None, b: Optional[str] = None,
-                n_omega: int = 4096) -> float:
+    def mi_rate(self, a=None, b=None, n_omega: int = 4096) -> float:
         """Exact information rate in bits per bin, via the coherence integral.
 
         This is the intensive counterpart of :meth:`block_mi`, and equals the
-        slope that :meth:`affine_fit` recovers. Exact up to quadrature, so
-        ``n_omega`` controls the only approximation in this class.
+        slope that :meth:`affine_fit` recovers. The spectral density of the
+        latent is ``H Q H^*`` with ``H = (I - Phi e^{-i omega})^{-1}``. Exact up
+        to quadrature, so ``n_omega`` controls the only approximation in this
+        class.
         """
         a, b = self._default_pair(a, b)
+        ia, ib = self._channels(a), self._channels(b)
+        Ca, Cb = self._C[ia], self._C[ib]
+        noise_a, noise_b = np.diag(self._r[ia]), np.diag(self._r[ib])
         omega = np.linspace(-np.pi, np.pi, n_omega, endpoint=False)
-        gain = (1 - self.phi ** 2) / (1 - 2 * self.phi * np.cos(omega) + self.phi ** 2)
-        Ma, Mb = self.proj[a], self.proj[b]
-        eye_a, eye_b = np.eye(self.dims[a]), np.eye(self.dims[b])
-        MaS, MbS = Ma @ self.Sigma_Z, Mb @ self.Sigma_Z
+        eye = np.eye(self.d)
         vals = np.empty(n_omega)
-        for i, g in enumerate(gain):
-            Saa = g * MaS @ Ma.T + self.noise[a] ** 2 * eye_a
-            Sbb = g * MbS @ Mb.T + self.noise[b] ** 2 * eye_b
-            Sab = g * MaS @ Mb.T
-            joint = np.block([[Saa, Sab], [Sab.T, Sbb]])
+        for i, w in enumerate(omega):
+            H = np.linalg.inv(eye - self.Phi * np.exp(-1j * w))
+            S = H @ self.Q @ H.conj().T
+            Saa = Ca @ S @ Ca.T + noise_a
+            Sbb = Cb @ S @ Cb.T + noise_b
+            Sab = Ca @ S @ Cb.T
+            joint = np.block([[Saa, Sab], [Sab.conj().T, Sbb]])
             vals[i] = _slogdet(Saa) + _slogdet(Sbb) - _slogdet(joint)
         return float(_TRAPZ(vals, omega) / (4 * np.pi) / LOG2)
 
-    def affine_fit(self, w_lo: int, w_hi: int, a: Optional[str] = None,
-                   b: Optional[str] = None) -> Tuple[float, float]:
+    def affine_fit(self, w_lo: int, w_hi: int, a=None, b=None) -> Tuple[float, float]:
         """Fit ``block_mi(w) = rate * w + intercept`` over ``[w_lo, w_hi]``.
 
         The slope converges to :meth:`mi_rate` and the intercept to the
-        subextensive predictive information. Fit well away from ``w=1``, where
+        subextensive part of the block MI. Fit well away from ``w=1``, where
         edge effects still dominate.
 
         Returns
@@ -305,16 +386,16 @@ class SharedLatentGaussian:
         slope, intercept = np.polyfit(widths, values, 1)
         return float(slope), float(intercept)
 
-    def _default_pair(self, a: Optional[str], b: Optional[str]) -> Tuple[str, str]:
+    def _default_pair(self, a, b):
         if a is None or b is None:
             if len(self.names) < 2:
                 raise ValueError(
                     "This oracle defines a single process and has no pair to "
-                    "measure. Name two processes in dims or pass a and b explicitly."
+                    "measure. Name two processes or pass a and b explicitly."
                 )
             a = a if a is not None else self.names[0]
             b = b if b is not None else self.names[1]
-        self.dim(a), self.dim(b)
+        self._channels(a), self._channels(b)
         return a, b
 
     # ------------------------------------------------------------------
@@ -329,32 +410,33 @@ class SharedLatentGaussian:
         T : int
             Number of time steps to return.
         seed : int, optional
-            Seeds the noise draws, independently of the constructor seed that
-            fixed the projections. Defaults to 0.
+            Seeds the noise draws, independently of anything that fixed the
+            projections. Defaults to 0.
         burn : int, optional
             Latent steps discarded so the returned series starts stationary.
             Defaults to 500.
         return_latents : bool, optional
-            If True, also return the shared latent that drove the sample.
-            Defaults to False.
+            If True, also return the latent that drove the sample. Defaults to
+            False.
 
         Returns
         -------
         dict of str to ndarray
-            One array per process, each of shape ``(T, n_channels)``, the timepoints-first convention the library's processors expect.
+            One array per process, each of shape ``(T, n_channels)``, the
+            timepoints-first convention the library's processors expect.
 
         ndarray, optional
-            The shared latent ``Z``, of shape ``(T, d)``, only if
-            ``return_latents=True``.
+            The latent ``Z``, of shape ``(T, d)``, only if ``return_latents=True``.
         """
         rng = np.random.default_rng(seed)
-        latent = np.empty((T + burn, self.d))
         z = rng.multivariate_normal(np.zeros(self.d), self.Sigma_Z)
+        eta = rng.normal(size=(T + burn, self.d)) @ np.linalg.cholesky(self.Q).T
+        latent = np.empty((T + burn, self.d))
         for t in range(T + burn):
-            z = self.phi * z + rng.normal(size=self.d)
+            z = self.Phi @ z + eta[t]
             latent[t] = z
         latent = latent[burn:]
-        observed = {v: latent @ self.proj[v].T + self.noise[v] * rng.normal(size=(T, n))
+        observed = {v: latent @ self.proj[v].T + np.asarray(self.noise[v]) * rng.normal(size=(T, n))
                     for v, n in self.dims.items()}
         if return_latents:
             return observed, latent
@@ -365,28 +447,29 @@ def generate_shared_latent_gaussian(T: int = 20000, dims: Optional[Dict[str, int
                                     d: int = 2, phi: float = 0.9, noise=1.0,
                                     coupling: float = 1.0, seed: int = 0,
                                     return_latents: bool = False):
-    """Sample from a :class:`SharedLatentGaussian` and return the oracle with it.
+    """Sample from :meth:`LatentGaussian.shared` and return the oracle with it.
 
     A convenience for the common case of wanting data and its exact values
-    together. Equivalent to constructing the oracle and calling
-    :meth:`~SharedLatentGaussian.sample`.
+    together. Equivalent to building the oracle and calling
+    :meth:`~LatentGaussian.sample`.
 
     Parameters
     ----------
     return_latents : bool, optional
         If True, append the shared latent to the returned tuple. Defaults to
-        False. Every other parameter is passed straight to the constructor.
+        False. Every other parameter is passed straight to
+        :meth:`LatentGaussian.shared`.
 
     Returns
     -------
-    tuple of (dict, SharedLatentGaussian)
+    tuple of (dict, LatentGaussian)
         The sampled processes keyed by name, and the oracle that generated
         them, so any exact value can be queried afterwards. With
         ``return_latents=True`` the shared latent follows as a third element,
         of shape ``(T, d)``.
     """
-    oracle = SharedLatentGaussian(dims=dims, d=d, phi=phi, noise=noise,
-                                  coupling=coupling, seed=seed)
+    oracle = LatentGaussian.shared(dims=dims, d=d, phi=phi, noise=noise,
+                                   coupling=coupling, seed=seed)
     if return_latents:
         data, latent = oracle.sample(T, seed=seed, return_latents=True)
         return data, oracle, latent
@@ -1008,7 +1091,7 @@ def generate_lagged_pair(n_samples: int = 5000, lag: int = 30, dim: int = 1,
                          coupling: float = 3.0, seed: int = 0):
     """A pair whose dependence sits at a known lag, with exact MI at that lag.
 
-    Built from :class:`SharedLatentGaussian` and then offset, so both the lag
+    Built from :meth:`LatentGaussian.shared` and then offset, so both the lag
     and the mutual information at it are known. ``mode='lag'`` should recover
     ``lag`` as the peak, and the MI it reports there should approach
     ``exact_mi``.
@@ -1049,8 +1132,8 @@ def generate_lagged_pair(n_samples: int = 5000, lag: int = 30, dim: int = 1,
     """
     if lag < 0:
         raise ValueError(f"lag must be non-negative, got {lag}.")
-    oracle = SharedLatentGaussian(dims={'x': dim, 'y': dim}, d=1, phi=phi,
-                                  noise=noise, coupling=coupling, seed=seed)
+    oracle = LatentGaussian.shared(dims={'x': dim, 'y': dim}, d=1, phi=phi,
+                                   noise=noise, coupling=coupling, seed=seed)
     sample = oracle.sample(n_samples + lag, seed=seed)
     # Taking X from later in the series makes Y trail it, so the cross-lag peak
     # sits at +lag. The value there is the aligned (offset-0) MI of the source

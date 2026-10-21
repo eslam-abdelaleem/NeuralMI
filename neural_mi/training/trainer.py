@@ -14,11 +14,13 @@ from typing import Dict, Any, Tuple, Optional, List, Callable, Union
 import torch.nn as nn
 import copy
 import contextlib
+import time
 
 from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
                             AlignedStreams)
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
+from neural_mi.training.epochs import EPOCH_RULES, FUZZY_SE, choose_epoch, standard_error, warn_about_curve
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks)
 from neural_mi.augmentations import apply_augmentations
@@ -36,21 +38,36 @@ def _ranks(sample: np.ndarray) -> List[int]:
     indices = sorted(range(len(sample)), key=lambda i: sample[i])
     return sorted(indices, key=lambda i: indices[i])
 
-def _sample_with_minimum_distance(n: int, k: int, d: int) -> np.ndarray:
-    """Sample k block start positions in [0, n) with pairwise distance >= d.
+def _sample_with_minimum_distance(n: int, k: int, d: int, rng=np.random) -> np.ndarray:
+    """Sample k block start positions in [0, n) with pairwise distance >= d, drawn from rng.
 
     Draws k values from a compressed range of size n - (k-1)*(d-1), then
     spreads them out by each value's rank so consecutive picks are always
     at least d apart. This is what keeps the blocked test-split's blocks
     from overlapping or sitting adjacent to each other.
     """
-    sample = np.random.choice(n - (k - 1) * (d - 1), k, replace=False)
+    sample = rng.choice(n - (k - 1) * (d - 1), k, replace=False)
     return np.array([s + (d - 1) * r for s, r in zip(sample, _ranks(sample))])
+
+
+def _blocks_of(n_rows: int, max_rows: int) -> Tuple[int, int]:
+    """Blocks of at most max_rows that n_rows are evaluated in, and the rows of the largest."""
+    n_blocks = -(-n_rows // max_rows)
+    return n_blocks, -(-n_rows // n_blocks)
+
+
+def _rng_of(trainer):
+    """The generator a trainer draws its split and evaluation rows from.
+
+    Some callers use the split helpers on a bare instance or as plain functions
+    (``Trainer._create_blocked_split(None, ...)``); they get NumPy's global state.
+    """
+    return getattr(trainer, '_rng', np.random)
 
 
 def _batch_size_of(x) -> int:
     """Leading (sample) dim of x, whether x is a plain tensor or a tuple
-    (DualBranchEmbedding's compound "X-role" data, mode='conditional'
+    (BranchedEmbedding's compound "X-role" data, mode='conditional'
     (align='dual_branch')) sharing that dimension."""
     return (x[0] if isinstance(x, tuple) else x).shape[0]
 
@@ -60,6 +77,14 @@ def _to_device(x, device):
     if isinstance(x, tuple):
         return tuple(t.to(device) for t in x)
     return x.to(device)
+
+
+def _synchronize(device: torch.device) -> None:
+    """Wait for the work queued on a GPU, so that a clock read after it has the work done."""
+    if device.type == 'cuda':
+        torch.cuda.synchronize(device)
+    elif device.type == 'mps':
+        torch.mps.synchronize()
 
 
 def _index_batch(x, idx):
@@ -103,7 +128,11 @@ class Trainer:
                  use_amp: Union[bool, str] = 'auto',
                  augmentation_params_x: Optional[Dict[str, Any]] = None,
                  augmentation_params_y: Optional[Dict[str, Any]] = None):
-        
+
+        # The split, the evaluation rows and their subsampling are drawn from
+        # self._rng: NumPy's global state, or a generator of its own once
+        # train() is given a split_seed.
+        self._rng = np.random
         """
         Parameters
         ----------
@@ -189,6 +218,7 @@ class Trainer:
               shift_time: bool = False,
               shift_windows: bool = False,
               shift_seed: Optional[int] = None,
+              split_seed: Optional[int] = None,
               patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5,
               min_improvement: float = 0.001,
               save_best_model_path: Optional[str] = None,
@@ -197,12 +227,14 @@ class Trainer:
               train_indices: Optional[np.ndarray] = None,
               test_indices: Optional[np.ndarray] = None,
               max_eval_samples: int = 5000,
-              train_subset_size: Optional[int] = None,
+              train_subset_size: Optional[Union[int, str]] = None,
+              test_subset_size: Optional[Union[int, str]] = None,
               split_gap_fraction: float = 0.5,
               track_spectral_history: bool = False,
               max_index_reduction: float = 0.05,
               eval_train: Union[bool, float, int] = False,
               peak_fraction: float = 1.0,
+              epoch_rule: str = 'plateau_start',
               scheduler: Optional[Any] = None,
               track_embeddings: Union[bool, float, int, str] = False,
               return_rotated_embeddings: bool = False,
@@ -243,8 +275,20 @@ class Trainer:
             `_window_shifter` (`neural_mi/data/shift_windowing.py`); a
             no-op otherwise. Mutually exclusive in practice with
             `shift_time` (they gate on different dataset types).
+        shift_seed : int, optional
+            Seeds the generator the shifts are drawn from.
+        split_seed : int, optional
+            Seeds a generator of the run's own for the train/test split, the
+            evaluation rows and their subsampling. Runs given the same
+            split_seed share all three, whatever else draws random numbers
+            before or during training, which is what pairs the terms of a
+            difference quantity. Without it they come from NumPy's global state.
         patience : int, optional
             Epochs to wait for improvement before early stopping. Defaults to 10.
+            Early stopping decides when training ends. The network evaluated is
+            the one at the peak of the held-out curve smoothed after training
+            (``best_epoch``), whichever epoch that is: copies of the network are
+            kept for the epochs that can still turn out to be that peak.
         smoothing_sigma : float, optional
             Standard deviation for the Gaussian smoothing kernel on validation MI.
             Defaults to 1.0.
@@ -273,15 +317,24 @@ class Trainer:
             An array of specific indices to use for the test set. If provided,
             `split_mode` and `train_fraction` are ignored.
         max_eval_samples : int, optional
-            Maximum number of samples to use when evaluating MI on the validation set.
-            If the test set is larger than this, a random subset will be used for evaluation.
-            Defaults to 5000.
-        train_subset_size : int, optional
+            The most rows a single evaluation uses, which bounds its memory.
+            A larger set is evaluated in blocks of at most this many rows whose
+            values are averaged. Defaults to 5000.
+        train_subset_size : int or 'full', optional
             Size of the fixed subset of training samples the reported,
-            training-side MI is evaluated on. Training itself uses every
-            training sample. The evaluation is further capped at
-            ``max_eval_samples``. Defaults to None, which takes
+            training-side MI is evaluated on, or 'full' for all of them.
+            Training itself uses every training sample. Like the held-out
+            subset, a blocked split takes one contiguous stretch per training
+            segment, a random split random rows. Defaults to None, which takes
             ``min(n_train, max_eval_samples)``.
+        test_subset_size : int or 'full', optional
+            Size of the fixed subset of held-out samples evaluated at every
+            epoch and at the end, or 'full' for all of them. It is drawn once,
+            right after the split, so every epoch scores the same rows and runs
+            given the same ``split_seed`` score the same rows. A blocked split
+            takes one contiguous stretch per held-out block, a random split
+            random rows. Defaults to None, which takes
+            ``min(n_test, max_eval_samples)``.
         split_gap_fraction : float, optional
             When using 'blocked' split_mode, this fraction of the data will be left as a gap between training and test blocks to reduce leakage.
         leak_check_window_size, leak_check_step : float, optional
@@ -328,18 +381,29 @@ class Trainer:
 
             An unrecognised value raises ``ValueError``.
         peak_fraction : float, optional
-            Controls how the best epoch is selected for reporting train MI.
+            A conservative epoch for a held-out curve that saturates, where its
+            top may be the estimator's ceiling rather than the information.
 
-            - ``1.0`` (default), use the epoch where smoothed test MI is maximised.
-            - ``< 1.0``: use the *first improvement checkpoint* where smoothed test
-              MI reaches ``peak_fraction × max_test_mi``.  This gives a
-              conservative estimate that avoids the noisiest tail of training.
+            - ``1.0`` (default), use the epoch the ``epoch_rule`` reads.
+            - ``< 1.0``: use the first epoch whose smoothed test MI reaches
+              ``peak_fraction`` of its maximum, when that is earlier than the
+              epoch the rule reads.  The reported value is then read before the
+              curve reaches its top.
               Both the conservative and best-epoch estimates are obtained via
               fresh full evaluations at the end of training (no per-epoch train
               tracking is needed).  The results dict will contain
               ``'conservative_epoch'`` (the epoch used) and
               ``'train_mi_at_peak'`` (train MI at the actual peak epoch, for
               comparison).
+        epoch_rule : {'plateau_start', 'peak'}, optional
+            Which epoch the reported values are read at (``best_epoch``), from
+            the smoothed held-out curve. ``'plateau_start'`` (default) reads the
+            earliest epoch at its top, within half the curve's own noise of the
+            top's level: the peak of a clean peak, the start of a plateau.
+            ``'peak'`` reads the smoothed maximum. Either way the results give
+            the maximum as ``peak_epoch`` and a diagnosis of the curve as
+            ``curve_diagnosis``, and warn when the curve cannot support the
+            choice (``neural_mi/training/epochs.py``).
         scheduler : torch.optim.lr_scheduler instance, optional
             A PyTorch learning-rate scheduler to step at the end of each epoch.
             ``ReduceLROnPlateau`` is stepped with the current test MI as the metric
@@ -370,7 +434,10 @@ class Trainer:
         Dict[str, Any]
             A dictionary containing the results of the training run.
         """
+        if epoch_rule not in EPOCH_RULES:
+            raise ValueError(f"epoch_rule={epoch_rule!r} is not a recognised value. Use one of {EPOCH_RULES}.")
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
+        self._rng = np.random.RandomState(int(split_seed) % (2 ** 31)) if split_seed is not None else np.random
         # Any bundle carrying a window grid is temporal, not only the
         # two-stream subclass: a three-stream conditional bundle has the same
         # grid and the same time_shift, and testing the subclass would leave
@@ -450,7 +517,43 @@ class Trainer:
             raise ValueError(f"batch_size must be >= 2, got {batch_size}.")
 
         train_view = SubsetView(dataset, indices=train_idx, max_index_reduction=max_index_reduction)
-        test_view = SubsetView(dataset, indices=test_idx, max_index_reduction=max_index_reduction)
+
+        # Evaluation subsets follow the split on both sides: one contiguous
+        # stretch per segment for a blocked split, random rows for a random one.
+        # Temporal data always takes stretches (see _select_eval_indices).
+        _contiguous = is_temporal or split_mode != 'random'
+
+        # Lock in the held-out rows every evaluation scores. Drawn once, before
+        # anything else draws from the run's generator, so every epoch scores the
+        # same rows, and the terms of a difference (same split_seed) score the
+        # same rows whatever their other settings.
+        if isinstance(test_subset_size, str):
+            if test_subset_size != 'full':
+                raise ValueError(
+                    f"test_subset_size={test_subset_size!r} is not a recognised value. Use an int >= 1, "
+                    f"'full' for the whole held-out set, or None for min(n_test, max_eval_samples)."
+                )
+            test_subset_size = len(test_idx)
+        if test_subset_size is not None and test_subset_size > len(test_idx):
+            warnings.warn(
+                f"test_subset_size={test_subset_size} exceeds the number of held-out samples "
+                f"({len(test_idx)}). Clamping to {len(test_idx)}.",
+                UserWarning,
+                stacklevel=user_stacklevel(),
+            )
+        actual_test_subset_size = min(test_subset_size or max_eval_samples, len(test_idx))
+        test_eval_idx = self._select_eval_indices(test_idx, actual_test_subset_size, _contiguous)
+        test_eval_view = SubsetView(dataset, indices=test_eval_idx, max_index_reduction=max_index_reduction)
+        if actual_test_subset_size > max_eval_samples:
+            _blocks, _per_block = _blocks_of(actual_test_subset_size, max_eval_samples)
+            logger.info(
+                f"Held-out MI evaluated on all {actual_test_subset_size} rows in {_blocks} blocks of at most "
+                f"{_per_block} rows at every epoch, averaged. A single evaluation is limited to "
+                f"max_eval_samples={max_eval_samples}. Each block uses its own rows as negatives, so the "
+                f"ceiling is log({_per_block}) and the precision is that of all {actual_test_subset_size} rows. "
+                f"Every epoch costs {_blocks} evaluations. Raise max_eval_samples to evaluate in fewer, "
+                f"larger blocks if memory allows."
+            )
 
         # 2. Lock in a Train Evaluation Subset (to prevent OOM/slowdown during train_mi tracking)
         # Deliberately NOT coupled to len(test_idx): the reported train-side MI's
@@ -458,6 +561,13 @@ class Trainer:
         # reason to let a small test split (e.g. 10-20% of windows by default)
         # needlessly shrink that ceiling. Only max_eval_samples and the available
         # training pool bound it.
+        if isinstance(train_subset_size, str):
+            if train_subset_size != 'full':
+                raise ValueError(
+                    f"train_subset_size={train_subset_size!r} is not a recognised value. Use an int >= 1, "
+                    f"'full' for the whole training set, or None for min(n_train, max_eval_samples)."
+                )
+            train_subset_size = len(train_idx)
         actual_train_subset_size = train_subset_size or min(len(train_idx), max_eval_samples)
         if train_subset_size is not None and train_subset_size > len(train_idx):
             warnings.warn(
@@ -469,7 +579,7 @@ class Trainer:
             )
         # Clamp to available training samples to avoid ValueError from np.random.choice
         actual_train_subset_size = min(actual_train_subset_size, len(train_idx))
-        train_eval_idx = self._select_train_eval_indices(train_idx, actual_train_subset_size, is_temporal)
+        train_eval_idx = self._select_eval_indices(train_idx, actual_train_subset_size, _contiguous)
         train_eval_view = SubsetView(dataset, indices=train_eval_idx, max_index_reduction=max_index_reduction)
 
         # Determine the subset for per-epoch train MI tracking (eval_train parameter)
@@ -498,8 +608,8 @@ class Trainer:
                     f"for that many samples."
                 )
             if _do_epoch_train_eval:
-                epoch_train_eval_idx = self._select_train_eval_indices(train_idx, epoch_train_n, is_temporal)
-                # Wrapped in a SubsetView (like train_view/test_view/train_eval_view)
+                epoch_train_eval_idx = self._select_eval_indices(train_idx, epoch_train_n, _contiguous)
+                # Wrapped in a SubsetView (like train_view/test_eval_view/train_eval_view)
                 # instead of indexed as a plain fixed array -- for temporal data a
                 # shift_time rebuild can shrink window_manager.n_windows (windows
                 # failing min_coverage_fraction after the shift get dropped),
@@ -568,12 +678,7 @@ class Trainer:
             elif _do_embed_tracking:
                 _do_rotation = True
 
-        # AMP: only active on CUDA; silently no-ops on CPU/MPS.
-        _amp_active = (
-            self.device.type == 'cuda'
-            and (self.use_amp is True or self.use_amp == 'auto')
-        )
-        _scaler = torch.amp.GradScaler('cuda') if _amp_active else None
+        _scaler = self._amp_scaler()
 
         # shift_time/shift_windows are training-time augmentations only:
         # evaluation always reads a frozen, pre-shift snapshot (both the
@@ -601,14 +706,14 @@ class Trainer:
         if _shifting_active:
             _eval_x_source = _detach_clone(dataset.x_dataset.data)
             _eval_y_source = dataset.y_dataset.data.detach().clone()
-            _eval_test_idx = torch.as_tensor(test_idx, dtype=torch.long)
+            _eval_test_idx = torch.as_tensor(test_eval_idx, dtype=torch.long)
             _eval_train_eval_idx = torch.as_tensor(train_eval_idx, dtype=torch.long)
             if _do_epoch_train_eval:
                 _eval_epoch_train_eval_idx = torch.as_tensor(epoch_train_eval_idx, dtype=torch.long)
         else:
             _eval_x_source = dataset.x_dataset
             _eval_y_source = dataset.y_dataset
-            _eval_test_idx = test_view.indices
+            _eval_test_idx = test_eval_view.indices
             _eval_train_eval_idx = train_eval_view.indices
             if _do_epoch_train_eval:
                 _eval_epoch_train_eval_idx = epoch_train_eval_view.indices
@@ -621,11 +726,18 @@ class Trainer:
         _rotation_singular_values_history: list = []
         _rotation_history_x: list = []
         _rotation_history_y: list = []
-        best_model_state = None
-        # Improvement checkpoints: saved only when peak_fraction < 1.0 to avoid
-        # unnecessary memory use.  Each entry is (epoch, smoothed_mi, state_dict).
-        # The list is monotonically increasing in smoothed_mi by construction.
-        _improvement_checkpoints = []
+        # Copies of the network at every epoch that can still turn out to be the
+        # one evaluated: the peak of the held-out curve smoothed after training,
+        # or the first epoch to reach a threshold below it (epoch_rule
+        # 'plateau_start', or peak_fraction < 1). An epoch's smoothed value
+        # depends on up to _reach epochs after it. Once it is final, the epoch is
+        # kept only if it beats every earlier final epoch (the first epoch to
+        # reach any threshold always does), and when only the peak is read it
+        # replaces the one it beats. A custom smoothing function has no known
+        # reach, so every epoch is kept.
+        _states: Dict[int, Any] = {}
+        _reach = None if self.custom_smoothing_fn else self._smoothing_reach(smoothing_sigma, median_window)
+        _record, _record_ep = -np.inf, None
         nan_streak = 0
         
         display_progress = show_progress if show_progress is not None else verbose
@@ -634,73 +746,14 @@ class Trainer:
         
         # 3. Epoch Loop
         for epoch in epoch_iterator:
-            self.model.train()
-            if self.decoder_x is not None:
-                self.decoder_x.train()
-            if self.decoder_y is not None:
-                self.decoder_y.train()
-            
+            self._train_mode()
+
             # Manual batching for efficiency and temporal shifting support
             current_train_idx = train_view.indices
             shuffled_train_idx = current_train_idx[torch.randperm(current_train_idx.nelement())]
             
             for batch_idx in shuffled_train_idx.split(batch_size):
-                self.optimizer.zero_grad()
-                x_batch = _to_device(dataset.x_dataset[batch_idx, ...], self.device)
-                y_batch = dataset.y_dataset[batch_idx, ...].to(self.device)
-                if self.aug_params_x:
-                    x_batch = apply_augmentations(x_batch, self.aug_params_x)
-                if self.aug_params_y:
-                    y_batch = apply_augmentations(y_batch, self.aug_params_y)
-                _fwd_ctx = (torch.autocast(device_type='cuda')
-                            if _amp_active else contextlib.nullcontext())
-                with _fwd_ctx:
-                    scores, kl_loss = self.model(x_batch, y_batch)
-                    mi_estimate = self.estimator_fn(scores, **self.estimator_params)
-                    # In the bottleneck Lagrangian beta scales everything on the
-                    # relevance side, the MI term and both reconstructions alike.
-                    # Keeping the reconstructions inside it is what lets the
-                    # lambdas stay relative to the MI term: without it, changing
-                    # beta would silently re-weight reconstruction against MI.
-                    mi_coeff = self.beta if self.use_variational else 1.0
-                    if self.use_variational:
-                        loss = kl_loss - self.beta * mi_estimate
-                    else:
-                        loss = -mi_estimate
-                    # Optional decoder reconstruction loss
-                    if self.decoder_x is not None or self.decoder_y is not None:
-                        z_x, z_y = self.model.get_training_embeddings(x_batch, y_batch)
-                        if self.decoder_x is not None:
-                            recon_x = self.decoder_x(z_x)
-                            loss = loss + mi_coeff * self.decoder_lambda_x * self._decoder_loss(
-                                recon_x, x_batch, self.decoder_output_activation_x)
-                        if self.decoder_y is not None:
-                            recon_y = self.decoder_y(z_y)
-                            loss = loss + mi_coeff * self.decoder_lambda_y * self._decoder_loss(
-                                recon_y, y_batch, self.decoder_output_activation_y)
-                if _amp_active:
-                    _scaler.scale(loss).backward()
-                    if self.gradient_clip_val is not None:
-                        all_params = list(self.model.parameters())
-                        if self.decoder_x is not None:
-                            all_params.extend(self.decoder_x.parameters())
-                        if self.decoder_y is not None:
-                            all_params.extend(self.decoder_y.parameters())
-                        _scaler.unscale_(self.optimizer)
-                        nn.utils.clip_grad_norm_(all_params, self.gradient_clip_val)
-                    _scaler.step(self.optimizer)
-                    _scaler.update()
-                else:
-                    loss.backward()
-                    if self.gradient_clip_val is not None:
-                        # Clip gradients across model + decoder parameters
-                        all_params = list(self.model.parameters())
-                        if self.decoder_x is not None:
-                            all_params.extend(self.decoder_x.parameters())
-                        if self.decoder_y is not None:
-                            all_params.extend(self.decoder_y.parameters())
-                        nn.utils.clip_grad_norm_(all_params, self.gradient_clip_val)
-                    self.optimizer.step()
+                self._step(dataset, batch_idx, _scaler)
 
             # Fast evaluation using safety chunking
             self.model.eval()
@@ -711,12 +764,12 @@ class Trainer:
             with torch.no_grad():
                 x_test = _index_batch(_eval_x_source, _eval_test_idx)
                 y_test = _eval_y_source[_eval_test_idx, ...]
-                mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples)
+                mi_nats = self._safe_eval_mi(x_test, y_test, max_eval_samples, all_rows=True)
 
                 if _do_epoch_train_eval:
                     x_etrain = _index_batch(_eval_x_source, _eval_epoch_train_eval_idx)
                     y_etrain = _eval_y_source[_eval_epoch_train_eval_idx, ...]
-                    train_mi_nats = self._safe_eval_mi(x_etrain, y_etrain, max_eval_samples)
+                    train_mi_nats = self._safe_eval_mi(x_etrain, y_etrain, max_eval_samples, all_rows=True)
                     train_history.append(train_mi_nats)
 
                 # Per-epoch spectral history if requested (can be expensive, so optional)
@@ -761,14 +814,26 @@ class Trainer:
                         f"numerical instability (for example exploding gradients or "
                         f"zero-variance channels)."
                     )
-                logger.warning(
+                warnings.warn(
                     f"NaN MI detected at epoch {epoch + 1} (consecutive NaN streak: "
                     f"{nan_streak}/3). This step will be skipped for early stopping. "
-                    f"If this persists, check your data and hyperparameters."
+                    f"If this persists, check your data and hyperparameters.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
             else:
                 nan_streak = 0
             history.append(mi_nats)
+            _states[epoch] = copy.deepcopy(self.model.state_dict())
+            _final_ep = epoch - _reach if _reach is not None else -1
+            if (_final_ep >= 0 and len(history) >= median_window
+                    and not np.isnan(history[max(0, _final_ep - _reach):]).any()):
+                _value = self._smooth(history, smoothing_sigma, median_window)[_final_ep]
+                if _value > _record:
+                    if epoch_rule == 'peak' and peak_fraction >= 1.0 and _record_ep is not None:
+                        del _states[_record_ep]
+                    _record, _record_ep = _value, _final_ep
+                else:
+                    del _states[_final_ep]
 
             # Smoothing (Custom or Default)
             if self.custom_smoothing_fn:
@@ -814,14 +879,10 @@ class Trainer:
                 else:
                     scheduler.step()
 
-            # In-Memory Early Stopping
-            if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi) or best_model_state is None):
+            # Early stopping on the running smoothed curve. It decides when to
+            # stop, not which network is evaluated.
+            if not np.isnan(smoothed_nats) and (improvement > min_improvement or np.isinf(best_mi)):
                 best_mi, no_improve = smoothed_nats, 0
-                best_model_state = copy.deepcopy(self.model.state_dict())
-                if peak_fraction < 1.0:
-                    # best_model_state is a fresh deepcopy; appending it is safe —
-                    # the next improvement will create a new deepcopy, not mutate this one.
-                    _improvement_checkpoints.append((epoch, smoothed_nats, best_model_state))
             else:
                 no_improve += 1
                 
@@ -829,21 +890,34 @@ class Trainer:
                 logger.debug(f"Early stopping at epoch {epoch+1}.")
                 break
         
-        if best_model_state is None:
+        # 4. Finalization: the network at the peak of the smoothed held-out curve
+        _smoothed_history = np.asarray(
+            self.custom_smoothing_fn(history) if self.custom_smoothing_fn
+            else self._smooth(history, smoothing_sigma, median_window)
+        )
+        if np.isnan(_smoothed_history).all():
             raise TrainingError("Training failed to produce a valid model checkpoint.")
-
-        # 4. Finalization
+        best_ep, peak_ep, curve_diagnosis, approach_ep = choose_epoch(
+            history, _smoothed_history, epoch_rule, _reach, ran_to_limit=len(history) == n_epochs)
+        _train_x = _index_batch(_eval_x_source, _eval_train_eval_idx)
+        _train_y = _eval_y_source[_eval_train_eval_idx, ...]
+        # The network at the start of the curve's approach to its top, read on
+        # the same rows, before the network reported (epochs.py).
+        _at_approach = None
+        if approach_ep < best_ep and approach_ep in _states:
+            self.model.load_state_dict(_states[approach_ep])
+            with torch.no_grad():
+                _at_approach, _ = self._train_side(_train_x, _train_y, max_eval_samples)
+        best_model_state = _states[best_ep]
         self.model.load_state_dict(best_model_state)
         if save_best_model_path:
             torch.save(best_model_state, save_best_model_path)
-            
+
         with torch.no_grad():
             final_test_mi = self._safe_eval_mi(
                 _index_batch(_eval_x_source, _eval_test_idx),
-                _eval_y_source[_eval_test_idx, ...], max_eval_samples)
-            final_train_mi = self._safe_eval_mi(
-                _index_batch(_eval_x_source, _eval_train_eval_idx),
-                _eval_y_source[_eval_train_eval_idx, ...], max_eval_samples)
+                _eval_y_source[_eval_test_idx, ...], max_eval_samples, all_rows=True)
+            final_train_mi, _train_se = self._train_side(_train_x, _train_y, max_eval_samples)
         
         from neural_mi.estimators import infonce_lower_bound
         _scale = nats_to_bits  # 1/ln(2) for bits, 1.0 for nats -- same scale as every other reported MI
@@ -851,43 +925,53 @@ class Trainer:
 
         # Ceiling diagnostics, for every estimator: even one without a hard
         # ceiling is informative about its distance from log(n_eval).
-        # `eval_size` is the test-side sample count, and `train_eval_size` the
+        # `eval_size` is the held-out sample count, and `train_eval_size` the
         # count behind the reported estimate (`train_mi`). They can differ, so
-        # each has its own name and ceiling.
-        _eval_size = min(len(test_idx), max_eval_samples) if len(test_idx) > 0 else None
-        # The train-side estimate is evaluated on at most max_eval_samples rows of
-        # its subset, so that is the count its ceiling is set by.
-        _train_eval_size = (min(actual_train_subset_size, max_eval_samples)
-                            if actual_train_subset_size > 0 else None)
-        _test_ceiling_mi = (np.log(_eval_size) * _scale) if _eval_size and _eval_size >= 2 else None
-        _train_ceiling_mi = (np.log(_train_eval_size) * _scale) if _train_eval_size and _train_eval_size >= 2 else None
+        # each has its own name and ceiling. Each side evaluates every row of its
+        # subset, in blocks of at most max_eval_samples rows when the subset is
+        # larger. Each block's rows are its own negatives, so the rows of one
+        # block set the ceiling.
+        _eval_size = actual_test_subset_size if actual_test_subset_size > 0 else None
+        _test_blocks, _test_block_size = _blocks_of(_eval_size, max_eval_samples) if _eval_size else (1, None)
+        _train_eval_size = actual_train_subset_size if actual_train_subset_size > 0 else None
+        _train_blocks, _train_block_size = (_blocks_of(_train_eval_size, max_eval_samples)
+                                            if _train_eval_size else (1, None))
+        _test_ceiling_mi = (np.log(_test_block_size) * _scale) if _test_block_size and _test_block_size >= 2 else None
+        _train_ceiling_mi = (np.log(_train_block_size) * _scale) if _train_block_size and _train_block_size >= 2 else None
         _test_saturation = (final_test_mi * _scale / _test_ceiling_mi) if _test_ceiling_mi else None
         _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
 
+        _rows = max(actual_train_subset_size, epoch_train_n if _do_epoch_train_eval else 0)
+        if _rows > max_eval_samples:
+            _blocks, _per_block = _blocks_of(_rows, max_eval_samples)
+            logger.info(
+                f"Train-side MI evaluated on all {_rows} rows in {_blocks} blocks of at most {_per_block} "
+                f"rows, averaged. A single evaluation is limited to max_eval_samples={max_eval_samples}. "
+                f"Each block uses its own rows as negatives, so the ceiling is log({_per_block}) "
+                f"and the precision is that of all {_rows} rows. Raise max_eval_samples to evaluate "
+                f"in fewer, larger blocks if memory allows."
+            )
         if self.estimator_fn is infonce_lower_bound:
             _tripped = []
             if _test_ceiling_mi is not None and final_test_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _test_ceiling_mi:
                 _tripped.append(f"test MI ({final_test_mi * _scale:.3f} {_units}) vs. test ceiling "
-                                f"log(test_eval_size={_eval_size})={_test_ceiling_mi:.3f} {_units}")
+                                f"log(rows per evaluation={_test_block_size})={_test_ceiling_mi:.3f} {_units}")
             if _train_ceiling_mi is not None and final_train_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _train_ceiling_mi:
                 _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) vs. train-eval ceiling "
-                                f"log(train_eval_size={_train_eval_size})={_train_ceiling_mi:.3f} {_units}")
+                                f"log(rows per evaluation={_train_block_size})={_train_ceiling_mi:.3f} {_units}")
             if _tripped:
-                logger.warning(
+                warnings.warn(
                     f"InfoNCE estimate is near its ceiling: {'; '.join(_tripped)}. "
                     f"The true MI may be higher. Consider increasing max_eval_samples "
                     f"(and train_subset_size, if set) or switching to the 'smile' "
-                    f"estimator for high-MI scenarios."
+                    f"estimator for high-MI scenarios.",
+                    UserWarning, stacklevel=user_stacklevel()
                 )
 
         # Does peak-epoch selection distinguish epochs at all? When the
         # smoothed test trace rides near its ceiling for most of training, the
-        # argmax below is close to a coin flip over flat noise, and the
-        # reported best_epoch is arbitrary.
-        _smoothed_history = np.asarray(
-            self.custom_smoothing_fn(history) if self.custom_smoothing_fn
-            else self._smooth(history, smoothing_sigma, median_window)
-        )
+        # argmax is close to a coin flip over flat noise, and the reported
+        # best_epoch is arbitrary.
         _test_trace_saturated_fraction = None
         if _test_ceiling_mi is not None and _smoothed_history.size > 0:
             _valid = _smoothed_history[~np.isnan(_smoothed_history)]
@@ -896,32 +980,16 @@ class Trainer:
                     np.mean((_valid * _scale) > TEST_TRACE_SATURATION_THRESHOLD * _test_ceiling_mi)
                 )
                 if _test_trace_saturated_fraction > TEST_TRACE_SATURATED_EPOCH_FRACTION_THRESHOLD:
-                    logger.warning(
+                    warnings.warn(
                         f"Peak-epoch selection may be unreliable: "
                         f"{_test_trace_saturated_fraction:.0%} of the smoothed test-MI "
                         f"history sits above {TEST_TRACE_SATURATION_THRESHOLD:.0%} of the "
                         f"test ceiling ({_test_ceiling_mi:.3f} {_units}). With the trace "
                         f"riding near its ceiling, the epoch with the (noisy) maximum is "
-                        f"close to arbitrary. Consider increasing max_eval_samples."
+                        f"close to arbitrary. Consider increasing max_eval_samples, or a peak_fraction "
+                        f"below 1 to read the value before the curve reaches its ceiling.",
+                        UserWarning, stacklevel=user_stacklevel()
                     )
-
-        best_ep = np.argmax(_smoothed_history)
-
-        # Early stopping is effectively off by default (patience defaults to
-        # 1000), so nothing else signals "training simply ran out of epochs while
-        # test MI was still climbing." Since these are lower-bound estimators,
-        # under-training always biases the reported value downward -- the
-        # dangerous direction -- silently.
-        if no_improve < patience and len(history) > 1 and best_ep >= len(history) - 1:
-            warnings.warn(
-                f"Training completed all {len(history)} epoch(s) without early "
-                f"stopping and the best (smoothed) test MI occurred at the final "
-                f"epoch. MI may still have been rising when training stopped. The "
-                f"reported estimate may then be an under-trained lower bound. Raise "
-                f"n_epochs or lower patience to let early stopping act.",
-                UserWarning,
-                stacklevel=user_stacklevel(),
-            )
 
         # All-negative flag (from test MI history; warning deferred until _raw_train_mi is set)
         valid_history = [v for v in history if not np.isnan(v)]
@@ -930,35 +998,19 @@ class Trainer:
         # At this point the model is loaded at best_ep; final_train_mi is the fresh eval there.
         _best_ep_train_mi = final_train_mi  # save for train_mi_at_peak reporting
 
-        # Conservative epoch selection via improvement checkpoints.
-        # Finds the first checkpoint where smoothed test MI >= peak_fraction * final_max,
-        # loads that state, does a fresh full evaluation, then restores the best-epoch model.
+        # Conservative epoch: the first epoch whose smoothed test MI reaches
+        # peak_fraction of the maximum, when that is earlier than the epoch read.
+        # Its network is evaluated afresh, then the best-epoch network is restored.
         _conservative_ep = None
         _conservative_train_mi = None
-        if peak_fraction < 1.0 and _improvement_checkpoints:
-            _cons_state = None
-            _max_smoothed = _improvement_checkpoints[-1][1]  # monotonically last = highest
-            if _max_smoothed > 0:
-                _threshold = peak_fraction * _max_smoothed
-                for _ckpt_ep, _ckpt_sm, _ckpt_state in _improvement_checkpoints:
-                    if _ckpt_sm >= _threshold:
-                        _conservative_ep = _ckpt_ep
-                        _cons_state = _ckpt_state
-                        break
-                if _cons_state is None:
-                    # All checkpoints below threshold (shouldn't happen, but be safe)
-                    _conservative_ep = best_ep
-            else:
-                _conservative_ep = best_ep  # no positive peak; conservative == best
-
-            if _conservative_ep != best_ep and _cons_state is not None:
-                self.model.load_state_dict(_cons_state)
+        if peak_fraction < 1.0:
+            _peak = _smoothed_history[peak_ep]
+            _conservative_ep = (min(best_ep, int(np.flatnonzero(_smoothed_history >= peak_fraction * _peak)[0]))
+                                if _peak > 0 else best_ep)
+            if _conservative_ep != best_ep:
+                self.model.load_state_dict(_states[_conservative_ep])
                 with torch.no_grad():
-                    _conservative_train_mi = self._safe_eval_mi(
-                        _index_batch(_eval_x_source, _eval_train_eval_idx),
-                        _eval_y_source[_eval_train_eval_idx, ...],
-                        max_eval_samples,
-                    )
+                    _conservative_train_mi, _ = self._train_side(_train_x, _train_y, max_eval_samples)
                 self.model.load_state_dict(best_model_state)
             else:
                 _conservative_train_mi = _best_ep_train_mi
@@ -969,6 +1021,20 @@ class Trainer:
             _raw_train_mi = _conservative_train_mi
         else:
             _raw_train_mi = _best_ep_train_mi  # peak_fraction == 1.0 path
+
+        # What the held-out curve says about the epoch read: its shape, and
+        # whether reading at the start of the approach to its top moves the
+        # estimate by more than FUZZY_SE standard errors. A curve that never
+        # rose above zero has its own message below.
+        _read_ep = best_ep if _conservative_ep is None else _conservative_ep
+        _approach_shift = (_raw_train_mi - _at_approach
+                           if _at_approach is not None and approach_ep < _read_ep else None)
+        if curve_diagnosis == 'ok' and _approach_shift is not None and abs(_approach_shift) > FUZZY_SE * _train_se:
+            curve_diagnosis = 'fuzzy start'
+        if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
+            warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,
+                             None if _approach_shift is None else _approach_shift * _scale,
+                             _train_se * _scale, _units)
 
         # All-negative warning and zeroing (now that _raw_train_mi is correctly set)
         if _all_mi_negative:
@@ -1006,6 +1072,9 @@ class Trainer:
             'raw_train_mi': _raw_train_mi,
             'test_mi': final_test_mi,
             'best_epoch': best_ep,
+            'peak_epoch': peak_ep,
+            'curve_diagnosis': curve_diagnosis,
+            'approach_shift': _approach_shift,
             'test_mi_history': history,
             'all_mi_negative': _all_mi_negative,
         }
@@ -1019,10 +1088,10 @@ class Trainer:
             results['_frozen_eval_x'] = _eval_x_source
             results['_frozen_eval_y'] = _eval_y_source
         if _eval_size is not None:
-            # eval_size = min(len(test_idx), max_eval_samples), the test-side
-            # evaluation count. Its ceiling is log(eval_size), not
-            # log(batch_size).
+            # eval_size, the held-out rows every evaluation scores. Its ceiling
+            # is log(rows per block), not log(batch_size).
             results['eval_size'] = _eval_size
+            results['test_eval_blocks'] = _test_blocks
             results['test_ceiling_mi'] = _test_ceiling_mi
             results['test_saturation'] = _test_saturation
         if _train_eval_size is not None:
@@ -1030,6 +1099,7 @@ class Trainer:
             # (train_mi). It can exceed eval_size, and it is the ceiling that
             # applies to the number the caller is shown.
             results['train_eval_size'] = _train_eval_size
+            results['train_eval_blocks'] = _train_blocks
             results['train_ceiling_mi'] = _train_ceiling_mi
             results['train_saturation'] = _train_saturation
         if _test_trace_saturated_fraction is not None:
@@ -1109,6 +1179,83 @@ class Trainer:
 
         return results
 
+    def _amp_scaler(self):
+        """A gradient scaler when mixed precision is on, which it can be only on CUDA, else None."""
+        if self.device.type == 'cuda' and (self.use_amp is True or self.use_amp == 'auto'):
+            return torch.amp.GradScaler('cuda')
+        return None
+
+    def _train_mode(self) -> None:
+        for net in (self.model, self.decoder_x, self.decoder_y):
+            if net is not None:
+                net.train()
+
+    def _step(self, dataset, batch_idx: torch.Tensor, scaler) -> None:
+        """One optimisation step on the rows ``batch_idx``, with :meth:`_amp_scaler`'s scaler."""
+        self.optimizer.zero_grad()
+        x_batch = _to_device(dataset.x_dataset[batch_idx, ...], self.device)
+        y_batch = dataset.y_dataset[batch_idx, ...].to(self.device)
+        if self.aug_params_x:
+            x_batch = apply_augmentations(x_batch, self.aug_params_x)
+        if self.aug_params_y:
+            y_batch = apply_augmentations(y_batch, self.aug_params_y)
+        _fwd_ctx = (torch.autocast(device_type='cuda')
+                    if scaler is not None else contextlib.nullcontext())
+        with _fwd_ctx:
+            scores, kl_loss = self.model(x_batch, y_batch)
+            mi_estimate = self.estimator_fn(scores, **self.estimator_params)
+            # In the bottleneck Lagrangian beta scales everything on the
+            # relevance side, the MI term and both reconstructions alike.
+            # Keeping the reconstructions inside it is what lets the
+            # lambdas stay relative to the MI term: without it, changing
+            # beta would silently re-weight reconstruction against MI.
+            mi_coeff = self.beta if self.use_variational else 1.0
+            if self.use_variational:
+                loss = kl_loss - self.beta * mi_estimate
+            else:
+                loss = -mi_estimate
+            # Optional decoder reconstruction loss
+            if self.decoder_x is not None or self.decoder_y is not None:
+                z_x, z_y = self.model.get_training_embeddings(x_batch, y_batch)
+                if self.decoder_x is not None:
+                    recon_x = self.decoder_x(z_x)
+                    loss = loss + mi_coeff * self.decoder_lambda_x * self._decoder_loss(
+                        recon_x, x_batch, self.decoder_output_activation_x)
+                if self.decoder_y is not None:
+                    recon_y = self.decoder_y(z_y)
+                    loss = loss + mi_coeff * self.decoder_lambda_y * self._decoder_loss(
+                        recon_y, y_batch, self.decoder_output_activation_y)
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+        if self.gradient_clip_val is not None:
+            # Clip gradients across model + decoder parameters
+            if scaler is not None:
+                scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad_norm_([p for net in (self.model, self.decoder_x, self.decoder_y)
+                                      if net is not None for p in net.parameters()], self.gradient_clip_val)
+        if scaler is not None:
+            scaler.step(self.optimizer)
+            scaler.update()
+        else:
+            self.optimizer.step()
+
+    def seconds_per_step(self, dataset, batch_size: int, n_steps: int = 20, n_warmup: int = 5) -> float:
+        """Wall time of one training step on this trainer's device, after ``n_warmup`` untimed
+        steps that let the device settle. The steps train the network, so time a trainer that
+        is thrown away afterwards."""
+        scaler = self._amp_scaler()
+        rows = torch.randperm(len(dataset))
+        self._train_mode()
+        for k in range(n_warmup + n_steps):
+            if k == n_warmup:
+                _synchronize(self.device)
+                start = time.perf_counter()
+            self._step(dataset, rows[(torch.arange(batch_size) + k * batch_size) % len(rows)], scaler)
+        _synchronize(self.device)
+        return (time.perf_counter() - start) / n_steps
+
     @staticmethod
     def _decoder_loss(recon: torch.Tensor, target: torch.Tensor, activation: str) -> torch.Tensor:
         """Compute decoder reconstruction loss appropriate for the output activation.
@@ -1142,58 +1289,81 @@ class Trainer:
             # 'linear' or 'sigmoid': MSE is appropriate.
             return nn.functional.mse_loss(recon, target)
 
-    def _safe_eval_mi(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> float:
-        """Evaluates MI on at most max_samples samples, drawn as a single random subset.
-        If the dataset exceeds max_samples, draw ONE random
-        subset of size max_samples and evaluate MI on that single set. This gives a
-        valid (if higher-variance) unbiased estimate.
+    def _safe_eval_mi(self, x: torch.Tensor, y: torch.Tensor, max_samples: int, all_rows: bool = False) -> float:
+        """Evaluates the MI on the given rows, never on more than max_samples at once.
+
+        Up to max_samples rows are evaluated in one go. Above that, the held-out
+        side (``all_rows=False``) draws one random subset of max_samples rows, and
+        the train side (``all_rows=True``) evaluates every row in blocks of at most
+        max_samples and averages the blocks, weighted by their sizes. Row r goes to
+        block r % n_blocks, so every block spans the whole set. Each block is an
+        ordinary evaluation whose own rows are its negatives: the average keeps
+        the bound and the ceiling of one block, log(rows per block), and the
+        precision of all the rows.
 
         Parameters
         ----------
-        x : torch.Tensor
-            Test set X data.
-        y : torch.Tensor
-            Test set Y data.
+        x, y : torch.Tensor
+            The rows to evaluate.
         max_samples : int
-            Maximum number of samples for a single evaluation call. If the dataset
-            is larger, a random subset of this size is drawn once.
+            The most rows a single evaluation uses, which bounds its memory.
+        all_rows : bool, optional
+            Evaluate every row, in blocks if needed, instead of a random subset.
         """
         n_samples = _batch_size_of(x)
         if n_samples < 2:
             return float('nan')
 
-        if n_samples > max_samples:
-            # Sample once
-            idx = np.random.choice(n_samples, max_samples, replace=False)
-            idx_t = torch.from_numpy(idx)
-            x = _index_batch(x, idx_t)
-            y = y[idx_t]
+        if all_rows:
+            values, sizes = self._eval_blocks(x, y, max_samples)
+            result = float(np.average(values, weights=sizes))
+        elif n_samples <= max_samples:
+            result = self._eval_mi(x, y)
+        else:
+            idx_t = torch.from_numpy(_rng_of(self).choice(n_samples, max_samples, replace=False))
+            result = self._eval_mi(_index_batch(x, idx_t), y[idx_t])
 
-        result = self._eval_mi(x, y)
         if np.isnan(result):
-            logger.warning(
+            warnings.warn(
                 "MI evaluation returned NaN. This may indicate numerical instability, "
                 "a degenerate batch or exploding gradients. Check your learning_rate, "
-                "batch_size and input data for anomalies."
+                "batch_size and input data for anomalies.",
+                UserWarning, stacklevel=user_stacklevel()
             )
         return result
+
+    def _eval_blocks(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> Tuple[np.ndarray, np.ndarray]:
+        """The MI of every row in blocks of at most max_samples rows, and the blocks' sizes. Row r goes to
+        block r % n_blocks, so every block spans the whole set."""
+        n_samples = _batch_size_of(x)
+        n_blocks = -(-n_samples // max_samples)
+        blocks = [torch.arange(b, n_samples, n_blocks) for b in range(n_blocks)]
+        return (np.array([self._eval_mi(_index_batch(x, idx), y[idx]) for idx in blocks]),
+                np.array([len(idx) for idx in blocks]))
+
+    def _train_side(self, x: torch.Tensor, y: torch.Tensor, max_samples: int) -> Tuple[float, float]:
+        """The training-side estimate on every row, and its standard error."""
+        values, sizes = self._eval_blocks(x, y, max_samples)
+        return float(np.average(values, weights=sizes)), standard_error(values, int(sizes.sum()))
 
     def _eval_mi(self, x: torch.Tensor, y: torch.Tensor) -> float:
         scores, _ = self.model(_to_device(x, self.device), y.to(self.device))
         if torch.isnan(scores).any():
-            logger.warning(
+            warnings.warn(
                 "Score matrix contains NaN values during evaluation. "
                 "Returning NaN for this step. Check for exploding gradients or "
-                "degenerate embeddings."
+                "degenerate embeddings.",
+                UserWarning, stacklevel=user_stacklevel()
             )
             return float('nan')
         if torch.isinf(scores).any():
             dtype = scores.dtype
             safe_max = torch.finfo(dtype).max / 2
             scores = torch.clamp(scores, min=-safe_max, max=safe_max)
-            logger.warning(
+            warnings.warn(
                 f"Score matrix contains Inf values. Clamping to ±{safe_max:.3e} "
-                f"(dtype={dtype}, machine-epsilon-aware bound)."
+                f"(dtype={dtype}, machine-epsilon-aware bound).",
+                UserWarning, stacklevel=user_stacklevel()
             )
         return self.estimator_fn(scores, **self.estimator_params).item()
 
@@ -1221,6 +1391,12 @@ class Trainer:
             
         return results
 
+    @staticmethod
+    def _smoothing_reach(sigma: float, med_win: int) -> int:
+        """How many later epochs the smoothed value at an epoch depends on (see _smooth):
+        half the median window plus the Gaussian's radius, which scipy cuts at 4 sigma."""
+        return (med_win // 2 if med_win > 1 else 0) + (int(4.0 * sigma + 0.5) if sigma > 0 else 0)
+
     def _smooth(self, arr: List[float], sigma: float, med_win: int) -> np.ndarray:
         hist = np.array(arr)
         if len(hist) < 2: return hist
@@ -1228,15 +1404,18 @@ class Trainer:
         valid_hist = hist[~nan_mask]
         if len(valid_hist) == 0: return hist
         hist[nan_mask] = valid_hist[-1]
+        # Beyond its ends the curve is held at its end values. Mirroring it would
+        # give the first epoch the values of the epochs after it, so a curve that
+        # rises within an epoch or two would put its top at an undertrained epoch.
         if med_win > 1 and len(hist) >= med_win:
-            hist = median_filter(hist, size=med_win, mode='reflect')
-        if sigma > 0: 
-            hist = gaussian_filter1d(hist, sigma=sigma, mode='reflect')
+            hist = median_filter(hist, size=med_win, mode='nearest')
+        if sigma > 0:
+            hist = gaussian_filter1d(hist, sigma=sigma, mode='nearest')
         hist[nan_mask] = np.nan
         return hist
         
     def _create_random_split(self, n: int, frac: float) -> Tuple[np.ndarray, np.ndarray]:
-        indices = np.random.permutation(n)
+        indices = _rng_of(self).permutation(n)
         n_train = int(n * frac)
         return indices[:n_train], indices[n_train:]
 
@@ -1250,14 +1429,15 @@ class Trainer:
             k = n_test
         block, rem = divmod(n_test, k) if k > 0 else (0, 0)
         if n - block < k:
-            logger.warning(
+            warnings.warn(
                 "Blocked split parameters produced an invalid configuration. "
                 "Falling back to random split. Consider reducing n_test_blocks or "
-                "increasing your dataset size."
+                "increasing your dataset size.",
+                UserWarning, stacklevel=user_stacklevel()
             )
-            indices = np.random.permutation(n)
+            indices = _rng_of(self).permutation(n)
             return indices[n_test:], indices[:n_test]
-        starts = _sample_with_minimum_distance(n - block, k, block + 1)
+        starts = _sample_with_minimum_distance(n - block, k, block + 1, _rng_of(self))
         test_idx = np.concatenate([
             np.arange(s, s + block + (1 if i < rem else 0))
             for i, s in enumerate(starts)
@@ -1288,14 +1468,16 @@ class Trainer:
 
         return train_idx, test_idx
 
-    def _select_train_eval_indices(self, train_idx: np.ndarray, target_size: int,
-                                   is_temporal: bool) -> np.ndarray:
-        """Select a representative subset of ``train_idx`` for train-MI
-        evaluation (the final report, and per-epoch tracking via
-        ``eval_train``).
+    def _select_eval_indices(self, idx: np.ndarray, target_size: int, contiguous: bool) -> np.ndarray:
+        """Select a fixed, representative subset of ``idx`` for evaluation:
+        the training rows behind the reported estimate and the per-epoch
+        training curve (``eval_train``), or the held-out rows scored every epoch.
 
-        For static data a plain random subsample is fine. There's no
-        temporal structure whose contiguity needs to survive anything.
+        ``contiguous`` takes one contiguous stretch per segment of ``idx``
+        instead of random rows: for a blocked split, like the split itself, and
+        always for temporal data, for the reason below. Under a random split
+        of static data a plain random subsample is fine. There's no temporal
+        structure whose contiguity needs to survive anything.
 
         For temporal data, a *scattered* random subsample is wrong even
         when ``shift_time``/``shift_windows`` never fires
@@ -1313,7 +1495,7 @@ class Trainer:
         regardless of shift magnitude once the subset is scattered enough.
 
         The fix is to never *construct* a scattered temporal subset in the
-        first place: ``train_idx`` for temporal data is itself a union of a
+        first place: ``idx`` for temporal data is itself a union of a
         handful of contiguous segments (whatever's left after
         ``_create_blocked_split`` carves out test blocks + gap buffers).
         Pick one contiguous sub-chunk per segment, sized proportionally to
@@ -1328,12 +1510,12 @@ class Trainer:
         dominate" reasoning behind the contiguous-chunking fix in
         `analysis/rigorous.py`).
         """
-        if target_size >= len(train_idx):
-            return train_idx.copy()
-        if not is_temporal:
-            return np.random.choice(train_idx, target_size, replace=False)
+        if target_size >= len(idx):
+            return idx.copy()
+        if not contiguous:
+            return _rng_of(self).choice(idx, target_size, replace=False)
 
-        sorted_idx = np.sort(train_idx)
+        sorted_idx = np.sort(idx)
         breaks = np.where(np.diff(sorted_idx) > 1)[0]
         seg_starts = np.concatenate([[0], breaks + 1])
         seg_ends = np.concatenate([breaks + 1, [len(sorted_idx)]])  # exclusive
@@ -1361,8 +1543,8 @@ class Trainer:
                 continue
             # A random contiguous window within the segment (not always its
             # own start), so repeated runs don't all sample the same edge.
-            offset = np.random.randint(0, len(seg) - n_take + 1)
+            offset = _rng_of(self).randint(0, len(seg) - n_take + 1)
             chosen.append(seg[offset:offset + n_take])
-        return np.concatenate(chosen) if chosen else np.array([], dtype=train_idx.dtype)
+        return np.concatenate(chosen) if chosen else np.array([], dtype=idx.dtype)
 
 

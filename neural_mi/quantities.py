@@ -55,7 +55,7 @@ from neural_mi.analysis.offsets import (build_past_future, build_cross_offset, g
                                         resolve_stream_processing)
 from neural_mi.analysis.transfer import _build_te_arrays
 from neural_mi.utils import validate_stride
-from neural_mi.embeddings_io import model_file, resolve_model_path, warn_saving_several
+from neural_mi.embeddings_io import model_file, resolve_model_path, announce_saving_several
 
 
 # The fit settings a Rigorous config carries into a difference quantity's own
@@ -202,7 +202,7 @@ def _named_run(quantity: str, param: str, value, build, *, run_kwargs: Dict[str,
     save_path = _save_path(run_kwargs)
     if save_path:
         root, ext = os.path.splitext(save_path)
-        warn_saving_several(f"{root}_{param}-<value>{ext}")
+        announce_saving_several(f"{root}_{param}-<value>{ext}")
     tasks = [(*build(v), _with_save_path(run_kwargs, quantity, **{param: v}), rigorous, show_progress)
              for v in values]
     parts = dispatch_tasks(tasks, _task, n_workers=n_workers, show_progress=show_progress,
@@ -611,28 +611,7 @@ def interaction_information(x_data, y_data, w_data, rigorous=False, n_workers: i
 #
 # A and C have different window lengths for all three, beyond the small
 # mismatch mode='conditional' trims, so each routes through
-# align='dual_branch'. The caller supplies
-# model=Model(embedding_model='dual_branch', ...), or a DualBranchEmbedding
-# subclass through custom_embedding_cls for another branch architecture, and
-# this is checked up front instead of failing inside training.
-
-def _require_dual_branch_model(run_kwargs: Dict[str, Any], fn_name: str) -> None:
-    from neural_mi.models.embeddings import DualBranchEmbedding
-    model = run_kwargs.get('model')
-    embedding_model = getattr(model, 'embedding_model', None) if model is not None else None
-    custom_cls = getattr(model, 'custom_embedding_cls', None) if model is not None else None
-    is_dual_branch = (
-        embedding_model == 'dual_branch'
-        or (isinstance(custom_cls, type) and issubclass(custom_cls, DualBranchEmbedding))
-    )
-    if not is_dual_branch:
-        raise ValueError(
-            f"{fn_name} needs A and C at different window lengths. That requires "
-            f"model=Model(embedding_model='dual_branch', ...) or a DualBranchEmbedding "
-            f"subclass through custom_embedding_cls. The call has "
-            f"embedding_model={embedding_model!r} and custom_embedding_cls={custom_cls!r}."
-        )
-
+# align='dual_branch': the joint term's X is the pair (A, C).
 
 def _build_x_zero_aligned(x_data, history_window: int, n_valid: int,
                           stride: int = 1) -> torch.Tensor:
@@ -747,29 +726,27 @@ def mi_rate(
     half_width : int or iterable of int, default=20
         X_all's half-width; the full window spans ``2 * half_width + 1`` steps.
         Either ``h`` or ``half_width`` may be an iterable, and the other stays
-        fixed. Both windows change the answer, and they bias it in opposite
-        directions. A curve that has flattened along one of them is therefore
-        no evidence on its own. Too little conditioning history leaves Y's own
-        storage in and reads high, and too narrow a window on X omits signal
-        and reads low. Sweep one, fix it past its knee, then sweep the other.
+        fixed. Both windows change the answer. A curve that has flattened along
+        one of them is therefore no evidence on its own. Too narrow a window on
+        X omits signal and reads low. Too little conditioning history reads high
+        when Y's memory comes from what it shares with X and low when Y has
+        private memory its own past would cancel. Sweep one, fix it past its
+        knee, then sweep the other.
         Passing iterables for both raises, since the grid multiplies training
         runs for a reading two sequential sweeps already give.
     stride : int, default=1
         See :func:`active_information_storage`.
     rigorous, n_workers, show_progress, **run_kwargs
-        See :func:`active_information_storage`. ``model=`` must be
-        ``Model(embedding_model='dual_branch', ...)`` whenever ``h > 0``.
+        See :func:`active_information_storage`.
 
     Returns
     -------
     neural_mi.results.Results
     """
-    if any(hv > 0 for hv in (h if _is_sweep(h) else [h])):
-        _require_dual_branch_model(run_kwargs, 'mi_rate')
     if _is_sweep(h) and _is_sweep(half_width):
         raise ValueError(
             "mi_rate takes an iterable for h or for half_width and refuses one for both. "
-            "The two windows bias the estimate in opposite directions. Sweep one, fix it "
+            "Both windows change the estimate. Sweep one, fix it "
             "past its knee and then sweep the other. A grid over both costs "
             "len(h) * len(half_width) training runs for the same conclusion."
         )
@@ -821,8 +798,6 @@ def instantaneous_exchange(
     -------
     neural_mi.results.Results
     """
-    if any(kv > 0 for kv in (k if _is_sweep(k) else [k])):
-        _require_dual_branch_model(run_kwargs, 'instantaneous_exchange')
     rows = _on_one_grid(OrderedDict((('x', x_data), ('y', y_data))),
                         run_kwargs.pop('processing', None))
     if rows is not None:
@@ -868,8 +843,6 @@ def directed_information_rate(
     -------
     neural_mi.results.Results
     """
-    if any(kv > 0 for kv in (k if _is_sweep(k) else [k])):
-        _require_dual_branch_model(run_kwargs, 'directed_information_rate')
     rows = _on_one_grid(OrderedDict((('x', x_data), ('y', y_data))),
                         run_kwargs.pop('processing', None))
     if rows is not None:

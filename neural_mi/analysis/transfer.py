@@ -14,10 +14,9 @@ sliding windows controlled by ``history_window`` and ``prediction_horizon``.
 import torch
 from typing import Dict, Any, Optional
 
-from neural_mi.analysis.sweep import (combined_spread, _joint_marginal_difference,
+from neural_mi.analysis.sweep import (combined_spread, rung, _joint_marginal_difference,
                                       amplification_factor)
 from neural_mi.logger import logger
-from neural_mi.embeddings_io import saved_paths
 from neural_mi.utils import validate_stride
 
 
@@ -233,7 +232,7 @@ def run_transfer_entropy(
         base_params, sweep_grid, n_workers,
         quantity_name="TE(X→Y)",
         joint_label="xy_past;y_future", marginal_label="y_past;y_future",
-        joint_key="i_xypast_yfuture", marginal_key="i_ypast_yfuture",
+        joint_key="i_xypast_yfuture", marginal_key="i_ypast_yfuture", condition_at='last',
     )
 
     result = {
@@ -269,6 +268,7 @@ def run_transfer_entropy(
             quantity_name="TE(Y→X)",
             joint_label="yx_past;x_future", marginal_label="x_past;x_future",
             joint_key="i_yxpast_xfuture", marginal_key="i_xpast_xfuture", raw_key='te_yx_raw',
+            condition_at='last',
         )
 
         # Directionality index: +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric
@@ -320,5 +320,4 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
         w_data=w_data,
         stride=stride,
     )
-    paths = saved_paths(raw)
-    return (raw['te_estimate'], paths) if paths else raw['te_estimate']
+    return rung(raw, (('i_xypast_yfuture', 1), ('i_ypast_yfuture', -1)))

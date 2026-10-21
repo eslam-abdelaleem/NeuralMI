@@ -8,17 +8,19 @@ import warnings
 import torch
 import itertools
 import uuid
-import torch.multiprocessing as mp
 import numpy as np
 from tqdm.auto import tqdm
 from typing import List, Dict, Any, Optional, Sequence
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.exceptions import CombinationWarning
-from neural_mi.logger import CapturedTask, logger, released, user_stacklevel, worker_init_args
-from neural_mi.embeddings_io import with_model_labels
+from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
+from neural_mi.device import with_device
+from neural_mi.estimators import NONPARAMETRIC_CONDITIONAL
+from neural_mi.parallel import worker_pool
+from neural_mi.embeddings_io import saved_paths, with_model_labels
 from neural_mi.utils import mi_report_units
-from neural_mi.utils import _configure_multiprocessing, _ensure_cpu
+from neural_mi.utils import _ensure_cpu
 from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
@@ -84,10 +86,10 @@ class ParameterSweep:
                 **kwargs
             })
         elif isinstance(x_data, tuple) and isinstance(x_data[0], torch.Tensor) and x_data[0].ndim == 3:
-            # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
+            # Compound "X-role" data (BranchedEmbedding's two-tensor input,
             # mode='conditional'(align='dual_branch')) -- dims become a
             # matching 2-tuple instead of a single int, exactly what
-            # DualBranchEmbedding's constructor expects as `input_dim`. Only
+            # BranchedEmbedding's constructor expects as `input_dim`. Only
             # when already windowed (3-D): a raw (2-D) tuple -- shift_windows
             # reachability for dual_branch, X and C not yet windowed -- has
             # no `.shape[2]` to read yet either, and falls through to the
@@ -109,7 +111,8 @@ class ParameterSweep:
         Executes a list of prepared tasks in parallel.
         """
         if not tasks:
-            logger.warning("No tasks to run. Your sweep_grid might be empty.")
+            warnings.warn("No tasks to run. Your sweep_grid might be empty.",
+                          UserWarning, stacklevel=user_stacklevel())
             return []
 
         # Default to sequential if n_workers is not specified or is 1
@@ -147,14 +150,7 @@ class ParameterSweep:
             all_results = [run_training_task(task) for task in tqdm(tasks, desc="Sweep", disable=not show_progress or len(tasks) == 1)]
         else:
             logger.info(f"Starting parameter sweep with {effective_workers} workers...")
-            _configure_multiprocessing()
-            # Use 'spawn' start method for cross-platform safety.
-            # On macOS and Windows, 'fork' is either unavailable or unsafe with
-            # PyTorch's CUDA context. On Linux, 'spawn' is slightly slower than
-            # 'fork' but avoids deadlocks in multi-threaded environments.
-            _log_init, _log_args = worker_init_args()
-            with mp.get_context("spawn").Pool(processes=effective_workers,
-                                          initializer=_log_init, initargs=_log_args) as pool:
+            with worker_pool(effective_workers) as pool:
                 all_results = list(tqdm(
                     released(pool.imap(CapturedTask(run_training_task), tasks)), total=len(tasks),
                     desc="Sweep", unit="task", disable=not show_progress
@@ -245,7 +241,7 @@ class ParameterSweep:
     def run(self, sweep_grid: Dict[str, List], is_proc_sweep: Optional[bool] = None, n_workers: Optional[int] = None,
             **kwargs) -> List[Dict[str, Any]]:
         """Executes the hyperparameter sweep in parallel."""
-        tasks = self._prepare_tasks(sweep_grid, is_proc_sweep, **kwargs)
+        tasks = with_device(self._prepare_tasks(sweep_grid, is_proc_sweep, **kwargs), n_workers or 1)
         results = self._run_parallel(tasks, n_workers)
         logger.info("Parameter sweep finished.")
         return results
@@ -272,7 +268,7 @@ def amplification_factor(components: Sequence[float], result: float) -> float:
 
     which for the two-term case is the ``(t1 + t2) / (t1 - t2)`` given in
     ``THEORY.md``.  A component-wise relative error of ``eps`` becomes roughly
-    ``kappa * eps`` on the result.
+    ``kappa * eps`` on the result when the components' errors are independent.
 
     Interpreting it:
 
@@ -327,8 +323,24 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
     factor. ``signed`` marks a quantity whose negative values are meaningful,
     such as interaction information. Any other quantity is reported as 0 when
     it comes out negative, with the measured value kept under ``raw_key``.
+
+    A nonparametric estimator with a conditional form builds the joint term from
+    the conditioning term and the conditional estimate on the same rows, so the
+    terms do not err separately: only a negative value is reported.
     """
     _scale, _units = mi_report_units(base_params)
+    name = base_params.get('estimator_name')
+    if name in NONPARAMETRIC_CONDITIONAL:
+        if result < 0 and not signed:
+            warnings.warn(
+                f"{quantity_name} estimate is negative ({result * _scale:.4f} {_units}). The "
+                f"quantity cannot be negative. It is reported as 0 {_units} and the measured value "
+                f"is kept as {raw_key} in result.runs. With estimator='{name}' it is a single "
+                f"conditional estimate, and a negative one is a value near zero read with the "
+                f"estimator's bias and spread.",
+                CombinationWarning, stacklevel=user_stacklevel(),
+            )
+        return
     j_label, j_value, _ = joint
     terms = [joint, *marginals]
     keys = ', '.join(f"'{key}'" for _, _, key in terms)
@@ -372,14 +384,23 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
         warnings.warn(
             f"{quantity_name} has an error-amplification factor of {amp:.1f}x. It is a "
             f"small residual ({result * _scale:.4f} {_units}) of {count} much larger estimates "
-            f"({listing}). A relative error of eps on each component becomes roughly "
-            f"{amp:.0f}*eps on the result (about {amp:.0f}% for a 1% component error). "
-            f"Report the components ({keys}) beside the point estimate. The joint term is "
-            f"the largest. It reaches its ceiling first and then biases the result downward. "
-            f"Check it for ceiling saturation. Look for more data or more training "
-            f"before concluding that the true value is small.",
+            f"({listing}). If their errors were independent, a relative error of eps on each "
+            f"would become roughly {amp:.0f}*eps on the result (about {amp:.0f}% for a 1% "
+            f"component error). The components are trained on the same rows and partly err "
+            f"together, which cancels some of that. Report the components ({keys}) beside the "
+            f"point estimate. Look for more data or more training before concluding that the "
+            f"true value is small.",
             CombinationWarning, stacklevel=user_stacklevel(),
         )
+
+
+def rung(raw: Dict[str, Any], terms) -> Any:
+    """One rung of a rigorous ladder of a difference quantity, from its call's result: the signed
+    combination of the ``(key, sign)`` terms as measured, a measurement whatever its sign, with the saved
+    networks' paths when there are any."""
+    value = float(sum(sign * raw[key] for key, sign in terms))
+    paths = saved_paths(raw)
+    return (value, paths) if paths else value
 
 
 def combined_spread(value_lists, signs) -> Optional[float]:
@@ -420,6 +441,7 @@ def _joint_marginal_difference(
     quantity_name: str,
     joint_label: str, marginal_label: str,
     joint_key: str, marginal_key: str,
+    condition_at: Optional[str] = None,
     is_proc_sweep: bool = False,
     marginal_base_params: Optional[Dict[str, Any]] = None,
     reported: bool = True,
@@ -449,6 +471,15 @@ def _joint_marginal_difference(
     joint_key, marginal_key : str
         The caller's result-dict key names for the two component MI values,
         named in the negative-value warning so a user knows where to find them.
+    condition_at : {'first', 'last'}, optional
+        Where the marginal term's X sits among the joint term's channels, when
+        the caller joined them into one tensor. The conditioning term runs
+        first, and the joint term carries ``_condition = (condition_at, n)``,
+        ``n`` the channel count the conditioning term's network was built on.
+        Its X encoder then reads that block on a branch of its own
+        (``BranchedEmbedding``), and a nonparametric estimator conditions on
+        it. ``None`` for a joint X that arrives as the pair (rest, conditioning
+        set), which carries the split itself.
     is_proc_sweep : bool, optional
         Pass ``True`` when ``joint_x``/``marginal_x`` are raw, unwindowed
         data (shift_windows/shift_time reachability. The caller has
@@ -480,16 +511,20 @@ def _joint_marginal_difference(
         values one row per run. :func:`combined_spread` turns those into the
         spread of the difference.
     """
-    logger.info(f"{quantity_name}: estimating I({joint_label})...")
-    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y,
-                                 base_params=with_model_labels(base_params, component=joint_key).copy())
-    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
-
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
-                                    base_params=with_model_labels(marginal_base_params or base_params,
-                                                                  component=marginal_key).copy())
+                                    base_params={**with_model_labels(marginal_base_params or base_params,
+                                                                     component=marginal_key),
+                                                 '_difference_term': True})
     results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
+
+    logger.info(f"{quantity_name}: estimating I({joint_label})...")
+    joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True}
+    if condition_at is not None:
+        n = next(r['n_channels_x'] for r in results_marginal if 'n_channels_x' in r)
+        joint_params = {**joint_params, '_condition': (condition_at, n)}
+    sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
+    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
     joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
     marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]

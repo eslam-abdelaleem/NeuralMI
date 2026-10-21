@@ -40,9 +40,8 @@ class SubsetView:
         max_index_reduction : float, optional
             Maximum tolerated fractional drop in the number of valid windows
             after a dataset rebuild (e.g. due to shift_time).
-            If the window count drops by more than this fraction, a warning is
-            emitted with the old and new counts. Default is 0.05 (5%).
-            Set to 1.0 to suppress warnings entirely.
+            If the window count drops by more than this fraction, the old and
+            new counts are logged at the info level. Default is 0.05 (5%).
         """
         self.dataset = dataset
         self.channels_x = channels_x
@@ -65,7 +64,7 @@ class SubsetView:
             elif times.shape[1] != 2:
                 raise ValueError(f"Expected shape (n_regions, 2), got {times.shape}")
             if indices is not None:
-                logger.warning("Both indices and times provided, using times only")
+                logger.debug("Both indices and times provided, using times only")
             # Store times as the source of truth for temporal views
             self.times = np.asarray(times)
             self.indices = None  # Will be computed from times
@@ -196,13 +195,11 @@ class SubsetView:
         if old_count > 0:
             reduction = (old_count - new_count) / old_count
             if reduction > self.max_index_reduction:
-                logger.warning(
+                logger.info(
                     f"SubsetView: window count dropped from {old_count} to "
                     f"{new_count} ({reduction:.1%} reduction) after dataset "
-                    f"rebuild. This usually means shift_time moved "
-                    f"windows outside the valid recording range. Reduce the "
-                    f"shift magnitude or set max_index_reduction above "
-                    f"{self.max_index_reduction:.0%} to suppress this warning."
+                    f"rebuild. shift_time moved windows outside the valid "
+                    f"recording range for this epoch. A smaller shift keeps more of them."
                 )
     
     def __len__(self):
@@ -239,7 +236,7 @@ class SubsetView:
     def time_shift(self, offset_x=0.0, offset_y=0.0):
         """Forward time shift operations to underlying dataset."""
         if not self.is_temporal:
-            logger.warning("Tried to time-shift a non-windowed dataset, skipping")
+            logger.debug("Tried to time-shift a non-windowed dataset, skipping")
             return
         self.dataset.time_shift(offset_x, offset_y)
         # Note: indices will be updated automatically via _on_dataset_updated callback

@@ -8,10 +8,12 @@ every setting.
 
 - [Estimating mutual information with a critic](#estimating-mutual-information-with-a-critic):
   [InfoNCE](#infonce), [SMILE](#smile)
+- [Estimating mutual information from neighbours (KSG)](#estimating-mutual-information-from-neighbours-ksg)
 - [The reported number](#the-reported-number):
   [finite-sampling bias](#finite-sampling-bias), [correcting it](#correcting-it),
   [the spread over repeats](#the-spread-over-repeats),
-  [the permutation null](#the-permutation-null), [amplification](#amplification)
+  [the permutation null](#the-permutation-null), [amplification](#amplification),
+  [the encoder of a difference](#the-encoder-of-a-difference)
 - [Quantities and units](#quantities-and-units):
   [what the number is per](#what-the-number-is-per), [rates](#getting-a-rate),
   [silent windows](#silent-windows),
@@ -60,8 +62,14 @@ distribution-free lower bound on MI from $N$ samples is limited to order $\log
 N$ ([McAllester and Stratos,
 2020](https://proceedings.mlr.press/v108/mcallester20a.html)). The reported
 values are evaluated on `train_eval_size` training samples and `eval_size`
-held-out samples up to the caps set by `max_eval_samples` and by the size of the
-split. During training $N$ is the batch size and shapes the gradients without
+held-out samples. The held-out rows are drawn once and scored at every epoch.
+A subset larger than `max_eval_samples` is evaluated in blocks of at most that
+size whose values are averaged. Each block is an
+ordinary evaluation with its own rows as negatives, so the average keeps the
+bound and the ceiling of one block and gains the precision of all the rows. For
+weak dependence a block of $B$ rows sits below an evaluation on all $N$ rows by
+about $\chi^2(1/B - 1/N)/2$ nats, with $\chi^2 \approx 2I$ the chi-square
+divergence of the joint from the product of the marginals. During training $N$ is the batch size and shapes the gradients without
 capping the reported value. A short recording, a large `window_size` or a small
 held-out fraction all shrink $N$. Along a sweep over `window_size` the ceiling
 falls because fewer windows fit in the recording. Since the windowed MI grows
@@ -105,13 +113,127 @@ compared with the log of the evaluation size.
 
 ---
 
+## Estimating mutual information from neighbours (KSG)
+
+`estimator='ksg'` trains no critic. The Kraskov-Stögbauer-Grassberger estimator
+reads the information from the distances between rows. For each row $i$ it finds
+the distance $\epsilon_i$ to its $k$-th nearest neighbour in the joint space of
+$X$ and $Y$ under the max norm, and counts the rows strictly closer than
+$\epsilon_i$ in each marginal space, $n_x(i)$ and $n_y(i)$:
+
+$$
+\hat I(X;Y) = \psi(k) + \psi(N) - \left\langle \psi(n_x + 1) + \psi(n_y + 1) \right\rangle,
+$$
+
+with $\psi$ the digamma function and $\langle\cdot\rangle$ the mean over rows.
+The joint neighbour sets one length scale for all three density estimates, so
+most of their biases cancel. KSG is accurate in a few dimensions. It reads low
+when the information is large or the dimension high, because the $k$-th
+neighbour is then far away and the counts are no longer local. A small `k` is
+noisier and a large one less local. The implementation was checked against
+`bmi` (Czyż et al., 2023), JIDT (Lizier, 2014) and scikit-learn's
+`mutual_info_regression`, whose value it returns with `gaussianize=False` and
+`exclude=0`.
+
+### The conditional form
+
+Frenzel and Pompe (2007) estimate $I(X;Y \mid Z)$ from one neighbour search in
+the space of all three variables,
+
+$$
+\hat I(X;Y \mid Z) = \psi(k) - \left\langle \psi(n_{xz} + 1) + \psi(n_{yz} + 1) - \psi(n_z + 1) \right\rangle,
+$$
+
+so the terms share one length scale and their biases cancel inside the
+estimate. Conditional MI, transfer entropy and the quantities built on them use
+it: the joint term is $\hat I(Z;Y) + \hat I(X;Y \mid Z)$ and the conditioning
+term is $\hat I(Z;Y)$ on the same rows, so their difference is the conditional
+estimate itself and the [amplification](#amplification) of separately trained
+terms does not apply. Interaction information becomes
+$\hat I(W;Y \mid X) - \hat I(W;Y)$, a difference of two estimates.
+
+### Preparing the rows
+
+Each column is scaled to unit variance and given tie-breaking noise of $10^{-8}$
+standard deviations from a seeded generator, so a seeded call is reproducible.
+With `gaussianize=True`, the default, each column is then replaced by the
+standard normal quantile of its rank (Holmes and Nemenman, 2019). A monotone
+change of one column then leaves the estimate unchanged, as it leaves the
+information, and KSG is less biased on the Gaussian marginals that result than
+on skewed or heavy-tailed ones.
+
+### Rows of a time series
+
+Rows close in time resemble each other. A row's nearest neighbours can then be
+its own neighbours in time, and their resemblance reads as dependence between
+$X$ and $Y$. Rows fewer than `exclude` steps apart are never counted as
+neighbours (Theiler, 1986), and $\psi(N)$ becomes the mean of $\psi(M_i + 1)$,
+with $M_i$ the number of rows row $i$ may count. `exclude='auto'` takes the
+autocorrelation time of the rows: the first lag at which the correlation of
+each column with itself that many rows later, averaged over the columns, falls
+below $1/e$, minus one. Independent rows give 0. The rule assumes the rows are
+in time order. For two independent first-order autoregressive series with
+coefficient 0.98 and 5000 rows, the estimate without the window was 0.085 nats
+and with it -0.009 nats. A recording that spans few autocorrelation times holds
+few independent rows, and the estimate is noisy whichever the window.
+
+### Spread and bias
+
+KSG is deterministic on a given set of rows, so repeats of one call return the
+same value. `mode='rigorous'` estimates on $\gamma$ disjoint subsets of the rows
+and extrapolates in $1/N$, which gives both the spread and the bias correction,
+as Holmes and Nemenman (2019) do for KSG. The permutation test works as for the
+critic estimators.
+
+:::{admonition} Choosing
+:class: tip
+
+KSG suits variables of up to about ten dimensions, where it also checks the
+critic estimators. In tens or hundreds of dimensions its bias dominates, and a
+critic, which first learns a low-dimensional embedding, is the better choice.
+Tutorial 01 shows both on 500 channels that carry 10 shared dimensions.
+:::
+
+:::{admonition} References
+:class: note
+
+- Alexander Kraskov, Harald Stögbauer and Peter Grassberger. Estimating mutual information. *Physical Review E* 69, 066138, 2004. [doi.org/10.1103/PhysRevE.69.066138](https://doi.org/10.1103/PhysRevE.69.066138)
+- Stefan Frenzel and Bernd Pompe. Partial mutual information for coupling analysis of multivariate time series. *Physical Review Letters* 99, 204101, 2007. [doi.org/10.1103/PhysRevLett.99.204101](https://doi.org/10.1103/PhysRevLett.99.204101)
+- Caroline M. Holmes and Ilya Nemenman. Estimation of mutual information for real-valued data with error bars and controlled bias. *Physical Review E* 100, 022404, 2019. [arxiv.org/abs/1903.09280](https://arxiv.org/abs/1903.09280)
+- James Theiler. Spurious dimension from correlation algorithms applied to limited time-series data. *Physical Review A* 34, 2427, 1986. [doi.org/10.1103/PhysRevA.34.2427](https://doi.org/10.1103/PhysRevA.34.2427)
+- Shuyang Gao, Greg Ver Steeg and Aram Galstyan. Efficient estimation of mutual information for strongly dependent variables. *Proceedings of the 18th International Conference on Artificial Intelligence and Statistics*, PMLR 38:277-286, 2015. [proceedings.mlr.press/v38/gao15](https://proceedings.mlr.press/v38/gao15.html)
+- Paweł Czyż, Frederic Grabowski, Julia E. Vogt, Niko Beerenwinkel and Alexander Marx. Beyond normal: on the evaluation of mutual information estimators. *Advances in Neural Information Processing Systems* 36, 2023. [arxiv.org/abs/2306.11078](https://arxiv.org/abs/2306.11078)
+- Joseph T. Lizier. JIDT: an information-theoretic toolkit for studying the dynamics of complex systems. *Frontiers in Robotics and AI* 1:11, 2014. [doi.org/10.3389/frobt.2014.00011](https://doi.org/10.3389/frobt.2014.00011)
+:::
+
+---
+
 ## The reported number
 
 A training run splits the samples into a training set and a held-out set,
 evaluates the MI on the held-out set at every epoch, smooths that curve, and
-takes the epoch at its peak. The critic's weights at that epoch are then
+takes the earliest epoch at its top. The critic's weights at that epoch are then
 evaluated on the training samples to give `mi_estimate`. The held-out value at
 the same epoch is `test_mi` in `runs`.
+
+The earliest epoch at the top, not the maximum, because the held-out curve is
+noisy. On a curve that rises and falls the two agree. On a plateau the maximum
+lands wherever the noise happens to be highest, often many epochs into a stretch
+where the network no longer improves on held-out data and only fits its training
+rows further, which raises the training-side value. The curve's noise is
+measured from the curve itself, from its changes between epochs with smooth
+trends removed. The level of the top is the median of the smoothed curve within
+twice that noise of its maximum, and the epoch read is the first whose smoothed
+value comes within half the noise of that level (`epoch_rule='plateau_start'`;
+`'peak'` reads the maximum). `curve_diagnosis` says when the curve cannot
+support the choice: a top that does not stand clearly above the noise, a curve
+still rising when training ends, or a top reached within the smoothing's reach
+of the start. These thresholds were set on simulated curves of known shape. A
+slow approach to the top is measured instead: the training-side value is read
+also at the first epoch within three noise units of the top, on the same rows,
+and the start of the top is uncertain when the two readings differ by more than
+`FUZZY_SE` of the estimate's standard errors (`approach_shift` keeps the
+difference). `FUZZY_SE` is set in `neural_mi/training/epochs.py`.
 
 The held-out curve plays the part a bandwidth choice plays in kernel density
 estimation. On the training side the critic can fit ever finer structure. The
@@ -138,9 +260,11 @@ entropy formed from two networks, an extrapolated value from `mode='rigorous'`
 and a point of a precision curve are 0 when they come out negative. The library
 warns in every case and keeps the measured value in `runs` under `raw_train_mi`
 for a network and under `mi_raw` or `te_yx_raw` otherwise. Interaction
-information is signed and is reported as measured. Averages over repeats treat a
-value reported as 0 as a run that produced nothing and leave it out ([the spread
-over repeats](#the-spread-over-repeats)).
+information is signed and is reported as measured. An average over repeats of a
+single network treats a value reported as 0 as a run that produced nothing and
+leaves it out. A repeat of a combination or a fit is a measurement whatever its
+sign, so its average uses every repeat's measured value
+([the spread over repeats](#the-spread-over-repeats)).
 
 ### Finite-sampling bias
 
@@ -183,9 +307,11 @@ largest values of $\gamma$ until the quadratic term's t-statistic $|a_2| /
 that reaches `min_gamma_points` with the trend still curved stops there and sets
 `linear_region_found` to `False`.
 
-The fit treats a rung reported as 0 ([the reported
-number](#the-reported-number)) as a failed chunk that produced nothing and
-counts it in `zero_rungs`. `min_gamma_points` then decides whether enough values
+The fit treats a rung reported as 0, one whose networks learned nothing that
+generalises ([the reported number](#the-reported-number)), as a failed chunk
+that produced nothing and counts it in `zero_rungs`. A rung of a difference
+carries its signed measured value, a negative one included, since leaving out
+the negative rungs of a small difference would push its fit up. `min_gamma_points` then decides whether enough values
 of $\gamma$ remain once those with no rung left have dropped out. The fit warns
 about zero rungs and warns again where they make up half or more of a $\gamma$.
 
@@ -213,9 +339,14 @@ the truth.
 ### The spread over repeats
 
 `mi_mean` and `mi_std` are the mean and standard deviation of the result over
-repeats that retrain the networks from new initialisations on the same data.
-Repeats that produced nothing are reported as 0, counted in `n_zero` and left
-out of both statistics. A row reports 0 only when all of its repeats produced
+repeats that retrain the networks from new initialisations on the same data. A
+repeat of a difference quantity or of a rigorous fit is a measurement whatever
+its sign: a negative one is the spread of a small value crossing zero, and
+leaving it out would select the positive repeats and read high. Their row
+averages every repeat's measured value, reports the mean as 0 when it is
+negative and keeps it as `mi_raw_mean`. A single network's repeat reported as 0
+learned nothing that generalises: it is counted in `n_zero` and left out of both
+statistics, and a row reports 0 only when all of its repeats produced
 nothing. Among clearly positive repeats a zero is most likely a failed run. When
 every repeat is near zero the quantity itself may be near zero. Since the
 repeats share their data, the spread says nothing about how the estimate would
@@ -278,7 +409,9 @@ $$
 
 which for two terms is $(|t_1| + |t_2|) / |t_1 - t_2|$. A relative error
 $\epsilon$ on each component becomes roughly $\text{amp}\,\epsilon$ on the
-result.
+result if the components' errors are independent. The library trains the terms
+of a difference on the same rows, so part of their errors is shared and cancels
+in the subtraction, and the error of the result is smaller than that.
 
 | factor | reading |
 |---|---|
@@ -317,6 +450,41 @@ therefore belongs beside any small value. The factor says how fragile the
 arithmetic is. Whether the result is distinguishable from zero is settled by the
 spread over repeats or by a permutation test.
 
+### The encoder of a difference
+
+Only the errors the two terms make the same way cancel in the subtraction. Both
+terms must learn what the conditioning set $C$ says about $Y$, and the joint term
+must also learn what the rest of X, $A$, adds. Every term of a difference
+therefore encodes X with one branch per part of X under one small MLP head
+(`BranchedEmbedding`): branches for $A$ and $C$ in the joint term, a branch for
+$C$ alone in the conditioning term, each branch the call's encoder. $C$ takes the
+same path, branch then head, in both terms. Each term keeps its own weights,
+training and epoch, read from its own held-out curve. The terms share their
+architecture and their rows. Sharing the encoder of $C$ between the terms or
+training them on one loss did not improve on this in a pilot.
+
+Two simpler forms do worse.
+
+- **One encoder over all of X** mixes $C$ with $A$ from the first layer. The joint
+  term learns $C$'s part differently from the conditioning term and trains longer
+  before it is read. By then $A$'s inputs have fitted noise in the training rows.
+  In transfer entropy on linear-Gaussian data, with 64 source neurons over 10
+  bins of history and $2\times10^5$ samples, one encoder read a clear transfer
+  from sources shifted in time, where it is zero, and could not tell a small true
+  transfer from it. Branches read the shifted sources near zero.
+- **Branches in the joint term only**, with a bare encoder in the conditioning
+  term, leave $C$'s path one head deeper in the joint term. With $W$ a copy of
+  X, where the two terms are equal, one-layer encoders on a small spike data set
+  read $I(X,W;Y)$ several times above $I(W;Y)$. With the head in both terms the
+  two came close.
+
+In conditional MI on independent rows (10 channels each for X, Y and W,
+$2\times10^4$ rows, 10 recordings), branches recovered the exact value on
+average and read near zero with X shuffled. One encoder read high in both. The
+aligned transfer from 64 sources still read high with branches, as it did with
+one encoder. An MLP over all 640 source inputs fits the training rows. Reading
+every lag with one small readout brought it closer in a pilot.
+
 ---
 
 ## Quantities and units
@@ -340,11 +508,13 @@ with the growing input.
 Extensivity is the separate, stronger claim that the curve rises linearly, $I_w
 = \bar{I}w + b$, once $w$ exceeds the dependence timescale of the two processes.
 Below that timescale the curve still bends. The rate $\bar{I}$ is the slope of
-the linear part. The offset $b$ has come out positive in every case examined
-because the chain-rule increments decrease toward $\bar{I}$ and their partial
-sums sit above $\bar{I}w$. It is the subextensive part of the block MI, similar
-in shape to a single process's excess entropy ([temporal information
-quantities](#temporal-information-quantities)) without being the same quantity.
+the linear part. The offset is the subextensive part of the block MI. Writing
+each block entropy as its rate times $w$ plus an excess entropy ([temporal
+information quantities](#temporal-information-quantities)) gives
+$b = E_X + E_Y - E_{XY}$, the excess entropies of X, of Y and of the pair. Each
+is non-negative and their combination takes either sign. With independent $X_t$
+and $Y_t = X_{t-1} + \nu_t$ the block MI is exactly $(w-1)\,I(X_0; X_0 + \nu_1)$:
+the first sample of Y pairs with an X outside the window, and $b$ is negative.
 
 A larger window generically reports a larger raw MI because it is built from
 more data, whether or not the coupling changed. Windowed values at different
@@ -365,8 +535,9 @@ on average 3 bits of uncertainty about X.
 
 ### Getting a rate
 
-Since $I_w = \bar{I}w + b$ with $b$ nonzero, dividing one windowed value by its
-duration leaves a residual $b/w$ that changes with the window. The rate comes
+Since $I_w = \bar{I}w + b$ with $b$ generally nonzero, dividing one windowed
+value by its duration leaves a residual $b/w$ that changes with the window and
+takes the sign of $b$, so the quotient can read high or low. The rate comes
 either from the direct per-step estimate of `mi_rate` ([temporal information
 quantities](#temporal-information-quantities)) or from the slope of block MI
 against window size over a suitable range of $w$. That range needs $w$ large
@@ -510,11 +681,23 @@ information rate between X and Y
 ([Gelfand and Yaglom, 1959](https://doi.org/10.1090/trans2/012)). It asks how
 much X in a symmetric window around the present tells about Y's present, once
 enough of Y's past is controlled for. The quantity is the joint limit
-$L \to \infty$ and $h \to \infty$. The two windows bias the estimate in
-opposite directions. Too small an $h$ leaves Y's own dependence uncontrolled and
-reads high. Too narrow an $L$ leaves signal out and reads low. A curve that
-has flattened along one window can therefore sit at a converged-looking wrong
-value set by the other. Sweep one, fix it past its knee, then sweep the other.
+$L \to \infty$ and $h \to \infty$. Too narrow an $L$ leaves signal out and
+always reads low, since observing fewer variables never raises mutual
+information. The history can bias either way. For
+$f(h) = I(X_{-L:L}; Y_0 \mid Y_{-h:-1})$ the chain rule gives
+
+$$
+f(h) - f(h+1) = I(X_{-L:L}; Y_{-h-1} \mid Y_{-h:-1}) - I(X_{-L:L}; Y_{-h-1} \mid Y_{-h:0}),
+$$
+
+two non-negative terms of which either can be the larger. Too short a history
+reads high when Y's memory comes from what it shares with X, and can read low
+when Y carries private memory that its own past would cancel: with $Y = X + U$
+and $U$ a slow noise independent of X, the value at $h = 0$ lies below the rate.
+A curve that has flattened along one window can therefore sit at a
+converged-looking wrong value set by the other. The estimate converges to the
+rate as both windows grow, so sweep one, fix it past its knee, then sweep the
+other.
 
 $X_{all}$ is two-sided because the MI rate is the chain-rule decomposition of
 the symmetric block MI. Its term at time $t$ conditions on the whole of X before
@@ -551,9 +734,9 @@ and leaves the decomposition to check the result.
 
 The MI rate, instantaneous exchange and the directed information rate have $A$
 and $C$ groups of different lengths. Concatenating them would mean zero-padding
-the shorter one and leaving the network to learn to ignore the padding. They
-embed the two groups in separate branches of one network
-(`Model(embedding_model='dual_branch')`) and fuse the results.
+the shorter one and leaving the network to learn to ignore the padding. The two
+groups reach the joint term as a pair, each read on its own branch
+([the encoder of a difference](#the-encoder-of-a-difference)).
 
 #### Identities the catalogue satisfies
 

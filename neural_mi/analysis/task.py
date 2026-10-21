@@ -10,8 +10,9 @@ import torch
 import numpy as np
 from typing import Dict, Any
 
+from neural_mi.models.embeddings import conditioning_parts
 from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device, compute_cross_covariance_rotation
-from neural_mi.estimators import ESTIMATORS
+from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC, NONPARAMETRIC_CONDITIONAL
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import save_network
@@ -119,6 +120,34 @@ def _decoder_lambda(params: Dict[str, Any], axis: str) -> float:
     return 0.001 if value is None else float(value)
 
 
+def _reported(params: Dict[str, Any]) -> Dict[str, Any]:
+    """The task's settings as its result carries them, without the objects and private keys."""
+    return {k: v for k, v in params.items()
+            if k not in ('custom_critic', 'custom_embedding_cls', '_seed_key', '_keep_trained')}
+
+
+def _nonparametric(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
+    """A nonparametric estimate (``estimator_name='ksg'``) on every row of the dataset, in nats.
+
+    No network is trained, so there is no split, epoch or held-out value. The
+    joint term of a difference, whose X is the pair (rest, conditioning set) or
+    carries ``_condition``, estimates the conditioning set's own MI with Y plus
+    the conditional MI of the rest given it (Frenzel and Pompe). Its
+    conditioning term estimates that same MI on the same rows, so the
+    difference of the two is the conditional estimate itself.
+    """
+    as_array = lambda t: t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t)
+    x, y = dataset.x_data, as_array(dataset.y_data)
+    settings = dict(params.get('estimator_params') or {}, seed=params.get('random_seed'))
+    name, condition = params['estimator_name'], params.get('_condition')
+    if isinstance(x, tuple) or condition is not None:
+        rest, z = (as_array(part) for part in conditioning_parts(x, condition))
+        value = NONPARAMETRIC[name](z, y, **settings) + NONPARAMETRIC_CONDITIONAL[name](rest, y, z, **settings)
+    else:
+        value = NONPARAMETRIC[name](as_array(x), y, **settings)
+    return {'train_mi': value, 'eval_size': len(y), 'train_eval_size': len(y)}
+
+
 def run_training_task(args: tuple) -> Dict[str, Any]:
     """A top-level function that can be pickled for multiprocessing."""
     import random as _random
@@ -134,6 +163,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # "task_seed" -- and therefore the whole run -- different on every call
     # even with an explicit, fixed random_seed and n_workers=1.
     base_seed = params.get('random_seed', None)
+    task_seed = None
     if base_seed is not None:
         import hashlib
         seed_key = params.get('_seed_key', run_id)
@@ -221,12 +251,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     _4D_NATIVE = {'cnn2d', 'mlp', 'pretrained_backbone'}
 
     if isinstance(dataset.x_data, tuple):
-        # Compound "X-role" data (DualBranchEmbedding's two-tensor input,
+        # Compound "X-role" data (BranchedEmbedding's two-tensor input,
         # mode='conditional'(align='dual_branch')) -- dims become a matching
         # 2-tuple instead of a single int. The hasattr(..., 'shape') guard
         # below is False for a tuple, so without this branch the whole
         # dim-computation block would be silently skipped and
-        # DualBranchEmbedding would never receive the dims it needs.
+        # BranchedEmbedding would never receive the dims it needs.
         _a, _c = dataset.x_data
         params['n_channels_x'] = (_a.shape[1], _c.shape[1])
         params['input_dim_x'] = (_a.shape[1] * _a.shape[2], _c.shape[1] * _c.shape[2])
@@ -267,6 +297,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         else:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2]
 
+    if params.get('estimator_name') in NONPARAMETRIC:
+        return {**_reported(params), **_nonparametric(dataset, params)}
+
     if params.get('custom_critic') is not None:
         critic = params['custom_critic']
         logger.debug("Using the custom critic as given, so the Model(...) architecture settings are ignored.")
@@ -285,7 +318,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         if isinstance(_n_channels_x, tuple):
             raise NotImplementedError(
                 "use_decoder=True is not supported with a compound (tuple) "
-                "embedding input such as DualBranchEmbedding in mode='conditional' "
+                "embedding input such as BranchedEmbedding in mode='conditional' "
                 "with align='dual_branch'. Reconstructing a compound (A, C) input "
                 "from one fused embedding has no single well-defined decoder "
                 "architecture. Use use_decoder=False for this path."
@@ -375,6 +408,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         augmentation_params_y=aug_y,
     )
 
+    if params.get('_time_steps'):
+        # neural_mi.device.choose_device times this network's training steps instead of training it.
+        n_train = int(len(dataset) * params.get('train_fraction', 0.9))
+        return {'seconds_per_step': trainer.seconds_per_step(dataset, params['batch_size']),
+                'steps_per_epoch': -(-n_train // params['batch_size'])}
+
     # Intercept save_best_model_path to use the extended format
     # which includes build_params alongside state_dict for later extract_embeddings()
     _save_path = params.get('save_best_model_path')
@@ -388,6 +427,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         n_test_blocks=params.get('n_test_blocks', 5),
         shift_time=params.get('shift_time', True),
         shift_seed=base_seed,
+        split_seed=task_seed,
         shift_windows=params.get('shift_windows', True),
         patience=params['patience'],
         smoothing_sigma=params.get('smoothing_sigma', 1.0),
@@ -403,10 +443,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         max_eval_samples=params.get('max_eval_samples', 5000),
         split_gap_fraction=params.get('split_gap_fraction', 0.5),
         train_subset_size=params.get('train_subset_size'),
+        test_subset_size=params.get('test_subset_size'),
         track_spectral_history=params.get('track_spectral_history', False),
         max_index_reduction=params.get('max_index_reduction', 0.05),
         eval_train=params.get('eval_train', False),
         peak_fraction=params.get('peak_fraction', 1.0),
+        epoch_rule=params.get('epoch_rule', 'plateau_start'),
         scheduler=scheduler,
         track_embeddings=params.get('track_embeddings', False),
         return_rotated_embeddings=params.get('return_rotated_embeddings', False),
@@ -415,6 +457,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         leak_check_window_size=params.get('leak_check_window_size'),
         leak_check_step=params.get('leak_check_step'),
     )
+    results['device'] = str(device)
 
     # Save the best epoch's network with what rebuilding it needs, under a name
     # that carries the labels identifying this network within the call.
@@ -443,7 +486,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             )
         else:
             trainer.model.eval()
-            # _all_x may be a plain tensor or a tuple (DualBranchEmbedding's
+            # _all_x may be a plain tensor or a tuple (BranchedEmbedding's
             # compound "X-role" data, mode='conditional'(align='dual_branch')).
             _is_tuple_x = isinstance(_all_x, tuple)
             _n = (_all_x[0] if _is_tuple_x else _all_x).shape[0]
@@ -490,12 +533,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     frozen_x = results.pop('_frozen_eval_x', None)
     frozen_y = results.pop('_frozen_eval_y', None)
 
-    return_params = params.copy()
-    return_params.pop('custom_critic', None)
-    return_params.pop('custom_embedding_cls', None)
-    return_params.pop('_seed_key', None)
-    return_params.pop('_keep_trained', None)
-    final_result = {**return_params, **results}
+    final_result = {**_reported(params), **results}
     if params.get('_keep_trained'):
         # mode='precision' evaluates this network again on corrupted copies of
         # its training rows, so it needs the trainer, the dataset and, when the

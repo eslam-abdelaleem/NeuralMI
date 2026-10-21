@@ -42,24 +42,24 @@ class TestBuildDecoderDispatch:
         out = d(torch.randn(3, 4))
         assert out.shape == (3, 1, 4, 4)
 
-    def test_unknown_embedding_model_falls_back_to_mlp_with_warning(self, caplog):
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    def test_unknown_embedding_model_falls_back_to_mlp_and_says_so(self, caplog):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             d = build_decoder('some_unregistered_model', embedding_dim=4, hidden_dim=8,
                               n_channels=2, window_size=10, n_layers=2)
         assert isinstance(d, MLPDecoder)
         assert "No dedicated decoder" in caplog.text
         assert "some_unregistered_model" in caplog.text
 
-    def test_pretrained_backbone_falls_back_to_mlp_with_warning(self, caplog):
-        """pretrained_backbone has no dedicated decoder; must warn, not silently swap."""
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    def test_pretrained_backbone_falls_back_to_mlp_and_says_so(self, caplog):
+        """pretrained_backbone has no dedicated decoder; the swap is logged, not silent."""
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             d = build_decoder('pretrained_backbone', embedding_dim=4, hidden_dim=8,
                               n_channels=3, window_size=49, n_layers=2)
         assert isinstance(d, MLPDecoder)
         assert "No dedicated decoder" in caplog.text
 
-    def test_dedicated_decoders_do_not_warn(self, caplog):
-        with caplog.at_level(logging.WARNING, logger='neural_mi'):
+    def test_dedicated_decoders_do_not_fall_back(self, caplog):
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             build_decoder('gru', embedding_dim=4, hidden_dim=8, n_channels=2, window_size=10, n_layers=1)
         assert "No dedicated decoder" not in caplog.text
 

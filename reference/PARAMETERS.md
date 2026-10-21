@@ -30,11 +30,11 @@ The arguments of `nmi.run()` itself, beside the config objects.
 | `x_data`, `y_data` | required | The two variables. `y_data` is optional for `mode='pairwise'` (pairs within X) and `mode='dimensionality'` (two halves of X). |
 | `mode` | `'estimate'` | The analysis: `'estimate'`, `'sweep'`, `'rigorous'`, `'lag'`, `'precision'`, `'conditional'`, `'interaction'`, `'transfer'`, `'pairwise'` or `'dimensionality'`. |
 | `sweep_grid` | `None` | A dict of setting names to the values to run. A list, tuple, range or array gives one configuration per value and a single value fixes the setting. Every combination is one configuration and `run_id` in the grid repeats each one. The keys are the settings of `Model`, `Training`, `Split` and `Estimator` and the processor parameters. `Split(mode=...)`, `Split(gap_fraction=...)`, `Estimator(name=...)` and `Estimator(params=...)` are named `split_mode`, `split_gap_fraction`, `estimator_name` and `estimator_params`. |
-| `n_workers` | `1` | Worker processes. Tasks run in parallel across repeats, configurations, chunks, pairs or permutation trials. Results do not depend on the count. |
-| `seed` | `None` | Seed for Python, NumPy and PyTorch. Each task re-seeds from it and a fixed per-task key. A seeded call gives the same result at any `n_workers`. |
+| `n_workers` | `1` | Worker processes. Tasks run in parallel across repeats, configurations, chunks, pairs or permutation trials. Each worker gets an equal share of the CPU threads. Results do not depend on the count. |
+| `seed` | `None` | Seed for Python, NumPy and PyTorch. Each task re-seeds from it and a fixed per-task key. A seeded call gives the same result at any `n_workers`. Without one, a seed is drawn from NumPy's global state and recorded in `Results.params['random_seed']`. |
 | `verbose` | `None` | `True` logs informational messages for the call and `False` only warnings and errors. `None` keeps the level set by `nmi.set_verbosity()`. |
 | `show_progress` | `True` | Show progress bars. |
-| `device` | `None` | Compute device, `'cpu'`, `'cuda'` or `'mps'`. `None` picks the fastest available. |
+| `device` | `None` | Compute device, `'cpu'`, `'cuda'` or `'mps'`. `None` trains on the CPU unless a GPU, timed on the call's first network, is clearly faster ([USING.md](USING.md#speed-memory-and-logging)). |
 | `permutation_test` | `False` | Test every row of the result against a null built by rerunning the call with X moved in time. Adds a `p_value` column. |
 | `n_permutations` | `10` | Number of null trials. The smallest p-value reachable is `1 / (n_permutations + 1)`. |
 | `permutation_shuffle` | `'circular'` | How X is moved: `'circular'` shifts it by one random offset with wrap-around, excluding offsets within 10% of the recording's length of zero; `'block'` reorders contiguous blocks one window long. |
@@ -110,10 +110,10 @@ The networks that embed X and Y and score their pairing.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `embedding_model` | `'mlp'` | The encoder: `'mlp'`, `'cnn'`, `'cnn2d'`, `'gru'`, `'lstm'`, `'lru'`, `'tcn'`, `'transformer'`, `'deepsets'`, `'pretrained_backbone'` or `'dual_branch'`. |
+| `embedding_model` | `'mlp'` | The encoder: `'mlp'`, `'cnn'`, `'cnn2d'`, `'gru'`, `'lstm'`, `'lru'`, `'tcn'`, `'transformer'`, `'deepsets'` or `'pretrained_backbone'`. In a difference quantity it encodes each part of X on a branch of its own ([USING.md](USING.md#the-encoder-of-a-difference)). |
 | `embedding_dim` | `64` | Size of each embedding. `mode='dimensionality'` sets it from [`Dimensionality`](#dimensionality) and ignores this value. |
 | `hidden_dim` | `64` | Hidden width. A list such as `[256, 1024, 256]` sets each layer and overrides `n_layers` (MLP, CNN, CNN2D and TCN). |
-| `n_layers` | `2` | Encoder depth. |
+| `n_layers` | `2` | Encoder depth. For the MLP, 0 gives a linear encoder (the input mapped straight to the embedding); the other encoders need at least one layer. |
 | `embedding_model_y` | X's | Y's encoder, when it differs from X's. |
 | `embedding_dim_y` | X's | Y's embedding size. |
 | `hidden_dim_y` | X's | Y's hidden width. |
@@ -122,9 +122,9 @@ The networks that embed X and Y and score their pairing.
 | `hidden_dim_head` | `None` | Width of the hybrid critic's head; `None` takes `min(64, hidden_dim)`. |
 | `n_layers_head` | `None` | Depth of the hybrid critic's head; `None` takes `max(1, n_layers - 1)`. |
 | `kernel_size` | `3` | Kernel width of the CNN, CNN2D and TCN encoders. |
+| `cnn_pooling` | `'flatten'` | How the CNN encoder reads its convolutions: at every position of the window (`'flatten'`), which keeps where a pattern occurs, as a lag or a history window needs, or averaged over the window (`'mean'`), which ignores where it occurs. |
 | `bidirectional` | `False` | Bidirectional GRU or LSTM. |
 | `nhead` | `4` | Attention heads of the transformer encoder. |
-| `branch_model` | `'gru'` | Each branch's encoder under `embedding_model='dual_branch'`. |
 | `dropout` | `0.0` | Dropout after each hidden layer (MLP) or inside each block (LRU). |
 | `norm_layer` | `'auto'` | Normalisation in the MLP encoder: `'layer'`, `'batch'` or `'none'`. `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries. |
 | `use_spectral_norm` | `True` | Spectral normalisation of the MLP's hidden layers. |
@@ -132,7 +132,7 @@ The networks that embed X and Y and score their pairing.
 | `shared_encoder` | `False` | One encoder for X and Y. `mode='dimensionality'` without `y_data` uses `True` when unset. |
 | `max_n_batches` | `512` | Most samples an encoder embeds at once, to bound memory. A custom decision head or a variational concat critic also scores at most this many pairs at once. |
 | `custom_critic` | `None` | A `torch.nn.Module` used as the whole critic; the architecture settings above are then ignored. |
-| `custom_embedding_cls` | `None` | An encoder class to use in place of `embedding_model`. |
+| `custom_embedding_cls` | `None` | An encoder class to use in place of `embedding_model`, as each branch in a difference quantity. |
 | `custom_embedding_cls_y` | X's | Y's encoder class. |
 | `pytorch_predefined` | `None` | A torchvision model name, such as `'resnet18'`, for `embedding_model='pretrained_backbone'`. |
 | `pretrained` | `False` | Load that backbone's ImageNet weights. |
@@ -154,11 +154,12 @@ The optimisation loop and what is evaluated after it.
 | `n_epochs` | `50` | Training epochs. |
 | `learning_rate` | `0.0005` | Optimiser learning rate. |
 | `batch_size` | `128` | Training batch size. It sets how many negatives each training step sees and does not cap the reported estimate. |
-| `patience` | `1000` | Epochs without improvement before training stops. The default exceeds `n_epochs` and keeps early stopping off until this is lowered. |
+| `patience` | `1000` | Epochs without improvement before training stops. The default exceeds `n_epochs` and keeps early stopping off until this is lowered. Stopping decides only when training ends: the network evaluated is always the one at `best_epoch`. |
 | `min_improvement` | `0.001` | Rise in the smoothed test MI that counts as an improvement for `patience`. |
-| `median_window` | `5` | Width of the median filter on the test-MI curve before its peak is read. |
+| `median_window` | `5` | Width of the median filter on the test-MI curve before the epoch is read from it. |
 | `smoothing_sigma` | `1.0` | Width of the Gaussian filter applied after the median filter. |
-| `peak_fraction` | `1.0` | Below 1, report the first epoch whose smoothed test MI reaches this fraction of the peak. The chosen epoch is `conservative_epoch` in `runs`. |
+| `epoch_rule` | `'plateau_start'` | Which epoch of the smoothed held-out curve the reported values are read at (`best_epoch`): the earliest at its top, within half the curve's own noise of the top's level (`'plateau_start'`), or its maximum (`'peak'`). On a clean peak the two agree; on a plateau `'plateau_start'` reads its start, before the network fits its training rows further. `runs` gives the maximum as `peak_epoch` and a diagnosis of the curve as `curve_diagnosis`. |
+| `peak_fraction` | `1.0` | Below 1, report the first epoch whose smoothed test MI reaches this fraction of its maximum, when that is earlier than the epoch `epoch_rule` reads. Meant for a curve that saturates, whose top may be the estimator's ceiling rather than the information; the value is then read before the curve reaches its top. The chosen epoch is `conservative_epoch` in `runs`. |
 | `optimizer` | `'adam'` | `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`, or a `torch.optim.Optimizer` class. |
 | `optimizer_params` | `{}` | Extra arguments for the optimiser, such as `{'weight_decay': 1e-4}`. |
 | `scheduler` | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or a `torch.optim.lr_scheduler` class. |
@@ -166,9 +167,10 @@ The optimisation loop and what is evaluated after it.
 | `lr_head_multiplier` | `None` | Learning-rate multiplier for the hybrid critic's head. |
 | `gradient_clip_val` | `None` | Clip the gradient norm to this value. |
 | `use_amp` | `'auto'` | Mixed precision: `'auto'` uses it on CUDA only. |
-| `max_eval_samples` | `5000` | Most samples any single evaluation uses, test-side or train-side. |
-| `train_subset_size` | `None` | Size of the fixed training subset the reported estimate is evaluated on; `None` takes `min(n_train, max_eval_samples)`. Training uses every training sample either way. |
-| `eval_train` | `False` | Also record the train-side MI every epoch: `True`, a fraction, a sample count, or `'full'`. |
+| `max_eval_samples` | `5000` | Most samples any single evaluation uses, test-side or train-side. A larger set is evaluated in blocks of at most this size whose values are averaged, so every row counts and the ceiling is that of one block. |
+| `train_subset_size` | `None` | Size of the fixed training subset the reported estimate is evaluated on: a count, or `'full'` for the whole training set; `None` takes `min(n_train, max_eval_samples)`. Like the held-out subset, it is one contiguous stretch per training segment for a blocked split and random rows for a random split. A subset larger than `max_eval_samples` is evaluated in blocks. Training uses every training sample either way. |
+| `test_subset_size` | `None` | Size of the fixed held-out subset evaluated at every epoch: a count, or `'full'` for the whole held-out set; `None` takes `min(n_test, max_eval_samples)`. Drawn once, right after the split: one contiguous stretch per held-out block for a blocked split, random rows for a random split. A subset larger than `max_eval_samples` is evaluated in blocks at every epoch. |
+| `eval_train` | `False` | Also record the train-side MI every epoch: `True`, a fraction, a sample count, or `'full'`. A set larger than `max_eval_samples` is evaluated in blocks. |
 | `shift_time` | `True` | Temporal data: re-tile the windows from a fresh random time offset every epoch. |
 | `shift_windows` | `True` | The cheaper re-slicing form of `shift_time`, for regularly sampled continuous and categorical data. |
 | `augmentation_params` | `{}` | Augmentations applied to both X and Y during training (listed in [USING.md](USING.md)). |
@@ -192,13 +194,13 @@ How samples are divided into training and test sets.
 
 ## `Estimator`
 
-The bound the critic is trained on. A bare name, `estimator='smile'`, is accepted
-too.
+The bound the critic is trained on, or KSG, which trains no critic. A bare name,
+`estimator='smile'`, is accepted too.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `name` | `'infonce'` | `'infonce'` (low variance, capped at the log of the evaluation sample count) or `'smile'` (lower bias, higher variance). |
-| `params` | `{}` | Extra arguments for the bound. SMILE takes `clip`, default 5.0. |
+| `name` | `'infonce'` | `'infonce'` (low variance, capped at the log of the evaluation sample count), `'smile'` (lower bias, higher variance) or `'ksg'` (nearest neighbours, no training; see [USING.md](USING.md#estimators)). |
+| `params` | `{}` | Extra arguments for the estimator. SMILE takes `clip`, default 5.0. KSG takes `k` (4), `gaussianize` (True) and `exclude` (`'auto'`). |
 
 ## `Output`
 
@@ -276,7 +278,7 @@ For `mode='conditional'`.
 | Parameter | Default | Meaning |
 |--|--|----|
 | `w_data` | required | The conditioning variable $W$ in $I(X;Y \mid W)$. |
-| `align` | `None` | `'dual_branch'` embeds W apart from X, for a W whose window length differs from X's. |
+| `align` | `None` | `'dual_branch'` passes X and W to the joint term as a pair, for a W whose window length differs from X's. |
 | `rigorous` | `False` | Extrapolate each repeat to infinite data. |
 | `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
 

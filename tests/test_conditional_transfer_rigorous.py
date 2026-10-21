@@ -33,7 +33,7 @@ class TestConditionalRigorous:
         import neural_mi as nmi
         N = 400
         x = _make_random_3d(N, 2, 8, seed=1)
-        y = _make_random_3d(N, 2, 8, seed=2)
+        y = x + _make_random_3d(N, 2, 8, seed=2)      # X carries information about Y beyond W
         w = _make_random_3d(N, 2, 8, seed=3)
         result = nmi.run(
             x, y,
@@ -118,14 +118,14 @@ class TestTransferRigorous:
         T = 500
         rng = np.random.default_rng(13)
         x = rng.normal(size=(T, 2)).astype(np.float32)
-        y = rng.normal(size=(T, 2)).astype(np.float32)
+        y = (np.roll(x, 1, axis=0) + rng.normal(size=(T, 2))).astype(np.float32)     # X's past drives Y
         result = nmi.run(
             x, y,
             mode='transfer',
             transfer=Transfer(history_window=5, rigorous=True,
                               gamma_range=range(1, 4), min_gamma_points=2),
-            model=_MODEL, training=_TRAINING,
-            verbose=False, show_progress=False,
+            model=_MODEL, training=Training(n_epochs=30, learning_rate=1e-3, batch_size=32, patience=10),
+            verbose=False, show_progress=False, seed=0,
         )
         assert result.mi_estimate is not None, "rigorous transfer should set mi_estimate"
         assert result.dataframe is not None, "rigorous transfer should set dataframe"

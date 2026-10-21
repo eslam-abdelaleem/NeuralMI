@@ -1,7 +1,7 @@
 # tests/test_oracle.py
 """Tests for the exact-value oracle and the offset-spec array builder.
 
-Two things are locked in here. First, that ``SharedLatentGaussian`` reproduces
+Two things are locked in here. First, that ``LatentGaussian`` reproduces
 the identities the temporal taxonomy rests on, since a tutorial that claims
 Massey's conservation law holds needs both sides to be exact. Second, that the
 general :func:`build_offset_arrays` produces byte-identical arrays to every
@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from neural_mi.generators import SharedLatentGaussian, generate_shared_latent_gaussian
+from neural_mi.generators import LatentGaussian, generate_shared_latent_gaussian
 from neural_mi.utils import build_offset_arrays
 from neural_mi.analysis.offsets import build_past_future, build_cross_offset
 from neural_mi.quantities import (
@@ -28,7 +28,7 @@ def _past(name, k=K):
 
 @pytest.fixture(scope='module')
 def oracle():
-    return SharedLatentGaussian(dims={'x': 4, 'y': 4, 'w': 4}, d=2, phi=0.9, seed=0)
+    return LatentGaussian.shared(dims={'x': 4, 'y': 4, 'w': 4}, d=2, phi=0.9, seed=0)
 
 
 class TestOracleIdentities:
@@ -93,7 +93,7 @@ class TestOracleIdentities:
             oracle.exact([('x', 0)], [('y', 0)]))
 
     def test_tau_matches_phi(self):
-        o = SharedLatentGaussian(phi=0.9)
+        o = LatentGaussian.shared(phi=0.9)
         assert o.tau == pytest.approx(-1.0 / np.log(0.9))
 
 
@@ -115,13 +115,13 @@ class TestOracleSampling:
         """A long draw should reproduce the model's own lag-0 cross-covariance."""
         s = oracle.sample(T=200_000, seed=0)
         empirical = (s['x'] - s['x'].mean(0)).T @ (s['y'] - s['y'].mean(0)) / len(s['x'])
-        exact = oracle._cross_cov('x', 'y', 0)
+        exact = oracle._cov_from_spec([('x', 0), ('y', 0)])[:4, 4:]
         assert np.abs(empirical - exact).max() < 0.05
 
     def test_convenience_returns_data_and_oracle(self):
         data, o = generate_shared_latent_gaussian(T=300, dims={'x': 3, 'y': 3}, seed=2)
         assert data['x'].shape == (300, 3)
-        assert isinstance(o, SharedLatentGaussian)
+        assert isinstance(o, LatentGaussian)
         assert o.exact([('x', 0)], [('y', 0)]) > 0
 
     def test_return_latents_gives_the_driver_of_the_sample(self, oracle):
@@ -140,7 +140,7 @@ class TestOracleSampling:
             T=300, dims={'x': 3, 'y': 3}, d=2, seed=2, return_latents=True)
         assert data['x'].shape == (300, 3)
         assert latent.shape == (300, 2)
-        assert isinstance(o, SharedLatentGaussian)
+        assert isinstance(o, LatentGaussian)
 
 
 class TestOracleSNR:
@@ -158,7 +158,7 @@ class TestOracleSNR:
         assert np.allclose(empirical, oracle.snr('x'), rtol=0.1)
 
     def test_snr_is_infinite_without_observation_noise(self):
-        o = SharedLatentGaussian(dims={'x': 3, 'y': 3}, noise=0.0)
+        o = LatentGaussian.shared(dims={'x': 3, 'y': 3}, noise=0.0)
         assert np.all(np.isinf(o.snr('x')))
 
     def test_snr_rejects_an_unknown_process(self, oracle):
@@ -178,16 +178,61 @@ class TestOracleErrors:
 
     def test_nonstationary_phi_rejected(self):
         with pytest.raises(ValueError, match=r"\[0, 1\)"):
-            SharedLatentGaussian(phi=1.0)
+            LatentGaussian.shared(phi=1.0)
 
     def test_single_process_has_no_default_pair(self):
-        o = SharedLatentGaussian(dims={'x': 4})
+        o = LatentGaussian.shared(dims={'x': 4})
         with pytest.raises(ValueError, match="single process"):
             o.block_mi(5)
 
     def test_noise_dict_must_cover_every_process(self):
         with pytest.raises(ValueError, match="missing entries"):
-            SharedLatentGaussian(dims={'x': 4, 'y': 4}, noise={'x': 1.0})
+            LatentGaussian.shared(dims={'x': 4, 'y': 4}, noise={'x': 1.0})
+
+
+def _directed():
+    """X's latent drives Y's at lag 1, Y's latent has memory of its own, and the innovations correlate."""
+    rng = np.random.default_rng(0)
+    proj = {'x': np.c_[rng.normal(size=(3, 1)), np.zeros((3, 1))],
+            'y': np.c_[np.zeros((3, 1)), rng.normal(size=(3, 1))]}
+    return LatentGaussian(np.array([[0.9, 0.0], [0.5, 0.6]]), proj, noise=0.7,
+                          Q=np.array([[1.0, 0.3], [0.3, 1.0]]))
+
+
+class TestGeneralDynamics:
+    """Latent dynamics that couple components: what LatentGaussian.shared cannot build."""
+
+    @pytest.mark.parametrize('a, b', [('x', 'y'), ('y', 'x')])
+    def test_lagged_covariance_matches_a_long_sample(self, a, b):
+        o = _directed()
+        s = o.sample(200_000, seed=1)
+        u, v = s[a] - s[a].mean(0), s[b] - s[b].mean(0)
+        empirical = u[:-1].T @ v[1:] / (len(u) - 1)                 # E[a_t b_{t+1}^T]
+        assert np.abs(empirical - o._cov_from_spec([(a, 0), (b, 1)])[:3, 3:]).max() < 0.05
+
+    def test_the_rate_is_the_slope_of_block_mi(self):
+        o = _directed()
+        slope, _ = o.affine_fit(40, 50)
+        assert o.mi_rate() == pytest.approx(slope, rel=1e-3)
+
+    def test_the_infinite_past_is_the_limit_of_long_histories(self):
+        o = _directed()
+        infinite = o.storage_transfer('y', 'x')
+        assert o.storage_transfer('y', 'x', k=60) == pytest.approx(infinite, rel=1e-4)
+        assert o.storage_transfer('y', 'x', k=1)[0] < infinite[0]
+
+    def test_transfer_is_larger_along_the_influence(self):
+        o = _directed()
+        assert o.storage_transfer('y', 'x')[1] > o.storage_transfer('x', 'y')[1]
+
+    def test_channel_indices_stand_for_a_process_or_one_channel(self):
+        o = _directed()
+        assert o.exact([(np.arange(3), -1)], [(np.arange(3, 6), 0)]) == o.exact([('x', -1)], [('y', 0)])
+        assert 0 < o.exact([(0, -1)], [(3, 0)]) < o.exact([('x', -1)], [('y', 0)])
+
+    def test_an_unstable_latent_is_rejected(self):
+        with pytest.raises(ValueError, match='spectral radius'):
+            LatentGaussian(np.array([[1.0, 0.5], [0.0, 0.5]]), {'x': np.eye(2)})
 
 
 class TestBuilderMatchesNamedQuantities:
@@ -316,7 +361,7 @@ class TestBuilderEndToEnd:
 
     def test_spec_built_arrays_estimate_a_positive_quantity(self):
         import neural_mi as nmi
-        o = SharedLatentGaussian(dims={'x': 3, 'y': 3}, d=2, phi=0.9, seed=0)
+        o = LatentGaussian.shared(dims={'x': 3, 'y': 3}, d=2, phi=0.9, seed=0)
         data = o.sample(T=4000, seed=0)
         k = 8
         spec = {'A': [('x', s) for s in range(-k, 0)], 'B': [('x', 0)]}

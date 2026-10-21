@@ -192,16 +192,14 @@ class TestPairwisePermutation:
         cost = [w for w in caught if "reruns the whole call" in str(w.message)]
         assert len(cost) == 1
 
-    def test_self_pairwise_permutation_test_computes_no_null(self, caplog):
+    def test_self_pairwise_permutation_test_computes_no_null(self):
         rng = np.random.default_rng(0)
         x = rng.standard_normal((N, 3)).astype('float32')
-        with caplog.at_level('WARNING', logger='neural_mi'):
+        with pytest.warns(UserWarning, match="no effect for mode='pairwise' without y_data"):
             res = nmi.run(x, mode='pairwise', model=self._MODEL_P, training=self._TRAINING_P,
                           permutation_test=True, n_permutations=2, n_workers=1,
                           show_progress=False)
         assert 'null_distribution' not in res.details[0]
-        assert any("no effect for mode='pairwise' without y_data" in r.getMessage()
-                   for r in caplog.records)
 
 
 class TestConditionalInteractionRawDeferredPermutation:
@@ -362,18 +360,16 @@ class TestModesWithoutANullDistribution:
         return np.random.default_rng(0).standard_normal((300, 4)).astype(np.float32)
 
     @pytest.mark.parametrize("with_y", [False, True])
-    def test_dimensionality_reports_and_computes_no_null(self, caplog, with_y):
+    def test_dimensionality_reports_and_computes_no_null(self, with_y):
         from neural_mi.config import Dimensionality
         y = {'y_data': self._x()} if with_y else {}
-        with caplog.at_level('WARNING', logger='neural_mi'):
+        with pytest.warns(UserWarning, match="no effect for mode='dimensionality'"):
             result = nmi.run(x_data=self._x(), mode='dimensionality',
                              dimensionality=Dimensionality(n_restarts=1, reference_dim=2,
                                                            embedding_dims=[1]),
                              model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
                              training=Training(n_epochs=1), permutation_test=True,
                              n_permutations=3, n_workers=1, show_progress=False, **y)
-        assert any("no effect for mode='dimensionality'" in r.getMessage()
-                   for r in caplog.records)
         assert 'null_distribution' not in result.details[0]
         assert 'p_value' not in result.dataframe.columns
 

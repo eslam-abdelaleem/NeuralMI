@@ -195,7 +195,7 @@ class TestTransferEntropy:
 class TestConditionalTransferEntropy:
     """`conditional_transfer_entropy`, exported from the package top level.
 
-        A contract test, not an accuracy test. Against SharedLatentGaussian this
+        A contract test, not an accuracy test. Against LatentGaussian this
         quantity carries an amplification factor near 100 and a seed-to-seed
         spread larger than its own value, so it is not distinguishable from zero at
         any sample size a test can afford. What is pinned is that it runs, returns
@@ -396,7 +396,7 @@ class TestSweepShowProgressPropagation:
 
         monkeypatch.setattr(nmi.quantities, 'run', _spy)
         x, y = torch.randn(300, 1), torch.randn(300, 1)
-        model = Model(embedding_model='dual_branch', embedding_dim=8, hidden_dim=16, n_layers=1)
+        model = Model(embedding_dim=8, hidden_dim=16, n_layers=1)
         nmi.mi_rate(x, y, h=[0, 3], half_width=5, model=model, training=Training(n_epochs=2, patience=1),
                    n_workers=1, show_progress=False)
         assert received and all(v is False for v in received)
@@ -409,8 +409,8 @@ class TestIterableAndGridCompose:
 
     @staticmethod
     def _data():
-        from neural_mi.generators import SharedLatentGaussian
-        oracle = SharedLatentGaussian(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
+        from neural_mi.generators import LatentGaussian
+        oracle = LatentGaussian.shared(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
                                       phi=0.9, coupling=0.4, noise=1.0, seed=0)
         s = oracle.sample(T=1200, seed=0)
         return tuple(s[k].astype('float32') for k in ('x', 'y', 'w'))
@@ -494,8 +494,8 @@ class TestConditionalQuantitiesReportTheirSpread:
 
     @staticmethod
     def _data():
-        from neural_mi.generators import SharedLatentGaussian
-        oracle = SharedLatentGaussian(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
+        from neural_mi.generators import LatentGaussian
+        oracle = LatentGaussian.shared(dims={'x': 4, 'y': 4, 'w': 4}, d=2,
                                       phi=0.9, coupling=0.4, noise=1.0, seed=0)
         s = oracle.sample(T=1500, seed=0)
         return tuple(s[k].astype('float32') for k in ('x', 'y', 'w'))
@@ -553,14 +553,9 @@ class TestConditionalQuantitiesReportTheirSpread:
                 n_workers=1, **self._cheap()),
         }
         result = calls[quantity]()
-        spread = result.get('mi_std')
-        # The spread of the per-repeat differences, from the runs table, over the
-        # repeats that produced a value.
-        produced = result.runs['mi'][result.runs['mi'] != 0]
-        if len(produced) >= 2:
-            assert spread == pytest.approx(produced.std(ddof=1))
-        else:
-            assert np.isnan(spread)
+        # The spread of every repeat's measured difference, from the runs table.
+        measured = result.runs['mi_raw' if 'mi_raw' in result.runs else 'mi']
+        assert result.get('mi_std') == pytest.approx(measured.std(ddof=1))
 
     def test_a_single_run_reports_no_spread_rather_than_zero(self):
         x, y, _ = self._data()

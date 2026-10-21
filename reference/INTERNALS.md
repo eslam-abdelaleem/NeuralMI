@@ -26,7 +26,8 @@ the networks and returns rows that the shared assembly layer turns into a
 | `neural_mi/validation.py` | `ParameterValidator`, the allowed values, and the per-stream processor checks |
 | `neural_mi/results.py` | the `Results` object: `get`, `summary`, `plot`, `compare`, `animate`, `save`, `load`, `to_dict`, `to_json` |
 | `neural_mi/quantities.py` | the named quantities, on one engine: `_named` expands an iterable parameter into configurations, `_call` runs one configuration through `run()`, `_task` is the unit sent to a worker |
-| `neural_mi/parallel.py` | `dispatch_tasks`, the one worker pool (`spawn` context) every parallel loop uses |
+| `neural_mi/device.py` | `choose_device` and `with_device`: the device a call trains on when it names none, chosen by timing the first network on the CPU and, when the call is long enough, on the GPU |
+| `neural_mi/parallel.py` | `worker_pool`, the one worker pool every parallel loop opens (`spawn` context, the parent's logging level, a share of the CPU threads per worker), and `dispatch_tasks` |
 | `neural_mi/embeddings_io.py` | `extract_embeddings` (reloads a saved critic) |
 | `neural_mi/utils.py` | `build_critic` and `build_optimizer_and_scheduler`, `cross_covariance_svd` (the one whitening and SVD behind the participation ratios and the rotated embeddings), `build_offset_arrays`, `get_device` |
 
@@ -54,8 +55,17 @@ the per-processor datasets, `views.py` the `SubsetView` used for splits, and
 
 **`neural_mi/models/`** has the critics (`SeparableCritic`, `HybridCritic`,
 `ConcatCritic`), the encoders and `VariationalWrapper` in `embeddings.py`, and
-the reconstruction decoders in `decoders.py`. **`neural_mi/estimators/`** has
-the bounds in `bounds.py`, registered by name in `ESTIMATORS`.
+the reconstruction decoders in `decoders.py`. `BranchedEmbedding` is the X
+encoder of every term of a difference quantity. `_joint_marginal_difference`
+(`analysis/sweep.py`) marks both terms with `_difference_term`, trains the
+conditioning term first, and hands the joint term `_condition`, where its
+conditioning set sits among X's channels and how many channels the
+conditioning term's network was built on. `build_critic` then builds one branch
+per part of X from the call's encoder, and `conditioning_parts` splits a joint
+X for the branches and for a nonparametric estimator alike. **`neural_mi/estimators/`** has
+the bounds in `bounds.py`, registered by name in `ESTIMATORS`, and KSG in
+`ksg.py`, registered in `NONPARAMETRIC` with its conditional form in
+`NONPARAMETRIC_CONDITIONAL`.
 **`neural_mi/training/trainer.py`** has the training loop, the chunked
 evaluation, the epoch selection and the spectral metrics.
 **`neural_mi/visualize/`** has the plots and the training animation.
@@ -90,11 +100,14 @@ above zero or its training-side value came out negative. The measured value
 stays in `raw_train_mi`. A combined value gets the same rule where it is formed,
 through `modes._floor_at_zero`: in `_difference_rows` for conditional MI and
 transfer entropy, in `_fit_row` for an extrapolation, and in the precision rows.
-`modes._floor_at_zero` keeps the measured value as `<key>_raw`. Because
-`_joint_marginal_difference` returns the difference floored the same way, a rung
-of a rigorous ladder follows the rule too. `assemble.aggregate` leaves the
-values reported as 0 out of `mi_mean` and `mi_std` and counts them in `n_zero`.
-`rigorous._drop_zero_rungs` leaves the rungs reported as 0 out of the fit.
+`modes._floor_at_zero` keeps the measured value as `<key>_raw`. `assemble.aggregate` averages the
+measured values (`mi_raw`, or `<col>_raw` for a column in `mean_cols`) wherever a
+repeat carries one, and floors only the mean. Elsewhere it leaves the values
+reported as 0 out of `mi_mean` and `mi_std` and counts them in `n_zero`. The
+permutation test summarises each trial with `aggregate` too. A rung of a
+difference's rigorous ladder is its signed measured value (`sweep.rung`), and
+`rigorous._drop_zero_rungs` leaves out only the rungs reported as 0, whose
+networks learned nothing.
 Interaction information is signed and is left as measured.
 
 ### Processor parameters in a grid
@@ -119,8 +132,8 @@ task.
 
 Every loop of independent work, whether configurations, repeats, lags, pairs,
 rigorous chunks, splits or permutation trials, runs in a `spawn` pool when
-`n_workers` is above 1. The named quantities use `parallel.dispatch_tasks` and
-the analysis modules start their own pools. Each pool wraps its task function in
+`n_workers` is above 1. Every pool opens through `parallel.worker_pool`; the
+named quantities dispatch to one with `parallel.dispatch_tasks`. Each pool wraps its task function in
 `logger.CapturedTask` and reads the results through `logger.released`. A worker
 then hands back the warnings and log messages of its task, and they are raised
 again in the calling process at the caller's line. `logger.collect_repeats`
@@ -128,7 +141,16 @@ around every `run()`, named quantity and `create_dataset()` shows each kind of
 message once per call and counts the rest. In IPython the count is shared by every call of a cell. On import,
 `logger._group_repeats_by_cell` registers `pre_run_cell` and `post_run_cell`
 hooks that open and close it. `grouped_warnings()` opens the same shared count
-over a block. When an outer loop runs in parallel, any loop inside one of its units runs
+over a block. The count of a repeated warning is raised as a warning of the same
+category, and the count of a log message is logged at its level.
+
+A message that needs the user's attention (a result that may be off, a setting
+not used as given, data the library changed) is a `warnings.warn` with a
+category, and is documented in `reference/MESSAGES.md`. Logging carries only
+what the library did, at the info or debug level, and errors. `logger.warning`
+is not used, which `test_docs_drift.py` checks.
+
+When an outer loop runs in parallel, any loop inside one of its units runs
 with `n_workers=1` so that a pool never starts inside a pool. Each task seeds itself
 from the call's `seed` and a key fixed by its position in the grid so that the
 result does not depend on which worker ran it or when.
@@ -166,7 +188,11 @@ batch the image augmentations run first, then the others, then the custom ones.
 ## Extending the library
 
 To add an estimator, put the bound in `neural_mi/estimators/bounds.py` and
-register its name in `ESTIMATORS` in `neural_mi/estimators/__init__.py`.
+register its name in `ESTIMATORS` in `neural_mi/estimators/__init__.py`. An
+estimator that trains nothing is a function `(x, y, **params)` that returns
+nats, registered in `NONPARAMETRIC`. Its conditional form `(x, y, z, **params)`,
+registered in `NONPARAMETRIC_CONDITIONAL`, serves the difference quantities.
+`run_training_task` returns the value as `train_mi` before any network is built.
 
 To add a processor, subclass `TemporalWindowDataset` in
 `neural_mi/data/temporal.py` (`BaseStaticDataset` in `neural_mi/data/static.py`

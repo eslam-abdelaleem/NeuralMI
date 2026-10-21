@@ -51,7 +51,7 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_contract.py` | every mode with no grid, with repeats, with a configuration grid, with both, with a processor parameter in the grid, and with `rigorous=True` where it exists: each call returns the shared `Results` shape or refuses with a reason. Also embeddings kept per repeat, and the `n_workers` warning |
-| `test_docs_drift.py` | `reference/PARAMETERS.md` against every config field, default and processor parameter, and `reference/MESSAGES.md` against every message the package emits, in both directions |
+| `test_docs_drift.py` | `reference/PARAMETERS.md` against every config field, default and processor parameter, and `reference/MESSAGES.md` against every message the package emits, in both directions. No message is logged as a warning: a warning is a `warnings.warn` |
 | `test_settings_are_read.py` | every declared setting and every config field reaches code that reads it. A setting that is accepted and then ignored fails. |
 | `results_factory.py` | not a test: builds `Results` objects of any mode through the same `build_results` every mode uses, for the tests of `Results` and its plots |
 
@@ -60,6 +60,7 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_estimators.py` | the InfoNCE and SMILE bound functions, accuracy on known-MI data, SMILE's `clip` through the full pipeline |
+| `test_ksg.py` | KSG and its conditional form: agreement with scikit-learn, accuracy on Gaussian data, invariance under monotone transforms, the k-d tree and brute-force paths, the time window, and the modes through `run()` |
 
 ### Data
 
@@ -75,7 +76,7 @@ Each file covers one functional area. Run
 
 | file | covers |
 |---|---|
-| `test_oracle.py` | `SharedLatentGaussian`: the exact identities, sampling, SNR, error paths, and agreement between the offset builder and the named quantities |
+| `test_oracle.py` | `LatentGaussian`: the exact identities, sampling, SNR, error paths, latent dynamics that couple components (lagged covariance against a sample, the rate against the block-MI slope, the infinite past against long histories, channel specs), and agreement between the offset builder and the named quantities |
 | `test_generators.py` | every synthetic generator in numpy and torch modes |
 
 ### Models
@@ -85,7 +86,7 @@ Each file covers one functional area. Run
 | `test_models.py` | every encoder, `VariationalWrapper` for each, all three critics, chunking equivalence, gradients, `get_embeddings()` |
 | `test_critic_scoring.py` | the block scoring of the hybrid and concat critics against the pair-by-pair route, scores and gradients |
 | `test_cnn2d.py` | the 2-D encoder, its `build_critic` path, 4-D input handling, the image splits of `mode='dimensionality'` |
-| `test_dual_branch_embedding.py` | `DualBranchEmbedding`, its integration through `run()`, the quantities that require it, and accuracy against the oracle |
+| `test_branched_embedding.py` | `BranchedEmbedding`, the X encoder of every term of a difference: its parts and split, the encoder each term gets, the pair of different window lengths, and the quantities that use it against the oracle |
 | `test_decoders.py` | decoder dispatch and the reconstruction-loss path end to end |
 | `test_shared_encoder.py` | weight identity, parameter count, the concat incompatibility, the dimensionality-mode default |
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |
@@ -138,13 +139,14 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_reproducibility.py` | seeded reproducibility in estimate, sweep and rigorous modes, and under parallelism |
-| `test_parallel.py` | `dispatch_tasks`: empty and single-task shortcuts, order preservation, and the parallel path matching the sequential one |
+| `test_device.py` | the device a call trains on when it names none: a named device kept, no GPU timed without a GPU, in a worker or for a short call, the GPU chosen only when it beats the CPU workers together by the margin, and the timing path and the recorded `device` end to end |
+| `test_parallel.py` | `dispatch_tasks`: empty and single-task shortcuts, order preservation, and the parallel path matching the sequential one. `worker_pool`: each worker's share of the CPU threads, and a count set through `OMP_NUM_THREADS` kept |
 
 ### Utilities
 
 | file | covers |
 |---|---|
-| `test_utils.py` | device selection, `build_critic`, the cross-covariance spectrum, participation ratio, effective rank |
+| `test_utils.py` | device selection, the filter for tqdm's ipywidgets warning, `build_critic`, the cross-covariance spectrum, participation ratio, effective rank |
 
 ### Results and visualisation
 
@@ -161,12 +163,12 @@ Each file covers one functional area. Run
 
 | area | files |
 |---|---|
-| a wrong estimate or the estimator maths | `test_estimators.py`, `test_oracle.py` |
+| a wrong estimate or the estimator maths | `test_estimators.py`, `test_ksg.py`, `test_oracle.py` |
 | a column, row or field of `Results` missing or misplaced | `test_contract.py`, `test_results.py` |
 | a reference page that no longer matches the code | `test_docs_drift.py` |
 | a permutation null or p-value | `test_permutation.py` |
 | windowing, alignment or a split | `test_data_processors.py`, `test_shift_windowing.py` |
-| an encoder's output shape or gradients | `test_models.py`, `test_cnn2d.py`, `test_dual_branch_embedding.py` |
+| an encoder's output shape or gradients | `test_models.py`, `test_cnn2d.py`, `test_branched_embedding.py` |
 | the training loop | `test_trainer.py` |
 | a `run()` API error | `test_run.py`, `test_validation.py`, `test_config.py` |
 | a named quantity | `test_quantities.py`, `test_quantities_sweep.py` |

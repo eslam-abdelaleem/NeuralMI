@@ -47,9 +47,9 @@ result.summary()
 ```
 
 `run()` holds out 10% of the samples in contiguous blocks, trains a critic
-network on the rest, finds the epoch at which the smoothed MI on the held-out
-blocks peaks, and reports the MI on the training samples at that epoch as
-`mi_estimate`. The value is in bits unless `Output(units='nats')` asks for
+network on the rest, finds the earliest epoch at which the smoothed MI on the
+held-out blocks reaches its top, and reports the MI on the training samples at
+that epoch as `mi_estimate`. The value is in bits unless `Output(units='nats')` asks for
 nats. [THEORY.md](THEORY.md#the-reported-number) explains why the training side
 is the value reported.
 
@@ -96,17 +96,22 @@ of the whole procedure on the same data. Repeats are indexed by `run_id`.
 
 `dataframe` always has `config_id`, the grid and axis keys, `mi_mean`, `mi_std`,
 `n_runs` and `n_zero`, followed by the columns of the mode (listed per mode in
-[Choosing the analysis](#choosing-the-analysis)). `mi_mean` and `mi_std` use the
-repeats that produced a value. A repeat reported as 0 produced nothing and is
-counted in `n_zero` ([THEORY.md](THEORY.md#the-spread-over-repeats)). `mi_std`
+[Choosing the analysis](#choosing-the-analysis)). For a difference quantity or a
+rigorous fit, `mi_mean` and `mi_std` use every repeat's measured value,
+negative ones included, `mi_mean` is reported as 0 when it is negative, and
+`mi_raw_mean` keeps the measured mean. For a single network they use the
+repeats that produced a value, and a repeat reported as 0 produced nothing and
+is counted in `n_zero` ([THEORY.md](THEORY.md#the-spread-over-repeats)). `mi_std`
 is the spread over repeats of the procedure on the same data and is NaN below
 two repeats. It says how much the estimate moves when the networks are retrained
 and is never an interval on the population value
 ([THEORY.md](THEORY.md#the-spread-over-repeats)).
 
 `runs` has one row per repeat holding the repeat's value `mi` and the
-diagnostics of the network behind it: `test_mi`, `best_epoch`, `eval_size`,
-`train_eval_size`, the ceilings `train_ceiling_mi` and `test_ceiling_mi`, how
+diagnostics of the network behind it: `test_mi`, `best_epoch` (the epoch read)
+and `peak_epoch` (the maximum of the smoothed held-out curve), `curve_diagnosis`, `approach_shift` (how
+much the value moves when read at the start of the curve's approach to its top), `eval_size`,
+`train_eval_size` and their blocks (`test_eval_blocks`, `train_eval_blocks`), the ceilings `train_ceiling_mi` and `test_ceiling_mi`, how
 close each side came to its ceiling (`train_saturation`, `test_saturation`),
 `window_retention` and the window counts for windowed data, and the held-out MI
 at every epoch in `test_mi_history`. A repeat that trains several networks (the
@@ -385,9 +390,9 @@ measured difference in `mi_raw`. `dataframe` adds the component means and the
 relative error. A factor of 10 or more warns because a difference that small
 should be read with its components ([THEORY.md](THEORY.md#amplification)).
 
-`Conditional(align='dual_branch')` embeds W in its own branch, for a W whose
-window length differs from X's. It needs `Model(embedding_model='dual_branch')`.
-The named quantities that use it set `align` themselves and ask for the model
+`Conditional(align='dual_branch')` passes X and W to the joint term as a pair,
+each at its own window length, for a W whose window length differs from X's.
+The named quantities that need it set `align` themselves
 ([the named quantities](#the-named-quantities)).
 
 ### `interaction`
@@ -620,7 +625,20 @@ null because moving X would move both sides of each pair.
 configurations, lags, pairs, chunks of the rigorous ladder, splits, and
 permutation trials. With `seed` set, each task reseeds from the seed and a fixed
 key of its own. A seeded call therefore returns the same numbers at any
-`n_workers`.
+`n_workers`. A call without a seed draws one from NumPy's global state and
+records it in `result.params['random_seed']`, so passing that seed back
+reproduces the call.
+
+Each worker gets an equal share of the CPU threads, `os.cpu_count() // n_workers`
+and at least one. Workers that each used every core would compete for them, and
+the small networks typical here would train more slowly in parallel than with
+one thread each. Setting `OMP_NUM_THREADS` before the call keeps your own count.
+
+The terms of a difference quantity (conditional MI, transfer entropy,
+interaction information and the named quantities built on them) are separate
+trainings. They split and evaluate the same rows because every term of a repeat
+draws its split and evaluation rows from a generator seeded with the same key,
+with or without a seed passed to the call.
 
 A script that runs with `n_workers` above 1 needs a `__main__` guard. The
 workers start by re-importing the module that launched them. A top-level
@@ -857,14 +875,14 @@ nmi.run(x, y, mode='estimate',
 With shifting on, a window spans two independent draws and can carry more than
 `exact`. An estimate above `exact` points to the setup.
 
-`SharedLatentGaussian` gives the exact value of $I(A;B \mid C)$ for any choice
-of processes and time offsets. Every temporal quantity then has a number to
-check against:
+`LatentGaussian` gives the exact value of $I(A;B \mid C)$ for any choice of
+processes and time offsets. Every temporal quantity then has a number to check
+against:
 
 ```python
-from neural_mi.generators import SharedLatentGaussian
+from neural_mi.generators import LatentGaussian
 
-oracle = SharedLatentGaussian(dims={'x': 8, 'y': 8, 'w': 8}, d=2, phi=0.9)
+oracle = LatentGaussian.shared(dims={'x': 8, 'y': 8, 'w': 8}, d=2, phi=0.9)
 data = oracle.sample(T=20000, seed=0)                # {'x': (20000, 8), 'y': ..., 'w': ...}
 
 past = lambda v, k=25: [(v, s) for s in range(-k, 0)]
@@ -874,9 +892,11 @@ oracle.exact([('x', 0)], [('y', 0)], past('x') + past('y'))      # instantaneous
 oracle.block_mi(30)                                              # grows without bound in w
 oracle.mi_rate()                                                 # bits per step
 oracle.affine_fit(30, 60)                                        # slope and intercept of I_w
+oracle.storage_transfer('y', 'x')                                # storage of Y, transfer X to Y, infinite past
 ```
 
-The processes share one AR(1) latent with correlation time $\tau = -1/\log\phi$.
+`LatentGaussian.shared` builds processes sharing one AR(1) latent with
+correlation time $\tau = -1/\log\phi$.
 Because the shared latent violates Massey's no-feedback condition, the directed
 quantities converge below the symmetric MI rate that only a two-sided window
 over X recovers ([THEORY.md](THEORY.md#temporal-information-quantities)).
@@ -886,6 +906,26 @@ Because the projections are random, the channels of one process can differ in
 SNR by two orders of magnitude. A channel to display is best chosen by its SNR.
 `generate_shared_latent_gaussian(T, ...)` returns the data and the oracle
 together.
+
+The general model takes the latent dynamics, a readout matrix per process and
+the noise: `LatentGaussian(Phi, proj, noise, Q)`, with $Z_t = \Phi Z_{t-1} +
+\eta_t$, $\eta_t \sim N(0, Q)$ and $V_t = M_V Z_t + \epsilon_V$. A $\Phi$ that
+couples components lets one group of latents drive another, so transfer has a
+direction, and a latent read by one process only gives it memory of its own.
+A spec can name channel indices into the stacked processes in place of a
+process name, to ask about single channels.
+
+```python
+import numpy as np
+
+Phi = np.array([[0.9, 0.0],                          # X's latent, with memory
+                [0.5, 0.6]])                         # Y's latent, driven by X's at lag 1
+proj = {'x': np.c_[np.ones((4, 1)), np.zeros((4, 1))],
+        'y': np.c_[np.zeros((4, 1)), np.ones((4, 1))]}
+directed = LatentGaussian(Phi, proj, noise=1.0)
+directed.storage_transfer('y', 'x', k=10)            # from 10 bins of history
+directed.exact([(0, -1)], [(4, 0)])                  # one channel of X to one of Y
+```
 
 ---
 
@@ -936,24 +976,23 @@ means. Gaps stay visible through the coverage warnings. Keep
 `window_size`, merges it into the `Processing` given, and reads continuous
 data when given none.
 
-`mi_rate`, `instantaneous_exchange` and `directed_information_rate` embed their
-conditioning set in its own branch because it has a different window length from
-the other group. They need `Model(embedding_model='dual_branch', ...)` and raise
-at once without it. At `h=0` or `k=0` nothing is conditioned on and any model
-works.
+`mi_rate`, `instantaneous_exchange` and `directed_information_rate` condition
+on a group with a window length of its own, which reaches the joint term beside
+the other group as a pair ([the encoder of a difference](#the-encoder-of-a-difference)).
 
 ```python
 from neural_mi import Model, Training
 
-model = Model(embedding_model='dual_branch', branch_model='gru', embedding_dim=16)
+model = Model(embedding_model='gru', embedding_dim=16)
 r = nmi.mi_rate(x, y, h=[0, 5, 10, 20], half_width=20, model=model,
                 training=Training(n_epochs=100), n_workers=4)
 ```
 
-`h` and `half_width` bias the MI rate in opposite directions. Too little
-history on Y leaves Y's own storage in and reads high. Too narrow a window on X
-leaves signal out and reads low. Sweep one, fix it past its knee, then
-sweep the other. An iterable for both raises.
+Too narrow a window on X (`half_width`) leaves signal out and reads low. Too
+little history on Y (`h`) can read high or low: high when Y's memory comes from
+what it shares with X, low when Y has private memory that its own past would
+cancel ([THEORY.md](THEORY.md#temporal-information-quantities)). Sweep one, fix
+it past its knee, then sweep the other. An iterable for both raises.
 
 ### Sweeps, repeats and rigour
 
@@ -1007,8 +1046,7 @@ spec = {'A': [('x', s) for s in range(-10, 0)],     # X's past
 a, b, c, n_valid = build_offset_arrays({'x': x, 'y': y}, spec, stride=1)
 
 r = nmi.run(a, b, mode='conditional',
-            conditional=Conditional(w_data=c, align='dual_branch'),
-            model=Model(embedding_model='dual_branch'))
+            conditional=Conditional(w_data=c, align='dual_branch'))
 ```
 
 Offsets count rows with negative offsets in the past and zero at the present.
@@ -1025,16 +1063,24 @@ shape `(n_valid, n_channels, n_offsets)`. Without a `C` group, the pair goes to
 The critic scores every pairing of a batch. The estimator turns the score matrix
 into a bound on the MI
 ([THEORY.md](THEORY.md#estimating-mutual-information-with-a-critic)).
+`'ksg'` trains no critic and estimates from nearest neighbours instead.
 
 | `Estimator(name=...)` | bias and variance | ceiling |
 |---|---|---|
 | `'infonce'` (default) | low variance, biased low near its ceiling | $\log N$ nats, $N$ the number of samples evaluated |
 | `'smile'` | lower bias, higher variance | none |
+| `'ksg'` | no training; reads low at large MI and in many dimensions | none |
 
 InfoNCE cannot report more than the log of the number of samples it is evaluated
-on. That number is `eval_size` on the held-out side and `train_eval_size` on the
-reported training side, both capped by `max_eval_samples`. `runs` reports each
-side's ceiling and how close the estimate came to it (`train_saturation`,
+on. On the held-out side `eval_size` rows, drawn once and scored at every
+epoch, are evaluated in `test_eval_blocks` blocks of at most `max_eval_samples`
+rows. On the reported training side, `train_eval_size` rows are evaluated in
+`train_eval_blocks` blocks the same way. On each side the ceiling is set by the
+rows of one block. `Training(train_subset_size='full')` evaluates the reported
+estimate on every training row this way, with the precision of all of them and
+the memory of one block, and `Training(test_subset_size='full')` does the same
+for the held-out curve at every epoch. `runs` reports each side's
+ceiling and how close the estimate came to it (`train_saturation`,
 `test_saturation`). `batch_size` sets how many negatives each training step sees
 and places no cap on the reported value. An estimate near its ceiling calls for
 a larger `max_eval_samples` or for SMILE.
@@ -1047,6 +1093,25 @@ construction where SMILE's clipped density ratio is bounded in variance only.
 `Estimator(name='smile', params={'clip': 5.0})` sets the clip. A lower clip
 lowers the variance and raises the bias.
 
+`estimator='ksg'` is the Kraskov-Stögbauer-Grassberger estimator
+([THEORY.md](THEORY.md#estimating-mutual-information-from-neighbours-ksg)). It
+trains no network and estimates on every row, so the `Model`, `Training` and
+`Split` settings have no effect, and a call that sets any of them warns. It runs
+in every mode except `'dimensionality'` and `'precision'`, which read the
+embeddings of a trained critic. Conditional MI, transfer entropy, interaction
+information and the named quantities built on them use its conditional form on
+the same rows. `Estimator(name='ksg', params=...)` takes `k`, the neighbour count
+(default 4), `gaussianize` (default True), which maps each column through its
+ranks to a standard normal first, and `exclude` (default `'auto'`), the
+separation in rows below which two rows are never neighbours, `'auto'` for the
+autocorrelation time of the rows. `runs` reports the value as `train_mi`.
+Repeats on the same rows return the same value, and `mode='rigorous'` gives the
+spread and corrects the bias. The neighbour search uses a k-d tree up to 20
+dimensions and compares every pair of rows beyond that, at a cost that grows
+with the square of the rows: 5000 rows of 1000 dimensions took about 15 s on a
+laptop CPU. `neural_mi.estimators.ksg_mi(x, y)` and `ksg_cmi(x, y, z)` take
+arrays directly and return nats.
+
 ### Encoders
 
 Each side passes through an encoder before the critic scores it. Every encoder
@@ -1055,7 +1120,7 @@ outputs `(batch, embedding_dim)`.
 | `embedding_model` | input | for |
 |---|---|---|
 | `'mlp'` (default) | `(N, C, W)`, flattened | a general default |
-| `'cnn'` | `(N, C, W)` | local patterns along the window |
+| `'cnn'` | `(N, C, W)` | local patterns along the window, kept at their positions (`cnn_pooling='mean'` averages them over the window) |
 | `'cnn2d'` | `(N, C, H, W)` | image-like input of any size |
 | `'gru'`, `'lstm'` | `(N, C, W)` | sequences, optionally bidirectional |
 | `'lru'` | `(N, C, W)` | long sequences (a linear recurrent unit) |
@@ -1063,13 +1128,11 @@ outputs `(batch, embedding_dim)`.
 | `'transformer'` | `(N, C, W)` | self-attention over the window with `nhead` heads |
 | `'deepsets'` | `(N, C, W)` | raw spike times, invariant to the order of a window's spikes |
 | `'pretrained_backbone'` | `(N, C, H, W)` | a frozen torchvision network with a trainable head |
-| `'dual_branch'` | two inputs of different lengths | the conditioning set of `align='dual_branch'` |
 
 The encoder classes in the table are importable from `neural_mi.models`.
 `pretrained_backbone` takes the torchvision name in `pytorch_predefined` and
 ImageNet weights with `pretrained=True`. Input of a size other than 224 by 224
 pixels is resized by bilinear upsampling on the first forward pass and warns.
-`dual_branch` builds each branch from `branch_model`, `'gru'` by default.
 
 `embedding_model` sets the encoder of both sides. `embedding_model_y`,
 `custom_embedding_cls_y`, `hidden_dim_y`, `n_layers_y` and `embedding_dim_y`
@@ -1093,6 +1156,23 @@ away from zero. Spectral normalisation is unaffected. Because the transformer's
 positional encoding and a pretrained backbone's frozen biases add terms that do
 not depend on the input, these two encoders warn that the setting cannot fully
 apply.
+
+### The encoder of a difference
+
+Conditional MI, transfer entropy, interaction information and the named
+quantities built on them subtract a term that sees the conditioning set alone
+from a joint term that sees it beside the rest of X. Every term of such a
+difference encodes X with one branch per part of X under one small MLP head
+(`BranchedEmbedding`): two branches in the joint term, one in every other term.
+Each branch is the encoder `embedding_model` or `custom_embedding_cls` names.
+The conditioning set then takes the same path, branch then head, in every term
+that sees it, so the terms learn what they share the same way and their errors
+on it cancel in the difference
+([THEORY.md](THEORY.md#the-encoder-of-a-difference)). Each term keeps its own
+weights, training and epoch. A joint X joined along the channels is split where
+the quantity put the conditioning set, and a pair (`align='dual_branch'`)
+arrives split. `shared_encoder=True` is refused for these terms, since X's
+encoder is branched and Y's is not.
 
 ### Critics
 
@@ -1242,11 +1322,19 @@ than one network is refused with the keys to pass.
 
 ## Speed, memory and logging
 
-`device=None` picks CUDA, then Apple's MPS, then the CPU. Because MPS pays a
-fixed cost for every GPU operation, the CPU can be several times faster on small
-networks and batches. MPS starts to win on larger networks. Small synthetic checks run
-faster with `device='cpu'`. `Training(use_amp='auto')` uses mixed precision on
-CUDA.
+A call that names no device trains on the CPU unless a GPU is clearly faster for
+it. A GPU pays a fixed cost for every operation, so on the small networks and
+batches typical of neural data the CPU can be several times faster, and parallel
+workers that share one GPU wait for each other, while each worker gets its own
+share of the CPU. Before the trainings start, NeuralMI times a few training steps
+of the first network on the CPU, with the threads each worker will get. If all the
+trainings would take under two minutes there, it stays on the CPU. Otherwise it
+times the same steps on the GPU (CUDA, else Apple's MPS) and uses the GPU only if
+it is at least 1.5 times faster than the CPU workers together. The decision is
+logged at the info level, and `runs` or the trainings table records each
+network's `device`. A worker process started by `n_workers` trains on the CPU
+unless the call names a device. `device='cpu'`, `'cuda'` or `'mps'` skips all
+of this. `Training(use_amp='auto')` uses mixed precision on CUDA.
 
 `Training(max_eval_samples=...)` bounds memory through the largest number of
 samples any one evaluation uses. `Model(max_n_batches=...)` bounds it through
@@ -1255,11 +1343,16 @@ the largest block of the score matrix computed at once.
 moves each batch to the device. `'auto'` keeps the data on the device and is
 faster when they fit in its memory.
 
-NeuralMI logs warnings and errors by default. `nmi.set_verbosity(level)` sets the
-logging level for the session and `nmi.set_verbose(True)` shows informational
-messages beside the warnings. A
-call keeps that level unless it passes `verbose=True` (informational messages
-for this call) or `verbose=False` (warnings and errors only). [MESSAGES.md](MESSAGES.md) is keyed by the text of each message.
+A message that needs your attention is a Python warning: a result that may be
+off, a setting that was not used as given, or data the library had to change.
+`warnings.filterwarnings` silences a category or turns it into an error, and
+each kind is shown once per call, notebook cell or `nmi.grouped_warnings()`
+block, with a count of its repeats. What the library did as asked is logged at
+the info level and hidden by default. `nmi.set_verbosity(level)` sets the
+logging level for the session and `nmi.set_verbose(True)` shows the
+informational messages. A call keeps that level unless it passes `verbose=True`
+(informational messages for this call) or `verbose=False` (errors only).
+[MESSAGES.md](MESSAGES.md) is keyed by the text of each message.
 The library's own exceptions derive from `nmi.NeuralMIError`:
 `nmi.DataShapeError` for a shape a processor cannot read,
 `nmi.InsufficientDataError` for too little data for the request, and
