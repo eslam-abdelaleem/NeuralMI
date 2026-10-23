@@ -58,6 +58,16 @@ class TestEstimator:
         monkeypatch.setattr(K, 'KD_TREE_MAX_DIM', 0)
         assert (ksg_mi(x, y, exclude=exclude), ksg_cmi(x, y, z, exclude=exclude)) == pytest.approx(tree, abs=1e-12)
 
+    def test_one_pass_agrees_with_the_tree_when_one_space_is_large(self, monkeypatch):
+        """Above KD_TREE_MAX_DIM the joint search and every count come from one pass over the rows; the counts in the
+        small spaces must match the trees that answered them before."""
+        rng = np.random.default_rng(1)
+        x, z = rng.standard_normal((600, 1)), rng.standard_normal((600, 3))
+        y = rng.standard_normal((600, 25)) + x
+        one_pass = ksg_mi(x, y, exclude=3), ksg_cmi(x, y, z, exclude=3)
+        monkeypatch.setattr(K, 'KD_TREE_MAX_DIM', 1000)
+        assert one_pass == pytest.approx((ksg_mi(x, y, exclude=3), ksg_cmi(x, y, z, exclude=3)), abs=1e-12)
+
     def test_autocorrelation_time(self):
         rng = np.random.default_rng(0)
         assert K.autocorrelation_time(rng.standard_normal((5000, 2))) == 0

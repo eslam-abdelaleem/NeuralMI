@@ -74,50 +74,66 @@ def _resolve_exclude(exclude, arrays) -> int:
 
 
 def _kth_distance(points: np.ndarray, k: int, exclude: int) -> np.ndarray:
-    """Max-norm distance from each row to its k-th nearest row more than ``exclude`` rows away in time."""
+    """Max-norm distance from each row to its k-th nearest row more than ``exclude`` rows away in time, by k-d tree."""
     n = len(points)
     rows = np.arange(n)
-    if points.shape[1] <= KD_TREE_MAX_DIM:
-        tree = cKDTree(points)
-        n_query = min(n, k + 1 + 2 * exclude)
-        while True:
-            dist, idx = tree.query(points, k=n_query, p=np.inf)
-            kept = np.abs(idx - rows[:, None]) > exclude
-            position = np.argmax(np.cumsum(kept, axis=1) >= k, axis=1)
-            found = kept.sum(axis=1) >= k
-            if found.all() or n_query == n:
-                return dist[rows, position]
-            n_query = min(n, 2 * n_query)
-    data = torch.from_numpy(points)
-    out = np.empty(n)
-    for start in range(0, n, _CHUNK):
-        block = rows[start:start + _CHUNK]
-        dist = torch.cdist(data[block], data, p=float('inf'))
-        dist[torch.from_numpy(np.abs(block[:, None] - rows[None, :]) <= exclude)] = float('inf')
-        out[block] = torch.kthvalue(dist, k, dim=1).values.numpy()
-    return out
+    tree = cKDTree(points)
+    n_query = min(n, k + 1 + 2 * exclude)
+    while True:
+        dist, idx = tree.query(points, k=n_query, p=np.inf)
+        kept = np.abs(idx - rows[:, None]) > exclude
+        position = np.argmax(np.cumsum(kept, axis=1) >= k, axis=1)
+        found = kept.sum(axis=1) >= k
+        if found.all() or n_query == n:
+            return dist[rows, position]
+        n_query = min(n, 2 * n_query)
 
 
 def _count_within(points: np.ndarray, radius: np.ndarray, exclude: int) -> np.ndarray:
     """For each row, the rows strictly closer than its ``radius`` in the max norm, leaving out every row
-    within ``exclude`` rows of it in time, itself included."""
+    within ``exclude`` rows of it in time, itself included; by k-d tree."""
     n = len(points)
     rows = np.arange(n)
-    if points.shape[1] <= KD_TREE_MAX_DIM:
-        counts = cKDTree(points).query_ball_point(points, np.nextafter(radius, 0), p=np.inf, return_length=True)
-        for shift in range(-exclude, exclude + 1):           # take back the neighbours in time the search counted
-            i = rows[max(0, -shift):n - max(0, shift)]
-            close = np.abs(points[i] - points[i + shift]).max(axis=1) < radius[i]
-            np.subtract.at(counts, i[close], 1)
-        return counts
-    data = torch.from_numpy(points)
-    out = np.empty(n, dtype=int)
+    counts = cKDTree(points).query_ball_point(points, np.nextafter(radius, 0), p=np.inf, return_length=True)
+    for shift in range(-exclude, exclude + 1):           # take back the neighbours in time the search counted
+        i = rows[max(0, -shift):n - max(0, shift)]
+        close = np.abs(points[i] - points[i + shift]).max(axis=1) < radius[i]
+        np.subtract.at(counts, i[close], 1)
+    return counts
+
+
+def _neighbours(spaces, groups, k: int, exclude: int):
+    """The distance from each row to its k-th neighbour in the joint space (``spaces`` side by side), and for each
+    group of spaces the rows strictly closer than that distance in the group's own space. Rows within ``exclude``
+    rows of each other in time are never neighbours. Returns the distances and one array of counts per group.
+
+    With few dimensions in all, k-d trees answer each search. Otherwise every row is compared with every other, once:
+    in the max norm a distance over several spaces is the largest of their distances, so one pass over the rows
+    gives the k-th distance and every count."""
+    joint = np.hstack(spaces)
+    if joint.shape[1] <= KD_TREE_MAX_DIM:
+        eps = _kth_distance(joint, k, exclude)
+        return eps, [_count_within(np.hstack([spaces[i] for i in g]), eps, exclude) for g in groups]
+    n = len(joint)
+    rows = np.arange(n)
+    data = [torch.from_numpy(a) for a in spaces]
+    eps, counts = np.empty(n), [np.empty(n, dtype=int) for _ in groups]
+
+    def largest(dists):
+        out = dists[0].clone()
+        for d in dists[1:]:
+            torch.maximum(out, d, out=out)
+        return out
+
     for start in range(0, n, _CHUNK):
         block = rows[start:start + _CHUNK]
-        dist = torch.cdist(data[block], data, p=float('inf')).numpy()
-        dist[np.abs(block[:, None] - rows[None, :]) <= exclude] = np.inf
-        out[block] = (dist < radius[block, None]).sum(axis=1)
-    return out
+        near = torch.from_numpy(np.abs(block[:, None] - rows[None, :]) <= exclude)
+        dist = [torch.cdist(d[block], d, p=float('inf')).masked_fill_(near, float('inf')) for d in data]
+        e = torch.kthvalue(largest(dist), k, dim=1).values
+        eps[block] = e.numpy()
+        for c, g in zip(counts, groups):
+            c[block] = (largest([dist[i] for i in g]) < e[:, None]).sum(dim=1).numpy()
+    return eps, counts
 
 
 def _candidates(n: int, exclude: int) -> np.ndarray:
@@ -138,8 +154,7 @@ def ksg_mi(x, y, k: int = 4, gaussianize: bool = True, exclude: Union[int, str] 
     rng = np.random.default_rng(seed)
     w = _resolve_exclude(exclude, (x, y))
     x, y = prepare(x, gaussianize, rng), prepare(y, gaussianize, rng)
-    eps = _kth_distance(np.hstack([x, y]), k, w)
-    n_x, n_y = _count_within(x, eps, w), _count_within(y, eps, w)
+    eps, (n_x, n_y) = _neighbours([x, y], [(0,), (1,)], k, w)
     return float(digamma(k) + digamma(_candidates(len(x), w) + 1).mean()
                  - (digamma(n_x + 1) + digamma(n_y + 1)).mean())
 
@@ -155,6 +170,5 @@ def ksg_cmi(x, y, z, k: int = 4, gaussianize: bool = True, exclude: Union[int, s
     rng = np.random.default_rng(seed)
     w = _resolve_exclude(exclude, (x, y, z))
     x, y, z = (prepare(a, gaussianize, rng) for a in (x, y, z))
-    eps = _kth_distance(np.hstack([x, y, z]), k, w)
-    n_xz, n_yz, n_z = (_count_within(np.hstack(p), eps, w) for p in ((x, z), (y, z), (z,)))
+    eps, (n_xz, n_yz, n_z) = _neighbours([x, y, z], [(0, 2), (1, 2), (2,)], k, w)
     return float(digamma(k) - (digamma(n_xz + 1) + digamma(n_yz + 1) - digamma(n_z + 1)).mean())
