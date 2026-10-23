@@ -20,7 +20,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `'precision'`, and a call that sets `Model`, `Training` or `Split` settings
   warns that they have no effect. `neural_mi.estimators.ksg_mi` and `ksg_cmi`
   take arrays directly. Tutorial 01 and the README figures use it, and the
-  `tutorials` extra no longer installs `benchmark-mi`.
+  `tutorials` extra no longer installs `benchmark-mi`. In more than
+  `KD_TREE_MAX_DIM` dimensions it compares every pair of rows once and reads
+  the joint neighbour distance and every count from that one pass, instead of
+  one pass per space.
 
 - `Training(train_subset_size='full')` evaluates the reported estimate on every
   training row. A train-side evaluation larger than `max_eval_samples` (from
