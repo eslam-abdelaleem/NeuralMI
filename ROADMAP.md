@@ -145,6 +145,110 @@ itself is not a bound and reads high by construction.
 **Revisit if** the two terms' encoders of a large conditioning set are seen to
 learn it differently.
 
+### Separate settings for the terms of a quantity
+
+**Idea.** `model=` and `training=` keep applying to every term that is trained
+separately. An optional `terms=` mapping gives any of them its own settings,
+keyed by the names the library already reports in
+`details[config_id]['trainings']`:
+
+| mode | terms |
+|---|---|
+| transfer | `i_xypast_yfuture`, `i_ypast_yfuture` (and `i_yxpast_xfuture`, `i_xpast_xfuture` with `bidirectional`) |
+| conditional | `mi_xw_y`, `mi_w_y` |
+| interaction | `mi_xw_y`, `mi_x_y`, `mi_w_y` |
+
+```python
+nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
+        model=Model(hidden_dim=128, dropout=0.1),
+        terms={'mi_x_y': {'model': Model(hidden_dim=64, dropout=0.2)},
+               'mi_w_y': {'training': Training(learning_rate=1e-5)}})
+```
+
+A term's unset fields inherit from `model=` and `training=`, as `hidden_dim_y`
+inherits `hidden_dim`. A quantity added later with more terms gets the option
+by naming its terms.
+
+**Evidence.** In the storage-transfer paper (transfer entropy on spikes, four
+settings, 3 to 5 recordings per point), choosing each term's setting by its own
+held-out value mattered mainly at long histories. With one source and 50 bins,
+the error against the exact value fell to 0.44 mbit, from 0.80 with one fixed
+setting. There the term of the target's own past did best with more
+regularisation and the full term with more capacity. Elsewhere the choice made
+little difference, including where only the ratio of the terms' input sizes grew
+(99 sources against the target's own 5 lags).
+
+**Scope.**
+- Model and Training fields only. Split and estimator stay shared, because every
+  term must evaluate the same rows. Processing stays per stream
+  (`Processing(x=..., w=...)` already lets each stream be its own modality).
+  Processing per term would change the conditioning variable between the terms
+  and break the chain rule.
+- Carried in the settings dictionary, so rigorous chunks, permutation nulls,
+  both directions of transfer and the named quantities (which forward
+  `**run_kwargs`) inherit it. The engine change is a lookup by term name in
+  `_joint_marginal_difference`, which already takes `marginal_base_params` and
+  knows both terms' names, and in interaction's `mi_w_y` term.
+- Refused for a name the mode does not have (the message lists the mode's
+  terms), in modes with one term, and when one field of one term is set twice:
+  in `terms=` and in the grid, or in `terms=` while an unprefixed grid key varies
+  it for every term.
+- `result.params` records the settings of every term.
+
+**Sweeps per term.** A grid key prefixed with a term's name varies that term
+only, and unprefixed keys vary every term, as now:
+
+```python
+sweep_grid={'mi_x_y.hidden_dim': [64, 128], 'mi_w_y.learning_rate': [1e-5, 5e-6]}
+```
+
+Every combination of the keys is one configuration. A first version keeps the
+existing loop of `produce_difference`: each configuration trains every term,
+and the prefixed values reach their term the way `terms=` does. Rigorous mode,
+the nulls and the results need nothing new, and the runs carry the prefixed keys
+as columns. Its cost is retraining: k values of one term's key retrain the other
+terms k times. Prefixed keys are refused outside Model and Training fields.
+
+
+
+**Cost.** Small in the engine. Most of the work is the new setting, so it is
+cheaper after design item 1.
+
+## Estimators and quantities from other toolboxes
+
+From a comparison with JIDT, IDTxl, HOI, Frites, MINT, PyInform, dit and
+infomeasure (October 2026).
+
+**Preprocessing, embedding and objective as separate choices.** Rationale:
+several estimators of other toolboxes are combinations of the three. Options:
+- preprocessing: z-score, whitening, ZCA, PCA, copula (ranks to normal);
+- embedding: linear (an MLP with `n_layers=0`, already possible) or any
+  existing architecture;
+- objective: InfoNCE, SMILE, or a Gaussian objective (log-determinant of the
+  canonical correlations: CCA with linear embeddings, deep CCA otherwise; not a
+  bound, read on held-out data).
+
+Gaussian and Gaussian-copula MI then come for free (z-score or copula, identity
+embedding, Gaussian objective in closed form).
+
+**Pointwise and chunk-wise values.** Rationale: a trained critic scores single
+samples, so information can be resolved in time, by trial or by condition (local
+values as in JIDT; local storage and transfer as in Fiorenza et al. 2025).
+Options: a readout after training, like `mode='precision'`, or an option of any
+training. Chunk values scored against the whole recording, so they average back
+to the global estimate.
+
+**Composite quantities.** Rationale: Shannon combinations of MI terms the
+library already estimates, in the style of `interaction_information`. Options:
+total correlation, S-information, O-information. Partial information
+decomposition only as the minimum-MI version, named as such, since every
+version needs an extra definition of redundancy.
+
+**Discrete estimators for spike words.** Rationale: baselines for binned spikes
+beside KSG. Options: plug-in, Miller–Madow, Panzeri–Treves, NSB (start from the
+storage-transfer paper's version), quadratic extrapolation through the rigorous
+ladder.
+
 ## Smaller items
 
 **Check the README, ANATOMY and the tutorials in CI.**
