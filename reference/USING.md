@@ -543,6 +543,22 @@ settings of any config or processor parameters such as `window_size`,
 separately. A processor parameter that no stream's processor reads is
 refused. Values given as lists come back as tuples in `runs` and `dataframe`.
 
+### Choosing between configurations
+
+A configuration grid returns one estimate per configuration, each read at the
+epoch where its held-out curve peaks and reported on the training rows. To
+choose between configurations, compare their held-out values (`test_mi` in
+`runs`), not the reported ones. On average the held-out value is a lower bound
+on the information. The training-side value is not, because a network that
+overfits can push it above the truth. For a difference quantity, compare the
+sum of its terms' held-out values (`details[config_id]['trainings']`, one row
+per term). When several configurations are within the spread of the best one
+over repeats, prefer the one whose training and held-out values agree best in
+each term. Report the chosen configuration's value, and choose its nulls the
+same way, since the choice is part of the estimate. If configurations that tie
+on held-out data report different values, the held-out data cannot resolve the
+estimate, and that spread belongs in its uncertainty.
+
 ### What each mode accepts
 
 | mode | repeats | configuration grid | `rigorous` |
