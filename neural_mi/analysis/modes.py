@@ -22,7 +22,8 @@ from neural_mi.analysis.assemble import (
     config_lookup, convert_record, embedding_values, network_values, single_network_rows,
     split_grid, NATS_TO_BITS, NETWORK_KEYS,
 )
-from neural_mi.analysis.sweep import ParameterSweep, amplification_factor, merge_grid_values
+from neural_mi.analysis.sweep import (ParameterSweep, amplification_factor, combine_terms,
+                                      merge_grid_values)
 from neural_mi.logger import user_stacklevel
 
 # Repeat-level fit values a rigorous extrapolation reports.
@@ -196,31 +197,50 @@ def _rigorous_produced(rows, details, config_keys):
 # Difference quantities: conditional, transfer, interaction
 # ---------------------------------------------------------------------------
 
-def _component_values(results: List[Dict[str, Any]], to_bits: bool) -> List[float]:
-    return [convert_record({'mi': r.get('train_mi', math.nan)}, to_bits)['mi'] for r in results]
+def _combined(spec, raw, n_repeats, scale):
+    """One direction of a difference quantity, combined by the rule every combined quantity follows
+    (:func:`neural_mi.analysis.sweep.combine_terms`), padded to ``n_repeats`` and in the reported units."""
+    combined = combine_terms([(col, col, raw.get(key) or [], sign) for col, key, sign in spec])
+
+    def padded(values):
+        return [v * scale for v in values] + [math.nan] * (n_repeats - len(values))
+
+    failed = combined['failed'] + [[col for col, _, _ in spec]] * (n_repeats - len(combined['failed']))
+    return (padded(combined['per_repeat']),
+            {col: padded(combined['components'][col]) for col, _, _ in spec}, failed)
 
 
 def _difference_rows(mode, raw, cid, cfg, config_keys, run_ids, to_bits, bidirectional=False):
-    """Pair the components' repeats by position and combine each pair."""
+    """Pair the components' repeats by position and combine each pair.
+
+    A repeat in which a term failed has no value: its combination and its terms
+    are NaN, and ``failed_term`` names the terms that failed.
+    """
     spec = _DIFFERENCES[mode]
-    values = {col: _component_values(raw.get(key) or [], to_bits) for col, key, _ in spec}
-    reverse = {}
+    scale = NATS_TO_BITS if to_bits else 1.0
+    n = len(run_ids)
+    values, components, failed = _combined(spec, raw, n, scale)
     if bidirectional:
-        reverse = {col: _component_values(raw.get(key) or [], to_bits) for col, key, _ in _TRANSFER_REVERSE}
+        back_values, back_components, back_failed = _combined(_TRANSFER_REVERSE, raw, n, scale)
     rows, trainings = [], []
     for i, rid in enumerate(run_ids):
-        comp = {col: (vals[i] if i < len(vals) else math.nan) for col, vals in values.items()}
-        mi = sum(sign * comp[col] for col, _, sign in spec)
-        row = {'config_id': cid, **{k: cfg.get(k) for k in config_keys}, 'run_id': rid, 'mi': mi, **comp}
+        comp = {col: vals[i] for col, vals in components.items()}
+        row = {'config_id': cid, **{k: cfg.get(k) for k in config_keys}, 'run_id': rid,
+               'mi': values[i], **comp}
         if mode not in _SIGNED:
             _floor_at_zero(row, 'mi')
+        failed_terms = list(failed[i])
         if bidirectional:
-            back = {col: (vals[i] if i < len(vals) else math.nan) for col, vals in reverse.items()}
-            row.update(back)
-            row['te_yx'] = sum(sign * back[col] for col, _, sign in _TRANSFER_REVERSE)
+            row.update({col: vals[i] for col, vals in back_components.items()})
+            row['te_yx'] = back_values[i]
             _floor_at_zero(row, 'te_yx')
+            failed_terms += back_failed[i]
             total = abs(row['mi']) + abs(row['te_yx'])
-            row['directionality_index'] = (row['mi'] - row['te_yx']) / total if total > 1e-10 else 0.0
+            if math.isnan(total):
+                row['directionality_index'] = math.nan
+            else:
+                row['directionality_index'] = (row['mi'] - row['te_yx']) / total if total > 1e-10 else 0.0
+        row['failed_term'] = ', '.join(failed_terms) if failed_terms else None
         rows.append(row)
     for col, key, _ in spec + (_TRANSFER_REVERSE if bidirectional else []):
         for i, result in enumerate(raw.get(key) or []):
@@ -230,18 +250,24 @@ def _difference_rows(mode, raw, cid, cfg, config_keys, run_ids, to_bits, bidirec
     return rows, trainings
 
 
+def _mean_with_value(values) -> float:
+    """The mean of the values that are not NaN, or NaN when there are none."""
+    kept = [v for v in values if v is not None and not math.isnan(v)]
+    return float(np.mean(kept)) if kept else math.nan
+
+
 def _difference_scalars(mode, rows, bidirectional=False) -> Dict[str, Any]:
     """Amplification of the configuration's aggregate, from the component means.
 
     It uses the measured combination, since a value reported as 0 would make
-    the factor infinite."""
+    the factor infinite. Repeats without a value are left out of every mean."""
     spec = _DIFFERENCES[mode]
-    means = [float(np.nanmean([r[col] for r in rows])) for col, _, _ in spec]
-    result = float(np.nanmean([r.get('mi_raw', r['mi']) for r in rows]))
+    means = [_mean_with_value([r[col] for r in rows]) for col, _, _ in spec]
+    result = _mean_with_value([r.get('mi_raw', r['mi']) for r in rows])
     scalars = {'amplification_factor': amplification_factor(means, result)}
     if bidirectional:
-        back = [float(np.nanmean([r[col] for r in rows])) for col, _, _ in _TRANSFER_REVERSE]
-        te_yx = float(np.nanmean([r.get('te_yx_raw', r['te_yx']) for r in rows]))
+        back = [_mean_with_value([r[col] for r in rows]) for col, _, _ in _TRANSFER_REVERSE]
+        te_yx = _mean_with_value([r.get('te_yx_raw', r['te_yx']) for r in rows])
         scalars['amplification_factor_yx'] = amplification_factor(back, te_yx)
     return scalars
 

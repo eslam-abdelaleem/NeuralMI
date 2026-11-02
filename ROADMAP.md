@@ -11,22 +11,6 @@ answers: exact Gaussian values for a smooth two-process model (a shared damped
 oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. Values are in nats unless marked as bits.
 
-### C1. Terms of a difference combined from their measured values
-
-**Now.** A network whose training-side value comes out negative reports 0, and
-every place that combines the terms of a difference reads that floored value
-(`_joint_marginal_difference`, `modes._difference_rows`, the rigorous `rung` and
-interaction's `_single_mi_mean`). When the conditioning term of `mi_rate` read
-negative on its training rows, the result was the joint term alone: 2.41 for a
-true 0.17, with an amplification factor of 1.0 and no combination warning.
-
-**Fix.** One helper combines the terms of every difference from `raw_train_mi`.
-A term that learned nothing (its held-out value never rose above zero) or read
-negative on its training rows fails the repeat: NaN in `runs`, counted in its
-row, and one warning naming the term. A negative combination of two healthy
-terms stays a measurement under the existing combination warnings. Interaction
-information keeps its signed result, and the rule applies to its three terms.
-
 ### C2. One record of the rows' geometry
 
 **Now.** Whether rows form a time series is decided in six places from
@@ -134,7 +118,8 @@ term of `mi_rate` is several nats and the rate a small residual of it (0.17 from
 4.83 − 4.66). Whitening each signal by its own autoregressive filter leaves the
 rate unchanged in the limit of long windows and shrinks that term. The library's
 defaults then read 0.135 to 0.154 against 0.160, where on the raw signals they
-read 0 for two seeds and 2.41 (C1) for the third.
+read 0 for two seeds and, for the third, 2.41 from a conditioning term that
+had failed (such a repeat now has no value).
 
 **Fix.** `Preprocessing(channel=..., time=...)`, opt-in and recorded in
 `result.params`.

@@ -150,6 +150,32 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A quantity combined from separately trained networks (conditional MI,
+  transfer entropy and the quantities built on them, such as `mi_rate`, and
+  interaction information) read each term at its reported value, which is 0
+  when the network's training-side value came out negative. When the
+  conditioning term of `mi_rate` read negative on its training rows while its
+  held-out value stood at 1.29 nats, the result was the joint term alone: 2.41
+  nats for a true 0.17, with an amplification factor of 1 and no warning about
+  the combination. One helper, `sweep.combine_terms`, now combines the terms of
+  every such quantity, repeat by repeat, by one rule. A network whose
+  training-side value is negative while its held-out value stands clearly above
+  zero (by more than 3 standard errors, `epochs.stands_above_zero`) has two
+  readings that contradict each other, so its term has no value and neither has
+  its repeat: the repeat is NaN in `runs`, the new `failed_term` column names
+  the term, the new `n_failed` column of `dataframe` counts it, and one
+  `CombinationWarning` says which terms failed in how many repeats. A network
+  that learned nothing distinguishable from zero enters as 0, which is the value
+  of a term that is zero, and a second `CombinationWarning` names it, since a
+  term that its network missed reads the same and nothing else would show it.
+  The trainer draws the same line when it warns about a negative training-side
+  value, and a reading within noise of zero now says the network learned
+  nothing instead of blaming too few epochs. The warning quotes the held-out
+  value of the network read, where it quoted the maximum of the held-out curve
+  as though that were the value at the epoch read. A rung of a rigorous ladder whose
+  term failed is NaN and left out of the fit like one that produced nothing.
+  `result.summary()` now gives the number of repeats its spread uses.
+
 - The count that ends a notebook cell ("... was raised 3 times in this cell
   and shown once") named IPython's own file in the environment's
   site-packages, since no line of the cell is running when the cell ends. A

@@ -211,14 +211,16 @@ def _unfittable_ladder(kept: pd.DataFrame, where: str) -> Optional[Dict[str, Any
 
 
 def _drop_zero_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int]:
-    """The ladder without its rungs reported as 0, and how many there were.
+    """The ladder without its rungs that produced nothing, and how many there were.
 
-    A rung is 0 when the networks behind it learned nothing that generalises (a
-    rung of a difference carries its signed measured value otherwise). It
-    produced nothing, like a failed chunk, and the fit leaves it out. A gamma with no rung left drops out of the fit, where
+    A rung produced nothing when it is 0, because the networks behind it learned
+    nothing that generalises, or NaN, because a term of a difference failed
+    (:func:`neural_mi.analysis.sweep.combine_terms`). A rung of a difference
+    carries its signed measured value otherwise. The fit leaves those rungs out
+    like failed chunks. A gamma with no rung left drops out of the fit, where
     ``min_gamma_points`` decides whether enough remain.
     """
-    is_zero = group['train_mi'] == 0
+    is_zero = (group['train_mi'] == 0) | group['train_mi'].isna()
     if not is_zero.any():
         return group, 0
     per_gamma = group.assign(_zero=is_zero).groupby('gamma')['_zero'].agg(['sum', 'count'])
@@ -227,9 +229,9 @@ def _drop_zero_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int
                        for g, r in hit.iterrows())
     warnings.warn(
         f"{where}{int(is_zero.sum())} of {len(group)} rungs of the gamma ladder produced "
-        f"nothing (reported as 0) and are left out of the fit ({counts}). A rung produces "
-        f"nothing when the networks behind it learned nothing that generalises. runs counts "
-        f"them in zero_rungs.",
+        f"nothing and are left out of the fit ({counts}). A rung produces nothing when the "
+        f"networks behind it learned nothing that generalises (it is reported as 0), or when a "
+        f"term of a difference failed on its chunk (NaN). runs counts them in zero_rungs.",
         UserWarning, stacklevel=user_stacklevel()
     )
     half = [int(g) for g, r in per_gamma.iterrows() if r['sum'] >= 0.5 * r['count']]

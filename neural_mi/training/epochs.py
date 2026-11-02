@@ -36,6 +36,7 @@ RESOLVED_NOISE = 8      # the top must stand this many noise units above zero
 FAST_EPOCHS = 8         # an early top that falls clearly within this many epochs came too fast
 APPROACH_NOISE = 3      # the approach to the top starts this many noise units below it
 FUZZY_SE = 3            # readings at the approach and at the epoch read this many standard errors apart
+CLEAR_SE = 3            # a held-out value this many standard errors above zero shows the network learned something
 RISING_EPOCHS = 20      # a curve that rose by RISING_NOISE noise units over this many final epochs
 RISING_NOISE = 3        # when training ran to its limit was still rising
 
@@ -59,6 +60,17 @@ def standard_error(block_values, n_rows: int) -> float:
     count, or sqrt(2 I / N) for a single block of N rows reading I nats."""
     v = np.asarray(block_values, dtype=float)
     return float(v.std(ddof=1) / np.sqrt(len(v))) if len(v) > 1 else float(np.sqrt(2 * max(v[0], 0.0) / n_rows))
+
+
+def stands_above_zero(test_mi: Optional[float], n_rows: Optional[int]) -> bool:
+    """Whether a network's held-out value, in nats on ``n_rows`` rows, stands clearly above zero: by more than
+    CLEAR_SE of its standard errors (:func:`standard_error`), that is above 2 CLEAR_SE^2 / n_rows nats. A
+    network that learned nothing reads within that of zero. Without a row count, any value above zero counts."""
+    if test_mi is None or not np.isfinite(test_mi) or test_mi <= 0:
+        return False
+    if not n_rows:
+        return True
+    return bool(test_mi > CLEAR_SE * standard_error([test_mi], int(n_rows)))
 
 
 def choose_epoch(history, smoothed, rule: str, reach: Optional[int],

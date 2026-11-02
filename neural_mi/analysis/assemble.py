@@ -167,7 +167,7 @@ def _hashable(value: Any) -> Any:
 def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'mi',
               mean_cols: Iterable[str] = (), first_cols: Iterable[str] = (),
               std_cols: Iterable[str] = ()) -> pd.DataFrame:
-    """One row per group: ``mi_mean``, ``mi_std``, ``n_runs``, ``n_zero`` and column means.
+    """One row per group: ``mi_mean``, ``mi_std``, ``n_runs``, ``n_zero``, ``n_failed`` and column means.
 
     A repeat that carries its measured value in ``mi_raw`` (a difference of
     networks, a rigorous fit) is a measurement whatever its sign, and a
@@ -182,7 +182,10 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
     repeats used and is NaN below two, never 0. ``mean_cols`` are averaged into
     ``<col>_mean`` and ``std_cols`` spread into ``<col>_std`` the same way;
     ``first_cols`` are constant within a group and copied. ``n_runs`` counts
-    every repeat, including one that could not produce a number (NaN).
+    every repeat, and ``n_failed`` those that could not produce a number (NaN),
+    such as a repeat of a difference in which a term failed
+    (:func:`neural_mi.analysis.sweep.combine_terms`). They are left out of
+    every mean and spread.
     Grid values that pandas cannot group on (dicts) are grouped by a hashable
     stand-in and restored afterwards.
     """
@@ -190,7 +193,7 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
     std_cols = [c for c in std_cols if c in runs.columns]
     first_cols = [c for c in first_cols if c in runs.columns and c not in group_cols]
     if runs.empty:
-        cols = (list(group_cols) + ['mi_mean', 'mi_std', 'n_runs', 'n_zero']
+        cols = (list(group_cols) + ['mi_mean', 'mi_std', 'n_runs', 'n_zero', 'n_failed']
                 + [f'{c}_mean' for c in mean_cols] + first_cols)
         return pd.DataFrame(columns=cols)
 
@@ -209,9 +212,11 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
         n_rows = len(group)
         if measured:
             values, n_zero = pd.to_numeric(group['mi_raw'], errors='coerce'), 0
+            n_failed = int(values.isna().sum())
         else:
             values = pd.to_numeric(group[value_col], errors='coerce')
             n = int(values.notna().sum())
+            n_failed = n_rows - n
             n_zero = int((values == 0).sum())
             if n_zero < n:
                 used = values.notna() & (values != 0)
@@ -227,6 +232,7 @@ def aggregate(runs: pd.DataFrame, group_cols: Sequence[str], value_col: str = 'm
         row['mi_std'] = float(values.std(ddof=1)) if n_used >= 2 else math.nan
         row['n_runs'] = n_rows
         row['n_zero'] = n_zero
+        row['n_failed'] = n_failed
         for col in mean_cols:
             raw = f'{col}_raw' in group.columns
             col_values = pd.to_numeric(group[f'{col}_raw' if raw else col], errors='coerce')

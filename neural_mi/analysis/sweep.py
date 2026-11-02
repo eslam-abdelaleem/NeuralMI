@@ -4,16 +4,18 @@
 This module defines the core logic for executing multiple training runs in
 parallel across a grid of hyperparameters.
 """
+import math
 import warnings
 import torch
 import itertools
 import uuid
 import numpy as np
 from tqdm.auto import tqdm
-from typing import List, Dict, Any, Optional, Sequence
+from typing import List, Dict, Any, Optional, Sequence, Tuple
 
 from neural_mi.analysis.task import run_training_task
 from neural_mi.exceptions import CombinationWarning
+from neural_mi.training.epochs import stands_above_zero
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.device import with_device
 from neural_mi.estimators import NONPARAMETRIC_CONDITIONAL
@@ -397,7 +399,8 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
 def rung(raw: Dict[str, Any], terms) -> Any:
     """One rung of a rigorous ladder of a difference quantity, from its call's result: the signed
     combination of the ``(key, sign)`` terms as measured, a measurement whatever its sign, with the saved
-    networks' paths when there are any."""
+    networks' paths when there are any. The terms come combined by :func:`combine_terms`, so a rung whose
+    term failed is NaN, and the fit leaves it out."""
     value = float(sum(sign * raw[key] for key, sign in terms))
     paths = saved_paths(raw)
     return (value, paths) if paths else value
@@ -432,6 +435,119 @@ def combined_spread(value_lists, signs) -> Optional[float]:
     combined = [sum(sign * values[i] for sign, values in zip(signs, value_lists))
                 for i in range(n)]
     return float(np.std(combined, ddof=1))
+
+
+def term_values(results: Sequence[Dict[str, Any]]) -> Tuple[List[float], List[str]]:
+    """One term's value in each repeat of a combined quantity, and what the term's network read there.
+
+    The value is the term's reported ``train_mi``: a network's training-side
+    value, 0 for a network that learned nothing, or a nonparametric estimate as
+    computed. The state is one of:
+
+    - ``'measured'``: the value is a measurement.
+    - ``'nothing'``: the network learned nothing distinguishable from zero. Its
+      held-out value never rose above zero, or its training-side value came out
+      negative while its held-out value stood within noise of zero
+      (:func:`neural_mi.training.epochs.stands_above_zero`). It enters as 0,
+      which is the value of a term that is zero, and a term that is not zero
+      but that its network missed reads the same.
+    - ``'failed'``: the term has no value. Its training-side value came out
+      negative while its held-out value stood clearly above zero, so the two
+      readings of one network contradict each other, or its repeat produced no
+      value at all.
+    """
+    values, states = [], []
+    for result in results:
+        value = result.get('train_mi')
+        raw = result.get('raw_train_mi')
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            values.append(math.nan)
+            states.append('failed')
+        elif result.get('all_mi_negative'):
+            values.append(float(value))
+            states.append('nothing')
+        elif raw is not None and raw < 0:
+            learned = stands_above_zero(result.get('test_mi'), result.get('eval_size'))
+            values.append(math.nan if learned else float(value))
+            states.append('failed' if learned else 'nothing')
+        else:
+            values.append(float(value))
+            states.append('measured')
+    return values, states
+
+
+def _term_counts(keys_per_repeat, labels) -> str:
+    counts = {}
+    for keys in keys_per_repeat:
+        for key in keys:
+            counts[key] = counts.get(key, 0) + 1
+    return ', '.join(f"I({labels[key]}) in {count}" for key, count in counts.items())
+
+
+def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
+                  warn: bool = False) -> Dict[str, Any]:
+    """The repeats of a quantity combined from separately trained terms, by one rule for every such quantity.
+
+    ``terms`` is a sequence of ``(label, key, results, sign)``: the term's name
+    in messages (``'C;Y'``), the key its values are reported under
+    (``'mi_w_y'``), its task results in repeat order and its sign in the
+    combination. Repeats are paired by position. A repeat in which any term
+    failed (:func:`term_values`) has no value: its combination and every one of
+    its terms are NaN, and it is left out of the means and the spread. A term
+    that learned nothing enters as 0. With ``warn``, one warning names the terms
+    that failed and another the terms that learned nothing.
+
+    Returns a dict with ``per_repeat`` (the combination in each repeat),
+    ``components`` (``{key: values}``), ``failed`` and ``nothing`` (the keys of
+    the terms that failed, and that learned nothing, in each repeat), ``means``
+    (``{key: mean over the repeats with a value}``), ``value`` (the mean
+    combination over those repeats, NaN when there are none) and ``per_run``
+    (each term's values over those repeats, in the order of ``terms``, for
+    :func:`combined_spread`).
+    """
+    n = max((len(results) for _, _, results, _ in terms), default=0)
+    columns = []
+    for _, _, results, _ in terms:
+        values, states = term_values(results)
+        columns.append((values + [math.nan] * (n - len(values)),
+                        states + ['failed'] * (n - len(states))))
+    failed_keys = [[key for (_, key, _, _), (_, states) in zip(terms, columns) if states[i] == 'failed']
+                   for i in range(n)]
+    nothing_keys = [[key for (_, key, _, _), (_, states) in zip(terms, columns) if states[i] == 'nothing']
+                    for i in range(n)]
+    used = [i for i in range(n) if not failed_keys[i]]
+    components = {key: [values[i] if not failed_keys[i] else math.nan for i in range(n)]
+                  for (_, key, _, _), (values, _) in zip(terms, columns)}
+    per_repeat = [sum(sign * components[key][i] for _, key, _, sign in terms)
+                  if not failed_keys[i] else math.nan for i in range(n)]
+    means = {key: (float(np.mean([components[key][i] for i in used])) if used else math.nan)
+             for _, key, _, _ in terms}
+    value = float(np.mean([per_repeat[i] for i in used])) if used else math.nan
+    labels = {key: label for label, key, _, _ in terms}
+    if warn and len(used) < n:
+        warnings.warn(
+            f"{quantity_name}: {n - len(used)} of {n} repeats are left out of mi_mean and mi_std "
+            f"because a term read negative on its training rows while its held-out value stood "
+            f"clearly above zero ({_term_counts(failed_keys, labels)}). The two readings of that "
+            f"network contradict each other, so its repeat has no value. Those repeats are NaN in "
+            f"result.runs, where failed_term names the term, and each network's values are in "
+            f"details[config_id]['trainings']. The usual causes are too few epochs or samples, and "
+            f"data far from unit scale.",
+            CombinationWarning, stacklevel=user_stacklevel(),
+        )
+    if warn and any(nothing_keys[i] for i in used):
+        warnings.warn(
+            f"{quantity_name}: a term learned nothing distinguishable from zero and enters as 0 "
+            f"({_term_counts([nothing_keys[i] for i in used], labels)}). That is the value of a "
+            f"term that is zero, and a term that is not zero but that its network missed reads the "
+            f"same. A missed term that is subtracted makes the result read high by its value, and "
+            f"one that is added makes it read low. Each network's values are in "
+            f"details[config_id]['trainings'].",
+            CombinationWarning, stacklevel=user_stacklevel(),
+        )
+    return {'per_repeat': per_repeat, 'components': components, 'failed': failed_keys,
+            'nothing': nothing_keys, 'means': means, 'value': value,
+            'per_run': tuple([components[key][i] for i in used] for _, key, _, _ in terms)}
 
 
 def _joint_marginal_difference(
@@ -497,9 +613,10 @@ def _joint_marginal_difference(
         ``base_params`` for both sweeps.
     reported : bool, optional
         ``True`` when the difference is the quantity the caller reads: it is
-        checked with :func:`warn_combination`, and returned as 0 when it comes
-        out negative. Pass ``False`` when it is one term of a larger quantity,
-        whose caller checks that quantity itself.
+        checked with :func:`warn_combination` and returned as 0 when it comes
+        out negative, and :func:`combine_terms` warns about the terms that
+        failed or learned nothing. Pass ``False`` when it is one term of a
+        larger quantity, whose caller combines and checks that quantity itself.
     raw_key : str, optional
         Where the caller keeps the measured value, named in the warning.
 
@@ -507,9 +624,11 @@ def _joint_marginal_difference(
     -------
     tuple[float, float, float, list, list, tuple[list, list]]
         ``(difference, mi_joint, mi_marginal, results_joint, results_marginal,
-        per_run)``, where ``per_run`` is the two components' ``train_mi``
-        values one row per run. :func:`combined_spread` turns those into the
-        spread of the difference.
+        per_run)``. The terms are combined by :func:`combine_terms`: the means
+        and the difference are over the repeats in which both terms have a
+        value, NaN when there are none. ``per_run`` holds the two terms' values
+        in those repeats, which :func:`combined_spread` turns into the spread of
+        the difference.
     """
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
@@ -526,16 +645,16 @@ def _joint_marginal_difference(
     sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
     results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
 
-    joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
-    marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]
-    per_run = (joint_vals, marginal_vals)
-    if not joint_vals:
+    if not any('train_mi' in r for r in results_joint):
         raise RuntimeError(f"{quantity_name}: all I({joint_label}) runs failed, no valid train_mi values.")
-    if not marginal_vals:
+    if not any('train_mi' in r for r in results_marginal):
         raise RuntimeError(f"{quantity_name}: all I({marginal_label}) runs failed, no valid train_mi values.")
-    mi_joint = float(np.mean(joint_vals))
-    mi_marginal = float(np.mean(marginal_vals))
-    difference = mi_joint - mi_marginal
+    combined = combine_terms([(joint_label, joint_key, results_joint, 1),
+                              (marginal_label, marginal_key, results_marginal, -1)],
+                             quantity_name=quantity_name, warn=reported)
+    mi_joint, mi_marginal = combined['means'][joint_key], combined['means'][marginal_key]
+    difference = combined['value']
+    per_run = combined['per_run']
 
     amp = amplification_factor([mi_joint, mi_marginal], difference)
     # Report in the units the caller asked for. These values are nats internally
@@ -549,7 +668,7 @@ def _joint_marginal_difference(
         f"amplification factor={amp:.1f}x."
     )
 
-    if reported:
+    if reported and not math.isnan(difference):
         warn_combination(quantity_name, difference, (joint_label, mi_joint, joint_key),
                          [(marginal_label, mi_marginal, marginal_key)], base_params,
                          raw_key=raw_key)

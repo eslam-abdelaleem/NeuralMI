@@ -266,6 +266,23 @@ leaves it out. A repeat of a combination or a fit is a measurement whatever its
 sign, so its average uses every repeat's measured value
 ([the spread over repeats](#the-spread-over-repeats)).
 
+A quantity combined from separately trained networks takes each term's value
+from the network's two readings, repeat by repeat. A held-out value that stands
+clearly above zero, by more than 3 of its standard errors ($\sqrt{2I/N}$ for $I$
+nats on $N$ held-out rows), shows that the network learned something. A network
+that learned nothing enters as 0: its held-out value never rose above zero, or
+its training-side value came out negative while its held-out value stood within
+noise of zero. That is the value of a term that is zero, such as $I(X;Y)$ in a
+purely synergistic interaction. It is also what a network that missed a term
+that is not zero reads, and nothing else shows the miss, since a difference
+with one term at 0 has an amplification factor of 1. The library warns, naming
+the term. A network whose training-side value came out negative while its
+held-out value stood clearly above zero has two readings that contradict each
+other, and its term has no value. Neither has its repeat: the repeat is NaN in
+`runs` with the term named in `failed_term`, counted in `n_failed` and left out
+of the mean and the spread. Reading such a term as 0 would report the other
+terms alone, as though the term were zero.
+
 ### Finite-sampling bias
 
 Any estimate from $N$ samples carries a bias that depends on $N$. The classical
@@ -309,7 +326,8 @@ that reaches `min_gamma_points` with the trend still curved stops there and sets
 
 The fit treats a rung reported as 0, one whose networks learned nothing that
 generalises ([the reported number](#the-reported-number)), as a failed chunk
-that produced nothing and counts it in `zero_rungs`. A rung of a difference
+that produced nothing and counts it in `zero_rungs`, and so does a rung of a
+difference whose term has no value on its chunk (NaN). A rung of a difference
 carries its signed measured value, a negative one included, since leaving out
 the negative rungs of a small difference would push its fit up. `min_gamma_points` then decides whether enough values
 of $\gamma$ remain once those with no rung left have dropped out. The fit warns
@@ -344,7 +362,9 @@ repeat of a difference quantity or of a rigorous fit is a measurement whatever
 its sign: a negative one is the spread of a small value crossing zero, and
 leaving it out would select the positive repeats and read high. Their row
 averages every repeat's measured value, reports the mean as 0 when it is
-negative and keeps it as `mi_raw_mean`. A single network's repeat reported as 0
+negative and keeps it as `mi_raw_mean`. A repeat of a combination in which a
+term has no value ([the reported number](#the-reported-number)) has none itself:
+it is counted in `n_failed` and left out. A single network's repeat reported as 0
 learned nothing that generalises: it is counted in `n_zero` and left out of both
 statistics, and a row reports 0 only when all of its repeats produced
 nothing. Among clearly positive repeats a zero is most likely a failed run. When

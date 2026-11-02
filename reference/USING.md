@@ -95,11 +95,13 @@ of the whole procedure on the same data. Repeats are indexed by `run_id`.
 `params['axis_keys']` name the columns that index `dataframe`.
 
 `dataframe` always has `config_id`, the grid and axis keys, `mi_mean`, `mi_std`,
-`n_runs` and `n_zero`, followed by the columns of the mode (listed per mode in
-[Choosing the analysis](#choosing-the-analysis)). For a difference quantity or a
-rigorous fit, `mi_mean` and `mi_std` use every repeat's measured value,
-negative ones included, `mi_mean` is reported as 0 when it is negative, and
-`mi_raw_mean` keeps the measured mean. For a single network they use the
+`n_runs`, `n_zero` and `n_failed`, followed by the columns of the mode (listed
+per mode in [Choosing the analysis](#choosing-the-analysis)). For a difference
+quantity or a rigorous fit, `mi_mean` and `mi_std` use every repeat's measured
+value, negative ones included, `mi_mean` is reported as 0 when it is negative,
+and `mi_raw_mean` keeps the measured mean. A repeat with no value (NaN), such as
+one in which a term of a difference failed, is counted in `n_failed` and left
+out ([THEORY.md](THEORY.md#the-reported-number)). For a single network they use the
 repeats that produced a value, and a repeat reported as 0 produced nothing and
 is counted in `n_zero` ([THEORY.md](THEORY.md#the-spread-over-repeats)). `mi_std`
 is the spread over repeats of the procedure on the same data and is NaN below
@@ -385,7 +387,12 @@ result.plot()          # the components beside the difference
 $I(X;Y \mid W)$ is computed repeat by repeat as $I(X,W;Y) - I(W;Y)$ from two
 networks. `runs` holds each repeat's value and its components `mi_xw_y` and
 `mi_w_y`. A repeat that comes out negative is reported as 0 and keeps the
-measured difference in `mi_raw`. `dataframe` adds the component means and the
+measured difference in `mi_raw`. A term whose network learned nothing enters
+as 0, with a warning that names it. A repeat in which a term's network read
+negative on its training rows while its held-out value stood clearly above zero
+has no value: it is NaN, `failed_term` names the term, and the same holds for
+every quantity combined from separately trained networks
+([THEORY.md](THEORY.md#the-reported-number)). `dataframe` adds the component means and the
 `amplification_factor` by which the difference magnifies the components'
 relative error. A factor of 10 or more warns because a difference that small
 should be read with its components ([THEORY.md](THEORY.md#amplification)).

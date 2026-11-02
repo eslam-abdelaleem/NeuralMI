@@ -104,10 +104,39 @@ A single network's repeat is reported as 0 when it learned nothing that
 generalises or its value came out negative. `mi_mean` and `mi_std` average the
 other repeats, `n_zero` counts the zeros in each row, and a row whose repeats
 all produced nothing reports 0. A repeat of a difference quantity or a rigorous
-fit is a measurement whatever its sign and is never left out: its row averages
-every repeat's measured value. Among clearly positive repeats a zero is most likely a failed
-run. When every repeat is near zero the quantity itself may be near zero. `runs`
-keeps every repeat with its measured value.
+fit is a measurement whatever its sign: its row averages every repeat's measured
+value, and leaves out only a repeat that has no value (the next entry). Among
+clearly positive repeats a zero is most likely a failed run. When every repeat
+is near zero the quantity itself may be near zero. `runs` keeps every repeat
+with its measured value.
+
+**`... of ... repeats are left out of mi_mean and mi_std because a term read negative on its training rows`**
+A quantity combined from separately trained networks (conditional MI, transfer
+entropy and the quantities built from it, interaction information, `mi_rate`)
+takes each term's value repeat by repeat. In the repeats counted, a term's
+network read negative on its training rows while its held-out value stood
+clearly above zero (the entry
+[`The train MI at the reported epoch is negative (...) while the test MI (...) stands more than ... standard errors above zero`](#training)).
+The two readings of one network contradict each other, so the term has no
+value, and neither has its repeat: the result and every term of it are NaN in
+`runs`, `failed_term` names the term, `n_failed` counts the repeat in its row,
+and `mi_mean` and `mi_std` average the other repeats. Reading the term as 0
+instead would report the other terms alone, as though the term were zero. The
+usual causes are too few epochs or samples, and data far from unit scale. Each
+network's values are in `details[config_id]['trainings']`.
+
+**`...: a term learned nothing distinguishable from zero and enters as 0`**
+In the repeats counted, a term's network learned nothing distinguishable from
+zero: its held-out value never rose above zero, or its training-side value came
+out negative while its held-out value stood within noise of zero. The term
+enters the combination as 0. That is the value of a term that is zero, such as
+$I(X;Y)$ in a purely synergistic interaction or the target's own memory in
+transfer entropy to a memoryless target. A term that is not zero but that its
+network missed reads the same, and the result is then off by the term's value:
+high for a term that is subtracted, low for one that is added. Nothing else
+shows it, since a difference with one term at 0 has an amplification factor of
+1. Where the term should not be zero, estimate it on its own with more epochs or
+samples, or with data near unit scale.
 
 **`The extrapolated ... is negative`**
 The rigorous fit extrapolated below zero. The value is reported as 0 and the
@@ -188,11 +217,23 @@ The training-side value would be pure overfitting and is kept as `raw_train_mi`.
 Either there is no dependence to find or training failed. Check the learning
 rate before the data. In a deliberate null this is the expected outcome.
 
-**`The train MI at the reported epoch is negative`**
-The training-side value at the reported epoch came out negative after the test
-MI had risen above zero. Because MI cannot be negative, the reported value is 0
-and the measured one is kept as `raw_train_mi`. The usual causes are too few
-epochs or too few samples.
+**`The train MI at the reported epoch is negative (...) while the test MI (...) stands more than ... standard errors above zero`**
+The training-side value at the reported epoch came out negative while the
+held-out value of the network stood clearly above zero: by more than 3 of its
+standard errors, $\sqrt{2I/N}$ for a held-out value of $I$ nats on $N$ rows. Because MI cannot be
+negative, the reported value is 0 and the measured one is kept as
+`raw_train_mi`. The two readings of the network contradict each other, so a
+quantity combined from several networks has no value in that repeat (the
+[Amplification](#amplification) entry on repeats left out). The usual causes are
+too few epochs or too few samples, and data far from unit scale.
+
+**`The train MI at the reported epoch is negative (...), and the test MI (...) is within ... standard errors of zero`**
+Both readings of the network lie within noise of zero: the training-side value
+is negative and the held-out value stands less than 3 standard errors above
+zero. The network learned nothing distinguishable from zero, which is what a
+dependence of zero reads, and the reported value is 0 with the measured one
+kept as `raw_train_mi`. In a quantity combined from several networks the term
+enters as 0.
 
 **`NaN MI detected at epoch ... (consecutive NaN streak: .../3)`**
 An epoch whose evaluation produced NaN is skipped for early stopping. Three in a
@@ -327,7 +368,9 @@ straight. Use a smaller `gamma_range` or more data.
 `Training(min_reliable_samples=...)` moves the point at which this fires.
 
 **`... of ... rungs of the gamma ladder produced nothing`**
-The networks behind those rungs learned nothing that generalises. A rung of a
+The networks behind those rungs learned nothing that generalises (the rung is
+0), or a term of a difference failed on its chunk (the rung is NaN; the
+[Amplification](#amplification) entry on repeats left out). A rung of a
 difference quantity carries its signed measured value otherwise, a negative one
 included. The fit leaves them out like failed chunks and counts them in the
 `zero_rungs` column of `runs`. The message gives the count at each $\gamma$.

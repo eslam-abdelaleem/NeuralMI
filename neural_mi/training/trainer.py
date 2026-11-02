@@ -20,7 +20,8 @@ from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
                             AlignedStreams)
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
-from neural_mi.training.epochs import EPOCH_RULES, FUZZY_SE, choose_epoch, standard_error, warn_about_curve
+from neural_mi.training.epochs import (CLEAR_SE, EPOCH_RULES, FUZZY_SE, choose_epoch, standard_error,
+                                     stands_above_zero, warn_about_curve)
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks)
 from neural_mi.augmentations import apply_augmentations
@@ -1051,20 +1052,38 @@ class Trainer:
             )
             final_train_mi = 0.0
         elif final_train_mi is not None and final_train_mi < 0:
-            # The test MI rose above zero, so the network learned something,
-            # but the training-side value at the reported epoch came out below
-            # zero. MI cannot be negative, so it is reported as 0 like the case
-            # above, with the measured value kept as raw_train_mi.
-            warnings.warn(
-                f"The train MI at the reported epoch is negative "
-                f"({final_train_mi * _scale:.4f} {_units}) while the test MI peaked at "
-                f"{max(valid_history) * _scale:.4f} {_units} at epoch {best_ep}. MI cannot be "
-                f"negative. Train MI is reported as 0 {_units} and the measured value is "
-                f"kept as raw_train_mi. This usually means too few epochs or too few "
-                f"samples for the network to learn the dependence.",
-                UserWarning,
-                stacklevel=user_stacklevel(),
-            )
+            # The training-side value at the reported epoch came out below zero.
+            # MI cannot be negative, so it is reported as 0 like the case above,
+            # with the measured value kept as raw_train_mi. Whether the network
+            # learned something decides what that means: a held-out value within
+            # noise of zero is what a network that learned nothing reads, and a
+            # held-out value clearly above zero contradicts the negative reading
+            # (stands_above_zero, the rule that combining terms follows too).
+            if stands_above_zero(final_test_mi, _eval_size):
+                warnings.warn(
+                    f"The train MI at the reported epoch is negative "
+                    f"({final_train_mi * _scale:.4f} {_units}) while the test MI "
+                    f"({final_test_mi * _scale:.4f} {_units}) stands more than {CLEAR_SE:g} standard "
+                    f"errors above zero on its {_eval_size} rows. The two readings of the network "
+                    f"contradict each other, and MI cannot be negative. Train MI is reported as 0 "
+                    f"{_units} and the measured value is kept as raw_train_mi. This usually means "
+                    f"too few epochs or too few samples for the network to learn the dependence, "
+                    f"or data far from unit scale.",
+                    UserWarning,
+                    stacklevel=user_stacklevel(),
+                )
+            else:
+                warnings.warn(
+                    f"The train MI at the reported epoch is negative "
+                    f"({final_train_mi * _scale:.4f} {_units}), and the test MI "
+                    f"({final_test_mi * _scale:.4f} {_units}) is within {CLEAR_SE:g} standard errors "
+                    f"of zero on its {_eval_size} rows. The network learned nothing distinguishable "
+                    f"from zero, which is what a dependence of zero reads. Train MI is reported as "
+                    f"0 {_units} and the measured value is kept as raw_train_mi. When the data should "
+                    f"hold a dependence, more epochs or samples may resolve it.",
+                    UserWarning,
+                    stacklevel=user_stacklevel(),
+                )
             final_train_mi = 0.0
 
         results = {

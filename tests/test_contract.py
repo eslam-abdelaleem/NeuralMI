@@ -106,7 +106,7 @@ def _check(result, mode, grid_name):
     config_keys, n_configs, n_axis, n_repeats = _expected_shape(mode, grid_name)
     df, runs = result.dataframe, result.runs
     assert df is not None and runs is not None
-    for col in ('config_id', 'mi_mean', 'mi_std', 'n_runs', 'n_zero'):
+    for col in ('config_id', 'mi_mean', 'mi_std', 'n_runs', 'n_zero', 'n_failed'):
         assert col in df.columns, col
     assert result.params['config_keys'] == config_keys
     assert result.params['axis_keys'] == AXIS.get(mode, [])
@@ -137,6 +137,7 @@ def _check(result, mode, grid_name):
         if 'mi_raw' in runs.columns:
             measured = runs.loc[mask, 'mi_raw'].astype(float).dropna()
             assert row['n_zero'] == 0
+            assert row['n_failed'] == int(mask.sum()) - len(measured)
             if len(measured):
                 assert row['mi_raw_mean'] == pytest.approx(measured.mean())
                 assert row['mi_mean'] == pytest.approx(max(measured.mean(), 0.0))
@@ -144,6 +145,7 @@ def _check(result, mode, grid_name):
         values = runs.loc[mask, 'mi'].astype(float)
         produced = values[values.notna() & (values != 0)]
         assert row['n_zero'] == int((values == 0).sum())
+        assert row['n_failed'] == int(values.isna().sum())
         if len(produced):
             assert row['mi_mean'] == pytest.approx(produced.mean())
         elif (values == 0).any():

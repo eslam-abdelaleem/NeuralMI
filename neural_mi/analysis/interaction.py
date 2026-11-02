@@ -12,6 +12,7 @@ formula. The three-way orchestration is new; the underlying estimation
 machinery (``ParameterSweep``, the joint/marginal-difference pattern) is
 reused verbatim from ``analysis/sweep.py``/``analysis/conditional.py``.
 """
+import math
 import torch
 from typing import Dict, Any, Optional
 
@@ -19,8 +20,9 @@ from neural_mi.data.shift_windowing import (SHIFT_PACK_CONCAT, SHIFT_PACK_FIRST,
                                             SHIFT_PACK_SECOND,
                                             _REGULAR_GRID_PROCESSOR_TYPES)
 from neural_mi.analysis.conditional import _merge_raw_blocks
-from neural_mi.analysis.sweep import (combined_spread, rung, ParameterSweep, _joint_marginal_difference,
-                                      warn_combination, amplification_factor)
+from neural_mi.analysis.sweep import (combined_spread, combine_terms, rung, ParameterSweep,
+                                      _joint_marginal_difference, warn_combination,
+                                      amplification_factor)
 import warnings
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import with_model_labels
@@ -45,25 +47,24 @@ def _ensure_3d(t: torch.Tensor) -> torch.Tensor:
     return t.unsqueeze(-1) if t.ndim == 2 else t
 
 
-def _single_mi_mean(
+def _train_single_term(
     x: torch.Tensor, y: torch.Tensor, base_params: Dict[str, Any],
     sweep_grid: Optional[Dict[str, Any]], n_workers: int,
     *, quantity_name: str, label: str, is_proc_sweep: bool = False,
-) -> tuple:
-    """Run one ``ParameterSweep``, return ``(mean(train_mi), raw_results, values)``.
+) -> list:
+    """Train one term on its own with ``ParameterSweep`` and return its task results.
 
     The single-term counterpart to ``_joint_marginal_difference``'s
     joint/marginal pair, needed here for interaction information's
     standalone I(W;Y) term, which isn't itself a difference of two sweeps.
+    The caller combines the terms (:func:`neural_mi.analysis.sweep.combine_terms`).
     """
     logger.info(f"{quantity_name}: estimating I({label})...")
     sweep = ParameterSweep(x_data=x, y_data=y, base_params=base_params.copy())
     results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
-    vals = [r['train_mi'] for r in results if 'train_mi' in r]
-    if not vals:
+    if not any('train_mi' in r for r in results):
         raise RuntimeError(f"{quantity_name}: all I({label}) runs failed, no valid train_mi values.")
-    import numpy as np
-    return float(np.mean(vals)), results, vals
+    return results
 
 
 def run_interaction_information(
@@ -80,8 +81,9 @@ def run_interaction_information(
 
     Reuses ``_joint_marginal_difference`` once for the (joint=XW, marginal=X)
     pair, which yields both I(X,W;Y) and I(X;Y) for free, plus one standalone
-    ``_single_mi_mean`` call for I(W;Y), three sweeps total, not four,
-    avoiding a redundant recomputation of I(X;Y).
+    ``_train_single_term`` call for I(W;Y), three sweeps total, not four,
+    avoiding a redundant recomputation of I(X;Y). The three are combined repeat
+    by repeat by :func:`neural_mi.analysis.sweep.combine_terms`.
 
     Parameters
     ----------
@@ -265,7 +267,7 @@ def run_interaction_information(
         xw_data = torch.cat([x_data, w_data], dim=1)
         x_role, w_role = x_data, w_data
 
-    _diff, mi_xw_y, mi_x_y, raw_xw_y, raw_x_y, _per_run = _joint_marginal_difference(
+    _, _, _, raw_xw_y, raw_x_y, _ = _joint_marginal_difference(
         xw_data, y_data, x_role, y_data,
         joint_bp, sweep_grid, n_workers,
         quantity_name="Interaction information",
@@ -275,23 +277,30 @@ def run_interaction_information(
         marginal_base_params=marginal_x_bp,
         reported=False,
     )
-    mi_w_y, raw_w_y, _w_vals = _single_mi_mean(
+    raw_w_y = _train_single_term(
         w_role, y_data, {**with_model_labels(marginal_w_bp, component='mi_w_y'), '_difference_term': True},
         sweep_grid, n_workers,
         quantity_name="Interaction information", label="W;Y",
         is_proc_sweep=raw_deferred,
     )
 
-    ii = mi_xw_y - mi_x_y - mi_w_y
+    # The three terms are combined repeat by repeat, by the rule every combined
+    # quantity follows: a repeat in which any of them failed has no value.
+    combined = combine_terms([("X,W;Y", 'mi_xw_y', raw_xw_y, 1), ("X;Y", 'mi_x_y', raw_x_y, -1),
+                              ("W;Y", 'mi_w_y', raw_w_y, -1)],
+                             quantity_name="Interaction information", warn=True)
+    ii = combined['value']
+    mi_xw_y, mi_x_y, mi_w_y = (combined['means'][k] for k in ('mi_xw_y', 'mi_x_y', 'mi_w_y'))
     _scale, _units = mi_report_units(base_params)
     logger.info(
         f"Interaction information: I(X,W;Y)={mi_xw_y * _scale:.4f}, "
         f"I(X;Y)={mi_x_y * _scale:.4f}, I(W;Y)={mi_w_y * _scale:.4f}, "
         f"II={ii * _scale:.4f} {_units}."
     )
-    warn_combination("Interaction information", ii, ("X,W;Y", mi_xw_y, 'mi_xw_y'),
-                     [("X;Y", mi_x_y, 'mi_x_y'), ("W;Y", mi_w_y, 'mi_w_y')],
-                     base_params, signed=True)
+    if not math.isnan(ii):
+        warn_combination("Interaction information", ii, ("X,W;Y", mi_xw_y, 'mi_xw_y'),
+                         [("X;Y", mi_x_y, 'mi_x_y'), ("W;Y", mi_w_y, 'mi_w_y')],
+                         base_params, signed=True)
 
     return {
         'interaction_info': ii,
@@ -299,7 +308,7 @@ def run_interaction_information(
         'mi_x_y': mi_x_y,
         'mi_w_y': mi_w_y,
         'amplification_factor': amplification_factor([mi_xw_y, mi_x_y, mi_w_y], ii),
-        'mi_estimate_std': combined_spread((*_per_run, _w_vals), (1, -1, -1)),
+        'mi_estimate_std': combined_spread(combined['per_run'], (1, -1, -1)),
         'raw_xw_y': raw_xw_y,
         'raw_x_y': raw_x_y,
         'raw_w_y': raw_w_y,

@@ -107,8 +107,18 @@ reported as 0 out of `mi_mean` and `mi_std` and counts them in `n_zero`. The
 permutation test summarises each trial with `aggregate` too. A rung of a
 difference's rigorous ladder is its signed measured value (`sweep.rung`), and
 `rigorous._drop_zero_rungs` leaves out only the rungs reported as 0, whose
-networks learned nothing.
+networks learned nothing, and the NaN rungs, whose term failed.
 Interaction information is signed and is left as measured.
+
+Every quantity combined from separately trained networks goes through
+`sweep.combine_terms`: `_joint_marginal_difference` (conditional MI, transfer
+entropy and the quantities built on them), interaction information and the runs
+rows of `modes._difference_rows`. The rungs of their rigorous ladders call the
+same functions on each chunk. `sweep.term_values` reads each network as
+measured, as having learned nothing (it enters as 0) or as failed (its repeat
+is NaN). The line between the last two is `epochs.stands_above_zero`, the same
+test the trainer uses to word its warning about a negative training-side value,
+so a network's warning and its place in a combination agree.
 
 ### Processor parameters in a grid
 

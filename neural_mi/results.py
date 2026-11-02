@@ -34,6 +34,17 @@ _COMPONENTS = {
 }
 
 
+def _repeats_used(row) -> int:
+    """How many of a row's repeats its mean and spread use: all but those that failed (``n_failed``) and,
+    unless every other repeat is one, those that produced nothing (``n_zero``)."""
+    def count(key, default):
+        value = row.get(key, default)
+        return default if value is None or pd.isna(value) else int(value)
+    n_runs, n_failed, n_zero = count('n_runs', 1), count('n_failed', 0), count('n_zero', 0)
+    left = n_runs - n_failed
+    return left - n_zero if n_zero < left else left
+
+
 def _scalar(value: Any) -> Any:
     """A numpy scalar as its Python value; anything else unchanged."""
     if isinstance(value, np.generic):
@@ -107,10 +118,10 @@ class Results:
         otherwise ``None``. In the units set by ``Output(units=...)``.
     dataframe : pandas.DataFrame
         One row per configuration and axis value: ``config_id``, the grid keys,
-        the axis keys, ``mi_mean``, ``mi_std``, ``n_runs`` and the mode's
-        per-configuration columns. ``mi_std`` is the spread of repeats of the
-        procedure on the same data and is NaN when there was one repeat. It is
-        never an interval on the population value.
+        the axis keys, ``mi_mean``, ``mi_std``, ``n_runs``, ``n_zero``,
+        ``n_failed`` and the mode's per-configuration columns. ``mi_std`` is the
+        spread of repeats of the procedure on the same data and is NaN when
+        there was one repeat. It is never an interval on the population value.
     runs : pandas.DataFrame
         One row per repeat: ``config_id``, the grid and axis keys, the repeat
         index (``run_id``), ``mi`` (the repeat's value of the
@@ -295,8 +306,10 @@ class Results:
         if n_rows == 1:
             row = df.iloc[0]
             n_runs = int(row.get('n_runs', 1))
+            n_used = _repeats_used(row)
             std = row.get('mi_std')
-            spread = (f" ± {std:.4f} (spread over {n_runs} repeats)"
+            over = f"{n_used} repeats" if n_used == n_runs else f"{n_used} of {n_runs} repeats"
+            spread = (f" ± {std:.4f} (spread over {over})"
                       if std is not None and not pd.isna(std) else "")
             label = _QUANTITY_LABELS.get(self.mode, 'MI estimate')
             print(f"  {label:<12}: {self.mi_estimate:.4f} {units}{spread}"
