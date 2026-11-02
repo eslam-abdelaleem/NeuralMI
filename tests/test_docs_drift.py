@@ -105,7 +105,9 @@ def test_every_documented_default_matches_the_code(cls):
 def test_run_arguments_are_documented():
     params = inspect.signature(nmi.run).parameters
     config_args = {'processing', 'model', 'training', 'split', 'estimator', 'output', *MODE_OF.values()}
-    run_args = {n for n, p in params.items() if p.kind is not p.VAR_KEYWORD} - config_args
+    # A leading underscore marks an argument the library passes to itself.
+    run_args = {n for n, p in params.items()
+                if p.kind is not p.VAR_KEYWORD and not n.startswith('_')} - config_args
     assert set(TABLES['run']) == run_args
     for name, cell in TABLES['run'].items():
         stated = _literal(cell)

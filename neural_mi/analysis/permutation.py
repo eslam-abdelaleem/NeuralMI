@@ -18,8 +18,8 @@ Two shuffles are available through ``permutation_shuffle``:
     zero (in either direction) are excluded, since a near-zero shift would
     leave the dependence in place.
 ``'block'``
-    X is cut into contiguous blocks one window long and the blocks are
-    reordered. Structure within a window is kept; structure across windows
+    X is cut into contiguous blocks as long as one row's span and the blocks
+    are reordered. Structure within a block is kept; structure across blocks
     is not.
 """
 import math
@@ -32,6 +32,7 @@ import torch
 from tqdm.auto import tqdm
 
 from neural_mi.analysis.assemble import _hashable, aggregate
+from neural_mi.data.rows import row_geometry
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.parallel import worker_pool
 
@@ -128,18 +129,26 @@ def _block_shuffle_spike_population(spikes: list, t_start: float, t_end: float,
 
 
 def _window_rows(x: Any, base_params: Dict[str, Any], ctx: Dict[str, Any]) -> int:
-    """How many rows of X make one window, the block length of a block shuffle.
+    """How many rows of X one block of a block shuffle holds: the rows that one row's span takes in.
 
-    Windowed data has one window per row. A raw series that is windowed later
-    has ``window_size`` samples per window, converted with the stream's
-    sample rate or clock. Transfer entropy's raw series use the history length.
+    Rows in time order carry their geometry (:mod:`neural_mi.data.rows`), and a
+    block is as many of them as one row covers, so a block keeps whole the rows
+    that share samples. Rows not known to be in time order move one at a time.
+    A raw series that is windowed later moves in blocks of one window, its
+    ``window_size`` converted to samples with the stream's sample rate or
+    clock. Transfer entropy's raw series move in blocks of one of its rows,
+    whose recorded span is in samples.
     """
+    rows = row_geometry(base_params)
     if getattr(x, 'ndim', 2) != 2:
-        return 1
+        return rows.rows_per_span if rows is not None else 1
     params = base_params.get('processor_params_x') or {}
     window = params.get('window_size')
-    if window is None:
-        return int(ctx.get('history_window') or 1)
+    if window is None or params.get('preprocessed'):
+        # No processor windows this series later (run.py marks a series it has
+        # prepared already): its rows are built from it by offset (transfer
+        # entropy), or they are its samples.
+        return max(1, int(round(rows.span))) if rows is not None else 1
     if params.get('sample_rate'):
         period = 1.0 / float(params['sample_rate'])
     elif base_params.get('x_time') is not None and len(base_params['x_time']) > 1:

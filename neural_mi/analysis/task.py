@@ -17,6 +17,7 @@ from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import save_network
 from neural_mi.data.handler import create_dataset, AlignedStaticStreams
+from neural_mi.data.rows import record_rows, row_geometry, window_rows
 
 # Batch size used for embedding extraction (no effect on training).
 # Large enough to keep GPU utilisation high; small enough to avoid OOM.
@@ -240,6 +241,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         else:
             logger.debug("Dataset cache hit, reusing pre-built dataset.")
 
+    # A dataset this task windowed itself records its rows' geometry here, as
+    # run.py records it for a dataset windowed there (neural_mi/data/rows.py).
+    _wm = getattr(dataset, 'window_manager', None)
+    if _wm is not None:
+        record_rows(params, window_rows(_wm.window_size, _wm.resolve_step()))
+
     # Models that natively support 4-D input (N, C, H, W):
     #   'cnn2d', Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
     #   'mlp', flattens C*H*W into a feature vector; spatial structure ignored.
@@ -454,8 +461,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         return_rotated_embeddings=params.get('return_rotated_embeddings', False),
         rotated_embeddings_per_epoch=params.get('rotated_embeddings_per_epoch', False),
         return_rotation_matrices=params.get('return_rotation_matrices', False),
-        leak_check_window_size=params.get('leak_check_window_size'),
-        leak_check_step=params.get('leak_check_step'),
+        rows=row_geometry(params),
     )
     results['device'] = str(device)
 

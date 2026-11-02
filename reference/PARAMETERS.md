@@ -234,7 +234,7 @@ For `mode='rigorous'`. The same fit settings are fields of `Conditional`,
 | `confidence_level` | `0.68` | Confidence level of `mi_error`. |
 | `residual_threshold` | `2.5` | Largest studentised residual before `fit_quality_warning` is set. |
 | `leverage_threshold` | `0.2` | Largest relative shift of the intercept when the $\gamma = 1$ points are left out before `leverage_warning` is set. |
-| `temporal_chunking` | `None` | Cut chunks as contiguous stretches (`True`) or random subsets (`False`); `None` decides from the data. |
+| `temporal_chunking` | `None` | Cut chunks as contiguous stretches (`True`) or random subsets (`False`). `None` cuts contiguous chunks from rows in time order (windows a processor cut, the rows of a named quantity, the histories of transfer entropy) and random subsets from other rows. |
 
 ### `Precision`
 

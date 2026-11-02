@@ -19,6 +19,7 @@ from .analysis.assemble import build_results
 from collections import OrderedDict
 from dataclasses import fields
 from .data.handler import create_dataset
+from .data.rows import RowGeometry, record_rows, window_rows
 from .data.shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from .results import Results
 from .validation import ParameterValidator, DataValidator
@@ -526,6 +527,7 @@ def run(
     permutation_test: bool = False,
     n_permutations: int = 10,
     permutation_shuffle: str = 'circular',
+    _rows: Optional[RowGeometry] = None,
     **_removed: Any,
 ) -> Results:
     """Unified entry point for all NeuralMI analyses (config-based API).
@@ -745,6 +747,9 @@ def run(
     flat['permutation_test'] = permutation_test
     flat['n_permutations'] = n_permutations
     flat['permutation_shuffle'] = permutation_shuffle
+    # Private: the geometry of rows a named quantity built in time order
+    # (neural_mi/data/rows.py). Arrays passed in already built carry none.
+    flat['_rows'] = _rows
     analysis_kwargs['n_workers'] = n_workers
 
     if base_params:
@@ -850,6 +855,7 @@ def _run_flat(
     channel_names_x: Optional[List[str]] = None,
     channel_names_y: Optional[List[str]] = None,
     _grid_part: Optional[Dict[str, Any]] = None,
+    _rows: Optional[RowGeometry] = None,
     **analysis_kwargs
 ) -> Results:
     """Flat-kwarg engine behind :func:`run`; see that function's docstring for
@@ -857,7 +863,8 @@ def _run_flat(
 
     ``_grid_part`` marks a call that runs one processor setting of a larger
     grid (see :func:`_run_processor_grid`); it skips the checks and messages
-    that belong to the whole call.
+    that belong to the whole call. ``_rows`` is the geometry of rows the caller
+    built in time order itself (the named quantities, :mod:`neural_mi.data.rows`).
     """
     sweep_grid = _normalise_grid(sweep_grid)
     _call_args = dict(locals())
@@ -1034,6 +1041,8 @@ def _run_flat(
         param_validator = ParameterValidator(locals())
         param_validator.validate()
         param_validator.apply_defaults()
+        # Rows the caller built in time order carry their geometry from here on.
+        record_rows(base_params, _rows)
 
         # Warn about n_layers/hidden_dim list mismatch only when the user explicitly
         # set n_layers (i.e., it was in base_params before defaults were applied).
@@ -1346,13 +1355,11 @@ def _run_flat(
             # Windowing happens once, here -- the dataset that reaches the
             # Trainer downstream is a plain, already-windowed PairedDataset
             # with no window_manager of its own (processor_type_x/y were just
-            # wiped to None above). Capture the window geometry now, while
-            # dataset.window_manager is still live, so the blocked-split
-            # leakage check has something to validate against.
+            # wiped to None above). Record the rows' geometry now, while
+            # dataset.window_manager is still live (data/rows.py).
             _wm = getattr(dataset, 'window_manager', None)
             if _wm is not None:
-                base_params['leak_check_window_size'] = _wm.window_size
-                base_params['leak_check_step'] = _wm.resolve_step()
+                record_rows(base_params, window_rows(_wm.window_size, _wm.resolve_step()))
 
             # Retention is reported per task (see analysis/task.py), since it
             # varies between tasks and one run-level scalar would misdescribe
@@ -1547,8 +1554,8 @@ def _run_flat(
                 if w_data is not None:
                     _specs['w'] = dict(data=w_data, time=w_time, processor_type=w_processor_type,
                                        processor_params=w_processor_params)
-                _rows = one_step_rows(grid_rows(_specs), "mode='transfer'")
-                x_run, y_run, w_run = _rows['x'], _rows['y'], _rows.get('w')
+                _one_step = one_step_rows(grid_rows(_specs)[0], "mode='transfer'")
+                x_run, y_run, w_run = _one_step['x'], _one_step['y'], _one_step.get('w')
             else:
                 x_run, y_run = _to_2d(_to_tensor(x_data)), _to_2d(_to_tensor(y_data))
                 if w_data is not None:
@@ -1570,6 +1577,10 @@ def _run_flat(
             ctx = {'history_window': history_window, 'prediction_horizon': prediction_horizon,
                    'stride': stride, 'bidirectional': bidirectional_te}
             _record['history_window'] = history_window
+            # The histories are rows in time order, recorded before anything
+            # reads them: the ladder's chunks, the permutation's blocks.
+            from .analysis.transfer import te_rows
+            record_rows(base_params, te_rows(history_window, prediction_horizon, stride))
             if _use_rigorous:
                 from .analysis.transfer import _te_rigorous_scalar
                 ctx.update(rigorous=True, scalar_fn=_te_rigorous_scalar,
@@ -1577,8 +1588,6 @@ def _run_flat(
                            extra_kwargs={'history_window': history_window,
                                          'prediction_horizon': prediction_horizon,
                                          'stride': stride, 'bidirectional': bidirectional_te},
-                           # Histories are time-ordered, so the ladder's chunks are contiguous.
-                           temporal_kwargs={'temporal_chunking': True},
                            rigorous_kwargs=_scalar_rigorous_kwargs(
                                analysis_kwargs, curvature_t_threshold, min_gamma_points,
                                confidence_level))

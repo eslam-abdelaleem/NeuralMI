@@ -729,17 +729,18 @@ class TestStride:
 
     # ---- the split check has to see the real stride -----------------------
 
-    def test_leak_check_step_carries_the_stride(self):
-        """At stride 1 a one-window gap buys one sample of separation, so a
+    def test_the_row_step_carries_the_stride(self):
+        """At stride 1 a one-row gap buys one sample of separation, so a
         wrong value here waves through a split that shares almost a whole
-        window."""
+        row."""
         import neural_mi.analysis.transfer as transfer_mod
         x, y = self._oracle.sample(1200, seed=4)
         seen = {}
         real = transfer_mod._joint_marginal_difference
 
         def spy(a, b, c, d, base_params, *args, **kwargs):
-            seen.setdefault('step', base_params.get('leak_check_step'))
+            seen.setdefault('step', base_params.get('row_step'))
+            seen.setdefault('span', base_params.get('row_span'))
             seen.setdefault('rows', a.shape[0])
             return real(a, b, c, d, base_params, *args, **kwargs)
 
@@ -751,6 +752,7 @@ class TestStride:
         finally:
             transfer_mod._joint_marginal_difference = real
         assert seen['step'] == 4
+        assert seen['span'] == 5 + 1      # the history and the step it predicts
         assert seen['rows'] == (1200 - 5 - 1) // 4 + 1
 
     # ---- validation --------------------------------------------------------

@@ -178,6 +178,31 @@ recording and excludes a gap of `gap_fraction` of a block on either side of each
 from training. Neighbouring correlated windows cannot then sit on both sides of
 the split. A random split suits independent samples only.
 
+### Rows in time order
+
+Whatever builds rows from a time series records their geometry once, in the
+parameters every task receives (`neural_mi/data/rows.py`): `row_step`, the
+distance between the starts of consecutive rows, and `row_span`, the stretch one
+row covers, in one unit. A processor records its windows (`run.py` when it
+windows once for the call, `task.py` and `shift_windowing.py` when a task
+windows for itself). A named quantity records the rows it slices by offset and
+hands them to `run()` through its private `_rows` argument, composed with the
+grid's own windows when `processing=` put the streams on one. Transfer entropy
+records its histories (`transfer.te_rows`). Rows without the record are not
+known to be in time order: arrays passed in already built, or samples in no
+order. The record is reported per network in `runs` and
+`details[config_id]['trainings']`.
+
+Everything that depends on the time order reads the record and nothing else.
+The trainer's blocked split warns when its gap is shorter than a row's span,
+and its random split warns when rows share samples, as does the split
+`mode='dimensionality'` shares across its fits. The rigorous ladder cuts
+recorded rows into contiguous chunks through `rigorous._Chunker`, the one
+chunker of both rigorous paths. A block shuffle moves blocks of the rows one
+row's span takes in. Whether a dataset can rebuild its windows under a time
+shift is a different question, which the trainer answers from the dataset's
+type.
+
 ### Rigorous fits in $\gamma$
 
 The ladder trains on chunks of $N/\gamma$ samples. For fixed $N$ the bias

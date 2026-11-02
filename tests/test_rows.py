@@ -1,0 +1,193 @@
+"""One record of how rows lie in time, written where rows are built and read wherever time order matters.
+
+Every builder of rows records their geometry (``neural_mi/data/rows.py``): the
+processors their windows, the named quantities the rows they slice by offset,
+transfer entropy its histories. The split's leak checks, the rigorous chunks
+and the block shuffle read that record and nothing else.
+"""
+import math
+import warnings
+
+import numpy as np
+import pytest
+import torch
+
+import neural_mi as nmi
+from neural_mi.data.rows import RowGeometry, offset_rows, row_geometry, window_rows
+
+_MODEL = nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1)
+_TRAINING = nmi.Training(n_epochs=2, batch_size=32)
+
+
+def _series(n=600, seed=0):
+    rng = np.random.default_rng(seed)
+    x = np.cumsum(rng.standard_normal((n, 1)), axis=0) * 0.1
+    y = x + rng.standard_normal((n, 1))
+    return x.astype(np.float32), y.astype(np.float32)
+
+
+def _quiet(fn, *args, **kwargs):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        result = fn(*args, model=_MODEL, training=kwargs.pop('training', _TRAINING), show_progress=False,
+                    seed=0, **kwargs)
+    return result, [str(w.message) for w in caught]
+
+
+def _recorded(result):
+    """The (row_step, row_span) every network of a result recorded, as one set."""
+    tables = [result.runs]
+    for entry in result.details.values():
+        if 'trainings' in entry:
+            tables.append(entry['trainings'])
+    pairs = set()
+    for table in tables:
+        if 'row_step' in table.columns:
+            pairs |= {(float(a), float(b)) for a, b in zip(table['row_step'], table['row_span'])}
+    return pairs
+
+
+class TestGeometry:
+
+    def test_offsets_on_a_raw_series_count_samples(self):
+        assert offset_rows(5, 2) == RowGeometry(step=2.0, span=5.0)
+
+    def test_offsets_on_a_grid_build_on_its_windows(self):
+        # Windows of 4 every 2: five of them in a row cover 2 * 4 + 4.
+        assert offset_rows(5, 1, window_rows(4, 2)) == RowGeometry(step=2.0, span=12.0)
+
+    def test_rows_per_span_and_overlap(self):
+        assert RowGeometry(1, 5).rows_per_span == 5 and RowGeometry(1, 5).overlapping
+        assert RowGeometry(4, 4).rows_per_span == 1 and not RowGeometry(4, 4).overlapping
+        assert RowGeometry(2, 5).rows_per_span == 3
+
+    def test_no_record_means_no_known_time_order(self):
+        assert row_geometry({}) is None
+        assert row_geometry({'row_step': 1, 'row_span': 3}) == RowGeometry(1.0, 3.0)
+
+
+class TestEveryBuilderRecordsItsRows:
+
+    @pytest.mark.parametrize('call, expected', [
+        (lambda x, y, **kw: nmi.active_information_storage(x, k=4, stride=2, **kw), (2.0, 5.0)),
+        (lambda x, y, **kw: nmi.predictive_information(x, k=3, **kw), (1.0, 6.0)),
+        (lambda x, y, **kw: nmi.cross_predictive_information(x, y, k=3, **kw), (1.0, 6.0)),
+        (lambda x, y, **kw: nmi.instantaneous_mi(x, y, **kw), (1.0, 1.0)),
+        (lambda x, y, **kw: nmi.block_mi(x, y, window_size=4, **kw), (4.0, 4.0)),
+        (lambda x, y, **kw: nmi.transfer_entropy(x, y, history_window=3, stride=2, **kw), (2.0, 4.0)),
+        (lambda x, y, **kw: nmi.conditional_transfer_entropy(x, y, y[::-1].copy(), history_window=3, **kw),
+         (1.0, 4.0)),
+        (lambda x, y, **kw: nmi.mi_rate(x, y, h=3, half_width=5, **kw), (1.0, 11.0)),
+        (lambda x, y, **kw: nmi.mi_rate(x, y, h=7, half_width=2, **kw), (1.0, 10.0)),
+        (lambda x, y, **kw: nmi.instantaneous_exchange(x, y, k=3, **kw), (1.0, 4.0)),
+        (lambda x, y, **kw: nmi.directed_information_rate(x, y, k=2, **kw), (1.0, 3.0)),
+    ], ids=['ais', 'predictive', 'cross_predictive', 'instantaneous', 'block', 'transfer',
+            'conditional_transfer', 'mi_rate', 'mi_rate_long_history', 'exchange', 'directed_rate'])
+    def test_the_rows_of_every_temporal_quantity_are_recorded(self, call, expected):
+        x, y = _series()
+        result, _ = _quiet(call, x, y)
+        assert _recorded(result) == {expected}
+
+    def test_a_grid_carries_its_windows_into_the_offsets(self):
+        x, y = _series()
+        processing = nmi.Processing(x='continuous', y='continuous',
+                                    x_params={'window_size': 4, 'step_size': 2})
+        result, _ = _quiet(nmi.mi_rate, x, y, h=1, half_width=1, processing=processing)
+        # Three grid steps of 2 on either side of the centre's window of 4: 2 * 2 + 4.
+        assert _recorded(result) == {(2.0, 8.0)}
+
+    def test_rows_passed_in_built_are_not_known_to_be_in_time_order(self):
+        rng = np.random.default_rng(1)
+        x = rng.standard_normal((300, 2, 5)).astype(np.float32)
+        result, _ = _quiet(nmi.run, x, x + rng.standard_normal(x.shape).astype(np.float32))
+        assert _recorded(result) == set()
+
+
+class TestTheSplitReadsTheRecord:
+
+    def test_a_gap_shorter_than_a_row_warns_for_rows_built_by_offset(self):
+        # 370 rows of span 31, 37 held out in five blocks of 7: a gap of 4 rows
+        # buys 4 samples, far short of a row.
+        x, _ = _series(400)
+        _, messages = _quiet(nmi.active_information_storage, x, k=30)
+        assert any('Blocked split may leak raw samples' in m for m in messages)
+
+    def test_a_random_split_of_overlapping_rows_warns(self):
+        x, _ = _series()
+        _, messages = _quiet(nmi.active_information_storage, x, k=4, split=nmi.Split(mode='random'))
+        assert any('Random split of rows that share samples' in m for m in messages)
+
+    def test_a_random_split_of_rows_that_share_nothing_is_quiet(self):
+        x, y = _series()
+        _, messages = _quiet(nmi.instantaneous_mi, x, y, split=nmi.Split(mode='random'))
+        assert not any('Random split of rows' in m for m in messages)
+
+    def test_the_split_dimensionality_shares_runs_the_same_checks(self):
+        from neural_mi.analysis.dimensionality import _get_or_create_shared_split
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            _get_or_create_shared_split({'row_step': 1.0, 'row_span': 50.0}, 1000)
+            _get_or_create_shared_split({'row_step': 1.0, 'row_span': 50.0, 'split_mode': 'random'}, 1000)
+        messages = [str(w.message) for w in caught]
+        assert any('Blocked split may leak' in m for m in messages)
+        assert any('Random split of rows that share samples' in m for m in messages)
+
+
+class TestRigorousChunks:
+
+    @staticmethod
+    def _chunker(x, params, **kwargs):
+        from neural_mi.analysis.rigorous import _Chunker
+        return _Chunker(x, x, params, **kwargs)
+
+    def test_recorded_rows_are_cut_in_time_order(self):
+        chunker = self._chunker(torch.zeros(10, 1, 3), {'row_step': 1, 'row_span': 3}, deferred=False)
+        assert chunker.mode == 'contiguous'
+        assert [c.tolist() for c in chunker.chunks(2)] == [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]]
+
+    def test_other_rows_are_cut_in_a_random_order_unless_told(self):
+        np.random.seed(0)
+        assert self._chunker(torch.zeros(10, 1), {}, deferred=False).mode == 'permuted'
+        assert self._chunker(torch.zeros(10, 1), {}, deferred=False, temporal_chunking=True).mode == 'contiguous'
+
+    def test_a_recording_each_chunk_windows_cannot_be_permuted(self):
+        params = {'processor_type_x': 'continuous', 'processor_type_y': 'continuous', 'shift_windows': True,
+                  'processor_params_x': {'window_size': 5}}
+        x = torch.zeros(200, 1)
+        assert self._chunker(x, params, deferred=True).mode == 'contiguous'
+        with pytest.raises(ValueError, match=r"temporal_chunking=False\) cannot apply"):
+            self._chunker(x, params, deferred=True, temporal_chunking=False)
+
+    @pytest.mark.parametrize('call', [
+        lambda x, y, **kw: nmi.active_information_storage(x, k=3, **kw),
+        lambda x, y, **kw: nmi.mi_rate(x, y, h=2, half_width=2, **kw),
+        lambda x, y, **kw: nmi.transfer_entropy(x, y, history_window=2, **kw),
+    ], ids=['ais', 'mi_rate', 'transfer'])
+    def test_every_temporal_quantity_is_cut_into_contiguous_chunks(self, call):
+        x, y = _series(800)
+        result, _ = _quiet(call, x, y, rigorous=nmi.Rigorous(gamma_range=[1, 2], min_gamma_points=2))
+        assert set(result.runs['chunking_mode']) == {'contiguous'}
+
+    def test_independent_rows_are_still_permuted(self):
+        rng = np.random.default_rng(2)
+        x = rng.standard_normal((800, 2)).astype(np.float32)
+        result, _ = _quiet(nmi.run, x, x + rng.standard_normal(x.shape).astype(np.float32), mode='rigorous',
+                           rigorous=nmi.Rigorous(gamma_range=[1, 2], min_gamma_points=2))
+        assert set(result.runs['chunking_mode']) == {'permuted'}
+
+
+class TestBlockShuffle:
+
+    @pytest.mark.parametrize('x, params, rows', [
+        (torch.zeros(40, 1, 5), {'row_step': 1.0, 'row_span': 5.0}, 5),
+        (torch.zeros(40, 1, 5), {'row_step': 2.0, 'row_span': 5.0}, 3),
+        (torch.zeros(40, 1, 5), {}, 1),
+        (torch.zeros(400, 1), {'row_step': 1.0, 'row_span': 4.0}, 4),
+        (torch.zeros(400, 1), {'processor_type_x': 'continuous', 'processor_params_x': {'window_size': 10}}, 10),
+        (torch.zeros(400, 1), {'row_step': 1.0, 'row_span': 4.0,
+                               'processor_params_x': {'window_size': 1, 'preprocessed': True}}, 4),
+    ], ids=['offset_rows', 'strided_rows', 'unknown_rows', 'transfer_series', 'series_windowed_later',
+            'transfer_series_off_a_grid'])
+    def test_a_block_holds_the_rows_one_row_spans(self, x, params, rows):
+        from neural_mi.analysis.permutation import _window_rows
+        assert _window_rows(x, params, {}) == rows

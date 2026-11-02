@@ -385,7 +385,8 @@ dependence between X and Y. Each null trial reruns the whole call with X moved
 in time and everything else in place. A circular shift moves X by one random
 offset with wrap-around. The offset is at least 10% of the recording's length
 away from zero in either direction. No trial therefore leaves X nearly aligned
-with Y. A block shuffle cuts X into blocks one window long and reorders them.
+with Y. A block shuffle cuts X into blocks as long as one row's span and
+reorders them, so rows that share samples move together.
 Either way X, Y and W keep their temporal structure, apart from the seams in X.
 Only the alignment between X and the rest is removed. A spike population moves
 as a whole and keeps the structure among its neurons.

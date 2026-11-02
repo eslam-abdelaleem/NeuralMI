@@ -105,7 +105,7 @@ def test_fractional_step_reaches_the_shift_path():
             split=nmi.Split(mode='blocked'), estimator=nmi.Estimator('infonce'),
             show_progress=False, n_workers=1, seed=0,
         )
-        assert result.get('leak_check_step') == 5
+        assert result.get('row_step') == 5
         counts[shift] = result.get('train_eval_size')
     assert abs(counts[True] - counts[False]) <= 5
 

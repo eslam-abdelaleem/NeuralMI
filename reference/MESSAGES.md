@@ -298,9 +298,21 @@ silent windows and estimates the unrestricted quantity
 ([USING.md](USING.md#silent-spike-windows)).
 
 **`Blocked split may leak raw samples between train and test`**
-Because the gap around each test block is shorter than a window, windows on
-either side of a boundary share raw samples. Raise `Split(gap_fraction=...)` to
-the value the message gives.
+Because the gap around each test block is shorter than the stretch one row
+covers, rows on either side of a boundary share raw samples. The rows are a
+processor's windows, the rows a named quantity slices by offset or the
+histories of transfer entropy, and each records how far apart its rows start
+and how much one covers. Raise `Split(gap_fraction=...)` to the value the
+message gives.
+
+**`Random split of rows that share samples`**
+`Split(mode='random')` drew the held-out rows one by one from rows that overlap
+in time, so each held-out row sits among training rows that share most of its
+samples. The held-out curve then cannot tell fitting the training rows from
+learning the dependence: it keeps rising as the network overfits, the epoch it
+chooses comes late, and the value read there is high. Use the default
+`Split(mode='blocked')`, which holds out contiguous blocks with a gap around
+each.
 
 **`Blocked split parameters produced an invalid configuration`**
 Because the requested blocks do not fit the dataset, the split fell back to a

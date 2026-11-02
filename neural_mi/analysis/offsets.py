@@ -166,12 +166,23 @@ def grid_rows(specs):
         ``{name: dict(data=..., time=..., processor_type=..., processor_params=...)}``,
         in the order the streams should be built. Streams whose data is None
         are skipped.
+
+    Returns
+    -------
+    tuple
+        ``(rows, geometry)``: the rows by stream name, and the geometry of the
+        grid's windows (:mod:`neural_mi.data.rows`), in the grid's own unit,
+        for the rows sliced from them by offset.
     """
     from collections import OrderedDict
     from neural_mi.data.handler import create_dataset
+    from neural_mi.data.rows import window_rows
     specs = OrderedDict((n, s) for n, s in specs.items() if s.get('data') is not None)
     bundle = create_dataset(specs, validate_windows=False)
-    return OrderedDict((name, bundle.stream(name).data) for name in bundle.stream_names)
+    rows = OrderedDict((name, bundle.stream(name).data) for name in bundle.stream_names)
+    manager = getattr(bundle, 'window_manager', None)
+    geometry = window_rows(manager.window_size, manager.resolve_step()) if manager is not None else None
+    return rows, geometry
 
 
 def one_step_rows(rows, caller: str):

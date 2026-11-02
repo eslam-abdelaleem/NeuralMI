@@ -16,8 +16,17 @@ from typing import Dict, Any, Optional
 
 from neural_mi.analysis.sweep import (combined_spread, rung, _joint_marginal_difference,
                                       amplification_factor)
+from neural_mi.data.rows import RowGeometry, offset_rows, record_rows
 from neural_mi.logger import logger
 from neural_mi.utils import validate_stride
+
+
+def te_rows(history_window: int, prediction_horizon: int = 1, stride: int = 1,
+            series: Optional[RowGeometry] = None) -> RowGeometry:
+    """The geometry of the rows :func:`_build_te_arrays` builds: a history of ``history_window`` steps
+    and the ``prediction_horizon`` steps after it, every ``stride`` steps (:mod:`neural_mi.data.rows`).
+    ``series`` is that of the series' own rows when they come off a grid."""
+    return offset_rows(history_window + prediction_horizon, stride, series)
 
 
 def _build_te_arrays(
@@ -201,18 +210,12 @@ def run_transfer_entropy(
         f"Transfer Entropy: building windows "
         f"(history_window={history_window}, prediction_horizon={prediction_horizon})..."
     )
-    # _build_te_arrays windows via unfold(0, history_window, stride), bypassing
-    # WindowManager entirely, so the blocked-split leakage check (same mechanism
-    # as the WindowManager path; see run.py/trainer.py) needs its window geometry
-    # passed explicitly here instead. The step has to be the real stride: at
-    # stride 1 a gap of one window index buys one sample of separation, so the
-    # check would otherwise wave through a split that shares almost a whole
-    # window. Set once and reused by every _joint_marginal_difference call below
-    # (joint/marginal, both directions if bidirectional), since neither
-    # history_window nor the stride changes between them.
+    # The rows built below are in time order. Their geometry is recorded for
+    # the leak check of every term's split (neural_mi/data/rows.py). The step
+    # has to be the real stride: at stride 1 a gap of one row buys one sample
+    # of separation.
     base_params = dict(base_params)
-    base_params['leak_check_window_size'] = history_window
-    base_params['leak_check_step'] = stride
+    record_rows(base_params, te_rows(history_window, prediction_horizon, stride))
     x_past, y_past, y_future = _build_te_arrays(
         x_data, y_data, history_window, prediction_horizon, stride=stride
     )

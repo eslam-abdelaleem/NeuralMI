@@ -18,12 +18,14 @@ import time
 
 from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
                             AlignedStreams)
+from neural_mi.data.rows import RowGeometry
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
 from neural_mi.training.epochs import (CLEAR_SE, EPOCH_RULES, FUZZY_SE, choose_epoch, standard_error,
                                      stands_above_zero, warn_about_curve)
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
-                             compute_cross_covariance_rotation, warn_if_blocked_split_leaks)
+                             compute_cross_covariance_rotation, warn_if_blocked_split_leaks,
+                             warn_if_random_split_leaks)
 from neural_mi.augmentations import apply_augmentations
 
 # Fraction of the (smoothed) test-MI history that must sit above
@@ -241,8 +243,7 @@ class Trainer:
               return_rotated_embeddings: bool = False,
               rotated_embeddings_per_epoch: bool = False,
               return_rotation_matrices: bool = False,
-              leak_check_window_size: Optional[float] = None,
-              leak_check_step: Optional[float] = None) -> Dict[str, Any]:
+              rows: Optional[RowGeometry] = None) -> Dict[str, Any]:
 
         """Trains the critic model and returns performance metrics.
 
@@ -338,20 +339,15 @@ class Trainer:
             ``min(n_test, max_eval_samples)``.
         split_gap_fraction : float, optional
             When using 'blocked' split_mode, this fraction of the data will be left as a gap between training and test blocks to reduce leakage.
-        leak_check_window_size, leak_check_step : float, optional
-            Window geometry for the blocked-split leakage check, in time units.
-            ``gap_fraction`` above buys a gap of *windows*, not time, the
-            actual time-domain buffer is ``gap_size * step``, and if that's
-            shorter than the window, train and test windows can share raw
-            samples even though their indices don't overlap. Most callers
-            don't need to pass these explicitly: if omitted, the check falls
-            back to ``dataset.window_manager`` when one is live (e.g.
-            deferred-processing paths like ``mode='lag'``). Callers whose
-            windowing already happened upstream of this Trainer call (the
-            common case for most modes. See ``run.py``, which builds the
-            windowed dataset once and passes only the resulting tensor down)
-            must pass these explicitly, since ``dataset`` here is a plain,
-            already-windowed dataset with no window manager of its own.
+        rows : RowGeometry, optional
+            How the rows lie in time (:mod:`neural_mi.data.rows`), as whatever
+            built them recorded it. ``gap_fraction`` above buys a gap of rows,
+            and the stretch of time it buys is ``gap_size * rows.step``. When
+            that is shorter than ``rows.span``, a training row and a held-out
+            row can share samples although their indices do not, and the split
+            warns. A random split of rows that share samples warns too. Without
+            it the rows are not known to be in time order and neither check
+            runs.
         track_spectral_history : bool, optional
             If True, records ``pr_eig``, ``pr_singular``, and the raw cross-covariance
             spectrum (singular values) at every epoch in the returned
@@ -439,10 +435,11 @@ class Trainer:
             raise ValueError(f"epoch_rule={epoch_rule!r} is not a recognised value. Use one of {EPOCH_RULES}.")
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         self._rng = np.random.RandomState(int(split_seed) % (2 ** 31)) if split_seed is not None else np.random
-        # Any bundle carrying a window grid is temporal, not only the
-        # two-stream subclass: a three-stream conditional bundle has the same
-        # grid and the same time_shift, and testing the subclass would leave
-        # it silently unshiftable.
+        # Any bundle carrying a window grid can rebuild its windows, not only
+        # the two-stream subclass: a three-stream conditional bundle has the
+        # same grid and the same time_shift, and testing the subclass would
+        # leave it silently unshiftable. Whether rows are in time order is a
+        # separate question, which `rows` answers.
         is_temporal = isinstance(dataset, AlignedStreams)
 
         # Prime the time-shift grid once, up front -- before the train/test
@@ -464,32 +461,22 @@ class Trainer:
         if train_indices is not None and test_indices is not None:
             train_idx, test_idx = train_indices, test_indices
         elif split_mode == 'random':
+            if rows is not None and rows.overlapping:
+                warn_if_random_split_leaks(rows)
             train_idx, test_idx = self._create_random_split(len(dataset), train_fraction)
         else:
-            # Window geometry for the leakage check below can come from two
-            # places, depending on how this dataset was built:
-            #  - dataset.window_manager is live when windowing was deferred to
-            #    this worker (e.g. mode='lag', a processor-swept mode='sweep')
-            #    and `dataset` really is the PairedTemporalDataset that did it.
-            #  - leak_check_window_size/step (explicit args, set by callers like
-            #    run.py's single-preprocess path for mode='estimate' and most
-            #    other modes) cover the common case where windowing already
-            #    happened once upstream and `dataset` here is a plain,
-            #    already-windowed PairedDataset with no window_manager at all.
-            _wm = getattr(dataset, 'window_manager', None)
-            if leak_check_window_size is not None and leak_check_step is not None:
-                _leak_kwargs = {'window_size': leak_check_window_size, 'step': leak_check_step}
-            elif _wm is not None:
-                _leak_kwargs = {'window_size': _wm.window_size, 'step': _wm.resolve_step()}
-            else:
-                _leak_kwargs = {}
-            if is_temporal and shift_time and 'window_size' in _leak_kwargs:
+            # The rows' geometry is recorded where they were built: a processor
+            # (run.py, or this task for windowing done here), an offset builder
+            # of a named quantity, transfer entropy (neural_mi/data/rows.py).
+            _leak_kwargs = {}
+            if rows is not None:
+                _leak_kwargs = {'span': rows.span, 'step': rows.step}
+            if is_temporal and shift_time and 'span' in _leak_kwargs:
                 # Under a time shift a training window's content can drift by
-                # up to a full window_size while the frozen eval window stays
-                # at offset 0, so the safe leak-check margin is
-                # 2 * window_size, not window_size. The check only warns; it
-                # does not change the split.
-                _leak_kwargs = {**_leak_kwargs, 'window_size': 2 * _leak_kwargs['window_size']}
+                # up to a full window while the frozen eval window stays at
+                # offset 0, so the safe leak-check margin is twice the span.
+                # The check only warns; it does not change the split.
+                _leak_kwargs = {**_leak_kwargs, 'span': 2 * _leak_kwargs['span']}
             train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
                                                              gap_fraction=split_gap_fraction, **_leak_kwargs)
         # Kept for callers that evaluate the trained network again afterwards,
@@ -1439,7 +1426,7 @@ class Trainer:
         return indices[:n_train], indices[n_train:]
 
     def _create_blocked_split(self, n: int, frac: float, k: int, gap_fraction: float = 0.0,
-                              window_size: Optional[float] = None, step: Optional[float] = None,
+                              span: Optional[float] = None, step: Optional[float] = None,
                               leak_check_label: str = "") -> Tuple[np.ndarray, np.ndarray]:
         n_test = int(n * (1 - frac))
         if n_test == 0:
@@ -1463,8 +1450,8 @@ class Trainer:
         ])
 
         gap_size = int(round(gap_fraction * block)) if block > 0 else 0
-        if window_size is not None and step is not None:
-            warn_if_blocked_split_leaks(gap_size, block, step, window_size, gap_fraction,
+        if span is not None and step is not None:
+            warn_if_blocked_split_leaks(gap_size, block, step, span, gap_fraction,
                                         path_label=leak_check_label)
         if gap_size > 0:
             gap_idx = set()

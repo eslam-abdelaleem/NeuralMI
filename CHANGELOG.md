@@ -150,6 +150,31 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Whether rows are in time order was decided in six places from different
+  signals, and rows built by offset (active information storage, predictive
+  and cross-predictive information, `mi_rate`, instantaneous exchange, the
+  directed information rate) triggered none of them. Their blocked split never
+  checked for shared samples, a random split of them did not warn, a block
+  shuffle moved them one row at a time, and `rigorous=True` cut them into
+  chunks in a random order, so each chunk's blocked split was random over rows
+  that share almost all their samples. Whatever builds rows now records their
+  geometry once (`neural_mi/data/rows.py`): `row_step`, the distance between
+  the starts of consecutive rows, and `row_span`, the stretch one row covers.
+  The processors record their windows, the named quantities the rows they
+  slice (built on the grid's own windows under `processing=`), and transfer
+  entropy its histories, whose span now includes the predicted step. The
+  blocked split's leak check, a new warning for a random split of rows that
+  share samples, the split `mode='dimensionality'` shares across its fits, the
+  rigorous chunks and the block shuffle's block length read that record. The
+  two rigorous paths cut their chunks with one chunker, and the scalar path
+  now warns about chunks too small to fill an evaluation batch as the other
+  did. `Rigorous(temporal_chunking=False)` on a recording each chunk windows for
+  itself, which cannot be permuted, now raises instead of cutting each chunk
+  as the range between two windows drawn at random. `runs` reports `row_step` and `row_span` in place of
+  `leak_check_step` and `leak_check_window_size`, and the schema no longer
+  lists a `temporal_chunking` for conditional MI, transfer entropy and
+  interaction information, which no config could set.
+
 - A quantity combined from separately trained networks (conditional MI,
   transfer entropy and the quantities built on them, such as `mi_rate`, and
   interaction information) read each term at its reported value, which is 0

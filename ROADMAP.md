@@ -11,36 +11,6 @@ answers: exact Gaussian values for a smooth two-process model (a shared damped
 oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. Values are in nats unless marked as bits.
 
-### C2. One record of the rows' geometry
-
-**Now.** Whether rows form a time series is decided in six places from
-different signals (`run.py`, `shift_windowing.py`, `transfer.py`, two places in
-`rigorous.py`, `trainer.py`). Rows built by offset (active information storage,
-predictive and cross-predictive information, `mi_rate`, instantaneous exchange,
-the directed information rate) trigger none of them. With `rigorous=True` those
-rows are chunked in a random permutation (`chunking_mode='permuted'` for
-`mi_rate`, `directed_information_rate` and `active_information_storage`;
-`'contiguous'` for `transfer_entropy`), so each chunk's blocked split is random
-over rows that share almost all their samples. The blocked-split leak check
-never runs for them, since only the processors and transfer entropy pass their
-window geometry. `Conditional` has no `temporal_chunking` field, and
-`quantities._difference_fit` refuses `Rigorous(temporal_chunking=...)` with a
-message saying difference quantities already chunk contiguously. Rigorous
-chunking is written twice (`AnalysisWorkflow._prepare_tasks` and
-`run_rigorous_scalar_analysis`).
-
-**Fix.** Every builder of rows (the processors, the offset builder, transfer
-entropy) records whether its rows are in time order, the step between rows and
-the span of samples a row covers. The leak check, rigorous chunking, the choice
-of evaluation rows, the permutation block length, window shifting (C12) and the
-one-step check (C3) read that record. One chunker serves both rigorous paths.
-The `temporal_chunking` entries the schema keeps for conditional, transfer and
-interaction, which no config can set, go.
-
-**Verification.** For every temporal quantity, contiguous rigorous chunks, and a
-leak warning on a recording short enough for the gap to fall inside a row's
-span.
-
 ### C3. One offset builder and one path for `processing=`
 
 **Now.** Six hand-written builders (`build_past_future`, `build_cross_offset`,
@@ -54,7 +24,9 @@ transfer entropy requires rows one step wide. With overlapping windows
 (`window_size=10`, `step_size=2`) `mi_rate` puts 8 of the 10 samples of Y_0 into
 its own conditioning set. On spike data in 10 ms windows,
 `instantaneous_exchange(k=0)` keeps silent windows (5,992 rows) and
-`instantaneous_mi` drops them (51 rows), although both compute I(X_0; Y_0).
+`instantaneous_mi` drops them (51 rows), although both compute I(X_0; Y_0). At
+`k=0`, `instantaneous_exchange` and `directed_information_rate` ignore
+`stride`.
 
 **Fix.** Every named quantity defined by time offsets, `instantaneous_mi`
 included, builds its rows through `build_offset_arrays` and takes `processing=`
@@ -205,7 +177,8 @@ warnings name it when it is small.
 but never the offset quantities on the same data.
 
 **Fix.** Shifting applies wherever rows thin a series (a step or stride above
-one sample) and nowhere else, read from the row geometry (C2).
+one sample) and nowhere else, read from the rows' recorded geometry
+(`neural_mi/data/rows.py`).
 
 ### C13. Small duplicates
 

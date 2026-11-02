@@ -95,14 +95,21 @@ def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int)
     if existing_train is not None:
         return existing_train, analysis_params.get('test_indices')
 
+    from neural_mi.data.rows import row_geometry
     from neural_mi.training.trainer import Trainer
+    from neural_mi.utils import warn_if_random_split_leaks
     split_mode = analysis_params.get('split_mode', 'blocked')
     train_fraction = analysis_params.get('train_fraction', 0.9)
+    rows = row_geometry(analysis_params)
     if split_mode == 'random':
+        if rows is not None and rows.overlapping:
+            warn_if_random_split_leaks(rows)
         return Trainer._create_random_split(None, n_samples, train_fraction)
     n_test_blocks = analysis_params.get('n_test_blocks', 5)
     gap_fraction = analysis_params.get('split_gap_fraction', 0.5)
-    return Trainer._create_blocked_split(None, n_samples, train_fraction, n_test_blocks, gap_fraction)
+    geometry = {'span': rows.span, 'step': rows.step} if rows is not None else {}
+    return Trainer._create_blocked_split(None, n_samples, train_fraction, n_test_blocks, gap_fraction,
+                                         **geometry)
 
 
 def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,

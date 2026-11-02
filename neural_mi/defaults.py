@@ -211,8 +211,8 @@ MODE_KWARGS_SCHEMA = {
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
         'leverage_threshold': {'type': float, 'default': 0.20},
-        # None = auto-detect from leak_check_window_size (set exactly when a
-        # windowed processor was used); True/False overrides the detector.
+        # None: contiguous chunks for rows recorded in time order
+        # (neural_mi/data/rows.py), permuted otherwise; True/False overrides.
         'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'lag': {
@@ -240,7 +240,6 @@ MODE_KWARGS_SCHEMA = {
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
         'leverage_threshold': {'type': float, 'default': 0.20},
-        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'transfer': {
         'n_workers': {'type': int, 'default': 1},
@@ -251,12 +250,6 @@ MODE_KWARGS_SCHEMA = {
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
         'leverage_threshold': {'type': float, 'default': 0.20},
-        # Transfer entropy is unconditionally temporal (built from
-        # unfold-based history windows); run.py always forces this True for
-        # the transfer path regardless of what's passed here -- exposed in
-        # the schema for consistency/validation, not because it's meant to
-        # be overridden per-call.
-        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'interaction': {
         'n_workers': {'type': int, 'default': 1},
@@ -267,7 +260,6 @@ MODE_KWARGS_SCHEMA = {
         'confidence_level': {'type': float, 'default': 0.68},
         'residual_threshold': {'type': float, 'default': 2.5},
         'leverage_threshold': {'type': float, 'default': 0.20},
-        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
     },
     'pairwise': {
         'n_workers': {'type': int, 'default': 1},

@@ -28,6 +28,7 @@ from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.exceptions import CombinationWarning, InsufficientDataError, TrainingError
 from neural_mi.utils import _ensure_cpu
+from neural_mi.data.rows import rows_in_time
 from neural_mi.data.shift_windowing import (
     n_windows_if_deferred, shift_family, chunk_window_range_to_raw, seconds_to_samples,
     spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
@@ -535,6 +536,141 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
 # AnalysisWorkflow class
 # ---------------------------------------------------------------------------
 
+class _Chunker:
+    """The data of a rigorous call cut into the chunks of its gamma ladder, the one way both rigorous
+    paths cut them (``AnalysisWorkflow._prepare_tasks`` and :func:`run_rigorous_scalar_analysis`).
+
+    At each gamma one ordering of the rows is split into gamma equal chunks, so
+    the chunks at gamma=2 are halves of the data at gamma=1, and every gamma
+    sees the same data at a different size. Rows in time order are cut into
+    contiguous stretches: a blocked split inside a chunk takes contiguous blocks
+    of the order it receives, and a chunk of shuffled rows would make those
+    blocks random in time, the leak the blocked split is there to prevent. Rows
+    in time order are those whose builder recorded their geometry
+    (:mod:`neural_mi.data.rows`), and the raw series and spike populations a
+    chunk's task windows for itself. Other rows are cut in a random order,
+    which keeps each chunk representative of the whole when rows are
+    independent. ``temporal_chunking`` overrides the choice for rows that exist
+    already. Contiguous chunks trade that representativeness for time order:
+    on a process that drifts, chunks at high gamma sample different stretches,
+    which ``per_gamma_train_mi_spread`` shows.
+
+    ``deferred`` says that the caller hands over raw data that each chunk's task
+    windows: a spike population (cut to a time range) or a raw series on a
+    regular grid under ``shift_windows`` (cut to a sample range, per side).
+    """
+
+    def __init__(self, x_data, y_data, params: Dict[str, Any], *, deferred: bool,
+                 temporal_chunking: Optional[bool] = None):
+        proc_x = params.get('processor_type_x')
+        proc_y = params.get('processor_type_y') or proc_x
+        family = shift_family(proc_x, proc_y)
+        self.spike = bool(deferred and isinstance(x_data, list) and family == 'spike')
+        self.raw = bool(deferred and not self.spike and getattr(x_data, 'ndim', None) == 2
+                        and params.get('shift_windows') and family == 'regular')
+        if self.spike:
+            self.n, self._t_start, self._window, self._step = spike_shift_grid_info(x_data, y_data, params)
+        elif self.raw:
+            self.n = n_windows_if_deferred(x_data, y_data, params)
+            # Per-side window and step in raw samples, fixed for the whole call:
+            # a processor parameter in the grid runs one setting per call
+            # (run._run_processor_grid).
+            side_x = params.get('processor_params_x') or {}
+            side_y = params.get('processor_params_y') or side_x
+            window = side_x.get('window_size')
+            step = resolve_step_size(window, side_x.get('step_size'))
+            self._samples = {}
+            for side, side_params in (('x', side_x), ('y', side_y)):
+                period = 1.0 / side_params['sample_rate'] if side_params.get('sample_rate') else 1.0
+                self._samples[side] = (seconds_to_samples(window, period), seconds_to_samples(step, period))
+        else:
+            self.n = x_data.shape[0] if hasattr(x_data, 'shape') else len(x_data)
+        in_time = rows_in_time(params) or self.raw or self.spike
+        if (self.raw or self.spike) and temporal_chunking is False:
+            raise ValueError(
+                "Rigorous(temporal_chunking=False) cannot apply here: each chunk's task windows a raw "
+                "recording for itself, and a chunk of a recording is a stretch of it. Leave "
+                "temporal_chunking unset."
+            )
+        self.contiguous = in_time if temporal_chunking is None else bool(temporal_chunking)
+        self.mode = 'contiguous' if self.contiguous else 'permuted'
+        self.reorder()
+
+    def reorder(self) -> None:
+        """Draw the ordering the chunks are cut from: time order, or a new random permutation."""
+        self.order = np.arange(self.n) if self.contiguous else np.random.permutation(self.n)
+
+    def chunks(self, gamma: int) -> List[np.ndarray]:
+        """The row indices of each chunk at ``gamma``."""
+        return np.array_split(self.order, gamma)
+
+    def cut(self, chunk: np.ndarray, arrays: Dict[str, Any],
+            params: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """``arrays`` cut to one chunk, and the params its task runs with.
+
+        ``arrays`` holds ``'x'``, ``'y'`` and any extra array (W, a conditioning
+        set) by name. Every array but Y is cut with X's range, since an extra
+        array shares X's grid. A chunk of a spike population carries its own
+        time span in the params, which is never the caller's dict.
+        """
+        if self.spike:
+            # The chunk's window range becomes a time range with a margin of
+            # 2 * window_size for the shifts (chunk_window_range_to_time), and
+            # each spike list is sliced to it and re-zeroed. The streams share
+            # one grid, so every one uses the same range. The chunk's dataset
+            # spans [0, span), the span that function assumed, and not the
+            # narrower extent of wherever its spikes fall.
+            lo, hi = int(chunk[0]), int(chunk[-1]) + 1
+            t0, t1 = chunk_window_range_to_time(lo, hi, self._window, self._step)
+            start, end = self._t_start + t0, self._t_start + t1
+            cut = {name: slice_spike_data_to_time_range(data, start, end) for name, data in arrays.items()}
+            params = {**params, 'processor_params_x': {**(params.get('processor_params_x') or {}),
+                                                       't_start': 0.0, 't_end': t1 - t0}}
+            return cut, params
+        if self.raw:
+            # A contiguous window-index range becomes the raw sample range that
+            # reproduces exactly that many windows under any per-epoch shift.
+            lo, hi = int(chunk[0]), int(chunk[-1]) + 1
+            ranges = {side: chunk_window_range_to_raw(lo, hi, *self._samples[side]) for side in ('x', 'y')}
+            cut = {}
+            for name, data in arrays.items():
+                r0, r1 = ranges['y' if name == 'y' else 'x']
+                cut[name] = _ensure_cpu(data[r0:r1])
+            return cut, params
+        return {name: _ensure_cpu(data[chunk]) for name, data in arrays.items()}, params
+
+
+def _warn_if_chunks_small(gamma: int, chunks: List[np.ndarray], params: Dict[str, Any]) -> None:
+    """Warn when the smallest chunk at ``gamma`` cannot fill one evaluation batch with its held-out rows.
+
+    Not a gate. The line is where a chunk's held-out partition no longer fills
+    a single evaluation batch, below which a chunk's value stops measuring
+    anything. ``Training(min_reliable_samples=...)`` moves it. A nonparametric
+    estimator holds nothing out, so the line does not apply to it.
+    """
+    if params.get('estimator_name') in NONPARAMETRIC:
+        return
+    smallest = min(len(c) for c in chunks)
+    line = params.get('min_reliable_samples')
+    if line is None:
+        held_out = max(1.0 - float(params.get('train_fraction', 0.9)), 1e-6)
+        line = int(np.ceil(params.get('batch_size', 128) / held_out))
+    if smallest < line:
+        warnings.warn(
+            f"gamma={gamma}: the smallest data subset has {smallest} "
+            f"samples. Below about {line} the held-out partition "
+            f"of a chunk cannot fill one evaluation batch "
+            f"(batch_size={params.get('batch_size', 128)}, "
+            f"train_fraction={params.get('train_fraction', 0.9)}). "
+            f"MI values from chunks this small are dominated by noise. A "
+            f"straight line through noisy rungs still looks straight and the "
+            f"linearity check cannot catch it. Use a smaller gamma_range or "
+            f"more data. Set Training(min_reliable_samples=...) to move this "
+            f"line.",
+            UserWarning, stacklevel=user_stacklevel()
+        )
+
+
 class AnalysisWorkflow:
     """Orchestrates the rigorous, multi-step analysis for bias correction."""
 
@@ -587,10 +723,9 @@ class AnalysisWorkflow:
         n_workers : int, optional
             The number of worker processes to use. Defaults to 1.
         temporal_chunking : bool, optional
-            Controls how the gamma-chunk subsampling orders data (see
-            ``_prepare_tasks`` for the full rationale). ``None`` (default)
-            auto-detects from ``base_params['leak_check_window_size']``;
-            pass ``True``/``False`` to override.
+            Contiguous (``True``) or permuted (``False``) chunks, overriding
+            the choice :class:`_Chunker` makes from the rows' recorded
+            geometry. ``None`` (default) leaves the choice to it.
         **kwargs : Dict[str, Any]
             Additional keyword arguments for the bias correction, such as
             ``curvature_t_threshold``, ``min_gamma_points``, ``confidence_level``,
@@ -666,43 +801,12 @@ class AnalysisWorkflow:
 
     def _prepare_tasks(self, param_grid: Optional[Dict[str, List]], gamma_range,
                        temporal_chunking: Optional[bool] = None) -> List[tuple]:
-        """Prepares tasks using a hierarchical master-ordering subsampling strategy.
+        """One training task per chunk of the gamma ladder, for every configuration of ``param_grid``.
 
-        Generate one master ordering at the start.  For each gamma G, split
-        the master ordering into G equal chunks.  This ensures:
-
-        - The gamma=2 subsets are literally halves of the gamma=1 dataset.
-        - Each gamma level sees a consistent view of the data, only varying in N.
-        - The linear fit extrapolates pure N-dependent bias, not noise variation.
-
-        The master ordering is either a random permutation or the identity
-        (contiguous, time-order-preserving) ordering, chosen by
-        ``temporal_chunking``:
-
-        - ``None`` (default): auto-detect from ``leak_check_window_size`` in
-          ``base_params`` (set exactly when a windowed processor built the
-          data, see ``run.py``). Present -> contiguous. Absent -> permuted,
-          correct for i.i.d. data.
-        - ``True`` / ``False``: explicit override.
-
-        **Why the default depends on the processor.** A random permutation is the
-        right choice for i.i.d. data. It doesn't matter what order rows appear in, and it
-        keeps each gamma-chunk representative of the whole dataset. But for
-        temporal data, ``Trainer._create_blocked_split`` takes *contiguous
-        index blocks* of whatever ordering it receives to form the train/test
-        split. A shuffled ordering makes those blocks random in time on
-        autocorrelated data, exactly the leakage ``split_mode='blocked'``
-        exists to prevent, reintroduced inside every rung of the bias-
-        correction ladder. Contiguous chunks keep each chunk's rows in time
-        order, so the blocked split within a chunk means what it's supposed
-        to.
-
-        **A trade-off and not a strict improvement.** Random chunks each spanned
-        the whole recording, averaging over any non-stationarity. Contiguous
-        chunks do not, at high gamma, each chunk is a short segment, and if
-        the underlying process drifts, different chunks sample different
-        regimes. Watch ``per_gamma_train_mi_spread`` in the result details:
-        large spread at high gamma is exactly this showing up.
+        :class:`_Chunker` cuts the chunks, as it does for
+        :func:`run_rigorous_scalar_analysis`: contiguous for rows in time order,
+        permuted otherwise, and ``temporal_chunking`` overrides that. Each
+        configuration draws its own ordering.
         """
         tasks = []
         run_id_base = str(uuid.uuid4())
@@ -713,133 +817,32 @@ class AnalysisWorkflow:
         keys, values = zip(*param_grid.items()) if param_grid else ([], [])
         param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if param_grid else [{}]
 
-        # Raw (2-D), unwindowed data (shift_windows reachability): windowing
-        # hasn't happened yet, so `leak_check_window_size` (normally set by
-        # run.py's eager windowing) isn't present yet either -- this data is
-        # temporal regardless, and N must be the shift-invariant window
-        # count, not a raw sample count.
-        _proc_x = self.base_params.get('processor_type_x')
-        _proc_y = self.base_params.get('processor_type_y') or _proc_x
-        # hasattr guards against spike data (a ragged per-neuron spike-time
-        # list, no .ndim) -- only reachable when _is_spike_deferred below.
-        _is_raw_deferred = (hasattr(self.x_data, 'ndim') and self.x_data.ndim == 2
-                            and self.base_params.get('shift_windows')
-                            and shift_family(_proc_x, _proc_y) == 'regular')
-        # Raw spike data under shift_time: a ragged per-neuron list of spike
-        # times, with no .ndim.
-        _is_spike_deferred = (isinstance(self.x_data, list) and self.base_params.get('shift_time')
-                              and shift_family(_proc_x, _proc_y) == 'spike')
-        if _is_spike_deferred:
-            N, _spike_base_t_start, _spike_window_size, _spike_step_size = spike_shift_grid_info(
-                self.x_data, self.y_data, self.base_params)
-        else:
-            N = n_windows_if_deferred(self.x_data, self.y_data, self.base_params)
-
-        is_temporal = (temporal_chunking if temporal_chunking is not None
-                      else (self.base_params.get('leak_check_window_size') is not None
-                            or _is_raw_deferred or _is_spike_deferred))
-        self.resolved_chunking_mode = 'contiguous' if is_temporal else 'permuted'
-
-        if _is_raw_deferred:
-            # Per-side window_size and step_size in raw samples, fixed for
-            # the whole call: a processor parameter in the grid runs one
-            # setting per call (run._run_processor_grid).
-            _wp_x = self.base_params.get('processor_params_x') or {}
-            _wp_y = self.base_params.get('processor_params_y') or _wp_x
-            _window_size = _wp_x.get('window_size')
-            _step_size = resolve_step_size(_window_size, _wp_x.get('step_size'))
-            _period_x = 1.0 / _wp_x['sample_rate'] if _wp_x.get('sample_rate') else 1.0
-            _period_y = 1.0 / _wp_y['sample_rate'] if _wp_y.get('sample_rate') else 1.0
-            _window_size_x = seconds_to_samples(_window_size, _period_x)
-            _step_size_x = seconds_to_samples(_step_size, _period_x)
-            _window_size_y = seconds_to_samples(_window_size, _period_y)
-            _step_size_y = seconds_to_samples(_step_size, _period_y)
+        # Raw data reach this path only when each chunk's task windows them:
+        # a spike population under shift_time, a raw series under
+        # shift_windows. run.py windows everything else once.
+        chunker = _Chunker(self.x_data, self.y_data, self.base_params, deferred=True,
+                           temporal_chunking=temporal_chunking)
+        self.resolved_chunking_mode = chunker.mode
 
         for i_combo, params in enumerate(param_combinations):
             current_params = {**self.base_params, **params}
-
-            master_permutation = np.arange(N) if is_temporal else np.random.permutation(N)
-
+            chunker.reorder()
             for gamma in gamma_range:
                 current_params['gamma'] = gamma
-
-                # Split the master permutation into gamma equal chunks.
-                # np.array_split handles uneven divisions gracefully.
-                chunks = np.array_split(master_permutation, gamma)
-
-                min_chunk_size = min(len(c) for c in chunks)
-                # Not a hard threshold and deliberately not a gate.  The line is
-                # placed where a chunk's held-out partition can no longer fill a
-                # single evaluation batch, which is the point below which a
-                # per-chunk MI value stops being a measurement of anything.
-                # Move it with Training(min_reliable_samples=...). A nonparametric
-                # estimator holds nothing out, so the line does not apply to it.
-                min_reliable_samples = current_params.get('min_reliable_samples')
-                if min_reliable_samples is None:
-                    _bs = current_params.get('batch_size', 128)
-                    _train_frac = current_params.get('train_fraction', 0.9)
-                    _held_out = max(1.0 - float(_train_frac), 1e-6)
-                    min_reliable_samples = int(np.ceil(_bs / _held_out))
-                if (min_chunk_size < min_reliable_samples
-                        and current_params.get('estimator_name') not in NONPARAMETRIC):
-                    warnings.warn(
-                        f"gamma={gamma}: the smallest data subset has {min_chunk_size} "
-                        f"samples. Below about {min_reliable_samples} the held-out partition "
-                        f"of a chunk cannot fill one evaluation batch "
-                        f"(batch_size={current_params.get('batch_size', 128)}, "
-                        f"train_fraction={current_params.get('train_fraction', 0.9)}). "
-                        f"MI values from chunks this small are dominated by noise. A "
-                        f"straight line through noisy rungs still looks straight and the "
-                        f"linearity check cannot catch it. Use a smaller gamma_range or "
-                        f"more data. Set Training(min_reliable_samples=...) to move this "
-                        f"line.",
-                        UserWarning, stacklevel=user_stacklevel()
-                    )
-
+                chunks = chunker.chunks(gamma)
+                _warn_if_chunks_small(gamma, chunks, current_params)
                 for i_subset, subset_indices in enumerate(chunks):
-                    if _is_raw_deferred:
-                        # subset_indices is a contiguous window-index range
-                        # (guaranteed by master_permutation = np.arange(N)
-                        # for is_temporal=True); translate to the raw
-                        # sample range that reproduces exactly this many
-                        # windows under any per-epoch shift.
-                        lo, hi = int(subset_indices[0]), int(subset_indices[-1]) + 1
-                        rx0, rx1 = chunk_window_range_to_raw(lo, hi, _window_size_x, _step_size_x)
-                        ry0, ry1 = chunk_window_range_to_raw(lo, hi, _window_size_y, _step_size_y)
-                        x_subset = _ensure_cpu(self.x_data[rx0:rx1])
-                        y_subset = _ensure_cpu(self.y_data[ry0:ry1])
-                    elif _is_spike_deferred:
-                        # The chunk's window range becomes a time range
-                        # (chunk_window_range_to_time, which keeps a margin
-                        # of 2 * window_size for the shifts), and each spike
-                        # list is sliced to it and re-zeroed. X and Y share
-                        # one grid, so both use the same range.
-                        lo, hi = int(subset_indices[0]), int(subset_indices[-1]) + 1
-                        t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, _spike_window_size, _spike_step_size)
-                        chunk_span = t1_rel - t0_rel
-                        t0_abs = _spike_base_t_start + t0_rel
-                        t1_abs = _spike_base_t_start + t1_rel
-                        x_subset = slice_spike_data_to_time_range(self.x_data, t0_abs, t1_abs)
-                        y_subset = slice_spike_data_to_time_range(self.y_data, t0_abs, t1_abs)
-                        # The chunk's dataset spans [0, chunk_span), the span
-                        # chunk_window_range_to_time assumed, and not the
-                        # narrower extent of wherever its spikes fall.
-                        current_params['processor_params_x'] = {
-                            **(current_params.get('processor_params_x') or {}),
-                            't_start': 0.0, 't_end': chunk_span,
-                        }
-                    else:
-                        x_subset = _ensure_cpu(self.x_data[subset_indices])
-                        y_subset = _ensure_cpu(self.y_data[subset_indices])
+                    cut, chunk_params = chunker.cut(subset_indices, {'x': self.x_data, 'y': self.y_data},
+                                                    current_params)
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
                     # Purely deterministic per-task key for run_training_task's seeding
                     # (see task.py) -- unlike task_run_id above, excludes the random
                     # run_id_base prefix so a fixed random_seed reproduces the same
                     # task_seed (and result) on every call.
-                    current_params['_seed_key'] = f"c{i_combo}_g{gamma}_s{i_subset}"
-                    current_params['chunk'] = i_subset
-                    task_params = with_model_labels(current_params, **params, gamma=gamma, chunk=i_subset)
-                    tasks.append((x_subset, y_subset, task_params.copy(), task_run_id))
+                    chunk_params = {**chunk_params, '_seed_key': f"c{i_combo}_g{gamma}_s{i_subset}",
+                                    'chunk': i_subset}
+                    task_params = with_model_labels(chunk_params, **params, gamma=gamma, chunk=i_subset)
+                    tasks.append((cut['x'], cut['y'], task_params.copy(), task_run_id))
 
         self.n_tasks_created = len(tasks)
         logger.info(
@@ -1007,20 +1010,17 @@ def run_rigorous_scalar_analysis(
         Passed to ``_compute_fit_diagnostics``.  Defaults to ``2.5``.
     leverage_threshold : float, optional
         Passed to ``_compute_fit_diagnostics``.  Defaults to ``0.20``.
+    temporal_chunking : bool, optional
+        Contiguous (``True``) or permuted (``False``) chunks, overriding the
+        choice :class:`_Chunker` makes from the rows' recorded geometry.
     raw_deferred : bool, optional
         ``True`` when ``x_data``/``y_data`` (and every array in
-        ``extra_data``) are raw, unwindowed 2-D arrays and this call should
-        reproduce ``AnalysisWorkflow._prepare_tasks``'s
-        ``shift_windows``-reachability chunk-to-raw-sample-range
-        translation (mirrored here as its own ``_is_raw_deferred`` check).
-        Set explicitly by the caller (``run.py``'s
-        ``_defer_for_conditional_interaction``) instead of inferred from
-        ``base_params`` alone. This helper is shared with
-        ``mode='transfer'``'s rigorous dispatch, whose own 2-D
-        ``x_data``/``y_data`` are raw for an unrelated reason (built via a
-        stride-1 ``unfold`` internally, deliberately excluded from both
-        shift mechanisms) and must never be reinterpreted as
-        window-size/step_size-chunkable data. Defaults to ``False``.
+        ``extra_data``) are raw data that each chunk's task windows, so a chunk
+        is a range of samples or of time (:class:`_Chunker`). Set by the caller
+        (``run.py``'s ``_defer_for_conditional_interaction``) and not inferred
+        from ``base_params``: ``mode='transfer'`` passes raw 2-D series as well,
+        which its histories are built from and which are never windowed.
+        Defaults to ``False``.
 
     Returns
     -------
@@ -1059,118 +1059,23 @@ def run_rigorous_scalar_analysis(
         If fewer than ``min_gamma_points`` rows are collected across all gamma
         values (i.e. almost every ``scalar_fn`` call failed).
     """
-    # Raw (2-D) X and Y windowed inside each task, as in
-    # AnalysisWorkflow._prepare_tasks: N is the window count, not the sample
-    # count. Gated on the explicit raw_deferred flag because mode='transfer'
-    # also passes raw 2-D series here, which are histories and not for
-    # windowing.
-    _proc_x = base_params.get('processor_type_x')
-    _proc_y = base_params.get('processor_type_y') or _proc_x
-    _is_raw_deferred = (raw_deferred and hasattr(x_data, 'ndim') and x_data.ndim == 2
-                        and base_params.get('shift_windows') and shift_family(_proc_x, _proc_y) == 'regular')
-    # The spike case: X is a list of spike times. It is not gated on
-    # shift_time, because run.py windows a spike X and spike W inside the task
-    # whether or not they shift.
-    _is_spike_deferred = (raw_deferred and isinstance(x_data, list)
-                          and shift_family(_proc_x, _proc_y) == 'spike')
-    if _is_spike_deferred:
-        N, _spike_base_t_start, _spike_window_size, _spike_step_size = spike_shift_grid_info(
-            x_data, y_data, base_params)
-    elif _is_raw_deferred:
-        N = n_windows_if_deferred(x_data, y_data, base_params)
-    else:
-        N = x_data.shape[0]
-    # As in AnalysisWorkflow._prepare_tasks, i.i.d. samples are chunked in a
-    # random order and a time series contiguously. Transfer entropy is always
-    # a time series, and run.py says so with temporal_chunking=True, since its
-    # window geometry is only set inside each chunk's call.
-    is_temporal = (temporal_chunking if temporal_chunking is not None
-                   else (base_params.get('leak_check_window_size') is not None
-                         or _is_raw_deferred or _is_spike_deferred))
-    resolved_chunking_mode = 'contiguous' if is_temporal else 'permuted'
-    master_perm = np.arange(N) if is_temporal else np.random.permutation(N)
-
-    if _is_raw_deferred:
-        # Per-side window_size and step_size in raw samples, as in
-        # AnalysisWorkflow._prepare_tasks. The extra arrays (W) are cut with
-        # X's, since conditional.py and interaction.py concatenate W onto X
-        # before windowing and run.py refuses a W with a window of its own on
-        # this path.
-        _wp_x = base_params.get('processor_params_x') or {}
-        _wp_y = base_params.get('processor_params_y') or _wp_x
-        _window_size = _wp_x.get('window_size')
-        _step_size = resolve_step_size(_window_size, _wp_x.get('step_size'))
-        _period_x = 1.0 / _wp_x['sample_rate'] if _wp_x.get('sample_rate') else 1.0
-        _period_y = 1.0 / _wp_y['sample_rate'] if _wp_y.get('sample_rate') else 1.0
-        _window_size_x = seconds_to_samples(_window_size, _period_x)
-        _step_size_x = seconds_to_samples(_step_size, _period_x)
-        _window_size_y = seconds_to_samples(_window_size, _period_y)
-        _step_size_y = seconds_to_samples(_step_size, _period_y)
+    # raw_deferred: X, Y and the extra arrays are raw and each chunk's task
+    # windows them. mode='transfer' passes raw 2-D series too, which are its
+    # histories' source and never windowed, so this is the caller's word and
+    # not inferred.
+    chunker = _Chunker(x_data, y_data, base_params, deferred=raw_deferred,
+                       temporal_chunking=temporal_chunking)
+    resolved_chunking_mode = chunker.mode
 
     tasks = []
     for gamma in gamma_range:
-        chunks = np.array_split(master_perm, gamma)
+        chunks = chunker.chunks(gamma)
+        _warn_if_chunks_small(gamma, chunks, base_params)
         for chunk, chunk_idx in enumerate(chunks):
-            if _is_spike_deferred:
-                # Same idea as _is_raw_deferred, but the chunk-index ->
-                # raw-range translation lands in a raw *time* range
-                # (chunk_window_range_to_time -- the 2*window_size margin
-                # matching PairedTemporalDataset._reserve_shift_margin, not
-                # chunk_window_range_to_raw's window_size-1 one) instead of
-                # a raw sample range, and the "raw" data is a ragged
-                # per-neuron spike-time list sliced+re-zeroed instead of
-                # tensor-sliced. X and the conditioning variable share one
-                # window grid here (spike/spike, no per-side sample-rate
-                # conversion), so both use the same time range -- extra_data
-                # (w_data/c_data) is translated the same way.
-                lo, hi = int(chunk_idx[0]), int(chunk_idx[-1]) + 1
-                t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, _spike_window_size, _spike_step_size)
-                chunk_span = t1_rel - t0_rel
-                t0_abs = _spike_base_t_start + t0_rel
-                t1_abs = _spike_base_t_start + t1_rel
-                x_sub = slice_spike_data_to_time_range(x_data, t0_abs, t1_abs)
-                y_sub = slice_spike_data_to_time_range(y_data, t0_abs, t1_abs)
-                extra_sub = {}
-                if extra_data:
-                    for key, arr in extra_data.items():
-                        extra_sub[key] = slice_spike_data_to_time_range(arr, t0_abs, t1_abs)
-                # Force this chunk's own PairedTemporalDataset to treat
-                # [0, chunk_span) as its full base span (exactly what
-                # chunk_window_range_to_time assumed), instead of deriving a
-                # shorter, data-dependent extent from wherever this slice's
-                # actual spikes happen to fall. A fresh dict per chunk (not
-                # a reassignment of the shared base_params) so this doesn't
-                # leak between iterations.
-                _task_base_params = {**base_params, 'processor_params_x': {
-                    **(base_params.get('processor_params_x') or {}),
-                    't_start': 0.0, 't_end': chunk_span,
-                }}
-            elif _is_raw_deferred:
-                # chunk_idx is a contiguous window-index range (guaranteed by
-                # master_perm = np.arange(N) for is_temporal=True); translate
-                # to the raw sample range reproducing exactly this many
-                # windows under any per-epoch shift.
-                lo, hi = int(chunk_idx[0]), int(chunk_idx[-1]) + 1
-                rx0, rx1 = chunk_window_range_to_raw(lo, hi, _window_size_x, _step_size_x)
-                ry0, ry1 = chunk_window_range_to_raw(lo, hi, _window_size_y, _step_size_y)
-                x_sub = _ensure_cpu(x_data[rx0:rx1])
-                y_sub = _ensure_cpu(y_data[ry0:ry1])
-                extra_sub = {}
-                if extra_data:
-                    for key, arr in extra_data.items():
-                        extra_sub[key] = _ensure_cpu(arr[rx0:rx1])
-                _task_base_params = base_params
-            else:
-                x_sub = _ensure_cpu(x_data[chunk_idx])
-                y_sub = _ensure_cpu(y_data[chunk_idx])
-
-                extra_sub = {}
-                if extra_data:
-                    for key, arr in extra_data.items():
-                        extra_sub[key] = _ensure_cpu(arr[chunk_idx])
-                _task_base_params = base_params
-
-            tasks.append((scalar_fn, x_sub, y_sub, _task_base_params.copy(),
+            cut, task_base_params = chunker.cut(chunk_idx, {'x': x_data, 'y': y_data, **(extra_data or {})},
+                                                base_params)
+            extra_sub = {key: cut[key] for key in (extra_data or {})}
+            tasks.append((scalar_fn, cut['x'], cut['y'], dict(task_base_params),
                          extra_sub, extra_kwargs, gamma, chunk, len(chunk_idx)))
 
     show_progress = base_params.get('show_progress', True)

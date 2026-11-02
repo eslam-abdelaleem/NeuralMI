@@ -1018,36 +1018,46 @@ def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[s
 
 
 def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
-                                 window_size: float, gap_fraction: float,
+                                 span: float, gap_fraction: float,
                                  path_label: str = "") -> bool:
-    """Warn if a blocked train/test split's gap doesn't fully separate windows in time.
+    """Warn if a blocked train/test split's gap doesn't fully separate rows in time.
 
-    ``gap_size`` (a count of *windows* excluded on each side of a test block,
-    already computed by the caller) buys a time-domain buffer of
-    ``gap_size * step``. With overlapping windows (``step < window_size``) that
-    buffer can be shorter than a single window, in which case a train window and
-    a test window can share raw samples even though their *indices* don't
-    overlap, a leakage channel distinct from (and not caught by) the index
-    split itself. Shared with the transfer-entropy path (``step=1``,
-    ``window_size=history_window`` there), which builds windows via ``unfold``
-    and bypasses ``WindowManager`` entirely.
+    ``gap_size`` (a count of *rows* excluded on each side of a test block,
+    already computed by the caller) buys a stretch of time ``gap_size * step``,
+    where ``step`` is the distance between the starts of consecutive rows and
+    ``span`` the stretch one row covers (:mod:`neural_mi.data.rows`). When rows
+    overlap and the buffer is shorter than a row, a training row and a held-out
+    row can share samples although their indices do not.
 
-    Returns True if a leak was detected (and a warning logged), else False.
+    Returns True if a leak was detected (and a warning raised), else False.
     """
-    if step <= 0 or window_size <= 0:
+    if step <= 0 or span <= 0:
         return False
     buffer = gap_size * step
-    if buffer >= window_size:
+    if buffer >= span:
         return False
-    min_gap_fraction = (window_size / (block * step)) if (block > 0 and step > 0) else float('inf')
+    min_gap_fraction = (span / (block * step)) if (block > 0 and step > 0) else float('inf')
     _where = f" ({path_label})" if path_label else ""
     warnings.warn(
-        f"Blocked split may leak raw samples between train and test{_where}. "
-        f"gap_size={gap_size} windows x step={step} gives {buffer:.3g} samples of "
-        f"buffer against a window_size of {window_size}. Train and test windows can "
-        f"share up to {window_size - buffer:.3g} samples. Increase "
-        f"Split(gap_fraction=...) to at least {min_gap_fraction:.4f} "
-        f"(currently {gap_fraction}) to eliminate this.",
+        f"Blocked split may leak raw samples between train and test{_where}. A gap of "
+        f"{gap_size} rows, whose starts are {step:.3g} apart, buys {buffer:.3g} of separation "
+        f"against the {span:.3g} one row covers, so a training row and a held-out row can share "
+        f"up to {span - buffer:.3g} of it. Increase Split(gap_fraction=...) to at least "
+        f"{min_gap_fraction:.4f} (currently {gap_fraction}) to eliminate this.",
         UserWarning, stacklevel=user_stacklevel()
     )
     return True
+
+
+def warn_if_random_split_leaks(rows) -> None:
+    """Warn that a random split of rows that share samples leaves each held-out row among training rows
+    that nearly copy it (``rows`` is a :class:`neural_mi.data.rows.RowGeometry`)."""
+    warnings.warn(
+        f"Random split of rows that share samples: consecutive rows start {rows.step:.3g} apart and "
+        f"each covers {rows.span:.3g}, so a held-out row shares samples with up to "
+        f"{2 * (rows.rows_per_span - 1)} rows around it, most of them in training. The held-out "
+        f"curve then follows the training rows and keeps rising as the network overfits, so the "
+        f"epoch it chooses comes late and the value read there is high. Split(mode='blocked') "
+        f"holds out contiguous blocks with a gap around each.",
+        UserWarning, stacklevel=user_stacklevel()
+    )

@@ -302,9 +302,13 @@ that point are noise that a straight line can still pass through.
 With repeats, `mi_mean` and `mi_std` are the mean and spread of the repeats'
 extrapolations. `dataframe['n_reliable']` counts the reliable fits.
 `dataframe['mi_error']` is filled for a single repeat only because the intervals
-of repeats that share data cannot be combined. Windowed time-series data are cut
-into the same contiguous chunks for every repeat. Static data are reordered at
-random for each repeat.
+of repeats that share data cannot be combined. Rows in time order are cut into
+the same contiguous chunks for every repeat: the windows a processor cut, the
+rows a named quantity builds and the histories of transfer entropy, for every
+quantity. Other rows are reordered at random for each repeat, since an array
+passed in already built is not known to be in time order.
+`Rigorous(temporal_chunking=True)` says it is. `runs['chunking_mode']` records
+which.
 
 ### `lag`
 
@@ -620,8 +624,8 @@ result.get('null_distribution')
 The default `permutation_shuffle='circular'` shifts X by one random offset with
 wrap-around, drawn away from zero by at least 10% of the recording's length so
 that no trial leaves X nearly aligned. `permutation_shuffle='block'` cuts X into
-blocks one window long and reorders them. Both apply to windowed rows, to raw
-series and to spike times. A spike population moves as a whole and keeps the
+blocks as long as one row's span and reorders them, so rows that share samples
+move together. Both apply to windowed rows, to raw series and to spike times. A spike population moves as a whole and keeps the
 structure among its neurons.
 
 The null has one set of trials per row of `dataframe`. A lag scan gets a null at

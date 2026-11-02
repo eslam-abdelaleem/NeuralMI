@@ -59,6 +59,7 @@ import torch
 import torch.nn.functional as F
 
 import warnings
+from neural_mi.data.rows import record_rows, window_rows
 from neural_mi.logger import user_stacklevel
 
 
@@ -564,9 +565,8 @@ def _build_shifted_dataset(stream_defs, params, data_device, pack_roles, shifter
         ``name -> (raw_data, processor_type, processor_params, window_size,
         step_size)``, in order, the first being the reference.
     params : dict
-        Mutated in place with ``leak_check_window_size``/``leak_check_step``,
-        since the returned dataset has no ``window_manager`` for
-        :class:`Trainer`'s leakage check to read geometry from.
+        Mutated in place with the rows' geometry (:mod:`neural_mi.data.rows`),
+        in the reference stream's samples.
     pack_roles : callable
         Maps the shifter's name-keyed windows to ``(x_role, y_role)``.
     shifter_cls_args : callable
@@ -619,8 +619,7 @@ def _build_shifted_dataset(stream_defs, params, data_device, pack_roles, shifter
             seconds_to_samples(step_size, period), encoder, period,
         )
     reference = next(iter(geometry.values()))
-    params['leak_check_window_size'] = reference['window_size']
-    params['leak_check_step'] = reference['step_size']
+    record_rows(params, window_rows(reference['window_size'], reference['step_size']))
 
     shifter = shifter_cls_args(geometry)
     x_role, y_role = pack_roles(shifter)
@@ -636,10 +635,8 @@ def try_build_shift_windows_dataset(x_data, y_data, params: dict, data_device: s
     ``y_data``, or return ``None`` if this pair doesn't qualify (caller
     should fall back to :func:`~neural_mi.data.handler.create_dataset`).
 
-    Mutates ``params`` in place with ``leak_check_window_size``/
-    ``leak_check_step`` when it builds a dataset, since the returned
-    dataset has no ``window_manager`` for :class:`Trainer`'s blocked-split
-    leakage check to read geometry from otherwise. Shared by
+    Mutates ``params`` in place with the rows' geometry
+    (:mod:`neural_mi.data.rows`) when it builds a dataset. Shared by
     ``task.py::run_training_task`` and ``precision.py`` so both build this
     kind of dataset the same way.
     """
