@@ -1678,10 +1678,34 @@ def _deferred_window_count(x_data, base_params: dict, largest_lag: float = 0.0):
                           seconds_to_samples(step, period)), 'windows'
 
 
+def _held_out_count(n_rows: int, base_params: dict) -> int:
+    """The held-out rows of ``n_rows``: the caller's own test indices when given, otherwise what
+    ``train_fraction`` leaves (``trainer.held_out_rows``, the count the split itself takes)."""
+    from .training.trainer import held_out_rows
+    test_indices = base_params.get('test_indices')
+    if test_indices is not None:
+        return len(test_indices)
+    return held_out_rows(n_rows, base_params.get('train_fraction', 0.9))
+
+
 def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
                        mode: str = 'estimate') -> None:
-    """One warning for a small dataset, whether the caller passed arrays or the
-    library windowed the data (``unit`` is 'samples' or 'windows')."""
+    """The warnings for a small dataset, whether the caller passed arrays or the
+    library windowed the data (``unit`` is 'samples' or 'windows'): too few rows
+    in all, and too few held out for the curve that reads them."""
+    from .estimators import NONPARAMETRIC
+    from .training.trainer import too_few_held_out
+    n_held_out = _held_out_count(n_samples, base_params)
+    if (base_params.get('estimator_name') not in NONPARAMETRIC
+            and too_few_held_out(n_held_out, base_params.get('batch_size', 128))):
+        warnings.warn(
+            f"Only {n_held_out} of the {n_samples} {unit} are held out, fewer than one training batch "
+            f"(batch_size={base_params.get('batch_size', 128)}). The held-out curve chooses the epoch "
+            f"the estimate is read at and says whether it is resolved. On so few rows its noise is "
+            f"large and its ceiling, log({n_held_out}), lies below that of a training batch. Use more "
+            f"data, or hold out more with Split(train_fraction=...).",
+            UserWarning, stacklevel=user_stacklevel(),
+        )
     if not 0 < n_samples < _SMALL_SAMPLE:
         return
     tips = []

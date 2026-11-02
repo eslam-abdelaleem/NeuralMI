@@ -68,6 +68,28 @@ def _rng_of(trainer):
     return getattr(trainer, '_rng', np.random)
 
 
+def held_out_rows(n_rows: int, train_fraction: float) -> int:
+    """How many of ``n_rows`` a split holds out: what ``train_fraction`` leaves.
+
+    Counted here once, for the random and the blocked split and for every check
+    that reads the count. The small tolerance keeps a fraction such as 0.9 from
+    losing a row to floating point (300 * 0.9 is 270, not 269.99...).
+    """
+    return int(n_rows) - int(np.floor(n_rows * train_fraction + 1e-9))
+
+
+def too_few_held_out(n_held_out: int, batch_size: int) -> bool:
+    """Whether a held-out set is smaller than one training batch.
+
+    The held-out curve chooses the epoch the estimate is read at and says
+    whether it is resolved. Its rows are each other's negatives, so its ceiling
+    is ``log(n_held_out)``, below the ``log(batch_size)`` of the objective it
+    follows, and its noise grows as the rows shrink. The rigorous ladder draws
+    the same line for its chunks.
+    """
+    return 0 < n_held_out < batch_size
+
+
 def _batch_size_of(x) -> int:
     """Leading (sample) dim of x, whether x is a plain tensor or a tuple
     (BranchedEmbedding's compound "X-role" data, mode='conditional'
@@ -1026,7 +1048,8 @@ class Trainer:
         if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
             warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,
                              None if _approach_shift is None else _approach_shift * _scale,
-                             _train_se * _scale, _units)
+                             _train_se * _scale, _units,
+                             held_out=_eval_size if too_few_held_out(_eval_size or 0, batch_size) else None)
 
         # All-negative warning and zeroing (now that _raw_train_mi is correctly set)
         if _all_mi_negative:
@@ -1426,13 +1449,13 @@ class Trainer:
         
     def _create_random_split(self, n: int, frac: float) -> Tuple[np.ndarray, np.ndarray]:
         indices = _rng_of(self).permutation(n)
-        n_train = int(n * frac)
+        n_train = n - held_out_rows(n, frac)
         return indices[:n_train], indices[n_train:]
 
     def _create_blocked_split(self, n: int, frac: float, k: int, gap_fraction: float = 0.0,
                               span: Optional[float] = None, step: Optional[float] = None,
                               leak_check_label: str = "") -> Tuple[np.ndarray, np.ndarray]:
-        n_test = int(n * (1 - frac))
+        n_test = held_out_rows(n, frac)
         if n_test == 0:
             return np.arange(n), np.array([])
         if n_test < k:

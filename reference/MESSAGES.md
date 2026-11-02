@@ -178,6 +178,17 @@ information nor the information $I$ itself is known before estimating.
 ([THEORY.md](THEORY.md#finite-sampling-bias)). The message also lists the
 regularisation settings not yet in use.
 
+**`Only ... of the ... are held out, fewer than one training batch`**
+The held-out rows are what `train_fraction` leaves (or the caller's
+`test_indices`), counted the way the split counts them. The held-out curve
+chooses the epoch the estimate is read at and says whether the estimate is
+resolved. Its rows are each other's negatives, so its ceiling is the log of
+their count, below that of the training batch whose objective it follows, and
+its noise grows as they shrink. The rigorous ladder draws the same line for its
+chunks. Use more data or a lower `Split(train_fraction=...)`. Every curve
+warning below then also names the count. With `estimator='ksg'` nothing is
+held out and the message does not apply.
+
 **`The held-out MI was still rising when training reached n_epochs=...`**
 Training used every epoch it was allowed, and the smoothed held-out curve rose
 by more than 3 times its own noise over the last 20 epochs. The reported value
@@ -185,7 +196,9 @@ may be under-trained. Raise `n_epochs`, and a `patience` below `n_epochs` then
 ends training once the curve stops improving. A higher `learning_rate` gets
 further in each epoch instead. Raised too far, it brings the top into the first
 few epochs, which the message about a top reached at epoch ... and gone soon
-after reports.
+after reports. Here and in the three entries below, the message ends by naming
+the count of held-out rows when they are fewer than one training batch (the
+entry above).
 
 **`The held-out MI curve does not rise clearly above its own noise`**
 The top of the smoothed held-out curve stands less than 8 times the curve's

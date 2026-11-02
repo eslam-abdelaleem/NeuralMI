@@ -116,7 +116,8 @@ had failed (such a repeat now has no value).
 A data check at the start of every call reports, for each stream, the channel
 scales, constant or non-finite channels, for the rate quantities how much of
 each channel's variance its own past predicts linearly, the scale of the rows
-the network will receive, and the held-out row count. It suggests the matching
+the network will receive, and the held-out row count (`trainer.held_out_rows`,
+the count the splits and the small-sample check use). It suggests the matching
 option and changes nothing.
 
 ### C8. The scale of processed rows
@@ -161,15 +162,6 @@ another quantity, with one network instead of a difference.
 the quantity computed: `instantaneous_mi` for `instantaneous_exchange(k=0)` and
 `directed_information_rate(k=0)`, and I(X_{-L..L}; Y_0) for `mi_rate(h=0)`,
 which is instantaneous MI at `half_width=0`.
-
-### C11. The small-sample check counts held-out rows
-
-**Now.** `_warn_small_sample` fires below 200 rows in total. `block_mi` with
-20-sample windows on 20,000 samples built 1,000 windows with 99 held-out rows,
-read about 1.4 against 3.12, and warned only that the curve was still rising.
-
-**Fix.** The check also considers the held-out row count, and the curve
-warnings name it when it is small.
 
 ### C12. One rule for window shifting
 
@@ -443,7 +435,7 @@ the easy regime of the accuracy test the same slope needs 6.3.
 wider networks and longer training, did no better, and every one of those
 curves was not resolved. After whitening (C7) the defaults read 0.70 against
 0.75 at 5 samples and 1.31 against 1.53 at 10 (still rising), and fell short at
-20 samples, where 1,000 windows were left (C11).
+20 samples, where 1,000 windows were left, with 99 of them held out.
 
 **Needs.** A fit of the linear part of I(w): `rigorous._find_linear_region`
 generalised to named columns, trimming at both ends (the subextensive bend at

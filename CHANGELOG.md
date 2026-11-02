@@ -150,6 +150,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The small-sample check counted rows in all and fired below 200. `block_mi`
+  with 20-sample windows on 20,000 samples built 1,000 windows with 99
+  held-out rows, read about 1.4 bits against 3.12, and warned only that the
+  curve was still rising. The held-out count is now computed in one place,
+  `trainer.held_out_rows`, which both splits use. The blocked split used to
+  round it down for round counts, holding out 29 of 300 rows at
+  `train_fraction=0.9`, while the random split held out 30. A call whose
+  held-out rows are fewer than one training batch now warns: the held-out
+  curve chooses the epoch the estimate is read at, its rows are each other's
+  negatives, and on so few rows its noise is large and its ceiling lies below
+  that of a training batch. It counts the caller's own `test_indices` when
+  given, and does not apply to a nonparametric estimator. Every warning about
+  the held-out curve then names the count.
+
 - A held-out curve was `'not resolved'` only when its top stood less than 8
   times its epoch-to-epoch noise above zero. Every epoch scores the same
   held-out rows, so their sampling error moves the whole curve together and

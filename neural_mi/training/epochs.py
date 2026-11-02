@@ -125,28 +125,33 @@ def _diagnose(s, start, level, noise, reach, ran_to_limit, n_rows=None) -> str:
 
 def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int], n_epochs: int,
                      approach: Optional[int] = None, shift: Optional[float] = None, se: Optional[float] = None,
-                     units: str = 'bits') -> None:
+                     units: str = 'bits', held_out: Optional[int] = None) -> None:
     """Warn when the diagnosis is not 'ok'. The texts differ between networks only in their numbers, so the
-    library shows each kind once per call and counts the rest. ``shift`` and ``se`` are in ``units``."""
+    library shows each kind once per call and counts the rest. ``shift`` and ``se`` are in ``units``.
+    ``held_out`` is the count of held-out rows the curve scores, given when it is smaller than one training
+    batch (``trainer.too_few_held_out``), and each message then names it."""
+    note = (f" The curve scores only {held_out} held-out rows, fewer than one training batch, so its noise is "
+            f"large and its ceiling of log({held_out}) low. More data, or a lower Split(train_fraction=...), "
+            f"gives it more." if held_out else "")
     if diagnosis == 'not resolved':
         warnings.warn(
-            "The held-out MI curve does not rise clearly above its own noise, either its epoch-to-epoch noise or "
-            "the sampling error of its held-out rows, so the data do not settle the epoch the estimate is read at, "
-            "nor the estimate. Check the curve with result.plot(). More data, more epochs or another network may "
-            "resolve it.", UserWarning, stacklevel=user_stacklevel())
+            f"The held-out MI curve does not rise clearly above its own noise, either its epoch-to-epoch noise or "
+            f"the sampling error of its held-out rows, so the data do not settle the epoch the estimate is read at, "
+            f"nor the estimate. Check the curve with result.plot(). More data, more epochs or another network may "
+            f"resolve it.{note}", UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'still rising':
         warnings.warn(
             f"The held-out MI was still rising when training reached n_epochs={n_epochs}. The estimate may then "
-            f"be an under-trained lower bound. Raise n_epochs, or learning_rate so that each epoch goes further.",
-            UserWarning, stacklevel=user_stacklevel())
+            f"be an under-trained lower bound. Raise n_epochs, or learning_rate so that each epoch goes further."
+            f"{note}", UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'too fast':
         warnings.warn(
             f"The held-out MI reached its top at epoch {peak} and fell clearly soon after. A top this early lies "
             f"within the {reach} epochs over which the curve is smoothed, so the start of the curve placed it. Lower "
-            f"learning_rate to spread the rise over more epochs.", UserWarning, stacklevel=user_stacklevel())
+            f"learning_rate to spread the rise over more epochs.{note}", UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'fuzzy start':
         warnings.warn(
             f"The held-out MI approached its top slowly, so where the top starts is uncertain. Read at the start "
             f"of the approach (epoch {approach}) instead of epoch {epoch}, the estimate moves by {shift:.4f} "
-            f"{units}, more than {FUZZY_SE:g} times its standard error of {se:.4f} {units}. Check the curve with result.plot().",
-            UserWarning, stacklevel=user_stacklevel())
+            f"{units}, more than {FUZZY_SE:g} times its standard error of {se:.4f} {units}. Check the curve with "
+            f"result.plot().{note}", UserWarning, stacklevel=user_stacklevel())
