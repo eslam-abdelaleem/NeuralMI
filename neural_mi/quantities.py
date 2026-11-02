@@ -164,25 +164,29 @@ def _refuse_custom_split(run_kwargs: Dict[str, Any], quantity: str) -> None:
 
 def _named(quantity: str, param: str, value, build, *, run_kwargs: Dict[str, Any], rigorous,
            n_workers: int, show_progress: bool, construction: Dict[str, Any],
-           sweep_mode: str) -> Results:
+           sweep_mode: str, rows_are_the_input: bool = False) -> Results:
     """Run a quantity at one value of its own parameter, or at every value of an
     iterable, merged into one result.
 
     ``build(v)`` returns ``(kind, a, b, c, transfer_kwargs, rows)`` for value ``v``,
     ``rows`` being the geometry of the rows it built (:mod:`neural_mi.data.rows`).
     ``construction`` holds the settings held fixed, recorded in ``params``.
-    ``sweep_mode`` labels a merged result.
+    ``sweep_mode`` labels a merged result. ``rows_are_the_input`` says that the
+    rows built are the rows passed, in order, so custom split indices still
+    address them.
     """
     with call_verbosity(run_kwargs.get('verbose')), collect_repeats():
         return _named_run(quantity, param, value, build, run_kwargs=run_kwargs, rigorous=rigorous,
                           n_workers=n_workers, show_progress=show_progress,
-                          construction=construction, sweep_mode=sweep_mode)
+                          construction=construction, sweep_mode=sweep_mode,
+                          rows_are_the_input=rows_are_the_input)
 
 
 def _named_run(quantity: str, param: str, value, build, *, run_kwargs: Dict[str, Any], rigorous,
                n_workers: int, show_progress: bool, construction: Dict[str, Any],
-               sweep_mode: str) -> Results:
-    _refuse_custom_split(run_kwargs, quantity)
+               sweep_mode: str, rows_are_the_input: bool = False) -> Results:
+    if not rows_are_the_input:
+        _refuse_custom_split(run_kwargs, quantity)
     grid = dict(run_kwargs.get('sweep_grid') or {})
     if param in grid:
         raise ValueError(
@@ -270,9 +274,14 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
         a, b, c, rows = build_rows(series, spec_of(v), stride=stride)
         return ('conditional' if c is not None else 'mi', a, b, c, None, rows)
 
+    # Offsets all at zero, every row kept: the rows are the ones passed, in
+    # order, so custom split indices still address them (instantaneous_mi).
+    values = list(value) if _is_sweep(value) else [value]
+    own = stride == 1 and all(offset == 0 for v in values for group in spec_of(v).values()
+                              for _, offset in (group or []))
     return _named(quantity, param, value, build, run_kwargs=run_kwargs, rigorous=rigorous,
                   n_workers=n_workers, show_progress=show_progress, construction=construction,
-                  sweep_mode=sweep_mode)
+                  sweep_mode=sweep_mode, rows_are_the_input=own)
 
 
 def _spec_active_information_storage(k: int, future_k: int = 1) -> dict:

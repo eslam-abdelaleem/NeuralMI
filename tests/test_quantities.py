@@ -475,7 +475,13 @@ class TestIterableAndGridCompose:
         }
         result = calls[quantity]()
         assert len(result.runs) == 3
-        assert result.mi_estimate == pytest.approx(result.runs['mi'].mean())
+        # The value averages every repeat's measured value (mi_raw where a
+        # repeat of a quantity that cannot be negative was floored), and only
+        # the mean is reported as 0 when negative.
+        if 'mi_raw' in result.runs:
+            assert result.mi_estimate == pytest.approx(max(result.runs['mi_raw'].mean(), 0.0))
+        else:
+            assert result.mi_estimate == pytest.approx(result.runs['mi'].mean())
 
     def test_a_scalar_parameter_with_repeats_is_one_row(self):
         x, y, _ = self._data()
