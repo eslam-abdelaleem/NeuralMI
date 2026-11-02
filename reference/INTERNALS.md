@@ -86,6 +86,21 @@ into one `dataframe` row per configuration and axis value. A mode only declares
 its networks and its combine step in its producer. The shape of `Results` is the
 same for every mode.
 
+### One place for a default
+
+Every setting's default is written once, in `BASE_PARAMS_SCHEMA`
+(`neural_mi/defaults.py`). Code below `run()` reads a setting with
+`defaults.setting(params, name)`, which falls back to that default, and every
+signature default of a setting, in `Trainer`, the encoder and decoder classes,
+is `defaults.default_of(name)`. `tests/test_schema_defaults.py` checks the
+signatures.
+
+`build_critic` reads only the settings in `utils.ARCHITECTURE_KEYS`, and
+`save_network` saves exactly those with a network, so `extract_embeddings`
+rebuilds it as it was trained. A value pickle cannot store, such as a class
+defined inside a function, is saved as its name, and `extract_embeddings` asks
+for it in `base_params`.
+
 ### One unit conversion
 
 Every network trains and reports in nats. `assemble.convert_record` converts the
@@ -242,9 +257,11 @@ for unwindowed data). Add a branch for its name in `create_single_dataset()` in
 [PARAMETERS.md](PARAMETERS.md) for `tests/test_docs_drift.py` to check against
 the schema.
 
-To add an encoder, subclass `BaseEmbedding`, register it in `build_critic()` in
+To add an encoder, subclass `BaseEmbedding`, declare the `Model` settings it
+reads in its `settings`, register it in `_EMBEDDING_CLASSES` in
 `neural_mi/utils.py`, add its name to the allowed values of `embedding_model` in
-`neural_mi/validation.py`, and add any new settings to `BASE_PARAMS_SCHEMA`.
+`neural_mi/validation.py`, and add any new settings to `BASE_PARAMS_SCHEMA`, to
+`MODEL_SETTINGS` in `neural_mi/utils.py`, and give them `default_of` defaults.
 
 To add an analysis mode:
 

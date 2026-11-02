@@ -17,6 +17,15 @@ from neural_mi import Model, Training
 from neural_mi.models.decoders import (
     build_decoder, MLPDecoder, CNN1DDecoder, CNN2DDecoder,
 )
+from neural_mi.defaults import default_of
+
+
+def _build(name, **kwargs):
+    """build_decoder with the settings a call fills from the schema, as task.py passes them."""
+    for key in ('n_layers', 'kernel_size', 'nhead', 'dropout'):
+        kwargs.setdefault(key, default_of(key))
+    kwargs.setdefault('output_activation', default_of('decoder_output_activation_x'))
+    return build_decoder(name, **kwargs)
 
 
 class TestBuildDecoderDispatch:
@@ -24,27 +33,27 @@ class TestBuildDecoderDispatch:
 
     def test_cnn_key_dispatches_to_cnn1d_decoder(self):
         """'cnn' is the real embedding_model name (see ALLOWED_VALUES); 'cnn1d' is not."""
-        d = build_decoder('cnn', embedding_dim=4, hidden_dim=8, n_channels=2, window_size=10, n_layers=2)
+        d = _build('cnn', embedding_dim=4, hidden_dim=8, n_channels=2, window_size=10, n_layers=2)
         assert isinstance(d, CNN1DDecoder)
         out = d(torch.randn(3, 4))
         assert out.shape == (3, 2, 10)
 
     def test_cnn2d_dispatches_to_cnn2d_decoder_with_explicit_shape(self):
-        d = build_decoder('cnn2d', embedding_dim=4, hidden_dim=8, n_channels=1,
+        d = _build('cnn2d', embedding_dim=4, hidden_dim=8, n_channels=1,
                           window_size=64, n_layers=2, height=8, width=8)
         assert isinstance(d, CNN2DDecoder)
         out = d(torch.randn(3, 4))
         assert out.shape == (3, 1, 8, 8)
 
     def test_cnn2d_falls_back_to_square_shape_when_height_width_missing(self):
-        d = build_decoder('cnn2d', embedding_dim=4, hidden_dim=8, n_channels=1,
+        d = _build('cnn2d', embedding_dim=4, hidden_dim=8, n_channels=1,
                           window_size=16, n_layers=2)
         out = d(torch.randn(3, 4))
         assert out.shape == (3, 1, 4, 4)
 
     def test_unknown_embedding_model_falls_back_to_mlp_and_says_so(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            d = build_decoder('some_unregistered_model', embedding_dim=4, hidden_dim=8,
+            d = _build('some_unregistered_model', embedding_dim=4, hidden_dim=8,
                               n_channels=2, window_size=10, n_layers=2)
         assert isinstance(d, MLPDecoder)
         assert "No dedicated decoder" in caplog.text
@@ -53,14 +62,14 @@ class TestBuildDecoderDispatch:
     def test_pretrained_backbone_falls_back_to_mlp_and_says_so(self, caplog):
         """pretrained_backbone has no dedicated decoder; the swap is logged, not silent."""
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            d = build_decoder('pretrained_backbone', embedding_dim=4, hidden_dim=8,
+            d = _build('pretrained_backbone', embedding_dim=4, hidden_dim=8,
                               n_channels=3, window_size=49, n_layers=2)
         assert isinstance(d, MLPDecoder)
         assert "No dedicated decoder" in caplog.text
 
     def test_dedicated_decoders_do_not_fall_back(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            build_decoder('gru', embedding_dim=4, hidden_dim=8, n_channels=2, window_size=10, n_layers=1)
+            _build('gru', embedding_dim=4, hidden_dim=8, n_channels=2, window_size=10, n_layers=1)
         assert "No dedicated decoder" not in caplog.text
 
 

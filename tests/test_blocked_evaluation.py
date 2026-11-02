@@ -65,7 +65,7 @@ class TestTrainSubsetSize:
     def _train(self, **kwargs):
         x, y = _rows(400, seed=1)
         return _trainer().train(PairedDataset(x, y), n_epochs=2, batch_size=32, split_mode='random',
-                                verbose=False, show_progress=False, **kwargs)
+                                output_units='nats', verbose=False, show_progress=False, **kwargs)
 
     def test_default_is_unchanged(self):
         results = self._train(max_eval_samples=50)
@@ -115,7 +115,7 @@ class TestHeldOutRows:
                           torch.optim.Adam(list(net.parameters()) + list(y_net.parameters()), lr=1e-3),
                           torch.device('cpu'))
         kwargs = {'n_epochs': 3, 'batch_size': 64, 'split_seed': 3, 'max_eval_samples': 100,
-                  'verbose': False, 'show_progress': False, **kwargs}
+                  'output_units': 'nats', 'verbose': False, 'show_progress': False, **kwargs}
         results = trainer.train(self._data(), **kwargs)
         return seen, results, trainer
 

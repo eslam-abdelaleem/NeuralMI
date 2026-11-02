@@ -19,6 +19,7 @@ import time
 from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
                             AlignedStreams)
 from neural_mi.data.rows import RowGeometry
+from neural_mi.defaults import default_of
 from neural_mi.models.critics import _batch_size_of
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
@@ -133,18 +134,18 @@ class Trainer:
     MI score, and the ability to save the best model checkpoint.
     """
     def __init__(self, model: nn.Module, estimator_fn: Callable, optimizer: torch.optim.Optimizer,
-                 device: torch.device, use_variational: bool = False, beta: float = 1024,
+                 device: torch.device, use_variational: bool = default_of('use_variational'), beta: float = default_of('beta'),
                  estimator_params: Optional[Dict[str, Any]] = None,
                  custom_smoothing_fn: Optional[Callable] = None,
-                 whitening: Optional[str] = 'std',
-                 gradient_clip_val: Optional[float] = None,
+                 whitening: Optional[str] = default_of('whitening'),
+                 gradient_clip_val: Optional[float] = default_of('gradient_clip_val'),
                  decoder_x: Optional[nn.Module] = None,
                  decoder_y: Optional[nn.Module] = None,
-                 decoder_lambda_x: float = 0.001,
-                 decoder_lambda_y: float = 0.001,
-                 decoder_output_activation_x: str = 'linear',
-                 decoder_output_activation_y: str = 'linear',
-                 use_amp: Union[bool, str] = 'auto',
+                 decoder_lambda_x: float = default_of('decoder_lambda'),
+                 decoder_lambda_y: float = default_of('decoder_lambda'),
+                 decoder_output_activation_x: str = default_of('decoder_output_activation_x'),
+                 decoder_output_activation_y: str = default_of('decoder_output_activation_y'),
+                 use_amp: Union[bool, str] = default_of('use_amp'),
                  augmentation_params_x: Optional[Dict[str, Any]] = None,
                  augmentation_params_y: Optional[Dict[str, Any]] = None):
 
@@ -233,38 +234,39 @@ class Trainer:
         self.aug_params_y = augmentation_params_y or {}
 
     def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
-              train_fraction: float = 0.9, n_test_blocks: int = 5,
-              shift_time: bool = False,
-              shift_windows: bool = False,
+              train_fraction: float = default_of('train_fraction'), n_test_blocks: int = default_of('n_test_blocks'),
+              shift_time: bool = default_of('shift_time'),
+              shift_windows: bool = default_of('shift_windows'),
               shift_seed: Optional[int] = None,
               split_seed: Optional[int] = None,
-              patience: int = 10, smoothing_sigma: float = 1.0, median_window: int = 5,
-              min_improvement: float = 0.001,
-              save_best_model_path: Optional[str] = None,
-              output_units: str = 'nats', verbose: bool = True, show_progress: bool = True,
-              split_mode: str = 'blocked',
+              patience: int = default_of('patience'), smoothing_sigma: float = default_of('smoothing_sigma'), median_window: int = default_of('median_window'),
+              min_improvement: float = default_of('min_improvement'),
+              save_best_model_path: Optional[str] = default_of('save_best_model_path'),
+              output_units: str = default_of('output_units'), verbose: bool = default_of('verbose'), show_progress: bool = default_of('show_progress'),
+              split_mode: str = default_of('split_mode'),
               train_indices: Optional[np.ndarray] = None,
               test_indices: Optional[np.ndarray] = None,
-              max_eval_samples: int = 5000,
-              train_subset_size: Optional[Union[int, str]] = None,
-              test_subset_size: Optional[Union[int, str]] = None,
-              split_gap_fraction: float = 0.5,
-              track_spectral_history: bool = False,
-              max_index_reduction: float = 0.05,
-              eval_train: Union[bool, float, int] = False,
-              peak_fraction: float = 1.0,
-              epoch_rule: str = 'plateau_start',
+              max_eval_samples: int = default_of('max_eval_samples'),
+              train_subset_size: Optional[Union[int, str]] = default_of('train_subset_size'),
+              test_subset_size: Optional[Union[int, str]] = default_of('test_subset_size'),
+              split_gap_fraction: float = default_of('split_gap_fraction'),
+              track_spectral_history: bool = default_of('track_spectral_history'),
+              max_index_reduction: float = default_of('max_index_reduction'),
+              eval_train: Union[bool, float, int] = default_of('eval_train'),
+              peak_fraction: float = default_of('peak_fraction'),
+              epoch_rule: str = default_of('epoch_rule'),
               scheduler: Optional[Any] = None,
-              track_embeddings: Union[bool, float, int, str] = False,
-              return_rotated_embeddings: bool = False,
-              rotated_embeddings_per_epoch: bool = False,
-              return_rotation_matrices: bool = False,
+              track_embeddings: Union[bool, float, int, str] = default_of('track_embeddings'),
+              return_rotated_embeddings: bool = default_of('return_rotated_embeddings'),
+              rotated_embeddings_per_epoch: bool = default_of('rotated_embeddings_per_epoch'),
+              return_rotation_matrices: bool = default_of('return_rotation_matrices'),
               rows: Optional[RowGeometry] = None) -> Dict[str, Any]:
 
         """Trains the critic model and returns performance metrics.
 
         This method implements the main training loop, including data splitting,
-        training, evaluation, and early stopping.
+        training, evaluation, and early stopping. A setting left out takes the
+        default the schema gives it (``neural_mi.defaults``), as in ``run()``.
 
         Parameters
         ----------
@@ -273,10 +275,9 @@ class Trainer:
         batch_size : int
             The number of samples per batch.
         train_fraction : float, optional
-            The fraction of the data to use for training. Defaults to 0.9.
+            The fraction of the data to use for training.
         n_test_blocks : int, optional
             For 'blocked' split_mode, the number of contiguous blocks for the test set.
-            Defaults to 5.
         shift_time : bool, optional
             For temporal, windowed data: re-tiles the windows from a fresh
             random time offset every epoch (via `PairedTemporalDataset.time_shift`),
@@ -303,7 +304,7 @@ class Trainer:
             before or during training, which is what pairs the terms of a
             difference quantity. Without it they come from NumPy's global state.
         patience : int, optional
-            Epochs to wait for improvement before early stopping. Defaults to 10.
+            Epochs to wait for improvement before early stopping.
             Early stopping decides when training ends. The network evaluated is
             the one at the peak of the held-out curve smoothed after training
             (``best_epoch``), whichever epoch that is: copies of the network are
@@ -318,9 +319,9 @@ class Trainer:
         save_best_model_path : str, optional
             If provided, saves the best model's state dictionary to this path.
         output_units : {'nats', 'bits'}, optional
-            The units for displaying the MI estimate. Defaults to 'nats'.
+            The units for displaying the MI estimate.
         verbose : bool, optional
-            If True, details and defaults will be displayed. Defaults to False.
+            If True, details and defaults will be displayed.
         show_progress : bool, optional
             If True, progress bar will be shown. Defaults to True.
         split_mode : {'blocked', 'random'}, optional

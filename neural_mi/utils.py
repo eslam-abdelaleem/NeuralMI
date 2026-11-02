@@ -23,6 +23,7 @@ from neural_mi.models.embeddings import (
     PretrainedBackboneEmbedding, LRUEmbedding, BranchedEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
+from neural_mi.defaults import setting
 from neural_mi.logger import logger, user_stacklevel
 
 # Every built-in embedding_model string -> class.
@@ -514,12 +515,17 @@ MODEL_SETTINGS = ('use_spectral_norm', 'dropout', 'norm_layer', 'bias', 'kernel_
                   'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained')
 
 
-def _setting(params: Dict[str, Any], name: str) -> Any:
-    """A setting from ``params``, or the schema's default when it is absent."""
-    if name in params:
-        return params[name]
-    from neural_mi.defaults import BASE_PARAMS_SCHEMA
-    return BASE_PARAMS_SCHEMA[name].get('default')
+# Every setting build_critic reads, and so the list a saved network carries for
+# extract_embeddings to rebuild it as it was trained (embeddings_io.save_network).
+# build_critic sees nothing else, so the two cannot drift apart.
+ARCHITECTURE_KEYS = (
+    'critic_type', 'embedding_model', 'embedding_dim', 'hidden_dim', 'n_layers',
+    'embedding_model_y', 'embedding_dim_y', 'hidden_dim_y', 'n_layers_y',
+    'custom_embedding_cls', 'custom_embedding_cls_y', 'hidden_dim_head', 'n_layers_head',
+    'use_variational', 'shared_encoder', 'max_n_batches',
+    'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
+    '_difference_term', '_condition', 'processor_params_x', 'processor_params_y',
+) + MODEL_SETTINGS
 
 
 def _names(cls, key: str) -> bool:
@@ -552,9 +558,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     ``'hybrid'``.
     """
     
-    # Access parameters strictly to ensure defaults were applied
-    use_variational = embedding_params['use_variational']
-    max_n_batches = embedding_params['max_n_batches']
+    # Only the architecture keys reach the build, so a network saved with them
+    # rebuilds as it was trained. A setting absent from them takes its schema
+    # default.
+    embedding_params = {k: embedding_params[k] for k in ARCHITECTURE_KEYS if k in embedding_params}
+    use_variational = setting(embedding_params, 'use_variational')
+    max_n_batches = setting(embedding_params, 'max_n_batches')
     # The class also travels in embedding_params, so a caller that only has the
     # dict (embeddings_io rebuilding a saved run) still gets it.
     custom_embedding_cls = custom_embedding_cls or embedding_params.get('custom_embedding_cls')
@@ -566,11 +575,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     _y_model = embedding_params.get('embedding_model_y')
     _y_custom = embedding_params.get('custom_embedding_cls_y')
     spec_x = {
-        'model_type': embedding_params['embedding_model'].lower(),
+        'model_type': setting(embedding_params, 'embedding_model').lower(),
         'custom_cls': custom_embedding_cls,
-        'hidden_dim': embedding_params['hidden_dim'],
-        'n_layers': embedding_params['n_layers'],
-        'embedding_dim': embedding_params['embedding_dim'],
+        'hidden_dim': setting(embedding_params, 'hidden_dim'),
+        'n_layers': setting(embedding_params, 'n_layers'),
+        'embedding_dim': setting(embedding_params, 'embedding_dim'),
     }
     spec_y = {
         'model_type': _y_model.lower() if _y_model else spec_x['model_type'],
@@ -583,7 +592,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                'n_layers_y', 'embedding_dim_y')
     _given_y = [k for k in _Y_KEYS if embedding_params.get(k) is not None]
 
-    shared_encoder = embedding_params.get('shared_encoder', False)
+    shared_encoder = setting(embedding_params, 'shared_encoder')
     if _given_y:
         if critic_type == 'concat':
             raise ValueError(
@@ -612,10 +621,10 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # The Model settings every network of the critic can read, resolved once.
     # norm_layer 'auto' is layer normalisation for the hybrid critic in
     # mode='dimensionality', which resolves it there, and none everywhere else.
-    norm = _setting(embedding_params, 'norm_layer')
+    norm = setting(embedding_params, 'norm_layer')
     # An explicit bias of None means unset, not off.
-    _bias = _setting(embedding_params, 'bias')
-    values = {name: _setting(embedding_params, name) for name in MODEL_SETTINGS}
+    _bias = setting(embedding_params, 'bias')
+    values = {name: setting(embedding_params, name) for name in MODEL_SETTINGS}
     values['norm_layer'] = None if norm in ('auto', 'none') else norm
     values['bias'] = True if _bias is None else bool(_bias)
     # Every MLP the critic builds around its encoders (the hybrid critic's
@@ -864,7 +873,7 @@ def build_optimizer_and_scheduler(
     -------
     tuple[torch.optim.Optimizer, scheduler or None]
     """
-    _opt_val = params.get('optimizer', 'adam')
+    _opt_val = setting(params, 'optimizer')
     if isinstance(_opt_val, type):
         OptCls = _opt_val
     else:
@@ -895,15 +904,15 @@ def build_optimizer_and_scheduler(
             {'params': _encoder_params,                        'lr': _base_lr},
             {'params': list(critic.decision_head.parameters()), 'lr': _base_lr * _head_mult},
         ]
-        optimizer = OptCls(_param_groups, **params.get('optimizer_params', {}))
+        optimizer = OptCls(_param_groups, **setting(params, 'optimizer_params'))
     else:
         _all_params = list(critic.parameters()) + _decoder_params
-        optimizer = OptCls(_all_params, lr=_base_lr, **params.get('optimizer_params', {}))
+        optimizer = OptCls(_all_params, lr=_base_lr, **setting(params, 'optimizer_params'))
 
-    _sched_val = params.get('scheduler', None)
+    _sched_val = setting(params, 'scheduler')
     scheduler = None
     if _sched_val is not None:
-        _sched_params = params.get('scheduler_params', {})
+        _sched_params = setting(params, 'scheduler_params')
         n_epochs = params['n_epochs']
         if isinstance(_sched_val, type):
             scheduler = _sched_val(optimizer, **_sched_params)

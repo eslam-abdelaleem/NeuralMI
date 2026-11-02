@@ -1,7 +1,8 @@
 """Every declared setting is read by the engine.
 
 A setting is read when the engine looks it up by name (a subscript load,
-``.get``, ``.pop``, ``.setdefault`` or an ``in`` test), takes it as a named
+``.get``, ``.pop``, ``.setdefault``, an ``in`` test or the schema's accessors
+``setting`` and ``default_of``), takes it as a named
 parameter of one of its functions, or uses it inside ``_run_flat()`` for
 anything other than copying it into the settings. The modules that only declare
 or validate settings do not count. A setting that is accepted and then ignored
@@ -68,6 +69,10 @@ def _engine_reads():
             elif (isinstance(node, ast.Compare) and isinstance(node.left, ast.Constant)
                   and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops)):
                 read.add(node.left.value)
+            elif (isinstance(node, ast.Call) and getattr(node.func, 'id', None) in ('setting', 'default_of')
+                  and node.args and isinstance(node.args[-1], ast.Constant)):
+                # The schema's accessors (defaults.setting and defaults.default_of).
+                read.add(node.args[-1].value)
             elif isinstance(node, ast.FunctionDef):
                 params = {a.arg for a in node.args.args + node.args.kwonlyargs}
                 if path.name == 'run.py' and node.name in ROUTING:

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import pickle
 import re
 
 import numpy as np
@@ -106,6 +107,20 @@ def saved_paths(raw: Dict[str, Any]) -> list:
             for record in value if isinstance(record, dict) and record.get('model_path')]
 
 
+def _saved(value: Any) -> Any:
+    """``value`` as a saved network carries it: itself, or, for a class pickle cannot store (one defined
+    inside a function), a note naming it that ``extract_embeddings`` reports."""
+    try:
+        pickle.dumps(value)
+        return value
+    except Exception:
+        return _Unsaved(f"{getattr(value, '__module__', '?')}.{getattr(value, '__qualname__', repr(value))}")
+
+
+class _Unsaved(str):
+    """The name of a setting's value that could not be saved with a network."""
+
+
 def save_network(model: torch.nn.Module, params: Dict[str, Any], build_keys) -> Optional[str]:
     """Save `model` with what rebuilding it needs, and return the path written."""
     path = model_file(params)
@@ -114,7 +129,7 @@ def save_network(model: torch.nn.Module, params: Dict[str, Any], build_keys) -> 
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    build_params = {k: params[k] for k in build_keys if k in params}
+    build_params = {k: _saved(params[k]) for k in build_keys if k in params}
     torch.save({'state_dict': model.state_dict(), 'build_params': build_params}, path)
     logger.debug(f"Model saved to {path}.")
     return os.path.abspath(path)
@@ -162,8 +177,10 @@ def extract_embeddings(
     y_data : np.ndarray or torch.Tensor
         Input data for variable Y.
     base_params : dict, optional
-        Required only when loading a bare state_dict. Must include all keys
-        needed by :func:`~neural_mi.utils.build_critic`.
+        Required when loading a bare state_dict, and then holding the settings
+        :func:`~neural_mi.utils.build_critic` reads. With a bundled file it
+        supplies what could not be saved, such as a ``custom_embedding_cls``
+        defined inside a function.
     device : str, optional
         Compute device (e.g., ``'cpu'``, ``'cuda'``).  Auto-detected if None.
 
@@ -189,7 +206,14 @@ def extract_embeddings(
     if isinstance(loaded, dict) and 'state_dict' in loaded and 'build_params' in loaded:
         # New format
         state_dict = loaded['state_dict']
-        bp = loaded['build_params']
+        bp = {**loaded['build_params'], **(base_params or {})}
+        unsaved = {k: v for k, v in bp.items() if isinstance(v, _Unsaved)}
+        if unsaved:
+            raise ValueError(
+                f"'{model_path}' was trained with {', '.join(f'{k}={v}' for k, v in unsaved.items())}, "
+                f"which could not be saved with it (a class defined inside a function cannot be). "
+                f"Pass it as base_params={{{', '.join(repr(k) + ': ...' for k in unsaved)}}}."
+            )
         logger.debug(f"Loaded new-format model from {model_path} "
                      f"(critic_type={bp.get('critic_type')}, "
                      f"embedding_model={bp.get('embedding_model')}).")

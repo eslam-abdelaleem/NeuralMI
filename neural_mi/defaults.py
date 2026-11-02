@@ -2,6 +2,9 @@
 """
 Centralized definition of default parameters and allowed keys for validation.
 """
+import copy
+from typing import Any, Dict
+
 import numpy as np
 import torch
 
@@ -274,3 +277,14 @@ PROCESSOR_PARAMS_SCHEMA = {
               'burst_threshold_multiplier', 'drop_empty_windows'],
     'categorical': ['window_size', 'step_size', 'sample_rate', 'min_coverage_fraction', 'encoding'],
 }
+
+
+def default_of(name: str) -> Any:
+    """The schema's default for setting ``name``: the one place a default is written. A mutable default comes
+    back as a copy, so a caller cannot change it for every other caller."""
+    return copy.copy(BASE_PARAMS_SCHEMA[name]['default'])
+
+
+def setting(params: Dict[str, Any], name: str) -> Any:
+    """Setting ``name`` from ``params``, or its schema default when ``params`` lacks it."""
+    return params[name] if name in params else default_of(name)

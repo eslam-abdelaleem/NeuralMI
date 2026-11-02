@@ -7,6 +7,7 @@ import numpy as np
 from typing import Any, Dict, Optional, Tuple
 from torch.nn.utils import spectral_norm as _spectral_norm
 
+from neural_mi.defaults import default_of
 from neural_mi.logger import logger, user_stacklevel
 
 # Shared activation set for every embedding model below (MLP, CNN1D, CNN2D).
@@ -149,9 +150,9 @@ class MLP(_BaseMLP):
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int,
                  n_layers: int, activation: str = 'relu',
-                 use_spectral_norm: bool = True,
-                 dropout: float = 0.0,
-                 norm_layer: Optional[str] = None, bias: bool = True):
+                 use_spectral_norm: bool = default_of('use_spectral_norm'),
+                 dropout: float = default_of('dropout'),
+                 norm_layer: Optional[str] = None, bias: bool = default_of('bias')):
         """
         Parameters
         ----------
@@ -245,8 +246,8 @@ class CNN1D(BaseEmbedding):
     settings = {'kernel_size': 'kernel_size', 'cnn_pooling': 'cnn_pooling', 'bias': 'bias'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = 7, bias: bool = True,
-                 window_size: Optional[int] = None, cnn_pooling: str = 'flatten'):
+                 activation: str = 'relu', kernel_size: int = default_of('kernel_size'), bias: bool = default_of('bias'),
+                 window_size: Optional[int] = None, cnn_pooling: str = default_of('cnn_pooling')):
         """
         Parameters
         ----------
@@ -266,7 +267,7 @@ class CNN1D(BaseEmbedding):
             'relu', 'gelu', 'tanh', 'elu', 'leaky_relu', 'sigmoid', 'silu'.
             Defaults to 'relu'.
         kernel_size : int, optional
-            The size of the convolutional kernel. Must be an odd number. Defaults to 7.
+            The size of the convolutional kernel. Must be an odd number.
         window_size : int, optional
             The window length. ``build_critic`` passes it. Needed by
             ``cnn_pooling='flatten'``.
@@ -342,7 +343,7 @@ class GRU(BaseEmbedding):
     reads = classmethod(_recurrent_reads)
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 bidirectional: bool = False, dropout: float = 0.0, bias: bool = True, **kwargs):
+                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
         """
         Parameters
         ----------
@@ -389,7 +390,7 @@ class LSTM(BaseEmbedding):
     reads = classmethod(_recurrent_reads)
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 bidirectional: bool = False, dropout: float = 0.0, bias: bool = True, **kwargs):
+                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
         """
         Parameters
         ----------
@@ -431,7 +432,7 @@ class LockedDropout(nn.Module):
     reuses it across every timestep, instead of an independent mask per
     timestep (``nn.Dropout``'s default), the standard regularization for
     recurrent state-space layers, see Gal & Ghahramani (2016)."""
-    def __init__(self, p: float = 0.3):
+    def __init__(self, p: float):
         super().__init__()
         self.p = p
 
@@ -482,7 +483,7 @@ class LRUBlock(nn.Module):
     """LayerNorm + LRULayer + LockedDropout + a 2-layer GELU MLP, combined
     as a residual block, the standard pre-norm transformer-style block
     shape, with the LRU recurrence standing in for self-attention."""
-    def __init__(self, hidden_dim: int, dropout: float = 0.3, bias: bool = True):
+    def __init__(self, hidden_dim: int, dropout: float, bias: bool = default_of('bias')):
         super().__init__()
         self.norm = (nn.LayerNorm(hidden_dim) if bias
                      else nn.RMSNorm(hidden_dim, elementwise_affine=False))
@@ -511,8 +512,8 @@ class LRUEmbedding(BaseEmbedding):
     input_style = 'channels'
     settings = {'dropout': 'dropout', 'bias': 'bias'}
 
-    def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int = 1,
-                 dropout: float = 0.3, bias: bool = True, **kwargs):
+    def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int = default_of('n_layers'),
+                 dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
         """
         Parameters
         ----------
@@ -523,9 +524,9 @@ class LRUEmbedding(BaseEmbedding):
         embedding_dim : int
             The dimensionality of the output embedding.
         n_layers : int, optional
-            The number of stacked LRUBlocks. Defaults to 1.
+            The number of stacked LRUBlocks.
         dropout : float, optional
-            Locked-dropout probability inside each block. Defaults to 0.3.
+            Locked-dropout probability inside each block.
         """
         super().__init__()
         self.in_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
@@ -580,7 +581,7 @@ class TCN(BaseEmbedding):
             return self.relu(out + res)
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 kernel_size: int = 3, dropout: float = 0.0, bias: bool = True, **kwargs):
+                 kernel_size: int = default_of('kernel_size'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
         """
         Parameters
         ----------
@@ -644,7 +645,7 @@ class Transformer(BaseEmbedding):
             return x + self.pe[:seq_len]
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 nhead: int = 4, dropout: float = 0.0, bias: bool = True, **kwargs):
+                 nhead: int = default_of('nhead'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
         """
         Parameters
         ----------
@@ -743,7 +744,7 @@ class DeepSets(BaseEmbedding):
     settings = {'bias': 'bias'}
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int,
-                 n_layers: int = 2, bias: bool = True,
+                 n_layers: int = default_of('n_layers'), bias: bool = default_of('bias'),
                  no_spike_value: float = 0.0, **kwargs):
         super().__init__()
         self.no_spike_value = float(no_spike_value)
@@ -786,7 +787,7 @@ class CNN2D(BaseEmbedding):
     settings = {'kernel_size': 'kernel_size', 'bias': 'bias'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = 3, bias: bool = True, **kwargs):
+                 activation: str = 'relu', kernel_size: int = default_of('kernel_size'), bias: bool = default_of('bias'), **kwargs):
         """
         Parameters
         ----------
@@ -915,8 +916,8 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
                  pytorch_predefined: Optional[str] = None,
-                 pretrained: bool = False, use_spectral_norm: bool = True, dropout: float = 0.0,
-                 norm_layer: Optional[str] = None, bias: bool = True, **kwargs):
+                 pretrained: bool = default_of('pretrained'), use_spectral_norm: bool = default_of('use_spectral_norm'), dropout: float = default_of('dropout'),
+                 norm_layer: Optional[str] = None, bias: bool = default_of('bias'), **kwargs):
         super().__init__()
         try:
             import torchvision.models as _tv_models
@@ -1106,7 +1107,7 @@ class VariationalWrapper(nn.Module):
         stability.
     """
 
-    def __init__(self, base_encoder: nn.Module, embedding_dim: int, bias: bool = True):
+    def __init__(self, base_encoder: nn.Module, embedding_dim: int, bias: bool = default_of('bias')):
         super().__init__()
         self.base_encoder = base_encoder
         self.mu_head = nn.Linear(embedding_dim, embedding_dim, bias=bias)
