@@ -21,6 +21,9 @@ from neural_mi.training.epochs import choose_epoch
 from neural_mi.training.trainer import Trainer
 
 N, N_TEST, N_EPOCHS = 400, 40, 40          # a random split holds out 40 of 400 rows
+# On 40 held-out rows a top must clear 3 standard errors, sqrt(2 I / 40), to be
+# resolved (epochs.stands_above_zero): above 0.45 nats. The scripted plateaus
+# below top out at 0.6.
 
 
 def _curve(seed, nan_at=None):
@@ -102,11 +105,12 @@ def test_custom_smoothing_keeps_every_epoch(monkeypatch):
 def test_plateau_start_reads_and_evaluates_the_start_of_the_top(monkeypatch):
     """The default rule reads the earliest epoch at the top of a plateau, and that epoch's network is evaluated."""
     e = np.arange(N_EPOCHS)
-    curve = 0.3 * (1 - np.exp(-(e + 1) / 2)) + 0.005 * np.random.default_rng(4).standard_normal(N_EPOCHS)
+    curve = 0.6 * (1 - np.exp(-(e + 1) / 2)) + 0.005 * np.random.default_rng(4).standard_normal(N_EPOCHS)
     results, at_epoch, train_side = _train(monkeypatch, curve)
     smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
     expected, peak, diagnosis, _ = choose_epoch(curve, smoothed, 'plateau_start',
-                                                Trainer._smoothing_reach(1.0, 5), ran_to_limit=True)
+                                                Trainer._smoothing_reach(1.0, 5), ran_to_limit=True,
+                                                n_rows=N_TEST)
     assert results['best_epoch'] == expected < results['peak_epoch'] == peak
     assert results['curve_diagnosis'] in (diagnosis, 'fuzzy start')
     assert train_side[-1] == at_epoch[expected]
@@ -119,7 +123,7 @@ def test_a_slow_approach_is_fuzzy_when_its_start_moves_the_estimate(monkeypatch,
     from neural_mi.training import trainer as trainer_module
     monkeypatch.setattr(trainer_module, 'standard_error', lambda values, n: se)
     e = np.arange(N_EPOCHS)
-    curve = 0.3 * (1 - np.exp(-(e + 1) / 4)) + 0.002 * np.random.default_rng(4).standard_normal(N_EPOCHS)
+    curve = 0.6 * (1 - np.exp(-(e + 1) / 4)) + 0.002 * np.random.default_rng(4).standard_normal(N_EPOCHS)
     results, at_epoch, train_side = _train(monkeypatch, curve)
     smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
     approach = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5), True)[3]

@@ -74,17 +74,22 @@ def stands_above_zero(test_mi: Optional[float], n_rows: Optional[int]) -> bool:
 
 
 def choose_epoch(history, smoothed, rule: str, reach: Optional[int],
-                 ran_to_limit: bool) -> Tuple[int, int, str, int]:
+                 ran_to_limit: bool, n_rows: Optional[int] = None) -> Tuple[int, int, str, int]:
     """The epoch to read, the epoch of the smoothed maximum, the diagnosis of the curve, and the first epoch of
     its approach to the top.
 
-    ``history`` is the raw held-out curve and ``smoothed`` the smoothed one.
-    ``reach`` is how many epochs the smoothing looks ahead, None when unknown (a
-    custom smoothing function). ``ran_to_limit`` is whether training used every
-    epoch it was allowed. The diagnosis is one of:
+    ``history`` is the raw held-out curve and ``smoothed`` the smoothed one, in
+    nats. ``reach`` is how many epochs the smoothing looks ahead, None when
+    unknown (a custom smoothing function). ``ran_to_limit`` is whether training
+    used every epoch it was allowed. ``n_rows`` is the number of held-out rows
+    every epoch scores, None when unknown. The diagnosis is one of:
 
     - ``'ok'``.
-    - ``'not resolved'``: the top does not stand clearly above the curve's noise.
+    - ``'not resolved'``: the top does not stand clearly above the curve's noise:
+      RESOLVED_NOISE times its epoch-to-epoch noise, or zero by CLEAR_SE
+      standard errors of its held-out rows (:func:`stands_above_zero`). Every
+      epoch scores the same rows, so their sampling error moves the whole curve
+      together and never shows in its epoch-to-epoch noise.
     - ``'still rising'``: training ran to its limit while the curve was still
       rising clearly over its last epochs.
     - ``'too fast'``: the curve reached its top within the smoothing's reach of
@@ -100,10 +105,12 @@ def choose_epoch(history, smoothed, rule: str, reach: Optional[int],
     start = int(np.flatnonzero(s >= level - 0.5 * noise)[0])
     epoch = start if rule == 'plateau_start' else peak
     approach = int(np.flatnonzero(s >= level - APPROACH_NOISE * noise)[0])
-    return epoch, peak, _diagnose(s, start, level, noise, reach, ran_to_limit), approach
+    return epoch, peak, _diagnose(s, start, level, noise, reach, ran_to_limit, n_rows), approach
 
 
-def _diagnose(s, start, level, noise, reach, ran_to_limit) -> str:
+def _diagnose(s, start, level, noise, reach, ran_to_limit, n_rows=None) -> str:
+    if n_rows and not stands_above_zero(level, n_rows):
+        return 'not resolved'
     if not noise > 0:
         return 'ok'
     if level < RESOLVED_NOISE * noise:
@@ -123,9 +130,10 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
     library shows each kind once per call and counts the rest. ``shift`` and ``se`` are in ``units``."""
     if diagnosis == 'not resolved':
         warnings.warn(
-            "The held-out MI curve does not rise clearly above its own epoch-to-epoch noise, so the data do not "
-            "settle the epoch the estimate is read at, nor the estimate. Check the curve with result.plot(). More "
-            "data, more epochs or another network may resolve it.", UserWarning, stacklevel=user_stacklevel())
+            "The held-out MI curve does not rise clearly above its own noise, either its epoch-to-epoch noise or "
+            "the sampling error of its held-out rows, so the data do not settle the epoch the estimate is read at, "
+            "nor the estimate. Check the curve with result.plot(). More data, more epochs or another network may "
+            "resolve it.", UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'still rising':
         warnings.warn(
             f"The held-out MI was still rising when training reached n_epochs={n_epochs}. The estimate may then "

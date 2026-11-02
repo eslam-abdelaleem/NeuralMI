@@ -150,6 +150,18 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A held-out curve was `'not resolved'` only when its top stood less than 8
+  times its epoch-to-epoch noise above zero. Every epoch scores the same
+  held-out rows, so their sampling error moves the whole curve together and
+  never shows in that noise, and a network that learned nothing could sit flat
+  a little above zero and pass: 0.0013 bits on 14 held-out rows was read as
+  resolved, with a warning that blamed a top reached too fast. A top must now
+  also stand 3 standard errors of its held-out rows above zero
+  (`epochs.stands_above_zero`), the line C1 draws for the terms of a combined
+  quantity, so the diagnosis, the trainer's warnings and the combination read
+  one line. The fuzzy-start check leaves out a training-side value at or below
+  zero, whose standard error from a single block is 0 and made any shift count.
+
 - Whether rows are in time order was decided in six places from different
   signals, and rows built by offset (active information storage, predictive
   and cross-predictive information, `mi_rate`, instantaneous exchange, the

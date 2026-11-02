@@ -85,3 +85,15 @@ def test_each_warning_differs_between_networks_only_in_its_numbers(diagnosis):
         warn_about_curve('ok', 3, 4, 6, 100)
     first, second = (str(w.message) for w in caught)
     assert _kind('UserWarning', first) == _kind('UserWarning', second)
+
+
+def test_a_flat_curve_a_little_above_zero_is_not_resolved_on_few_rows():
+    """Every epoch scores the same held-out rows, so their sampling error moves the whole curve together:
+    a curve that sits flat at a small positive level clears its epoch-to-epoch noise easily, and only the
+    standard error of its rows shows that it has not cleared zero."""
+    history = 0.001 + 1e-6 * np.random.default_rng(0).standard_normal(40)   # nats, nearly flat
+    smoothed = Trainer._smooth(None, list(history), 1.0, 5)
+    assert choose_epoch(history, smoothed, 'plateau_start', REACH, False)[2] == 'ok'
+    assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=14)[2] == 'not resolved'
+    # 0.001 nats clears 3 standard errors, sqrt(2 * 0.001 / N), once N exceeds 18 / 0.001 rows.
+    assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=20000)[2] == 'ok'

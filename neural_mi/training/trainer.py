@@ -886,7 +886,8 @@ class Trainer:
         if np.isnan(_smoothed_history).all():
             raise TrainingError("Training failed to produce a valid model checkpoint.")
         best_ep, peak_ep, curve_diagnosis, approach_ep = choose_epoch(
-            history, _smoothed_history, epoch_rule, _reach, ran_to_limit=len(history) == n_epochs)
+            history, _smoothed_history, epoch_rule, _reach, ran_to_limit=len(history) == n_epochs,
+            n_rows=actual_test_subset_size)
         _train_x = _index_batch(_eval_x_source, _eval_train_eval_idx)
         _train_y = _eval_y_source[_eval_train_eval_idx, ...]
         # The network at the start of the curve's approach to its top, read on
@@ -1013,11 +1014,14 @@ class Trainer:
         # What the held-out curve says about the epoch read: its shape, and
         # whether reading at the start of the approach to its top moves the
         # estimate by more than FUZZY_SE standard errors. A curve that never
-        # rose above zero has its own message below.
+        # rose above zero has its own message below, and so does a reading at
+        # or below zero, whose standard error from a single block is 0 and
+        # would count any shift.
         _read_ep = best_ep if _conservative_ep is None else _conservative_ep
         _approach_shift = (_raw_train_mi - _at_approach
                            if _at_approach is not None and approach_ep < _read_ep else None)
-        if curve_diagnosis == 'ok' and _approach_shift is not None and abs(_approach_shift) > FUZZY_SE * _train_se:
+        if (curve_diagnosis == 'ok' and _raw_train_mi > 0 and _approach_shift is not None
+                and abs(_approach_shift) > FUZZY_SE * _train_se):
             curve_diagnosis = 'fuzzy start'
         if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
             warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,

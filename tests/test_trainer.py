@@ -368,8 +368,9 @@ class TestUnderTrainingWarning:
                        custom_smoothing_fn=custom_smoothing_fn)
 
     def test_fires_when_the_curve_is_still_rising_at_the_epoch_limit(self, dummy_data, dummy_model, monkeypatch):
-        """A held-out curve still rising when training reaches n_epochs -> warn."""
-        rising = iter(0.05 * np.arange(1, 31) + 0.001 * np.random.default_rng(0).standard_normal(30))
+        """A held-out curve still rising when training reaches n_epochs -> warn. It ends at 3 nats, clear of
+        3 standard errors of the 10 held-out rows, sqrt(2 * 3 / 10), so the curve is resolved."""
+        rising = iter(0.1 * np.arange(1, 31) + 0.001 * np.random.default_rng(0).standard_normal(30))
         evaluate = Trainer._safe_eval_mi
         monkeypatch.setattr(Trainer, '_safe_eval_mi', lambda self, *a, **k: next(rising, None) or evaluate(self, *a, **k))
         trainer = self._trainer(dummy_model, None)

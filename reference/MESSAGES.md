@@ -187,12 +187,16 @@ further in each epoch instead. Raised too far, it brings the top into the first
 few epochs, which the message about a top reached at epoch ... and gone soon
 after reports.
 
-**`The held-out MI curve does not rise clearly above its own epoch-to-epoch noise`**
+**`The held-out MI curve does not rise clearly above its own noise`**
 The top of the smoothed held-out curve stands less than 8 times the curve's
-noise above zero. The noise is measured from the curve itself, from its changes
-between epochs with any smooth trend removed. The data then settle neither the
-epoch the estimate is read at nor the estimate. A curve whose values are all
-non-positive gets the message below instead.
+epoch-to-epoch noise above zero, or less than 3 standard errors of its held-out
+rows ($\sqrt{2I/N}$ for a top of $I$ nats on $N$ rows). The epoch-to-epoch noise
+is measured from the curve itself, from its changes between epochs with any
+smooth trend removed. Every epoch scores the same held-out rows, so their
+sampling error moves the whole curve together and never shows in that noise: a
+network that learned nothing can sit flat a little above zero. The data then
+settle neither the epoch the estimate is read at nor the estimate. A curve whose
+values are all non-positive gets the message below instead.
 
 **`The held-out MI reached its top at epoch ... and fell clearly soon after`**
 The earliest epoch at the top of the smoothed curve lies within the smoothing's
@@ -207,7 +211,8 @@ The smoothed curve climbed its last 3 noise units to the level of its top over
 several epochs, and the training-side value read at the first of them differs
 from the reported one by more than `FUZZY_SE` of the estimate's standard errors (the
 spread of its evaluation blocks over the root of their count, or
-$\sqrt{2I/N}$ for a single block). The estimate then depends on where the top
+$\sqrt{2I/N}$ for a single block). A reported value at or below zero is left
+out, since its warnings come from the entries on negative values. The estimate then depends on where the top
 is taken to start. `runs` keeps the difference as `approach_shift`.
 `result.plot()` shows the curve with the epoch read and the peak.
 

@@ -209,25 +209,6 @@ estimates across units with channel preprocessing; independent repeats with a
 custom critic; the row-geometry contract for every temporal quantity;
 window-parameter validation; every setting reaching every network.
 
-### C16. A held-out curve within its own noise counts as resolved
-
-**Now.** The held-out curve is `'not resolved'` when its top stands less than 8
-times its epoch-to-epoch noise above zero (`epochs._diagnose`). Every epoch
-scores the same held-out rows, so their sampling error moves every epoch's value
-together and never shows in that noise. A network that learned nothing and sits
-flat at a small positive level passes: 0.0013 bits on 14 held-out rows over
-three epochs was read as resolved, and its warning blamed a top reached too
-fast. The standard error of a training-side value read in one block is
-$\sqrt{2I/N}$, which is 0 at or below zero, so the `'fuzzy start'` check then
-counts any shift.
-
-**Fix.** A curve is also `'not resolved'` when its top does not stand clearly
-above zero by the held-out rows' own standard error (`epochs.stands_above_zero`,
-the line C1 drew for combining terms), so the diagnosis, the trainer's warnings
-and the combination of terms read one line. The fuzzy-start check leaves out a
-training-side value at or below zero, which the warnings about a negative value
-already cover.
-
 ## Design work
 
 The design items aim to declare every fact about a setting or a mode in one
