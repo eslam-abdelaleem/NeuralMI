@@ -1,5 +1,257 @@
 # Roadmap
 
+## Correctness fixes
+
+Each item below gives a wrong or misleading result today, or is one thing
+implemented in several places that can disagree. They are being fixed now. An
+item leaves this list when its fix lands, and the changelog records the fix.
+
+The evidence comes from an investigation of `mi_rate` on data with known
+answers: exact Gaussian values for a smooth two-process model (a shared damped
+oscillation under larger private ones, finely sampled, as in field potentials)
+and the library's own generators. Values are in nats unless marked as bits.
+
+### C1. Terms of a difference combined from their measured values
+
+**Now.** A network whose training-side value comes out negative reports 0, and
+every place that combines the terms of a difference reads that floored value
+(`_joint_marginal_difference`, `modes._difference_rows`, the rigorous `rung` and
+interaction's `_single_mi_mean`). When the conditioning term of `mi_rate` read
+negative on its training rows, the result was the joint term alone: 2.41 for a
+true 0.17, with an amplification factor of 1.0 and no combination warning.
+
+**Fix.** One helper combines the terms of every difference from `raw_train_mi`.
+A term that learned nothing (its held-out value never rose above zero) or read
+negative on its training rows fails the repeat: NaN in `runs`, counted in its
+row, and one warning naming the term. A negative combination of two healthy
+terms stays a measurement under the existing combination warnings. Interaction
+information keeps its signed result, and the rule applies to its three terms.
+
+### C2. One record of the rows' geometry
+
+**Now.** Whether rows form a time series is decided in six places from
+different signals (`run.py`, `shift_windowing.py`, `transfer.py`, two places in
+`rigorous.py`, `trainer.py`). Rows built by offset (active information storage,
+predictive and cross-predictive information, `mi_rate`, instantaneous exchange,
+the directed information rate) trigger none of them. With `rigorous=True` those
+rows are chunked in a random permutation (`chunking_mode='permuted'` for
+`mi_rate`, `directed_information_rate` and `active_information_storage`;
+`'contiguous'` for `transfer_entropy`), so each chunk's blocked split is random
+over rows that share almost all their samples. The blocked-split leak check
+never runs for them, since only the processors and transfer entropy pass their
+window geometry. `Conditional` has no `temporal_chunking` field, and
+`quantities._difference_fit` refuses `Rigorous(temporal_chunking=...)` with a
+message saying difference quantities already chunk contiguously. Rigorous
+chunking is written twice (`AnalysisWorkflow._prepare_tasks` and
+`run_rigorous_scalar_analysis`).
+
+**Fix.** Every builder of rows (the processors, the offset builder, transfer
+entropy) records whether its rows are in time order, the step between rows and
+the span of samples a row covers. The leak check, rigorous chunking, the choice
+of evaluation rows, the permutation block length, window shifting (C12) and the
+one-step check (C3) read that record. One chunker serves both rigorous paths.
+The `temporal_chunking` entries the schema keeps for conditional, transfer and
+interaction, which no config can set, go.
+
+**Verification.** For every temporal quantity, contiguous rigorous chunks, and a
+leak warning on a recording short enough for the gap to fall inside a row's
+span.
+
+### C3. One offset builder and one path for `processing=`
+
+**Now.** Six hand-written builders (`build_past_future`, `build_cross_offset`,
+`_build_te_arrays`, `_build_mi_rate_arrays`, `_build_inst_exchange_arrays`,
+`_build_dir_info_rate_arrays`) do what `utils.build_offset_arrays` does; a test
+already shows they give identical arrays. `processing=` reaches the named
+quantities four ways: `_on_one_grid` for the offset quantities, `grid_rows` with
+`one_step_rows` for transfer entropy, the processor itself for `block_mi`, and
+`run()` directly for `instantaneous_mi` and `interaction_information`. Only
+transfer entropy requires rows one step wide. With overlapping windows
+(`window_size=10`, `step_size=2`) `mi_rate` puts 8 of the 10 samples of Y_0 into
+its own conditioning set. On spike data in 10 ms windows,
+`instantaneous_exchange(k=0)` keeps silent windows (5,992 rows) and
+`instantaneous_mi` drops them (51 rows), although both compute I(X_0; Y_0).
+
+**Fix.** Every named quantity defined by time offsets, `instantaneous_mi`
+included, builds its rows through `build_offset_arrays` and takes `processing=`
+through one path that puts the streams on one grid of rows one step wide, as
+transfer entropy does now. Silent spike windows are then treated alike, and
+`instantaneous_mi` builds the same rows as the `k=0` forms. `block_mi` keeps
+windowing through the processor, which is its definition.
+
+### C4. A joint X travels as a pair everywhere
+
+**Now.** The joint term's X reaches its network in one of two forms: one tensor
+whose last channels are the conditioning set, tagged `_condition` (transfer
+entropy, conditional transfer entropy, `mode='conditional'`, interaction
+information), or a pair of tensors when the two parts have different window
+lengths (`mi_rate`, `instantaneous_exchange`, `directed_information_rate`,
+`Conditional(align='dual_branch')`). Every stage between the builders and the
+network handles both, and four refuse the pair: permutation tests, decoders,
+variational encoders and precision corruption. `mi_rate` therefore cannot be
+tested against a permutation null.
+
+**Fix.** The pair everywhere. The `_condition` tag and the channel split go, and
+the four stages accept the pair.
+
+### C5. Every setting reaches every network it names
+
+**Now.** `use_spectral_norm`, `dropout`, `norm_layer` and `bias` reach MLP
+encoders. The hybrid critic's head, the concat critic and the
+pretrained-backbone head are built with spectral normalisation on and ignore
+the other three, whatever is set. The branched head follows spectral
+normalisation and dropout only over MLP branches and never follows
+`norm_layer`. TCN blocks use dropout 0.2 and the Transformer PyTorch's 0.1,
+which `Model(dropout=...)` never reaches. Nothing warns.
+
+**Fix.** Every setting reaches every network the library builds that has the
+part it names, and a setting with no effect on the chosen network says so.
+`use_spectral_norm` stays on by default. Across eleven scenarios with exact
+values, turning it off lowered the held-out value in most and raised it by at
+most 0.08 bits (see "Spectral normalisation off by default" under Estimation).
+
+### C6. Defaults only in the schema
+
+**Now.** `Trainer.train` declares defaults of its own (patience 10, `shift_time`
+and `shift_windows` False, units nats, `verbose` True) against the schema's
+(1000, True, True, bits, False). Fallbacks in `task.py`, `utils.py` and the
+decoder builder name a kernel size of 7 and dropout 0.3, which never apply
+because the schema always fills 3 and 0.0, and the decoder classes declare
+defaults of their own. This is the part of design item 1 that disagrees with
+the schema today. The rest of item 1 stays design work.
+
+**Fix.** Defaults come from the schema alone. Functions below `run()` take the
+settings without defaults of their own, and the dead fallbacks go.
+
+### C7. Preprocessing and a data check
+
+**Now.** Nothing scales or whitens data before the networks, and estimates
+depend on units: a pair carrying 2.0 reads 2.05 at unit scale, 0.006 at ×1e-3
+and 0.000 at ×1e3. KSG standardises its columns in `ksg.prepare`, and the
+embedding spectrum normalises in `utils._whiten`. On smooth, finely sampled
+signals a process's own past predicts its present so well that the conditioning
+term of `mi_rate` is several nats and the rate a small residual of it (0.17 from
+4.83 − 4.66). Whitening each signal by its own autoregressive filter leaves the
+rate unchanged in the limit of long windows and shrinks that term. The library's
+defaults then read 0.135 to 0.154 against 0.160, where on the raw signals they
+read 0 for two seeds and 2.41 (C1) for the third.
+
+**Fix.** `Preprocessing(channel=..., time=...)`, opt-in and recorded in
+`result.params`.
+- Channel domain: z-score, ZCA, PCA and copula, each fitted on one stream at a
+  time (X, Y and W separately). Each is invertible and leaves every quantity
+  unchanged. PCA may keep fewer components, with a warning that a cut by
+  variance can drop the information, which need not lie in the directions of
+  largest variance. In the smooth model it lies under larger private
+  oscillations.
+- Time domain: whitening by an autoregressive filter per channel. The rate
+  quantities (`mi_rate`, transfer entropy, conditional transfer entropy, the
+  directed information rate, instantaneous exchange) are unchanged by it in the
+  limit of long windows. Every other quantity is changed by it and warns.
+- Spike-time and categorical streams take neither, and the message points at the
+  processor's own settings and at encoder input scaling (C8). Pre-windowed arrays
+  take the channel domain only.
+- A custom transform plugs in through the interface the built-ins use: fit on a
+  stream, transform, declare its domain. The library warns once that it cannot
+  check that a custom transform preserves information.
+- One implementation replaces `utils._whiten` and the scaling in `ksg.prepare`.
+
+A data check at the start of every call reports, for each stream, the channel
+scales, constant or non-finite channels, for the rate quantities how much of
+each channel's variance its own past predicts linearly, the scale of the rows
+the network will receive, and the held-out row count. It suggests the matching
+option and changes nothing.
+
+### C8. The scale of processed rows
+
+**Now.** Binned spikes are divided by the bin width by default
+(`normalize_bins=True`), so one spike becomes 100 in 10 ms bins and 1,000 in
+1 ms bins. On the library's spike generator (1.152 bits, information in the
+counts) the estimate is 0 at both bin widths (held-out −2.3 and −116 bits), and
+0.72 and 0.47 bits with plain counts. Preprocessing acts on raw streams and
+cannot reach the rows a processor makes.
+
+**Fix.** `normalize_bins` defaults to False, so rates are opt-in like every
+other change to the data. Input scaling becomes an encoder setting in `Model`,
+off by default, honoured by every encoder (C5), saved with the network and
+applied by `extract_embeddings`.
+
+### C9. Custom critics as recipes
+
+**Now.** `Model(custom_critic=obj)` trains the one object it is given in every
+task. With `n_workers=1` each repeat continues the previous one's training
+(held-out value at the first epoch 0.11, 0.77 and 1.22 over three repeats), the
+caller's object is trained in place, results depend on `n_workers`, and a
+difference quantity fails with a shape error.
+
+**Fix.** `custom_critic` takes a class or function, which the library calls in
+each task under that task's seed with the input sizes it computed, as
+`custom_embedding_cls` works now. Each term of a difference gets its own. An
+object is refused with a message showing the new form.
+
+### C10. The windows of the named quantities
+
+**Now.** `mi_rate` requires `h` and defaults `half_width` to 20 samples,
+although both windows change the answer. In the easy regime of the accuracy
+test `half_width=20` read 0.551 to 0.609 against 0.588, and `half_width=5` read
+0.579 to 0.594. Window parameters are not validated as `stride` is:
+`mi_rate(h=-1)` runs as `h=0`, `k=0` and `history_window=0` build arrays without
+columns, and other values fail inside torch. At `h=0` or `k=0` the call computes
+another quantity, with one network instead of a difference.
+
+**Fix.** `half_width` is required. One validator, in the manner of
+`validate_stride`, checks every window parameter. `h=0` and `k=0` warn and name
+the quantity computed: `instantaneous_mi` for `instantaneous_exchange(k=0)` and
+`directed_information_rate(k=0)`, and I(X_{-L..L}; Y_0) for `mi_rate(h=0)`,
+which is instantaneous MI at `half_width=0`.
+
+### C11. The small-sample check counts held-out rows
+
+**Now.** `_warn_small_sample` fires below 200 rows in total. `block_mi` with
+20-sample windows on 20,000 samples built 1,000 windows with 99 held-out rows,
+read about 1.4 against 3.12, and warned only that the curve was still rising.
+
+**Fix.** The check also considers the held-out row count, and the curve
+warnings name it when it is small.
+
+### C12. One rule for window shifting
+
+**Now.** `shift_windows` reaches `block_mi`, which windows through a processor,
+but never the offset quantities on the same data.
+
+**Fix.** Shifting applies wherever rows thin a series (a step or stride above
+one sample) and nowhere else, read from the row geometry (C2).
+
+### C13. Small duplicates
+
+`_ensure_3d`, `_batch_size_of`, the two trim tolerances of `conditional.py` and
+`interaction.py`, `_EMBEDDING_BATCH` and `_to_tensor` are each defined twice.
+Each keeps one definition.
+
+### C14. Docs, tests and tutorials on the defaults
+
+**Now.** Three configurations describe the rate quantities and none is the
+default. `USING.md` shows a GRU, the accuracy tests use a GRU (embedding 8,
+hidden 32, one layer) at learning rate 1e-3, and tutorial 03 uses an MLP with
+embedding 8 and hidden 128 at batch 256. Every run in the investigation used the
+default MLP.
+
+**Fix.** Docs, tests and tutorials use the defaults, and a deviation states its
+reason.
+
+### C15. Tests that would have caught these
+
+**Now.** The one end-to-end accuracy test of `mi_rate` runs in the easy regime
+(errors amplified 2.7 times), with a GRU, and accepts ±0.5 bits on a 0.85-bit
+target.
+
+**Fix.** Accuracy on a smooth, self-predictable process after whitening, with
+the default model and a tolerance that fails on the errors above; unchanged
+estimates across units with channel preprocessing; independent repeats with a
+custom critic; the row-geometry contract for every temporal quantity; a failed
+term failing its repeat; window-parameter validation; every setting reaching
+every network.
+
 ## Design work
 
 The design items aim to declare every fact about a setting or a mode in one
@@ -176,7 +428,10 @@ the error against the exact value fell to 0.44 mbit, from 0.80 with one fixed
 setting. There the term of the target's own past did best with more
 regularisation and the full term with more capacity. Elsewhere the choice made
 little difference, including where only the ratio of the terms' input sizes grew
-(99 sources against the target's own 5 lags).
+(99 sources against the target's own 5 lags). On the smooth model of the
+correctness section, the joint term of `mi_rate` was often still rising at the
+default 50 epochs while its conditioning term had settled. Reading each term at
+its own epoch cannot make up for a budget they share.
 
 **Scope.**
 - Model and Training fields only. Split and estimator stay shared, because every
@@ -214,6 +469,100 @@ terms k times. Prefixed keys are refused outside Model and Training fields.
 **Cost.** Small in the engine. Most of the work is the new setting, so it is
 cheaper after design item 1.
 
+### The rate from the slope of block MI
+
+**Idea.** Past the dependence time of the two processes, block MI grows as
+`rate * w + b`. The slope between two window sizes cancels `b` and never
+estimates the conditioning term that `mi_rate` subtracts, so it suits processes
+whose own past predicts them well, where the chain route of `mi_rate` amplifies
+errors. The chain route suits processes with a large rate and little memory,
+where block MI reaches the ceiling within a few samples. On the smooth model of
+the correctness section, the slope between windows of 5 and 10 samples needs
+block MI of 1.4 and amplifies errors 2.4 times, against 56 for `mi_rate`. In
+the easy regime of the accuracy test the same slope needs 6.3.
+
+**Evidence so far.** On the raw smooth signals the library's defaults read about
+0.05 against 0.57 at a 5-sample window. Learning rates from 1e-4 to 1e-2, with
+wider networks and longer training, did no better, and every one of those
+curves was not resolved. After whitening (C7) the defaults read 0.70 against
+0.75 at 5 samples and 1.31 against 1.53 at 10 (still rising), and fell short at
+20 samples, where 1,000 windows were left (C11).
+
+**Needs.** A fit of the linear part of I(w): `rigorous._find_linear_region`
+generalised to named columns, trimming at both ends (the subextensive bend at
+small w, the ceiling and the falling row count at large w) and reporting the
+slope with its interval. Offered as a second route the user chooses, with the
+run pointing to it (see "Pointers in messages" under Smaller items).
+
+### Two-modality preprocessing (PLS, CCA)
+
+**Idea.** Directions chosen for X and Y together, as a channel-domain option of
+C7.
+
+**Constraints.** It uses both streams, so fitting it on every row would let the
+held-out rows shape the transform. It is fitted inside each task on that task's
+training rows. With a full basis on each side it is invertible and leaves the
+quantity unchanged; keeping fewer components warns as PCA does. In a difference
+quantity the two terms would transform the conditioning set differently, so it
+is refused there.
+
+### A direct estimate of a conditional term
+
+**Idea.** I(A; B | C) as the mean log-likelihood ratio of two predictive models
+of B, one given A and C and one given C alone, on the same rows. There are no
+negatives and no `log N` ceiling, and the two terms' errors are paired row by
+row instead of coming from two separate networks. It fits the objective choice
+of the first item under "Estimators and quantities from other toolboxes".
+
+**Revisit if** whitening (C7) does not make the conditioned quantities reliable
+on real recordings.
+
+### Starting the joint term from the trained conditioning term
+
+**Idea.** The conditioning term's network is the joint term's network without
+the branch of the rest of X. Starting the joint term from it, with that branch
+contributing nothing at first, starts the joint term at the conditioning term's
+value.
+
+**Caveat.** The shared path keeps training and adds to the difference, so it is
+either frozen or the conditioning term is read again after the same training.
+
+### Spectral normalisation off by default (considered, not planned)
+
+**Idea.** Turn `use_spectral_norm` off by default, after a case on spike data
+where it seemed to hurt.
+
+**Study.** Eleven scenarios with exact values, inputs at unit scale, library
+defaults otherwise. Spectral normalisation on and off at the default learning
+rate and at four times it, 2 or 3 seeds, each setting read at the learning rate
+its own held-out value preferred (bits):
+
+| scenario | exact | held-out, on | held-out, off |
+|---|---|---|---|
+| 50 dimensions, 3 shared, 2,000 rows | 3.0 | 1.38 | 0.12 |
+| windowed multichannel oscillations | 3.95 | 3.27 | 2.41 |
+| binned spikes, information in counts | 1.15 | 0.50 | 0.34 |
+| binned spikes, information in timing | 1.15 | 1.10 | 1.01 |
+| hybrid critic, 50 dimensions | 3.0 | 1.55 | 0.81 |
+| heavy-tailed nonlinear transform | 3.0 | 2.69 | 2.58 |
+| Gaussian, 5 dimensions | 3.0 | 2.98 | 2.91 |
+| Gaussian, high MI | 6.5 | 6.04 | 6.00 |
+| XOR | 1.0 | 1.00 | 1.00 |
+| `mi_rate` on whitened signals (reported) | 0.23 | 0.21 | 0.22 |
+| hybrid critic, Gaussian, 5 dimensions | 3.0 | 2.88 | 2.96 |
+
+Turning it off often raised the training-side value while the held-out value
+fell (binned counts: 0.70 reported against 0.58), which is overfitting. Away
+from unit scale it fixes nothing either way: at ×1e-3 both settings fail, and at
+the scale of default spike binning (C8) turning it off is worse.
+
+**Why not.** On is better or tied everywhere except one easy case, where off
+leads by 0.08 bits.
+
+**Revisit if** a recording shows held-out values rising with it off. The spike
+case that prompted the idea is the first to rerun, since its loss may have come
+from the bin scaling of C8.
+
 ## Estimators and quantities from other toolboxes
 
 From a comparison with JIDT, IDTxl, HOI, Frites, MINT, PyInform, dit and
@@ -221,7 +570,8 @@ infomeasure (October 2026).
 
 **Preprocessing, embedding and objective as separate choices.** Rationale:
 several estimators of other toolboxes are combinations of the three. Options:
-- preprocessing: z-score, whitening, ZCA, PCA, copula (ranks to normal);
+- preprocessing: now correctness item C7 (channel domain: z-score, ZCA, PCA,
+  copula; time domain: whitening), with PLS and CCA under Estimation;
 - embedding: linear (an MLP with `n_layers=0`, already possible) or any
   existing architecture;
 - objective: InfoNCE, SMILE, or a Gaussian objective (log-determinant of the
@@ -250,6 +600,17 @@ storage-transfer paper's version), quadratic extrapolation through the rigorous
 ladder.
 
 ## Smaller items
+
+**Pointers in messages.** The amplification warning of a difference names
+whitening (C7) and the block-MI route. Each term's curve diagnosis is carried
+onto the combined row in `dataframe`, so a difference read from two unfinished
+terms says so where its value is shown.
+
+**Reading a run.** A section of USING.md or a tutorial that reads a run's own
+diagnostics in order: whether the held-out curve resolved, the reported value,
+for a difference its amplification and each term's diagnosis, and the held-out
+row count. It complements "Choosing between configurations" in USING.md, and
+it says that a curve still rising is unfinished rather than wrong.
 
 **Check the README, ANATOMY and the tutorials in CI.**
 `docs/figures/readme_figures.ipynb` runs the README quickstart and the code in
