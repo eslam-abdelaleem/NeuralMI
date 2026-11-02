@@ -1,0 +1,315 @@
+{
+ "experiment": "scale",
+ "runs": [
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.005943775177001953,
+   "mi_std": null,
+   "J": 3.6616296768188477,
+   "M": 3.6675734519958496,
+   "amp": 1233.088888888889,
+   "J_train": 3.6616296768188477,
+   "J_test": 3.588592529296875,
+   "J_epoch": 35.0,
+   "J_diag": [
+    "fuzzy start"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 3.6675734519958496,
+   "M_test": 3.5973448753356934,
+   "M_epoch": 41.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 88.86751914024353,
+   "label": "zscored",
+   "seed": 0,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 2 times in this c",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.002865314483642578,
+   "mi_std": null,
+   "J": 3.782658576965332,
+   "M": 3.7855238914489746,
+   "amp": 2641.3095356964554,
+   "J_train": 3.782658576965332,
+   "J_test": 3.657744884490967,
+   "J_epoch": 38.0,
+   "J_diag": [
+    "still rising"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 3.7855238914489746,
+   "M_test": 3.6713082790374756,
+   "M_epoch": 38.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 77.23615097999573,
+   "label": "zscored",
+   "seed": 1,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.0433502197265625,
+   "mi_raw": 0.0433502197265625,
+   "mi_std": null,
+   "J": 3.6321873664855957,
+   "M": 3.588837146759033,
+   "amp": 166.5741156282999,
+   "J_train": 3.6321873664855957,
+   "J_test": 3.7076916694641113,
+   "J_epoch": 39.0,
+   "J_diag": [
+    "still rising"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 3.588837146759033,
+   "M_test": 3.672193765640259,
+   "M_epoch": 36.0,
+   "M_diag": [
+    "ok"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 93.86862063407898,
+   "label": "zscored",
+   "seed": 2,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "Conditional MI (dual-branch) has an error-amplification factor of 166",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.22982454299926758,
+   "mi_std": null,
+   "J": 2.672245979309082,
+   "M": 2.9020705223083496,
+   "amp": 24.254661529492072,
+   "J_train": 2.672245979309082,
+   "J_test": 2.5973243713378906,
+   "J_epoch": 44.0,
+   "J_diag": [
+    "still rising"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 2.9020705223083496,
+   "M_test": 2.8287715911865234,
+   "M_epoch": 34.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 74.30354118347168,
+   "label": "raw_x162",
+   "seed": 0,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.40587806701660156,
+   "mi_std": null,
+   "J": 2.5415453910827637,
+   "M": 2.9474234580993652,
+   "amp": 13.523689243739339,
+   "J_train": 2.5415453910827637,
+   "J_test": 2.5533809661865234,
+   "J_epoch": 35.0,
+   "J_diag": [
+    "fuzzy start"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 2.9474234580993652,
+   "M_test": 2.9162216186523438,
+   "M_epoch": 32.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 70.74741244316101,
+   "label": "raw_x162",
+   "seed": 1,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 2 times in this c",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 2.4120922088623047,
+   "mi_raw": 2.4120922088623047,
+   "mi_std": null,
+   "J": 2.4120922088623047,
+   "M": 0.0,
+   "amp": 1.0,
+   "J_train": 2.4120922088623047,
+   "J_test": 2.4592208862304688,
+   "J_epoch": 36.0,
+   "J_diag": [
+    "fuzzy start"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 0.0,
+   "M_test": 1.2940850257873535,
+   "M_epoch": 39.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 70.28831267356873,
+   "label": "raw_x162",
+   "seed": 2,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 2 times in this c",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The train MI at the reported epoch is negative (-0"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.017671585083007812,
+   "mi_raw": 0.017671585083007812,
+   "mi_std": null,
+   "J": 0.48006439208984375,
+   "M": 0.46239280700683594,
+   "amp": 53.33178629249865,
+   "J_train": 0.48006439208984375,
+   "J_test": 0.5049247741699219,
+   "J_epoch": 30.0,
+   "J_diag": [
+    "ok"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 0.46239280700683594,
+   "M_test": 0.48047780990600586,
+   "M_epoch": 24.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 54.47553825378418,
+   "label": "volts_x1e-3",
+   "seed": 0,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "Conditional MI (dual-branch) has an error-amplification factor of 53",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.04664897918701172,
+   "mi_raw": 0.04664897918701172,
+   "mi_std": null,
+   "J": 0.4862632751464844,
+   "M": 0.43961429595947266,
+   "amp": 19.847756311969743,
+   "J_train": 0.4862632751464844,
+   "J_test": 0.49338388442993164,
+   "J_epoch": 19.0,
+   "J_diag": [
+    "ok"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 0.43961429595947266,
+   "M_test": 0.4662165641784668,
+   "M_epoch": 22.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 60.83708381652832,
+   "label": "volts_x1e-3",
+   "seed": 1,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "Conditional MI (dual-branch) has an error-amplification factor of 19",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.07676315307617188,
+   "mi_raw": 0.07676315307617188,
+   "mi_std": null,
+   "J": 0.4127197265625,
+   "M": 0.3359565734863281,
+   "amp": 9.75306862793818,
+   "J_train": 0.4127197265625,
+   "J_test": 0.5244903564453125,
+   "J_epoch": 23.0,
+   "J_diag": [
+    "ok"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 0.3359565734863281,
+   "M_test": 0.525022029876709,
+   "M_epoch": 24.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 73.5058205127716,
+   "label": "volts_x1e-3",
+   "seed": 2,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "The held-out MI approached its top slowly, so where the top starts is uncertain"
+   ]
+  }
+ ]
+}

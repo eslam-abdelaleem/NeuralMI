@@ -1,0 +1,71 @@
+{
+ "experiment": "sn_chain",
+ "rows": [
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.1647324562072754,
+   "mi_raw": 0.1647324562072754,
+   "mi_std": null,
+   "J": 3.477538585662842,
+   "M": 3.3128061294555664,
+   "amp": 41.22044235517514,
+   "J_train": 3.477538585662842,
+   "J_test": 3.4480338096618652,
+   "J_epoch": 25.0,
+   "J_diag": [
+    "ok"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 3.3128061294555664,
+   "M_test": 3.4152331352233887,
+   "M_epoch": 18.0,
+   "M_diag": [
+    "ok"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 87.6388623714447,
+   "seed": 0,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "Conditional MI (dual-branch) has an error-amplification factor of 41"
+   ]
+  },
+  {
+   "h": 5,
+   "half_width": 20,
+   "mi": 0.46675682067871094,
+   "mi_raw": 0.46675682067871094,
+   "mi_std": null,
+   "J": 3.5833497047424316,
+   "M": 3.1165928840637207,
+   "amp": 14.354246776862881,
+   "J_train": 3.5833497047424316,
+   "J_test": 3.505805015563965,
+   "J_epoch": 16.0,
+   "J_diag": [
+    "fuzzy start"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 3.1165928840637207,
+   "M_test": 2.9132275581359863,
+   "M_epoch": 20.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 64.83690118789673,
+   "seed": 1,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 2 times in this c",
+    "Conditional MI (dual-branch) has an error-amplification factor of 14",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain"
+   ]
+  }
+ ]
+}

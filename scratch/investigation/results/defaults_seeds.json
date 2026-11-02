@@ -1,0 +1,449 @@
+{
+ "experiment": "defaults_seeds",
+ "runs": [
+  {
+   "h": 0.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": null,
+   "mi_std": null,
+   "J": 0.0,
+   "M": 0.0,
+   "amp": null,
+   "J_train": 0.0,
+   "J_test": -0.12391328811645508,
+   "J_epoch": 22.0,
+   "J_diag": [
+    "not resolved"
+   ],
+   "seconds": 65.8750746846199,
+   "label": "raw",
+   "seed": 0,
+   "J_true": 0.009543981010658342,
+   "M_true": 0.0,
+   "rate_true": 0.009543981010658342,
+   "warnings": [
+    "'Conditional MI (dual-branch) estimate is negative (-0",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 2 times in this c",
+    "'The held-out MI was still rising when training reached n_epochs=50' was raised 4 times in this call and shown",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 2.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.18299150466918945,
+   "mi_std": null,
+   "J": 2.825951099395752,
+   "M": 3.0089426040649414,
+   "amp": 31.88614528313195,
+   "J_train": 2.825951099395752,
+   "J_test": 2.7364706993103027,
+   "J_epoch": 40.0,
+   "J_diag": [
+    "still rising"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 3.0089426040649414,
+   "M_test": 2.885784149169922,
+   "M_epoch": 37.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 65.8750746846199,
+   "label": "raw",
+   "seed": 0,
+   "J_true": 4.830028794020972,
+   "M_true": 4.653981701117653,
+   "rate_true": 0.17604709290331932,
+   "warnings": [
+    "'Conditional MI (dual-branch) estimate is negative (-0",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 2 times in this c",
+    "'The held-out MI was still rising when training reached n_epochs=50' was raised 4 times in this call and shown",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 5.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.22982454299926758,
+   "mi_std": null,
+   "J": 2.672245979309082,
+   "M": 2.9020705223083496,
+   "amp": 24.254661529492072,
+   "J_train": 2.672245979309082,
+   "J_test": 2.5973243713378906,
+   "J_epoch": 44.0,
+   "J_diag": [
+    "still rising"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 2.9020705223083496,
+   "M_test": 2.8287715911865234,
+   "M_epoch": 34.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 65.8750746846199,
+   "label": "raw",
+   "seed": 0,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "'Conditional MI (dual-branch) estimate is negative (-0",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 2 times in this c",
+    "'The held-out MI was still rising when training reached n_epochs=50' was raised 4 times in this call and shown",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 20.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.2972850799560547,
+   "mi_std": null,
+   "J": 2.3291029930114746,
+   "M": 2.6263880729675293,
+   "amp": 16.66915496301239,
+   "J_train": 2.3291029930114746,
+   "J_test": 2.1351003646850586,
+   "J_epoch": 42.0,
+   "J_diag": [
+    "still rising"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 2.6263880729675293,
+   "M_test": 2.54782772064209,
+   "M_epoch": 41.0,
+   "M_diag": [
+    "still rising"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 65.8750746846199,
+   "label": "raw",
+   "seed": 0,
+   "J_true": 4.830437316168862,
+   "M_true": 4.664601404006795,
+   "rate_true": 0.16583591216206628,
+   "warnings": [
+    "'Conditional MI (dual-branch) estimate is negative (-0",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 2 times in this c",
+    "'The held-out MI was still rising when training reached n_epochs=50' was raised 4 times in this call and shown",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 0.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": null,
+   "mi_std": null,
+   "J": 0.0,
+   "M": 0.0,
+   "amp": null,
+   "J_train": 0.0,
+   "J_test": -0.38927364349365234,
+   "J_epoch": 25.0,
+   "J_diag": [
+    "not resolved"
+   ],
+   "seconds": 59.755907237529755,
+   "label": "raw",
+   "seed": 1,
+   "J_true": 0.009543981010658342,
+   "M_true": 0.0,
+   "rate_true": 0.009543981010658342,
+   "warnings": [
+    "'Conditional MI (dual-branch) estimate is negative (-0",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 4 times in this c",
+    "'The held-out MI was still rising when training reached n_epochs=50' was raised 2 times in this call and shown",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 2.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.06360054016113281,
+   "mi_std": null,
+   "J": 2.973115921020508,
+   "M": 3.0367164611816406,
+   "amp": 94.49341730394362,
+   "J_train": 2.973115921020508,
+   "J_test": 2.9615235328674316,
+   "J_epoch": 40.0,
+   "J_diag": [
+    "still rising"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 3.0367164611816406,
+   "M_test": 3.0461792945861816,
+   "M_epoch": 26.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 59.755907237529755,
+   "label": "raw",
+   "seed": 1,
+   "J_true": 4.830028794020972,
+   "M_true": 4.653981701117653,
+   "rate_true": 0.17604709290331932,
+   "warnings": [
+    "'Conditional MI (dual-branch) estimate is negative (-0",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 4 times in this c",
+    "'The held-out MI was still rising when training reached n_epochs=50' was raised 2 times in this call and shown",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 5.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.40587806701660156,
+   "mi_std": null,
+   "J": 2.5415453910827637,
+   "M": 2.9474234580993652,
+   "amp": 13.523689243739339,
+   "J_train": 2.5415453910827637,
+   "J_test": 2.5533809661865234,
+   "J_epoch": 35.0,
+   "J_diag": [
+    "fuzzy start"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 2.9474234580993652,
+   "M_test": 2.9162216186523438,
+   "M_epoch": 32.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 59.755907237529755,
+   "label": "raw",
+   "seed": 1,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "'Conditional MI (dual-branch) estimate is negative (-0",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 4 times in this c",
+    "'The held-out MI was still rising when training reached n_epochs=50' was raised 2 times in this call and shown",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 20.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": -0.4544835090637207,
+   "mi_std": null,
+   "J": 2.247647762298584,
+   "M": 2.7021312713623047,
+   "amp": 10.890998099926453,
+   "J_train": 2.247647762298584,
+   "J_test": 2.1160964965820312,
+   "J_epoch": 22.0,
+   "J_diag": [
+    "fuzzy start"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 2.7021312713623047,
+   "M_test": 2.648428440093994,
+   "M_epoch": 42.0,
+   "M_diag": [
+    "still rising"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 59.755907237529755,
+   "label": "raw",
+   "seed": 1,
+   "J_true": 4.830437316168862,
+   "M_true": 4.664601404006795,
+   "rate_true": 0.16583591216206628,
+   "warnings": [
+    "'Conditional MI (dual-branch) estimate is negative (-0",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 4 times in this c",
+    "'The held-out MI was still rising when training reached n_epochs=50' was raised 2 times in this call and shown",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) estimate is negative (-0",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50"
+   ]
+  },
+  {
+   "h": 0.0,
+   "half_width": 20,
+   "mi": 0.0,
+   "mi_raw": null,
+   "mi_std": null,
+   "J": 0.0,
+   "M": 0.0,
+   "amp": null,
+   "J_train": 0.0,
+   "J_test": -0.19731569290161133,
+   "J_epoch": 26.0,
+   "J_diag": [
+    "not resolved"
+   ],
+   "seconds": 63.293431758880615,
+   "label": "raw",
+   "seed": 2,
+   "J_true": 0.009543981010658342,
+   "M_true": 0.0,
+   "rate_true": 0.009543981010658342,
+   "warnings": [
+    "'Conditional MI (dual-branch) has an error-amplification factor of 108",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 5 times in this c",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) has an error-amplification factor of 108",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50",
+    "The train MI at the reported epoch is negative (-0"
+   ]
+  },
+  {
+   "h": 2.0,
+   "half_width": 20,
+   "mi": 0.05337190628051758,
+   "mi_raw": 0.05337190628051758,
+   "mi_std": null,
+   "J": 2.926929473876953,
+   "M": 2.8735575675964355,
+   "amp": 108.68052962145646,
+   "J_train": 2.926929473876953,
+   "J_test": 2.7643399238586426,
+   "J_epoch": 43.0,
+   "J_diag": [
+    "still rising"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 2.8735575675964355,
+   "M_test": 2.7258691787719727,
+   "M_epoch": 33.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 63.293431758880615,
+   "label": "raw",
+   "seed": 2,
+   "J_true": 4.830028794020972,
+   "M_true": 4.653981701117653,
+   "rate_true": 0.17604709290331932,
+   "warnings": [
+    "'Conditional MI (dual-branch) has an error-amplification factor of 108",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 5 times in this c",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) has an error-amplification factor of 108",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50",
+    "The train MI at the reported epoch is negative (-0"
+   ]
+  },
+  {
+   "h": 5.0,
+   "half_width": 20,
+   "mi": 2.4120922088623047,
+   "mi_raw": 2.4120922088623047,
+   "mi_std": null,
+   "J": 2.4120922088623047,
+   "M": 0.0,
+   "amp": 1.0,
+   "J_train": 2.4120922088623047,
+   "J_test": 2.4592208862304688,
+   "J_epoch": 36.0,
+   "J_diag": [
+    "fuzzy start"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 0.0,
+   "M_test": 1.2940850257873535,
+   "M_epoch": 39.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 63.293431758880615,
+   "label": "raw",
+   "seed": 2,
+   "J_true": 4.8302489127728165,
+   "M_true": 4.6603382997599265,
+   "rate_true": 0.16991061301289,
+   "warnings": [
+    "'Conditional MI (dual-branch) has an error-amplification factor of 108",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 5 times in this c",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) has an error-amplification factor of 108",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50",
+    "The train MI at the reported epoch is negative (-0"
+   ]
+  },
+  {
+   "h": 20.0,
+   "half_width": 20,
+   "mi": 0.12083148956298828,
+   "mi_raw": 0.12083148956298828,
+   "mi_std": null,
+   "J": 2.2060108184814453,
+   "M": 2.085179328918457,
+   "amp": 35.513839669773716,
+   "J_train": 2.2060108184814453,
+   "J_test": 2.1560583114624023,
+   "J_epoch": 28.0,
+   "J_diag": [
+    "fuzzy start"
+   ],
+   "J_ceiling": 8.517193191416238,
+   "M_train": 2.085179328918457,
+   "M_test": 2.1434364318847656,
+   "M_epoch": 29.0,
+   "M_diag": [
+    "fuzzy start"
+   ],
+   "M_ceiling": 8.517193191416238,
+   "seconds": 63.293431758880615,
+   "label": "raw",
+   "seed": 2,
+   "J_true": 4.830437316168862,
+   "M_true": 4.664601404006795,
+   "rate_true": 0.16583591216206628,
+   "warnings": [
+    "'Conditional MI (dual-branch) has an error-amplification factor of 108",
+    "'The held-out MI approached its top slowly, so where the top starts is uncertain' was raised 5 times in this c",
+    "All test MI values in the training history are non-positive (max test MI = -0",
+    "Conditional MI (dual-branch) has an error-amplification factor of 108",
+    "The held-out MI approached its top slowly, so where the top starts is uncertain",
+    "The held-out MI was still rising when training reached n_epochs=50",
+    "The train MI at the reported epoch is negative (-0"
+   ]
+  }
+ ]
+}
