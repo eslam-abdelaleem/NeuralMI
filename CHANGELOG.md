@@ -44,6 +44,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Helpers written twice now have one definition each: the trim tolerances of
+  conditional MI and interaction information (in `conditional.py`), the
+  promotion of a 2-D array to rows with a window axis
+  (`utils.with_window_axis`, which replaces both `_ensure_3d`s), the
+  conversion to a float tensor (`utils.float_tensor`, behind `run.py`'s and
+  `embeddings_io.py`'s `_to_tensor`), `_batch_size_of` (in `models/critics.py`)
+  and the embedding batch size (in `embeddings_io.py`).
+
 - Every term of a difference quantity (`mode='conditional'`, `'transfer'` and
   `'interaction'`, with or without `rigorous=True`, their permutation trials,
   and the named quantities built on them) encodes X with one branch per part of

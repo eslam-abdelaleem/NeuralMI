@@ -26,7 +26,7 @@ import torch
 from typing import Dict, Any, Optional, Tuple
 
 from neural_mi.logger import logger
-from neural_mi.utils import build_critic, get_device
+from neural_mi.utils import build_critic, float_tensor, get_device
 
 
 MODEL_EXTENSION = '.pt'
@@ -219,13 +219,8 @@ def extract_embeddings(
     critic.eval()
 
     # --- Prepare tensors ---
-    def _to_tensor(arr):
-        if torch.is_tensor(arr):
-            return arr.float()
-        return torch.from_numpy(np.asarray(arr)).float()
-
-    x_t = _to_tensor(x_data)
-    y_t = _to_tensor(y_data)
+    x_t = float_tensor(x_data)
+    y_t = float_tensor(y_data)
 
     if x_t.shape[0] != y_t.shape[0]:
         raise ValueError(

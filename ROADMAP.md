@@ -5,7 +5,7 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1, C2, C3, C5, C11 and C16 have landed. The investigation's scripts and
+C1, C2, C3, C5, C11, C13 and C16 have landed. The investigation's scripts and
 results, with the exact-value models C15 can build on, are in `scratch/` until
 the list is done.
 
@@ -150,12 +150,6 @@ but never the offset quantities on the same data.
 one sample) and nowhere else, read from the rows' recorded geometry
 (`neural_mi/data/rows.py`). Offset rows record their geometry in steps of the
 series, so for them that means `row_step > 1`.
-
-### C13. Small duplicates
-
-`_ensure_3d`, `_batch_size_of`, the two trim tolerances of `conditional.py` and
-`interaction.py`, `_EMBEDDING_BATCH` and `_to_tensor` are each defined twice.
-Each keeps one definition.
 
 ### C14. Docs, tests and tutorials on the defaults
 

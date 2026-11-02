@@ -15,13 +15,12 @@ from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_dev
 from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC, NONPARAMETRIC_CONDITIONAL
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger, user_stacklevel
-from neural_mi.embeddings_io import save_network
+from neural_mi.embeddings_io import _EMBEDDING_BATCH, save_network
 from neural_mi.data.handler import create_dataset, AlignedStaticStreams
 from neural_mi.data.rows import record_rows, row_geometry, window_rows
 
 # Batch size used for embedding extraction (no effect on training).
 # Large enough to keep GPU utilisation high; small enough to avoid OOM.
-_EMBEDDING_BATCH = 512
 
 # ---------------------------------------------------------------------------
 # Module-level dataset cache

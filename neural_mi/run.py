@@ -20,6 +20,7 @@ from collections import OrderedDict
 from dataclasses import fields
 from .data.handler import create_dataset
 from .data.rows import RowGeometry, record_rows, window_rows
+from .utils import float_tensor, with_window_axis
 from .data.shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from .results import Results
 from .validation import ParameterValidator, DataValidator
@@ -1205,14 +1206,8 @@ def _run_flat(
         is_proc_sweep = mode == 'sweep' and any(key in (sweep_grid or {}) for key in processor_param_keys)
     
         def _to_tensor(arr):
-            """Convert array-like to a float32 tensor; expand 2-D (N, C) to (N, C, 1)."""
-            if torch.is_tensor(arr):
-                t = arr.float()
-            else:
-                t = torch.from_numpy(np.asarray(arr, dtype=np.float32))
-            if t.ndim == 2:
-                t = t.unsqueeze(-1)
-            return t
+            """An array as a float32 tensor, 2-D input with its trailing window axis of 1."""
+            return with_window_axis(float_tensor(arr))
 
         # Window shifting needs the raw arrays to reach each training task, so a
         # call that shifts leaves windowing to the tasks, as a processor sweep

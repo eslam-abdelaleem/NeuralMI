@@ -19,32 +19,19 @@ from typing import Dict, Any, Optional
 from neural_mi.data.shift_windowing import (SHIFT_PACK_CONCAT, SHIFT_PACK_FIRST,
                                             SHIFT_PACK_SECOND,
                                             _REGULAR_GRID_PROCESSOR_TYPES)
-from neural_mi.analysis.conditional import _merge_raw_blocks
+from neural_mi.analysis.conditional import (_merge_raw_blocks, _SAMPLE_COUNT_TRIM_TOLERANCE,
+                                            _WINDOW_SIZE_TRIM_TOLERANCE)
 from neural_mi.analysis.sweep import (combined_spread, combine_terms, rung, ParameterSweep,
                                       _joint_marginal_difference, warn_combination,
                                       amplification_factor)
 import warnings
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import with_model_labels
-from neural_mi.utils import mi_report_units
+from neural_mi.utils import mi_report_units, with_window_axis
 
-# Mirrors conditional.py's identical constants exactly -- both modes window
-# W paired with Y via the same create_dataset(x_data=w_data, y_data=y_data,
-# ...) call (see run.py), so both are subject to the same small boundary
-# effects: a window-count difference of up to _SAMPLE_COUNT_TRIM_TOLERANCE
-# windows between X-paired-with-Y and W-paired-with-Y (a coverage-validation
-# difference between two separate create_dataset calls, not a real duration
-# mismatch), and a window-size difference of up to
-# _WINDOW_SIZE_TRIM_TOLERANCE samples. Every processor now emits
-# window_size slots for a window of window_size, so a one-sample difference
-# has no known cause; the tolerance stays as a guard against rounding at a
-# sample-rate boundary, and says so instead of naming a cause.
-_WINDOW_SIZE_TRIM_TOLERANCE = 1
-_SAMPLE_COUNT_TRIM_TOLERANCE = 1
-
-
-def _ensure_3d(t: torch.Tensor) -> torch.Tensor:
-    return t.unsqueeze(-1) if t.ndim == 2 else t
+# The trim tolerances are conditional.py's: both modes window W paired with Y
+# through the same create_dataset call (see run.py), so both see the same
+# small boundary effects.
 
 
 def _train_single_term(
@@ -200,9 +187,9 @@ def run_interaction_information(
             marginal_w_bp = {**base_params, **_second, '_shift_pack': SHIFT_PACK_SECOND}
 
     else:
-        x_data = _ensure_3d(x_data)
-        y_data = _ensure_3d(y_data)
-        w_data = _ensure_3d(w_data)
+        x_data = with_window_axis(x_data)
+        y_data = with_window_axis(y_data)
+        w_data = with_window_axis(w_data)
         device = x_data.device
         y_data = y_data.to(device)
         w_data = w_data.to(device)

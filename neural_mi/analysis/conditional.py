@@ -355,14 +355,12 @@ def run_conditional_mi(
 
     # Normalise all inputs to the same ndim before shape comparison and cat.
     # StaticDataset delivers (N, C, 1) tensors, but w_data is often passed as
-    # raw 2-D (N, C) when no w_processor_type is given.  Unsqueeze the missing
+    # raw 2-D (N, C) when no w_processor_type is given.  Add the missing
     # trailing window dimension so that torch.cat works on a consistent axis.
-    def _ensure_3d(t: torch.Tensor) -> torch.Tensor:
-        return t.unsqueeze(-1) if t.ndim == 2 else t
-
-    x_data = _ensure_3d(x_data)
-    y_data = _ensure_3d(y_data)
-    w_data = _ensure_3d(w_data)
+    from neural_mi.utils import with_window_axis
+    x_data = with_window_axis(x_data)
+    y_data = with_window_axis(y_data)
+    w_data = with_window_axis(w_data)
 
     # Ensure all inputs are on the same device (x_data is the reference).
     # w_data in particular may arrive as a raw CPU tensor when no

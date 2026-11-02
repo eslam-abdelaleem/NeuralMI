@@ -19,6 +19,7 @@ import time
 from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
                             AlignedStreams)
 from neural_mi.data.rows import RowGeometry
+from neural_mi.models.critics import _batch_size_of
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
 from neural_mi.training.epochs import (CLEAR_SE, EPOCH_RULES, FUZZY_SE, choose_epoch, standard_error,
@@ -88,13 +89,6 @@ def too_few_held_out(n_held_out: int, batch_size: int) -> bool:
     the same line for its chunks.
     """
     return 0 < n_held_out < batch_size
-
-
-def _batch_size_of(x) -> int:
-    """Leading (sample) dim of x, whether x is a plain tensor or a tuple
-    (BranchedEmbedding's compound "X-role" data, mode='conditional'
-    (align='dual_branch')) sharing that dimension."""
-    return (x[0] if isinstance(x, tuple) else x).shape[0]
 
 
 def _to_device(x, device):

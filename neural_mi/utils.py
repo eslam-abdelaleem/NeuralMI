@@ -96,6 +96,19 @@ def _is_spike_input(data) -> bool:
     )
 
 
+def float_tensor(data) -> torch.Tensor:
+    """``data`` as a float32 tensor, converting a tensor rather than copying it."""
+    if torch.is_tensor(data):
+        return data.float()
+    return torch.from_numpy(np.asarray(data, dtype=np.float32))
+
+
+def with_window_axis(t: torch.Tensor) -> torch.Tensor:
+    """A 2-D ``(N, C)`` tensor with the trailing window axis of 1 every stream carries inside the library;
+    any other tensor as it is."""
+    return t.unsqueeze(-1) if t.ndim == 2 else t
+
+
 def _as_tensor(data) -> torch.Tensor:
     if isinstance(data, torch.Tensor):
         return data
