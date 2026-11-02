@@ -564,8 +564,9 @@ branched encoder, the pretrained backbone's head), which read all four. Under
 `critic_type='concat'` no encoder is built, so the encoder settings do not
 apply. The head
 settings apply to `critic_type='hybrid'`, `beta` to `use_variational=True`, and
-the decoder settings to `use_decoder=True`. With `custom_critic` the critic is
-used as given. Every other `Model` setting is ignored. Of the `Output` settings,
+the decoder settings to `use_decoder=True`. With `custom_critic` the recipe builds
+the critic and takes only the settings it names; every other `Model` setting is
+ignored. Of the `Output` settings,
 `return_rotated_embeddings` needs `return_embeddings` or `track_embeddings`,
 `rotated_embeddings_per_epoch` needs both `track_embeddings` and
 `return_rotated_embeddings`, and `return_rotation_matrices` needs

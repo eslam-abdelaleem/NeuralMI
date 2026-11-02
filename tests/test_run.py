@@ -190,15 +190,14 @@ class MyCustomCritic(nmi.models.BaseCritic):
 
 def test_run_with_custom_critic(gaussian_data):
     """
-    Tests that the `run` function can accept a pre-initialized custom critic.
+    Tests that the `run` function builds a custom critic from its class.
     """
     x_data, y_data = gaussian_data
-    custom_critic_instance = MyCustomCritic()
 
     result = nmi.run(
         x_data, y_data,
         mode='estimate',
-        model=Model(custom_critic=custom_critic_instance),
+        model=Model(custom_critic=MyCustomCritic),
         training=TRAINING,
         n_workers=1,
         output=NATS  # Use nats for direct comparison with np.log

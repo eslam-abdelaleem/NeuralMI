@@ -521,11 +521,77 @@ MODEL_SETTINGS = ('use_spectral_norm', 'dropout', 'norm_layer', 'bias', 'kernel_
 ARCHITECTURE_KEYS = (
     'critic_type', 'embedding_model', 'embedding_dim', 'hidden_dim', 'n_layers',
     'embedding_model_y', 'embedding_dim_y', 'hidden_dim_y', 'n_layers_y',
-    'custom_embedding_cls', 'custom_embedding_cls_y', 'hidden_dim_head', 'n_layers_head',
+    'custom_critic', 'custom_embedding_cls', 'custom_embedding_cls_y', 'hidden_dim_head', 'n_layers_head',
     'use_variational', 'shared_encoder', 'max_n_batches',
     'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
     '_difference_term', '_condition', 'processor_params_x', 'processor_params_y',
 ) + MODEL_SETTINGS
+
+
+# What a custom critic recipe can take, by name: the input sizes the task
+# computed, and the architecture settings.
+CRITIC_SIZES = ('input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y', 'window_size_x', 'window_size_y')
+CRITIC_SETTINGS = ('embedding_dim', 'hidden_dim', 'n_layers') + MODEL_SETTINGS
+
+
+def check_custom_critic(recipe) -> None:
+    """Refuse a ``custom_critic`` that is not a recipe: an object would be trained in place and shared by every
+    repeat and every term of a difference."""
+    if recipe is None:
+        return
+    if isinstance(recipe, nn.Module) or not callable(recipe):
+        raise TypeError(
+            f"Model(custom_critic=...) takes a class or a function that builds the critic, and got "
+            f"{type(recipe).__name__!r} object. The library calls it in each task, under that task's seed, "
+            f"so every repeat and every term of a difference trains a critic of its own. An object would be "
+            f"trained in place and shared by all of them. Pass the class, Model(custom_critic=MyCritic), or a "
+            f"function, Model(custom_critic=make_critic) with def make_critic(input_dim_x, input_dim_y): "
+            f"return MyCritic(input_dim_x, input_dim_y). It receives the parameters it names among "
+            f"{', '.join(CRITIC_SIZES + CRITIC_SETTINGS)}."
+        )
+
+
+def critic_recipe_takes(recipe) -> Optional[set]:
+    """The names a critic recipe takes among ``CRITIC_SIZES`` and ``CRITIC_SETTINGS``, or None when it takes
+    them all (``**kwargs``)."""
+    try:
+        parameters = inspect.signature(recipe).parameters
+    except (TypeError, ValueError):
+        return set()
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return None
+    return set(parameters) & set(CRITIC_SIZES + CRITIC_SETTINGS)
+
+
+def _custom_critic(recipe, params: Dict[str, Any]) -> nn.Module:
+    """The critic a ``custom_critic`` recipe builds, called with the sizes and settings it names."""
+    check_custom_critic(recipe)
+
+    def window(side):
+        flat, channels = params.get(f'input_dim_{side}'), params.get(f'n_channels_{side}')
+        if flat is None or channels is None:
+            return None
+        return tuple(f // c for f, c in zip(flat, channels)) if isinstance(channels, tuple) else flat // channels
+
+    norm = setting(params, 'norm_layer')
+    available = {**{key: params.get(key) for key in CRITIC_SIZES[:4]},
+                 'window_size_x': window('x'), 'window_size_y': window('y'),
+                 **{name: setting(params, name) for name in CRITIC_SETTINGS}}
+    available['norm_layer'] = None if norm in ('auto', 'none') else norm
+    takes = critic_recipe_takes(recipe)
+    kwargs = available if takes is None else {name: available[name] for name in takes}
+    required = [name for name, p in inspect.signature(recipe).parameters.items()
+                if p.default is inspect.Parameter.empty and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+                and name not in kwargs]
+    if required:
+        raise TypeError(
+            f"custom_critic {getattr(recipe, '__name__', recipe)!r} requires {required}, which the library "
+            f"does not pass. It can name any of {', '.join(CRITIC_SIZES + CRITIC_SETTINGS)}."
+        )
+    critic = recipe(**kwargs)
+    if not isinstance(critic, nn.Module):
+        raise TypeError(f"custom_critic must build a torch.nn.Module and built a {type(critic).__name__!r}.")
+    return critic
 
 
 def _names(cls, key: str) -> bool:
@@ -562,6 +628,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # rebuilds as it was trained. A setting absent from them takes its schema
     # default.
     embedding_params = {k: embedding_params[k] for k in ARCHITECTURE_KEYS if k in embedding_params}
+    if embedding_params.get('custom_critic') is not None:
+        # The caller's recipe builds the whole critic, in each task anew.
+        return _custom_critic(embedding_params['custom_critic'], embedding_params)
     use_variational = setting(embedding_params, 'use_variational')
     max_n_batches = setting(embedding_params, 'max_n_batches')
     # The class also travels in embedding_params, so a caller that only has the

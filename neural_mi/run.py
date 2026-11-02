@@ -314,9 +314,13 @@ def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Opti
     chosen = {f.name for f in fields(model) if set_away(model, f.name)} if model is not None else set()
     ignored = []
     if model is not None and model.custom_critic is not None:
-        others = sorted(chosen - {'custom_critic'})
+        from .utils import CRITIC_SETTINGS, critic_recipe_takes
+        takes = critic_recipe_takes(model.custom_critic)
+        taken = set(CRITIC_SETTINGS) if takes is None else takes
+        others = sorted(chosen - {'custom_critic'} - taken)
         if others:
-            ignored.append(f"{', '.join(others)} (custom_critic is used as given)")
+            ignored.append(f"{', '.join(others)} (custom_critic builds the critic and takes only the "
+                           f"settings it names)")
     else:
         if model is not None:
             ignored += _unread_model_settings(mode, model, chosen)
@@ -699,6 +703,9 @@ def run(
 
     # Coerce dict/str inputs to config instances.
     model = as_config(model, Model)
+    if model is not None:
+        from .utils import check_custom_critic
+        check_custom_critic(model.custom_critic)
     training = as_config(training, Training)
     split = as_config(split, Split)
     output = as_config(output, Output)
@@ -849,7 +856,7 @@ def _run_flat(
     output_units: str = 'bits',
     estimator: str = 'infonce',
     estimator_params: Optional[Dict[str, Any]] = None,
-    custom_critic: Optional[torch.nn.Module] = None,
+    custom_critic: Optional[Any] = None,
     custom_embedding_cls: Optional[type] = None,
     save_best_model_path: Optional[str] = None,
     random_seed: Optional[int] = None,

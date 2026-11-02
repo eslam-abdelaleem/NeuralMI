@@ -1285,8 +1285,32 @@ result = nmi.run(x, y, model=Model(custom_embedding_cls=MyEmbedding, embedding_d
 
 A class receives `bias` only when its `__init__` accepts it directly or through
 `**kwargs`. An explicit `bias=False` that cannot reach it warns.
-`Model(custom_critic=...)` takes a whole critic module. Any architecture setting
-passed beside it is ignored with a warning.
+`Model(custom_critic=...)` takes a class or function that builds the whole
+critic, in the way `custom_embedding_cls` takes an encoder class. Every task
+calls it under its own seed with the parameters it names among the input sizes
+(`input_dim_x`, `input_dim_y`, `n_channels_x`, `n_channels_y`, `window_size_x`,
+`window_size_y`) and the architecture settings (`embedding_dim`, `hidden_dim`,
+`n_layers` and the network settings), so every repeat and every term of a
+difference trains a critic of its own, sized for its X. An architecture setting
+it does not name is ignored with a warning. An object is refused, since one
+object would be trained in place and shared by every repeat. With
+`n_workers` above 1 the class or function must be defined at module level so
+the workers can import it.
+
+```python
+class MyCritic(nmi.models.BaseCritic):
+    def __init__(self, input_dim_x, input_dim_y, embedding_dim):
+        super().__init__()
+        self.fx = torch.nn.Linear(input_dim_x, embedding_dim)
+        self.fy = torch.nn.Linear(input_dim_y, embedding_dim)
+
+    def forward(self, x, y):
+        zx = self.fx(x.reshape(len(x), -1))
+        zy = self.fy(y.reshape(len(y), -1))
+        return zx @ zy.T, torch.tensor(0.0)
+
+result = nmi.run(x, y, model=Model(custom_critic=MyCritic, embedding_dim=16))
+```
 
 ### Regularised objectives
 

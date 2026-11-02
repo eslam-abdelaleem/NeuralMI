@@ -304,13 +304,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     if params.get('estimator_name') in NONPARAMETRIC:
         return {**_reported(params), **_nonparametric(dataset, params)}
 
-    if params.get('custom_critic') is not None:
-        critic = params['custom_critic']
-        logger.debug("Using the custom critic as given, so the Model(...) architecture settings are ignored.")
-    else:
-        critic = build_critic(setting(params, 'critic_type'),
-                              params,
-                              params.get('custom_embedding_cls'))
+    # A custom critic is the caller's recipe, built here under this task's seed
+    # like every other critic (build_critic).
+    critic = build_critic(setting(params, 'critic_type'), params, params.get('custom_embedding_cls'))
 
     # Build decoders if use_decoder is enabled
     decoder_x = None

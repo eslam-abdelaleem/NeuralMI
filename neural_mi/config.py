@@ -108,7 +108,7 @@ class Model:
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None
     max_n_batches: Optional[int] = None            # critic chunking
-    custom_critic: Optional[Any] = None            # torch.nn.Module
+    custom_critic: Optional[Any] = None            # class or function that builds the critic
     custom_embedding_cls: Optional[type] = None
     custom_embedding_cls_y: Optional[type] = None
     pytorch_predefined: Optional[str] = None       # torchvision backbone name

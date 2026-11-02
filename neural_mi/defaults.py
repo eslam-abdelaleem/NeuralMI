@@ -146,7 +146,7 @@ BASE_PARAMS_SCHEMA = {
     'processor_type_y': {'type': (str, type(None))},
     'processor_params_x': {'type': (dict, type(None))},
     'processor_params_y': {'type': (dict, type(None))},
-    'custom_critic': {'type': (object, type(None))}, # torch.nn.Module
+    'custom_critic': {'type': (object, type(None))}, # class or function that builds the critic
     'custom_embedding_cls': {'type': (type, type(None))},
     'train_indices': {'type': (object, type(None))}, # numpy array
     'test_indices': {'type': (object, type(None))},
