@@ -150,6 +150,41 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Six hand-written builders of the named quantities' rows did what
+  `build_offset_arrays` does, and `processing=` reached the named quantities
+  four ways. With overlapping windows (`window_size=10`, `step_size=2`)
+  `mi_rate` put 8 of the 10 samples of Y_0 into its own conditioning set. On 10
+  ms spike windows `instantaneous_exchange(k=0)` kept silent windows (5,992
+  rows) and `instantaneous_mi` dropped them (51 rows), although both compute
+  I(X_0; Y_0). At `k=0`, `instantaneous_exchange` and
+  `directed_information_rate` ignored `stride`. Every named quantity defined by
+  time offsets now builds its rows from its spec through `build_offset_arrays`,
+  which also gives the rows' geometry, and transfer entropy builds its
+  histories from its own spec. `processing=` reaches all of them through one
+  path that puts every stream on one grid of rows one step wide that tile
+  time, and a grid whose rows are wider or overlap is refused.
+  `instantaneous_mi` builds the same rows as the `k=0` forms, takes a
+  `stride`, and refuses rows already windowed, which go to `nmi.run()`.
+  `nmi.offset_quantity(data, spec)` runs a spec with no function of its own the
+  way the named quantities run, so its rows carry their geometry, which arrays
+  passed to `nmi.run()` by hand do not.
+
+- The hybrid critic's head, the concat critic's network and the pretrained
+  backbone's head were built with spectral normalisation on and ignored
+  `dropout`, `norm_layer` and `bias`. The branched head of a difference term
+  followed spectral normalisation and dropout only over MLP branches and never
+  `norm_layer`. TCN blocks used dropout 0.2 and the transformer PyTorch's 0.1,
+  which `Model(dropout=...)` never reached, and nothing warned. Each built-in
+  encoder now declares the Model settings it reads, `build_critic` passes it
+  exactly those, a custom encoder gets every setting its `__init__` names, and
+  every MLP built around the encoders reads `use_spectral_norm`, `dropout`,
+  `norm_layer` and `bias`. `dropout` reaches TCN, the transformer and stacked
+  GRU and LSTM layers. A setting that no network of the call reads warns,
+  including the encoder settings under `critic_type='concat'`, which builds no
+  encoder. `CNN1D` takes `cnn_pooling` under that name. The concat critic's
+  network is sized from the flattened inputs, which a channel-style
+  `embedding_model` broke. Spectral normalisation stays on by default.
+
 - The small-sample check counted rows in all and fired below 200. `block_mi`
   with 20-sample windows on 20,000 samples built 1,000 windows with 99
   held-out rows, read about 1.4 bits against 3.12, and warned only that the

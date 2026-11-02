@@ -5,35 +5,14 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
+C1, C2, C3, C5, C11 and C16 have landed. The investigation's scripts and
+results, with the exact-value models C15 can build on, are in `scratch/` until
+the list is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
 oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. Values are in nats unless marked as bits.
-
-### C3. One offset builder and one path for `processing=`
-
-**Now.** Six hand-written builders (`build_past_future`, `build_cross_offset`,
-`_build_te_arrays`, `_build_mi_rate_arrays`, `_build_inst_exchange_arrays`,
-`_build_dir_info_rate_arrays`) do what `utils.build_offset_arrays` does; a test
-already shows they give identical arrays. `processing=` reaches the named
-quantities four ways: `_on_one_grid` for the offset quantities, `grid_rows` with
-`one_step_rows` for transfer entropy, the processor itself for `block_mi`, and
-`run()` directly for `instantaneous_mi` and `interaction_information`. Only
-transfer entropy requires rows one step wide. With overlapping windows
-(`window_size=10`, `step_size=2`) `mi_rate` puts 8 of the 10 samples of Y_0 into
-its own conditioning set. On spike data in 10 ms windows,
-`instantaneous_exchange(k=0)` keeps silent windows (5,992 rows) and
-`instantaneous_mi` drops them (51 rows), although both compute I(X_0; Y_0). At
-`k=0`, `instantaneous_exchange` and `directed_information_rate` ignore
-`stride`.
-
-**Fix.** Every named quantity defined by time offsets, `instantaneous_mi`
-included, builds its rows through `build_offset_arrays` and takes `processing=`
-through one path that puts the streams on one grid of rows one step wide, as
-transfer entropy does now. Silent spike windows are then treated alike, and
-`instantaneous_mi` builds the same rows as the `k=0` forms. `block_mi` keeps
-windowing through the processor, which is its definition.
 
 ### C4. A joint X travels as a pair everywhere
 
@@ -50,22 +29,6 @@ tested against a permutation null.
 **Fix.** The pair everywhere. The `_condition` tag and the channel split go, and
 the four stages accept the pair.
 
-### C5. Every setting reaches every network it names
-
-**Now.** `use_spectral_norm`, `dropout`, `norm_layer` and `bias` reach MLP
-encoders. The hybrid critic's head, the concat critic and the
-pretrained-backbone head are built with spectral normalisation on and ignore
-the other three, whatever is set. The branched head follows spectral
-normalisation and dropout only over MLP branches and never follows
-`norm_layer`. TCN blocks use dropout 0.2 and the Transformer PyTorch's 0.1,
-which `Model(dropout=...)` never reaches. Nothing warns.
-
-**Fix.** Every setting reaches every network the library builds that has the
-part it names, and a setting with no effect on the chosen network says so.
-`use_spectral_norm` stays on by default. Across eleven scenarios with exact
-values, turning it off lowered the held-out value in most and raised it by at
-most 0.08 bits (see "Spectral normalisation off by default" under Estimation).
-
 ### C6. Defaults only in the schema
 
 **Now.** `Trainer.train` declares defaults of its own (patience 10, `shift_time`
@@ -76,8 +39,14 @@ because the schema always fills 3 and 0.0, and the decoder classes declare
 defaults of their own. This is the part of design item 1 that disagrees with
 the schema today. The rest of item 1 stays design work.
 
+Also: `task._BUILD_PARAMS_KEYS`, the settings saved with a network for
+`extract_embeddings`, lacks `bias`, `cnn_pooling`, the Y-side settings, the head
+sizes, `_difference_term`/`_condition` and the processor parameters, so a
+network built with any of them cannot be rebuilt as it was trained.
+
 **Fix.** Defaults come from the schema alone. Functions below `run()` take the
-settings without defaults of their own, and the dead fallbacks go.
+settings without defaults of their own, and the dead fallbacks go. The saved
+keys and the settings `build_critic` reads are one list.
 
 ### C7. Preprocessing and a data check
 
@@ -120,6 +89,12 @@ the network will receive, and the held-out row count (`trainer.held_out_rows`,
 the count the splits and the small-sample check use). It suggests the matching
 option and changes nothing.
 
+Open points: where it hooks in (the start of `_run_flat` on raw streams, and
+for the named quantities on the series before `offsets.build_rows`); for the
+time domain, a fixed autoregressive order or one chosen by AIC, and whether to
+keep the series' length with zero initial conditions or drop the first samples;
+for PCA, a rotation with an `n_components` option.
+
 ### C8. The scale of processed rows
 
 **Now.** Binned spikes are divided by the bin width by default
@@ -131,8 +106,10 @@ cannot reach the rows a processor makes.
 
 **Fix.** `normalize_bins` defaults to False, so rates are opt-in like every
 other change to the data. Input scaling becomes an encoder setting in `Model`,
-off by default, honoured by every encoder (C5), saved with the network and
-applied by `extract_embeddings`.
+off by default, honoured by every encoder (declared, as every Model setting
+now is, in `BaseEmbedding.settings` and passed by `build_critic`), saved with
+the network and applied by `extract_embeddings`. The agreed form is
+`Model(input_scaling=None|'standard')`.
 
 ### C9. Custom critics as recipes
 
@@ -161,7 +138,8 @@ another quantity, with one network instead of a difference.
 `validate_stride`, checks every window parameter. `h=0` and `k=0` warn and name
 the quantity computed: `instantaneous_mi` for `instantaneous_exchange(k=0)` and
 `directed_information_rate(k=0)`, and I(X_{-L..L}; Y_0) for `mi_rate(h=0)`,
-which is instantaneous MI at `half_width=0`.
+which is instantaneous MI at `half_width=0`. The windows now come from each
+quantity's spec (`quantities._spec_*`, built by `offsets.build_rows`).
 
 ### C12. One rule for window shifting
 
@@ -170,7 +148,8 @@ but never the offset quantities on the same data.
 
 **Fix.** Shifting applies wherever rows thin a series (a step or stride above
 one sample) and nowhere else, read from the rows' recorded geometry
-(`neural_mi/data/rows.py`).
+(`neural_mi/data/rows.py`). Offset rows record their geometry in steps of the
+series, so for them that means `row_step > 1`.
 
 ### C13. Small duplicates
 
@@ -549,6 +528,13 @@ storage-transfer paper's version), quadratic extrapolation through the rigorous
 ladder.
 
 ## Smaller items
+
+**Found while fixing the correctness items.** `mode='transfer'` never runs the
+small-sample checks, since its branch of `run.py` passes raw series.
+`Training(min_reliable_samples=...)` moves only the rigorous ladder's line for
+small chunks, not the call's held-out line or the curve warnings' note, whose
+defaults agree with it; one setting could move all three. A spec with a C group
+always runs dual-branch, even when A and C have the same window length.
 
 **Pointers in messages.** The amplification warning of a difference names
 whitening (C7) and the block-MI route. Each term's curve diagnosis is carried
