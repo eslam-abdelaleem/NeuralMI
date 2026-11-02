@@ -481,6 +481,28 @@ def mi_report_units(base_params: Optional[Dict[str, Any]] = None,
     return (1.0 / np.log(2) if to_bits else 1.0), ('bits' if to_bits else 'nats')
 
 
+# The Model settings an encoder or a head can read beyond its sizes. Each
+# built-in encoder declares the ones it reads (BaseEmbedding.settings).
+MODEL_SETTINGS = ('use_spectral_norm', 'dropout', 'norm_layer', 'bias', 'kernel_size', 'cnn_pooling',
+                  'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained')
+
+
+def _setting(params: Dict[str, Any], name: str) -> Any:
+    """A setting from ``params``, or the schema's default when it is absent."""
+    if name in params:
+        return params[name]
+    from neural_mi.defaults import BASE_PARAMS_SCHEMA
+    return BASE_PARAMS_SCHEMA[name].get('default')
+
+
+def _names(cls, key: str) -> bool:
+    """Whether ``cls.__init__`` names ``key`` as a parameter of its own."""
+    try:
+        return key in inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                  custom_embedding_cls: Optional[type] = None) -> BaseCritic:
     """Builds and returns a critic model based on the provided parameters.
@@ -560,8 +582,27 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             f"different widths."
         )
 
+    # The Model settings every network of the critic can read, resolved once.
+    # norm_layer 'auto' is layer normalisation for the hybrid critic in
+    # mode='dimensionality', which resolves it there, and none everywhere else.
+    norm = _setting(embedding_params, 'norm_layer')
+    # An explicit bias of None means unset, not off.
+    _bias = _setting(embedding_params, 'bias')
+    values = {name: _setting(embedding_params, name) for name in MODEL_SETTINGS}
+    values['norm_layer'] = None if norm in ('auto', 'none') else norm
+    values['bias'] = True if _bias is None else bool(_bias)
+    # Every MLP the critic builds around its encoders (the hybrid critic's
+    # head, the concat critic's network, the head of a difference term's
+    # branched encoder) reads the call's MLP settings.
+    head_settings = {name: values[name] for name in MLP.settings}
+
     def _resolve_side(spec, side):
-        """The class, the ``input_dim`` it expects, and its kwargs, for one side."""
+        """The class, the ``input_dim`` it expects, and its kwargs, for one side.
+
+        A built-in class gets the Model settings it declares (``settings``), a
+        custom class every one its ``__init__`` names, and ``bias`` also
+        through ``**kwargs``.
+        """
         if (spec['n_layers'] == 0 and not spec['custom_cls'] and spec['model_type'] != 'mlp'
                 and not isinstance(spec['hidden_dim'], list)):
             raise ValueError(
@@ -578,12 +619,19 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 f"{sorted(_EMBEDDING_CLASSES)}. Pass a class via custom_embedding_cls "
                 f"for anything else."
             )
-        model_type = spec['model_type']
         model_kwargs = {
             'hidden_dim': spec['hidden_dim'],
             'embedding_dim': spec['embedding_dim'],
             'n_layers': spec['n_layers'],
         }
+        if spec['custom_cls']:
+            model_kwargs.update({name: values[name] for name in MODEL_SETTINGS
+                                 if _names(EmbeddingModel, name)})
+            if _accepts_kwarg(EmbeddingModel, 'bias'):
+                model_kwargs['bias'] = values['bias']
+        else:
+            model_kwargs.update({keyword: values[name]
+                                 for name, keyword in EmbeddingModel.settings.items()})
         # A class's own `input_style` (see BaseEmbedding) decides the input_dim
         # convention it's built with -- 'channels' (raw channel count, the
         # window/sequence axis handled internally by the class) or 'flattened'
@@ -592,36 +640,8 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         # sets it). Read per side, since the two sides can be different classes.
         if getattr(EmbeddingModel, 'input_style', 'flattened') == 'channels':
             input_dim = embedding_params[f'n_channels_{side}']
-            # Each architecture's own kwargs, resolved from this side's model
-            # type and read from the one value the caller supplied. Two cnns
-            # share a kernel_size; a cnn paired with a gru takes the kernel size
-            # on one side and the bidirectional flag on the other.
-            if model_type in ('cnn', 'tcn', 'cnn2d'):
-                model_kwargs['kernel_size'] = embedding_params.get(
-                    'kernel_size', 7 if model_type == 'cnn' else 3)
-            if model_type == 'cnn':
-                model_kwargs['pooling'] = embedding_params.get('cnn_pooling', 'flatten')
-            if model_type in ('gru', 'lstm'):
-                model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
-            if model_type == 'transformer':
-                model_kwargs['nhead'] = embedding_params.get('nhead', 4)
-            if model_type == 'pretrained_backbone':
-                model_kwargs['pytorch_predefined'] = embedding_params.get('pytorch_predefined')
-                model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
-            if model_type == 'lru':
-                model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-        else:  # MLP or a custom class, both take the fully-flattened input_dim
+        else:
             input_dim = embedding_params[f'input_dim_{side}']
-            if not spec['custom_cls']:
-                # These are specific to the built-in MLP. A custom class only receives
-                # the universal (hidden_dim, embedding_dim, n_layers) contract, so it need
-                # not accept regularisation kwargs it may know nothing about.
-                model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
-                model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-                # 'auto' is resolved to 'layer' by mode='dimensionality' for the
-                # hybrid critic. Everywhere else it means no normalisation.
-                norm = embedding_params.get('norm_layer', 'auto')
-                model_kwargs['norm_layer'] = None if norm in ('auto', 'none') else norm
         return EmbeddingModel, input_dim, model_kwargs
 
     Model_x, input_dim_x, model_kwargs = _resolve_side(spec_x, 'x')
@@ -650,10 +670,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             "and cannot also be Y's encoder. Set shared_encoder=False."
         )
 
-    # Bias terms in the embedding layers. Both encoders get the same value.
-    # An explicit None means unset, not off, so it falls back to the default.
-    _bias = embedding_params.get('bias')
-    bias_x = bias_y = True if _bias is None else bool(_bias)
+    bias_x = bias_y = values['bias']
 
     for Model_, unused in ((Model_x, None), (Model_y, None)):
         if not (bias_x and bias_y) and not getattr(Model_, 'zero_preserving', True):
@@ -666,16 +683,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             )
             break
 
-    # Only classes that accept `bias` are given it. A custom embedding class
-    # following the minimal BaseEmbedding contract
+    # A custom embedding class following the minimal BaseEmbedding contract
     # (input_dim, hidden_dim, embedding_dim, n_layers) must still build, so an
     # explicit bias request that such a class cannot receive is reported rather
     # than forced on it.
-    for Model_, kwargs, value in ((Model_x, model_kwargs, bias_x),
-                                  (Model_y, model_kwargs_y, bias_y)):
-        if _accepts_kwarg(Model_, 'bias'):
-            kwargs['bias'] = value
-        elif not (bias_x and bias_y):
+    for Model_, kwargs in ((Model_x, model_kwargs), (Model_y, model_kwargs_y)):
+        if 'bias' not in kwargs and not (bias_x and bias_y):
             # Only reachable when bias was actually turned off AND the class cannot
             # receive it. Gating this on any other capability would report a bias
             # problem the class does not have.
@@ -689,21 +702,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # A class that names window_size gets the window length, the flattened size
     # over the channel count (a pair of them for a compound input), so it need
-    # not average over the window to stay independent of its length. A custom
-    # class that names dropout or use_spectral_norm gets those too: the minimal
-    # contract above passes it only its sizes.
-    def _names(cls, key):
-        return key in inspect.signature(cls.__init__).parameters
-
-    for Model_, kwargs, spec, side in ((Model_x, model_kwargs, spec_x, 'x'), (Model_y, model_kwargs_y, spec_y, 'y')):
+    # not average over the window to stay independent of its length.
+    for Model_, kwargs, side in ((Model_x, model_kwargs, 'x'), (Model_y, model_kwargs_y, 'y')):
         n_ch, flat = embedding_params.get(f'n_channels_{side}'), embedding_params.get(f'input_dim_{side}')
         if _names(Model_, 'window_size') and n_ch is not None and flat is not None:
             kwargs['window_size'] = (tuple(f // c for f, c in zip(flat, n_ch)) if isinstance(n_ch, tuple)
                                      else flat // n_ch)
-        if spec['custom_cls']:
-            for key, default in (('dropout', 0.0), ('use_spectral_norm', True)):
-                if _names(Model_, key):
-                    kwargs[key] = embedding_params.get(key, default)
 
     # DeepSets masks padded slots, so it needs the sentinel the processor used.
     # Taken per side, since X and Y can be processed differently.
@@ -714,7 +718,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
 
     net_x_base = (_branched(Model_x, input_dim_x, model_kwargs, embedding_params['n_channels_x'],
-                            embedding_params.get('_condition'))
+                            embedding_params.get('_condition'), head_settings)
                   if difference_term else Model_x(input_dim_x, **model_kwargs))
     net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
 
@@ -752,37 +756,41 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         decision_head_input_dim = spec_x['embedding_dim'] + spec_y['embedding_dim']
         _head_hidden_dim = embedding_params.get('hidden_dim_head') or min(64, _last_hidden)
         _head_n_layers = embedding_params.get('n_layers_head') or max(1, n_layers - 1)
-        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=_head_hidden_dim, embedding_dim=1, n_layers=_head_n_layers)
+        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=_head_hidden_dim, embedding_dim=1,
+                            n_layers=_head_n_layers, **head_settings)
         return HybridCritic(embedding_net_x=net_x, embedding_net_y=net_y, decision_head=decision_head, **critic_kwargs)
     elif critic_type == 'concat':
-        concat_input_dim = input_dim_x + input_dim_y
-        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=hidden_dim, embedding_dim=1, n_layers=n_layers)
+        # The concat critic scores the flattened pair and builds no encoder, so
+        # its input is the flattened sizes whatever embedding_model names.
+        concat_input_dim = embedding_params['input_dim_x'] + embedding_params['input_dim_y']
+        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=hidden_dim, embedding_dim=1, n_layers=n_layers,
+                         **head_settings)
         if use_variational:
             # The concat network's one output is the score of a pair, so the
             # variational layer makes each score a Gaussian draw and its KL term
             # regularises the scores. There is no per-variable embedding here
             # for it to compress.
-            concat_net = VariationalWrapper(concat_net, 1)
+            concat_net = VariationalWrapper(concat_net, 1, bias=bias_x)
         return ConcatCritic(embedding_net=concat_net, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
 
 
-def _branched(branch_cls, input_dim, kwargs, n_channels, condition) -> BranchedEmbedding:
+def _branched(branch_cls, input_dim, kwargs, n_channels, condition, head) -> BranchedEmbedding:
     """The X encoder of a term of a difference, with ``branch_cls`` built as the call's X encoder for each part.
 
     A joint term's X arrives as a pair with its two sizes, or as one tensor
     split by ``condition = ('first' | 'last', n)``: its first or last ``n``
     channels are the conditioning set, in a size convention of ``input_dim``
     per ``n_channels`` channels, at one window length. Any other term's X is
-    one part.
+    one part. ``head`` holds the head's MLP settings.
     """
     if condition is not None:
         per_channel, n = input_dim // n_channels, condition[1]
         input_dim = ((n_channels - n) * per_channel, n * per_channel)
         if 'window_size' in kwargs:
             kwargs = {**kwargs, 'window_size': (kwargs['window_size'],) * 2}
-    return BranchedEmbedding(input_dim, branch_cls=branch_cls, condition=condition, **kwargs)
+    return BranchedEmbedding(input_dim, branch_cls=branch_cls, condition=condition, head=head, **kwargs)
 
 
 _OPTIMIZERS = {

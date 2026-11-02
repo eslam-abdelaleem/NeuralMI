@@ -195,10 +195,68 @@ def _check_grid_keys(mode: str, sweep_grid: Optional[dict]) -> None:
 
 # Settings that only take effect with particular encoders, read the way
 # utils.build_critic routes them to each side's model.
-_ENCODER_SETTINGS = {'kernel_size': ('cnn', 'cnn2d', 'tcn'), 'cnn_pooling': ('cnn',), 'bidirectional': ('gru', 'lstm'),
-                     'nhead': ('transformer',), 'pytorch_predefined': ('pretrained_backbone',),
-                     'pretrained': ('pretrained_backbone',)}
 _HEAD_SETTINGS = ('n_layers_head', 'hidden_dim_head')
+# Modes whose X encoder is a difference term's branched encoder, an MLP head
+# over the branches (neural_mi/models/embeddings.py, BranchedEmbedding).
+_BRANCHED_MODES = ('conditional', 'transfer', 'interaction')
+# What the concat critic does not build: it scores the raw pair with one MLP.
+_ENCODER_ONLY = ('embedding_model', 'embedding_dim', 'custom_embedding_cls')
+
+
+def _unread_model_settings(mode: str, model: Model, chosen: set) -> List[str]:
+    """The Model settings in ``chosen`` that no network this call builds reads, each with where it applies.
+
+    Each built-in encoder declares the settings it reads
+    (``BaseEmbedding.settings``), a custom one reads those its ``__init__``
+    names, and the MLPs built around the encoders (the hybrid critic's head,
+    the concat critic's network, the head of a difference term's branched
+    encoder) read the MLP settings.
+    """
+    from .utils import _EMBEDDING_CLASSES, MODEL_SETTINGS, _accepts_kwarg, _names
+    from .models.embeddings import MLP
+    critic = model.critic_type or ('hybrid' if mode == 'dimensionality' else 'separable')
+    heads = critic in ('hybrid', 'concat') or mode in _BRANCHED_MODES
+
+    def encoder(custom, name):
+        return custom if custom is not None else _EMBEDDING_CLASSES.get((name or 'mlp').lower())
+
+    x_cls = encoder(model.custom_embedding_cls, model.embedding_model)
+    if model.custom_embedding_cls_y is not None or model.embedding_model_y is not None:
+        y_cls = encoder(model.custom_embedding_cls_y, model.embedding_model_y)
+    else:
+        y_cls = x_cls
+    sides = [] if critic == 'concat' else [
+        (x_cls, model.n_layers), (y_cls, model.n_layers_y if model.n_layers_y is not None else model.n_layers)]
+    n_default = BASE_PARAMS_SCHEMA['n_layers']['default']
+
+    def reads(cls, name, n_layers):
+        if cls is None:          # an unknown embedding_model, which the build refuses
+            return True
+        if cls in _EMBEDDING_CLASSES.values():
+            return cls.reads(name, n_layers if n_layers is not None else n_default)
+        return _names(cls, name) or (name == 'bias' and _accepts_kwarg(cls, 'bias'))
+
+    ignored = []
+    for name in MODEL_SETTINGS:
+        if name not in chosen:
+            continue
+        if any(reads(cls, name, n) for cls, n in sides) or (heads and name in MLP.settings):
+            continue
+        where = [f"'{key}'" for key, cls in _EMBEDDING_CLASSES.items() if name in cls.settings]
+        text = f"embedding_model {', '.join(where)}" if where else ""
+        if name in MLP.settings:
+            text += (" and to the MLP heads of critic_type='hybrid' or 'concat' and of a difference "
+                     "quantity")
+        if name == 'dropout' and any(cls in _EMBEDDING_CLASSES.values() and 'dropout' in cls.settings
+                                     for cls, _ in sides):
+            text += "; a recurrent encoder applies it between stacked layers, which n_layers=1 lacks"
+        ignored.append(f"{name} (applies to {text.strip()})")
+    if critic == 'concat':
+        unbuilt = [name for name in _ENCODER_ONLY if name in chosen]
+        if unbuilt:
+            ignored.append(f"{', '.join(unbuilt)} (critic_type='concat' scores the raw pair with one MLP "
+                           f"and builds no encoder)")
+    return ignored
 _DECODER_SETTINGS = ('decoder_lambda', 'decoder_lambda_x', 'decoder_lambda_y',
                      'decoder_output_activation_x', 'decoder_output_activation_y')
 
@@ -259,15 +317,8 @@ def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Opti
         if others:
             ignored.append(f"{', '.join(others)} (custom_critic is used as given)")
     else:
-        custom = model is not None and (model.custom_embedding_cls is not None
-                                        or model.custom_embedding_cls_y is not None)
-        x_model = (model.embedding_model if model is not None else None) or 'mlp'
-        y_model = (model.embedding_model_y if model is not None else None) or x_model
-        if not custom:
-            for name, encoders in _ENCODER_SETTINGS.items():
-                if name in chosen and not {x_model, y_model} & set(encoders):
-                    names = ', '.join(f"'{e}'" for e in encoders)
-                    ignored.append(f"{name} (applies to embedding_model {names})")
+        if model is not None:
+            ignored += _unread_model_settings(mode, model, chosen)
         critic = (model.critic_type if model is not None else None) or (
             'hybrid' if mode == 'dimensionality' else 'separable')
         head = [n for n in _HEAD_SETTINGS if n in chosen]

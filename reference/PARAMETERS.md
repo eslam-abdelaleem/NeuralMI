@@ -125,10 +125,10 @@ The networks that embed X and Y and score their pairing.
 | `cnn_pooling` | `'flatten'` | How the CNN encoder reads its convolutions: at every position of the window (`'flatten'`), which keeps where a pattern occurs, as a lag or a history window needs, or averaged over the window (`'mean'`), which ignores where it occurs. |
 | `bidirectional` | `False` | Bidirectional GRU or LSTM. |
 | `nhead` | `4` | Attention heads of the transformer encoder. |
-| `dropout` | `0.0` | Dropout after each hidden layer (MLP) or inside each block (LRU). |
-| `norm_layer` | `'auto'` | Normalisation in the MLP encoder: `'layer'`, `'batch'` or `'none'`. `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries. |
-| `use_spectral_norm` | `True` | Spectral normalisation of the MLP's hidden layers. |
-| `bias` | `True` | Bias terms in the encoder's layers. |
+| `dropout` | `0.0` | Dropout after each hidden layer of an MLP, inside each block of the LRU, TCN and transformer encoders, and between the stacked layers of a GRU or LSTM. It reaches the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). A setting that no network of the call reads warns. |
+| `norm_layer` | `'auto'` | Normalisation in each hidden block of an MLP: `'layer'`, `'batch'` or `'none'`, in the MLP encoder and the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries. |
+| `use_spectral_norm` | `True` | Spectral normalisation of the hidden layers of an MLP: the MLP encoder and the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). |
+| `bias` | `True` | Bias terms in the layers of every encoder and of the MLPs built around them. |
 | `shared_encoder` | `False` | One encoder for X and Y. `mode='dimensionality'` without `y_data` uses `True` when unset. |
 | `max_n_batches` | `512` | Most samples an encoder embeds at once, to bound memory. A custom decision head or a variational concat critic also scores at most this many pairs at once. |
 | `custom_critic` | `None` | A `torch.nn.Module` used as the whole critic; the architecture settings above are then ignored. |

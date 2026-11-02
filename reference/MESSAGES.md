@@ -540,7 +540,14 @@ Each listed setting applies only with an encoder, critic or switch that this
 call does not use and that the message names. `kernel_size` applies to `'cnn'`,
 `'cnn2d'` and `'tcn'`, `bidirectional` to `'gru'` and `'lstm'`, `nhead` to
 `'transformer'`, and `pytorch_predefined` and `pretrained` to
-`'pretrained_backbone'`. The head
+`'pretrained_backbone'`. `use_spectral_norm`, `dropout`, `norm_layer` and `bias`
+apply to the networks that have the part they name: the MLP encoder, the LRU,
+TCN and transformer encoders for `dropout`, a GRU or LSTM of more than one layer
+for `dropout`, and the MLPs the library builds around the encoders (the hybrid
+critic's head, the concat critic's network, the head of a difference term's
+branched encoder, the pretrained backbone's head), which read all four. Under
+`critic_type='concat'` no encoder is built, so the encoder settings do not
+apply. The head
 settings apply to `critic_type='hybrid'`, `beta` to `use_variational=True`, and
 the decoder settings to `use_decoder=True`. With `custom_critic` the critic is
 used as given. Every other `Model` setting is ignored. Of the `Output` settings,
