@@ -28,7 +28,7 @@ from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.exceptions import CombinationWarning, InsufficientDataError, TrainingError
 from neural_mi.utils import _ensure_cpu
-from neural_mi.data.rows import rows_in_time
+from neural_mi.data.rows import kept_rows, rows_in_time
 from neural_mi.data.shift_windowing import (
     n_windows_if_deferred, shift_family, chunk_window_range_to_raw, seconds_to_samples,
     spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
@@ -650,7 +650,7 @@ def _warn_if_chunks_small(gamma: int, chunks: List[np.ndarray], params: Dict[str
     """
     if params.get('estimator_name') in NONPARAMETRIC:
         return
-    smallest = min(len(c) for c in chunks)
+    smallest = min(kept_rows(len(c), params) for c in chunks)
     line = params.get('min_reliable_samples')
     if line is None:
         held_out = max(1.0 - float(params.get('train_fraction', 0.9)), 1e-6)

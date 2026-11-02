@@ -2,13 +2,16 @@
 """Per-epoch window shifting, and the reslicing mechanism behind ``shift_windows``.
 
 Two mechanisms re-tile a windowed dataset from a fresh random offset every
-epoch, so training sees many sets of window boundaries.
+epoch, so training sees many sets of window boundaries. A shift only makes
+sense where rows thin a series, their starts more than one sample apart, and
+it moves them by less than one step: windows that start one sample apart hold
+every set of boundaries already.
 
 ``Training(shift_windows=True)`` serves the regular-grid family, `continuous`
 and `categorical` streams in any combination. `WindowShifter` holds the raw,
 unwindowed `(T, n_channels)` array and re-derives the windows with
 `torch.Tensor.unfold` at an integer sample offset drawn uniformly from
-`[0, window_size)`. It always produces exactly `n_windows` windows, so the
+`[0, step_size)`. It always produces exactly `n_windows` windows, so the
 window count, and every train, test and evaluation index computed against it,
 stays the same from shift to shift, and only the content at each index changes.
 Categorical streams are re-encoded after the reslice
@@ -38,10 +41,12 @@ raises at once.
 
 Which modes each mechanism reaches is set by the `_SHIFT_*_SAFE_MODES` tuples in
 `neural_mi/run.py`: shifting needs the raw data to reach each training task and
-must not disturb a comparison between runs. Transfer entropy and the named
-quantities built from offsets are never shifted. Their rows are cut at every
-step, one step apart, so a shift by `s` would only relabel row `i` as row
-`s + i`.
+must not disturb a comparison between runs. The rows a quantity builds by
+offset (the named quantities, transfer entropy, `offset_quantity`) shift under
+``shift_windows`` when a ``stride`` above one thins them: they are built at
+every step, and `RowPhaseShifter` keeps one in every ``stride`` from a phase
+drawn each epoch. At ``stride=1`` they hold every step already, and a shift by
+``s`` would only relabel row ``i`` as row ``s + i``.
 
 Evaluation never sees a shift. The Trainer measures `test_mi` and `train_mi`,
 and everything derived from them, against a snapshot of the data taken before
@@ -59,7 +64,7 @@ import torch
 import torch.nn.functional as F
 
 import warnings
-from neural_mi.data.rows import record_rows, window_rows
+from neural_mi.data.rows import PHASES_KEY, kept_rows, record_rows, window_rows
 from neural_mi.logger import user_stacklevel
 
 
@@ -334,7 +339,56 @@ class WindowShifter:
         return self.encoder(raw_windows) if self.encoder is not None else raw_windows
 
     def random_shift(self, generator: torch.Generator = None) -> int:
-        return int(torch.randint(0, self.window_size, (1,), generator=generator).item())
+        """A shift within one step: every distinct set of window boundaries, and windows that start
+        one sample apart never move."""
+        return int(torch.randint(0, max(1, self.step_size), (1,), generator=generator).item())
+
+
+class RowPhaseShifter:
+    """Rows built by offset at every step of their series, kept one in every ``phases`` from a phase
+    drawn each epoch: the shift of rows that a stride thins.
+
+    The rows of every phase are cut to the count every phase has, so every
+    train, test and evaluation index stays valid from shift to shift, and a
+    shift only changes which steps the rows start on. ``x`` may be a pair of
+    row arrays (a dual-branch X), each cut the same way.
+    """
+
+    def __init__(self, x, y, phases: int):
+        self.x, self.y, self.phases = x, y, int(phases)
+        n_rows = (x[0] if isinstance(x, tuple) else x).shape[0]
+        self.n_windows = kept_rows(n_rows, {PHASES_KEY: self.phases})
+        if self.n_windows <= 0:
+            raise ValueError(
+                f"Not enough rows ({n_rows}) to keep one in every {self.phases} at every phase."
+            )
+
+    def _take(self, data, shift: int):
+        rows = slice(shift, shift + self.phases * (self.n_windows - 1) + 1, self.phases)
+        return tuple(d[rows] for d in data) if isinstance(data, tuple) else data[rows]
+
+    def windows_at(self, shift: int):
+        return self._take(self.x, shift), self._take(self.y, shift)
+
+    def random_shift(self, generator: torch.Generator = None) -> int:
+        return int(torch.randint(0, self.phases, (1,), generator=generator).item())
+
+
+def try_build_row_phase_dataset(x_data, y_data, params: dict, data_device: str = 'cpu'):
+    """The dataset of rows built at every step and kept one in every ``_row_phases``
+    (:mod:`neural_mi.data.rows`), at phase 0 with a :class:`RowPhaseShifter` attached for
+    ``shift_windows``, or ``None`` for rows built any other way."""
+    from neural_mi.data.static import StaticDataset
+    from neural_mi.data.handler import PairedDataset
+    phases = int(params.get(PHASES_KEY) or 1)
+    if phases <= 1:
+        return None
+    shifter = RowPhaseShifter(x_data, y_data, phases)
+    x_rows, y_rows = shifter.windows_at(0)
+    dataset = PairedDataset(StaticDataset(x_rows, data_device=data_device),
+                            StaticDataset(y_rows, data_device=data_device))
+    dataset._window_shifter = shifter
+    return dataset
 
 
 def stream_spec(raw, window_size, step_size, encoder=None, period=1.0):

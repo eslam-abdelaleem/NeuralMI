@@ -185,15 +185,19 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # Dataset construction, with module-level cache for static datasets.
     # ------------------------------------------------------------------
     from neural_mi.data.shift_windowing import (
-        try_build_shift_windows_dataset, try_build_shift_windows_dataset_tuple,
+        try_build_row_phase_dataset, try_build_shift_windows_dataset,
+        try_build_shift_windows_dataset_tuple,
     )
-    if isinstance(x_data, tuple):
+    # Rows built by offset at every step, kept one in every stride: at phase 0,
+    # with the shifter that moves the phase each epoch under shift_windows.
+    dataset = try_build_row_phase_dataset(x_data, y_data, params, data_device=_data_device)
+    if dataset is None and isinstance(x_data, tuple):
         # Compound "X-role" data: two raw streams windowed independently and
         # combined afterwards. params['_shift_pack'] says how -- kept apart for
         # dual_branch, concatenated for a conditioning variable that shares X's
         # window axis, or used alone for the marginal leg.
         dataset = try_build_shift_windows_dataset_tuple(x_data, y_data, params, data_device=_data_device)
-    else:
+    elif dataset is None:
         dataset = try_build_shift_windows_dataset(x_data, y_data, params, data_device=_data_device)
     if dataset is not None:
         _cache_key = None  # never cached (mutated in place every epoch); the

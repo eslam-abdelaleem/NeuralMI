@@ -32,7 +32,7 @@ import torch
 from tqdm.auto import tqdm
 
 from neural_mi.analysis.assemble import _hashable, aggregate
-from neural_mi.data.rows import row_geometry
+from neural_mi.data.rows import PHASES_KEY, RowGeometry, row_geometry
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.parallel import worker_pool
 
@@ -141,7 +141,11 @@ def _window_rows(x: Any, base_params: Dict[str, Any], ctx: Dict[str, Any]) -> in
     """
     rows = row_geometry(base_params)
     if getattr(x, 'ndim', 2) != 2:
-        return rows.rows_per_span if rows is not None else 1
+        if rows is None:
+            return 1
+        # Rows built at every step for shifting are one step apart, not one row step.
+        phases = int(base_params.get(PHASES_KEY) or 1)
+        return RowGeometry(rows.step / phases, rows.span).rows_per_span
     params = base_params.get('processor_params_x') or {}
     window = params.get('window_size')
     if window is None or params.get('preprocessed'):

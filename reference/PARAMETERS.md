@@ -172,7 +172,7 @@ The optimisation loop and what is evaluated after it.
 | `test_subset_size` | `None` | Size of the fixed held-out subset evaluated at every epoch: a count, or `'full'` for the whole held-out set; `None` takes `min(n_test, max_eval_samples)`. Drawn once, right after the split: one contiguous stretch per held-out block for a blocked split, random rows for a random split. A subset larger than `max_eval_samples` is evaluated in blocks at every epoch. |
 | `eval_train` | `False` | Also record the train-side MI every epoch: `True`, a fraction, a sample count, or `'full'`. A set larger than `max_eval_samples` is evaluated in blocks. |
 | `shift_time` | `True` | Temporal data: re-tile the windows from a fresh random time offset every epoch. |
-| `shift_windows` | `True` | The cheaper re-slicing form of `shift_time`, for regularly sampled continuous and categorical data. |
+| `shift_windows` | `True` | The cheaper re-slicing form of `shift_time`, for regularly sampled continuous and categorical data, and for the rows a `stride` above one thins in the quantities built by time offsets. A shift moves rows by less than one step, so rows that start one sample apart never move. |
 | `augmentation_params` | `{}` | Augmentations applied to both X and Y during training (listed in [USING.md](USING.md)). |
 | `augmentation_params_x` | `augmentation_params` | X's augmentations; `{}` turns them off for X. |
 | `augmentation_params_y` | `augmentation_params` | Y's augmentations. |

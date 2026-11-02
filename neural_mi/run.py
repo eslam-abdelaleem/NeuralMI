@@ -19,7 +19,7 @@ from .analysis.assemble import build_results
 from collections import OrderedDict
 from dataclasses import fields
 from .data.handler import create_dataset
-from .data.rows import RowGeometry, record_rows, window_rows
+from .data.rows import PHASES_KEY, RowGeometry, kept_rows, record_rows, row_geometry, window_rows
 from .utils import float_tensor, with_window_axis
 from .data.shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from .results import Results
@@ -580,6 +580,7 @@ def run(
     n_permutations: int = 10,
     permutation_shuffle: str = 'circular',
     _rows: Optional[RowGeometry] = None,
+    _row_phases: Optional[int] = None,
     **_removed: Any,
 ) -> Results:
     """Unified entry point for all NeuralMI analyses (config-based API).
@@ -802,6 +803,9 @@ def run(
     # Private: the geometry of rows a named quantity built in time order
     # (neural_mi/data/rows.py). Arrays passed in already built carry none.
     flat['_rows'] = _rows
+    # Private: rows built at every step of their series so that they can shift,
+    # of which each task keeps one in every _row_phases (data/rows.py).
+    flat['_row_phases'] = _row_phases
     analysis_kwargs['n_workers'] = n_workers
 
     if base_params:
@@ -908,6 +912,7 @@ def _run_flat(
     channel_names_y: Optional[List[str]] = None,
     _grid_part: Optional[Dict[str, Any]] = None,
     _rows: Optional[RowGeometry] = None,
+    _row_phases: Optional[int] = None,
     **analysis_kwargs
 ) -> Results:
     """Flat-kwarg engine behind :func:`run`; see that function's docstring for
@@ -916,7 +921,9 @@ def _run_flat(
     ``_grid_part`` marks a call that runs one processor setting of a larger
     grid (see :func:`_run_processor_grid`); it skips the checks and messages
     that belong to the whole call. ``_rows`` is the geometry of rows the caller
-    built in time order itself (the named quantities, :mod:`neural_mi.data.rows`).
+    built in time order itself (the named quantities, :mod:`neural_mi.data.rows`),
+    and ``_row_phases`` says those rows hold every step of their series, of
+    which each task keeps one in every ``_row_phases`` so that they can shift.
     """
     sweep_grid = _normalise_grid(sweep_grid)
     _call_args = dict(locals())
@@ -1095,6 +1102,8 @@ def _run_flat(
         param_validator.apply_defaults()
         # Rows the caller built in time order carry their geometry from here on.
         record_rows(base_params, _rows)
+        if _row_phases and int(_row_phases) > 1:
+            base_params[PHASES_KEY] = int(_row_phases)
 
         # Warn about n_layers/hidden_dim list mismatch only when the user explicitly
         # set n_layers (i.e., it was in base_params before defaults were applied).
@@ -1365,7 +1374,7 @@ def _run_flat(
                 base_params['processor_params_y'] = {}
             base_params['processor_params_x']['preprocessed'] = True
             base_params['processor_params_y']['preprocessed'] = True
-            _warn_small_sample(x_run_data.shape[0], 'samples', base_params, mode)
+            _warn_small_sample(kept_rows(x_run_data.shape[0], base_params), 'samples', base_params, mode)
             if mode not in ('dimensionality', 'pairwise') and y_run_data is None:
                 raise ValueError(f"y_data must be provided for mode '{mode}'.")
         else:
@@ -1437,7 +1446,10 @@ def _run_flat(
         _warn_if_shift_windows_dead(base_params, mode, processor_type_x, _effective_processor_type_y,
                                     user_set_keys=_pre_default_keys,
                                     extra_reachable=(_defer_regular_conditional_interaction
-                                                    or _defer_for_dual_branch_shift_windows))
+                                                    or _defer_for_dual_branch_shift_windows
+                                                    # transfer entropy's histories shift
+                                                    # when a stride thins them
+                                                    or (mode == 'transfer' and stride > 1)))
 
         if mode not in _MODES:
             raise ValueError(
@@ -1892,9 +1904,18 @@ def _warn_if_shift_windows_dead(base_params: dict, mode: str, processor_type_x: 
         return
     if base_params.get('shift_windows') is not True:
         return
-    if extra_reachable:
+    if extra_reachable or base_params.get(PHASES_KEY):
         return
     if mode in _SHIFT_WINDOWS_SAFE_MODES and shift_family(processor_type_x, effective_processor_type_y) == 'regular':
+        return
+    if processor_type_x is None and (row_geometry(base_params) is not None or mode == 'transfer'):
+        # Rows built by offset at every step of their series (stride=1).
+        warnings.warn(
+            f"shift_windows=True has no effect here: the rows start one step apart, so a shift "
+            f"would only relabel them. The rows of a quantity built by time offsets shift when a "
+            f"stride above one thins them. Set Training(shift_windows=False) to silence this warning.",
+            UserWarning, stacklevel=user_stacklevel(),
+        )
         return
     warnings.warn(
         f"shift_windows=True has no effect for mode='{mode}' with "

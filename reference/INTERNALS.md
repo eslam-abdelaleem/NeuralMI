@@ -189,6 +189,10 @@ windows for itself). Rows built by offset get their geometry from the spec
 that builds them (`offsets.build_rows` and `offsets.spec_geometry`): a named
 quantity or `offset_quantity` hands it to `run()` through the private `_rows`
 argument, and transfer entropy records it for its histories (`transfer.te_spec`).
+Rows a `stride` above one thins are built at every step when windows shift,
+and `_row_phases` tells each task to keep one in every `stride`
+(`shift_windowing.RowPhaseShifter`, which moves the phase each epoch). The
+record still gives the kept rows' step, `data.rows.kept_rows` their count.
 Rows without the record are not
 known to be in time order: arrays passed in already built, or samples in no
 order. The record is reported per network in `runs` and

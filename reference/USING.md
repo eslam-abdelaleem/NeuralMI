@@ -810,8 +810,11 @@ from 0.155 at 20 ms to 1.0 at 1 s. `drop_empty_windows=False` holds retention at
 
 By default `Training(shift_windows=True)` and `Training(shift_time=True)` make
 training re-tile the windows from a fresh random offset every epoch to show the
-network many sets of window boundaries. `shift_windows` re-slices a regular grid
-and serves continuous and categorical streams. `shift_time` rebuilds windows
+network many sets of window boundaries. A shift applies where rows thin a
+series, their starts more than one sample apart, and moves them by less than one
+step. `shift_windows` re-slices a regular grid and serves continuous and
+categorical streams, and the rows a `stride` above one thins in the quantities
+built by time offsets. `shift_time` rebuilds windows
 from the raw data and serves spike streams, including a spike stream paired with
 a continuous or categorical one that has a `sample_rate`. Because evaluation
 always reads the unshifted windows, the reported values do not depend on the
@@ -822,15 +825,19 @@ last shift drawn.
 | `estimate`, `sweep`, `pairwise`, `dimensionality`, `precision`, `lag` | shifted | shifted |
 | `conditional`, `interaction` | shifted | shifted |
 | `rigorous` | shifted | shifted for spike pairs only |
-| `transfer` | not shifted | not shifted |
+| `transfer` | shifted at `stride` above 1 | shifted at `stride` above 1 |
 | `block_mi` | shifted | shifted |
-| other named quantities | not shifted | not shifted |
+| other named quantities, `offset_quantity` | shifted at `stride` above 1 | shifted at `stride` above 1 |
 | already-windowed data | not shifted | not shifted |
 
 A spike stream paired with a continuous or categorical one is shifted only when
 that stream has a `sample_rate` that makes a shift mean the same time on both
-sides. Because transfer entropy and the named quantities built from offsets use
-every row as a sample one step apart, a shift would only relabel their rows.
+sides. Transfer entropy and the quantities built from offsets keep every step
+as a row at the default `stride=1`, where a shift would only relabel their rows.
+At a larger `stride` they are built at every step, and each epoch keeps one row
+in every `stride` from a phase drawn afresh, the offset counterpart of a window
+shift. A shifting row reaches up to one step further, and the split's leak
+check counts that.
 Setting a shift explicitly where it cannot apply warns. A windowed generator
 whose MI is known for its own windows needs both switched off
 ([Generators](#generators-with-a-known-answer)).

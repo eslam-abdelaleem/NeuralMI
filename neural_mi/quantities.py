@@ -50,7 +50,8 @@ from neural_mi.results import Results
 from neural_mi.logger import call_verbosity, collect_repeats, user_stacklevel
 from neural_mi.parallel import dispatch_tasks
 from neural_mi.analysis.assemble import merge_results
-from neural_mi.analysis.offsets import build_rows, one_step_series, resolve_stream_processing
+from neural_mi.analysis.offsets import (build_rows, one_step_series, resolve_stream_processing,
+                                        spec_geometry)
 from neural_mi.utils import _as_tensor, validate_stride, validate_window
 from neural_mi.embeddings_io import model_file, resolve_model_path, announce_saving_several
 
@@ -93,7 +94,8 @@ def _difference_fit(config) -> Dict[str, Any]:
 
 
 def _call(kind: str, a, b, c, *, run_kwargs: Dict[str, Any], rigorous, n_workers: int,
-          show_progress: bool, transfer: Optional[Dict[str, Any]] = None, rows=None) -> Results:
+          show_progress: bool, transfer: Optional[Dict[str, Any]] = None, rows=None,
+          phases: int = 1) -> Results:
     """One :func:`run` call on arrays a quantity has built.
 
     ``kind`` is ``'mi'`` for one MI estimate per repeat, or the mode of a
@@ -101,11 +103,14 @@ def _call(kind: str, a, b, c, *, run_kwargs: Dict[str, Any], rigorous, n_workers
     A conditional quantity with no conditioning set (``c`` is None) is one MI
     estimate. ``rows`` is the geometry of the rows the quantity built in time
     order (:mod:`neural_mi.data.rows`), which :func:`run` records for the split's
-    leak checks, the rigorous chunks and the permutation blocks.
+    leak checks, the rigorous chunks and the permutation blocks. ``phases``
+    above 1 says the rows hold every step of their series, of which each task
+    keeps one in every ``phases`` at a phase that shifts each epoch.
     """
     from neural_mi.config import Conditional, Interaction, Transfer
     on, config = _rigorous_settings(rigorous)
-    common = dict(n_workers=n_workers, show_progress=show_progress, _rows=rows, **run_kwargs)
+    common = dict(n_workers=n_workers, show_progress=show_progress, _rows=rows,
+                  _row_phases=phases if phases > 1 else None, **run_kwargs)
     if kind == 'mi' or (kind == 'conditional' and c is None):
         if on:
             return run(a, b, mode='rigorous', rigorous=config, **common)
@@ -146,9 +151,9 @@ def _with_save_path(run_kwargs: Dict[str, Any], quantity: str, **labels) -> Dict
 
 def _task(task) -> Results:
     """Module-level dispatch target: one value of a quantity's parameter."""
-    kind, a, b, c, transfer, rows, run_kwargs, rigorous, show_progress = task
+    kind, a, b, c, transfer, rows, phases, run_kwargs, rigorous, show_progress = task
     return _call(kind, a, b, c, run_kwargs=run_kwargs, rigorous=rigorous, n_workers=1,
-                 show_progress=show_progress, transfer=transfer, rows=rows)
+                 show_progress=show_progress, transfer=transfer, rows=rows, phases=phases)
 
 
 def _refuse_custom_split(run_kwargs: Dict[str, Any], quantity: str) -> None:
@@ -169,8 +174,10 @@ def _named(quantity: str, param: str, value, build, *, run_kwargs: Dict[str, Any
     """Run a quantity at one value of its own parameter, or at every value of an
     iterable, merged into one result.
 
-    ``build(v)`` returns ``(kind, a, b, c, transfer_kwargs, rows)`` for value ``v``,
-    ``rows`` being the geometry of the rows it built (:mod:`neural_mi.data.rows`).
+    ``build(v)`` returns ``(kind, a, b, c, transfer_kwargs, rows, phases)`` for value
+    ``v``, ``rows`` being the geometry of the rows it built
+    (:mod:`neural_mi.data.rows`) and ``phases`` how many interleaved row sets they
+    hold (:func:`_call`).
     ``construction`` holds the settings held fixed, recorded in ``params``.
     ``sweep_mode`` labels a merged result. ``rows_are_the_input`` says that the
     rows built are the rows passed, in order, so custom split indices still
@@ -197,10 +204,10 @@ def _named_run(quantity: str, param: str, value, build, *, run_kwargs: Dict[str,
     record = {**construction, 'quantity': quantity}
     run_kwargs = _with_save_path(run_kwargs, quantity)
     if param is None or not _is_sweep(value):
-        kind, a, b, c, transfer, rows = build(value)
+        kind, a, b, c, transfer, rows, phases = build(value)
         result = _call(kind, a, b, c, run_kwargs=run_kwargs, rigorous=rigorous,
                        n_workers=n_workers, show_progress=show_progress, transfer=transfer,
-                       rows=rows)
+                       rows=rows, phases=phases)
         result.params.update({**record, **({param: value} if param is not None else {})})
         return result
     values = list(value)
@@ -252,6 +259,15 @@ def _series(streams: Dict[str, Any], processing, quantity: str) -> 'OrderedDict[
     return series
 
 
+def _shifts_windows(run_kwargs: Dict[str, Any]) -> bool:
+    """Whether the call's rows shift each epoch, ``Training(shift_windows=...)`` or its default."""
+    from neural_mi.config import Training, as_config
+    from neural_mi.defaults import BASE_PARAMS_SCHEMA
+    training = as_config(run_kwargs.get('training'), Training)
+    value = getattr(training, 'shift_windows', None) if training is not None else None
+    return bool(BASE_PARAMS_SCHEMA['shift_windows']['default'] if value is None else value)
+
+
 def _steps(name: str, first: int, last: int) -> list:
     """``(name, offset)`` for every offset from ``first`` to ``last``, both included."""
     return [(name, s) for s in range(first, last + 1)]
@@ -288,10 +304,15 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     """
     stride = validate_stride(stride, f"{quantity}()")
     series = _series(streams, run_kwargs.pop('processing', None), quantity)
+    # Rows a stride thins shift under shift_windows: built at every step, of
+    # which each task keeps one in every stride, at a phase drawn each epoch.
+    phases = stride if stride > 1 and _shifts_windows(run_kwargs) else 1
 
     def build(v):
-        a, b, c, rows = build_rows(series, spec_of(v), stride=stride)
-        return ('conditional' if c is not None else 'mi', a, b, c, None, rows)
+        spec = spec_of(v)
+        a, b, c, _ = build_rows(series, spec, stride=1 if phases > 1 else stride)
+        return ('conditional' if c is not None else 'mi', a, b, c, None,
+                spec_geometry(spec, stride), phases)
 
     # Offsets all at zero, every row kept: the rows are the ones passed, in
     # order, so custom split indices still address them (instantaneous_mi).
@@ -629,7 +650,7 @@ def transfer_entropy(
     def build(hw):
         # mode='transfer' builds the histories and records their geometry.
         return ('transfer', x_data, y_data, None,
-                {'history_window': hw, 'stride': stride, 'bidirectional': bidirectional}, None)
+                {'history_window': hw, 'stride': stride, 'bidirectional': bidirectional}, None, 1)
 
     return _named('transfer_entropy', 'history_window', history_window, build,
                   run_kwargs=run_kwargs, rigorous=rigorous, n_workers=n_workers,
@@ -672,7 +693,7 @@ def conditional_transfer_entropy(
 
     def build(hw):
         return ('transfer', x_data, y_data, w_data,
-                {'history_window': hw, 'stride': stride, 'bidirectional': bidirectional}, None)
+                {'history_window': hw, 'stride': stride, 'bidirectional': bidirectional}, None, 1)
 
     return _named('conditional_transfer_entropy', 'history_window', history_window, build,
                   run_kwargs=run_kwargs, rigorous=rigorous, n_workers=n_workers,

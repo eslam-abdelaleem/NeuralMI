@@ -287,9 +287,10 @@ class Trainer:
             Cheaper, narrower alternative to `shift_time` for regularly-sampled
             data windowed via a fixed `window_size`/`step_size`: re-slices
             (not interpolates) a fresh window tiling from a random integer
-            sample offset every epoch, at negligible per-epoch cost. Shifts
-            at full magnitude every epoch, up to `window_size` samples. Only
-            takes effect when `dataset` was built with an attached
+            sample offset every epoch, at negligible per-epoch cost. A shift
+            stays within one row step, so windows that start one sample apart
+            never move, and rows a stride thins change phase. Only takes
+            effect when `dataset` was built with an attached
             `_window_shifter` (`neural_mi/data/shift_windowing.py`); a
             no-op otherwise. Mutually exclusive in practice with
             `shift_time` (they gate on different dataset types).
@@ -493,6 +494,11 @@ class Trainer:
                 # offset 0, so the safe leak-check margin is twice the span.
                 # The check only warns; it does not change the split.
                 _leak_kwargs = {**_leak_kwargs, 'span': 2 * _leak_kwargs['span']}
+            elif (shift_windows and getattr(dataset, '_window_shifter', None) is not None
+                  and 'span' in _leak_kwargs and rows.step > 1):
+                # A shift_windows shift moves a training row by less than one
+                # row step, so a row reaches that much further.
+                _leak_kwargs = {**_leak_kwargs, 'span': _leak_kwargs['span'] + rows.step}
             train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
                                                              gap_fraction=split_gap_fraction, **_leak_kwargs)
         # Kept for callers that evaluate the trained network again afterwards,

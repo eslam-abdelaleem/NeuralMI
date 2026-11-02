@@ -299,6 +299,12 @@ test.
 
 ## Windowing and coverage
 
+**`shift_windows=True has no effect here: the rows start one step apart`**
+The rows of a quantity built by time offsets hold every step of the series at
+`stride=1`, so a shift would only relabel them. The rows shift when a stride
+above one thins them: they are then built at every step and each epoch keeps one
+in every `stride` from a new phase.
+
 **`At ...=0, ...() has nothing to condition on and computes ...`**
 A conditional quantity built by time offsets was asked for an empty
 conditioning history, so it has no difference to form and computes another

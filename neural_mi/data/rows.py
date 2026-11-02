@@ -21,6 +21,9 @@ from typing import Any, Dict, Optional
 
 STEP_KEY = 'row_step'
 SPAN_KEY = 'row_span'
+# Rows built by offset at every step of their series, of which each task keeps
+# one in every _row_phases, at a phase drawn each epoch when windows shift.
+PHASES_KEY = '_row_phases'
 
 
 @dataclass(frozen=True)
@@ -80,3 +83,10 @@ def row_geometry(params: Dict[str, Any]) -> Optional[RowGeometry]:
 def rows_in_time(params: Dict[str, Any]) -> bool:
     """Whether the rows ``params`` describes are known to be in time order."""
     return row_geometry(params) is not None
+
+
+def kept_rows(n_rows: int, params: Dict[str, Any]) -> int:
+    """How many of ``n_rows`` passed rows a task keeps: all of them, or, for rows built at every step of
+    their series so that they can shift (``_row_phases``), one in every ``_row_phases`` at any phase."""
+    phases = int(params.get(PHASES_KEY) or 1)
+    return n_rows if phases <= 1 else max(0, (n_rows - phases) // phases + 1)

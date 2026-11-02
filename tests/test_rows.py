@@ -216,3 +216,62 @@ class TestOffsetQuantity:
         with pytest.raises(ValueError, match="Name the streams 'x', 'y' and 'w'"):
             nmi.offset_quantity({'a': x, 'b': y}, {'A': [('a', -1)], 'B': [('b', 0)]},
                                 processing=nmi.Processing(x='continuous', x_params={'window_size': 1}))
+
+
+class TestShiftingRowsAStrideThins:
+    """A shift applies wherever rows thin a series and nowhere else, and moves them by less than one
+    row step: offset rows at a stride above one change phase each epoch, and windows that start one
+    sample apart never move."""
+
+    def test_the_phase_shifter_keeps_one_row_in_every_stride_at_every_phase(self):
+        from neural_mi.data.shift_windowing import RowPhaseShifter
+        x = torch.arange(10, dtype=torch.float32).reshape(10, 1, 1)
+        shifter = RowPhaseShifter((x, x + 100), x + 1000, 3)
+        assert shifter.n_windows == 3
+        for phase in range(3):
+            (a, c), b = shifter.windows_at(phase)
+            assert a[:, 0, 0].tolist() == [phase, phase + 3, phase + 6]
+            assert c[:, 0, 0].tolist() == [v + 100 for v in a[:, 0, 0].tolist()]
+            assert b[:, 0, 0].tolist() == [v + 1000 for v in a[:, 0, 0].tolist()]
+        draws = {shifter.random_shift(torch.Generator().manual_seed(s)) for s in range(40)}
+        assert draws == {0, 1, 2}
+
+    def test_a_window_shift_stays_within_one_step(self):
+        from neural_mi.data.shift_windowing import WindowShifter
+        generator = torch.Generator().manual_seed(0)
+        tiled = WindowShifter(torch.zeros(200, 1), window_size=10, step_size=4)
+        assert {tiled.random_shift(generator) for _ in range(60)} == {0, 1, 2, 3}
+        dense = WindowShifter(torch.zeros(200, 1), window_size=10, step_size=1)
+        assert {dense.random_shift(generator) for _ in range(20)} == {0}
+
+    @pytest.mark.parametrize('stride, shift, phases', [(3, True, 3), (3, False, None), (1, True, None)],
+                             ids=['strided_and_shifting', 'not_shifting', 'every_step'])
+    def test_offset_rows_shift_only_where_a_stride_thins_them(self, monkeypatch, stride, shift, phases):
+        from neural_mi.data import shift_windowing
+        seen = []
+        real = shift_windowing.try_build_row_phase_dataset
+
+        def spy(x_data, y_data, params, data_device='cpu'):
+            seen.append(params.get('_row_phases'))
+            return real(x_data, y_data, params, data_device)
+        monkeypatch.setattr(shift_windowing, 'try_build_row_phase_dataset', spy)
+        x, _ = _series(900)
+        training = nmi.Training(n_epochs=2, batch_size=32, shift_windows=shift)
+        result, _ = _quiet(nmi.active_information_storage, x, k=4, stride=stride, training=training)
+        assert set(seen) == {phases}
+        assert _recorded(result) == {(float(stride), 5.0)}
+
+    def test_a_row_reaches_one_step_further_when_it_shifts(self):
+        # 200 rows of span 5 and step 3, 20 held out in five blocks of 4: a gap of
+        # 2 rows buys 6 samples, enough for a row of 5 that stays put and short of
+        # the 8 a shifting row reaches.
+        x, _ = _series(604)
+        for shift, leaks in ((False, False), (True, True)):
+            training = nmi.Training(n_epochs=2, batch_size=16, shift_windows=shift)
+            _, messages = _quiet(nmi.active_information_storage, x, k=4, stride=3, training=training)
+            assert any('Blocked split may leak' in m for m in messages) == leaks
+
+    def test_a_block_of_rows_built_at_every_step_holds_one_span(self):
+        from neural_mi.analysis.permutation import _window_rows
+        params = {'row_step': 3.0, 'row_span': 5.0, '_row_phases': 3}
+        assert _window_rows(torch.zeros(40, 1, 5), params, {}) == 5

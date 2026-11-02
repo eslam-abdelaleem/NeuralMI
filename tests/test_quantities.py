@@ -763,19 +763,27 @@ class TestStride:
         def spy(a, b, c, d, base_params, *args, **kwargs):
             seen.setdefault('step', base_params.get('row_step'))
             seen.setdefault('span', base_params.get('row_span'))
+            seen.setdefault('phases', base_params.get('_row_phases'))
             seen.setdefault('rows', a.shape[0])
             return real(a, b, c, d, base_params, *args, **kwargs)
 
         transfer_mod._joint_marginal_difference = spy
         try:
-            nmi.transfer_entropy(torch.from_numpy(x), torch.from_numpy(y),
-                                 history_window=5, stride=4, model=_MODEL,
-                                 training=_TRAINING, show_progress=False, seed=0)
+            for shift in (False, True):
+                seen.clear()
+                nmi.transfer_entropy(torch.from_numpy(x), torch.from_numpy(y),
+                                     history_window=5, stride=4, model=_MODEL,
+                                     training=Training(**{**_TRAINING.__dict__, 'shift_windows': shift}),
+                                     show_progress=False, seed=0)
+                assert seen['step'] == 4
+                assert seen['span'] == 5 + 1      # the history and the step it predicts
+                if shift:
+                    # Built at every step, each task keeping one in four from a shifting phase.
+                    assert seen['phases'] == 4 and seen['rows'] == 1200 - 5
+                else:
+                    assert seen['phases'] is None and seen['rows'] == (1200 - 5 - 1) // 4 + 1
         finally:
             transfer_mod._joint_marginal_difference = real
-        assert seen['step'] == 4
-        assert seen['span'] == 5 + 1      # the history and the step it predicts
-        assert seen['rows'] == (1200 - 5 - 1) // 4 + 1
 
     # ---- validation --------------------------------------------------------
 
