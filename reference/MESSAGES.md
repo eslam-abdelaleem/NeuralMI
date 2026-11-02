@@ -22,6 +22,7 @@ asked is logged at the info level instead and listed at the end, under
 - [Permutation tests](#permutation-tests)
 - [Windowing and coverage](#windowing-and-coverage)
 - [Bias correction](#bias-correction)
+- [Preprocessing and the data check](#preprocessing-and-the-data-check)
 - [Data shape and type](#data-shape-and-type)
 - [Dimensionality](#dimensionality)
 - [Settings that had no effect](#settings-that-had-no-effect)
@@ -458,6 +459,77 @@ without that chunk while at least `min_gamma_points` remain.
 
 ---
 
+## Preprocessing and the data check
+
+`Preprocessing(channel=..., time=...)` transforms each continuous stream before
+rows are built from it, and every call checks its streams first
+([USING.md](USING.md#preprocessing-the-streams)). The check changes nothing.
+Its report is logged at the info level (`Data check for ...`, under
+[Informational messages](#informational-messages)), and it warns about what
+needs attention.
+
+**`... has non-finite values (NaN or infinite) in channel(s) ...`**
+Every network that reads a NaN or an infinite value produces NaN, and the call
+fails or reports nothing. A stream read by a continuous or categorical
+processor is refused before this point. This message catches arrays passed in
+already processed. Remove or fill the values before the call.
+
+**`... has constant channel(s) ...`**
+A constant channel carries no information, and the transforms leave it
+unscaled. Drop it before the call, especially before `channel='zca'`, which
+has no direction to sphere along it.
+
+**`The channels of ... have a typical scale of ..., more than a factor of ... from unit scale`**
+The median standard deviation of the stream's channels is below 0.1 or above
+10. The networks start from weights sized for inputs near unit scale, and
+their estimate depends on units: a pair sharing 2 nats reads 2.05 at unit
+scale, 0.006 at a thousandth of it and 0 at a thousand times it.
+`Preprocessing(channel='zscore')` brings every channel to unit scale and leaves
+every quantity unchanged. The check does not fire when a channel transform is
+set.
+
+**`The rows ...'s ... processor builds have a typical scale of ..., more than a factor of ... from unit scale`**
+A spike-time or categorical stream's rows come from its processor, after any
+preprocessing, and the typical standard deviation of those rows is below 0.1 or
+above 10. Spike times within a window are small numbers in seconds. Binned
+counts divided by the bin width (`normalize_bins`) are rates in the hundreds or
+thousands at fine bins, and on the library's spike generator they turned a
+1.15-bit dependence into 0. `normalize_bins=False` keeps counts, and
+`Model(input_scaling='standard')` scales the rows an encoder receives.
+
+**`Preprocessing(time=...) filters each channel by its own past, which changes what ... measures`**
+Filtering each process invertibly by its own past leaves the rate quantities
+unchanged in the limit of long windows (`mi_rate`, `transfer_entropy`,
+`conditional_transfer_entropy`, `directed_information_rate`,
+`instantaneous_exchange`). It changes every other quantity: the information
+between the whitened streams is not the information between the original ones.
+Use it with another quantity only when that is the quantity wanted.
+
+**`Preprocessing leaves ..., a ... stream, as it is`**
+A spike-time or categorical stream has no continuous values to transform. Its
+rows come from its processor, whose own settings set their values (`bin_size`
+and `normalize_bins` for spikes, `encoding` for categories), and
+`Model(input_scaling='standard')` scales the rows an encoder receives.
+
+**`Preprocessing(time=...) leaves ... as it is in time`**
+The stream arrived as rows built already (three or more dimensions), so there
+is no single series to filter. It still takes the channel transform. Pass the
+series, and let a processor or a named quantity build the rows.
+
+**`Preprocessing applies ..., a transform of your own`**
+The library cannot check what a transform of your own does to the information
+in a stream. An invertible transform keeps it, and one that drops, merges or
+clips values does not. The built-in transforms are invertible, apart from
+`PCA` with fewer components than channels.
+
+**`PCA keeps ... of the ... components of ..., those of largest variance`**
+The kept components are the directions of largest variance, and the information
+need not lie in them. A signal shared under larger private ones, as in field
+potentials, is cut first. `n_components=None` keeps every component, a rotation
+that leaves every quantity unchanged.
+
+---
+
 ## Data shape and type
 
 **`... have different numbers of samples (...). Truncating ... to ... samples`**, **`X (...) and Y (...) differ in sample count`**
@@ -666,6 +738,25 @@ Install ffmpeg to write MP4.
 
 These report what the library did. They are logged at the info level, shown
 with `verbose=True` or `nmi.set_verbose(True)`, and ask for no action.
+
+
+**`Data check: ... reach the estimator, ...`**
+The part of the check that needs the rows, reported where they are counted:
+how many reach the estimator, how many of them are held out (counted as the
+split counts them), and the typical scale of each variable's rows where they
+are built at that point. A held-out set smaller than one training batch also
+warns.
+
+**`Data check for ...`**
+The check every call runs on its streams before rows are built, after any
+`Preprocessing`. It gives each stream's channel count and the range of its
+channel scales and, for a rate quantity on a series, the largest share of a
+channel's variance that the channel's own past predicts linearly, from the
+autoregressive fit `ARWhitening` uses. A share above 90% means a large
+conditioning term, of which the rate is a small residual, and the line
+suggests `Preprocessing(time='ar')`, which removes the term and leaves the rate
+unchanged. Spike-time and categorical streams are named only, since their
+processors build their rows.
 
 **`Dimensionality: the grid runs over embedding_dim 1 to ... because the reference fit has a participation ratio of ...`**, **`Dimensionality: the grid runs over ... values of embedding_dim from 1 to ... on a log scale`**
 The default grid reaches twice the participation ratio of the reference fit.

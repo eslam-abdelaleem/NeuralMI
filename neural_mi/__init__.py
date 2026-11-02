@@ -10,7 +10,7 @@ _warnings.filterwarnings("ignore", message="IProgress not found", category=_Tqdm
 
 from .run import run
 from .config import (
-    Model, Training, Split, Estimator, Output, Processing,
+    Model, Training, Split, Estimator, Output, Processing, Preprocessing,
     Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional,
     Interaction, Pairwise,
 )
@@ -29,6 +29,7 @@ from .quantities import (
 )
 from . import data
 from . import generators
+from . import preprocessing
 from . import estimators
 from . import models
 from . import results
@@ -43,7 +44,7 @@ _group_repeats_by_cell()
 
 __all__ = [
     'run',
-    'Model', 'Training', 'Split', 'Estimator', 'Output', 'Processing',
+    'Model', 'Training', 'Split', 'Estimator', 'Output', 'Processing', 'Preprocessing',
     'Rigorous', 'Precision', 'Lag', 'Transfer', 'Dimensionality', 'Conditional',
     'Interaction', 'Pairwise',
     'Results',

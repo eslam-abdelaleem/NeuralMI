@@ -12,6 +12,7 @@ setting falls back to the value given for X.
 
 - [`run()`](#run)
 - [`Processing`](#processing) and the [processor parameters](#processor-parameters)
+- [`Preprocessing`](#preprocessing)
 - [`Model`](#model)
 - [`Training`](#training)
 - [`Split`](#split)
@@ -103,6 +104,20 @@ Other values are mapped to consecutive integers with a warning.
 | `encoding` | `'majority_vote'` | `'majority_vote'` (the most frequent label, one-hot), `'probability'` (the label frequencies) or `'full_trajectory'` (every sample one-hot). |
 | `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. |
 | `sample_rate` | `None` | Samples per second. Puts windows, steps and lags in seconds. |
+
+## `Preprocessing`
+
+Transforms of each continuous stream before rows are built from it, made only
+when asked and recorded in `result.params['preprocessing']`. Each transform is
+fitted on X, Y and W apart, the time transform first. Spike-time and
+categorical streams take neither, and arrays passed in as rows take the channel
+transform only. The transforms are in `nmi.preprocessing`, and
+[USING.md](USING.md#preprocessing-the-streams) shows them in use.
+
+| Parameter | Default | Meaning |
+|--|--|----|
+| `channel` | `None` | A transform across each stream's channels: `'zscore'` (centre each channel and divide it by its standard deviation), `'zca'` (sphere the channels), `'pca'` (rotate them onto their principal axes) or `'copula'` (map each channel through its ranks to a standard normal). Each leaves every quantity unchanged. `nmi.preprocessing.PCA(n_components=k)` keeps the first `k` components, and warns. A transform of your own also goes here. |
+| `time` | `None` | A transform along each channel's time axis: `'ar'` filters each channel by its own autoregressive fit, whose order AIC chooses up to `10 log10(T)` (`nmi.preprocessing.ARWhitening(order=p)` fixes it). It leaves the rate quantities unchanged in the limit of long windows and changes every other quantity, which warns. |
 
 ## `Model`
 

@@ -28,7 +28,7 @@ from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 __all__ = [
-    "Model", "Training", "Split", "Estimator", "Output", "Processing",
+    "Model", "Training", "Split", "Estimator", "Output", "Processing", "Preprocessing",
     "Rigorous", "Precision", "Lag", "Transfer", "Dimensionality", "Conditional",
     "Interaction", "Pairwise",
     "as_config",
@@ -246,6 +246,25 @@ class Processing:
             "y": "processor_type_y", "y_params": "processor_params_y",
             "w": "w_processor_type", "w_params": "w_processor_params",
         })
+
+
+@dataclass
+class Preprocessing:
+    """Transforms of each continuous stream before rows are built from it, made only when asked.
+
+    ``channel`` acts across a stream's channels: ``'zscore'``, ``'zca'``,
+    ``'pca'`` or ``'copula'``, each leaving every quantity unchanged. ``time``
+    acts along each channel: ``'ar'`` filters it by its own autoregressive fit,
+    which leaves the rate quantities unchanged in the limit of long windows and
+    changes the others. Either also takes a transform object
+    (:mod:`neural_mi.preprocessing`), such as ``PCA(n_components=8)`` or one of
+    your own. Each is fitted on X, Y and W apart, the time transform first.
+    """
+    channel: Optional[Any] = None
+    time: Optional[Any] = None
+
+    def to_kwargs(self) -> Dict[str, Any]:
+        return _non_none(self)
 
 
 # ---------------------------------------------------------------------------

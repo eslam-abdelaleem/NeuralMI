@@ -29,7 +29,7 @@ from .embeddings_io import model_file, resolve_model_path, announce_saving_sever
 from .defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 import inspect as _inspect
 from .config import (
-    Model, Training, Split, Estimator, Output, Processing,
+    Model, Training, Split, Estimator, Output, Processing, Preprocessing,
     Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional,
     Interaction, Pairwise, as_config,
 )
@@ -561,6 +561,7 @@ def run(
     *,
     mode: str = 'estimate',
     processing: Optional[Union[Processing, Dict[str, Any]]] = None,
+    preprocessing: Optional[Union[Preprocessing, Dict[str, Any]]] = None,
     model: Optional[Union[Model, Dict[str, Any]]] = None,
     training: Optional[Union[Training, Dict[str, Any]]] = None,
     split: Optional[Union[Split, Dict[str, Any]]] = None,
@@ -611,6 +612,10 @@ def run(
         The analysis to run.
     processing : Processing or dict, optional
         Raw-data processors, e.g. ``Processing(x='continuous', x_params={'window_size': 1})``.
+    preprocessing : Preprocessing or dict, optional
+        Transforms of each continuous stream before rows are built from it,
+        e.g. ``Preprocessing(channel='zscore')``. Recorded in
+        ``result.params['preprocessing']``. See :mod:`neural_mi.preprocessing`.
     model : Model or dict, optional
         Architecture, e.g. ``Model(embedding_dim=16, hidden_dim=64, critic_type='separable')``.
     training : Training or dict, optional
@@ -710,6 +715,10 @@ def run(
     split = as_config(split, Split)
     output = as_config(output, Output)
     processing = as_config(processing, Processing)
+    preprocessing = as_config(preprocessing, Preprocessing)
+    if preprocessing is not None:
+        from .preprocessing import resolve as _resolve_preprocessing
+        _resolve_preprocessing(preprocessing)       # a name or transform it cannot use raises here
     if isinstance(estimator, str):
         estimator = Estimator(name=estimator)
     else:
@@ -807,6 +816,7 @@ def run(
     flat['permutation_test'] = permutation_test
     flat['n_permutations'] = n_permutations
     flat['permutation_shuffle'] = permutation_shuffle
+    flat['preprocessing'] = preprocessing
     # Private: the geometry of rows a named quantity built in time order
     # (neural_mi/data/rows.py). Arrays passed in already built carry none.
     flat['_rows'] = _rows
@@ -917,6 +927,7 @@ def _run_flat(
     return_rotation_matrices: Optional[bool] = None,
     channel_names_x: Optional[List[str]] = None,
     channel_names_y: Optional[List[str]] = None,
+    preprocessing: Optional[Preprocessing] = None,
     _grid_part: Optional[Dict[str, Any]] = None,
     _rows: Optional[RowGeometry] = None,
     _row_phases: Optional[int] = None,
@@ -1215,6 +1226,9 @@ def _run_flat(
                       **analysis_kwargs}
         if channel_names_x is not None: run_params['channel_names_x'] = channel_names_x
         if channel_names_y is not None: run_params['channel_names_y'] = channel_names_y
+        if preprocessing is not None:
+            from .preprocessing import describe as _describe_preprocessing
+            run_params['preprocessing'] = _describe_preprocessing(preprocessing)
 
         # Every processor parameter the schema knows, so a new one defers
         # windowing in a sweep without further changes.
@@ -1268,6 +1282,19 @@ def _run_flat(
                 _accepted_w = PROCESSOR_PARAMS_SCHEMA.get(w_processor_type, ())
                 w_processor_params = {k: v for k, v in (processor_params_x or {}).items()
                                       if k in _accepted_w}
+        # The streams as Preprocessing(...) asks, before any rows are built from
+        # them, and the data check, which changes nothing
+        # (neural_mi/preprocessing.py). Transfer entropy takes both in its
+        # branch below, once its streams are on one grid, as the named
+        # quantities do on theirs (quantities._by_offsets). Rows a named
+        # quantity built (_rows) were checked there as series.
+        _processor_of = {'x': processor_type_x, 'y': _effective_processor_type_y, 'w': w_processor_type}
+        if mode != 'transfer':
+            from .preprocessing import prepare as _prepare_streams
+            _prepared = _prepare_streams(OrderedDict(x=x_data, y=y_data, w=w_data), _processor_of,
+                                         preprocessing, quantity=f"mode='{mode}'", rate=False,
+                                         check=_rows is None)
+            x_data, y_data, w_data = _prepared['x'], _prepared['y'], _prepared['w']
         # conditional and interaction window W together with X inside each task
         # when X and W are both regular (continuous or categorical, in any
         # combination) under shift_windows, or both spike trains. The raw
@@ -1381,7 +1408,8 @@ def _run_flat(
                 base_params['processor_params_y'] = {}
             base_params['processor_params_x']['preprocessed'] = True
             base_params['processor_params_y']['preprocessed'] = True
-            _warn_small_sample(kept_rows(x_run_data.shape[0], base_params), 'samples', base_params, mode)
+            _warn_small_sample(kept_rows(x_run_data.shape[0], base_params), 'samples', base_params, mode,
+                               rows={'x': x_run_data, 'y': y_run_data})
             if mode not in ('dimensionality', 'pairwise') and y_run_data is None:
                 raise ValueError(f"y_data must be provided for mode '{mode}'.")
         else:
@@ -1435,7 +1463,9 @@ def _run_flat(
                 base_params['_n_windows_retained'] = dataset.n_windows_retained
 
             _n_built = dataset.x_data.shape[0] if getattr(dataset, 'x_data', None) is not None else 0
-            _warn_small_sample(_n_built, 'windows', base_params, mode)
+            _warn_small_sample(_n_built, 'windows', base_params, mode,
+                               rows={'x': getattr(dataset, 'x_data', None), 'y': getattr(dataset, 'y_data', None)},
+                               processors={'x': processor_type_x, 'y': _effective_processor_type_y})
 
             if mode in ('dimensionality', 'pairwise'):
                 # dimensionality and pairwise can operate on x_data alone
@@ -1639,6 +1669,14 @@ def _run_flat(
                             f"or set Processing(...) with one-step windows to put streams of other "
                             f"kinds on one grid."
                         )
+            # Preprocessing(...) and the data check act on the series the
+            # histories are built from, after any grid. Transfer entropy is a
+            # rate quantity, which a time transform leaves unchanged.
+            from .preprocessing import prepare as _prepare_streams
+            _prepared = _prepare_streams(OrderedDict(x=x_run, y=y_run, w=w_run), _processor_of,
+                                         preprocessing, quantity="mode='transfer'", rate=True,
+                                         check=_rows is None)
+            x_run, y_run, w_run = _prepared['x'], _prepared['y'], _prepared['w']
             # The histories are built here, so the training tasks read them as given.
             base_params['processor_type_x'] = None
             base_params['processor_type_y'] = None
@@ -1759,14 +1797,55 @@ def _held_out_count(n_rows: int, base_params: dict) -> int:
     return held_out_rows(n_rows, base_params.get('train_fraction', 0.9))
 
 
+def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
+                 rows: Optional[dict], processors: Optional[dict]) -> None:
+    """The part of the data check that needs the rows: how many reach the estimator, how many are held out,
+    and their scale. Rows a spike-time or categorical processor built far from unit scale warn; a continuous
+    stream's scale was checked before its rows were built (neural_mi/preprocessing.py)."""
+    from .estimators import NONPARAMETRIC
+    from .preprocessing import SCALE_BAND
+    held = ("a nonparametric estimate holds none out"
+            if base_params.get('estimator_name') in NONPARAMETRIC else f"{n_held_out} of them held out")
+    scales = []
+    for name, data in (rows or {}).items():
+        if not (torch.is_tensor(data) or isinstance(data, np.ndarray)) or len(data) == 0:
+            continue
+        # The first rows tell the scale; reading every row would copy a large dataset.
+        sample = data[:10000]
+        scale = float(np.std(sample.detach().cpu().numpy() if torch.is_tensor(sample) else sample))
+        scales.append(f"{name} {scale:.3g}")
+        kind = (processors or {}).get(name)
+        if kind in ('spike', 'categorical') and not 1.0 / SCALE_BAND <= scale <= SCALE_BAND:
+            side = base_params.get(f'processor_params_{name}') or {}
+            if kind == 'categorical':
+                held_in = "They hold the processor's encoding of the categories."
+            elif side.get('bin_size') is not None:
+                held_in = ("They hold spike counts per bin, divided by the bin width when normalize_bins is "
+                           "set, which makes them rates. normalize_bins=False keeps the counts.")
+            else:
+                held_in = "They hold spike times within each window, in the stream's time unit."
+            warnings.warn(
+                f"The rows {name}'s {kind} processor builds have a typical scale of {scale:.3g}, more than "
+                f"a factor of {SCALE_BAND:g} from unit scale, where the networks start. {held_in} "
+                f"Model(input_scaling='standard') scales the rows an encoder receives.",
+                UserWarning, stacklevel=user_stacklevel(),
+            )
+    logger.info(f"Data check: {n_samples} {unit} reach the estimator, {held}"
+                + (f"; their scale is {', '.join(scales)}" if scales else "") + ".")
+
+
 def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
-                       mode: str = 'estimate') -> None:
+                       mode: str = 'estimate', rows: Optional[dict] = None,
+                       processors: Optional[dict] = None) -> None:
     """The warnings for a small dataset, whether the caller passed arrays or the
     library windowed the data (``unit`` is 'samples' or 'windows'): too few rows
-    in all, and too few held out for the curve that reads them."""
+    in all, and too few held out for the curve that reads them. The rows' part
+    of the data check (:func:`_report_rows`) is reported here, where their count
+    is known."""
     from .estimators import NONPARAMETRIC
     from .training.trainer import too_few_held_out
     n_held_out = _held_out_count(n_samples, base_params)
+    _report_rows(n_samples, unit, n_held_out, base_params, rows, processors)
     if (base_params.get('estimator_name') not in NONPARAMETRIC
             and too_few_held_out(n_held_out, base_params.get('batch_size', 128))):
         warnings.warn(

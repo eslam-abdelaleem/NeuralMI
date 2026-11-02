@@ -581,6 +581,17 @@ at a lag where it has strong nonlinear dependence ([Fraser and Swinney,
 1986](https://doi.org/10.1103/PhysRevA.33.1134)). The autocorrelation time is
 only a lower bound on the timescale.
 
+A conditioning term large against the rate makes the difference fragile: the
+amplification factor is about $1 + 2M/\bar{I}$ for a conditioning term $M$, and
+on smooth, finely sampled signals Y's own past predicts its present so well that
+$M$ is several nats. Filtering each process by an invertible filter of its own
+past leaves the rate unchanged, since the filtered and the original processes
+determine each other in the limit of long windows, and an autoregressive filter
+fitted to each channel removes most of $M$. `Preprocessing(time='ar')` applies
+it. Any quantity other than a rate changes under it, because the information
+between the filtered streams at finite windows is not that between the
+original ones.
+
 A per-step quantity converts to bits per second by dividing by the bin width.
 Transfer entropy, instantaneous exchange, the directed information rate, active
 information storage and the MI rate are per step in this sense. Predictive and

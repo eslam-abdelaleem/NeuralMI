@@ -193,6 +193,20 @@ recording and excludes a gap of `gap_fraction` of a block on either side of each
 from training. Neighbouring correlated windows cannot then sit on both sides of
 the split. A random split suits independent samples only.
 
+### Preprocessing and the data check
+
+`neural_mi/preprocessing.py` holds every transform of the data: the channel
+transforms, the autoregressive whitening and the interface a transform of your
+own follows. `utils._whiten` (the embedding spectrum) and `ksg.prepare` use the
+same `ZScore`, `ZCA` and `Copula`. `preprocessing.prepare` applies a
+`Preprocessing` to the streams of a call and runs the data check on the result,
+and every path takes it once, before rows are built: `_run_flat` on the raw
+streams for every mode but transfer entropy, the transfer branch on the series
+its histories come from (after any grid), and `quantities._by_offsets` on a
+named quantity's series, before `offsets.build_rows`. The named quantities take
+`preprocessing` out of what they pass to `run()`, which receives rows and skips
+its own check when `_rows` says a quantity built them.
+
 ### Rows in time order
 
 Whatever builds rows from a time series records their geometry once, in the

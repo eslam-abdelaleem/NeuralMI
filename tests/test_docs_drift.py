@@ -60,7 +60,7 @@ def _literal(cell):
 
 
 TABLES = _parameter_tables()
-CONFIGS = [cfg.Model, cfg.Training, cfg.Split, cfg.Estimator, cfg.Output, cfg.Processing,
+CONFIGS = [cfg.Model, cfg.Training, cfg.Split, cfg.Estimator, cfg.Output, cfg.Processing, cfg.Preprocessing,
            cfg.Rigorous, cfg.Precision, cfg.Lag, cfg.Transfer, cfg.Conditional, cfg.Interaction,
            cfg.Pairwise, cfg.Dimensionality]
 # Config fields stored under another name in the parameter schema.
@@ -104,7 +104,8 @@ def test_every_documented_default_matches_the_code(cls):
 
 def test_run_arguments_are_documented():
     params = inspect.signature(nmi.run).parameters
-    config_args = {'processing', 'model', 'training', 'split', 'estimator', 'output', *MODE_OF.values()}
+    config_args = {'processing', 'preprocessing', 'model', 'training', 'split', 'estimator', 'output',
+                   *MODE_OF.values()}
     # A leading underscore marks an argument the library passes to itself.
     run_args = {n for n, p in params.items()
                 if p.kind is not p.VAR_KEYWORD and not n.startswith('_')} - config_args

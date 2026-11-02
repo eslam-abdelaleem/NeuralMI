@@ -33,7 +33,6 @@ import numpy as np
 import torch
 from scipy.spatial import cKDTree
 from scipy.special import digamma
-from scipy.stats import norm, rankdata
 
 NOISE = 1e-8              # tie-breaking noise, in standard deviations of each column
 KD_TREE_MAX_DIM = 20      # above this many dimensions comparing every pair is faster than a k-d tree
@@ -42,12 +41,13 @@ _CHUNK = 256              # rows compared with every row at once on the brute-fo
 
 def prepare(a, gaussianize: bool, rng: np.random.Generator) -> np.ndarray:
     """Rows of ``a`` flattened to columns, each scaled to unit variance with tie-breaking noise, and with
-    ``gaussianize`` mapped through its ranks to a standard normal."""
+    ``gaussianize`` mapped through its ranks to a standard normal, by the transforms ``Preprocessing``
+    applies to streams (:mod:`neural_mi.preprocessing`)."""
+    from neural_mi.preprocessing import Copula, ZScore
     a = np.asarray(a, dtype=float).reshape(len(a), -1)
-    sd = a.std(axis=0)
-    a = (a - a.mean(axis=0)) / np.where(sd > 0, sd, 1.0) + NOISE * rng.standard_normal(a.shape)
+    a = ZScore().fit(a).transform(a) + NOISE * rng.standard_normal(a.shape)
     if gaussianize:
-        a = norm.ppf((rankdata(a, axis=0) - 0.5) / len(a))
+        a = Copula().fit(a).transform(a)
     return a
 
 

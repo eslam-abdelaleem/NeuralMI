@@ -1027,16 +1027,14 @@ def build_optimizer_and_scheduler(
 
 
 def _whiten(z: np.ndarray, whitening: Optional[str]) -> np.ndarray:
-    """Normalize centred embeddings before their cross-covariance is taken."""
+    """Normalize centred embeddings before their cross-covariance is taken, with the transforms
+    ``Preprocessing`` applies to streams (:mod:`neural_mi.preprocessing`). Dead dimensions keep their
+    (zero) scale instead of being divided by it."""
+    from neural_mi.preprocessing import ZCA, ZScore
     if whitening == 'std':
-        std = z.std(axis=0, keepdims=True)
-        # Dead dimensions keep their (zero) scale instead of dividing by zero.
-        return z / np.where(std > 1e-8, std, 1.0)
+        return ZScore().fit(z).transform(z)
     if whitening == 'zca':
-        cov = (z.T @ z) / (z.shape[0] - 1)
-        u, s, _ = np.linalg.svd(cov)
-        w = u @ np.diag(1.0 / np.sqrt(np.maximum(s, 1e-8))) @ u.T
-        return z @ w.T
+        return ZCA().fit(z).transform(z)
     if whitening is not None:
         raise ValueError(f"Unknown whitening {whitening!r}. Expected 'std', 'zca' or None.")
     return z

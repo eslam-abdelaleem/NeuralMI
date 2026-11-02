@@ -53,6 +53,7 @@ from neural_mi.analysis.assemble import merge_results
 from neural_mi.analysis.offsets import (build_rows, one_step_series, resolve_stream_processing,
                                         spec_geometry)
 from neural_mi.utils import _as_tensor, validate_stride, validate_window
+from neural_mi.preprocessing import describe as describe_preprocessing
 from neural_mi.embeddings_io import model_file, resolve_model_path, announce_saving_several
 
 
@@ -268,6 +269,17 @@ def _shifts_windows(run_kwargs: Dict[str, Any]) -> bool:
     return bool(BASE_PARAMS_SCHEMA['shift_windows']['default'] if value is None else value)
 
 
+def _prepared_series(series, processing, preprocessing, quantity: str):
+    """A quantity's series transformed as ``preprocessing`` asks and checked, before its rows are built.
+    A stream read by a spike-time or categorical processor takes no transform."""
+    from neural_mi.config import Preprocessing, as_config
+    from neural_mi.preprocessing import RATE_QUANTITIES, prepare
+    processors = ({name: resolved[0] for name, resolved in resolve_stream_processing(processing).items()}
+                  if processing is not None else {})
+    return prepare(series, processors, as_config(preprocessing, Preprocessing), quantity=f"{quantity}()",
+                   rate=quantity in RATE_QUANTITIES)
+
+
 def _steps(name: str, first: int, last: int) -> list:
     """``(name, offset)`` for every offset from ``first`` to ``last``, both included."""
     return [(name, s) for s in range(first, last + 1)]
@@ -303,7 +315,14 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     MI estimate.
     """
     stride = validate_stride(stride, f"{quantity}()")
-    series = _series(streams, run_kwargs.pop('processing', None), quantity)
+    processing = run_kwargs.pop('processing', None)
+    series = _series(streams, processing, quantity)
+    # The series as Preprocessing(...) asks, and the data check, here and not in
+    # run(), which receives rows built already (neural_mi/preprocessing.py).
+    preprocessing = run_kwargs.pop('preprocessing', None)
+    series = _prepared_series(series, processing, preprocessing, quantity)
+    if preprocessing is not None:
+        construction = {**construction, 'preprocessing': describe_preprocessing(preprocessing)}
     # Rows a stride thins shift under shift_windows: built at every step, of
     # which each task keeps one in every stride, at a phase drawn each epoch.
     phases = stride if stride > 1 and _shifts_windows(run_kwargs) else 1

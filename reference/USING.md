@@ -806,6 +806,52 @@ windows are more likely to hold a spike. On a 3 Hz population, retention rose
 from 0.155 at 20 ms to 1.0 at 1 s. `drop_empty_windows=False` holds retention at
 1.0 across the sweep.
 
+### Preprocessing the streams
+
+Nothing changes the data unless asked. `Preprocessing` transforms each
+continuous stream before rows are built from it, fitted on X, Y and W apart,
+and `result.params['preprocessing']` records what it applied:
+
+```python
+from neural_mi import Preprocessing
+from neural_mi.preprocessing import PCA
+
+nmi.run(x, y, preprocessing=Preprocessing(channel='zscore'))
+nmi.mi_rate(x, y, h=10, half_width=5, preprocessing=Preprocessing(time='ar', channel='zscore'))
+nmi.run(x, y, preprocessing=Preprocessing(channel=PCA(n_components=8)))
+```
+
+The channel transforms (`'zscore'`, `'zca'`, `'pca'`, `'copula'`) are
+invertible, so every quantity keeps its value, and they remove the dependence of
+the estimate on units: a pair sharing 2 nats reads 2.05 at unit scale, 0.006 at
+a thousandth of it and 0 at a thousand times it. `PCA(n_components=k)` with `k`
+below the channel count is the exception. It keeps the directions of largest
+variance and warns, since the information need not lie in them.
+
+`time='ar'` filters each channel by its own autoregressive fit, its order chosen
+by AIC, and keeps the series' length. It leaves the rate quantities unchanged in
+the limit of long windows and shrinks their conditioning term
+([THEORY.md](THEORY.md#getting-a-rate)). On smooth, finely sampled signals that
+term is several nats and the rate a small residual of it, which the networks
+read poorly. On a shared oscillation under larger private ones, `mi_rate` read
+0.135 to 0.154 against an exact 0.160 after whitening, and 0 or a failed
+repeat before. Every other quantity changes under it, and warns.
+
+Spike-time and categorical streams take neither transform: their processors set
+their rows, and `Model(input_scaling='standard')` scales what an encoder
+receives. Arrays passed in as rows take the channel transform only. A transform
+of your own subclasses `nmi.preprocessing.Transform`: it declares its `domain`
+(`'channel'` or `'time'`), learns from a stream in `fit` and applies in
+`transform`, both on `(n, n_channels)` arrays. The library warns that it cannot
+check that it keeps the information.
+
+Every call also checks its streams before rows are built, after any
+preprocessing, and changes nothing. It warns about non-finite or constant
+channels and about channels more than ten times from unit scale. Its report,
+logged at the info level (`verbose=True`), gives each stream's channel scales
+and, for a rate quantity, how much of each channel's variance its own past
+predicts, with the option that would help.
+
 ### Window shifting
 
 By default `Training(shift_windows=True)` and `Training(shift_time=True)` make
