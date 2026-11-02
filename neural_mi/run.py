@@ -1584,6 +1584,10 @@ def _run_flat(
         elif mode == 'transfer':
             if history_window is None:
                 raise ValueError("`history_window` must be provided for mode='transfer'.")
+            from .utils import validate_window
+            history_window = validate_window(history_window, 'history_window', "mode='transfer'", 1)
+            prediction_horizon = validate_window(prediction_horizon, 'prediction_horizon',
+                                                 "mode='transfer'", 1)
             if y_data is None:
                 raise ValueError("y_data must be provided for mode='transfer'.")
             if any(t is not None for t in (processor_type_x, processor_type_y, w_processor_type)):

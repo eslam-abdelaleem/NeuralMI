@@ -794,3 +794,52 @@ class TestStride:
             nmi.active_information_storage(torch.from_numpy(x), k=3, stride=0.5,
                                            model=_MODEL, training=_TRAINING,
                                            show_progress=False, seed=0)
+
+
+class TestWindowParameters:
+    """Every window parameter is a whole number of steps, checked as stride is, and an empty
+    conditioning history says which quantity it computes instead."""
+
+    class _Built(Exception):
+        pass
+
+    @staticmethod
+    def _xy(T=200):
+        rng = np.random.default_rng(0)
+        return rng.standard_normal((T, 1)).astype('float32'), rng.standard_normal((T, 1)).astype('float32')
+
+    @pytest.mark.parametrize('call, message', [
+        (lambda x, y: nmi.mi_rate(x, y, h=-1, half_width=3), "h must be >= 0"),
+        (lambda x, y: nmi.mi_rate(x, y, h=2, half_width=[3, -1]), "half_width must be >= 0"),
+        (lambda x, y: nmi.instantaneous_exchange(x, y, k=1.5), "k must be a whole number"),
+        (lambda x, y: nmi.directed_information_rate(x, y, k=True), "k must be a whole number"),
+        (lambda x, y: nmi.active_information_storage(x, k=0), "k must be >= 1"),
+        (lambda x, y: nmi.active_information_storage(x, k=3, future_k=0), "future_k must be >= 1"),
+        (lambda x, y: nmi.predictive_information(x, k=[2, 0]), "k must be >= 1"),
+        (lambda x, y: nmi.cross_predictive_information(x, y, k=0), "k must be >= 1"),
+        (lambda x, y: nmi.transfer_entropy(x, y, history_window=0), "history_window must be >= 1"),
+        (lambda x, y: nmi.run(x, y, mode='transfer', transfer=nmi.Transfer(history_window=0)),
+         "history_window must be >= 1"),
+    ], ids=['negative_h', 'negative_half_width', 'fractional_k', 'bool_k', 'empty_ais_k',
+            'empty_future', 'empty_predictive_k', 'empty_cross_k', 'empty_history', 'run_transfer'])
+    def test_a_window_that_is_not_a_count_of_steps_is_refused(self, call, message):
+        with pytest.raises(ValueError, match=message):
+            call(*self._xy())
+
+    def test_mi_rate_needs_half_width(self):
+        with pytest.raises(TypeError, match="half_width"):
+            nmi.mi_rate(*self._xy(), h=2)
+
+    @pytest.mark.parametrize('call, computes', [
+        (lambda x, y: nmi.instantaneous_exchange(x, y, k=0), 'computes instantaneous_mi'),
+        (lambda x, y: nmi.directed_information_rate(x, y, k=[0, 2]), 'computes instantaneous_mi'),
+        (lambda x, y: nmi.mi_rate(x, y, h=0, half_width=3), 'computes I(X_{-L..L}; Y_0)'),
+    ], ids=['exchange', 'directed_rate_sweep', 'mi_rate'])
+    def test_an_empty_history_names_the_quantity_computed(self, monkeypatch, call, computes):
+        def spy(series, spec, stride=1):
+            raise self._Built()
+        monkeypatch.setattr(_q, 'build_rows', spy)
+        with pytest.warns(UserWarning, match=r"=0, .*has nothing to condition on") as caught:
+            with pytest.raises(self._Built):
+                call(*self._xy())
+        assert any(computes in str(w.message) for w in caught)

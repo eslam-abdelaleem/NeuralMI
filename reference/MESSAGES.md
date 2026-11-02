@@ -299,6 +299,15 @@ test.
 
 ## Windowing and coverage
 
+**`At ...=0, ...() has nothing to condition on and computes ...`**
+A conditional quantity built by time offsets was asked for an empty
+conditioning history, so it has no difference to form and computes another
+quantity with one network. `instantaneous_exchange(k=0)` and
+`directed_information_rate(k=0)` compute `instantaneous_mi`, $I(X_0; Y_0)$.
+`mi_rate(h=0)` computes $I(X_{-L..L}; Y_0)$ for $L$ = `half_width`, which is
+`instantaneous_mi` at `half_width=0`. In a sweep that starts at 0 the first
+point is that quantity, the baseline the conditioned values are read against.
+
 **`step_size=... was read as a fraction of window_size=...`**
 A `step_size` below 1 is always a fraction of the window. `step_size=0.25` is
 75% overlap at any window size. In seconds that rule meets ordinary values:

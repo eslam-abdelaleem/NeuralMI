@@ -976,7 +976,7 @@ defines each quantity and the identities between them.
 | `transfer_entropy(x, y, history_window)` | $I(Y_0; X_{past} \mid Y_{past})$ | `transfer` |
 | `conditional_transfer_entropy(x, y, w, history_window)` | $I(Y_0; X_{past} \mid Y_{past}, W_{past})$ | `transfer` |
 | `interaction_information(x, y, w)` | $I(X,W;Y) - I(X;Y) - I(W;Y)$ | `interaction` |
-| `mi_rate(x, y, h, half_width=20)` | $I(X_{all}(L); Y_0 \mid Y_{past}(h))$ | `conditional` with `align='dual_branch'` |
+| `mi_rate(x, y, h, half_width)` | $I(X_{all}(L); Y_0 \mid Y_{past}(h))$ | `conditional` with `align='dual_branch'` |
 | `instantaneous_exchange(x, y, k)` | $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$ | `conditional` with `align='dual_branch'` |
 | `directed_information_rate(x, y, k)` | $I(X_{past}(k), X_0; Y_0 \mid Y_{past}(k))$ | `conditional` with `align='dual_branch'` |
 
@@ -1031,7 +1031,16 @@ Too narrow a window on X (`half_width`) leaves signal out and reads low. Too
 little history on Y (`h`) can read high or low: high when Y's memory comes from
 what it shares with X, low when Y has private memory that its own past would
 cancel ([THEORY.md](THEORY.md#temporal-information-quantities)). Sweep one, fix
-it past its knee, then sweep the other. An iterable for both raises.
+it past its knee, then sweep the other. An iterable for both raises, and
+`half_width` has no default, since the answer depends on it as much as on `h`.
+
+Every window parameter (`k`, `future_k`, `h`, `half_width`, `history_window`)
+is a whole number of steps, checked as `stride` is. The conditioning histories
+`h` of `mi_rate` and `k` of `instantaneous_exchange` and
+`directed_information_rate` may be 0, where there is nothing to condition on:
+the call then computes `instantaneous_mi` (for `mi_rate`, MI between Y's present
+and X's whole window) with one network and warns. In the sweep above, the
+`h=0` point is that baseline.
 
 ### Sweeps, repeats and rigour
 

@@ -40,17 +40,18 @@ compose the same way:
   settings, extrapolates each repeat to infinite data.
 """
 import os
+import warnings
 from collections import OrderedDict
 from dataclasses import replace
 from typing import Any, Dict, Optional, Union
 
 from neural_mi.run import run
 from neural_mi.results import Results
-from neural_mi.logger import call_verbosity, collect_repeats
+from neural_mi.logger import call_verbosity, collect_repeats, user_stacklevel
 from neural_mi.parallel import dispatch_tasks
 from neural_mi.analysis.assemble import merge_results
 from neural_mi.analysis.offsets import build_rows, one_step_series, resolve_stream_processing
-from neural_mi.utils import _as_tensor, validate_stride
+from neural_mi.utils import _as_tensor, validate_stride, validate_window
 from neural_mi.embeddings_io import model_file, resolve_model_path, announce_saving_several
 
 
@@ -256,6 +257,24 @@ def _steps(name: str, first: int, last: int) -> list:
     return [(name, s) for s in range(first, last + 1)]
 
 
+def _windows(quantity: str, **windows) -> None:
+    """Check every window parameter of a quantity, each ``name=(value, minimum)``: a whole number of
+    steps, or an iterable of them (:func:`neural_mi.utils.validate_window`)."""
+    for name, (value, minimum) in windows.items():
+        for v in (value if _is_sweep(value) else [value]):
+            validate_window(v, name, f"{quantity}()", minimum)
+
+
+def _warn_if_unconditioned(quantity: str, name: str, value, computes: str) -> None:
+    """Warn that at ``name=0`` a conditional quantity has nothing to condition on, and say what it
+    computes then, with one network instead of a difference of two."""
+    if any(v == 0 for v in (value if _is_sweep(value) else [value])):
+        warnings.warn(
+            f"At {name}=0, {quantity}() has nothing to condition on and computes {computes}, with "
+            f"one network instead of a difference of two.",
+            UserWarning, stacklevel=user_stacklevel())
+
+
 def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional[str], value, *,
                 stride: int, rigorous, n_workers: int, show_progress: bool,
                 run_kwargs: Dict[str, Any], construction: Dict[str, Any], sweep_mode: str) -> Results:
@@ -345,8 +364,9 @@ def active_information_storage(
     x_data : array-like, shape (T, n_channels)
         Raw time series, or any stream ``processing`` can put on a grid.
     k : int or iterable of int
-        History length. An iterable runs every value, and each value is one
-        configuration of the result, with ``k`` a column of ``dataframe``.
+        History length, a whole number of steps of at least 1. An iterable runs
+        every value, and each value is one configuration of the result, with
+        ``k`` a column of ``dataframe``.
     future_k : int, default=1
         Future window length (1 is the present; use
         :func:`predictive_information` for a longer future window).
@@ -376,6 +396,7 @@ def active_information_storage(
     -------
     neural_mi.results.Results
     """
+    _windows('active_information_storage', k=(k, 1), future_k=(future_k, 1))
     return _by_offsets('active_information_storage', OrderedDict(x=x_data),
                        lambda kv: _spec_active_information_storage(kv, future_k), 'k', k,
                        stride=stride, rigorous=rigorous, n_workers=n_workers,
@@ -413,6 +434,7 @@ def predictive_information(
     -------
     neural_mi.results.Results
     """
+    _windows('predictive_information', k=(k, 1))
     return _by_offsets('predictive_information', OrderedDict(x=x_data),
                        _spec_predictive_information, 'k', k, stride=stride, rigorous=rigorous,
                        n_workers=n_workers, show_progress=show_progress, run_kwargs=run_kwargs,
@@ -475,6 +497,7 @@ def cross_predictive_information(
     -------
     neural_mi.results.Results
     """
+    _windows('cross_predictive_information', k=(k, 1))
     return _by_offsets('cross_predictive_information', OrderedDict(x=x_data, y=y_data),
                        _spec_cross_predictive_information, 'k', k, stride=stride,
                        rigorous=rigorous, n_workers=n_workers, show_progress=show_progress,
@@ -601,6 +624,8 @@ def transfer_entropy(
     conditional_transfer_entropy : the same quantity with a third signal's
         history folded into the conditioning side.
     """
+    _windows('transfer_entropy', history_window=(history_window, 1))
+
     def build(hw):
         # mode='transfer' builds the histories and records their geometry.
         return ('transfer', x_data, y_data, None,
@@ -643,6 +668,8 @@ def conditional_transfer_entropy(
     -------
     neural_mi.results.Results
     """
+    _windows('conditional_transfer_entropy', history_window=(history_window, 1))
+
     def build(hw):
         return ('transfer', x_data, y_data, w_data,
                 {'history_window': hw, 'stride': stride, 'bidirectional': bidirectional}, None)
@@ -687,7 +714,7 @@ def interaction_information(x_data, y_data, w_data, rigorous=False, n_workers: i
 # align='dual_branch': the joint term's X is the pair (A, C).
 
 def mi_rate(
-    x_data, y_data, h: Union[int, list], half_width: Union[int, list] = 20, stride: int = 1,
+    x_data, y_data, h: Union[int, list], half_width: Union[int, list], stride: int = 1,
     rigorous=False, n_workers: int = 1, show_progress: bool = True, **run_kwargs
 ) -> Results:
     r"""MI rate :math:`I(X_{all}; Y_0 \mid Y_{past}(h))`, the two-sided,
@@ -705,10 +732,14 @@ def mi_rate(
     x_data, y_data : array-like, shape (T, n_channels)
         Raw time series, same leading dimension.
     h : int or iterable of int
-        Y's conditioning history length. See
-        :func:`active_information_storage` for an iterable.
-    half_width : int or iterable of int, default=20
-        X_all's half-width; the full window spans ``2 * half_width + 1`` steps.
+        Y's conditioning history length, in steps. See
+        :func:`active_information_storage` for an iterable. At ``h=0`` there is
+        no history to condition on, and the call computes
+        :math:`I(X_{-L..L}; Y_0)` with one network and warns.
+    half_width : int or iterable of int
+        X_all's half-width, in steps; the full window spans
+        ``2 * half_width + 1`` steps. It has no default: the answer depends on
+        it as much as on ``h``.
         Either ``h`` or ``half_width`` may be an iterable, and the other stays
         fixed. Both windows change the answer. A curve that has flattened along
         one of them is therefore no evidence on its own. Too narrow a window on
@@ -734,6 +765,10 @@ def mi_rate(
             "past its knee and then sweep the other. A grid over both costs "
             "len(h) * len(half_width) training runs for the same conclusion."
         )
+    _windows('mi_rate', h=(h, 0), half_width=(half_width, 0))
+    _warn_if_unconditioned('mi_rate', 'h', h,
+                           'I(X_{-L..L}; Y_0) for L = half_width, which is instantaneous_mi at '
+                           'half_width=0')
     if _is_sweep(half_width):
         param, value, construction = 'half_width', half_width, {'h': h, 'stride': stride}
 
@@ -767,8 +802,10 @@ def instantaneous_exchange(
     x_data, y_data : array-like, shape (T, n_channels)
         Raw time series, same leading dimension.
     k : int or iterable of int
-        Conditioning history length for both X_past and Y_past. See
-        :func:`active_information_storage` for an iterable.
+        Conditioning history length for both X_past and Y_past, in steps. See
+        :func:`active_information_storage` for an iterable. At ``k=0`` there is
+        no past to condition on, and the call computes :func:`instantaneous_mi`
+        with one network and warns.
     stride : int, default=1
         See :func:`active_information_storage`.
     rigorous, n_workers, show_progress, **run_kwargs
@@ -778,6 +815,8 @@ def instantaneous_exchange(
     -------
     neural_mi.results.Results
     """
+    _windows('instantaneous_exchange', k=(k, 0))
+    _warn_if_unconditioned('instantaneous_exchange', 'k', k, 'instantaneous_mi, I(X_0; Y_0)')
     return _by_offsets('instantaneous_exchange', OrderedDict(x=x_data, y=y_data),
                        _spec_instantaneous_exchange, 'k', k, stride=stride, rigorous=rigorous,
                        n_workers=n_workers, show_progress=show_progress, run_kwargs=run_kwargs,
@@ -805,8 +844,10 @@ def directed_information_rate(
     x_data, y_data : array-like, shape (T, n_channels)
         Raw time series, same leading dimension.
     k : int or iterable of int
-        History length for both X_past and Y_past. See
-        :func:`active_information_storage` for an iterable.
+        History length for both X_past and Y_past, in steps. See
+        :func:`active_information_storage` for an iterable. At ``k=0`` there is
+        no past to condition on, and the call computes :func:`instantaneous_mi`
+        with one network and warns.
     stride : int, default=1
         See :func:`active_information_storage`.
     rigorous, n_workers, show_progress, **run_kwargs
@@ -816,6 +857,8 @@ def directed_information_rate(
     -------
     neural_mi.results.Results
     """
+    _windows('directed_information_rate', k=(k, 0))
+    _warn_if_unconditioned('directed_information_rate', 'k', k, 'instantaneous_mi, I(X_0; Y_0)')
     return _by_offsets('directed_information_rate', OrderedDict(x=x_data, y=y_data),
                        _spec_directed_information_rate, 'k', k, stride=stride, rigorous=rigorous,
                        n_workers=n_workers, show_progress=show_progress, run_kwargs=run_kwargs,

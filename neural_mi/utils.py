@@ -149,6 +149,24 @@ def validate_stride(stride: Any, quantity: str = "this quantity") -> int:
     return int(stride)
 
 
+def validate_window(value: Any, name: str, quantity: str = "this quantity", minimum: int = 1) -> int:
+    """Check a window parameter (``k``, ``h``, ``half_width``, ``history_window``...) and return it as
+    an int, as :func:`validate_stride` checks ``stride``.
+
+    A window counts steps of the series, so it is a whole number, at least
+    ``minimum``: 1 for a window that has to hold something, 0 for one that
+    may be empty, such as a conditioning history.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(
+            f"{name} must be a whole number of steps, got {value!r}. {quantity} counts its "
+            f"windows in steps of the series."
+        )
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum} for {quantity}, got {value}.")
+    return int(value)
+
+
 def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
                         dtype: torch.dtype = torch.float32,
                         stride: int = 1) -> Tuple[Any, Any, Any, int]:
