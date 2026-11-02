@@ -88,13 +88,21 @@ class TestEveryBuilderRecordsItsRows:
         result, _ = _quiet(call, x, y)
         assert _recorded(result) == {expected}
 
-    def test_a_grid_carries_its_windows_into_the_offsets(self):
+    def test_a_grid_puts_the_rows_one_step_apart(self):
         x, y = _series()
-        processing = nmi.Processing(x='continuous', y='continuous',
-                                    x_params={'window_size': 4, 'step_size': 2})
+        processing = nmi.Processing(x='continuous', y='continuous', x_params={'window_size': 1})
         result, _ = _quiet(nmi.mi_rate, x, y, h=1, half_width=1, processing=processing)
-        # Three grid steps of 2 on either side of the centre's window of 4: 2 * 2 + 4.
-        assert _recorded(result) == {(2.0, 8.0)}
+        assert _recorded(result) == {(1.0, 3.0)}
+
+    @pytest.mark.parametrize('x_params, message', [
+        ({'window_size': 4}, 'one time step wide'),
+        ({'window_size': 1, 'step_size': 0.5}, 'tile time'),
+    ], ids=['wide', 'overlapping'])
+    def test_a_grid_whose_rows_are_not_single_steps_is_refused(self, x_params, message):
+        x, y = _series()
+        processing = nmi.Processing(x='continuous', y='continuous', x_params=x_params)
+        with pytest.raises(ValueError, match=message):
+            _quiet(nmi.mi_rate, x, y, h=1, half_width=1, processing=processing)
 
     def test_rows_passed_in_built_are_not_known_to_be_in_time_order(self):
         rng = np.random.default_rng(1)
@@ -191,3 +199,20 @@ class TestBlockShuffle:
     def test_a_block_holds_the_rows_one_row_spans(self, x, params, rows):
         from neural_mi.analysis.permutation import _window_rows
         assert _window_rows(x, params, {}) == rows
+
+
+class TestOffsetQuantity:
+    """A spec with no named function runs as the named quantities do, rows' geometry included."""
+
+    def test_a_conditional_spec_runs_with_its_geometry_and_records_the_spec(self):
+        x, y = _series()
+        spec = {'A': [('x', s) for s in range(-3, 0)], 'B': [('y', 0)], 'C': [('y', s) for s in range(-2, 0)]}
+        result, _ = _quiet(nmi.offset_quantity, {'x': x, 'y': y}, spec, stride=2)
+        assert result.params['spec'] == spec and result.mode == 'conditional'
+        assert _recorded(result) == {(2.0, 4.0)}
+
+    def test_processing_needs_the_stream_names_it_reads(self):
+        x, y = _series()
+        with pytest.raises(ValueError, match="Name the streams 'x', 'y' and 'w'"):
+            nmi.offset_quantity({'a': x, 'b': y}, {'A': [('a', -1)], 'B': [('b', 0)]},
+                                processing=nmi.Processing(x='continuous', x_params={'window_size': 1}))

@@ -25,7 +25,7 @@ from .quantities import (
     cross_predictive_information, block_mi, transfer_entropy,
     conditional_transfer_entropy,
     interaction_information, mi_rate, instantaneous_exchange,
-    directed_information_rate,
+    directed_information_rate, offset_quantity,
 )
 from . import data
 from . import generators
@@ -61,7 +61,7 @@ __all__ = [
     'cross_predictive_information', 'block_mi', 'transfer_entropy',
     'conditional_transfer_entropy',
     'interaction_information', 'mi_rate', 'instantaneous_exchange',
-    'directed_information_rate',
+    'directed_information_rate', 'offset_quantity',
     'data',
     'generators',
     'estimators',

@@ -13,7 +13,20 @@ import torch
 
 import neural_mi as nmi
 from neural_mi import Model, Training
-from neural_mi.analysis.offsets import build_past_future, build_cross_offset
+from neural_mi.analysis.offsets import build_rows
+from neural_mi import quantities as _q
+
+
+def build_past_future(signal, past_len, future_len=1, stride=1):
+    """X's past of ``past_len`` steps and its next ``future_len`` steps, through the one builder."""
+    return build_rows({'x': signal}, {'A': _q._steps('x', -past_len, -1),
+                                      'B': _q._steps('x', 0, future_len - 1)}, stride=stride)[:2]
+
+
+def build_cross_offset(x, y, past_len, future_len=1, stride=1):
+    """X's past of ``past_len`` steps and Y's next ``future_len`` steps, through the one builder."""
+    return build_rows({'x': x, 'y': y}, {'A': _q._steps('x', -past_len, -1),
+                                         'B': _q._steps('y', 0, future_len - 1)}, stride=stride)[:2]
 
 
 # --------------------------------------------------------------------------
@@ -616,7 +629,6 @@ class TestOffsetQuantitiesAcceptAGrid:
 
     def test_a_raw_array_is_unchanged_by_the_new_route(self):
         """No Processing means slice the array directly, exactly as before."""
-        from neural_mi.analysis.offsets import build_past_future
         ramp = torch.arange(200, dtype=torch.float32).reshape(200, 1)
         past, present = build_past_future(ramp, past_len=5, future_len=1)
         assert past.shape == (195, 1, 5)
@@ -687,32 +699,36 @@ class TestStride:
             assert float(fut[i, 0, 0]) == i * stride + 4
 
     @pytest.mark.parametrize("stride", [1, 2, 3])
-    def test_dual_branch_builders_stay_aligned(self, stride):
-        """The three arrays of each dual-branch quantity share their time base.
-
-        These mix ``unfold`` output with a direct slice, so a stride applied to
-        one and not the other misaligns A against B while leaving every shape
-        correct and raising nothing.
-        """
-        from neural_mi.quantities import (_build_mi_rate_arrays,
-                                          _build_inst_exchange_arrays,
-                                          _build_dir_info_rate_arrays)
+    def test_dual_branch_quantities_stay_aligned(self, stride):
+        """The three arrays of each dual-branch quantity share their time base."""
         x = self._ramp(60)
         y = x + 1000.0
+        series = {'x': x, 'y': y}
 
-        x_all, y0, y_past = _build_mi_rate_arrays(x, y, h=3, half_width=2, stride=stride)
+        x_all, y0, y_past, _ = build_rows(series, _q._spec_mi_rate(3, 2), stride=stride)
         for i in range(y0.shape[0]):
             centre = float(y0[i, 0, 0]) - 1000.0
             assert float(x_all[i, 0, 2]) == centre       # centre of the 2 * half_width + 1 window
             assert float(y_past[i, 0, -1]) == centre - 1 + 1000.0
 
-        x0, yf, _c = _build_inst_exchange_arrays(x, y, k=3, stride=stride)
+        x0, yf, _c, _ = build_rows(series, _q._spec_instantaneous_exchange(3), stride=stride)
         for i in range(x0.shape[0]):
             assert float(x0[i, 0, 0]) == float(yf[i, 0, 0]) - 1000.0
 
-        a, yf2, _yp = _build_dir_info_rate_arrays(x, y, k=3, stride=stride)
+        a, yf2, _yp, _ = build_rows(series, _q._spec_directed_information_rate(3), stride=stride)
         for i in range(a.shape[0]):
             assert float(a[i, 0, -1]) == float(yf2[i, 0, 0]) - 1000.0
+
+    @pytest.mark.parametrize("spec_of", [_q._spec_instantaneous_exchange,
+                                         _q._spec_directed_information_rate],
+                             ids=['instantaneous_exchange', 'directed_information_rate'])
+    def test_the_k_zero_forms_take_the_stride_too(self, spec_of):
+        """At k=0 the rows used to be every row whatever the stride."""
+        x = self._ramp(60)
+        a, b, c, rows = build_rows({'x': x, 'y': x + 1000.0}, spec_of(0), stride=3)
+        assert c is None and a.shape[0] == 20
+        assert [float(v) for v in a[:3, 0, -1]] == [0.0, 3.0, 6.0]
+        assert (rows.step, rows.span) == (3.0, float(spec_of(0)['A'][-1][1] - spec_of(0)['A'][0][1] + 1))
 
     @pytest.mark.slow
     def test_estimate_survives_a_change_of_stride(self):

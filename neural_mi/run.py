@@ -1159,8 +1159,8 @@ def _run_flat(
         # processor.
         _has_time_dim = hasattr(x_data, 'ndim') and x_data.ndim == 3
         # mode='transfer' builds its own (N, C, history_window) arrays from
-        # raw 2-D (T, n_channels) input internally, via unfold
-        # (analysis/transfer.py's _build_te_arrays) -- raw 2-D input there is
+        # raw 2-D (T, n_channels) input internally, by offset
+        # (analysis/transfer.py's te_spec) -- raw 2-D input there is
         # the intended, documented shape, not a mistake this check should
         # catch. Everywhere else (mode='estimate'/'conditional'/'interaction'/
         # etc.), the caller is expected to have already windowed the data
@@ -1592,9 +1592,10 @@ def _run_flat(
             if y_data is None:
                 raise ValueError("y_data must be provided for mode='transfer'.")
             if any(t is not None for t in (processor_type_x, processor_type_y, w_processor_type)):
-                # Every stream on one grid of one-step rows, which the histories
-                # index by offset.
-                from .analysis.offsets import grid_rows, one_step_rows
+                # Every stream on one grid of rows one step wide that tile
+                # time, which the histories index by offset: the one path of
+                # processing= for every quantity defined by time offsets.
+                from .analysis.offsets import one_step_series
                 _specs = OrderedDict()
                 _specs['x'] = dict(data=x_data, time=x_time, processor_type=processor_type_x,
                                    processor_params=processor_params_x)
@@ -1605,7 +1606,7 @@ def _run_flat(
                 if w_data is not None:
                     _specs['w'] = dict(data=w_data, time=w_time, processor_type=w_processor_type,
                                        processor_params=w_processor_params)
-                _one_step = one_step_rows(grid_rows(_specs)[0], "mode='transfer'")
+                _one_step = one_step_series(_specs, "mode='transfer'")
                 x_run, y_run, w_run = _one_step['x'], _one_step['y'], _one_step.get('w')
             else:
                 x_run, y_run = _to_2d(_to_tensor(x_data)), _to_2d(_to_tensor(y_data))
@@ -1630,8 +1631,9 @@ def _run_flat(
             _record['history_window'] = history_window
             # The histories are rows in time order, recorded before anything
             # reads them: the ladder's chunks, the permutation's blocks.
-            from .analysis.transfer import te_rows
-            record_rows(base_params, te_rows(history_window, prediction_horizon, stride))
+            from .analysis.offsets import spec_geometry
+            from .analysis.transfer import te_spec
+            record_rows(base_params, spec_geometry(te_spec(history_window, prediction_horizon), stride))
             if _use_rigorous:
                 from .analysis.transfer import _te_rigorous_scalar
                 ctx.update(rigorous=True, scalar_fn=_te_rigorous_scalar,

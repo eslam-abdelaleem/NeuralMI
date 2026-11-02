@@ -43,7 +43,7 @@ the networks and returns rows that the shared assembly layer turns into a
 | `rigorous.py` | the $\gamma$ ladder, `_find_linear_region`, `_extrapolate_mi` and the fit diagnostics, for `mode='rigorous'` and for the rigorous difference quantities |
 | `lag.py`, `precision.py`, `pairwise.py`, `dimensionality.py` | the mode-specific procedures the producers call |
 | `conditional.py`, `interaction.py`, `transfer.py` | the component trainings of the difference quantities |
-| `offsets.py` | the past and future builders of the named quantities, `grid_rows` (streams onto one grid, then rows) and `one_step_rows` (rows one time step wide, for transfer entropy) |
+| `offsets.py` | the one path to the rows of every quantity defined by time offsets: `build_rows` (the rows a spec defines, through `utils.build_offset_arrays`, and their geometry), `one_step_series` (streams onto one grid of rows one step wide that tile time, the one route of `processing=`) and `grid_rows` |
 
 **`neural_mi/data/`** holds the preprocessing. `handler.py` has
 `create_dataset` for any number of streams on one grid, `create_single_dataset`
@@ -185,10 +185,11 @@ parameters every task receives (`neural_mi/data/rows.py`): `row_step`, the
 distance between the starts of consecutive rows, and `row_span`, the stretch one
 row covers, in one unit. A processor records its windows (`run.py` when it
 windows once for the call, `task.py` and `shift_windowing.py` when a task
-windows for itself). A named quantity records the rows it slices by offset and
-hands them to `run()` through its private `_rows` argument, composed with the
-grid's own windows when `processing=` put the streams on one. Transfer entropy
-records its histories (`transfer.te_rows`). Rows without the record are not
+windows for itself). Rows built by offset get their geometry from the spec
+that builds them (`offsets.build_rows` and `offsets.spec_geometry`): a named
+quantity or `offset_quantity` hands it to `run()` through the private `_rows`
+argument, and transfer entropy records it for its histories (`transfer.te_spec`).
+Rows without the record are not
 known to be in time order: arrays passed in already built, or samples in no
 order. The record is reported per network in `runs` and
 `details[config_id]['trainings']`.

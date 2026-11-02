@@ -103,17 +103,11 @@ def _as_tensor(data) -> torch.Tensor:
         raise TypeError(
             "Raw spike times were passed to a quantity that indexes by integer "
             "time offset. That needs a regularly sampled (n_timepoints, "
-            "n_channels) series. Build one by binning at the window size and "
-            "keeping silent windows to keep the time axis contiguous:\n"
-            "    ds = create_dataset(x_data=spikes, processor_type_x='spike',\n"
-            "            processor_params_x={'bin_size': b, 'window_size': b,\n"
-            "                                'normalize_bins': False,\n"
-            "                                'drop_empty_windows': False})\n"
-            "    series = ds.x_data.squeeze(-1)   # (n_bins, n_neurons)\n"
-            "Dropping silent windows would leave consecutive indices more than "
-            "one bin apart and move the offsets away from the ones you asked for. "
-            "block_mi windows the data itself and takes spike times directly "
-            "through processing=Processing(x='spike', y='spike')."
+            "n_channels) series. processing=Processing(x='spike', "
+            "x_params={'window_size': b, 'bin_size': b}) puts the spikes on a grid "
+            "of one bin per row first, keeping silent bins so that consecutive "
+            "rows stay one bin apart. block_mi windows the data itself and takes "
+            "spike times through processing=Processing(x='spike', y='spike')."
         )
     return torch.as_tensor(np.asarray(data), dtype=torch.float32)
 
@@ -150,8 +144,10 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
     Every quantity in the temporal taxonomy is ``I(A; B | C)`` under a
     different choice of which processes and time offsets go into each group.
     This turns such a choice into the three arrays :func:`neural_mi.run`
-    consumes, so a quantity that has no named wrapper in
-    :mod:`neural_mi.quantities` can still be estimated directly.
+    consumes. Every named quantity defined by time offsets builds its rows
+    here, and :func:`neural_mi.offset_quantity` runs any other spec the same
+    way, with the rows' geometry, which arrays passed to :func:`neural_mi.run`
+    by hand do not carry.
 
     Offsets are in time bins relative to a common reference: negative is past,
     zero is present, positive is future. All three groups are cut to the same

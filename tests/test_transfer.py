@@ -5,7 +5,16 @@ import numpy as np
 import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Transfer, Output
-from neural_mi.analysis.transfer import _build_te_arrays
+from neural_mi.analysis.offsets import build_rows
+from neural_mi.analysis.transfer import te_spec
+
+
+def _build_te_arrays(x, y, history_window, prediction_horizon=1, stride=1):
+    """X's and Y's pasts and Y's future as transfer entropy builds them, through the one builder."""
+    joint, y_future, y_past, _ = build_rows({'x': x, 'y': y}, te_spec(history_window, prediction_horizon),
+                                            stride=stride)
+    n_x = np.shape(x)[1]
+    return joint[:, :n_x], y_past, y_future
 
 # Minimal model/training configs for fast tests
 _MODEL = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
@@ -16,7 +25,7 @@ H = 10   # history_window
 
 
 class TestBuildTeArrays:
-    """Unit tests for the internal _build_te_arrays helper."""
+    """The rows transfer entropy builds from its spec (te_spec)."""
 
     def test_output_shapes(self):
         x = np.random.randn(N, 2)
@@ -203,14 +212,15 @@ class TestConditionalTransferEntropy:
                                   show_progress=False)
         assert r_default.mi_estimate == r_explicit_none.mi_estimate
 
-    def test_build_w_past_matches_x_past_construction(self):
-        from neural_mi.analysis.transfer import _build_te_arrays, _build_w_past
+    def test_w_past_matches_x_past_construction(self):
         x = np.random.randn(N, 2)
         y = np.random.randn(N, 3)
         w = np.random.randn(N, 1)
-        x_past, y_past, y_future = _build_te_arrays(x, y, history_window=H)
-        w_past = _build_w_past(w, history_window=H, n_valid=x_past.shape[0])
-        assert w_past.shape == (x_past.shape[0], 1, H)
+        joint, _, conditioning, _ = build_rows({'x': x, 'y': y, 'w': w},
+                                               te_spec(H, conditioned_on_w=True))
+        assert joint.shape == (N - H, 2 + 3 + 1, H)
+        assert conditioning.shape == (N - H, 3 + 1, H)
+        assert torch.equal(joint[:, 2:], conditioning)   # the conditioning set is the joint's last channels
 
     def test_w_data_joins_the_conditioning_set(self, monkeypatch):
         """W's past joins the conditioning set: the joint term splits off Y's and W's channels."""

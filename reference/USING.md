@@ -456,9 +456,10 @@ of history windows built.
 
 The histories are built row by row from `(T, n_channels)` input series. With
 `processing=` every stream is first put on one grid whose rows are one time step
-wide ([one grid](#one-grid-for-every-stream)). `window_size` must then be one
-step: `bin_size` for spikes and one sample for continuous data. Categorical
-streams spend that axis on categories and are refused.
+wide and tile time ([one grid](#one-grid-for-every-stream)). `window_size` must
+then be one step, `bin_size` for spikes and one sample for continuous data, and
+`step_size` is left unset. Categorical streams spend that axis on categories and
+are refused.
 
 ### `pairwise`
 
@@ -986,15 +987,24 @@ $X_{all}(L)$ is a window of $2L+1$ steps centred on $Y_0$ whose $L$ is set by
 
 Inputs passed on their own are `(T, n_channels)` series sampled on a regular
 grid whose rows the offsets count. With `processing=` the offsets count the
-windows of one shared grid onto which each processor first puts its stream. This
-is the route for spike times and for streams on different clocks:
+rows of one shared grid onto which each processor first puts its stream, one
+time step per row: `window_size` is one step (`bin_size` for spikes, one sample
+for continuous data) and `step_size` is left unset, so the rows tile time. This
+is the route for spike times and for streams on different clocks, and the same
+one for every quantity defined by time offsets, transfer entropy included:
 
 ```python
 r = nmi.active_information_storage(
     spike_times, k=3,
-    processing=Processing(x='spike', x_params={'window_size': 0.5, 'bin_size': 0.1,
+    processing=Processing(x='spike', x_params={'window_size': 0.1, 'bin_size': 0.1,
                                                 'drop_empty_windows': False}))
 ```
+
+A grid whose rows are wider than one step, or overlap, is refused: an offset of
+one row would skip the steps inside a row, or reach back into the row before.
+`instantaneous_mi` builds its rows the same way as the `k=0` forms of
+`instantaneous_exchange` and `directed_information_rate`. Rows built in any other
+way go to `nmi.run()`.
 
 Window validation is off on this route and keeps every window because dropping
 one would put two distant windows next to each other and change what an offset
@@ -1063,25 +1073,26 @@ single window length these quantities do not have.
 ### Quantities without a named function
 
 Every quantity above is $I(A;B \mid C)$ for some choice of processes and
-offsets in each group. `build_offset_arrays` builds the three groups from a
-spec, for a quantity with no function of its own:
+offsets in each group, and builds its rows from that spec. `offset_quantity`
+runs a spec for a quantity with no function of its own, the way the named ones
+run:
 
 ```python
-from neural_mi.utils import build_offset_arrays
-
 spec = {'A': [('x', s) for s in range(-10, 0)],     # X's past
         'B': [('y', 0)],                            # Y now
         'C': [('y', s) for s in range(-10, 0)]}     # given Y's past
-a, b, c, n_valid = build_offset_arrays({'x': x, 'y': y}, spec, stride=1)
-
-r = nmi.run(a, b, mode='conditional',
-            conditional=Conditional(w_data=c, align='dual_branch'))
+r = nmi.offset_quantity({'x': x, 'y': y}, spec, stride=1)
 ```
 
 Offsets count rows with negative offsets in the past and zero at the present.
-Every group is cut to the range over which all its offsets exist. Each array has
-shape `(n_valid, n_channels, n_offsets)`. Without a `C` group, the pair goes to
-`mode='estimate'`.
+Every group is cut to the range over which all its offsets exist. A spec with a
+`C` group runs `mode='conditional'` with `align='dual_branch'`, and one without
+is one MI estimate. `result.params['spec']` records the spec. The rows carry
+their geometry, so the split's leak checks, the rigorous chunks and the
+permutation blocks treat them as the rows of a named quantity.
+`neural_mi.utils.build_offset_arrays(data, spec, stride=...)` returns the arrays
+themselves, each of shape `(n_valid, n_channels, n_offsets)`. Passed to
+`nmi.run()` by hand they are not known to be in time order.
 
 ---
 

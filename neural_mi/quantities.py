@@ -44,18 +44,13 @@ from collections import OrderedDict
 from dataclasses import replace
 from typing import Any, Dict, Optional, Union
 
-import torch
-
 from neural_mi.run import run
 from neural_mi.results import Results
 from neural_mi.logger import call_verbosity, collect_repeats
 from neural_mi.parallel import dispatch_tasks
 from neural_mi.analysis.assemble import merge_results
-from neural_mi.analysis.offsets import (build_past_future, build_cross_offset, grid_rows,
-                                        resolve_stream_processing)
-from neural_mi.analysis.transfer import _build_te_arrays, te_rows
-from neural_mi.data.rows import offset_rows
-from neural_mi.utils import validate_stride
+from neural_mi.analysis.offsets import build_rows, one_step_series, resolve_stream_processing
+from neural_mi.utils import _as_tensor, validate_stride
 from neural_mi.embeddings_io import model_file, resolve_model_path, announce_saving_several
 
 
@@ -196,12 +191,12 @@ def _named_run(quantity: str, param: str, value, build, *, run_kwargs: Dict[str,
         )
     record = {**construction, 'quantity': quantity}
     run_kwargs = _with_save_path(run_kwargs, quantity)
-    if not _is_sweep(value):
+    if param is None or not _is_sweep(value):
         kind, a, b, c, transfer, rows = build(value)
         result = _call(kind, a, b, c, run_kwargs=run_kwargs, rigorous=rigorous,
                        n_workers=n_workers, show_progress=show_progress, transfer=transfer,
                        rows=rows)
-        result.params.update({**record, param: value})
+        result.params.update({**record, **({param: value} if param is not None else {})})
         return result
     values = list(value)
     save_path = _save_path(run_kwargs)
@@ -221,26 +216,106 @@ def _sweep_label(rigorous) -> str:
     return 'rigorous' if _rigorous_settings(rigorous)[0] else 'sweep'
 
 
-def _on_one_grid(streams: Dict[str, Any], processing) -> tuple:
-    """Put a quantity's streams on one grid of rows: ``(rows, geometry)``, or ``(None, None)`` without
-    ``processing``.
+def _series(streams: Dict[str, Any], processing, quantity: str) -> 'OrderedDict[str, Any]':
+    """A quantity's streams as ``(T, C)`` series, the one way they reach the builder of rows by offset.
 
-    A raw ``(T, C)`` array is a grid already, and the offset builders slice it
-    directly. Spike times, or streams on different clocks, first go through
-    their processors onto one shared grid (see
-    :func:`neural_mi.analysis.offsets.grid_rows`). Each stream reads with its
-    own processor from ``processing``: ``x``, ``y`` and ``w``, with Y and W
-    falling back to X's. ``geometry`` is that of the grid's windows, which the
-    rows sliced from them by offset build on.
+    Without ``processing`` each stream is a regularly sampled series already,
+    ``(T, n_channels)`` or one-dimensional. With ``processing=`` every stream
+    goes onto one grid of rows one step wide that tile time
+    (:func:`neural_mi.analysis.offsets.one_step_series`), each read with its own
+    processor from ``processing``: ``x``, ``y`` and ``w``, with Y and W falling
+    back to X's.
     """
-    if processing is None:
-        return None, None
-    resolved = resolve_stream_processing(processing)
-    specs = OrderedDict()
+    if processing is not None:
+        resolved = resolve_stream_processing(processing)
+        specs = OrderedDict()
+        for name, data in streams.items():
+            proc, params, time = resolved[name]
+            specs[name] = dict(data=data, time=time, processor_type=proc, processor_params=params)
+        return one_step_series(specs, f"{quantity}()")
+    series = OrderedDict()
     for name, data in streams.items():
-        proc, params, time = resolved[name]
-        specs[name] = dict(data=data, time=time, processor_type=proc, processor_params=params)
-    return grid_rows(specs)
+        tensor = _as_tensor(data)
+        if tensor.ndim not in (1, 2):
+            raise ValueError(
+                f"{quantity}() builds its rows from (T, n_channels) series, and {name}_data has "
+                f"shape {tuple(tensor.shape)}. Pass the series unwindowed, or put spike times and "
+                f"streams on separate clocks onto one grid with processing=. Rows built elsewhere "
+                f"go to nmi.run()."
+            )
+        series[name] = tensor
+    return series
+
+
+def _steps(name: str, first: int, last: int) -> list:
+    """``(name, offset)`` for every offset from ``first`` to ``last``, both included."""
+    return [(name, s) for s in range(first, last + 1)]
+
+
+def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional[str], value, *,
+                stride: int, rigorous, n_workers: int, show_progress: bool,
+                run_kwargs: Dict[str, Any], construction: Dict[str, Any], sweep_mode: str) -> Results:
+    """Run a quantity defined by time offsets: its streams through the one path to ``(T, C)`` series,
+    its rows through the one builder, which gives their geometry too.
+
+    ``spec_of(v)`` is the quantity's spec at value ``v`` of its own parameter
+    (:func:`neural_mi.utils.build_offset_arrays`). A spec with a C group is a
+    conditional quantity, a difference of two networks, and one without is one
+    MI estimate.
+    """
+    stride = validate_stride(stride, f"{quantity}()")
+    series = _series(streams, run_kwargs.pop('processing', None), quantity)
+
+    def build(v):
+        a, b, c, rows = build_rows(series, spec_of(v), stride=stride)
+        return ('conditional' if c is not None else 'mi', a, b, c, None, rows)
+
+    return _named(quantity, param, value, build, run_kwargs=run_kwargs, rigorous=rigorous,
+                  n_workers=n_workers, show_progress=show_progress, construction=construction,
+                  sweep_mode=sweep_mode)
+
+
+def _spec_active_information_storage(k: int, future_k: int = 1) -> dict:
+    return {'A': _steps('x', -k, -1), 'B': _steps('x', 0, future_k - 1)}
+
+
+def _spec_predictive_information(k: int) -> dict:
+    return {'A': _steps('x', -k, -1), 'B': _steps('x', 0, k - 1)}
+
+
+def _spec_cross_predictive_information(k: int) -> dict:
+    return {'A': _steps('x', -k, -1), 'B': _steps('y', 0, k - 1)}
+
+
+def _spec_instantaneous_mi() -> dict:
+    return {'A': [('x', 0)], 'B': [('y', 0)]}
+
+
+def _spec_mi_rate(h: int, half_width: int) -> dict:
+    """X_all, the steps from ``-half_width`` to ``half_width`` around Y_0, given Y's ``h`` steps before
+    Y_0. Without a history (``h=0``) it is one MI estimate."""
+    spec = {'A': _steps('x', -half_width, half_width), 'B': [('y', 0)]}
+    if h > 0:
+        spec['C'] = _steps('y', -h, -1)
+    return spec
+
+
+def _spec_instantaneous_exchange(k: int) -> dict:
+    """X_0 and Y_0 given both pasts of ``k`` steps, X's channels first. At ``k=0`` it is
+    instantaneous MI."""
+    spec = _spec_instantaneous_mi()
+    if k > 0:
+        spec['C'] = _steps('x', -k, -1) + _steps('y', -k, -1)
+    return spec
+
+
+def _spec_directed_information_rate(k: int) -> dict:
+    """X's past of ``k`` steps and X_0 against Y_0, given Y's past of ``k`` steps. At ``k=0`` it is
+    instantaneous MI."""
+    spec = {'A': _steps('x', -k, 0), 'B': [('y', 0)]}
+    if k > 0:
+        spec['C'] = _steps('y', -k, -1)
+    return spec
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +328,8 @@ def active_information_storage(
 ) -> Results:
     r"""Active information storage :math:`I(X_{past}; X_0)`.
 
-    How much a window of X's own past predicts its present. Built from a
-    single signal via :func:`analysis.offsets.build_past_future`
-    (``past_len=k``, ``future_len=future_k``).
+    How much a window of X's own past predicts its present: X's ``k`` steps
+    before the present against its ``future_k`` steps from the present on.
 
     Parameters
     ----------
@@ -287,24 +361,18 @@ def active_information_storage(
         ``sweep_grid=`` (repeats and settings at every ``k``),
         ``permutation_test=``, and so on. ``processing=`` puts a stream that is
         not already a regular series (spike times, a separate clock) on a grid
-        of rows first.
+        of rows one step wide first.
 
     Returns
     -------
     neural_mi.results.Results
     """
-    rows, grid = _on_one_grid(OrderedDict((('x', x_data),)), run_kwargs.pop('processing', None))
-    if rows is not None:
-        x_data = rows['x']
-
-    def build(kv):
-        return ('mi', *build_past_future(x_data, past_len=kv, future_len=future_k, stride=stride),
-                None, None, offset_rows(kv + future_k, stride, grid))
-
-    return _named('active_information_storage', 'k', k, build, run_kwargs=run_kwargs,
-                  rigorous=rigorous, n_workers=n_workers, show_progress=show_progress,
-                  construction={'future_k': future_k, 'stride': stride},
-                  sweep_mode=_sweep_label(rigorous))
+    return _by_offsets('active_information_storage', OrderedDict(x=x_data),
+                       lambda kv: _spec_active_information_storage(kv, future_k), 'k', k,
+                       stride=stride, rigorous=rigorous, n_workers=n_workers,
+                       show_progress=show_progress, run_kwargs=run_kwargs,
+                       construction={'future_k': future_k, 'stride': stride},
+                       sweep_mode=_sweep_label(rigorous))
 
 
 def predictive_information(
@@ -336,49 +404,37 @@ def predictive_information(
     -------
     neural_mi.results.Results
     """
-    rows, grid = _on_one_grid(OrderedDict((('x', x_data),)), run_kwargs.pop('processing', None))
-    if rows is not None:
-        x_data = rows['x']
-
-    def build(kv):
-        return ('mi', *build_past_future(x_data, past_len=kv, future_len=kv, stride=stride),
-                None, None, offset_rows(2 * kv, stride, grid))
-
-    return _named('predictive_information', 'k', k, build, run_kwargs=run_kwargs,
-                  rigorous=rigorous, n_workers=n_workers, show_progress=show_progress,
-                  construction={'stride': stride}, sweep_mode=_sweep_label(rigorous))
+    return _by_offsets('predictive_information', OrderedDict(x=x_data),
+                       _spec_predictive_information, 'k', k, stride=stride, rigorous=rigorous,
+                       n_workers=n_workers, show_progress=show_progress, run_kwargs=run_kwargs,
+                       construction={'stride': stride}, sweep_mode=_sweep_label(rigorous))
 
 
-def instantaneous_mi(x_data, y_data, rigorous=False, n_workers: int = 1,
+def instantaneous_mi(x_data, y_data, stride: int = 1, rigorous=False, n_workers: int = 1,
                      show_progress: bool = True, **run_kwargs) -> Results:
     r"""Instantaneous mutual information :math:`I(X_0; Y_0)`.
 
-    MI at matching time indices. ``mode='estimate'`` computes the same quantity on
-    ``(T, n_channels)`` or already-windowed input. Provided so the taxonomy has
-    a name for every quantity.
+    MI at matching time steps, built from the same rows as the ``k=0`` forms
+    of :func:`instantaneous_exchange` and :func:`directed_information_rate`.
+    ``mode='estimate'`` computes MI on rows built in any other way.
 
     Parameters
     ----------
-    x_data, y_data : array-like
-        Same leading (time) dimension.
-    rigorous, n_workers, show_progress, **run_kwargs
+    x_data, y_data : array-like, shape (T, n_channels)
+        Raw time series, same leading dimension, or any streams ``processing``
+        can put on a grid.
+    stride, rigorous, n_workers, show_progress, **run_kwargs
         See :func:`active_information_storage`.
 
     Returns
     -------
     neural_mi.results.Results
     """
-    # A series given as (T, C) is one sample per row, in time order. Processors
-    # record the rows they cut themselves, and windows built elsewhere are not
-    # known to be in time order.
-    from neural_mi.utils import _as_tensor
-    raw_series = run_kwargs.get('processing') is None and not isinstance(x_data, list) \
-        and _as_tensor(x_data).ndim <= 2
-    result = _call('mi', x_data, y_data, None, run_kwargs=run_kwargs, rigorous=rigorous,
-                   n_workers=n_workers, show_progress=show_progress,
-                   rows=offset_rows(1) if raw_series else None)
-    result.params['quantity'] = 'instantaneous_mi'
-    return result
+    return _by_offsets('instantaneous_mi', OrderedDict(x=x_data, y=y_data),
+                       lambda _: _spec_instantaneous_mi(), None, None, stride=stride,
+                       rigorous=rigorous, n_workers=n_workers, show_progress=show_progress,
+                       run_kwargs=run_kwargs, construction={'stride': stride},
+                       sweep_mode=_sweep_label(rigorous))
 
 
 def cross_predictive_information(
@@ -410,18 +466,11 @@ def cross_predictive_information(
     -------
     neural_mi.results.Results
     """
-    rows, grid = _on_one_grid(OrderedDict((('x', x_data), ('y', y_data))),
-                              run_kwargs.pop('processing', None))
-    if rows is not None:
-        x_data, y_data = rows['x'], rows['y']
-
-    def build(kv):
-        return ('mi', *build_cross_offset(x_data, y_data, past_len=kv, future_len=kv,
-                                          stride=stride), None, None, offset_rows(2 * kv, stride, grid))
-
-    return _named('cross_predictive_information', 'k', k, build, run_kwargs=run_kwargs,
-                  rigorous=rigorous, n_workers=n_workers, show_progress=show_progress,
-                  construction={'stride': stride}, sweep_mode=_sweep_label(rigorous))
+    return _by_offsets('cross_predictive_information', OrderedDict(x=x_data, y=y_data),
+                       _spec_cross_predictive_information, 'k', k, stride=stride,
+                       rigorous=rigorous, n_workers=n_workers, show_progress=show_progress,
+                       run_kwargs=run_kwargs, construction={'stride': stride},
+                       sweep_mode=_sweep_label(rigorous))
 
 
 def _processing_with_window(processing, window_size):
@@ -628,107 +677,6 @@ def interaction_information(x_data, y_data, w_data, rigorous=False, n_workers: i
 # mismatch mode='conditional' trims, so each routes through
 # align='dual_branch': the joint term's X is the pair (A, C).
 
-def _build_x_zero_aligned(x_data, history_window: int, n_valid: int,
-                          stride: int = 1) -> torch.Tensor:
-    """X at the same absolute time as ``_build_te_arrays``'s ``y_future``
-    (single time step), for the one row per quantity here (X_0) that isn't
-    already one of ``_build_te_arrays``'s three outputs.
-
-    ``stride`` has to match the one those arrays were built at. This is the one
-    place in the family that reads time points by direct slice instead of by
-    ``unfold``, so a stride applied to one and not the other would misalign A
-    against B while leaving every shape correct and raising nothing.
-    """
-    from neural_mi.analysis.offsets import as_rows
-    return as_rows(x_data)[history_window::stride][:n_valid]
-
-
-def _build_mi_rate_arrays(x_data, y_data, h: int, half_width: int, stride: int = 1):
-    """Build (X_all, Y_0, Y_past(h)) for MI rate.
-
-    X_all is a two-sided window of half-width ``half_width`` centred on the
-    same time index as Y_0 (the symmetric, two-sided rate); Y_past(h) covers
-    the h steps strictly before that centre. Returns ``y_past=None`` when
-    ``h=0``: with no conditioning this is plain MI between X_all and Y_0.
-
-    ``stride`` thins the centre times the three arrays share. All three are cut
-    from the same ``[start, end)`` range before striding, so they keep the same
-    length and stay aligned on the same centres.
-    """
-    stride = validate_stride(stride, 'mi_rate')
-    from neural_mi.analysis.offsets import as_rows, slice_lags
-    x_rows, y_rows = as_rows(x_data), as_rows(y_data)
-    T = x_rows.shape[0]
-    if T < 2 * half_width + 1:
-        raise ValueError(
-            f"Not enough time points for a two-sided window of half_width={half_width}: "
-            f"need T >= {2 * half_width + 1}, got T={T}."
-        )
-    start, end = max(half_width, h), T - half_width
-    if end - start <= 0:
-        raise ValueError(
-            f"Not enough time points to build mi_rate arrays for half_width={half_width}, "
-            f"h={h} (T={T})."
-        )
-    # window i covers [i, i + 2 * half_width], centred at i + half_width
-    x_all_full = slice_lags(x_rows, 2 * half_width + 1, 1, T - 2 * half_width)
-    x_all = x_all_full[start - half_width:end - half_width:stride]
-    y0 = y_rows[start:end:stride]
-    y_past = None
-    if h > 0:
-        # window i covers [i, i+h-1] = offsets -h..-1 of centre i+h
-        y_past_full = slice_lags(y_rows, h, 1, y_rows.shape[0] - h + 1)
-        y_past = y_past_full[start - h:end - h:stride]
-    return x_all, y0, y_past
-
-
-def _build_inst_exchange_arrays(x_data, y_data, k: int, stride: int = 1):
-    """Build (X_0, Y_0, [X_past(k)|Y_past(k)]) for instantaneous exchange.
-
-    C concatenates X_past and Y_past channel-wise (both share window length
-    k, so no dual branch is needed for C itself, only for A against C). Returns
-    ``c=None`` when ``k=0``, where this is plain instantaneous MI I(X_0;Y_0).
-    """
-    if k == 0:
-        from neural_mi.analysis.offsets import as_rows
-        return as_rows(x_data), as_rows(y_data), None
-    x_past, y_past, y_future = _build_te_arrays(x_data, y_data, history_window=k,
-                                                prediction_horizon=1, stride=stride)
-    x_zero = _build_x_zero_aligned(x_data, k, x_past.shape[0], stride=stride)
-    c = torch.cat([x_past, y_past], dim=1)
-    return x_zero, y_future, c
-
-
-def _build_dir_info_rate_arrays(x_data, y_data, k: int, stride: int = 1):
-    """Build (X_past(k)+X_0, Y_0, Y_past(k)) for directed information rate.
-
-    A spans offsets -k..0 (X's past and its present, one step wider than C's
-    -k..-1), built by concatenating X_0 onto X_past. mode='conditional''s trim
-    to a shared start would drop A's last position (X_0) instead. Returns
-    ``c=None`` when ``k=0``, where this is plain instantaneous MI I(X_0;Y_0).
-    """
-    if k == 0:
-        from neural_mi.analysis.offsets import as_rows
-        return as_rows(x_data), as_rows(y_data), None
-    x_past, y_past, y_future = _build_te_arrays(x_data, y_data, history_window=k,
-                                                prediction_horizon=1, stride=stride)
-    x_zero = _build_x_zero_aligned(x_data, k, x_past.shape[0], stride=stride)
-    a = torch.cat([x_past, x_zero], dim=2)
-    return a, y_future, y_past
-
-
-def _mi_rate_rows(h: int, half_width: int, stride: int, grid=None):
-    """The geometry of :func:`_build_mi_rate_arrays`'s rows: a row covers from the earliest of X_all's
-    and Y_past's first steps to X_all's last, ``max(half_width, h) + half_width + 1`` steps."""
-    return offset_rows(max(half_width, h) + half_width + 1, stride, grid)
-
-
-def _present_rows(k: int, stride: int, grid=None):
-    """The geometry of the rows of instantaneous exchange and the directed information rate: k steps of
-    past and the present, every stride steps. At k=0 the rows are the series' own, every one."""
-    return te_rows(k, 1, stride, grid) if k > 0 else offset_rows(1, 1, grid)
-
-
 def mi_rate(
     x_data, y_data, h: Union[int, list], half_width: Union[int, list] = 20, stride: int = 1,
     rigorous=False, n_workers: int = 1, show_progress: bool = True, **run_kwargs
@@ -777,26 +725,20 @@ def mi_rate(
             "past its knee and then sweep the other. A grid over both costs "
             "len(h) * len(half_width) training runs for the same conclusion."
         )
-    rows, grid = _on_one_grid(OrderedDict((('x', x_data), ('y', y_data))),
-                              run_kwargs.pop('processing', None))
-    if rows is not None:
-        x_data, y_data = rows['x'], rows['y']
     if _is_sweep(half_width):
         param, value, construction = 'half_width', half_width, {'h': h, 'stride': stride}
 
-        def build(v):
-            return ('conditional', *_build_mi_rate_arrays(x_data, y_data, h, v, stride=stride), None,
-                    _mi_rate_rows(h, v, stride, grid))
+        def spec_of(v):
+            return _spec_mi_rate(h, v)
     else:
         param, value, construction = 'h', h, {'half_width': half_width, 'stride': stride}
 
-        def build(v):
-            return ('conditional', *_build_mi_rate_arrays(x_data, y_data, v, half_width,
-                                                          stride=stride), None,
-                    _mi_rate_rows(v, half_width, stride, grid))
-    return _named('mi_rate', param, value, build, run_kwargs=run_kwargs, rigorous=rigorous,
-                  n_workers=n_workers, show_progress=show_progress, construction=construction,
-                  sweep_mode='conditional')
+        def spec_of(v):
+            return _spec_mi_rate(v, half_width)
+    return _by_offsets('mi_rate', OrderedDict(x=x_data, y=y_data), spec_of, param, value,
+                       stride=stride, rigorous=rigorous, n_workers=n_workers,
+                       show_progress=show_progress, run_kwargs=run_kwargs,
+                       construction=construction, sweep_mode='conditional')
 
 
 def instantaneous_exchange(
@@ -827,18 +769,10 @@ def instantaneous_exchange(
     -------
     neural_mi.results.Results
     """
-    rows, grid = _on_one_grid(OrderedDict((('x', x_data), ('y', y_data))),
-                              run_kwargs.pop('processing', None))
-    if rows is not None:
-        x_data, y_data = rows['x'], rows['y']
-
-    def build(kv):
-        return ('conditional', *_build_inst_exchange_arrays(x_data, y_data, kv, stride=stride), None,
-                _present_rows(kv, stride, grid))
-
-    return _named('instantaneous_exchange', 'k', k, build, run_kwargs=run_kwargs,
-                  rigorous=rigorous, n_workers=n_workers, show_progress=show_progress,
-                  construction={'stride': stride}, sweep_mode='conditional')
+    return _by_offsets('instantaneous_exchange', OrderedDict(x=x_data, y=y_data),
+                       _spec_instantaneous_exchange, 'k', k, stride=stride, rigorous=rigorous,
+                       n_workers=n_workers, show_progress=show_progress, run_kwargs=run_kwargs,
+                       construction={'stride': stride}, sweep_mode='conditional')
 
 
 def directed_information_rate(
@@ -873,15 +807,56 @@ def directed_information_rate(
     -------
     neural_mi.results.Results
     """
-    rows, grid = _on_one_grid(OrderedDict((('x', x_data), ('y', y_data))),
-                              run_kwargs.pop('processing', None))
-    if rows is not None:
-        x_data, y_data = rows['x'], rows['y']
+    return _by_offsets('directed_information_rate', OrderedDict(x=x_data, y=y_data),
+                       _spec_directed_information_rate, 'k', k, stride=stride, rigorous=rigorous,
+                       n_workers=n_workers, show_progress=show_progress, run_kwargs=run_kwargs,
+                       construction={'stride': stride}, sweep_mode='conditional')
 
-    def build(kv):
-        return ('conditional', *_build_dir_info_rate_arrays(x_data, y_data, kv, stride=stride), None,
-                _present_rows(kv, stride, grid))
 
-    return _named('directed_information_rate', 'k', k, build, run_kwargs=run_kwargs,
-                  rigorous=rigorous, n_workers=n_workers, show_progress=show_progress,
-                  construction={'stride': stride}, sweep_mode='conditional')
+# ---------------------------------------------------------------------------
+# Any quantity defined by time offsets
+# ---------------------------------------------------------------------------
+
+def offset_quantity(data: Dict[str, Any], spec: Dict[str, Any], stride: int = 1, rigorous=False,
+                    n_workers: int = 1, show_progress: bool = True, **run_kwargs) -> Results:
+    r"""The quantity a spec of time offsets defines, :math:`I(A; B \mid C)`, for one with no
+    function of its own.
+
+    Every named quantity defined by time offsets is such a spec. This runs any
+    other the way they run: the rows come from
+    :func:`neural_mi.utils.build_offset_arrays`, and their geometry reaches the
+    split's leak checks, the rigorous chunks and the permutation blocks, which
+    rows built by hand and passed to :func:`neural_mi.run` do not carry. A spec
+    with a C group runs ``mode='conditional'`` with ``align='dual_branch'``, a
+    difference of two networks, and one without is one MI estimate.
+
+    Parameters
+    ----------
+    data : dict of str to array-like
+        The streams by name, each ``(T, n_channels)`` with the same ``T``. With
+        ``processing=`` the names are ``'x'``, ``'y'`` and ``'w'``, which say
+        which processor reads each stream, and the streams go onto one grid of
+        rows one step wide first.
+    spec : dict
+        ``{'A': [...], 'B': [...], 'C': [...]}``, each group a list of
+        ``(stream, offset)`` pairs, offsets counting steps with the past
+        negative. C is optional. See :func:`neural_mi.utils.build_offset_arrays`.
+    stride, rigorous, n_workers, show_progress, **run_kwargs
+        See :func:`active_information_storage`. ``result.params['spec']``
+        records the spec.
+
+    Returns
+    -------
+    neural_mi.results.Results
+    """
+    if run_kwargs.get('processing') is not None and set(data) - {'x', 'y', 'w'}:
+        raise ValueError(
+            f"With processing=, offset_quantity() reads its streams with the processors of "
+            f"'x', 'y' and 'w', and data names {sorted(set(data) - {'x', 'y', 'w'})}. Name the "
+            f"streams 'x', 'y' and 'w', or pass regular (T, n_channels) series without processing=."
+        )
+    return _by_offsets('offset_quantity', OrderedDict(data), lambda _: spec, None, None,
+                       stride=stride, rigorous=rigorous, n_workers=n_workers,
+                       show_progress=show_progress, run_kwargs=run_kwargs,
+                       construction={'spec': spec, 'stride': stride},
+                       sweep_mode=_sweep_label(rigorous))

@@ -1,119 +1,38 @@
 # neural_mi/analysis/offsets.py
-"""Shared offset/window construction for quantities built on plain (unconditioned)
-past/future slices of one or two raw time series.
+"""The one path from streams to the rows of every quantity defined by time offsets.
 
-Generalizes the sliding-window construction already used by
-``analysis/transfer.py``'s ``_build_te_arrays`` (built for the two-signal,
-conditioned transfer-entropy case) to the simpler single-signal and
-unconditioned two-signal cases needed by ``neural_mi/quantities.py``.
+Every such quantity is :math:`I(A; B \\mid C)` for a choice of processes and
+offsets in each group, a spec (:func:`neural_mi.utils.build_offset_arrays`).
+Its streams reach the builder as ``(T, C)`` series in one of two ways: as
+given, when they are regularly sampled already, or through ``processing=``,
+which puts every stream on one grid of rows one step wide that tile time
+(:func:`one_step_series`). The rows a spec builds carry their geometry
+(:func:`spec_geometry`), which :func:`neural_mi.run` records for everything
+that depends on the rows' time order (:mod:`neural_mi.data.rows`).
 """
-import torch
-from typing import Tuple
+from collections import OrderedDict
+from typing import Any, Dict, Optional, Tuple
 
-from neural_mi.analysis.transfer import _build_te_arrays
-from neural_mi.utils import validate_stride, _as_tensor
+from neural_mi.data.rows import RowGeometry, offset_rows
+from neural_mi.utils import build_offset_arrays
 
 
+def spec_geometry(spec: Dict[str, Any], stride: int = 1) -> RowGeometry:
+    """The geometry of the rows a spec builds: each row covers the steps from the earliest offset of any
+    group to the latest, and consecutive rows start ``stride`` steps apart."""
+    offsets = [o for group in ('A', 'B', 'C') for (_, o) in (spec.get(group) or [])]
+    return offset_rows(max(offsets) - min(offsets) + 1, stride)
 
-def as_rows(data):
-    """Promote a raw ``(T, C)`` series to the ``(N, C, w)`` row layout.
 
-    A bare array *is* a grid, one sample per row, so it becomes ``w = 1``. An
-    array that already came off a bundle is left alone. Every offset builder
-    works on rows from here, so the same slicing serves a raw
-    series and an aligned multi-modal grid.
+def build_rows(series: Dict[str, Any], spec: Dict[str, Any],
+               stride: int = 1) -> Tuple[Any, Any, Optional[Any], RowGeometry]:
+    """The rows a spec defines on ``series``, and their geometry: the one builder of rows by offset.
+
+    Returns ``(a, b, c, geometry)``, with ``c`` None when the spec has no C
+    group (:func:`neural_mi.utils.build_offset_arrays`, :func:`spec_geometry`).
     """
-    tensor = _as_tensor(data)
-    return tensor.unsqueeze(-1) if tensor.ndim == 2 else tensor
-
-
-def slice_lags(rows, n_lags, stride, n_valid):
-    """``n_lags`` consecutive rows at each strided position, flattened lag-major.
-
-    Returns ``(n_valid, C, n_lags * w)``, with lag ``l``'s slot ``j`` at
-    ``l * w + j``. At ``w = 1`` this is exactly ``unfold(0, n_lags, stride)``,
-    so a raw series keeps the arrays it has always produced.
-    """
-    windows = rows.unfold(0, n_lags, stride)[:n_valid]        # (n, C, w, n_lags)
-    n, channels = windows.shape[0], windows.shape[1]
-    return windows.permute(0, 1, 3, 2).reshape(n, channels, -1)
-
-
-def build_past_future(signal: torch.Tensor, past_len: int, future_len: int = 1,
-                      stride: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Build (X_past, X_future) sliding-window arrays from one raw signal.
-
-    ``X_past[i] = signal[i : i+past_len]``,
-    ``X_future[i] = signal[i+past_len : i+past_len+future_len]``, so X_future
-    starts exactly where X_past ends. Covers active information storage
-    (``future_len=1``) and excess entropy (``future_len=w``): both are
-    :math:`I(X_{past}; X_{future})` on this same offset shape, differing only
-    in how much future is included.
-
-    Parameters
-    ----------
-    signal : torch.Tensor or array-like
-        Shape ``(T, n_channels)``: raw time series.
-    past_len : int
-        Number of past time steps in each ``X_past`` window.
-    future_len : int, default=1
-        Number of future time steps in each ``X_future`` window.
-    stride : int, default=1
-        Distance in samples between consecutive rows. At the default of 1 every
-        valid position becomes a row, so neighbours share ``past_len - 1`` of
-        their samples. Raising it thins the rows without changing the quantity.
-
-    Returns
-    -------
-    tuple of (x_past, x_future), each shape ``(n_valid, n_channels, {past_len,future_len})``.
-    """
-    stride = validate_stride(stride, 'this quantity')
-    rows = as_rows(signal)
-    T = rows.shape[0]
-    n_positions = T - past_len - future_len + 1
-    if n_positions <= 0:
-        raise ValueError(
-            f"Not enough time points to build past/future arrays. "
-            f"Need > past_len + future_len = {past_len + future_len}, got T={T}."
-        )
-    n_valid = (n_positions - 1) // stride + 1
-    # Both slice from the same strided reference positions, so X_future[i]
-    # still starts exactly where X_past[i] ends.
-    x_past = slice_lags(rows, past_len, stride, n_valid)
-    x_future = slice_lags(rows[past_len:], future_len, stride, n_valid)
-    return x_past, x_future
-
-
-def build_cross_offset(x: torch.Tensor, y: torch.Tensor, past_len: int, future_len: int = 1,
-                       stride: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Build (X_past, Y_future) sliding-window arrays for cross-predictive information.
-
-    ``X_past[i] = x[i : i+past_len]``, ``Y_future[i] = y[i+past_len : i+past_len+future_len]``,
-    measuring how much a window of X's past tells you about a window of Y's
-    future, unconditioned. Reuses ``_build_te_arrays``'s construction directly (it
-    already builds exactly this pair, plus a ``y_past`` this quantity doesn't
-    need), instead of re-implementing the same ``unfold`` logic a second
-    time.
-
-    Parameters
-    ----------
-    x, y : torch.Tensor or array-like
-        Shape ``(T, n_channels)`` each, same leading dimension.
-    past_len : int
-        Number of past time steps in each ``X_past`` window.
-    future_len : int, default=1
-        Number of future time steps in each ``Y_future`` window.
-    stride : int, default=1
-        Distance in samples between consecutive rows. See
-        :func:`build_past_future`.
-
-    Returns
-    -------
-    tuple of (x_past, y_future), each shape ``(n_valid, n_channels, {past_len,future_len})``.
-    """
-    x_past, _y_past, y_future = _build_te_arrays(x, y, history_window=past_len,
-                                                 prediction_horizon=future_len, stride=stride)
-    return x_past, y_future
+    a, b, c, _ = build_offset_arrays(series, spec, stride=stride)
+    return a, b, c, spec_geometry(spec, stride)
 
 
 def resolve_stream_processing(processing) -> dict:
@@ -151,8 +70,7 @@ def grid_rows(specs):
     other modality does not: spike times are a point process until they are
     binned, and two streams on different clocks share no row. The streams are
     built onto one shared grid by their processors and handed back as
-    ``(N, C, w)`` rows, which the offset builders treat exactly as they treat a
-    raw array.
+    ``(N, C, w)`` rows.
 
     Validation is off on purpose. Dropping windows compacts the row axis and so
     destroys the uniform spacing offsets depend on: a 40 s gap in a 1 s grid
@@ -171,10 +89,8 @@ def grid_rows(specs):
     -------
     tuple
         ``(rows, geometry)``: the rows by stream name, and the geometry of the
-        grid's windows (:mod:`neural_mi.data.rows`), in the grid's own unit,
-        for the rows sliced from them by offset.
+        grid's windows (:mod:`neural_mi.data.rows`) in the grid's own unit.
     """
-    from collections import OrderedDict
     from neural_mi.data.handler import create_dataset
     from neural_mi.data.rows import window_rows
     specs = OrderedDict((n, s) for n, s in specs.items() if s.get('data') is not None)
@@ -185,15 +101,20 @@ def grid_rows(specs):
     return rows, geometry
 
 
-def one_step_rows(rows, caller: str):
-    """Rows one time step wide, as ``(T, C)`` series, for a history built by offset.
+def one_step_series(specs, caller: str) -> 'OrderedDict[str, Any]':
+    """Every stream on one grid of rows one step wide that tile time, as ``(T, C)`` series: the one way
+    ``processing=`` reaches a quantity defined by time offsets.
 
-    Transfer entropy builds its histories from a plain ``(T, C)`` series, so a
-    grid row has to carry a single time step. A resolution-1 grid gives that:
-    one bin per row for spikes, one sample per row for continuous data. A
-    categorical stream spends its trailing axis on categories, which cannot be
-    flattened without changing what a lag means, so it is refused.
+    An offset counts rows, so a row has to be one time step, and the rows have
+    to tile time. With rows wider than one step an offset of one row would skip
+    the steps inside a row, and with rows that overlap it would reach back into
+    the row before, so a present would share samples with its own past. A
+    resolution-1 grid gives one bin per row for spikes and one sample per row
+    for continuous data. A categorical stream spends its trailing axis on
+    categories, which cannot be flattened without changing what a lag means, so
+    it is refused.
     """
+    rows, grid = grid_rows(specs)
     wide = {n: r.shape[-1] for n, r in rows.items() if r.shape[-1] != 1}
     if wide:
         raise ValueError(
@@ -203,4 +124,10 @@ def one_step_rows(rows, caller: str):
             f"continuous). A categorical stream cannot satisfy this because its "
             f"encoder uses that axis for categories."
         )
-    return {n: r.squeeze(-1) for n, r in rows.items()}
+    if grid is not None and grid.overlapping:
+        raise ValueError(
+            f"{caller} needs a grid whose rows tile time. Its windows of {grid.span:g} start "
+            f"every {grid.step:g}, so neighbouring rows share samples and an offset of one row "
+            f"reaches back into the row before. Leave step_size unset, which steps by one window."
+        )
+    return OrderedDict((n, r.squeeze(-1)) for n, r in rows.items())
