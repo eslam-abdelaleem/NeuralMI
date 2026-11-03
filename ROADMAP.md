@@ -5,7 +5,7 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1, C2, C3, C5, C11, C13 and C16 have landed. The investigation's scripts and
+C1, C2, C3, C5, C10, C11, C12, C13 and C16 have landed. The investigation's scripts and
 results, with the exact-value models C15 can build on, are in `scratch/` until
 the list is done.
 
@@ -124,33 +124,6 @@ each task under that task's seed with the input sizes it computed, as
 `custom_embedding_cls` works now. Each term of a difference gets its own. An
 object is refused with a message showing the new form.
 
-### C10. The windows of the named quantities
-
-**Now.** `mi_rate` requires `h` and defaults `half_width` to 20 samples,
-although both windows change the answer. In the easy regime of the accuracy
-test `half_width=20` read 0.551 to 0.609 against 0.588, and `half_width=5` read
-0.579 to 0.594. Window parameters are not validated as `stride` is:
-`mi_rate(h=-1)` runs as `h=0`, `k=0` and `history_window=0` build arrays without
-columns, and other values fail inside torch. At `h=0` or `k=0` the call computes
-another quantity, with one network instead of a difference.
-
-**Fix.** `half_width` is required. One validator, in the manner of
-`validate_stride`, checks every window parameter. `h=0` and `k=0` warn and name
-the quantity computed: `instantaneous_mi` for `instantaneous_exchange(k=0)` and
-`directed_information_rate(k=0)`, and I(X_{-L..L}; Y_0) for `mi_rate(h=0)`,
-which is instantaneous MI at `half_width=0`. The windows now come from each
-quantity's spec (`quantities._spec_*`, built by `offsets.build_rows`).
-
-### C12. One rule for window shifting
-
-**Now.** `shift_windows` reaches `block_mi`, which windows through a processor,
-but never the offset quantities on the same data.
-
-**Fix.** Shifting applies wherever rows thin a series (a step or stride above
-one sample) and nowhere else, read from the rows' recorded geometry
-(`neural_mi/data/rows.py`). Offset rows record their geometry in steps of the
-series, so for them that means `row_step > 1`.
-
 ### C14. Docs, tests and tutorials on the defaults
 
 **Now.** Three configurations describe the rate quantities and none is the
@@ -171,8 +144,8 @@ target.
 **Fix.** Accuracy on a smooth, self-predictable process after whitening, with
 the default model and a tolerance that fails on the errors above; unchanged
 estimates across units with channel preprocessing; independent repeats with a
-custom critic; the row-geometry contract for every temporal quantity;
-window-parameter validation; every setting reaching every network.
+custom critic; the row-geometry contract for every temporal quantity; every
+setting reaching every network.
 
 ## Design work
 

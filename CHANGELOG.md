@@ -158,6 +158,33 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `shift_windows` reached `block_mi`, which windows through a processor, but
+  never the quantities built by time offsets on the same data, and a window
+  shift moved windows by up to a whole window even when they started one
+  sample apart. A shift now applies wherever rows thin a series, their starts
+  more than one sample apart, and moves them by less than one step: a window
+  shift is drawn within one step, so windows that start one sample apart never
+  move, and the rows a `stride` above one thins in the quantities built by time
+  offsets (the named ones, transfer entropy, `offset_quantity`) are built at
+  every step, of which each epoch keeps one in every `stride` from a phase
+  drawn afresh. The split's leak check counts the extra step a shifting row
+  reaches, which it did not count for a window shift, and an explicit
+  `shift_windows=True` on rows one step apart says why it has no effect.
+
+- `mi_rate` defaulted `half_width` to 20 samples, although both windows change
+  the answer: in the easy regime of the accuracy test `half_width=20` read
+  0.551 to 0.609 against 0.588, and `half_width=5` read 0.579 to 0.594. Window
+  parameters were not validated as `stride` is: `mi_rate(h=-1)` ran as `h=0`,
+  `k=0` and `history_window=0` built arrays without columns, and other values
+  failed inside torch. `half_width` is now required, and every window parameter
+  (`k`, `future_k`, `h`, `half_width`, `history_window`, and
+  `mode='transfer'`'s `history_window` and `prediction_horizon`) must be a whole
+  number of steps, at least 1, or at least 0 for a conditioning history. At
+  `h=0` or `k=0` there is nothing to condition on, and the call warns and names
+  what it computes with one network: `instantaneous_mi` for
+  `instantaneous_exchange` and `directed_information_rate`, and I(X_{-L..L};
+  Y_0) for `mi_rate`, which is `instantaneous_mi` at `half_width=0`.
+
 - Six hand-written builders of the named quantities' rows did what
   `build_offset_arrays` does, and `processing=` reached the named quantities
   four ways. With overlapping windows (`window_size=10`, `step_size=2`)
