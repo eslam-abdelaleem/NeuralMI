@@ -5,7 +5,7 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1, C2, C3, C5, C10, C11, C12, C13 and C16 have landed. The investigation's scripts and
+C1 to C3, C5 to C13 and C16 have landed; C4, C14 and C15 remain. The investigation's scripts and
 results, with the exact-value models C15 can build on, are in `scratch/` until
 the list is done.
 
@@ -28,101 +28,6 @@ tested against a permutation null.
 
 **Fix.** The pair everywhere. The `_condition` tag and the channel split go, and
 the four stages accept the pair.
-
-### C6. Defaults only in the schema
-
-**Now.** `Trainer.train` declares defaults of its own (patience 10, `shift_time`
-and `shift_windows` False, units nats, `verbose` True) against the schema's
-(1000, True, True, bits, False). Fallbacks in `task.py`, `utils.py` and the
-decoder builder name a kernel size of 7 and dropout 0.3, which never apply
-because the schema always fills 3 and 0.0, and the decoder classes declare
-defaults of their own. This is the part of design item 1 that disagrees with
-the schema today. The rest of item 1 stays design work.
-
-Also: `task._BUILD_PARAMS_KEYS`, the settings saved with a network for
-`extract_embeddings`, lacks `bias`, `cnn_pooling`, the Y-side settings, the head
-sizes, `_difference_term`/`_condition` and the processor parameters, so a
-network built with any of them cannot be rebuilt as it was trained.
-
-**Fix.** Defaults come from the schema alone. Functions below `run()` take the
-settings without defaults of their own, and the dead fallbacks go. The saved
-keys and the settings `build_critic` reads are one list.
-
-### C7. Preprocessing and a data check
-
-**Now.** Nothing scales or whitens data before the networks, and estimates
-depend on units: a pair carrying 2.0 reads 2.05 at unit scale, 0.006 at ×1e-3
-and 0.000 at ×1e3. KSG standardises its columns in `ksg.prepare`, and the
-embedding spectrum normalises in `utils._whiten`. On smooth, finely sampled
-signals a process's own past predicts its present so well that the conditioning
-term of `mi_rate` is several nats and the rate a small residual of it (0.17 from
-4.83 − 4.66). Whitening each signal by its own autoregressive filter leaves the
-rate unchanged in the limit of long windows and shrinks that term. The library's
-defaults then read 0.135 to 0.154 against 0.160, where on the raw signals they
-read 0 for two seeds and, for the third, 2.41 from a conditioning term that
-had failed (such a repeat now has no value).
-
-**Fix.** `Preprocessing(channel=..., time=...)`, opt-in and recorded in
-`result.params`.
-- Channel domain: z-score, ZCA, PCA and copula, each fitted on one stream at a
-  time (X, Y and W separately). Each is invertible and leaves every quantity
-  unchanged. PCA may keep fewer components, with a warning that a cut by
-  variance can drop the information, which need not lie in the directions of
-  largest variance. In the smooth model it lies under larger private
-  oscillations.
-- Time domain: whitening by an autoregressive filter per channel. The rate
-  quantities (`mi_rate`, transfer entropy, conditional transfer entropy, the
-  directed information rate, instantaneous exchange) are unchanged by it in the
-  limit of long windows. Every other quantity is changed by it and warns.
-- Spike-time and categorical streams take neither, and the message points at the
-  processor's own settings and at encoder input scaling (C8). Pre-windowed arrays
-  take the channel domain only.
-- A custom transform plugs in through the interface the built-ins use: fit on a
-  stream, transform, declare its domain. The library warns once that it cannot
-  check that a custom transform preserves information.
-- One implementation replaces `utils._whiten` and the scaling in `ksg.prepare`.
-
-A data check at the start of every call reports, for each stream, the channel
-scales, constant or non-finite channels, for the rate quantities how much of
-each channel's variance its own past predicts linearly, the scale of the rows
-the network will receive, and the held-out row count (`trainer.held_out_rows`,
-the count the splits and the small-sample check use). It suggests the matching
-option and changes nothing.
-
-Open points: where it hooks in (the start of `_run_flat` on raw streams, and
-for the named quantities on the series before `offsets.build_rows`); for the
-time domain, a fixed autoregressive order or one chosen by AIC, and whether to
-keep the series' length with zero initial conditions or drop the first samples;
-for PCA, a rotation with an `n_components` option.
-
-### C8. The scale of processed rows
-
-**Now.** Binned spikes are divided by the bin width by default
-(`normalize_bins=True`), so one spike becomes 100 in 10 ms bins and 1,000 in
-1 ms bins. On the library's spike generator (1.152 bits, information in the
-counts) the estimate is 0 at both bin widths (held-out −2.3 and −116 bits), and
-0.72 and 0.47 bits with plain counts. Preprocessing acts on raw streams and
-cannot reach the rows a processor makes.
-
-**Fix.** `normalize_bins` defaults to False, so rates are opt-in like every
-other change to the data. Input scaling becomes an encoder setting in `Model`,
-off by default, honoured by every encoder (declared, as every Model setting
-now is, in `BaseEmbedding.settings` and passed by `build_critic`), saved with
-the network and applied by `extract_embeddings`. The agreed form is
-`Model(input_scaling=None|'standard')`.
-
-### C9. Custom critics as recipes
-
-**Now.** `Model(custom_critic=obj)` trains the one object it is given in every
-task. With `n_workers=1` each repeat continues the previous one's training
-(held-out value at the first epoch 0.11, 0.77 and 1.22 over three repeats), the
-caller's object is trained in place, results depend on `n_workers`, and a
-difference quantity fails with a shape error.
-
-**Fix.** `custom_critic` takes a class or function, which the library calls in
-each task under that task's seed with the input sizes it computed, as
-`custom_embedding_cls` works now. Each term of a difference gets its own. An
-object is refused with a message showing the new form.
 
 ### C14. Docs, tests and tutorials on the defaults
 

@@ -158,6 +158,63 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Nothing scaled or whitened data before the networks, and estimates depended
+  on units: a pair sharing 2 nats read 2.05 at unit scale, 0.006 at a
+  thousandth of it and 0 at a thousand times it. On smooth, finely sampled
+  signals the conditioning term of `mi_rate` is several nats and the rate a
+  small residual of it. `Preprocessing(channel=..., time=...)`, opt-in and
+  recorded in `result.params`, transforms each continuous stream before rows
+  are built from it, fitted on X, Y and W apart. The channel transforms
+  (`'zscore'`, `'zca'`, `'pca'`, `'copula'`) are invertible and leave every
+  quantity unchanged, and `PCA(n_components=k)` below the channel count warns.
+  `time='ar'` filters each channel by its own autoregressive fit (order by AIC
+  up to 10 log10(T), length kept), which leaves the rate quantities unchanged
+  and warns for any other. Spike-time and categorical streams take neither and
+  say so, rows passed in take the channel transform only, and a transform of
+  your own (`nmi.preprocessing.Transform`) warns that it cannot be checked.
+  `preprocessing.prepare` is the one step every path takes, and
+  `utils._whiten` and `ksg.prepare` use the same transforms. Every call also
+  checks its streams first and changes nothing: it warns about non-finite or
+  constant channels and channels more than ten times from unit scale (unless
+  the encoders scale their own inputs), reports each stream's scales and, for a
+  rate quantity, how much of each channel's variance its own past predicts,
+  and reports how many rows reach the estimator, how many are held out and
+  their scale. It reads large streams in stretches of 100,000 rows.
+
+- Binned spikes were divided by the bin width by default, so one spike became
+  100 in 10 ms bins and 1,000 in 1 ms bins, and on the library's spike
+  generator the estimate was 0 at both widths. `normalize_bins` now defaults
+  to False, so rates are opt-in like every other change to the data.
+  `Model(input_scaling='standard')` centres and scales every encoder's input
+  channel by channel, with statistics the trainer fits from the training rows
+  before the first epoch. They are saved with the network and applied by
+  `extract_embeddings`. With it a pair carrying 1.10 nats reads 1.09 to 1.10
+  at unit scale, ×1e3 and ×1e-3, where it read 0 at both ends. DeepSets, which
+  tells a spike from padding by the padding value, refuses it.
+
+- `Model(custom_critic=obj)` trained the one object it was given in every task:
+  with `n_workers=1` each repeat continued the previous one's training, the
+  caller's object was trained in place, results depended on `n_workers`, and a
+  difference quantity failed with a shape error because every term shared a
+  critic sized for one of them. `custom_critic` now takes a class or function,
+  which `build_critic` calls in each task, under that task's seed, with the
+  input sizes and architecture settings it names, as `custom_embedding_cls`
+  works, so every repeat and every term trains a critic of its own. An object
+  is refused with a message showing the new form, and the recipe is saved with
+  the network.
+
+- `Trainer.train` declared defaults of its own (patience 10, `shift_time` and
+  `shift_windows` False, units nats, `verbose` True) against the schema's
+  (1000, True, True, bits, False), fallbacks named a kernel size of 7 and
+  dropout 0.3 that never applied, and the encoder and decoder classes declared
+  values of their own. The settings saved with a network for
+  `extract_embeddings` lacked `bias`, `cnn_pooling`, the Y-side settings, the
+  head sizes, the difference-term settings and the processor parameters, so
+  such a network could not be rebuilt as it was trained. Every default now
+  comes from the schema (`defaults.default_of`), and the settings
+  `build_critic` reads and those `save_network` saves are one list
+  (`utils.ARCHITECTURE_KEYS`).
+
 - `shift_windows` reached `block_mi`, which windows through a processor, but
   never the quantities built by time offsets on the same data, and a window
   shift moved windows by up to a whole window even when they started one
