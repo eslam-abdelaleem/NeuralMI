@@ -5,14 +5,82 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C3, C5 to C13 and C16 have landed; C4, C14 and C15 remain. The investigation's scripts and
-results, with the exact-value models C15 can build on, are in `scratch/` until
-the list is done.
+C1 to C3, C5 to C13 and C16 have landed. C17, C4, C18, C14 and C15 remain, in
+that order. C4 is built on C17's row plan, and C14 and C15 are written against
+the defaults, which C18 may change. The investigation's scripts and results,
+with the exact-value models C15 can build on, are in `scratch/` until the list
+is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
 oscillation under larger private ones, finely sampled, as in field potentials)
-and the library's own generators. Values are in nats unless marked as bits.
+and the library's own generators. C17 and C18 come from a second investigation,
+of how the terms of a difference get their rows and of window shifting. Values
+are in nats unless marked as bits.
+
+### C17. One row plan per quantity
+
+**Now.** A quantity's rows (the window times, the windows kept, the split and
+the shift) are decided per term, from the streams each term reads. The terms
+are assumed to agree because they share seeds. They disagree wherever their
+streams do:
+
+- Spike X with spike W in `mode='conditional'` or `'interaction'`. Each term
+  starts its grid at the first spikes of its own streams, so the terms train
+  and evaluate on different stretches of time. This holds under the defaults,
+  with or without shifting, and the code passes it on to rigorous runs and
+  permutation nulls. The default call reads 0.25 bits of conditional MI where
+  the truth is 0.
+- `Conditional(align='dual_branch')` with `shift_windows` and a W window unlike
+  X's. The terms step on different grids, and the conditioning term cuts Y on
+  W's grid. The call crashes where W yields fewer rows than X and is wrong
+  otherwise (0.18 nats against an intended 0.55).
+
+Smaller failures have the same cause:
+
+- Spike X and Y with a regular W crash under the default `shift_time`.
+  `run.py:1599` reads W from a dataset that the deferred path never built.
+- With a step larger than the window, X and Y drift apart on some epochs.
+- Inside a task, Y loses the settings it inherits from X.
+- The bursty-neuron exclusion is fitted per term, so the terms can drop
+  different neurons of W.
+- Interaction reads W with X's processor settings.
+
+Two more things for the plan to settle. On the route of the named quantities
+`drop_empty_windows` has no effect, because that route builds its rows without
+window validation, and nothing says so. The processor settings' defaults
+(`drop_empty_windows`, `min_coverage_fraction`, `encoding` and the rest) are
+written in `handler.py` and in the dataset classes, not in the schema.
+
+**Fix.** First a guard, in its own commit. Every task returns the identity of
+its rows (origin, step, count and each stream's span), `combine_terms` refuses
+terms whose rows differ, and the crash route is refused with a message.
+
+Then one row plan per call and processor configuration. `run()` builds it over
+every stream any term reads, and it holds:
+
+- the grid: its origin is the latest start over all streams, with one step and
+  the window times that follow from them;
+- each stream's span and settings, resolved once from the schema;
+- the fits to the data, made once: the category count, the bursty exclusion and
+  the spike slot width;
+- the windows kept, folded over all streams;
+- for each seed and repeat, the split, the evaluation rows and the shift
+  schedule.
+
+A term only selects streams from the plan. One epoch offset moves every stream
+together, and `shift_time` folds into `shift_windows`. `RowGeometry`,
+`offsets.build_rows`, `create_dataset`, the rigorous `_Chunker` and the
+permutation nulls become views or producers of the plan.
+
+**Decided.** `drop_empty_windows=True` stays the default. The docs name it as
+the one default that changes the data and say why: in spike times, silence
+looks the same as no recording. Under the plan a row is kept only where every
+spike stream fired, in every term. The named quantities' route says the setting
+has no effect there. A grid has one window length and one step. A stream that
+asks for another (W or Y) is refused, and the message says to set them equal or
+to place the stream with `offset_quantity`, whose spec states where each group
+sits.
 
 ### C4. A joint X travels as a pair everywhere
 
@@ -24,10 +92,23 @@ lengths (`mi_rate`, `instantaneous_exchange`, `directed_information_rate`,
 `Conditional(align='dual_branch')`). Every stage between the builders and the
 network handles both, and four refuse the pair: permutation tests, decoders,
 variational encoders and precision corruption. `mi_rate` therefore cannot be
-tested against a permutation null.
+tested against a permutation null. Two more stages read the shape of one tensor
+and would fail on the pair: the augmentations and the concat critic.
 
-**Fix.** The pair everywhere. The `_condition` tag and the channel split go, and
-the four stages accept the pair.
+**Fix.** Built on C17's plan. The pair everywhere, as (the rest of X, the
+conditioning set) in every quantity, and every stage accepts it. `align`, the
+`_condition` tag and the channel split, the code that concatenates or merges X
+and W, the trim tolerances and the unused dual-branch builder go. This also
+settles the smaller item on specs with a C group.
+
+### C18. Epoch budget under shifting
+
+**Now.** Window shifting helps the network. The held-out value was higher with
+it in 22 of 23 paired runs. At the default 50 epochs, shifted runs are still
+rising.
+
+**Fix.** Measure on several oracles, then set `n_epochs` or a stopping rule
+from what they show.
 
 ### C14. Docs, tests and tutorials on the defaults
 
@@ -50,7 +131,10 @@ target.
 the default model and a tolerance that fails on the errors above; unchanged
 estimates across units with channel preprocessing; independent repeats with a
 custom critic; the row-geometry contract for every temporal quantity; every
-setting reaching every network.
+setting reaching every network. Known-answer cases for C17: spike trains with a
+W that starts late, estimated with KSG, where the true conditional MI is 0; a W
+window unlike X's, refused by `run()` and placed by `offset_quantity` on a
+Gaussian with a known answer; a step larger than the window.
 
 ## Design work
 
