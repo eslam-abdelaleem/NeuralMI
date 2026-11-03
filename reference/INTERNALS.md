@@ -133,7 +133,14 @@ same functions on each chunk. `sweep.term_values` reads each network as
 measured, as having learned nothing (it enters as 0) or as failed (its repeat
 is NaN). The line between the last two is `epochs.stands_above_zero`, the same
 test the trainer uses to word its warning about a negative training-side value,
-so a network's warning and its place in a combination agree.
+so a network's warning and its place in a combination agree. Before it reads a
+value, `combine_terms` compares the rows each term's task read
+(`data.rows.row_identity`, in the task's result under `_row_identity`): their
+count, and the grid's origin and step, a digest of the kept rows' start times
+and Y's window wherever both tasks know them (`data.rows.same_rows`). A repeat
+whose terms read different rows is refused. Rows built before the tasks, by
+`run()` or by offsets, are known by their count and the recorded geometry, and
+every term receives the same ones.
 
 ### Processor parameters in a grid
 

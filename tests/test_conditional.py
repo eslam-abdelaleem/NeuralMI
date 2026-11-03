@@ -671,6 +671,29 @@ class TestConditionalShiftTimeSpike:
         assert np.isfinite(results.mi_estimate)
 
 
+class TestSpikePairWithARegularW:
+    """Under shift_time, on by default, X and Y are left raw for each task to
+    window when one of them holds spike times, and a regular W has no way to
+    join their grid there. The call is refused before anything is built."""
+
+    @pytest.mark.parametrize('mode', ['conditional', 'interaction'])
+    def test_refused_under_shift_time(self, mode):
+        rng = np.random.default_rng(0)
+        x = [np.sort(rng.uniform(0, 60, 300)) for _ in range(3)]
+        y = [np.sort(rng.uniform(0, 60, 300)) for _ in range(3)]
+        sample_rate = 100.0
+        w = rng.standard_normal((6000, 2)).astype('float32')
+        processing = nmi.Processing(x='spike', x_params={'window_size': 0.5},
+                                    y='spike', y_params={'window_size': 0.5},
+                                    w='continuous', w_params={'window_size': 0.5, 'sample_rate': sample_rate},
+                                    w_time=np.arange(6000) / sample_rate)
+        config = Conditional(w_data=w) if mode == 'conditional' else nmi.Interaction(w_data=w)
+        with pytest.raises(ValueError, match=r"cannot shift time with this W\..*Pass "
+                                             r"Training\(shift_time=False\)"):
+            nmi.run(x, y, mode=mode, processing=processing, estimator='ksg', show_progress=False,
+                    **{mode: config})
+
+
 def _gappy_timeline(duty_on=8.0, period=40.0, span=400.0, dt=0.02):
     """A timeline sampled densely during scattered epochs, with gaps between.
 

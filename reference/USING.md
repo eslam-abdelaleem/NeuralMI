@@ -403,10 +403,12 @@ every quantity combined from separately trained networks
 relative error. A factor of 10 or more warns because a difference that small
 should be read with its components ([THEORY.md](THEORY.md#amplification)).
 
-`Conditional(align='dual_branch')` passes X and W to the joint term as a pair,
-each at its own window length, for a W whose window length differs from X's.
+`Conditional(align='dual_branch')` passes X and W to the joint term as a pair.
 The named quantities that need it set `align` themselves
-([the named quantities](#the-named-quantities)).
+([the named quantities](#the-named-quantities)), and there the two parts span
+different stretches of time. A W that a processor windows takes X's window and
+step: under `shift_windows` a W that asks for others is refused, and without it
+X's are used, with a warning.
 
 ### `interaction`
 
@@ -666,9 +668,16 @@ one thread each. Setting `OMP_NUM_THREADS` before the call keeps your own count.
 
 The terms of a difference quantity (conditional MI, transfer entropy,
 interaction information and the named quantities built on them) are separate
-trainings. They split and evaluate the same rows because every term of a repeat
-draws its split and evaluation rows from a generator seeded with the same key,
-with or without a seed passed to the call.
+trainings. Every term of a repeat draws its split and evaluation rows from a
+generator seeded with the same key, with or without a seed passed to the call,
+so terms that build the same rows split and evaluate them alike. Each term
+builds its rows from the streams it reads, and a repeat whose terms built
+different rows is refused, since its difference would compare different
+stretches of the data. Spike times are the usual case: a term's grid starts at
+the first spike of its own streams, and the windows where one of them is silent
+are dropped, so a spike W that starts later than X or falls silent elsewhere
+gives the conditioning term other rows. Binning the spike times on one clock
+and passing the counts as continuous streams puts every term on the same rows.
 
 A script that runs with `n_workers` above 1 needs a `__main__` guard. The
 workers start by re-importing the module that launched them. A top-level

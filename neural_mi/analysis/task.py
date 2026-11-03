@@ -18,7 +18,7 @@ from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import _EMBEDDING_BATCH, save_network
 from neural_mi.data.handler import create_dataset, AlignedStaticStreams
-from neural_mi.data.rows import record_rows, row_geometry, window_rows
+from neural_mi.data.rows import IDENTITY_KEY, record_rows, row_geometry, row_identity, window_rows
 from neural_mi.defaults import setting
 
 # Batch size used for embedding extraction (no effect on training).
@@ -243,6 +243,9 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     _wm = getattr(dataset, 'window_manager', None)
     if _wm is not None:
         record_rows(params, window_rows(_wm.window_size, _wm.resolve_step()))
+    # Which rows this task reads, for the terms of a difference to be checked
+    # against each other once they are all trained (sweep.combine_terms).
+    _rows = row_identity(dataset, params)
 
     # Models that natively support 4-D input (N, C, H, W):
     #   'cnn2d', Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
@@ -302,7 +305,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2]
 
     if params.get('estimator_name') in NONPARAMETRIC:
-        return {**_reported(params), **_nonparametric(dataset, params)}
+        return {**_reported(params), **_nonparametric(dataset, params), IDENTITY_KEY: _rows}
 
     # A custom critic is the caller's recipe, built here under this task's seed
     # like every other critic (build_critic).
@@ -532,7 +535,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     frozen_x = results.pop('_frozen_eval_x', None)
     frozen_y = results.pop('_frozen_eval_y', None)
 
-    final_result = {**_reported(params), **results}
+    final_result = {**_reported(params), **results, IDENTITY_KEY: _rows}
     if params.get('_keep_trained'):
         # mode='precision' evaluates this network again on corrupted copies of
         # its training rows, so it needs the trainer, the dataset and, when the

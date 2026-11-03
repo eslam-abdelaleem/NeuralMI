@@ -294,7 +294,7 @@ For `mode='conditional'`.
 | Parameter | Default | Meaning |
 |--|--|----|
 | `w_data` | required | The conditioning variable $W$ in $I(X;Y \mid W)$. |
-| `align` | `None` | `'dual_branch'` passes X and W to the joint term as a pair, for a W whose window length differs from X's. |
+| `align` | `None` | `'dual_branch'` passes X and W to the joint term as a pair. The named quantities set it for parts that span different stretches of time. A W that a processor windows takes X's window and step. |
 | `rigorous` | `False` | Extrapolate each repeat to infinite data. |
 | `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
 

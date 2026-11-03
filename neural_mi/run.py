@@ -1321,9 +1321,22 @@ def _run_flat(
         _defer_for_conditional_interaction = (
             _defer_regular_conditional_interaction or _defer_spike_conditional_interaction
         )
-        if _defer_for_conditional_interaction:
-            # The concatenated array is windowed with X's window_size and
-            # step_size, so a W that sets different ones is refused.
+        # align='dual_branch' never concatenates X and W. Under shift_windows
+        # each task windows X, W and Y together from the raw arrays
+        # (shift_windowing.try_build_shift_windows_dataset_tuple), and the term
+        # whose X is W alone cuts Y on W's grid.
+        _defer_for_dual_branch_shift_windows = (
+            mode == 'conditional' and analysis_kwargs.get('align') == 'dual_branch'
+            and base_params.get('shift_windows')
+            and processor_type_x in _regular_types and _cond_var_type in _regular_types
+            # The three-way shifter needs Y on a regular grid as well; without
+            # it the call would fall back to create_dataset with a tuple X.
+            and _effective_processor_type_y in _regular_types
+        )
+        if _defer_for_conditional_interaction or _defer_for_dual_branch_shift_windows:
+            # Every term windows W on X's grid, the concatenated array with X's
+            # window_size and step_size and the dual-branch terms with the
+            # grid of their X, so a W that sets different ones is refused.
             for _key in ('window_size', 'step_size'):
                 _x_value = (processor_params_x or {}).get(_key)
                 _w_value = (w_processor_params or {}).get(_key)
@@ -1334,6 +1347,7 @@ def _run_flat(
                         f"Processing(x_params=...) sets {_x_value}. Remove {_key} from "
                         f"w_params to use X's or set them equal."
                     )
+        if _defer_for_conditional_interaction:
             # It is also windowed on X's clock, so a different w_time is
             # refused. Equal clocks, the usual case, pass.
             if w_time is not None and x_time is not None:
@@ -1346,18 +1360,6 @@ def _run_flat(
                         f"from x_time cannot be used. Resample W onto X's clock and drop "
                         f"Processing(w_time=...){_alternative}."
                     )
-        # align='dual_branch' never concatenates X and W: W keeps its own
-        # window geometry, so the checks above do not apply. shift_windows
-        # reaches it through a three-way shifter that moves X, W and Y in step
-        # (shift_windowing.try_build_shift_windows_dataset_dual_branch).
-        _defer_for_dual_branch_shift_windows = (
-            mode == 'conditional' and analysis_kwargs.get('align') == 'dual_branch'
-            and base_params.get('shift_windows')
-            and processor_type_x in _regular_types and _cond_var_type in _regular_types
-            # The three-way shifter needs Y on a regular grid as well; without
-            # it the call would fall back to create_dataset with a tuple X.
-            and _effective_processor_type_y in _regular_types
-        )
         # W joins X and Y on one grid whenever it needs windowing and no task
         # windows it later. Each grid starts at the latest start among its own
         # streams, so a W windowed on a grid of its own would start somewhere
@@ -1369,6 +1371,15 @@ def _run_flat(
             and not _defer_for_conditional_interaction
             and not _defer_for_dual_branch_shift_windows
         )
+        # shift_time leaves X and Y raw for each task to window, and a W joins
+        # their grid only where the three are windowed together, here.
+        if _bundle_w and _defer_for_shift_time:
+            raise ValueError(
+                f"mode='{mode}' cannot shift time with this W. Under shift_time, which is on by "
+                f"default, X and Y are windowed inside each training task because one of them "
+                f"holds spike times, and a {w_processor_type} W has no way to join their grid "
+                f"there. Pass Training(shift_time=False) to window X, Y and W once, on one grid."
+            )
         if mode == 'transfer':
             # Transfer entropy builds its histories from rows of a (T, C) series;
             # the transfer branch below puts the streams on one grid itself.

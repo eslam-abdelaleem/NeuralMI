@@ -70,6 +70,7 @@ Each file covers one functional area. Run
 | `test_shift_windowing.py` | the `unfold` reslice route: shift families, step-size resolution, categorical re-encoding parity with `CategoricalWindowDataset`, differing sample rates, cross-unit warnings |
 | `test_augmentations.py` | each augmentation's effect and shape contract, the spatial-on-3-D warning, custom callables, application order, and the boolean shortcuts |
 | `test_empty_windows.py` | `drop_empty_windows`, its independence from the continuous coverage rule, retention reporting, and the mixed-unit warning |
+| `test_rows.py` | how rows lie in time: the geometry each builder records, the split's leak checks, the rigorous chunks and the block shuffle that read it, the phase shifter of strided rows, and the identity of the rows each task reports |
 | `test_views.py` | `SubsetView` by index, channel and time region, and temporal index conversion |
 
 ### Generators and oracles
@@ -86,7 +87,7 @@ Each file covers one functional area. Run
 | `test_models.py` | every encoder, `VariationalWrapper` for each, all three critics, chunking equivalence, gradients, `get_embeddings()` |
 | `test_critic_scoring.py` | the block scoring of the hybrid and concat critics against the pair-by-pair route, scores and gradients |
 | `test_cnn2d.py` | the 2-D encoder, its `build_critic` path, 4-D input handling, the image splits of `mode='dimensionality'` |
-| `test_branched_embedding.py` | `BranchedEmbedding`, the X encoder of every term of a difference: its parts and split, the encoder each term gets, the pair of different window lengths, and the quantities that use it against the oracle |
+| `test_branched_embedding.py` | `BranchedEmbedding`, the X encoder of every term of a difference: its parts and split, the encoder each term gets, the pair, which takes X's grid under `shift_windows`, and the quantities that use it against the oracle |
 | `test_decoders.py` | decoder dispatch and the reconstruction-loss path end to end |
 | `test_shared_encoder.py` | weight identity, parameter count, the concat incompatibility, the dimensionality-mode default |
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |
@@ -123,7 +124,8 @@ Each file covers one functional area. Run
 | `test_dimensionality.py` | the grid chosen from the reference fit, the curve and its reading against curves of known dimension, the early stop and the extension, the median over splits, every warning, the settings and refusals, every split method, and a run through `run()` |
 | `test_interaction.py` | interaction information's plumbing and accuracy, and its shift routes across categorical, mixed and spike pairings |
 | `test_permutation.py` | the permutation null: X moved by a circular shift or reordered blocks for windowed rows, raw series and spike times, one null per row, `p_value`, the default trial count, and the modes that compute no null |
-| `test_conditional.py` | CMI independence and correlation properties, the component details, categorical conditioning variables |
+| `test_conditional.py` | CMI independence and correlation properties, the component details, categorical conditioning variables, and the spike pair with a regular W refused under `shift_time` |
+| `test_combining_terms.py` | the one rule for terms trained apart: measured, learned nothing or failed, repeats paired by position, terms that read different rows refused, the repeat rows and the rigorous rungs |
 | `test_rigorous_diagnostics.py` | fit diagnostics, their presence in corrected results, scalar rigorous analysis, chunk-range translation |
 | `test_sweep.py` | sweep mechanics: dimension inference, subsampling, processor-param sweeps, save-path collisions |
 | `test_transfer.py` | transfer entropy in both directions and the directionality index |

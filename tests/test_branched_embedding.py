@@ -341,17 +341,17 @@ class TestAccuracyAgainstOracle:
 
 
 class TestPairUnderShiftWindows:
-    """shift_windows reachability for align='dual_branch' -- a new
-    DualBranchWindowShifter (X, C, Y all shift in sync, each in its own
-    window units) rather than the concat-based mechanism the plain
-    (non-dual_branch) conditioning-variable case uses, since dual_branch
-    never concatenates X and C in the first place."""
+    """shift_windows under align='dual_branch': each task windows X, C and Y
+    together from the raw arrays
+    (shift_windowing.try_build_shift_windows_dataset_tuple), and the term
+    whose X is C alone cuts Y on C's grid, so C needs X's grid."""
 
-    def test_engages_silently_with_different_window_sizes(self):
-        """No warning, and a finite result: shift_windows must actually
-        reach align='dual_branch' with X and C at genuinely different
-        window sizes (20 vs 8) -- the entire premise of dual_branch."""
-        import warnings
+    @pytest.mark.parametrize('w_params, key', [({'window_size': 8, 'step_size': 8}, 'window_size'),
+                                               ({'window_size': 20, 'step_size': 10}, 'step_size')])
+    def test_a_c_window_or_step_unlike_x_is_refused(self, w_params, key):
+        """A C with a window or step of its own would put the joint term's C
+        on a grid that drifts from X's, and the conditioning term's Y on C's
+        grid, so the terms would read different rows."""
         np.random.seed(0)
         T = 3000
         x = np.random.randn(T, 2).astype('float32')
@@ -359,20 +359,15 @@ class TestPairUnderShiftWindows:
         y = np.random.randn(T, 2).astype('float32')
         processing = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
                                     y='continuous', y_params={'window_size': 20, 'step_size': 20})
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            r = nmi.run(
+        with pytest.raises(ValueError, match=f"windows W on X's window grid here. The two need the same {key}"):
+            nmi.run(
                 x, y, mode='conditional',
-                conditional=Conditional(w_data=c,
-                                       align='dual_branch'),
-                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': 8, 'step_size': 8}),
+                conditional=Conditional(w_data=c, align='dual_branch'),
+                processing=dataclasses.replace(processing, w='continuous', w_params=w_params),
                 model=_DB_MODEL,
                 training=Training(n_epochs=2, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
-        msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
-        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
-        assert np.isfinite(r.mi_estimate)
 
     def test_c_equal_to_x_gives_near_zero_cmi_under_shift(self):
         """Correctness/desync check: C as an exact copy of X (same raw
@@ -415,8 +410,7 @@ class TestPairUnderShiftWindows:
         """rigorous=True + align='dual_branch' + shift_windows=True must
         raise a clear error rather than silently misalign C's raw data
         (run_rigorous_scalar_analysis's chunk translation uses X's own
-        window_size for every extra_data array, which would be wrong for
-        C's genuinely different window geometry)."""
+        window_size for every extra_data array)."""
         np.random.seed(0)
         T = 2000
         x = np.random.randn(T, 2).astype('float32')
@@ -429,7 +423,7 @@ class TestPairUnderShiftWindows:
                 x, y, mode='conditional',
                 conditional=Conditional(w_data=c,
                                        align='dual_branch', rigorous=True, gamma_range=range(1, 4)),
-                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': 8, 'step_size': 8}),
+                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': 20, 'step_size': 20}),
                 model=_DB_MODEL,
                 training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,

@@ -13,7 +13,8 @@ import pytest
 import torch
 
 import neural_mi as nmi
-from neural_mi.data.rows import RowGeometry, offset_rows, row_geometry, window_rows
+from neural_mi.data.rows import (RowGeometry, describe_rows, offset_rows, record_rows, row_geometry, row_identity,
+                                 same_rows, window_rows)
 
 _MODEL = nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1)
 _TRAINING = nmi.Training(n_epochs=2, batch_size=32)
@@ -275,3 +276,55 @@ class TestShiftingRowsAStrideThins:
         from neural_mi.analysis.permutation import _window_rows
         params = {'row_step': 3.0, 'row_span': 5.0, '_row_phases': 3}
         assert _window_rows(torch.zeros(40, 1, 5), params, {}) == 5
+
+
+class TestRowIdentity:
+    """Each task reports which rows it read, so that the terms of a difference, trained in separate
+    tasks, can be checked to have read the same ones (sweep.combine_terms)."""
+
+    def test_a_grid_of_spike_times_starts_at_the_latest_first_spike(self):
+        from neural_mi.data.handler import create_dataset
+        rng = np.random.default_rng(0)
+        early = [np.sort(rng.uniform(0.0, 20.0, 100)) for _ in range(2)]
+        late = [np.sort(rng.uniform(5.0, 20.0, 80)) for _ in range(2)]
+        spike = {'window_size': 0.5}
+        dataset = create_dataset(early, late, processor_type_x='spike', processor_params_x=spike,
+                                 processor_type_y='spike', processor_params_y=spike)
+        identity = row_identity(dataset, {})
+        assert identity['origin'] == pytest.approx(min(s[0] for s in late))
+        assert identity['step'] == 0.5 and identity['spans'] == {'x': 0.5, 'y': 0.5}
+        assert identity['count'] == len(dataset) and identity['kept']
+
+    def test_rows_resliced_from_the_raw_arrays_start_at_their_first_sample(self):
+        from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
+        x, y = _series()
+        params = {'shift_windows': True, 'processor_type_x': 'continuous', 'processor_type_y': 'continuous',
+                  'processor_params_x': {'window_size': 10, 'step_size': 0.5}}
+        dataset = try_build_shift_windows_dataset(x, y, params)
+        assert row_identity(dataset, params) == {'count': len(dataset), 'origin': 0.0, 'step': 5.0,
+                                                 'spans': {'x': 10.0, 'y': 10.0}, 'kept': None}
+
+    def test_rows_built_before_the_task_are_known_by_their_count_and_record(self):
+        from neural_mi.data.handler import PairedDataset
+        from neural_mi.data.static import StaticDataset
+        dataset = PairedDataset(StaticDataset(torch.zeros(7, 1, 3)), StaticDataset(torch.zeros(7, 1, 3)))
+        assert row_identity(dataset, {}) == {'count': 7, 'origin': None, 'step': None, 'spans': None,
+                                             'kept': None}
+        params = {}
+        record_rows(params, window_rows(3, 3))
+        assert row_identity(dataset, params)['step'] == 3.0
+
+    def test_same_rows_compares_what_both_identities_know(self):
+        rows = {'count': 400, 'origin': 0.05, 'step': 0.5, 'spans': {'x': 0.5, 'y': 0.5}, 'kept': 'a1'}
+        assert same_rows(rows, dict(rows))
+        for change in ({'count': 320}, {'origin': 40.0}, {'step': 1.0}, {'kept': 'b2'},
+                       {'spans': {'x': 0.5, 'y': 1.0}}):
+            assert not same_rows(rows, {**rows, **change}), change
+        # X's window belongs to its term: the conditioning term's X is W.
+        assert same_rows(rows, {**rows, 'spans': {'x': 1.0, 'y': 0.5}})
+        assert same_rows(rows, {'count': 400, 'origin': None, 'step': None, 'spans': None, 'kept': None})
+
+    def test_an_identity_reads_as_words(self):
+        rows = {'count': 400, 'origin': 0.05, 'step': 0.5, 'spans': {'y': 0.5}, 'kept': None}
+        assert describe_rows(rows) == '400 rows starting at 0.05, one every 0.5, Y over 0.5'
+        assert describe_rows({'count': 7, 'origin': None, 'step': None, 'spans': None}) == '7 rows'

@@ -437,6 +437,25 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   evaluation rows from a generator of its own seeded per task, so other random
   draws cannot desynchronise the terms.
 
+- The terms of a difference built their rows each from the streams it read, and
+  read the same rows only where those streams agreed. With spike times in
+  `mode='conditional'` or `'interaction'`, each term started its grid at the
+  first spike of its own streams and dropped the windows where one of them was
+  silent. A W that started 40 s after X gave the joint term 400 rows from 0 s
+  and the conditioning term 320 from 40 s, and the default call read 0.25 bits
+  of conditional MI where the truth is 0. Each task now reports which rows it
+  read (`data.rows.row_identity`: their count, and where the task knows them
+  the grid's origin and step, the kept rows and each stream's window), and
+  `sweep.combine_terms` refuses a repeat whose terms read different rows,
+  naming both. Under `Conditional(align='dual_branch')` with `shift_windows`, a
+  W with a window or step of its own was cut on a grid of its own, and the
+  conditioning term cut Y on that grid: the call crashed where W gave fewer rows
+  than X and read 0.18 nats against 0.55 otherwise. W now needs X's window and
+  step there, as on the path that concatenates them. Spike X and Y with a
+  continuous or categorical W crashed under the default `shift_time` with an
+  `UnboundLocalError` and are now refused with a message that names
+  `Training(shift_time=False)`.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

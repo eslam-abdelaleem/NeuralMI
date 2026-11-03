@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 from typing import List, Dict, Any, Optional, Sequence, Tuple
 
 from neural_mi.analysis.task import run_training_task
+from neural_mi.data.rows import IDENTITY_KEY, describe_rows, same_rows
 from neural_mi.exceptions import CombinationWarning
 from neural_mi.training.epochs import stands_above_zero
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
@@ -484,6 +485,30 @@ def _term_counts(keys_per_repeat, labels) -> str:
     return ', '.join(f"I({labels[key]}) in {count}" for key, count in counts.items())
 
 
+def _refuse_different_rows(terms: Sequence[tuple], n: int, quantity_name: str) -> None:
+    """Raise when the terms of one repeat read different rows (:func:`neural_mi.data.rows.same_rows`).
+
+    Each term is trained in a task of its own, which builds its rows from the
+    streams that term reads. A difference of values measured on different rows
+    compares different stretches of the data and has no meaning.
+    """
+    for i in range(n):
+        read = [(label, results[i][IDENTITY_KEY]) for label, _, results, _ in terms
+                if i < len(results) and isinstance(results[i], dict) and results[i].get(IDENTITY_KEY)]
+        for label, identity in read[1:]:
+            if not same_rows(read[0][1], identity):
+                raise ValueError(
+                    f"{quantity_name or 'A difference of trained terms'}: I({read[0][0]}) and "
+                    f"I({label}) read different rows ({describe_rows(read[0][1])}, against "
+                    f"{describe_rows(identity)}), so their difference would compare different "
+                    f"stretches of the data and has no value. Each term builds its rows from the "
+                    f"streams it reads. Spike times start the grid at the first spike of those "
+                    f"streams and drop the windows where one of them is silent, and a W with a window "
+                    f"or step of its own is cut on a grid of its own. Bin spike times on one clock and "
+                    f"pass the counts as continuous streams, or give W the window and step of X."
+                )
+
+
 def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
                   warn: bool = False) -> Dict[str, Any]:
     """The repeats of a quantity combined from separately trained terms, by one rule for every such quantity.
@@ -491,7 +516,8 @@ def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
     ``terms`` is a sequence of ``(label, key, results, sign)``: the term's name
     in messages (``'C;Y'``), the key its values are reported under
     (``'mi_w_y'``), its task results in repeat order and its sign in the
-    combination. Repeats are paired by position. A repeat in which any term
+    combination. Repeats are paired by position, and the terms of a repeat that
+    read different rows are refused. A repeat in which any term
     failed (:func:`term_values`) has no value: its combination and every one of
     its terms are NaN, and it is left out of the means and the spread. A term
     that learned nothing enters as 0. With ``warn``, one warning names the terms
@@ -506,6 +532,7 @@ def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
     :func:`combined_spread`).
     """
     n = max((len(results) for _, _, results, _ in terms), default=0)
+    _refuse_different_rows(terms, n, quantity_name)
     columns = []
     for _, _, results, _ in terms:
         values, states = term_values(results)

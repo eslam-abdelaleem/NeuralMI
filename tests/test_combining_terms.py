@@ -248,3 +248,60 @@ class TestRigorousRungs:
         assert n_dropped == 2
         assert kept['train_mi'].tolist() == [0.5, 0.4, 0.3, 0.35]
         assert any('2 of 6 rungs of the gamma ladder produced nothing' in str(w.message) for w in caught)
+
+
+def _spikes(rng, start, rate=5.0, end=200.0, n=3):
+    return [np.sort(rng.uniform(start, end, rng.poisson(rate * (end - start)))) for _ in range(n)]
+
+
+class TestTermsReadTheSameRows:
+    """The terms of a difference are trained in separate tasks, each building its rows from the streams it
+    reads. A repeat whose terms read different rows is refused: its difference would compare different
+    stretches of the data."""
+
+    JOINT = {'count': 400, 'origin': 0.05, 'step': 0.5, 'spans': {'x': 0.5, 'y': 0.5}, 'kept': None}
+
+    def test_terms_on_different_rows_are_refused(self):
+        late = {**self.JOINT, 'count': 320, 'origin': 40.0}
+        terms = [('XW;Y', 'mi_xw_y', [{**_net(0.3), '_row_identity': self.JOINT}], 1),
+                 ('W;Y', 'mi_w_y', [{**_net(0.1), '_row_identity': late}], -1)]
+        with pytest.raises(ValueError, match=r"Conditional MI: I\(XW;Y\) and I\(W;Y\) read different rows "
+                                             r"\(400 rows starting at 0.05, one every 0.5, Y over 0.5, "
+                                             r"against 320 rows starting at 40"):
+            combine_terms(terms, quantity_name='Conditional MI')
+
+    def test_every_repeat_is_checked(self):
+        late = {**self.JOINT, 'origin': 40.0}
+        terms = [('XW;Y', 'mi_xw_y', [{**_net(0.3), '_row_identity': self.JOINT}] * 2, 1),
+                 ('W;Y', 'mi_w_y', [{**_net(0.1), '_row_identity': self.JOINT}, {**_net(0.1), '_row_identity': late}], -1)]
+        with pytest.raises(ValueError, match='read different rows'):
+            combine_terms(terms)
+
+    def test_terms_on_the_same_rows_combine(self):
+        terms = [('XW;Y', 'mi_xw_y', [{**_net(0.3), '_row_identity': self.JOINT}], 1),
+                 ('W;Y', 'mi_w_y', [{**_net(0.1), '_row_identity': dict(self.JOINT)}], -1)]
+        assert combine_terms(terms)['value'] == pytest.approx(0.2)
+
+    @pytest.mark.parametrize('mode', ['conditional', 'interaction'])
+    def test_spike_times_with_a_late_w_are_refused(self, mode):
+        # Each term starts its grid at the first spike of its own streams: the joint term at 0 s, the
+        # conditioning term where W starts, 40 s later.
+        import neural_mi as nmi
+        rng = np.random.default_rng(0)
+        x, y, w = _spikes(rng, 0.0), _spikes(rng, 0.0), _spikes(rng, 40.0)
+        spike = {'window_size': 0.5}
+        processing = nmi.Processing(x='spike', x_params=spike, y='spike', y_params=spike, w='spike', w_params=spike)
+        config = (nmi.Conditional(w_data=w) if mode == 'conditional' else nmi.Interaction(w_data=w))
+        with pytest.raises(ValueError, match=r'read different rows \(400 rows starting at .*, against 320 rows'):
+            nmi.run(x, y, mode=mode, processing=processing, estimator='ksg', show_progress=False,
+                    **{mode: config})
+
+    @pytest.mark.parametrize('mode', ['conditional', 'interaction'])
+    def test_streams_on_one_grid_combine(self, mode):
+        import neural_mi as nmi
+        rng = np.random.default_rng(0)
+        x, w = rng.standard_normal((2000, 2)), rng.standard_normal((2000, 2))
+        y = x + w + rng.standard_normal((2000, 2))
+        config = (nmi.Conditional(w_data=w) if mode == 'conditional' else nmi.Interaction(w_data=w))
+        result = nmi.run(x, y, mode=mode, estimator='ksg', show_progress=False, **{mode: config})
+        assert np.isfinite(result.mi_estimate)

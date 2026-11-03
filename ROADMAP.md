@@ -52,9 +52,14 @@ window validation, and nothing says so. The processor settings' defaults
 (`drop_empty_windows`, `min_coverage_fraction`, `encoding` and the rest) are
 written in `handler.py` and in the dataset classes, not in the schema.
 
-**Fix.** First a guard, in its own commit. Every task returns the identity of
-its rows (origin, step, count and each stream's span), `combine_terms` refuses
-terms whose rows differ, and the crash route is refused with a message.
+**Fix.** A guard has landed first. Every task returns the identity of its rows
+(`data.rows.row_identity`: count, origin, step, each stream's span and a digest
+of the kept rows), `combine_terms` refuses terms whose rows differ, and the
+crash route is refused with a message. Under `align='dual_branch'` with
+`shift_windows`, W now needs X's window and step, as on the concatenated path.
+The guard turns the two wrong results above into refusals. Spike X with spike W
+then runs only where every term's rows happen to coincide, and interaction
+information has no route for a spike X with a continuous W.
 
 Then one row plan per call and processor configuration. `run()` builds it over
 every stream any term reads, and it holds:
