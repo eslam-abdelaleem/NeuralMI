@@ -98,6 +98,7 @@ class _SharedLatentOracle:
         return x.reshape(-1, 1), y.reshape(-1, 1)  # (T, 1) -- one channel
 
 
+# The plumbing tests use a small network and a short budget for speed. The accuracy tests use the defaults.
 _MODEL = Model(embedding_dim=8, hidden_dim=32, n_layers=1)
 _TRAINING = Training(n_epochs=30, learning_rate=1e-3, batch_size=128, patience=8)
 
@@ -292,8 +293,8 @@ class TestConvenienceFunctionsSweep:
 
 
 # --------------------------------------------------------------------------
-# Accuracy against exact Gaussian ground truth (slower, generous tolerance --
-# short training budget, so this checks "in the right ballpark", not precision)
+# Accuracy against exact Gaussian ground truth, with the default model and
+# training.
 # --------------------------------------------------------------------------
 class TestAccuracyAgainstOracle:
     _oracle = _SharedLatentOracle(phi=0.85, a=1.0, b=1.0, sx=0.5, sy=0.5)
@@ -303,8 +304,7 @@ class TestAccuracyAgainstOracle:
         x, _y = self._oracle.sample(4000, seed=1)
         exact = self._oracle.ais_exact(k)
         r = nmi.active_information_storage(
-            torch.from_numpy(x), k=k, model=_MODEL, training=_TRAINING,
-            show_progress=False, seed=0,
+            torch.from_numpy(x), k=k, show_progress=False, seed=0,
         )
         assert abs(r.mi_estimate - exact) < 0.5
 
@@ -317,12 +317,10 @@ class TestAccuracyAgainstOracle:
         assert ee_exact >= ais_exact - 1e-9  # exact-math sanity check on the oracle itself
 
         r_ais = nmi.active_information_storage(
-            torch.from_numpy(x), k=k, model=_MODEL, training=_TRAINING,
-            show_progress=False, seed=0,
+            torch.from_numpy(x), k=k, show_progress=False, seed=0,
         )
         r_ee = nmi.predictive_information(
-            torch.from_numpy(x), k=k, model=_MODEL, training=_TRAINING,
-            show_progress=False, seed=0,
+            torch.from_numpy(x), k=k, show_progress=False, seed=0,
         )
         assert abs(r_ais.mi_estimate - ais_exact) < 0.5
         assert abs(r_ee.mi_estimate - ee_exact) < 0.5
@@ -333,7 +331,7 @@ class TestAccuracyAgainstOracle:
         exact = self._oracle.cross_predictive_exact(k)
         r = nmi.cross_predictive_information(
             torch.from_numpy(x), torch.from_numpy(y), k=k,
-            model=_MODEL, training=_TRAINING, show_progress=False, seed=0,
+            show_progress=False, seed=0,
         )
         assert abs(r.mi_estimate - exact) < 0.5
 
@@ -342,22 +340,20 @@ class TestAccuracyAgainstOracle:
         exact = self._oracle.instantaneous_mi_exact()
         r = nmi.instantaneous_mi(
             torch.from_numpy(x), torch.from_numpy(y),
-            model=_MODEL, training=_TRAINING, show_progress=False, seed=0,
+            show_progress=False, seed=0,
         )
         assert abs(r.mi_estimate - exact) < 0.5
 
     def test_block_mi_accuracy(self):
-        # Block MI combines info across every position in the window (a small
-        # compression task, not a single past/future split), so it converges
-        # more slowly than the other four quantities at this training budget
-        # -- wider tolerance here, not a sign of a construction bug (shape/
-        # alignment correctness is already covered by TestOffsetShapes).
+        # Block MI combines information across every position in the window, a
+        # small compression task rather than one past/future split, and is the
+        # hardest of the five to learn.
         w = 3
         x, y = self._oracle.sample(4000, seed=4)
         exact = self._oracle.block_mi_exact(w)
         r = nmi.block_mi(
             torch.from_numpy(x), torch.from_numpy(y), window_size=w,
-            model=_MODEL, training=_TRAINING, show_progress=False, seed=0,
+            show_progress=False, seed=0,
         )
         assert abs(r.mi_estimate - exact) < 1.0
 

@@ -211,11 +211,10 @@ class TestInteractionInformationAccuracy:
         assert ii_exact < 0  # exact-math sanity check on the oracle itself
 
         x, y, w = oracle.sample(4000, seed=1)
-        training = Training(n_epochs=30, learning_rate=1e-3, batch_size=128, patience=8)
         r = nmi.run(
             torch.from_numpy(x), torch.from_numpy(y), mode='interaction',
             interaction=Interaction(w_data=torch.from_numpy(w)),
-            model=_MODEL, training=training, n_workers=1, seed=0, show_progress=False,
+            n_workers=1, seed=0, show_progress=False,
         )
         assert r.mi_estimate < 0.3  # not a tight match (II is a 3-term combination,
         # the same "small residual" fragility discussed in THEORY.md applies), but the

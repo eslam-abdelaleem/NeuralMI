@@ -66,16 +66,14 @@ pip install -e ".[dev]"
 <!-- quickstart-start -->
 ```python
 import neural_mi as nmi
-from neural_mi import Model, Split, Training
+from neural_mi import Split
 
 x, y = nmi.generators.generate_correlated_gaussians(
-    n_samples=1000, dim=5, mi=2.0, seed=0)
+    n_samples=2000, dim=5, mi=2.0, seed=0)
 
 result = nmi.run(
     x, y,
     mode='estimate',
-    model=Model(embedding_dim=16, hidden_dim=128),
-    training=Training(n_epochs=100, batch_size=128, patience=20),
     split=Split(mode='random'),   # for independent samples
     seed=0,
 )
@@ -85,7 +83,7 @@ print(f"exact    : 2.000 bits")
 ```
 
 ```
-estimate : 1.986 bits
+estimate : 2.078 bits
 exact    : 2.000 bits
 ```
 <!-- quickstart-end -->

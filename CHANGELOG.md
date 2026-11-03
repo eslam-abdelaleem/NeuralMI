@@ -169,6 +169,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   epoch rule then read an earlier epoch (ROADMAP C19). Stopping gives each run
   the epochs it needs. Calls with shifted windows on slowly varying data take
   longer than before.
+- The tutorials, the README quickstart, the examples in `USING.md` and the
+  tests that check an estimate against an exact value train the default model
+  with the default training. Each used to set a configuration of its own, and
+  none of them was the default, so what they showed was not what a call
+  without settings gives. Where one still sets something, it says why: the
+  tutorial 05 cap on the evaluation group that shows InfoNCE's ceiling, the
+  smaller batches of its smallest samples, the full training curve of tutorial
+  02, and ANATOMY's call that repeats the settings of its hand-written loop.
 
 ### Removed
 

@@ -229,6 +229,8 @@ print(f"library estimate       : {result.mi_estimate:.2f} bits "
       f"at epoch {result.get('best_epoch')}")
 ```
 
-The library draws its own split and initialisation and lands near the same
-value. Everything else it adds (windowing, blocked splits, repeats, ceilings,
-bias correction) wraps this loop.
+The call uses the settings of the loop above rather than the defaults, so that
+the two can be compared. The library draws its own split and initialisation,
+stops once its held-out curve has not improved for `patience` epochs, and lands
+near the same value. Everything else it adds (windowing, blocked splits,
+repeats, ceilings, bias correction) wraps this loop.

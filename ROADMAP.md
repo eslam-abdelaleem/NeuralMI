@@ -5,10 +5,10 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C13 and C16 to C18 have landed. C14 and C15 remain, in that order. C19
-came out of the measurements for C18 and is open. The investigation's scripts
-and results, with the exact-value models C15 can build on, are in `scratch/`
-until the list is done.
+C1 to C14 and C16 to C18 have landed. C15 remains. C19 came out of the
+measurements for C18 and is open. The investigation's scripts and results, with
+the exact-value models C15 can build on, are in `scratch/` until the list is
+done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
@@ -16,17 +16,6 @@ oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. C17 and C18 come from a second investigation,
 of how the terms of a difference get their rows and of window shifting. Values
 are in nats unless marked as bits.
-
-### C14. Docs, tests and tutorials on the defaults
-
-**Now.** Three configurations describe the rate quantities and none is the
-default. `USING.md` shows a GRU, the accuracy tests use a GRU (embedding 8,
-hidden 32, one layer) at learning rate 1e-3, and tutorial 03 uses an MLP with
-embedding 8 and hidden 128 at batch 256. Every run in the investigation used the
-default MLP.
-
-**Fix.** Docs, tests and tutorials use the defaults, and a deviation states its
-reason.
 
 ### C15. Tests that would have caught these
 

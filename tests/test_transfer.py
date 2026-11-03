@@ -259,13 +259,10 @@ class TestConditionalTransferEntropy:
         assert cte_exact < te_exact * 0.5  # exact-math sanity check on the oracle itself
 
         x, y, w = oracle.sample(6000, seed=2)
-        training = Training(n_epochs=30, learning_rate=1e-3, batch_size=128, patience=8)
         r_te = nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=k),
-                       model=_MODEL, training=training, n_workers=1, seed=0,
-                       show_progress=False)
+                       n_workers=1, seed=0, show_progress=False)
         r_cte = nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=k, w_data=w),
-                        model=_MODEL, training=training, n_workers=1, seed=0,
-                        show_progress=False)
+                        n_workers=1, seed=0, show_progress=False)
         # Both should be non-negative-ish (small negative noise is expected,
         # per THEORY.md's TE-is-a-difference discussion) and CTE should come
         # in below plain TE, matching the exact-math direction above.

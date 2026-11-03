@@ -95,6 +95,7 @@ class _SharedLatentOracle:
         return x.reshape(-1, 1), y.reshape(-1, 1)  # (T, 1) -- one channel
 
 
+# The plumbing tests use a small GRU and a short budget for speed. The accuracy tests use the defaults.
 _DB_MODEL = Model(embedding_model='gru', embedding_dim=8, hidden_dim=32, n_layers=1)
 _TRAINING = Training(n_epochs=40, learning_rate=1e-3, batch_size=128, patience=10)
 _FAST = dict(model=Model(embedding_dim=8, hidden_dim=16, n_layers=1), training=Training(n_epochs=2, patience=1),
@@ -307,10 +308,8 @@ class TestQuantitiesShapesAndSweep:
 
 
 # --------------------------------------------------------------------------
-# Accuracy against exact Gaussian ground truth (slower, generous tolerance --
-# short training budget, so this checks "in the right ballpark", not
-# precision; the harness scripts already recorded high-fidelity numbers with
-# a much larger training budget outside this test suite).
+# Accuracy against exact Gaussian ground truth, with the default model and
+# training.
 # --------------------------------------------------------------------------
 class TestAccuracyAgainstOracle:
     _oracle = _SharedLatentOracle(phi=0.85, a=1.0, b=1.0, sx=0.5, sy=0.5)
@@ -321,7 +320,7 @@ class TestAccuracyAgainstOracle:
         x, y = self._oracle.sample(6000, seed=10)
         exact = self._oracle.mi_rate_exact(h, W)
         r = nmi.mi_rate(torch.from_numpy(x), torch.from_numpy(y), h=h, half_width=W,
-                        model=_DB_MODEL, training=_TRAINING, show_progress=False, seed=0)
+                        show_progress=False, seed=0)
         assert abs(r.mi_estimate - exact) < 0.5
 
     @pytest.mark.slow
@@ -330,7 +329,7 @@ class TestAccuracyAgainstOracle:
         x, y = self._oracle.sample(6000, seed=11)
         exact = self._oracle.inst_exchange_exact(k)
         r = nmi.instantaneous_exchange(torch.from_numpy(x), torch.from_numpy(y), k=k,
-                                       model=_DB_MODEL, training=_TRAINING, show_progress=False, seed=0)
+                                       show_progress=False, seed=0)
         assert abs(r.mi_estimate - exact) < 0.5
 
     @pytest.mark.slow
@@ -339,7 +338,7 @@ class TestAccuracyAgainstOracle:
         x, y = self._oracle.sample(6000, seed=12)
         exact = self._oracle.dir_info_rate_exact(k)
         r = nmi.directed_information_rate(torch.from_numpy(x), torch.from_numpy(y), k=k,
-                                          model=_DB_MODEL, training=_TRAINING, show_progress=False, seed=0)
+                                          show_progress=False, seed=0)
         assert abs(r.mi_estimate - exact) < 0.5
 
     def test_dir_info_rate_identity_cross_check(self):

@@ -59,7 +59,9 @@ Every setting belongs to a config object: `Processing` for how raw data are
 read, `Model` for the networks, `Training` for the optimisation loop, `Split`
 for the train and test sets, `Estimator` for the bound, `Output` for units and
 extras, and one config per analysis mode. Every config is optional and can be
-replaced by a plain `dict` with the same keys.
+replaced by a plain `dict` with the same keys. The values below only show where
+each setting goes. The defaults are what the library is tested and documented
+with, and a starting point for any data.
 
 ```python
 from neural_mi import Model, Training, Split, Output
@@ -228,7 +230,7 @@ arrays, call one of these modes and return its `Results`.
 ### `estimate`
 
 ```python
-result = nmi.run(x, y, mode='estimate', training=Training(n_epochs=100))
+result = nmi.run(x, y, mode='estimate')
 result.mi_estimate
 result.plot()          # held-out MI against epoch, with the chosen epoch marked
 ```
@@ -1083,15 +1085,12 @@ means. Gaps stay visible through the coverage warnings. Keep
 data when given none.
 
 `mi_rate`, `instantaneous_exchange` and `directed_information_rate` condition
-on a group with a window length of its own, which reaches the joint term beside
-the other group as a pair ([the encoder of a difference](#the-encoder-of-a-difference)).
+on a group with a window length of its own. Their joint term reads the two
+groups as a pair, as every joint term does
+([the encoder of a difference](#the-encoder-of-a-difference)).
 
 ```python
-from neural_mi import Model, Training
-
-model = Model(embedding_model='gru', embedding_dim=16)
-r = nmi.mi_rate(x, y, h=[0, 5, 10, 20], half_width=20, model=model,
-                training=Training(n_epochs=100), n_workers=4)
+r = nmi.mi_rate(x, y, h=[0, 5, 10, 20], half_width=20, n_workers=4)
 ```
 
 Too narrow a window on X (`half_width`) leaves signal out and reads low. Too

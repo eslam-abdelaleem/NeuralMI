@@ -34,6 +34,11 @@ wall time. Deselecting the slow tests shortens a run substantially and still
 exercises every module. `pytest --collect-only -m slow` lists those tests and
 `--durations=20` ranks the slowest ones.
 
+A test that checks an estimate against an exact value uses the default model
+and training, the configuration the documentation describes. A test that checks
+plumbing (shapes, routing, refusals, messages) uses a small network and a few
+epochs for speed.
+
 CI runs the suite with the latest release of every dependency on Python 3.11 and
 3.12. A second job pins every dependency at the floor stated in `pyproject.toml`
 and runs the suite on Python 3.11. A change that needs a newer release fails
