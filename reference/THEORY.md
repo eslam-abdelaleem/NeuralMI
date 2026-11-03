@@ -483,8 +483,10 @@ terms must learn what the conditioning set $C$ says about $Y$, and the joint ter
 must also learn what the rest of X, $A$, adds. Every term of a difference
 therefore encodes X with one branch per part of X under one small MLP head
 (`BranchedEmbedding`): branches for $A$ and $C$ in the joint term, a branch for
-$C$ alone in the conditioning term, each branch the call's encoder. $C$ takes the
-same path, branch then head, in both terms. Each term keeps its own weights,
+$C$ alone in the conditioning term, each branch the call's encoder. The joint
+term reads X as the pair $(A, C)$, so each branch sees its own part, with that
+part's channels and window length. $C$ takes the same path, branch then head, in
+both terms. Each term keeps its own weights,
 training and epoch, read from its own held-out curve. The terms share their
 architecture and their rows. Sharing the encoder of $C$ between the terms or
 training them on one loss did not improve on this in a pilot.

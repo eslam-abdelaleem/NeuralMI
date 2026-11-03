@@ -17,8 +17,8 @@ the mode each one routes to:
   estimates: :func:`transfer_entropy` and
   :func:`conditional_transfer_entropy` (``mode='transfer'``), and
   :func:`mi_rate`, :func:`instantaneous_exchange`,
-  :func:`directed_information_rate` (``mode='conditional'`` with
-  ``align='dual_branch'``, since their groups have different window lengths).
+  :func:`directed_information_rate` (``mode='conditional'``, whose joint term
+  reads the pair (A, C), each group at its own window length).
 * **A three-estimate combination**: :func:`interaction_information`
   (``mode='interaction'``).
 
@@ -123,7 +123,7 @@ def _call(kind: str, a, b, c, *, run_kwargs: Dict[str, Any], rigorous, n_workers
                    **common)
     if kind == 'conditional':
         return run(a, b, mode='conditional',
-                   conditional=Conditional(w_data=c, align='dual_branch', **fit), **common)
+                   conditional=Conditional(w_data=c, **fit), **common)
     if kind == 'interaction':
         return run(a, b, mode='interaction', interaction=Interaction(w_data=c, **fit), **common)
     raise ValueError(f"Unknown quantity kind {kind!r}.")
@@ -752,9 +752,8 @@ def interaction_information(x_data, y_data, w_data, rigorous=False, n_workers: i
 # MI rate, instantaneous exchange, directed information rate
 # ---------------------------------------------------------------------------
 #
-# A and C have different window lengths for all three, beyond the small
-# mismatch mode='conditional' trims, so each routes through
-# align='dual_branch': the joint term's X is the pair (A, C).
+# A and C have different window lengths for all three. The joint term's X is
+# the pair (A, C), each group at its own length, as for every difference.
 
 def mi_rate(
     x_data, y_data, h: Union[int, list], half_width: Union[int, list], stride: int = 1,
@@ -766,8 +765,8 @@ def mi_rate(
     :math:`X_{all}` is a symmetric two-sided window of half-width
     ``half_width`` around the same time index as :math:`Y_0`.
     :math:`X_{all}` and :math:`Y_{past}(h)` generally differ in window length,
-    so this routes through ``align='dual_branch'``. At ``h=0`` there is no
-    conditioning and this routing does not apply. See ``THEORY.md`` for why the rate converges to its
+    and the joint term reads them as a pair. At ``h=0`` there is no
+    conditioning and one network estimates the quantity. See ``THEORY.md`` for why the rate converges to its
     true value only once ``h`` covers Y's own dependence structure.
 
     Parameters
@@ -837,8 +836,8 @@ def instantaneous_exchange(
     How much X and Y share at the same instant, beyond what their shared
     past already predicts. :math:`A=X_0` (window length 1) and
     :math:`C=[X_{past}(k) \Vert Y_{past}(k)]` (window length k) differ in
-    length whenever ``k > 0``, so this routes through ``align='dual_branch'``.
-    At ``k=0`` there is no conditioning and this routing does not apply.
+    length whenever ``k > 0``, and the joint term reads them as a pair. At
+    ``k=0`` there is no conditioning and one network estimates the quantity.
 
     Parameters
     ----------
@@ -877,10 +876,8 @@ def directed_information_rate(
     oracle, but going through it would carry TE's small, high-variance residual
     into this estimate (see ``THEORY.md``). :math:`A=[X_{past}(k) \Vert X_0]`
     (window length k+1) and :math:`C=Y_{past}(k)` (window length k) differ by
-    one position whenever ``k > 0``. ``mode='conditional'``'s trim to a shared
-    start would drop A's last position, :math:`X_0`, and turn this into plain
-    transfer entropy. To keep :math:`X_0`, this routes through
-    ``align='dual_branch'`` for ``k > 0``.
+    one position whenever ``k > 0``, and the joint term reads them as a pair,
+    so :math:`X_0` is kept.
 
     Parameters
     ----------
@@ -922,8 +919,8 @@ def offset_quantity(data: Dict[str, Any], spec: Dict[str, Any], stride: int = 1,
     :func:`neural_mi.utils.build_offset_arrays`, and their geometry reaches the
     split's leak checks, the rigorous chunks and the permutation blocks, which
     rows built by hand and passed to :func:`neural_mi.run` do not carry. A spec
-    with a C group runs ``mode='conditional'`` with ``align='dual_branch'``, a
-    difference of two networks, and one without is one MI estimate.
+    with a C group runs ``mode='conditional'``, a difference of two networks
+    whose joint term reads the pair (A, C), and one without is one MI estimate.
 
     Parameters
     ----------

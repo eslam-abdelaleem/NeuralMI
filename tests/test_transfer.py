@@ -212,23 +212,28 @@ class TestConditionalTransferEntropy:
                                   show_progress=False)
         assert r_default.mi_estimate == r_explicit_none.mi_estimate
 
-    def test_w_past_matches_x_past_construction(self):
+    def test_w_past_joins_the_conditioning_set_of_the_pair(self):
+        """A is the source's past alone and C the target's past followed by W's, each part on the same
+        window of rows, so the joint term reads the pair (A, C) and the conditioning term C."""
         x = np.random.randn(N, 2)
         y = np.random.randn(N, 3)
         w = np.random.randn(N, 1)
-        joint, _, conditioning, _ = build_rows({'x': x, 'y': y, 'w': w},
-                                               te_spec(H, conditioned_on_w=True))
-        assert joint.shape == (N - H, 2 + 3 + 1, H)
+        source, _, conditioning, _ = build_rows({'x': x, 'y': y, 'w': w},
+                                                te_spec(H, conditioned_on_w=True))
+        assert source.shape == (N - H, 2, H)
         assert conditioning.shape == (N - H, 3 + 1, H)
-        assert torch.equal(joint[:, 2:], conditioning)   # the conditioning set is the joint's last channels
+        row = 7                                           # its past is the samples [row, row + H)
+        as_rows = lambda a: torch.as_tensor(a[row:row + H].T, dtype=torch.float32)
+        assert torch.equal(source[row], as_rows(x))
+        assert torch.equal(conditioning[row], torch.cat([as_rows(y), as_rows(w)]))
 
     def test_w_data_joins_the_conditioning_set(self, monkeypatch):
-        """W's past joins the conditioning set: the joint term splits off Y's and W's channels."""
+        """W's past joins the conditioning set: the joint term's pair is (X's past, Y's and W's past)."""
         from neural_mi.analysis import task as task_module
-        build, conditions = task_module.build_critic, []
+        build, channels = task_module.build_critic, []
 
         def spy(critic_type, params, custom_cls=None):
-            conditions.append(params.get('_condition'))
+            channels.append(params.get('n_channels_x'))
             return build(critic_type, params, custom_cls)
         monkeypatch.setattr(task_module, 'build_critic', spy)
         oracle = _SharedLatentTripleOracle()
@@ -236,8 +241,8 @@ class TestConditionalTransferEntropy:
         for w_data in (None, w):
             nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=5, w_data=w_data),
                     model=_MODEL, training=_TRAINING, n_workers=1, seed=0, show_progress=False)
-        split = sorted({c for c in conditions if c is not None})
-        assert split == [('last', y.shape[1]), ('last', y.shape[1] + w.shape[1])]
+        pairs = sorted({c for c in channels if isinstance(c, tuple)})
+        assert pairs == [(x.shape[1], y.shape[1]), (x.shape[1], y.shape[1] + w.shape[1])]
 
     @pytest.mark.slow
     def test_conditional_te_explains_away_shared_latent(self):

@@ -18,7 +18,7 @@ import tempfile
 
 from neural_mi.models.embeddings import (
     DeepSets,
-    MLP, VariationalWrapper, ChannelScaling, InputScaling,
+    MLP, VariationalWrapper, InputScaling,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
     PretrainedBackboneEmbedding, LRUEmbedding, BranchedEmbedding,
 )
@@ -214,8 +214,9 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
     ValueError
         If a group mixes processes whose offset counts differ, since the
         result would have no single window length. Give each process in that
-        group the same number of offsets, or estimate it as a dual-branch
-        conditional instead.
+        group the same number of offsets. Groups may differ from one another:
+        the joint term reads A and C as a pair, each part with its own window
+        length.
 
     Examples
     --------
@@ -233,8 +234,8 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
 
     With ``C`` empty the pair goes to ``run(mode='estimate')``. With ``C``
     populated it goes to ``run(mode='conditional', conditional=Conditional(
-    w_data=c, align='dual_branch'))``, the dual branch being needed because A,
-    B and C generally have different window lengths.
+    w_data=c))``, whose joint term reads the pair (A, C): the groups generally
+    have different window lengths, and each part keeps its own.
     """
     if 'A' not in spec or 'B' not in spec:
         raise ValueError(f"spec needs both 'A' and 'B' keys, got {sorted(spec)}.")
@@ -304,9 +305,9 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
             counts = {v: len(o) for v, o in by_process.items()}
             raise ValueError(
                 f"Group {group_name!r} gives different offset counts per process "
-                f"({counts}) and has no single window length. Give each process the "
-                f"same number of offsets or split the group across the dual-branch "
-                f"conditional path."
+                f"({counts}) and has no single window length. Give each process in the "
+                f"group the same number of offsets. Groups may differ from one another: "
+                f"the joint term reads A and C as a pair, each part with its own window length."
             )
         out[group_name] = torch.cat(blocks, dim=1)
 
@@ -524,7 +525,7 @@ ARCHITECTURE_KEYS = (
     'custom_critic', 'custom_embedding_cls', 'custom_embedding_cls_y', 'hidden_dim_head', 'n_layers_head',
     'use_variational', 'shared_encoder', 'max_n_batches',
     'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
-    '_difference_term', '_condition', 'processor_params_x', 'processor_params_y', 'input_scaling',
+    '_difference_term', 'processor_params_x', 'processor_params_y', 'input_scaling',
 ) + MODEL_SETTINGS
 
 
@@ -588,7 +589,16 @@ def _custom_critic(recipe, params: Dict[str, Any]) -> nn.Module:
             f"custom_critic {getattr(recipe, '__name__', recipe)!r} requires {required}, which the library "
             f"does not pass. It can name any of {', '.join(CRITIC_SIZES + CRITIC_SETTINGS)}."
         )
-    critic = recipe(**kwargs)
+    try:
+        critic = recipe(**kwargs)
+    except Exception as error:
+        if isinstance(params.get('n_channels_x'), tuple):
+            error.add_note(
+                "This is the joint term of a difference, whose X is the pair (rest of X, conditioning set): "
+                "the critic receives X as a tuple of two tensors, and input_dim_x, n_channels_x and "
+                "window_size_x are pairs of the two parts' sizes."
+            )
+        raise
     if not isinstance(critic, nn.Module):
         raise TypeError(f"custom_critic must build a torch.nn.Module and built a {type(critic).__name__!r}.")
     return critic
@@ -822,8 +832,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             params = embedding_params.get(key) or {}
             kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
 
-    net_x_base = (_branched(Model_x, input_dim_x, model_kwargs, embedding_params['n_channels_x'],
-                            embedding_params.get('_condition'), head_settings)
+    net_x_base = (BranchedEmbedding(input_dim_x, branch_cls=Model_x, head=head_settings, **model_kwargs)
                   if difference_term else Model_x(input_dim_x, **model_kwargs))
     net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
 
@@ -884,7 +893,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     elif critic_type == 'concat':
         # The concat critic scores the flattened pair and builds no encoder, so
         # its input is the flattened sizes whatever embedding_model names.
-        concat_input_dim = embedding_params['input_dim_x'] + embedding_params['input_dim_y']
+        # A pair X (the joint term of a difference) enters flattened part by part.
+        _flat_x = embedding_params['input_dim_x']
+        concat_input_dim = (sum(_flat_x) if isinstance(_flat_x, tuple) else _flat_x) + embedding_params['input_dim_y']
         concat_net = MLP(input_dim=concat_input_dim, hidden_dim=hidden_dim, embedding_dim=1, n_layers=n_layers,
                          **head_settings)
         if use_variational:
@@ -893,28 +904,13 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             # regularises the scores. There is no per-variable embedding here
             # for it to compress.
             concat_net = VariationalWrapper(concat_net, 1, bias=bias_x)
-        scaling = ((ChannelScaling(embedding_params['n_channels_x']), ChannelScaling(embedding_params['n_channels_y']))
+        # Each side's channels scaled before the pair is formed, part by part for a pair X.
+        scaling = ((InputScaling(nn.Identity(), embedding_params['n_channels_x']),
+                    InputScaling(nn.Identity(), embedding_params['n_channels_y']))
                    if input_scaling == 'standard' else None)
         return ConcatCritic(embedding_net=concat_net, scaling=scaling, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
-
-
-def _branched(branch_cls, input_dim, kwargs, n_channels, condition, head) -> BranchedEmbedding:
-    """The X encoder of a term of a difference, with ``branch_cls`` built as the call's X encoder for each part.
-
-    A joint term's X arrives as a pair with its two sizes, or as one tensor
-    split by ``condition = ('first' | 'last', n)``: its first or last ``n``
-    channels are the conditioning set, in a size convention of ``input_dim``
-    per ``n_channels`` channels, at one window length. Any other term's X is
-    one part. ``head`` holds the head's MLP settings.
-    """
-    if condition is not None:
-        per_channel, n = input_dim // n_channels, condition[1]
-        input_dim = ((n_channels - n) * per_channel, n * per_channel)
-        if 'window_size' in kwargs:
-            kwargs = {**kwargs, 'window_size': (kwargs['window_size'],) * 2}
-    return BranchedEmbedding(input_dim, branch_cls=branch_cls, condition=condition, head=head, **kwargs)
 
 
 _OPTIMIZERS = {

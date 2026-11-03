@@ -183,7 +183,7 @@ class RowPhaseShifter:
     The rows of every phase are cut to the count every phase has, so every
     train, test and evaluation index stays valid from shift to shift, and a
     shift only changes which steps the rows start on. ``x`` may be a pair of
-    row arrays (a dual-branch X), each cut the same way.
+    row arrays (the joint term's X of a difference), each cut the same way.
     """
 
     def __init__(self, x, y, phases: int):
@@ -341,43 +341,3 @@ def stream_period(proc_params, time_vector):
     if period <= 0 or not np.all(np.abs(steps - period) <= 1e-6 * period):
         return None
     return period
-
-
-def categorical_to_channel_layout(windows, n_categories, encoding):
-    """Put an encoded categorical stream on the ``(N, C, W)`` layout X uses.
-
-    A categorical encoder spends the trailing axis on categories, not on time:
-    ``majority_vote`` and ``probability`` collapse the window to one slot per
-    category, and ``full_trajectory`` interleaves them as
-    ``timepoint * n_categories + category``. Either way the result cannot be
-    concatenated onto a continuous X along the channel axis until the two axes
-    mean the same thing again.
-
-    Returns ``(N, C*n_categories, W)``, with ``W = 1`` for the collapsing
-    encodings; the caller broadcasts that up to X's window width. This is the
-    same re-layout the eagerly-windowed path applies, shared so the shifted and
-    unshifted routes agree on it instead of each having their own.
-    """
-    n, c, last = windows.shape
-    if encoding in ('majority_vote', 'probability'):
-        return windows.reshape(n, c * n_categories, 1)
-    if encoding == 'full_trajectory':
-        w = last // n_categories
-        return windows.reshape(n, c, w, n_categories).permute(0, 1, 3, 2).reshape(
-            n, c * n_categories, w)
-    raise ValueError(
-        f"Unknown categorical encoding {encoding!r}, cannot lay it out for "
-        f"concatenation onto X."
-    )
-
-
-def align_trailing_axis(windows, width):
-    """Broadcast a collapsed trailing axis up to ``width`` so a concat works."""
-    if windows.shape[-1] == width:
-        return windows
-    if windows.shape[-1] == 1:
-        return windows.expand(-1, -1, width)
-    raise ValueError(
-        f"Cannot align a trailing axis of {windows.shape[-1]} to {width}: only a "
-        f"collapsed axis of 1 broadcasts."
-    )

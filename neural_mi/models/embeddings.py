@@ -1171,8 +1171,9 @@ class VariationalWrapper(nn.Module):
 
         Parameters
         ----------
-        x : torch.Tensor
-            Input tensor accepted by ``base_encoder`` (any shape).
+        x : torch.Tensor or tuple of torch.Tensor
+            Input accepted by ``base_encoder``: any shape, or the pair a
+            difference's joint term reads.
 
         Returns
         -------
@@ -1183,14 +1184,6 @@ class VariationalWrapper(nn.Module):
             Scalar KL divergence ``KL(N(μ, σ²) ‖ N(0, I))`` normalised by
             batch size.  Returns ``0.0`` at evaluation time.
         """
-        if isinstance(x, (tuple, list)):
-            raise NotImplementedError(
-                "use_variational=True is not supported with a compound (tuple) "
-                "embedding input such as BranchedEmbedding in mode='conditional' "
-                "with align='dual_branch'. The variational wrapper reads "
-                "x.shape[0] from the input itself. A tuple input has no shape. "
-                "Use use_variational=False for this path."
-            )
         h = self.base_encoder(x)                     # (batch, embedding_dim)
         mu = self.mu_head(h)                          # (batch, embedding_dim)
         log_var = self.log_var_head(h).clamp(-10.0, 4.0)
@@ -1204,17 +1197,8 @@ class VariationalWrapper(nn.Module):
 
         # KL divergence normalised by batch size for training stability
         kl_loss = -0.5 * torch.sum(1.0 + log_var - mu.pow(2) - log_var.exp())
-        kl_loss = kl_loss / x.shape[0]
+        kl_loss = kl_loss / h.shape[0]
         return z, kl_loss
-
-
-def conditioning_parts(x, condition=None):
-    """The joint term's X as ``(rest, conditioning set)``: the pair as given, or one array whose first or last
-    ``n`` channels are the conditioning set, ``condition = ('first' | 'last', n)``."""
-    if condition is None:
-        return tuple(x)
-    where, n = condition
-    return (x[:, :-n], x[:, -n:]) if where == 'last' else (x[:, n:], x[:, :n])
 
 
 class BranchedEmbedding(BaseEmbedding):
@@ -1230,9 +1214,7 @@ class BranchedEmbedding(BaseEmbedding):
     builds it for every term of a difference, with the call's X encoder (the built-in ``embedding_model`` or
     ``custom_embedding_cls``) as ``branch_cls``.
 
-    A joint X arrives as one tensor whose first or last ``n`` channels are ``C`` (``condition``), or as the pair
-    ``(a, c)`` when ``C`` has a window length of its own (MI rate, instantaneous exchange, directed information
-    rate, ``Conditional(align='dual_branch')``).
+    A joint X arrives as the pair ``(a, c)``, each part at its own window length and channel count.
 
     Parameters
     ----------
@@ -1244,8 +1226,6 @@ class BranchedEmbedding(BaseEmbedding):
         The encoder class of every branch.
     window_size : int or tuple of (int, int), optional
         The parts' window lengths, for a ``branch_cls`` that takes ``window_size``.
-    condition : tuple of (str, int), optional
-        ``('first' | 'last', n)`` for a joint X passed as one tensor.
     head : dict, optional
         The head's :class:`MLP` settings (``use_spectral_norm``, ``dropout``,
         ``norm_layer``, ``bias``), whatever the branches' class.
@@ -1255,9 +1235,8 @@ class BranchedEmbedding(BaseEmbedding):
     input_style = 'channels'
 
     def __init__(self, input_dim, hidden_dim, embedding_dim, n_layers, branch_cls,
-                 window_size=None, condition=None, head: Optional[Dict[str, Any]] = None, **branch_kwargs):
+                 window_size=None, head: Optional[Dict[str, Any]] = None, **branch_kwargs):
         super().__init__()
-        self.condition = condition
         dims = input_dim if isinstance(input_dim, tuple) else (input_dim,)
         windows = window_size if isinstance(window_size, tuple) else (window_size,) * len(dims)
         self.branches = nn.ModuleList(
@@ -1267,5 +1246,5 @@ class BranchedEmbedding(BaseEmbedding):
         self.head = MLP(len(dims) * embedding_dim, embedding_dim, embedding_dim, 1, **(head or {}))
 
     def forward(self, x) -> torch.Tensor:
-        parts = conditioning_parts(x, self.condition) if len(self.branches) == 2 else (x,)
+        parts = x if isinstance(x, (tuple, list)) else (x,)
         return self.head(torch.cat([branch(part) for branch, part in zip(self.branches, parts)], dim=-1))

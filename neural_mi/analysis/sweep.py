@@ -89,15 +89,10 @@ class ParameterSweep:
                 **kwargs
             })
         elif isinstance(x_data, tuple) and isinstance(x_data[0], torch.Tensor) and x_data[0].ndim == 3:
-            # Compound "X-role" data (BranchedEmbedding's two-tensor input,
-            # mode='conditional'(align='dual_branch')) -- dims become a
-            # matching 2-tuple instead of a single int, exactly what
-            # BranchedEmbedding's constructor expects as `input_dim`. Only
-            # when already windowed (3-D): a raw (2-D) tuple -- shift_windows
-            # reachability for dual_branch, X and C not yet windowed -- has
-            # no `.shape[2]` to read yet either, and falls through to the
-            # `else` branch below, dims inferred later by task.py once
-            # actually windowed, same as a raw single tensor already does.
+            # A pair X (BranchedEmbedding's two-tensor input, the joint term
+            # of a difference) -- dims become a matching 2-tuple instead of a
+            # single int, exactly what BranchedEmbedding's constructor expects
+            # as `input_dim`.
             a_data, c_data = x_data
             self.base_params.update({
                 'input_dim_x': (a_data.shape[1] * a_data.shape[2], c_data.shape[1] * c_data.shape[2]),
@@ -586,7 +581,6 @@ def _joint_marginal_difference(
     quantity_name: str,
     joint_label: str, marginal_label: str,
     joint_key: str, marginal_key: str,
-    condition_at: Optional[str] = None,
     reported: bool = True,
     raw_key: str = 'mi_raw',
 ) -> tuple:
@@ -616,15 +610,6 @@ def _joint_marginal_difference(
     joint_key, marginal_key : str
         The caller's result-dict key names for the two component MI values,
         named in the negative-value warning so a user knows where to find them.
-    condition_at : {'first', 'last'}, optional
-        Where the marginal term's X sits among the joint term's channels, when
-        the caller joined them into one tensor. The conditioning term runs
-        first, and the joint term carries ``_condition = (condition_at, n)``,
-        ``n`` the channel count the conditioning term's network was built on.
-        Its X encoder then reads that block on a branch of its own
-        (``BranchedEmbedding``), and a nonparametric estimator conditions on
-        it. ``None`` for a joint X that arrives as the pair (rest, conditioning
-        set), which carries the split itself.
     reported : bool, optional
         ``True`` when the difference is the quantity the caller reads: it is
         checked with :func:`warn_combination` and returned as 0 when it comes
@@ -652,9 +637,6 @@ def _joint_marginal_difference(
 
     logger.info(f"{quantity_name}: estimating I({joint_label})...")
     joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True}
-    if condition_at is not None:
-        n = next(r['n_channels_x'] for r in results_marginal if 'n_channels_x' in r)
-        joint_params = {**joint_params, '_condition': (condition_at, n)}
     sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
     results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 

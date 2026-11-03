@@ -121,11 +121,11 @@ class TestThroughRun:
         assert ii.mi_estimate == pytest.approx((ksg_cmi(w, y, x, seed=0) - ksg_mi(w, y, seed=0)) / LN2, abs=1e-12)
 
     def test_a_pair_of_different_lengths(self):
-        """align='dual_branch' hands the joint term the pair (X, C): the conditional estimate given C."""
+        """The joint term reads the pair (X, C), each part with its own window: the conditional estimate given C."""
         rng = np.random.default_rng(0)
         a, c = rng.standard_normal((1500, 2, 3)), rng.standard_normal((1500, 1, 5))
         y = a[:, :1, :1] + c[:, :, :1] + rng.standard_normal((1500, 1, 1))
-        r = nmi.run(a, y, mode='conditional', conditional=nmi.Conditional(w_data=c, align='dual_branch'),
+        r = nmi.run(a, y, mode='conditional', conditional=nmi.Conditional(w_data=c),
                     estimator='ksg', seed=0, **QUIET)
         assert r.mi_estimate == pytest.approx(ksg_cmi(a, y, c, seed=0) / LN2, abs=1e-12)
 

@@ -28,16 +28,16 @@ def te_spec(history_window: int, prediction_horizon: int = 1, *, source: str = '
     """The offsets of transfer entropy from ``source`` to ``target``, as a spec for
     :func:`neural_mi.analysis.offsets.build_rows`.
 
-    A is the joint past, the source's ``history_window`` steps followed by the
-    target's (and W's when ``conditioned_on_w``), so the conditioning set is its
-    last channels. B is the target's next ``prediction_horizon`` steps. C is the
-    conditioning past alone, the marginal term's X.
+    A is the source's ``history_window`` steps, the rest of the joint term's X.
+    B is the target's next ``prediction_horizon`` steps. C is the conditioning
+    past, the target's ``history_window`` steps (and W's when
+    ``conditioned_on_w``): the marginal term's X, and beside A the joint term's
+    pair.
     """
     past = range(-history_window, 0)
-    conditioning = [(target, s) for s in past] + ([('w', s) for s in past] if conditioned_on_w else [])
-    return {'A': [(source, s) for s in past] + conditioning,
+    return {'A': [(source, s) for s in past],
             'B': [(target, s) for s in range(prediction_horizon)],
-            'C': conditioning}
+            'C': [(target, s) for s in past] + ([('w', s) for s in past] if conditioned_on_w else [])}
 
 
 def run_transfer_entropy(
@@ -155,19 +155,19 @@ def run_transfer_entropy(
     # which each task keeps one in every stride at a phase drawn each epoch.
     phases = stride if stride > 1 and base_params.get('shift_windows') else 1
     spec = te_spec(history_window, prediction_horizon, conditioned_on_w=with_w)
-    xy_past, y_future, y_past_cond, _ = build_rows(series, spec, stride=1 if phases > 1 else stride)
+    x_past, y_future, y_past_cond, _ = build_rows(series, spec, stride=1 if phases > 1 else stride)
     record_rows(base_params, spec_geometry(spec, stride))
     if phases > 1:
         base_params[PHASES_KEY] = phases
-    n_samples = kept_rows(xy_past.shape[0], base_params)
+    n_samples = kept_rows(x_past.shape[0], base_params)
     logger.info(f"Transfer Entropy: {n_samples} valid samples.")
 
     te, mi_joint, mi_marginal, results_joint, results_marginal, _per_run = _joint_marginal_difference(
-        xy_past, y_future, y_past_cond, y_future,
+        (x_past, y_past_cond), y_future, y_past_cond, y_future,
         base_params, sweep_grid, n_workers,
         quantity_name="TE(X→Y)",
         joint_label="xy_past;y_future", marginal_label="y_past;y_future",
-        joint_key="i_xypast_yfuture", marginal_key="i_ypast_yfuture", condition_at='last',
+        joint_key="i_xypast_yfuture", marginal_key="i_ypast_yfuture",
     )
 
     result = {
@@ -186,17 +186,16 @@ def run_transfer_entropy(
     if bidirectional:
         logger.info("Transfer Entropy (bidirectional): estimating TE(Y→X)...")
         # The same offsets with the roles of X and Y swapped, on the same rows.
-        yx_past, x_future, x_past_cond, _ = build_rows(
+        y_past, x_future, x_past_cond, _ = build_rows(
             series, te_spec(history_window, prediction_horizon, source='y', target='x',
                             conditioned_on_w=with_w), stride=1 if phases > 1 else stride)
 
         te_yx, mi_joint_yx, mi_marginal_yx, results_joint_yx, results_marginal_yx, _per_run_yx = _joint_marginal_difference(
-            yx_past, x_future, x_past_cond, x_future,
+            (y_past, x_past_cond), x_future, x_past_cond, x_future,
             base_params, sweep_grid, n_workers,
             quantity_name="TE(Y→X)",
             joint_label="yx_past;x_future", marginal_label="x_past;x_future",
             joint_key="i_yxpast_xfuture", marginal_key="i_xpast_xfuture", raw_key='te_yx_raw',
-            condition_at='last',
         )
 
         # Directionality index: +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric

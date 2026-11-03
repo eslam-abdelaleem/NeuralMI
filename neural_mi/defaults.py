@@ -235,7 +235,6 @@ MODE_KWARGS_SCHEMA = {
     },
     'conditional': {
         'n_workers': {'type': int, 'default': 1},
-        'align': {'type': (str, type(None)), 'default': None},
         'rigorous': {'type': bool, 'default': False},
         'gamma_range': {'type': (range, list, type(None)), 'default': None},
         'curvature_t_threshold': {'type': float, 'default': 2.0},

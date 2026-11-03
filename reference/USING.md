@@ -403,13 +403,12 @@ every quantity combined from separately trained networks
 relative error. A factor of 10 or more warns because a difference that small
 should be read with its components ([THEORY.md](THEORY.md#amplification)).
 
-`Conditional(align='dual_branch')` passes X and W to the joint term as a pair.
-The named quantities that need it set `align` themselves
-([the named quantities](#the-named-quantities)), and there the two parts span
-different stretches of time. A W that a processor windows shares the grid of X
-and Y, with their window and step ([One grid for every stream](#one-grid-for-every-stream)).
-A spike window holds spike slots and a continuous one samples, so a spike X
-and a continuous W, or the other way round, need the pair.
+The joint term reads X and W as a pair, each part on a branch of its own
+([The encoder of a difference](#the-encoder-of-a-difference)), so X and W need
+not share a channel count, a window length or a modality. A spike X beside a
+continuous W works, and so do rows of W built before the call with a window
+length of their own. A W that a processor windows shares the grid of X and Y,
+with their window and step ([One grid for every stream](#one-grid-for-every-stream)).
 
 ### `interaction`
 
@@ -1044,9 +1043,9 @@ defines each quantity and the identities between them.
 | `transfer_entropy(x, y, history_window)` | $I(Y_0; X_{past} \mid Y_{past})$ | `transfer` |
 | `conditional_transfer_entropy(x, y, w, history_window)` | $I(Y_0; X_{past} \mid Y_{past}, W_{past})$ | `transfer` |
 | `interaction_information(x, y, w)` | $I(X,W;Y) - I(X;Y) - I(W;Y)$ | `interaction` |
-| `mi_rate(x, y, h, half_width)` | $I(X_{all}(L); Y_0 \mid Y_{past}(h))$ | `conditional` with `align='dual_branch'` |
-| `instantaneous_exchange(x, y, k)` | $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$ | `conditional` with `align='dual_branch'` |
-| `directed_information_rate(x, y, k)` | $I(X_{past}(k), X_0; Y_0 \mid Y_{past}(k))$ | `conditional` with `align='dual_branch'` |
+| `mi_rate(x, y, h, half_width)` | $I(X_{all}(L); Y_0 \mid Y_{past}(h))$ | `conditional` |
+| `instantaneous_exchange(x, y, k)` | $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$ | `conditional` |
+| `directed_information_rate(x, y, k)` | $I(X_{past}(k), X_0; Y_0 \mid Y_{past}(k))$ | `conditional` |
 
 $X_{all}(L)$ is a window of $2L+1$ steps centred on $Y_0$ whose $L$ is set by
 `half_width`.
@@ -1163,8 +1162,8 @@ r = nmi.offset_quantity({'x': x, 'y': y}, spec, stride=1)
 
 Offsets count rows with negative offsets in the past and zero at the present.
 Every group is cut to the range over which all its offsets exist. A spec with a
-`C` group runs `mode='conditional'` with `align='dual_branch'`, and one without
-is one MI estimate. `result.params['spec']` records the spec. The rows carry
+`C` group runs `mode='conditional'`, whose joint term reads the pair (A, C),
+and one without is one MI estimate. `result.params['spec']` records the spec. The rows carry
 their geometry, so the split's leak checks, the rigorous chunks and the
 permutation blocks treat them as the rows of a named quantity.
 `neural_mi.utils.build_offset_arrays(data, spec, stride=...)` returns the arrays
@@ -1286,10 +1285,14 @@ The conditioning set then takes the same path, branch then head, in every term
 that sees it, so the terms learn what they share the same way and their errors
 on it cancel in the difference
 ([THEORY.md](THEORY.md#the-encoder-of-a-difference)). Each term keeps its own
-weights, training and epoch. A joint X joined along the channels is split where
-the quantity put the conditioning set, and a pair (`align='dual_branch'`)
-arrives split. `shared_encoder=True` is refused for these terms, since X's
-encoder is branched and Y's is not.
+weights, training and epoch. The joint term's X is the pair (rest of X,
+conditioning set), so its two parts may differ in channels, window length and
+modality. Every stage that reads X takes the pair: the decoder reconstructs
+each part, the augmentations and the corruptions act on each part, a
+permutation null moves X's part of the pair, and the `'concat'` critic joins
+the flattened parts. KSG estimates the joint term as the conditioning set's MI with
+Y plus the conditional MI of the rest given it. `shared_encoder=True` is refused
+for these terms, since X's encoder is branched and Y's is not.
 
 ### Critics
 
@@ -1352,8 +1355,10 @@ calls it under its own seed with the parameters it names among the input sizes
 (`input_dim_x`, `input_dim_y`, `n_channels_x`, `n_channels_y`, `window_size_x`,
 `window_size_y`) and the architecture settings (`embedding_dim`, `hidden_dim`,
 `n_layers` and the network settings), so every repeat and every term of a
-difference trains a critic of its own, sized for its X. An architecture setting
-it does not name is ignored with a warning. An object is refused, since one
+difference trains a critic of its own, sized for its X. In the joint term of a
+difference X is the pair (rest of X, conditioning set): the critic receives a
+tuple of two tensors, and each size of X it names is a pair of the two parts'
+sizes. An architecture setting it does not name is ignored with a warning. An object is refused, since one
 object would be trained in place and shared by every repeat. With
 `n_workers` above 1 the class or function must be defined at module level so
 the workers can import it.

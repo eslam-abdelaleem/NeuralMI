@@ -42,9 +42,9 @@ class TestOneGridForEveryStream:
         rng = np.random.default_rng(1)
         x, y, w = _spikes(rng, 0.0), _spikes(rng, 0.0), _spikes(rng, 40.0)
         plan = _difference_plan(x, w, y, shift=shift)
-        joint = plan.build(Roles(x=('x', 'w'), channels=True))
-        conditioning = plan.build(Roles(x=('w',), channels=True))
-        alone = plan.build(Roles(x=('x',), channels=True))
+        joint = plan.build(Roles(x=('x', 'w')))
+        conditioning = plan.build(Roles(x=('w',)))
+        alone = plan.build(Roles(x=('x',)))
         assert joint._row_identity == conditioning._row_identity == alone._row_identity
         assert len(joint) == len(conditioning) == len(alone) == len(plan)
 
@@ -64,8 +64,8 @@ class TestOneGridForEveryStream:
         rng = np.random.default_rng(3)
         x, y, w = _spikes(rng, 0.0), _spikes(rng, 0.0), _spikes(rng, 0.0)
         plan = _difference_plan(x, w, y)
-        joint = plan.build(Roles(x=('x', 'w'), join='pair', channels=True))
-        conditioning = plan.build(Roles(x=('w',), channels=True))
+        joint = plan.build(Roles(x=('x', 'w')))
+        conditioning = plan.build(Roles(x=('w',)))
         for seed in range(3):
             g1, g2 = torch.Generator(), torch.Generator()
             g1.manual_seed(seed)
@@ -131,8 +131,8 @@ class TestFitsPerStream:
         x, y = _spikes(rng, 0.0), _spikes(rng, 0.0)
         w = _spikes(rng, 0.0) + [np.sort(rng.uniform(0, 120, 40000))]   # one bursty neuron
         plan = _difference_plan(x, w, y, shift=False, exclude_bursty_neurons=True)
-        joint = plan.build(Roles(x=('x', 'w'), join='pair', channels=True))
-        conditioning = plan.build(Roles(x=('w',), channels=True))
+        joint = plan.build(Roles(x=('x', 'w')))
+        conditioning = plan.build(Roles(x=('w',)))
         assert joint.x_data[1].shape == conditioning.x_data.shape
         assert conditioning.x_data.shape[1] == 3      # the bursty neuron is left out
         assert torch.equal(joint.x_data[1], conditioning.x_data)

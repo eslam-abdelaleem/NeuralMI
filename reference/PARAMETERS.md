@@ -151,7 +151,7 @@ The networks that embed X and Y and score their pairing.
 | `bias` | `True` | Bias terms in the layers of every encoder and of the MLPs built around them. |
 | `shared_encoder` | `False` | One encoder for X and Y. `mode='dimensionality'` without `y_data` uses `True` when unset. |
 | `max_n_batches` | `512` | Most samples an encoder embeds at once, to bound memory. A custom decision head or a variational concat critic also scores at most this many pairs at once. |
-| `custom_critic` | `None` | A class or function that builds the whole critic. Every task calls it under its own seed, so each repeat and each term of a difference trains a critic of its own, with the parameters it names among `input_dim_x`, `input_dim_y`, `n_channels_x`, `n_channels_y`, `window_size_x`, `window_size_y`, `embedding_dim`, `hidden_dim`, `n_layers` and the network settings above. An object is refused. Settings it does not name are ignored with a warning. |
+| `custom_critic` | `None` | A class or function that builds the whole critic. Every task calls it under its own seed, so each repeat and each term of a difference trains a critic of its own, with the parameters it names among `input_dim_x`, `input_dim_y`, `n_channels_x`, `n_channels_y`, `window_size_x`, `window_size_y`, `embedding_dim`, `hidden_dim`, `n_layers` and the network settings above. In the joint term of a difference X arrives as the pair (rest of X, conditioning set), and each size of X is a pair. An object is refused. Settings it does not name are ignored with a warning. |
 | `custom_embedding_cls` | `None` | An encoder class to use in place of `embedding_model`, as each branch in a difference quantity. |
 | `custom_embedding_cls_y` | X's | Y's encoder class. |
 | `pytorch_predefined` | `None` | A torchvision model name, such as `'resnet18'`, for `embedding_model='pretrained_backbone'`. |
@@ -296,7 +296,6 @@ For `mode='conditional'`.
 | Parameter | Default | Meaning |
 |--|--|----|
 | `w_data` | required | The conditioning variable $W$ in $I(X;Y \mid W)$. |
-| `align` | `None` | `'dual_branch'` passes X and W to the joint term as a pair. The named quantities set it for parts that span different stretches of time. A W that a processor windows takes X's window and step. |
 | `rigorous` | `False` | Extrapolate each repeat to infinite data. |
 | `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
 

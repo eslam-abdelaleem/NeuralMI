@@ -62,11 +62,11 @@ def _params(**overrides):
 
 @pytest.mark.parametrize('overrides, where', [
     ({}, 'encoders'), ({'critic_type': 'concat'}, 'concat'), ({'embedding_model': 'gru'}, 'encoders'),
-    ({'_difference_term': True, '_condition': ('last', 1)}, 'encoders')])
+    ({'_difference_term': True, 'n_channels_x': (1, 1), 'input_dim_x': (3, 3)}, 'encoders')])
 def test_every_encoder_and_the_concat_critic_scale_their_input(overrides, where):
     critic = build_critic(overrides.get('critic_type', 'separable'), _params(**overrides))
     if where == 'concat':
-        assert all(isinstance(s, ChannelScaling) for s in critic.scaling)
+        assert all(isinstance(s, InputScaling) for s in critic.scaling)
     else:
         assert isinstance(critic.embedding_net_x, InputScaling) and isinstance(critic.embedding_net_y, InputScaling)
 

@@ -170,10 +170,12 @@ def extract_embeddings(
     ----------
     model_path : str
         Path to the saved model file (``.pt`` or ``.pth``).
-    x_data : np.ndarray or torch.Tensor
+    x_data : np.ndarray or torch.Tensor, or a tuple of two
         Input data for variable X.  Shape must match what the model was trained
         on (e.g., ``(n_samples, input_dim_x)`` for MLP, or
-        ``(n_samples, n_channels, window_size)`` for CNN/GRU).
+        ``(n_samples, n_channels, window_size)`` for CNN/GRU). The joint term
+        of a difference quantity reads X as the pair ``(rest of X,
+        conditioning set)``, and its saved network takes that tuple.
     y_data : np.ndarray or torch.Tensor
         Input data for variable Y.
     base_params : dict, optional
@@ -243,25 +245,26 @@ def extract_embeddings(
     critic.eval()
 
     # --- Prepare tensors ---
-    x_t = float_tensor(x_data)
+    pair = isinstance(x_data, tuple)
+    x_t = tuple(float_tensor(part) for part in x_data) if pair else float_tensor(x_data)
     y_t = float_tensor(y_data)
 
-    if x_t.shape[0] != y_t.shape[0]:
-        raise ValueError(
-            f"x_data and y_data must have the same number of samples, "
-            f"got {x_t.shape[0]} and {y_t.shape[0]}."
-        )
+    for part in (x_t if pair else (x_t,)):
+        if part.shape[0] != y_t.shape[0]:
+            raise ValueError(
+                f"x_data and y_data must have the same number of samples, "
+                f"got {part.shape[0]} and {y_t.shape[0]}."
+            )
 
     # --- Extract embeddings in mini-batches, preserving sample order ---
-    n = x_t.shape[0]
+    n = y_t.shape[0]
     zx_parts, zy_parts = [], []
     with torch.no_grad():
         for start in range(0, n, _EMBEDDING_BATCH):
             end = min(start + _EMBEDDING_BATCH, n)
-            bzx, bzy = critic.get_embeddings(
-                x_t[start:end].to(_device),
-                y_t[start:end].to(_device),
-            )
+            bx = (tuple(part[start:end].to(_device) for part in x_t) if pair
+                  else x_t[start:end].to(_device))
+            bzx, bzy = critic.get_embeddings(bx, y_t[start:end].to(_device))
             zx_parts.append(bzx.detach().cpu())
             zy_parts.append(bzy.detach().cpu())
 

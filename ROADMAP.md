@@ -5,11 +5,10 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C3, C5 to C13, C16 and C17 have landed. C4, C18, C14 and C15 remain, in
-that order. C4 is built on C17's row plan, and C14 and C15 are written against
-the defaults, which C18 may change. The investigation's scripts and results,
-with the exact-value models C15 can build on, are in `scratch/` until the list
-is done.
+C1 to C13, C16 and C17 have landed. C18, C14 and C15 remain, in that order.
+C14 and C15 are written against the defaults, which C18 may change. The
+investigation's scripts and results, with the exact-value models C15 can build
+on, are in `scratch/` until the list is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
@@ -17,25 +16,6 @@ oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. C17 and C18 come from a second investigation,
 of how the terms of a difference get their rows and of window shifting. Values
 are in nats unless marked as bits.
-
-### C4. A joint X travels as a pair everywhere
-
-**Now.** The joint term's X reaches its network in one of two forms: one tensor
-whose last channels are the conditioning set, tagged `_condition` (transfer
-entropy, conditional transfer entropy, `mode='conditional'`, interaction
-information), or a pair of tensors when the two parts have different window
-lengths (`mi_rate`, `instantaneous_exchange`, `directed_information_rate`,
-`Conditional(align='dual_branch')`). Every stage between the builders and the
-network handles both, and four refuse the pair: permutation tests, decoders,
-variational encoders and precision corruption. `mi_rate` therefore cannot be
-tested against a permutation null. Two more stages read the shape of one tensor
-and would fail on the pair: the augmentations and the concat critic.
-
-**Fix.** Built on C17's plan. The pair everywhere, as (the rest of X, the
-conditioning set) in every quantity, and every stage accepts it. `align`, the
-`_condition` tag and the channel split, the code that concatenates or merges X
-and W, the trim tolerances and the unused dual-branch builder go. This also
-settles the smaller item on specs with a C group.
 
 ### C18. Epoch budget under shifting
 
@@ -429,8 +409,7 @@ window's range (-1, say) would tell the two apart. `mode='transfer'` never runs 
 small-sample checks, since its branch of `run.py` passes raw series.
 `Training(min_reliable_samples=...)` moves only the rigorous ladder's line for
 small chunks, not the call's held-out line or the curve warnings' note, whose
-defaults agree with it; one setting could move all three. A spec with a C group
-always runs dual-branch, even when A and C have the same window length.
+defaults agree with it; one setting could move all three.
 
 **Pointers in messages.** The amplification warning of a difference names
 whitening (C7) and the block-MI route. Each term's curve diagnosis is carried

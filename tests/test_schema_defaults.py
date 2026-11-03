@@ -54,7 +54,8 @@ class TestASavedNetworkRebuildsAsTrained:
     @pytest.mark.parametrize('overrides, x', [
         ({'bias': False, 'critic_type': 'hybrid', 'hidden_dim_head': 5}, torch.randn(7, 2, 3)),
         ({'embedding_model': 'cnn', 'cnn_pooling': 'mean'}, torch.randn(7, 2, 3)),
-        ({'_difference_term': True, '_condition': ('last', 1)}, torch.randn(7, 2, 3)),
+        ({'_difference_term': True, 'n_channels_x': (1, 1), 'input_dim_x': (3, 5)},
+         (torch.randn(7, 1, 3), torch.randn(7, 1, 5))),
         ({'embedding_model_y': 'gru', 'critic_type': 'hybrid'}, torch.randn(7, 2, 3)),
     ], ids=['bias_and_head', 'cnn_pooling', 'difference_term', 'y_side'])
     def test_extract_embeddings_rebuilds_it(self, tmp_path, overrides, x):

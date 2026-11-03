@@ -296,10 +296,9 @@ class TestNamedQuantitiesRunTheirSpecs:
     def test_transfer_entropy(self):
         from neural_mi.analysis.transfer import te_spec
         k = 6
-        assert te_spec(k) == {'A': _past('x', k) + _past('y', k), 'B': [('y', 0)], 'C': _past('y', k)}
+        assert te_spec(k) == {'A': _past('x', k), 'B': [('y', 0)], 'C': _past('y', k)}
         assert te_spec(k, source='y', target='x', conditioned_on_w=True) == {
-            'A': _past('y', k) + _past('x', k) + _past('w', k), 'B': [('x', 0)],
-            'C': _past('x', k) + _past('w', k)}
+            'A': _past('y', k), 'B': [('x', 0)], 'C': _past('x', k) + _past('w', k)}
 
 
 class TestBuilderBehaviour:

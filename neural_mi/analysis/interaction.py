@@ -63,7 +63,8 @@ def run_interaction_information(
     ----------
     plan : RowPlan
         The plan of the streams ``'x'``, ``'w'`` and ``'y'``. The joint term
-        reads X and W joined along the channel axis.
+        reads the pair (W, X): the rest of X beside the conditioning set of
+        the difference I(X,W;Y) - I(X;Y), which is X.
     base_params : Dict[str, Any]
         Fixed parameters for the MI estimator. Passed to all three sweeps.
     sweep_grid : Dict[str, List], optional
@@ -90,16 +91,15 @@ def run_interaction_information(
         - ``'raw_xw_y'``, ``'raw_x_y'``, ``'raw_w_y'`` : list of result dicts.
     """
     _, _, _, raw_xw_y, raw_x_y, _ = _joint_marginal_difference(
-        TermRows(plan, Roles(x=('x', 'w'), channels=True)), None,
-        TermRows(plan, Roles(x=('x',), channels=True)), None,
+        TermRows(plan, Roles(x=('w', 'x'))), None, TermRows(plan, Roles(x=('x',))), None,
         base_params, sweep_grid, n_workers,
         quantity_name="Interaction information",
         joint_label="X,W;Y", marginal_label="X;Y",
-        joint_key="mi_xw_y", marginal_key="mi_x_y", condition_at='first',
+        joint_key="mi_xw_y", marginal_key="mi_x_y",
         reported=False,
     )
     raw_w_y = _train_single_term(
-        TermRows(plan, Roles(x=('w',), channels=True)), None,
+        TermRows(plan, Roles(x=('w',))), None,
         {**with_model_labels(base_params, component='mi_w_y'), '_difference_term': True},
         sweep_grid, n_workers,
         quantity_name="Interaction information", label="W;Y",

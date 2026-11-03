@@ -20,8 +20,8 @@ _REGULAR_GRID_TYPES = ('continuous', 'categorical')
 def _truncate_leading(data, min_len: int):
     """Truncate the leading (sample) dimension to ``min_len``, whether
     ``data`` is a plain tensor or a tuple of tensors sharing that dimension
-    (``StaticDataset``'s compound "X-role" data for
-    ``mode='conditional'(align='dual_branch')``). A naive ``data[:min_len]``
+    (``StaticDataset``'s pair, the joint term's X of a difference). A naive
+    ``data[:min_len]``
     on a raw tuple would slice the *outer* 2-element tuple instead of
     truncating each inner tensor.
     """

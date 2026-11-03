@@ -65,12 +65,24 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   fell from a clear positive value to near zero. In conditional MI on
   independent rows the estimate with X shuffled fell to near zero, and the
   unshuffled estimate came down from above the exact value to it. Results of
-  these quantities change. The conditioning term now trains first, and the joint term
-  reads the conditioning set's width from it. `shared_encoder=True` is refused
-  for a term of a difference.
-- With shifted windows, a categorical stream estimated alone in a difference
-  quantity is laid out on the channel axis as it is inside the joint term, so
-  both terms read it the same way.
+  these quantities change. The conditioning term now trains first.
+  `shared_encoder=True` is refused for a term of a difference.
+- The joint term of every difference reads X as the pair (rest of X,
+  conditioning set), in `mode='conditional'` and `'interaction'`, transfer
+  entropy and every quantity built by offset alike. Its X used to arrive in one
+  of two forms: one tensor whose last channels were the conditioning set, or a
+  pair when the parts had different window lengths. Four stages refused the
+  pair (permutation tests, decoders, variational encoders and corruption), so
+  `mi_rate` could not be tested against a permutation null, and two more, the
+  augmentations and the concat critic, read one tensor and would have failed on
+  it. Every stage now takes the pair: the decoder reconstructs each part
+  (`PairDecoder`), the augmentations and corruptions act on each part, a
+  permutation null moves X's part, the concat critic joins the flattened parts,
+  and `extract_embeddings` takes the pair as a tuple. X and W no longer need a
+  common layout, so a spike X beside a continuous W runs, as do rows of W built
+  with a window length of their own. A custom critic receives the pair in the
+  joint term, with each size of X a pair, and a recipe that cannot build for
+  it is told so.
 - `curve_diagnosis='fuzzy start'` is measured instead of read from the shape
   of the held-out curve. The trainer reads the training-side value also at the
   start of the curve's approach to its top, the first epoch within 3 noise units
@@ -157,11 +169,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   window-shift builders behind them, all replaced by the row plan.
 
 - `embedding_model='dual_branch'` and `Model(branch_model=...)`. A joint X whose
-  parts have different window lengths (`Conditional(align='dual_branch')`,
-  `mi_rate`, `instantaneous_exchange`, `directed_information_rate`) is branched
-  like every other, with `embedding_model` as each branch, and these quantities
-  no longer require a particular model. `DualBranchEmbedding` is now
-  `BranchedEmbedding`.
+  parts have different window lengths (`mi_rate`, `instantaneous_exchange`,
+  `directed_information_rate`) is branched like every other, with
+  `embedding_model` as each branch, and these quantities no longer require a
+  particular model. `DualBranchEmbedding` is now `BranchedEmbedding`.
+
+- `Conditional(align=...)` and the `_condition` tag, now that every joint term
+  reads the pair. With them went the code that joined X and W along the
+  channels and split them again for the branches (`conditioning_parts`), the
+  channel layout and window broadcast that let a categorical W be joined to X,
+  and the refusals of a pair.
 
 ### Fixed
 
@@ -386,9 +403,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   that generalises, is still left out and counted in `n_zero`. The permutation
   test summarises each trial with the same function as the observed row.
 - `estimator='ksg'` in conditional MI and interaction information with
-  windowing through `Processing`: the joint term's conditioning set is now
-  named by the quantity, where KSG used to look for it in data it does not see
-  on that path. KSG also takes the pair of `Conditional(align='dual_branch')`.
+  windowing through `Processing`: KSG used to look for the joint term's
+  conditioning set in data it does not see on that path. It now reads it as the
+  second part of the joint term's pair.
 - The documentation of the block-MI offset and of `mi_rate`'s two windows. The
   offset $b$ of $I_w = \bar{I}w + b$ is $E_X + E_Y - E_{XY}$ in excess
   entropies and takes either sign. The docs gave it as positive, so that
@@ -451,7 +468,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   silent. A W that started 40 s after X gave the joint term 400 rows from 0 s
   and the conditioning term 320 from 40 s, and the default call read 0.25 bits
   of conditional MI where the truth is 0. Under
-  `Conditional(align='dual_branch')` with `shift_windows`, a W with a window or
+  `Conditional(align='dual_branch')` (since removed) with `shift_windows`, a W with a window or
   step of its own was cut on a grid of its own and the conditioning term cut Y
   on that grid: the call crashed where W gave fewer rows than X and read 0.18
   nats against 0.55 otherwise. Spike X and Y with a continuous or categorical W
@@ -473,9 +490,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   terms read different rows. On the example above both terms read the same 319
   rows from 40 s. A stream that asks for a
   window or a step other than the grid's is refused, with a pointer to
-  `nmi.offset_quantity` for a stream placed at offsets of its own. Under
-  `align='dual_branch'` with `rigorous=True` and shifting, which was refused,
-  each chunk is a plan of its own.
+  `nmi.offset_quantity` for a stream placed at offsets of its own. A pair under
+  `rigorous=True` and shifting, which was refused, runs, each chunk a plan of
+  its own.
 
 - Window shifting is one mechanism. Each epoch draws one offset within one
   step, and every stream's windows start that much later: the rows stay the
@@ -533,9 +550,9 @@ independent samples.
 
 ### Estimators and models
 
-The estimator is InfoNCE or SMILE, selectable per run. The library builds eleven
+The estimator is InfoNCE or SMILE, selectable per run. The library builds ten
 embedding architectures (`mlp`, `cnn`, `cnn2d`, `gru`, `lstm`, `tcn`,
-`transformer`, `lru`, `deepsets`, `dual_branch` and `pretrained_backbone`) and
+`transformer`, `lru`, `deepsets` and `pretrained_backbone`) and
 three critics (`separable`, `concat` and `hybrid`). Custom critics and embedding
 classes are supported. The two sides of a critic can carry different encoders
 through the `_y` settings.

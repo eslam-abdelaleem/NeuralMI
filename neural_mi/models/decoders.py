@@ -85,6 +85,18 @@ class BaseDecoder(nn.Module):
                     nn.init.zeros_(m.bias)
 
 
+class PairDecoder(BaseDecoder):
+    """Reconstructs a pair X, the joint term's X of a difference, part by part: one decoder per part, each
+    of its part's shape, all from the one embedding."""
+
+    def __init__(self, decoders):
+        super().__init__()
+        self.parts = nn.ModuleList(decoders)
+
+    def forward(self, z: torch.Tensor):
+        return tuple(decoder(z) for decoder in self.parts)
+
+
 class MLPDecoder(BaseDecoder):
     """Mirror MLP decoder for the :class:`~neural_mi.models.embeddings.MLP` encoder.
 

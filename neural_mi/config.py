@@ -372,15 +372,10 @@ class Dimensionality:
 class Conditional:
     """Parameters for ``mode='conditional'`` conditional MI (the W variable).
 
-    ``align='dual_branch'`` is for the case where W genuinely differs from
-    X in window length (MI rate, instantaneous exchange, directed
-    information rate, see ``THEORY.md``), beyond the small trim tolerance
-    the default path applies. X and W then reach the joint term as a pair,
-    each at its own window length, instead of joined along the channels.
-    Leave unset (``None``) unless you know you need it.
+    The joint term reads X and W as a pair, each part on a branch of its own
+    and at its own window length.
     """
     w_data: Optional[Any] = None
-    align: Optional[str] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
     curvature_t_threshold: Optional[float] = None

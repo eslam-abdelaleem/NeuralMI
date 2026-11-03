@@ -277,8 +277,7 @@ def _call_difference(mode, x, y, w, params, repeat_grid, ctx, n_workers):
     if mode == 'conditional':
         # x is the plan of X, W and Y (neural_mi/data/plan.py).
         from neural_mi.analysis.conditional import run_conditional_mi
-        return run_conditional_mi(x, params, sweep_grid=repeat_grid, n_workers=n_workers,
-                                  align=ctx.get('align'))
+        return run_conditional_mi(x, params, sweep_grid=repeat_grid, n_workers=n_workers)
     if mode == 'interaction':
         from neural_mi.analysis.interaction import run_interaction_information
         return run_interaction_information(x, params, sweep_grid=repeat_grid, n_workers=n_workers)

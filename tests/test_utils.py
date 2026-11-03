@@ -124,19 +124,17 @@ def test_build_critic_lru():
 
 
 def test_build_critic_branches_a_difference_term_with_the_x_encoder():
-    """A term of a difference gets one branch per part of X, of the call's X encoder class: two for a joint X that
-    arrives as a pair, or as one tensor split at its conditioning block, and one otherwise."""
+    """A term of a difference gets one branch per part of X, of the call's X encoder class: two for the joint
+    term's pair, and one otherwise."""
     from neural_mi.models.embeddings import BranchedEmbedding, LSTM
     base = {**DUMMY_EMBEDDING_PARAMS, 'embedding_model': 'lstm', '_difference_term': True}
     pair = build_critic('separable', {**base, 'n_channels_x': (3, 2), 'input_dim_x': (3 * 7, 2 * 4)})
-    split = build_critic('separable', {**base, 'n_channels_x': 5, 'input_dim_x': 5 * 7, '_condition': ('last', 2)})
     alone = build_critic('separable', {**base, 'n_channels_x': 2, 'input_dim_x': 2 * 7})
-    for critic, n in ((pair, 2), (split, 2), (alone, 1)):
+    for critic, n in ((pair, 2), (alone, 1)):
         net = critic.embedding_net_x
         assert isinstance(net, BranchedEmbedding) and len(net.branches) == n
         assert all(isinstance(b, LSTM) for b in net.branches)
     assert pair.embedding_net_x((torch.randn(3, 3, 7), torch.randn(3, 2, 4))).shape == (3, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
-    assert split.embedding_net_x(torch.randn(3, 5, 7)).shape == (3, DUMMY_EMBEDDING_PARAMS['embedding_dim'])
 
 
 def test_build_critic_unknown_embedding_model_lists_options():

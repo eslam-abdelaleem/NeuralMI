@@ -127,13 +127,15 @@ class TestInteractionInformationPlumbing:
         with pytest.raises((ValueError, TypeError)):
             nmi.run(x, y, mode='interaction', model=_MODEL, training=_TRAINING, n_workers=1)
 
-    def test_mismatched_window_size_raises(self):
+    def test_a_w_window_unlike_x_runs_as_a_pair(self):
+        """Rows of W with another window length than X's reach the joint term as the pair (W, X), each part
+        on a branch of its own."""
         x = np.random.randn(N, 1, 4)
         y = np.random.randn(N, 1, 4)
-        w = np.random.randn(N, 1, 6)  # different window size than x
-        with pytest.raises(ValueError):
-            nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
-                   model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
+        w = np.random.randn(N, 1, 6)
+        r = nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
+                    model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
+        assert np.isfinite(r.mi_estimate)
 
     @staticmethod
     def _plan(x, y, w):
@@ -150,21 +152,13 @@ class TestInteractionInformationPlumbing:
         with pytest.raises(ValueError, match="rows do not line up"):
             run_interaction_information(plan, _PARAMS, n_workers=1)
 
-    def test_window_size_broadcast_matches_conditional(self):
+    def test_a_w_of_one_value_per_row_runs(self):
         """A W with a collapsed (size-1) window axis, such as a per-window
-                categorical summary, is broadcast across X's window, as in
-                conditional MI.
-        """
+        categorical summary, keeps it as its part of the pair."""
         from neural_mi.analysis.interaction import run_interaction_information
         plan = self._plan(torch.randn(50, 1, 4), torch.randn(50, 1, 4), torch.randn(50, 1, 1))
         raw = run_interaction_information(plan, _PARAMS, n_workers=1)
         assert np.isfinite(raw['interaction_info'])
-
-    def test_a_window_of_another_width_raises(self):
-        from neural_mi.analysis.interaction import run_interaction_information
-        plan = self._plan(torch.randn(50, 1, 4), torch.randn(50, 1, 4), torch.randn(50, 1, 6))
-        with pytest.raises(ValueError, match="cannot be joined into one input"):
-            run_interaction_information(plan, _PARAMS, n_workers=1)
 
     def test_summary_runs(self, capsys):
         x, y, w = np.random.randn(N, 1), np.random.randn(N, 1), np.random.randn(N, 1)
@@ -229,9 +223,8 @@ class TestInteractionInformationAccuracy:
 
 
 class TestInteractionShiftWindows:
-    """shift_windows reachability: W is raw-concatenated onto X before
-    windowing (rather than after) whenever W is 'continuous' and matches
-    X's processor family."""
+    """shift_windows with a continuous W: one plan of X, W and Y, whose rows
+    every term reads and one offset per epoch moves together."""
 
     def test_engages_silently_for_matching_continuous_pair(self):
         """No warning: shift_windows must actually reach mode='interaction'
@@ -257,13 +250,10 @@ class TestInteractionShiftWindows:
         assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
 
     def test_w_equal_to_x_gives_consistent_components_under_shift(self):
-        """Correctness/desync check: if W is an exact copy of X (same raw
-        array, same window_size/step_size), W adds zero information beyond
-        X, so I(X,W;Y) and I(W;Y) should both closely match I(X;Y) -- with
-        shift_windows on. A one-window desync between X's and W's
-        independent reslicing would make the concatenated W look like
-        genuinely new information relative to X, inflating I(X,W;Y) above
-        I(X;Y)/I(W;Y) and breaking this expectation."""
+        """W as an exact copy of X adds no information beyond X, so I(X,W;Y)
+        and I(W;Y) should both closely match I(X;Y) with shift_windows on. If
+        X and W moved apart, W would look like new information relative to X
+        and inflate I(X,W;Y)."""
         np.random.seed(0)
         torch.manual_seed(0)
         T, window_size = 4000, 20
@@ -288,8 +278,7 @@ class TestInteractionShiftWindows:
             assert np.isfinite(a) and np.isfinite(b)
             assert abs(a - b) < 0.3, (
                 f"W=X exactly should make {name_a}={a:.3f} closely match {name_b}={b:.3f} -- "
-                f"a large gap suggests X and W's independent reslicing desynchronized "
-                f"under shift_windows."
+                f"a large gap suggests X and W moved apart under shift_windows."
             )
 
 
@@ -416,9 +405,8 @@ class TestInteractionShiftWindowsCategorical:
             )
 
     def test_mismatched_window_size_raises_clear_error(self):
-        """A W whose window_size differs from X's raises: the concatenated
-                array is windowed with X's geometry alone.
-        """
+        """A W whose window_size differs from X's is refused: the streams of
+        one quantity share one grid."""
         np.random.seed(0)
         x = np.random.randint(0, 3, size=(2000, 1)).astype('int64')
         y = np.random.randn(2000, 2).astype('float32')
@@ -436,11 +424,9 @@ class TestInteractionShiftWindowsCategorical:
 
 
 class TestInteractionShiftWindowsMixedTypes:
-    """shift_windows reachability for a *mixed* continuous+categorical W
-    (X and W have different processor types) -- exercises
-    shift_windowing.make_multi_categorical_encoder's continuous-passthrough
-    block and the broadcast reconciling a categorical block's collapsed
-    window axis against a continuous block's real window_size."""
+    """shift_windows with X and W of different processor types (continuous and
+    categorical): each stream is cut by its own processor on the one grid,
+    and each part of the pair keeps its own window axis."""
 
     def test_engages_silently_continuous_x_categorical_w(self):
         import warnings
@@ -521,8 +507,8 @@ class TestInteractionShiftWindowsMixedTypes:
             assert np.isfinite(a) and np.isfinite(b)
             assert abs(a - b) < 0.3, (
                 f"W as a lossless categorical recoding of X should make {name_a}={a:.3f} "
-                f"closely match {name_b}={b:.3f} -- a large gap suggests X and W's "
-                f"mixed-type concatenation desynchronized under shift_windows."
+                f"closely match {name_b}={b:.3f}; a large gap suggests X and W moved "
+                f"apart under shift_windows."
             )
 
 
@@ -576,8 +562,7 @@ class TestInteractionShiftingSpikes:
             assert np.isfinite(a) and np.isfinite(b)
             assert abs(a - b) < 0.3, (
                 f"W=X exactly should make {name_a}={a:.3f} closely match {name_b}={b:.3f} -- "
-                f"a large gap suggests X and W's spike-list concatenation desynchronized "
-                f"under shifting."
+                f"a large gap suggests X and W moved apart under shifting."
             )
 
     def test_rigorous_shifting_spikes_no_crash_and_finite(self):

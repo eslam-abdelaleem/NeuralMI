@@ -18,17 +18,20 @@ _TRAINING = nmi.Training(n_epochs=2, batch_size=32)
 
 
 class Recipe(nmi.models.BaseCritic):
-    """A dot-product critic sized by what the library passes, recording every build."""
+    """A dot-product critic sized by what the library passes, recording every build. In the joint term of a
+    difference X is the pair (rest of X, conditioning set), and its size is a pair too."""
     built = []
 
     def __init__(self, input_dim_x, input_dim_y, embedding_dim):
         super().__init__()
         Recipe.built.append((input_dim_x, input_dim_y, embedding_dim))
-        self.fx = nn.Linear(input_dim_x, embedding_dim)
+        self.fx = nn.Linear(sum(input_dim_x) if isinstance(input_dim_x, tuple) else input_dim_x, embedding_dim)
         self.fy = nn.Linear(input_dim_y, embedding_dim)
 
     def forward(self, x, y):
-        zx, zy = self.fx(x.reshape(x.shape[0], -1)), self.fy(y.reshape(y.shape[0], -1))
+        parts = x if isinstance(x, tuple) else (x,)
+        x = torch.cat([part.reshape(part.shape[0], -1) for part in parts], dim=1)
+        zx, zy = self.fx(x), self.fy(y.reshape(y.shape[0], -1))
         return zx @ zy.T, torch.tensor(0.0)
 
 
@@ -56,7 +59,7 @@ def test_every_repeat_builds_its_own_critic_with_the_sizes_it_names():
     Recipe.built.clear()
     x, y = _data()
     _run(x, y, mode='sweep', model=nmi.Model(custom_critic=Recipe, embedding_dim=6),
-         sweep_grid={'run_id': range(3)}, seed=0)
+         sweep_grid={'run_id': range(3)}, seed=0, device='cpu')     # choosing a device would build one more
     assert Recipe.built == [(2, 2, 6)] * 3
 
 
@@ -65,9 +68,25 @@ def test_every_term_of_a_difference_builds_its_own():
     x, y = _data()
     w = x[:, :1].copy()
     result, _ = _run(x, y, mode='conditional', conditional=nmi.Conditional(w_data=w),
-                     model=nmi.Model(custom_critic=Recipe, embedding_dim=4), seed=0)
-    assert sorted(Recipe.built) == [(1, 2, 4), (3, 2, 4)]
+                     model=nmi.Model(custom_critic=Recipe, embedding_dim=4), seed=0, device='cpu')
+    assert Recipe.built == [(1, 2, 4), ((2, 1), 2, 4)]        # the conditioning term, then the pair (X, W)
     assert result.runs is not None and len(result.runs) == 1
+
+
+def test_a_recipe_that_cannot_take_the_pair_is_told_why():
+    class OneX(nmi.models.BaseCritic):
+        def __init__(self, input_dim_x, input_dim_y, embedding_dim):
+            super().__init__()
+            self.fx, self.fy = nn.Linear(input_dim_x, embedding_dim), nn.Linear(input_dim_y, embedding_dim)
+
+        def forward(self, x, y):
+            return self.fx(x.reshape(x.shape[0], -1)) @ self.fy(y.reshape(y.shape[0], -1)).T, torch.tensor(0.0)
+
+    x, y = _data()
+    with pytest.raises(TypeError) as caught:
+        _run(x, y, mode='conditional', conditional=nmi.Conditional(w_data=x[:, :1].copy()),
+             model=nmi.Model(custom_critic=OneX), seed=0, device='cpu')
+    assert any('the pair (rest of X, conditioning set)' in note for note in caught.value.__notes__)
 
 
 def test_the_same_seed_gives_the_same_result():

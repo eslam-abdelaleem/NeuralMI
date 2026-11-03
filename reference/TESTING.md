@@ -88,7 +88,7 @@ Each file covers one functional area. Run
 | `test_models.py` | every encoder, `VariationalWrapper` for each, all three critics, chunking equivalence, gradients, `get_embeddings()` |
 | `test_critic_scoring.py` | the block scoring of the hybrid and concat critics against the pair-by-pair route, scores and gradients |
 | `test_cnn2d.py` | the 2-D encoder, its `build_critic` path, 4-D input handling, the image splits of `mode='dimensionality'` |
-| `test_branched_embedding.py` | `BranchedEmbedding`, the X encoder of every term of a difference: its parts and split, the encoder each term gets, the pair, which takes X's grid under `shift_windows`, and the quantities that use it against the oracle |
+| `test_branched_embedding.py` | `BranchedEmbedding`, the X encoder of every term of a difference: its parts, the encoder each term gets, the pair in every stage that reads X (the permutation null, the decoder, the variational wrapper, augmentation and the concat critic), the pair's one grid under `shift_windows`, and the quantities that use it against the oracle |
 | `test_decoders.py` | decoder dispatch and the reconstruction-loss path end to end |
 | `test_shared_encoder.py` | weight identity, parameter count, the concat incompatibility, the dimensionality-mode default |
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |

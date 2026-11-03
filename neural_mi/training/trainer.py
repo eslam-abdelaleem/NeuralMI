@@ -117,7 +117,7 @@ def _index_batch(x, idx):
 
 def _detach_clone(x):
     """``.detach().clone()``, mapped over each element if x is a tuple
-    (dual_branch's compound "X-role" data)."""
+    (the pair a difference's joint term reads)."""
     if isinstance(x, tuple):
         return tuple(t.detach().clone() for t in x)
     return x.detach().clone()
@@ -1241,8 +1241,12 @@ class Trainer:
         return (time.perf_counter() - start) / n_steps
 
     @staticmethod
-    def _decoder_loss(recon: torch.Tensor, target: torch.Tensor, activation: str) -> torch.Tensor:
+    def _decoder_loss(recon, target, activation: str) -> torch.Tensor:
         """Compute decoder reconstruction loss appropriate for the output activation.
+
+        A pair (the joint term's X of a difference, reconstructed part by part)
+        takes each part's loss, weighted by the part's share of the entries, which
+        for the squared error is the loss over the two parts taken together.
 
         Parameters
         ----------
@@ -1261,6 +1265,10 @@ class Trainer:
         torch.Tensor
             Scalar loss value.
         """
+        if isinstance(recon, tuple):
+            losses = [Trainer._decoder_loss(r, x, activation) for r, x in zip(recon, target)]
+            sizes = [float(x.numel()) for x in target]
+            return sum(loss * size for loss, size in zip(losses, sizes)) / sum(sizes)
         if activation == 'softmax':
             # recon: (B, C, W), probability over C channels for each time step.
             # target: (B, C, W), ground-truth (one-hot or soft target over channels).

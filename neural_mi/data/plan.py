@@ -67,17 +67,10 @@ def resolve_stream(data, time=None, processor=None, params=None) -> Stream:
 
 @dataclass(frozen=True)
 class Roles:
-    """Which of a plan's streams a term reads as X and as Y.
-
-    Several X streams join into one X along the channel axis (``join='concat'``)
-    or travel as a pair (``'pair'``). ``channels`` lays a categorical stream's
-    categories out as channels, as every term of a difference reads them, so
-    that the conditioning set reaches each term in the same layout.
-    """
+    """Which of a plan's streams a term reads as X and as Y. Two X streams travel as the pair
+    ``(rest of X, conditioning set)``, the joint term's X of a difference."""
     x: Tuple[str, ...] = ('x',)
     y: str = 'y'
-    join: str = 'concat'
-    channels: bool = False
 
 
 PAIR = Roles()
@@ -196,8 +189,7 @@ class RowPlan:
 
     def rows(self) -> Dict[str, Any]:
         """The rows at offset 0, built once per process: ``windows`` by stream name, ``times`` (each
-        row's start), ``origin``, ``spans``, ``layouts`` (each categorical stream's category count and
-        encoding), ``retention`` and, for a plan that shifts, ``shifter``."""
+        row's start), ``origin``, ``spans``, ``retention`` and, for a plan that shifts, ``shifter``."""
         if self._rows is None:
             self._rows = {'rows': self._rows_given, 'unfold': self._rows_unfold,
                           'grid': self._rows_grid}[self.route]()
@@ -224,21 +216,18 @@ class RowPlan:
                 f"to put them on one grid."
             )
         n = next(iter(counts.values()))
-        layouts = {name: s.params.get('categories') for name, s in self.streams.items()}
         return {'windows': windows, 'times': np.arange(n, dtype=float), 'origin': None, 'spans': {},
-                'layouts': layouts, 'retention': self._retention, 'shifter': None}
+                'retention': self._retention, 'shifter': None}
 
     def _rows_unfold(self) -> Dict[str, Any]:
         from neural_mi.data.shift_windowing import (BundleShifter, _prep_shift_side, seconds_to_samples,
                                                     stream_period, stream_spec)
-        specs, layouts = OrderedDict(), {}
+        specs = OrderedDict()
         for name, s in self.streams.items():
             period = stream_period(s.params, s.time)
             raw, encoder = _prep_shift_side(s.data, s.processor, s.params)
             specs[name] = stream_spec(raw, seconds_to_samples(self.window, period),
                                       seconds_to_samples(self.step, period), encoder, period)
-            layouts[name] = ((int(raw.max().item()) + 1 if raw.numel() else 1, s.params['encoding'])
-                             if s.processor == 'categorical' else None)
         shifter = BundleShifter(specs, shift=self.shift)
         if shifter.n_windows <= 0:
             raise ValueError(f"The streams hold no window of {self.window} with a step of {self.step}.")
@@ -251,7 +240,7 @@ class RowPlan:
         return {'windows': shifter.windows_at(0), 'times': origin + np.arange(n) * step,
                 'origin': origin, 'spans': {name: spec['window_size'] * spec['period']
                                             for name, spec in specs.items()},
-                'layouts': layouts, 'retention': (n, n, 1.0), 'shifter': shifter if self.shift else None}
+                'retention': (n, n, 1.0), 'shifter': shifter if self.shift else None}
 
     def _rows_grid(self) -> Dict[str, Any]:
         from neural_mi.data.handler import WindowManager, create_single_dataset, report_retention
@@ -291,11 +280,10 @@ class RowPlan:
             windows = OrderedDict((name, ds.data) for name, ds in datasets.items())
         else:
             windows = OrderedDict((name, ds.data) for name, ds in datasets.items())
-        layouts = {name: _layout(self.streams[name], ds) for name, ds in datasets.items()}
         shifter = GridShifter(datasets, manager, times, windows, self.step) if self.shift else None
         return {'windows': windows, 'times': times, 'origin': origin,
                 'spans': {name: float(self.window) for name in datasets},
-                'layouts': layouts, 'retention': retention, 'shifter': shifter}
+                'retention': retention, 'shifter': shifter}
 
     # ------------------------------------------------------------------
     # What a task does with it
@@ -307,11 +295,11 @@ class RowPlan:
         from neural_mi.data.handler import PairedDataset
         from neural_mi.data.static import StaticDataset
         rows = self.rows()
-        x, y = pack(rows['windows'], rows['layouts'], roles)
+        x, y = pack(rows['windows'], roles)
         dataset = PairedDataset(StaticDataset(x, data_device=data_device),
                                 StaticDataset(y, data_device=data_device))
         if rows['shifter'] is not None:
-            dataset._window_shifter = RoleShifter(rows['shifter'], rows['layouts'], roles)
+            dataset._window_shifter = RoleShifter(rows['shifter'], roles)
         dataset._row_identity = self.identity()
         if rows['retention'] is not None:
             dataset.n_windows_built, dataset.n_windows_retained, dataset.window_retention = rows['retention']
@@ -321,7 +309,7 @@ class RowPlan:
         """The same rows, built once: a plan whose streams hold their rows at offset 0."""
         rows = self.rows()
         streams = OrderedDict(
-            (name, Stream(window, None, None, {'categories': rows['layouts'].get(name)}))
+            (name, Stream(window, None, None, {}))
             for name, window in rows['windows'].items())
         plan = RowPlan(streams, identity=self.identity())
         plan._retention = rows['retention']
@@ -388,60 +376,23 @@ def count_rows(x_data, y_data, params: Dict[str, Any]) -> int:
 # Packing and moving
 # ---------------------------------------------------------------------------
 
-def pack(windows, layouts, roles: Roles):
-    """A term's ``(x, y)`` from the rows by stream name.
-
-    ``layouts`` says how each stream's trailing axis reads: a categorical
-    stream's ``(n_categories, encoding)``, a spike stream's
-    ``('spike', no_spike_value)``, ``None`` for samples. Streams joined along
-    their channels need trailing axes of one width: a collapsed categorical
-    axis is broadcast, and a spike stream with fewer slots is padded with
-    empty ones, which hold no spike.
-    """
-    from neural_mi.data.shift_windowing import align_trailing_axis, categorical_to_channel_layout
-
-    def laid_out(name):
-        window, layout = windows[name], layouts.get(name)
-        if layout is not None and layout[0] != 'spike' and (roles.channels or len(roles.x) > 1):
-            return categorical_to_channel_layout(window, layout[0], layout[1])
-        return window
-
-    parts = [laid_out(name) for name in roles.x]
-    if len(parts) == 1:
-        x = parts[0]
-    elif roles.join == 'pair':
-        x = tuple(parts)
-    else:
-        spike = [(layouts.get(name) or ('',))[0] == 'spike' for name in roles.x]
-        wide = [part.shape[-1] > 1 for part in parts]
-        width = max(part.shape[-1] for part in parts)
-        mixed = any(s and w for s, w in zip(spike, wide)) and any(not s and w for s, w in zip(spike, wide))
-        if mixed or any(not s and part.shape[-1] not in (1, width) for s, part in zip(spike, parts)):
-            widths = ', '.join(f"{p.shape[-1]} ({n.upper()})" for n, p in zip(roles.x, parts))
-            raise ValueError(
-                f"{' and '.join(n.upper() for n in roles.x)} cannot be joined into one input: their "
-                f"windows end in axes of {widths}. A spike stream's window holds spike slots and a "
-                f"continuous one's samples, and only axes that count the same thing join along the "
-                f"channels."
-            )
-        joined = [torch.nn.functional.pad(part, (0, width - part.shape[-1]), value=layouts[name][1])
-                  if s and part.shape[-1] < width else align_trailing_axis(part, width)
-                  for name, s, part in zip(roles.x, spike, parts)]
-        x = torch.cat(joined, dim=1)
-    return x, windows[roles.y]
+def pack(windows, roles: Roles):
+    """A term's ``(x, y)`` from the rows by stream name: one X stream as it is, two as a pair."""
+    parts = tuple(windows[name] for name in roles.x)
+    return (parts[0] if len(parts) == 1 else parts), windows[roles.y]
 
 
 class RoleShifter:
     """A plan's shifter, packed into a term's roles for the trainer."""
 
-    def __init__(self, shifter, layouts, roles: Roles):
-        self.shifter, self.layouts, self.roles = shifter, layouts, roles
+    def __init__(self, shifter, roles: Roles):
+        self.shifter, self.roles = shifter, roles
 
     def random_shift(self, generator: Optional[torch.Generator] = None):
         return self.shifter.random_shift(generator)
 
     def windows_at(self, shift):
-        return pack(self.shifter.windows_at(shift), self.layouts, self.roles)
+        return pack(self.shifter.windows_at(shift), self.roles)
 
 
 class GridShifter:
@@ -477,15 +428,6 @@ class GridShifter:
                 moved[name] = moved[name].clone()
                 moved[name][stay] = self.base[name][stay]
         return moved
-
-
-def _layout(stream: Stream, dataset):
-    """How a windowed stream's trailing axis reads (see :func:`pack`)."""
-    if stream.processor == 'categorical':
-        return int(dataset.n_categories), dataset.encoding
-    if stream.processor == 'spike' and stream.params.get('bin_size') is None:
-        return 'spike', float(stream.params['no_spike_value'])
-    return None
 
 
 def _attach(datasets, manager, times, refit: bool = True) -> None:

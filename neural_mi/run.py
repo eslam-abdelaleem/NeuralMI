@@ -1033,12 +1033,6 @@ def _run_flat(
                 "mode='rigorous'. The extrapolation reports its own error estimate. Test "
                 "the plain estimate (rigorous=False) against its null."
             )
-        if (permutation_test and mode == 'conditional'
-                and analysis_kwargs.get('align') == 'dual_branch'):
-            raise NotImplementedError(
-                "permutation_test=True is not supported with Conditional(align='dual_branch'). "
-                "Use the default align to test the conditional MI against its null."
-            )
 
         # Verify conditional-MI / interaction-information / conditional-TE input.
         # w_data is the shared "third variable" slot for all three modes
@@ -1441,14 +1435,12 @@ def _run_flat(
 
         elif mode in ('conditional', 'interaction'):
             # x_run is the plan of X, W and Y, whose rows every term shares.
-            _align = analysis_kwargs.get('align') if mode == 'conditional' else None
-            ctx = {'align': _align}
+            ctx = {}
             if _use_rigorous:
                 from .analysis.conditional import _cmi_rigorous_scalar
                 from .analysis.interaction import _ii_rigorous_scalar
                 ctx.update(rigorous=True,
                            scalar_fn=_cmi_rigorous_scalar if mode == 'conditional' else _ii_rigorous_scalar,
-                           extra_kwargs={'align': _align} if mode == 'conditional' else None,
                            rigorous_kwargs=_scalar_rigorous_kwargs(
                                analysis_kwargs, curvature_t_threshold, min_gamma_points,
                                confidence_level))

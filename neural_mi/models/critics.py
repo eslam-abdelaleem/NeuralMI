@@ -22,6 +22,14 @@ def _device_of(x) -> torch.device:
     return (x[0] if isinstance(x, (tuple, list)) else x).device
 
 
+def _flat(x) -> torch.Tensor:
+    """x as one ``(batch, features)`` matrix. A pair X (the joint term of a
+    difference) is flattened part by part and the parts are joined."""
+    if isinstance(x, (tuple, list)):
+        return torch.cat([part.reshape(part.shape[0], -1) for part in x], dim=1)
+    return x.reshape(x.shape[0], -1)
+
+
 # The most values one block of pair activations may hold: rows of the score
 # matrix times N pairs times the head's hidden width. A training batch of a few
 # hundred samples fits in one block and a large evaluation set in a few dozen.
@@ -158,7 +166,7 @@ class BaseCritic(nn.Module):
         else:
             # ConcatCritic: no separate embedding networks, return flat inputs.
             # This is semantically honest, concat critics have no separable embedding.
-            return x.view(x.shape[0], -1), y.view(y.shape[0], -1)
+            return _flat(x), _flat(y)
             
         max_n = getattr(self, 'max_n_batches', 512)
         use_var = getattr(self, 'use_variational', False)
@@ -187,7 +195,7 @@ class BaseCritic(nn.Module):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
         else:
             # ConcatCritic has no separate embedding networks
-            return x.reshape(x.shape[0], -1), y.reshape(y.shape[0], -1)
+            return _flat(x), _flat(y)
         max_n = getattr(self, 'max_n_batches', 512)
         use_var = getattr(self, 'use_variational', False)
         zx, zy, _ = self._compute_embeddings_chunked(x, y, net_x, net_y, max_n, use_var)
@@ -307,22 +315,21 @@ class ConcatCritic(BaseCritic):
         # before the pair is formed.
         self.scaling = nn.ModuleList(scaling) if scaling is not None else None
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.scaling is not None:
             x, y = self.scaling[0](x), self.scaling[1](y)
-        batch_size = x.size(0)
-        x_flat = x.view(batch_size, -1)
-        y_flat = y.view(batch_size, -1)
+        batch_size = _batch_size_of(x)
+        x_flat, y_flat = _flat(x), _flat(y)
         if not self.use_variational and _is_plain_mlp(self.embedding_net):
             return (_score_pairs(self.embedding_net, x_flat, y_flat),
-                    torch.tensor(0.0, device=x.device))
+                    torch.tensor(0.0, device=y.device))
 
         # Row-wise chunking: process chunk_rows rows of x per iteration.
         # Each chunk contains chunk_rows * N pairs, bounding peak memory to
         # max_n_batches pairs, same budget as the original flat-index loop.
         chunk_rows = max(1, self.max_n_batches // batch_size)
-        scores = torch.zeros(batch_size, batch_size, device=x.device)
-        total_kl_acc = torch.tensor(0.0, device=x.device)
+        scores = torch.zeros(batch_size, batch_size, device=y.device)
+        total_kl_acc = torch.tensor(0.0, device=y.device)
         n_pair_chunks = 0
         y_exp = y_flat.unsqueeze(0)  # (1, N, dy), shared view, no copy
 
@@ -351,9 +358,9 @@ class ConcatCritic(BaseCritic):
             scores[start:end] = chunk_scores.squeeze(-1).view(n_rows, batch_size)
 
         if self.use_variational and n_pair_chunks > 0:
-            kl_tensor = total_kl_acc.to(x.device) / (batch_size * batch_size)
+            kl_tensor = total_kl_acc.to(y.device) / (batch_size * batch_size)
         else:
-            kl_tensor = torch.tensor(0.0, device=x.device)
+            kl_tensor = torch.tensor(0.0, device=y.device)
 
         return scores, kl_tensor
 

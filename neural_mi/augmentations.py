@@ -64,8 +64,11 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
 
     Parameters
     ----------
-    x : torch.Tensor
+    x : torch.Tensor or tuple of torch.Tensor
         Batch of shape ``(N, C, ...)``: typically ``(N, C, W)`` or ``(N, C, H, W)``.
+        The pair a difference's joint term reads is augmented part by part,
+        each sample's ``intensity_scale`` the same in both parts, and a custom
+        augmentation receives each part.
     aug_params : dict
         Augmentation specification.  See module docstring for valid keys.
         An unrecognised key is ignored with a ``UserWarning`` instead of in
@@ -74,11 +77,21 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
 
     Returns
     -------
-    torch.Tensor
-        Augmented tensor, same shape as *x*.
+    torch.Tensor or tuple of torch.Tensor
+        Augmented batch, same shape as *x*.
     """
     if not aug_params:
         return x
+
+    if isinstance(x, (tuple, list)):
+        params = dict(aug_params)
+        scale_cfg = params.pop('intensity_scale', None)
+        parts = tuple(apply_augmentations(part, params) if params else part for part in x)
+        if scale_cfg is not None:
+            lo, hi = (scale_cfg.get('lo', 0.8), scale_cfg.get('hi', 1.2)) if isinstance(scale_cfg, dict) else (0.8, 1.2)
+            scale = torch.empty(parts[0].shape[0], device=parts[0].device, dtype=parts[0].dtype).uniform_(lo, hi)
+            parts = tuple(part * scale.view(-1, *([1] * (part.ndim - 1))) for part in parts)
+        return parts
 
     unknown = sorted(set(aug_params) - _VALID_KEYS)
     if unknown:

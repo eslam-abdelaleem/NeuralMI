@@ -7,8 +7,8 @@ CMI between X and Y given W is computed by the chain-rule difference:
 Both terms are estimated independently using ``ParameterSweep``, so the
 existing MI machinery (estimators, critics, augmentation) is reused verbatim.
 They read one plan of X, W and Y (:mod:`neural_mi.data.plan`), the joint term
-X and W and the conditioning term W, so both terms train and are evaluated on
-the same rows.
+the pair (X, W) and the conditioning term W, so both terms train and are
+evaluated on the same rows.
 """
 from typing import Any, Dict, Optional
 
@@ -22,7 +22,6 @@ def run_conditional_mi(
     base_params: Dict[str, Any],
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
-    align: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Estimates conditional mutual information I(X; Y | W).
 
@@ -43,11 +42,8 @@ def run_conditional_mi(
     sweep_grid : Dict[str, List], optional
         Optional hyperparameter grid, e.g. ``{'run_id': range(5)}``.
     n_workers : int, optional
-        Number of parallel workers. Defaults to 1.
-    align : {None, 'dual_branch'}, optional
-        ``None`` (the default) joins X and W along the channel axis into the
-        joint term's X. ``'dual_branch'`` passes them as a pair, for the named
-        quantities whose two parts span different stretches of time.
+        Number of parallel workers. Defaults to 1. The joint term's X is the
+        pair (X, W), each part on a branch of its own.
 
     Returns
     -------
@@ -66,15 +62,11 @@ def run_conditional_mi(
         - ``'raw_xw_y'`` : list of result dicts from the XW→Y sweep.
         - ``'raw_w_y'`` : list of result dicts from the W→Y sweep.
     """
-    dual = align == 'dual_branch'
-    joint = TermRows(plan, Roles(x=('x', 'w'), join='pair' if dual else 'concat', channels=True))
-    marginal = TermRows(plan, Roles(x=('w',), channels=True))
     cmi, mi_xw_y, mi_w_y, results_xw_y, results_w_y, _per_run = _joint_marginal_difference(
-        joint, None, marginal, None,
+        TermRows(plan, Roles(x=('x', 'w'))), None, TermRows(plan, Roles(x=('w',))), None,
         base_params, sweep_grid, n_workers,
-        quantity_name="Conditional MI (dual-branch)" if dual else "Conditional MI",
-        joint_label="XC;Y" if dual else "XW;Y", marginal_label="C;Y" if dual else "W;Y",
-        joint_key="mi_xw_y", marginal_key="mi_w_y", condition_at=None if dual else 'last',
+        quantity_name="Conditional MI", joint_label="XW;Y", marginal_label="W;Y",
+        joint_key="mi_xw_y", marginal_key="mi_w_y",
     )
     return {
         'cmi_estimate': cmi,
@@ -87,7 +79,7 @@ def run_conditional_mi(
     }
 
 
-def _cmi_rigorous_scalar(plan, _y, bp, sweep_grid=None, align=None) -> float:
+def _cmi_rigorous_scalar(plan, _y, bp, sweep_grid=None) -> float:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of CMI.
 
     ``run_rigorous_scalar_analysis`` dispatches many of these (one per
@@ -98,5 +90,5 @@ def _cmi_rigorous_scalar(plan, _y, bp, sweep_grid=None, align=None) -> float:
     dimensionality-mode splits. ``plan`` is the chunk's plan
     (:meth:`neural_mi.data.plan.RowPlan.cut`), whose rows both terms read.
     """
-    raw = run_conditional_mi(plan, bp, sweep_grid=sweep_grid, n_workers=1, align=align)
+    raw = run_conditional_mi(plan, bp, sweep_grid=sweep_grid, n_workers=1)
     return rung(raw, (('mi_xw_y', 1), ('mi_w_y', -1)))

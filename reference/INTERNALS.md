@@ -60,12 +60,13 @@ the phase shifter of rows a stride thins.
 `ConcatCritic`), the encoders and `VariationalWrapper` in `embeddings.py`, and
 the reconstruction decoders in `decoders.py`. `BranchedEmbedding` is the X
 encoder of every term of a difference quantity. `_joint_marginal_difference`
-(`analysis/sweep.py`) marks both terms with `_difference_term`, trains the
-conditioning term first, and hands the joint term `_condition`, where its
-conditioning set sits among X's channels and how many channels the
-conditioning term's network was built on. `build_critic` then builds one branch
-per part of X from the call's encoder, and `conditioning_parts` splits a joint
-X for the branches and for a nonparametric estimator alike. **`neural_mi/estimators/`** has
+(`analysis/sweep.py`) marks both terms with `_difference_term` and trains the
+conditioning term first. The joint term's X is the pair (rest of X,
+conditioning set), packed by the plan (`pack` in `data/plan.py`) or by the
+quantity that builds its rows by offset, and `build_critic` builds one branch
+per part of X from the call's encoder. Every stage that reads X takes the pair:
+`PairDecoder`, the augmentations, `StaticDataset`'s corruptions,
+`ConcatCritic` and the nonparametric estimator. **`neural_mi/estimators/`** has
 the bounds in `bounds.py`, registered by name in `ESTIMATORS`, and KSG in
 `ksg.py`, registered in `NONPARAMETRIC` with its conditional form in
 `NONPARAMETRIC_CONDITIONAL`.

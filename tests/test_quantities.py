@@ -705,8 +705,9 @@ class TestStride:
             assert float(fut[i, 0, 0]) == i * stride + 4
 
     @pytest.mark.parametrize("stride", [1, 2, 3])
-    def test_dual_branch_quantities_stay_aligned(self, stride):
-        """The three arrays of each dual-branch quantity share their time base."""
+    def test_the_three_groups_stay_aligned(self, stride):
+        """The three arrays of mi_rate, instantaneous_exchange and directed_information_rate share their time
+        base, though their groups differ in window length."""
         x = self._ramp(60)
         y = x + 1000.0
         series = {'x': x, 'y': y}
@@ -764,7 +765,7 @@ class TestStride:
             seen.setdefault('step', base_params.get('row_step'))
             seen.setdefault('span', base_params.get('row_span'))
             seen.setdefault('phases', base_params.get('_row_phases'))
-            seen.setdefault('rows', a.shape[0])
+            seen.setdefault('rows', a[0].shape[0])     # the joint term's X is the pair (X's past, Y's past)
             return real(a, b, c, d, base_params, *args, **kwargs)
 
         transfer_mod._joint_marginal_difference = spy

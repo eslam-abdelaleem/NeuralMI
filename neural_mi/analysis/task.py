@@ -10,7 +10,6 @@ import torch
 import numpy as np
 from typing import Dict, Any
 
-from neural_mi.models.embeddings import conditioning_parts
 from neural_mi.utils import (ARCHITECTURE_KEYS, build_critic, build_optimizer_and_scheduler, get_device,
                              compute_cross_covariance_rotation)
 from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC, NONPARAMETRIC_CONDITIONAL
@@ -124,18 +123,18 @@ def _nonparametric(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
     """A nonparametric estimate (``estimator_name='ksg'``) on every row of the dataset, in nats.
 
     No network is trained, so there is no split, epoch or held-out value. The
-    joint term of a difference, whose X is the pair (rest, conditioning set) or
-    carries ``_condition``, estimates the conditioning set's own MI with Y plus
-    the conditional MI of the rest given it (Frenzel and Pompe). Its
-    conditioning term estimates that same MI on the same rows, so the
-    difference of the two is the conditional estimate itself.
+    joint term of a difference, whose X is the pair (rest, conditioning set),
+    estimates the conditioning set's own MI with Y plus the conditional MI of
+    the rest given it (Frenzel and Pompe). Its conditioning term estimates that
+    same MI on the same rows, so the difference of the two is the conditional
+    estimate itself.
     """
     as_array = lambda t: t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t)
     x, y = dataset.x_data, as_array(dataset.y_data)
     settings = dict(params.get('estimator_params') or {}, seed=params.get('random_seed'))
-    name, condition = params['estimator_name'], params.get('_condition')
-    if isinstance(x, tuple) or condition is not None:
-        rest, z = (as_array(part) for part in conditioning_parts(x, condition))
+    name = params['estimator_name']
+    if isinstance(x, tuple):
+        rest, z = (as_array(part) for part in x)
         value = NONPARAMETRIC[name](z, y, **settings) + NONPARAMETRIC_CONDITIONAL[name](rest, y, z, **settings)
     else:
         value = NONPARAMETRIC[name](as_array(x), y, **settings)
@@ -246,7 +245,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
 
     if isinstance(dataset.x_data, tuple):
         # Compound "X-role" data (BranchedEmbedding's two-tensor input,
-        # mode='conditional'(align='dual_branch')) -- dims become a matching
+        # the joint term of a difference) -- dims become a matching
         # 2-tuple instead of a single int. The hasattr(..., 'shape') guard
         # below is False for a tuple, so without this branch the whole
         # dim-computation block would be silently skipped and
@@ -302,60 +301,38 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     decoder_x = None
     decoder_y = None
     if setting(params, 'use_decoder'):
-        from neural_mi.models.decoders import build_decoder
+        from neural_mi.models.decoders import PairDecoder, build_decoder
 
-        _n_channels_x = params['n_channels_x']
-        if isinstance(_n_channels_x, tuple):
-            raise NotImplementedError(
-                "use_decoder=True is not supported with a compound (tuple) "
-                "embedding input such as BranchedEmbedding in mode='conditional' "
-                "with align='dual_branch'. Reconstructing a compound (A, C) input "
-                "from one fused embedding has no single well-defined decoder "
-                "architecture. Use use_decoder=False for this path."
+        def _decoder(n_channels, input_dim, activation, height=None, width=None):
+            return build_decoder(
+                embedding_model=setting(params, 'embedding_model'),
+                embedding_dim=setting(params, 'embedding_dim'),
+                hidden_dim=setting(params, 'hidden_dim'),
+                n_channels=n_channels,
+                window_size=max(1, input_dim // n_channels),
+                n_layers=setting(params, 'n_layers'),
+                output_activation=activation,
+                kernel_size=setting(params, 'kernel_size'),
+                nhead=setting(params, 'nhead'),
+                height=height,
+                width=width,
+                dropout=setting(params, 'dropout'),
             )
-        _embedding_model = setting(params, 'embedding_model')
-        _embedding_dim = setting(params, 'embedding_dim')
-        _hidden_dim = setting(params, 'hidden_dim')
-        _n_layers = setting(params, 'n_layers')
-        _dec_act_x = setting(params, 'decoder_output_activation_x')
-        _dec_act_y = setting(params, 'decoder_output_activation_y')
 
-        _n_channels_y = params['n_channels_y']
-        _input_dim_x = params['input_dim_x']
-        _input_dim_y = params['input_dim_y']
-        _window_size_x = max(1, _input_dim_x // _n_channels_x)
-        _window_size_y = max(1, _input_dim_y // _n_channels_y)
-
-        decoder_x = build_decoder(
-            embedding_model=_embedding_model,
-            embedding_dim=_embedding_dim,
-            hidden_dim=_hidden_dim,
-            n_channels=_n_channels_x,
-            window_size=_window_size_x,
-            n_layers=_n_layers,
-            output_activation=_dec_act_x,
-            kernel_size=setting(params, 'kernel_size'),
-            nhead=setting(params, 'nhead'),
-            height=params.get('input_height_x'),
-            width=params.get('input_width_x'),
-            dropout=setting(params, 'dropout'),
-        )
+        # A pair X (the joint term of a difference) is reconstructed part by
+        # part, each by a decoder of its own shape.
+        _act_x = setting(params, 'decoder_output_activation_x')
+        if isinstance(params['n_channels_x'], tuple):
+            decoder_x = PairDecoder([_decoder(c, d, _act_x)
+                                     for c, d in zip(params['n_channels_x'], params['input_dim_x'])])
+        else:
+            decoder_x = _decoder(params['n_channels_x'], params['input_dim_x'], _act_x,
+                                 params.get('input_height_x'), params.get('input_width_x'))
         # Always build a dedicated decoder_y -- X and Y may differ in n_channels/
         # window_size/activation even when shared_encoder=True.
-        decoder_y = build_decoder(
-            embedding_model=_embedding_model,
-            embedding_dim=_embedding_dim,
-            hidden_dim=_hidden_dim,
-            n_channels=_n_channels_y,
-            window_size=_window_size_y,
-            n_layers=_n_layers,
-            output_activation=_dec_act_y,
-            kernel_size=setting(params, 'kernel_size'),
-            nhead=setting(params, 'nhead'),
-            height=params.get('input_height_y'),
-            width=params.get('input_width_y'),
-            dropout=setting(params, 'dropout'),
-        )
+        decoder_y = _decoder(params['n_channels_y'], params['input_dim_y'],
+                             setting(params, 'decoder_output_activation_y'),
+                             params.get('input_height_y'), params.get('input_width_y'))
         logger.debug(
             f"Built decoder_x ({type(decoder_x).__name__}) and decoder_y ({type(decoder_y).__name__}) "
             f"for use_decoder=True."
@@ -474,7 +451,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         else:
             trainer.model.eval()
             # _all_x may be a plain tensor or a tuple (BranchedEmbedding's
-            # compound "X-role" data, mode='conditional'(align='dual_branch')).
+            # pair, the joint term of a difference).
             _is_tuple_x = isinstance(_all_x, tuple)
             _n = (_all_x[0] if _is_tuple_x else _all_x).shape[0]
             _zx_parts, _zy_parts = [], []
