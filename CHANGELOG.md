@@ -210,8 +210,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Nothing scaled or whitened data before the networks, and estimates depended
-  on units: a pair sharing 2 nats read 2.05 at unit scale, 0.006 at a
-  thousandth of it and 0 at a thousand times it. On smooth, finely sampled
+  on units: a pair read close to its true value at unit scale and close to 0
+  at a thousand times it or a thousandth of it. On smooth, finely sampled
   signals the conditioning term of `mi_rate` is several nats and the rate a
   small residual of it. `Preprocessing(channel=..., time=...)`, opt-in and
   recorded in `result.params`, transforms each continuous stream before rows
@@ -239,8 +239,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `Model(input_scaling='standard')` centres and scales every encoder's input
   channel by channel, with statistics the trainer fits from the training rows
   before the first epoch. They are saved with the network and applied by
-  `extract_embeddings`. With it a pair carrying 1.10 nats reads 1.09 to 1.10
-  at unit scale, ×1e3 and ×1e-3, where it read 0 at both ends. DeepSets, which
+  `extract_embeddings`. With it a pair reads the same value at unit scale,
+  ×1e3 and ×1e-3, where it read 0 at both ends. DeepSets, which
   tells a spike from padding by the padding value, refuses it.
 
 - `Model(custom_critic=obj)` trained the one object it was given in every task:
@@ -280,8 +280,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `shift_windows=True` on rows one step apart says why it has no effect.
 
 - `mi_rate` defaulted `half_width` to 20 samples, although both windows change
-  the answer: in the easy regime of the accuracy test `half_width=20` read
-  0.551 to 0.609 against 0.588, and `half_width=5` read 0.579 to 0.594. Window
+  the answer: in the easy regime of the accuracy test `half_width=20` spread
+  several times wider around the exact value than `half_width=5`. Window
   parameters were not validated as `stride` is: `mi_rate(h=-1)` ran as `h=0`,
   `k=0` and `history_window=0` built arrays without columns, and other values
   failed inside torch. `half_width` is now required, and every window parameter
@@ -330,8 +330,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The small-sample check counted rows in all and fired below 200. `block_mi`
   with 20-sample windows on 20,000 samples built 1,000 windows with 99
-  held-out rows, read about 1.4 bits against 3.12, and warned only that the
-  curve was still rising. The held-out count is now computed in one place,
+  held-out rows, read well under half the exact value, and warned only that
+  the curve was still rising. The held-out count is now computed in one place,
   `trainer.held_out_rows`, which both splits use. The blocked split used to
   round it down for round counts, holding out 29 of 300 rows at
   `train_fraction=0.9`, while the random split held out 30. A call whose
@@ -346,8 +346,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   times its epoch-to-epoch noise above zero. Every epoch scores the same
   held-out rows, so their sampling error moves the whole curve together and
   never shows in that noise, and a network that learned nothing could sit flat
-  a little above zero and pass: 0.0013 bits on 14 held-out rows was read as
-  resolved, with a warning that blamed a top reached too fast. A top must now
+  a little above zero and pass: a value just above zero on 14 held-out rows
+  was read as resolved, with a warning that blamed a top reached too fast. A top must now
   also stand 3 standard errors of its held-out rows above zero
   (`epochs.stands_above_zero`), the line C1 draws for the terms of a combined
   quantity, so the diagnosis, the trainer's warnings and the combination read
@@ -384,9 +384,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   interaction information) read each term at its reported value, which is 0
   when the network's training-side value came out negative. When the
   conditioning term of `mi_rate` read negative on its training rows while its
-  held-out value stood at 1.29 nats, the result was the joint term alone: 2.41
-  nats for a true 0.17, with an amplification factor of 1 and no warning about
-  the combination. One helper, `sweep.combine_terms`, now combines the terms of
+  held-out value stood clearly above zero, the result was the joint term
+  alone, many times the true value, with an amplification factor of 1 and no
+  warning about the combination. One helper, `sweep.combine_terms`, now combines the terms of
   every such quantity, repeat by repeat, by one rule. A network whose
   training-side value is negative while its held-out value stands clearly above
   zero (by more than 3 standard errors, `epochs.stands_above_zero`) has two

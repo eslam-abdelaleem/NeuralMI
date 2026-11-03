@@ -58,6 +58,7 @@ Each file covers one functional area. Run
 | `test_contract.py` | every mode with no grid, with repeats, with a configuration grid, with both, with a processor parameter in the grid, and with `rigorous=True` where it exists: each call returns the shared `Results` shape or refuses with a reason. Also embeddings kept per repeat, and the `n_workers` warning |
 | `test_docs_drift.py` | `reference/PARAMETERS.md` against every config field, default and processor parameter, and `reference/MESSAGES.md` against every message the package emits, in both directions. No message is logged as a warning: a warning is a `warnings.warn` |
 | `test_settings_are_read.py` | every declared setting and every config field reaches code that reads it. A setting that is accepted and then ignored fails. |
+| `test_schema_defaults.py` | every default below `run()` comes from the schema, and a saved network carries every setting its build reads, so `extract_embeddings` rebuilds it as it was trained |
 | `results_factory.py` | not a test: builds `Results` objects of any mode through the same `build_results` every mode uses, for the tests of `Results` and its plots |
 
 ### Estimators and bounds
@@ -84,6 +85,7 @@ Each file covers one functional area. Run
 | `test_empty_windows.py` | `drop_empty_windows`, its independence from the continuous coverage rule, retention reporting, and the mixed-unit warning |
 | `test_rows.py` | how rows lie in time: the geometry each builder records, the split's leak checks, the rigorous chunks and the block shuffle that read it, the phase shifter of strided rows, and the identity of the rows each task reports |
 | `test_views.py` | `SubsetView` by index, channel and time region, and temporal index conversion |
+| `test_preprocessing.py` | `Preprocessing(channel=..., time=...)` on each continuous stream apart: the channel transforms leave every quantity unchanged, whitening leaves the rate quantities unchanged and warns elsewhere, spike-time and categorical streams take neither, and the data check changes nothing |
 
 ### Generators and oracles
 
@@ -103,12 +105,19 @@ Each file covers one functional area. Run
 | `test_decoders.py` | decoder dispatch and the reconstruction-loss path end to end |
 | `test_shared_encoder.py` | weight identity, parameter count, the concat incompatibility, the dimensionality-mode default |
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |
+| `test_custom_critic.py` | `Model(custom_critic=...)` as a recipe built in every task: each repeat and each term of a difference trains its own, the joint term's pair reaches it, and an object is refused |
+| `test_input_scaling.py` | `Model(input_scaling='standard')`: every encoder's input scaled by the training rows, the statistics saved with the network and applied on rebuild, and binned spikes kept as counts |
+| `test_network_settings.py` | every `Model` setting reaching every network that has the part it names, and a warning for a setting no network of the call reads |
 
 ### Training
 
 | file | covers |
 |---|---|
-| `test_trainer.py` | the training loop, chunked evaluation, spectral tracking, custom smoothing |
+| `test_trainer.py` | the training loop, chunked evaluation, spectral tracking, custom smoothing, and the default stopping rule |
+| `test_epoch_rule.py` | the epoch the estimate is read at and the diagnosis of the held-out curve, on many noisy draws of curves of each shape |
+| `test_best_epoch.py` | that the network evaluated is the one at the reported best epoch, for each epoch rule and `peak_fraction` |
+| `test_held_out.py` | the held-out rows counted once, and a held-out set smaller than one training batch named |
+| `test_blocked_evaluation.py` | which rows the trainer evaluates, and an evaluation set larger than `max_eval_samples` scored in blocks |
 | `test_amp_and_names.py` | mixed-precision training and named-variable propagation into results |
 
 ### The `run()` API
@@ -138,6 +147,7 @@ Each file covers one functional area. Run
 | `test_permutation.py` | the permutation null: X moved by a circular shift or reordered blocks for windowed rows, raw series and spike times, one null per row, `p_value`, the default trial count, and the modes that compute no null |
 | `test_conditional.py` | CMI independence and correlation properties, the component details, categorical conditioning variables, spike and mixed streams on one grid |
 | `test_combining_terms.py` | the one rule for terms trained apart: measured, learned nothing or failed, repeats paired by position, terms that read different rows refused, the repeat rows and the rigorous rungs |
+| `test_paired_terms.py` | the terms of a difference split and evaluate the same rows, with or without a seed |
 | `test_rigorous_diagnostics.py` | fit diagnostics, their presence in corrected results, scalar rigorous analysis, chunk-range translation |
 | `test_sweep.py` | sweep mechanics: dimension inference, subsampling, processor-param sweeps, save-path collisions |
 | `test_transfer.py` | transfer entropy in both directions and the directionality index |
@@ -184,6 +194,9 @@ Each file covers one functional area. Run
 | windowing, alignment or a split | `test_data_processors.py`, `test_shift_windowing.py` |
 | an encoder's output shape or gradients | `test_models.py`, `test_cnn2d.py`, `test_branched_embedding.py` |
 | the training loop | `test_trainer.py` |
+| the epoch an estimate is read at, or a warning about the held-out curve | `test_epoch_rule.py`, `test_best_epoch.py`, `test_held_out.py` |
+| a setting that does not reach the network, or a default | `test_network_settings.py`, `test_settings_are_read.py`, `test_schema_defaults.py` |
+| units, scaling or preprocessing | `test_preprocessing.py`, `test_input_scaling.py` |
 | a `run()` API error | `test_run.py`, `test_validation.py`, `test_config.py` |
 | a named quantity | `test_quantities.py`, `test_quantities_sweep.py` |
 | conditional MI, transfer entropy, interaction information | `test_conditional.py`, `test_transfer.py`, `test_interaction.py` |

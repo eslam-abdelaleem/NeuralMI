@@ -447,8 +447,8 @@ has no direction to sphere along it.
 **`The channels of ... have a typical scale of ..., more than a factor of ... from unit scale`**
 The median standard deviation of the stream's channels is below 0.1 or above
 10. The networks start from weights sized for inputs near unit scale, and
-their estimate depends on units: a pair sharing 2 nats reads 2.05 at unit
-scale, 0.006 at a thousandth of it and 0 at a thousand times it.
+their estimate depends on units: a pair reads close to its true value at unit
+scale and close to 0 at a thousand times it or a thousandth of it.
 `Preprocessing(channel='zscore')` brings every channel to unit scale and leaves
 every quantity unchanged. The check does not fire when a channel transform is
 set.

@@ -845,8 +845,8 @@ nmi.run(x, y, preprocessing=Preprocessing(channel=PCA(n_components=8)))
 
 The channel transforms (`'zscore'`, `'zca'`, `'pca'`, `'copula'`) are
 invertible, so every quantity keeps its value, and they remove the dependence of
-the estimate on units: a pair sharing 2 nats reads 2.05 at unit scale, 0.006 at
-a thousandth of it and 0 at a thousand times it. `PCA(n_components=k)` with `k`
+the estimate on units: a pair reads close to its true value at unit scale and
+close to 0 at a thousand times it or a thousandth of it. `PCA(n_components=k)` with `k`
 below the channel count is the exception. It keeps the directions of largest
 variance and warns, since the information need not lie in them.
 
@@ -855,9 +855,8 @@ by AIC, and keeps the series' length. It leaves the rate quantities unchanged in
 the limit of long windows and shrinks their conditioning term
 ([THEORY.md](THEORY.md#getting-a-rate)). On smooth, finely sampled signals that
 term is several nats and the rate a small residual of it, which the networks
-read poorly. On a shared oscillation under larger private ones, `mi_rate` read
-0.135 to 0.154 against an exact 0.160 after whitening, and 0 or a failed
-repeat before. Every other quantity changes under it, and warns.
+read poorly. On a shared oscillation under larger private ones, `mi_rate` came
+close to the exact rate after whitening, and read 0 or failed before. Every other quantity changes under it, and warns.
 
 Spike-time and categorical streams take neither transform: their processors set
 their rows, and `Model(input_scaling='standard')` scales what an encoder
@@ -1201,8 +1200,8 @@ and places no cap on the reported value. An estimate near its ceiling calls for
 a larger `max_eval_samples` or for SMILE.
 
 SMILE is the less numerically robust of the two. Called through `nmi.run()` it
-produced no NaN over eight data draws. A `Trainer` assembled by hand produced
-NaN on six of six draws at one input geometry and four of four at another.
+produced no NaN on any data draw tried. A `Trainer` assembled by hand produced
+NaN on every draw tried at two input geometries.
 InfoNCE trained on every one of those draws. InfoNCE's read-out is bounded by
 construction where SMILE's clipped density ratio is bounded in variance only.
 `Estimator(name='smile', params={'clip': 5.0})` sets the clip. A lower clip
@@ -1223,8 +1222,8 @@ autocorrelation time of the rows. `runs` reports the value as `train_mi`.
 Repeats on the same rows return the same value, and `mode='rigorous'` gives the
 spread and corrects the bias. The neighbour search uses a k-d tree up to 20
 dimensions and compares every pair of rows beyond that, at a cost that grows
-with the square of the rows: 5000 rows of 1000 dimensions took about 15 s on a
-laptop CPU. `neural_mi.estimators.ksg_mi(x, y)` and `ksg_cmi(x, y, z)` take
+with the square of the rows: thousands of rows of a thousand dimensions take
+seconds on a laptop CPU. `neural_mi.estimators.ksg_mi(x, y)` and `ksg_cmi(x, y, z)` take
 arrays directly and return nats.
 
 KSG assumes continuous values. Spike windows, whose padded slots and counts tie,
