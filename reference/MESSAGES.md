@@ -752,7 +752,8 @@ The check every call runs on its streams before rows are built, after any
 `Preprocessing`. It gives each stream's channel count and the range of its
 channel scales and, for a rate quantity on a series, the largest share of a
 channel's variance that the channel's own past predicts linearly, from the
-autoregressive fit `ARWhitening` uses. A share above 90% means a large
+autoregressive fit `ARWhitening` uses, read from its first 100,000 rows. A
+share above 90% means a large
 conditioning term, of which the rate is a small residual, and the line
 suggests `Preprocessing(time='ar')`, which removes the term and leaves the rate
 unchanged. Spike-time and categorical streams are named only, since their

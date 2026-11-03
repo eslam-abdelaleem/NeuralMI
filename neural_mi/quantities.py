@@ -269,15 +269,16 @@ def _shifts_windows(run_kwargs: Dict[str, Any]) -> bool:
     return bool(BASE_PARAMS_SCHEMA['shift_windows']['default'] if value is None else value)
 
 
-def _prepared_series(series, processing, preprocessing, quantity: str):
+def _prepared_series(series, processing, preprocessing, quantity: str, encoder_scales: bool = False):
     """A quantity's series transformed as ``preprocessing`` asks and checked, before its rows are built.
-    A stream read by a spike-time or categorical processor takes no transform."""
+    A stream read by a spike-time or categorical processor takes no transform. ``encoder_scales`` says
+    the encoders scale their own inputs (``Model(input_scaling=...)``)."""
     from neural_mi.config import Preprocessing, as_config
     from neural_mi.preprocessing import RATE_QUANTITIES, prepare
     processors = ({name: resolved[0] for name, resolved in resolve_stream_processing(processing).items()}
                   if processing is not None else {})
     return prepare(series, processors, as_config(preprocessing, Preprocessing), quantity=f"{quantity}()",
-                   rate=quantity in RATE_QUANTITIES)
+                   rate=quantity in RATE_QUANTITIES, encoder_scales=encoder_scales)
 
 
 def _steps(name: str, first: int, last: int) -> list:
@@ -320,7 +321,9 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     # The series as Preprocessing(...) asks, and the data check, here and not in
     # run(), which receives rows built already (neural_mi/preprocessing.py).
     preprocessing = run_kwargs.pop('preprocessing', None)
-    series = _prepared_series(series, processing, preprocessing, quantity)
+    model = run_kwargs.get('model')
+    scales = (model.get('input_scaling') if isinstance(model, dict) else getattr(model, 'input_scaling', None))
+    series = _prepared_series(series, processing, preprocessing, quantity, encoder_scales=scales is not None)
     if preprocessing is not None:
         construction = {**construction, 'preprocessing': describe_preprocessing(preprocessing)}
     # Rows a stride thins shift under shift_windows: built at every step, of

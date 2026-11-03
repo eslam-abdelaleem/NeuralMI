@@ -414,8 +414,44 @@ def _fmt(value: float) -> str:
     return f"{value:.3g}"
 
 
+# The check reads at most this many rows at a time, and its statistics from the first this many: it runs on
+# every call and must not copy a large dataset.
+CHECK_ROWS = 100_000
+
+
+def _channel_view(chunk) -> np.ndarray:
+    """A stretch of a stream with its channels as columns, without converting its type."""
+    array = chunk.detach().cpu().numpy() if torch.is_tensor(chunk) else np.asarray(chunk)
+    if array.ndim == 1:
+        return array[:, None]
+    if array.ndim == 2:
+        return array
+    return np.moveaxis(array, 1, -1).reshape(-1, array.shape[1])
+
+
+def _channel_moments(data) -> Tuple[np.ndarray, np.ndarray]:
+    """Whether every value of each channel is finite, and each channel's standard deviation over every row,
+    read in stretches of :data:`CHECK_ROWS` rows whose moments combine exactly (Chan et al.), so no more
+    than one stretch is copied at a time."""
+    finite, n, mean, m2 = None, 0, None, None
+    for start in range(0, len(data), CHECK_ROWS):
+        block = _channel_view(data[start:start + CHECK_ROWS]).astype(float)
+        ok = np.isfinite(block).all(axis=0)
+        finite = ok if finite is None else finite & ok
+        count, block_mean = len(block), block.mean(axis=0)
+        block_m2 = ((block - block_mean) ** 2).sum(axis=0)
+        if mean is None:
+            n, mean, m2 = count, block_mean, block_m2
+            continue
+        delta, total = block_mean - mean, n + count
+        mean = mean + delta * count / total
+        m2 = m2 + block_m2 + delta ** 2 * n * count / total
+        n = total
+    return finite, np.sqrt(m2 / max(n, 1))
+
+
 def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]], *, quantity: str,
-                  rate: bool, preprocessing=None) -> None:
+                  rate: bool, preprocessing=None, encoder_scales: bool = False) -> None:
     """Report what the streams of a call look like before any network sees them, and change nothing.
 
     For each regularly sampled stream or array of rows: its channels, their
@@ -423,7 +459,10 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
     variance its own past predicts linearly. It warns about non-finite and
     constant channels and about channels far from unit scale, and suggests the
     ``Preprocessing`` option that addresses each. The report itself is
-    logged at the info level.
+    logged at the info level. ``encoder_scales`` says the encoders scale their
+    own inputs (``Model(input_scaling=...)``), and the scale is then no warning.
+    It reads every row in stretches, so it never copies a large stream, and
+    fits the own past on the first :data:`CHECK_ROWS` rows of each.
     """
     asked = describe(preprocessing) or {}
     parts = []
@@ -434,17 +473,15 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
         if kind in ('spike', 'categorical'):
             parts.append(f"{name}: {kind}, rows built by its processor")
             continue
-        columns, _ = _channels_last(_as_array(data))
-        finite = np.isfinite(columns).all(axis=0)
+        finite, std = _channel_moments(data)
         if not finite.all():
             bad = np.flatnonzero(~finite).tolist()
             warnings.warn(
                 f"{name} has non-finite values (NaN or infinite) in channel(s) {bad}. Every network that "
                 f"reads them produces NaN. Remove or fill them before the call.",
                 UserWarning, stacklevel=user_stacklevel())
-            parts.append(f"{name}: {columns.shape[1]} channels, {len(bad)} with non-finite values")
+            parts.append(f"{name}: {len(finite)} channels, {len(bad)} with non-finite values")
             continue
-        std = columns.std(axis=0)
         constant = np.flatnonzero(std <= (1e-8 * std.max() if std.max() > 0 else 0.0)).tolist()
         if constant:
             warnings.warn(
@@ -452,11 +489,11 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
                 f"Preprocessing(channel='zca'), no direction to sphere. Drop them before the call.",
                 UserWarning, stacklevel=user_stacklevel())
         live = np.delete(std, constant)
-        line = f"{name}: {columns.shape[1]} channels"
+        line = f"{name}: {len(std)} channels"
         if live.size:
             typical = float(np.median(live))
             line += f", scale {_fmt(live.min())} to {_fmt(live.max())}"
-            if not (1.0 / SCALE_BAND <= typical <= SCALE_BAND) and 'channel' not in asked:
+            if not (1.0 / SCALE_BAND <= typical <= SCALE_BAND) and 'channel' not in asked and not encoder_scales:
                 warnings.warn(
                     f"The channels of {name} have a typical scale of {_fmt(typical)}, more than a factor "
                     f"of {SCALE_BAND:g} from unit scale. The networks start from weights sized for inputs "
@@ -464,7 +501,8 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
                     f"near 0 at a thousandth or a thousand times its scale. Preprocessing(channel='zscore') "
                     f"brings every channel to unit scale and leaves every quantity unchanged.",
                     UserWarning, stacklevel=user_stacklevel())
-        if rate and kind == 'series' and live.size and len(columns) > 2:
+        if rate and kind == 'series' and live.size and len(data) > 2:
+            columns = _channel_view(data[:CHECK_ROWS]).astype(float)
             ar = ARWhitening().fit(columns[:, [j for j in range(columns.shape[1]) if j not in constant]])
             share = max(ar.predicted_)
             line += f", own past predicts up to {share:.1%} of a channel's variance"
@@ -477,11 +515,12 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
 
 
 def prepare(streams: Dict[str, Any], processors: Dict[str, Optional[str]], preprocessing, *, quantity: str,
-            rate: bool, check: bool = True) -> 'OrderedDict[str, Any]':
+            rate: bool, check: bool = True, encoder_scales: bool = False) -> 'OrderedDict[str, Any]':
     """The streams of a call transformed as ``preprocessing`` asks (:func:`apply_preprocessing`), and
     checked as the networks will receive them (:func:`check_streams`): the one step every path of a call
     takes before rows are built. ``check=False`` leaves the check to a caller that ran it already."""
     out = apply_preprocessing(streams, processors, preprocessing, quantity=quantity, rate=rate)
     if check:
-        check_streams(out, processors, quantity=quantity, rate=rate, preprocessing=preprocessing)
+        check_streams(out, processors, quantity=quantity, rate=rate, preprocessing=preprocessing,
+                      encoder_scales=encoder_scales)
     return out

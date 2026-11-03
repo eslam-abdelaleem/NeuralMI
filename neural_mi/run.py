@@ -1293,7 +1293,8 @@ def _run_flat(
             from .preprocessing import prepare as _prepare_streams
             _prepared = _prepare_streams(OrderedDict(x=x_data, y=y_data, w=w_data), _processor_of,
                                          preprocessing, quantity=f"mode='{mode}'", rate=False,
-                                         check=_rows is None)
+                                         check=_rows is None,
+                                         encoder_scales=base_params.get('input_scaling') is not None)
             x_data, y_data, w_data = _prepared['x'], _prepared['y'], _prepared['w']
         # conditional and interaction window W together with X inside each task
         # when X and W are both regular (continuous or categorical, in any
@@ -1675,7 +1676,8 @@ def _run_flat(
             from .preprocessing import prepare as _prepare_streams
             _prepared = _prepare_streams(OrderedDict(x=x_run, y=y_run, w=w_run), _processor_of,
                                          preprocessing, quantity="mode='transfer'", rate=True,
-                                         check=_rows is None)
+                                         check=_rows is None,
+                                         encoder_scales=base_params.get('input_scaling') is not None)
             x_run, y_run, w_run = _prepared['x'], _prepared['y'], _prepared['w']
             # The histories are built here, so the training tasks read them as given.
             base_params['processor_type_x'] = None
@@ -1815,7 +1817,8 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
         scale = float(np.std(sample.detach().cpu().numpy() if torch.is_tensor(sample) else sample))
         scales.append(f"{name} {scale:.3g}")
         kind = (processors or {}).get(name)
-        if kind in ('spike', 'categorical') and not 1.0 / SCALE_BAND <= scale <= SCALE_BAND:
+        if (kind in ('spike', 'categorical') and not 1.0 / SCALE_BAND <= scale <= SCALE_BAND
+                and base_params.get('input_scaling') is None):
             side = base_params.get(f'processor_params_{name}') or {}
             if kind == 'categorical':
                 held_in = "They hold the processor's encoding of the categories."

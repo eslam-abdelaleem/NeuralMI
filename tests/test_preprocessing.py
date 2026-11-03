@@ -238,3 +238,42 @@ class TestTheRowsPartOfTheCheck:
     def test_rates_from_fine_bins_warn_and_name_the_counts(self):
         messages = self._spike_call({'window_size': 0.1, 'bin_size': 0.001, 'normalize_bins': True})
         assert messages and 'normalize_bins=False keeps the counts' in messages[0]
+
+
+class TestTheCheckOnLargeStreams:
+
+    def test_it_reads_every_row_one_stretch_at_a_time(self, monkeypatch):
+        from neural_mi import preprocessing
+        monkeypatch.setattr(preprocessing, 'CHECK_ROWS', 40)
+        rng = np.random.default_rng(19)
+        x = rng.standard_normal((100, 2))
+        x[:40, 1] = 2.0                       # constant over the first stretch only
+        finite, std = preprocessing._channel_moments(x)
+        assert finite.all() and np.allclose(std, x.std(axis=0))
+        _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False)
+        assert not any('constant channel' in m for m in messages)
+        x[90, 0] = np.inf                     # in the last stretch
+        _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False)
+        assert any('non-finite values (NaN or infinite) in channel(s) [0]' in m for m in messages)
+
+
+class TestEncodersThatScaleTheirInputs:
+    """With Model(input_scaling=...) the encoders scale what they receive, so the scale is no warning."""
+
+    def test_the_stream_check_leaves_the_scale_to_them(self):
+        x = np.random.default_rng(20).standard_normal((200, 2)) * 1e3
+        _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False, encoder_scales=True)
+        assert not any('typical scale' in m for m in messages)
+
+    def test_the_rows_check_leaves_the_scale_to_them(self):
+        from neural_mi.run import _report_rows
+        rows = {'x': torch.rand(100, 3, 5) * 1e-3}
+        _, plain = _caught(_report_rows, 100, 'windows', 10, {}, rows, {'x': 'spike'})
+        _, scaled = _caught(_report_rows, 100, 'windows', 10, {'input_scaling': 'standard'}, rows, {'x': 'spike'})
+        assert any('typical scale' in m for m in plain) and not any('typical scale' in m for m in scaled)
+
+    def test_a_named_quantity_passes_it_to_its_check(self):
+        from neural_mi.quantities import _prepared_series
+        x = torch.randn(300, 2) * 1e3
+        _, messages = _caught(_prepared_series, {'x': x}, None, None, 'mi_rate', encoder_scales=True)
+        assert not any('typical scale' in m for m in messages)
