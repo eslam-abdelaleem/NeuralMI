@@ -233,6 +233,14 @@ class TestRigorousScalarAnalysis:
 class TestDecoderModels:
     """Test that all decoder classes produce the correct output shape."""
 
+    @staticmethod
+    def _settings(**given):
+        """The settings build_decoder requires, at their schema defaults unless given."""
+        from neural_mi.defaults import default_of
+        return {'n_layers': default_of('n_layers'), 'kernel_size': default_of('kernel_size'),
+                'nhead': default_of('nhead'), 'dropout': default_of('dropout'),
+                'output_activation': default_of('decoder_output_activation_x'), **given}
+
     @pytest.mark.parametrize("model_name,kwargs", [
         ('mlp', {}),
         ('cnn1d', {'kernel_size': 7}),
@@ -256,8 +264,7 @@ class TestDecoderModels:
             hidden_dim=hidden_dim,
             n_channels=n_channels,
             window_size=window_size,
-            n_layers=n_layers,
-            **kwargs,
+            **self._settings(n_layers=n_layers, **kwargs),
         )
         dec.eval()
         with torch.no_grad():
@@ -273,7 +280,7 @@ class TestDecoderModels:
         dec = build_decoder(
             embedding_model='mlp',
             embedding_dim=16, hidden_dim=32, n_channels=3, window_size=10,
-            output_activation=activation,
+            **self._settings(output_activation=activation),
         )
         dec.eval()
         z = torch.randn(4, 16)
@@ -288,7 +295,7 @@ class TestDecoderModels:
     def test_unknown_activation_raises(self):
         from neural_mi.models.decoders import build_decoder
         with pytest.raises(ValueError, match="Unknown output_activation"):
-            build_decoder('mlp', 16, 32, 3, 10, output_activation='relu')
+            build_decoder('mlp', 16, 32, 3, 10, **self._settings(output_activation='relu'))
 
 
 class TestDecoderInTraining:
