@@ -102,11 +102,15 @@ def kept_rows(n_rows: int, params: Dict[str, Any]) -> int:
 
 
 def row_identity(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Which rows a task reads, before any shift: ``count``, and where the dataset knows them ``origin``
+    """Which rows a task reads, before any shift: the identity a :class:`~neural_mi.data.plan.RowPlan` gave
+    the dataset, or ``count``, and where the dataset knows them ``origin``
     (the start of the grid the rows are cut from), ``step``, each stream's window (``spans``) and a digest
     of the kept rows' start times (``kept``), in the unit of the rows' geometry. Rows built before the
     task, passed in or windowed once by :func:`neural_mi.run`, are known by their count and the recorded
     geometry, and every task of a call receives the same ones."""
+    given = getattr(dataset, '_row_identity', None)
+    if given is not None:
+        return dict(given)
     geometry = row_geometry(params)
     identity = {'count': len(dataset), 'origin': None, 'step': geometry.step if geometry else None,
                 'spans': None, 'kept': None}

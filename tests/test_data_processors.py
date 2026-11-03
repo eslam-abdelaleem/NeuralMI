@@ -302,151 +302,25 @@ def test_spike_time_shift_effects(spike_data):
         assert np.allclose(shifted, orig)
 
 
-def test_paired_time_shift_positive(continuous_data, spike_data):
-    """A positive time shift re-tiles: windowed content changes and the
-        window count stays at the margin-reserved value. The grid slides over
-        fixed raw data, so the offset survives every window-membership test.
-    """
-    c_data, c_time = continuous_data
-    s_data = spike_data
-
-    x_dataset = ContinuousWindowDataset(c_data, c_time)
-    y_dataset = SpikeWindowDataset(s_data)
-
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
-
-    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
-    n_baseline = len(paired_dataset)
-    baseline_x = paired_dataset.x_data.detach().clone()
-    # Raw data must never be rewritten by a shift.
-    original_x_time = paired_dataset.x_dataset.time_vector.copy()
-
-    shift = 6.0
-    paired_dataset.time_shift(offset_x=shift, offset_y=shift)
-
-    assert np.allclose(paired_dataset.x_dataset.time_vector, original_x_time), (
-        "time_shift must not mutate the underlying raw time vector."
-    )
-    assert len(paired_dataset) == n_baseline, (
-        "Window count should stay fixed at the margin-reserved value for any "
-        "offset in [0, window_size)."
-    )
-    assert not torch.equal(paired_dataset.x_data.detach(), baseline_x), (
-        "A nonzero shift should change which raw samples land in each "
-        "window; identical content indicates the offset is being canceled "
-        "out (the Phase-0 re-tiling bug)."
-    )
-
-
-def test_paired_time_shift_mismatched_offsets_warns_and_uses_x(continuous_data, spike_data, caplog):
-    """offset_x and offset_y are expected to be equal in production (a single
-    shared grid drives both X and Y); a caller passing different values gets
-    a warning and only offset_x is honored."""
-    c_data, c_time = continuous_data
-    s_data = spike_data
-
-    x_dataset = ContinuousWindowDataset(c_data, c_time)
-    y_dataset = SpikeWindowDataset(s_data)
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
-
-    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
-    n_windows = len(paired_dataset)
-
-    with pytest.warns(UserWarning, match='offset_x=3.0 != offset_y=7.0'):
-        paired_dataset.time_shift(offset_x=3.0, offset_y=7.0)
-    assert paired_dataset.window_manager.t_start == paired_dataset._base_t_start + 3.0
-    assert len(paired_dataset) == n_windows
-
-
-def test_paired_time_shift_large(continuous_data, spike_data):
-    """A shift near the top of the valid range ([0, window_size)) still
-    genuinely re-tiles and keeps the window count fixed."""
-    c_data, c_time = continuous_data
-    s_data = spike_data
-
-    x_dataset = ContinuousWindowDataset(c_data, c_time)
-    y_dataset = SpikeWindowDataset(s_data)
-
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
-
-    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
-    n_baseline = len(paired_dataset)
-    baseline_x = paired_dataset.x_data.detach().clone()
-
-    shift_amount = 9.999  # just under window_size
-    paired_dataset.time_shift(offset_x=shift_amount, offset_y=shift_amount)
-
-    assert len(paired_dataset) == n_baseline
-    assert not torch.equal(paired_dataset.x_data.detach(), baseline_x)
-
-
-def test_paired_time_shift_very_small(continuous_data, spike_data):
-    """Even a very small nonzero shift should perturb windowed content --
-    it must never be silently absorbed back into a no-op."""
-    c_data, c_time = continuous_data
-    s_data = spike_data
-
-    x_dataset = ContinuousWindowDataset(c_data, c_time)
-    y_dataset = SpikeWindowDataset(s_data)
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
-
-    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
-    n_baseline = len(paired_dataset)
-    baseline_x = paired_dataset.x_data.detach().clone()
-
-    shift_amount = 1e-3
-    paired_dataset.time_shift(offset_x=shift_amount, offset_y=shift_amount)
-
-    assert len(paired_dataset) == n_baseline
-    assert not torch.equal(paired_dataset.x_data.detach(), baseline_x)
-
-
-def test_paired_time_shift_spike_spike_pair_changes_content():
-    """Pure spike+spike pair (no continuous side): content genuinely differs
-    between two offsets, and window count stays fixed across the shift."""
-    rng = np.random.default_rng(0)
-    x_data = [np.sort(rng.random(300) * 100.0)]
-    y_data = [np.sort(rng.random(250) * 100.0)]
-    x_dataset = SpikeWindowDataset(x_data)
-    y_dataset = SpikeWindowDataset(y_data)
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=10.0)
-
-    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
-    n_windows = len(paired_dataset)
-    content_a = paired_dataset.x_data.detach().clone()
-
-    paired_dataset.time_shift(offset_x=6.0, offset_y=6.0)
-    content_b = paired_dataset.x_data.detach().clone()
-
-    assert len(paired_dataset) == n_windows
-    assert not torch.equal(content_a, content_b), (
-        "Shifting a spike+spike pair by a nonzero offset should change which "
-        "spikes land in each window; identical content indicates the offset "
-        "is being canceled out (the Phase-0 re-tiling bug)."
-    )
-
-
-def test_paired_time_shift_window_count_fixed_across_sweep():
-    """Window count stays exactly at the margin-reserved value across a
-    sweep of offsets spanning [0, window_size)."""
+def test_a_spike_plan_moves_every_stream_and_keeps_its_rows():
+    """The rows of a spike plan that shifts keep their count at every offset, and their content moves:
+    each stream windowed again at the rows' starts plus the offset (neural_mi/data/plan.py)."""
+    from collections import OrderedDict
+    from neural_mi.data.plan import RowPlan, resolve_stream
     rng = np.random.default_rng(1)
     x_data = [np.sort(rng.random(400) * 150.0)]
     y_data = [np.sort(rng.random(350) * 150.0)]
-    x_dataset = SpikeWindowDataset(x_data)
-    y_dataset = SpikeWindowDataset(y_data)
-    window_size = 10.0
-    paired_dataset = PairedTemporalDataset(x_dataset, y_dataset, window_size=window_size)
-
-    paired_dataset.time_shift(offset_x=0.0, offset_y=0.0)
-    n_windows = len(paired_dataset)
-    assert n_windows > 0
-
+    plan = RowPlan(OrderedDict(x=resolve_stream(x_data, None, 'spike', {'window_size': 10.0,
+                                                                        'drop_empty_windows': False}),
+                               y=resolve_stream(y_data, None, 'spike', {'drop_empty_windows': False})),
+                   shift=True)
+    rows = plan.rows()
+    shifter, base = rows['shifter'], rows['windows']
     for offset in (0.0, 2.5, 5.0, 7.5, 9.9):
-        paired_dataset.time_shift(offset_x=offset, offset_y=offset)
-        assert len(paired_dataset) == n_windows, (
-            f"Window count changed at offset={offset}: expected {n_windows}, "
-            f"got {len(paired_dataset)}"
-        )
+        moved = shifter.windows_at(offset)
+        assert all(w.shape[0] == len(plan) for w in moved.values())
+        if offset:
+            assert not torch.equal(moved['x'], base['x'])
 
 
 def test_time_shift_roundtrip(continuous_data):

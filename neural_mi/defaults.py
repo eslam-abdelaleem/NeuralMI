@@ -28,10 +28,8 @@ BASE_PARAMS_SCHEMA = {
     'show_progress': {'type': bool, 'default': True},
     'device': {'type': (str, type(None), torch.device), 'default': None},
     'split_mode': {'type': str, 'default': 'blocked'},
-    'shift_time': {'type': bool, 'default': True},
-    # Cheap reslice-based alternative to shift_time for regularly-sampled
-    # data (neural_mi/data/shift_windowing.py); wired up for mode='estimate'
-    # with a real processor only, see run.py's _warn_if_shift_windows_dead.
+    # Every epoch the windows a processor cuts start one offset later, the same
+    # for every stream, drawn within one step (neural_mi/data/plan.py).
     'shift_windows': {'type': bool, 'default': True},
     'smoothing_sigma': {'type': float, 'min': 0.0, 'default': 1.0},
     'median_window': {'type': int, 'min': 1, 'default': 5},
@@ -69,7 +67,6 @@ BASE_PARAMS_SCHEMA = {
     'beta': {'type': float, 'min': 0.0, 'default': 1024.0},
     'train_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
     'n_test_blocks': {'type': int, 'min': 1, 'default': 5},
-    'max_index_reduction': {'type': float, 'min': 0.0, 'default': 0.05},
     'optimizer': {'type': (str, type), 'default': 'adam'},
     'optimizer_params': {'type': dict, 'default': {}},
     'lr_head_multiplier': {'type': (float, int, type(None)), 'min': 0.0, 'default': None},  # Hybrid only; None → same LR as encoders
@@ -273,13 +270,30 @@ MODE_KWARGS_SCHEMA = {
     },
 }
 
-PROCESSOR_PARAMS_SCHEMA = {
-    'continuous': ['window_size', 'step_size', 'min_coverage_fraction', 'sample_rate'],
-    'spike': ['window_size', 'step_size', 'max_spikes_per_window', 'n_seconds', 'sample_rate',
-              'no_spike_value', 'bin_size', 'normalize_bins', 'exclude_bursty_neurons',
-              'burst_threshold_multiplier', 'drop_empty_windows'],
-    'categorical': ['window_size', 'step_size', 'sample_rate', 'min_coverage_fraction', 'encoding'],
+
+# The processor settings' defaults, by processor. ``None`` means unset: a
+# window_size has to be given, a step_size of None is one window, and so on.
+PROCESSOR_DEFAULTS = {
+    'continuous': {'window_size': None, 'step_size': None, 'min_coverage_fraction': 0.2,
+                   'sample_rate': None},
+    'spike': {'window_size': None, 'step_size': None, 'max_spikes_per_window': None, 'n_seconds': None,
+              'sample_rate': None, 'no_spike_value': 0.0, 'bin_size': None, 'normalize_bins': False,
+              'exclude_bursty_neurons': False, 'burst_threshold_multiplier': 5.0,
+              'drop_empty_windows': True},
+    'categorical': {'window_size': None, 'step_size': None, 'sample_rate': None,
+                    'min_coverage_fraction': 0.2, 'encoding': 'majority_vote'},
 }
+
+
+# The settings each processor takes.
+PROCESSOR_PARAMS_SCHEMA = {processor: list(defaults) for processor, defaults in PROCESSOR_DEFAULTS.items()}
+
+
+def processor_setting(processor: str, params: Dict[str, Any], name: str) -> Any:
+    """Processor setting ``name`` from ``params``, or the schema's default for ``processor`` when
+    ``params`` lacks it."""
+    params = params or {}
+    return params[name] if name in params else copy.copy(PROCESSOR_DEFAULTS[processor][name])
 
 
 def default_of(name: str) -> Any:

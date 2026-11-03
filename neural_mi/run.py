@@ -18,10 +18,9 @@ from .analysis.task import _decoder_lambda
 from .analysis.assemble import build_results
 from collections import OrderedDict
 from dataclasses import fields
-from .data.handler import create_dataset
+
 from .data.rows import PHASES_KEY, RowGeometry, kept_rows, record_rows, row_geometry, window_rows
 from .utils import float_tensor, with_window_axis
-from .data.shift_windowing import shift_family, mixed_pair_sample_rate_ok
 from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
@@ -40,32 +39,6 @@ _MODE_CONFIG_CLASSES = {
     'transfer': Transfer, 'dimensionality': Dimensionality, 'conditional': Conditional,
     'interaction': Interaction, 'pairwise': Pairwise,
 }
-
-# Which modes window shifting reaches. Shifting needs the raw, unwindowed data
-# to survive until each training task, and it must not disturb a comparison
-# between runs.
-#
-# These modes train independent runs from raw data, or compare only a frozen,
-# pre-shift view (dimensionality, precision), so both mechanisms apply.
-_SHIFT_SAFE_MODES = ('estimate', 'sweep', 'pairwise', 'dimensionality', 'precision')
-# shift_windows (the regular-grid family) also reaches 'rigorous', which
-# translates each gamma chunk into a raw sample range before windowing it, and
-# 'lag', whose lag-shifted data is windowed inside each task. 'rigorous' stays
-# out of _SHIFT_SAFE_MODES because that tuple also admits spike+regular pairs
-# to shift_time, and a rigorous chunk cannot be cut as a sample range on one
-# side and a time range on the other.
-_SHIFT_WINDOWS_SAFE_MODES = _SHIFT_SAFE_MODES + ('rigorous', 'lag')
-# shift_time also reaches 'conditional' and 'interaction'. Their terms are
-# separate training runs, and the Trainer draws every term's shifts from a
-# generator seeded with the run's shared seed, so all terms land on the same
-# offset at the same epoch and the difference stays paired. They stay out of
-# _SHIFT_SAFE_MODES, which feeds _SHIFT_WINDOWS_SAFE_MODES: a regular X/Y with a
-# spike W would then defer windowing without the raw-deferred path that builds W.
-_SHIFT_TIME_SAFE_MODES = _SHIFT_SAFE_MODES + ('conditional', 'interaction')
-# shift_time reaches 'rigorous' for a spike+spike pair, whose chunks are cut as
-# time ranges on both sides.
-_SHIFT_TIME_RIGOROUS_SAFE_MODES = _SHIFT_TIME_SAFE_MODES + ('rigorous',)
-
 
 _MODES = ('estimate', 'sweep', 'rigorous', 'lag', 'precision', 'conditional',
           'interaction', 'transfer', 'pairwise', 'dimensionality')
@@ -524,37 +497,6 @@ def _accepted(values: dict, processor: Optional[str]) -> dict:
     return {k: v for k, v in values.items() if k in accepted}
 
 
-def _reshape_categorical_w_for_conditional(w_run_data, cat_dataset):
-    """Re-lay-out a categorical-processor W tensor for ``mode='conditional'``.
-
-    ``mode='conditional'`` builds XW by concatenating X and W along the channel axis, so both must share X's window-size axis. The
-    categorical processor's encodings don't produce that layout natively:
-
-    - ``'majority_vote'`` / ``'probability'`` collapse each window to a
-      single per-category summary, shape ``(N, C, n_categories)``: W has no
-      temporal extent within a window by construction. Folded here into
-      ``C * n_categories`` channels with a size-1 window axis; the caller
-      broadcasts that axis against X's window size.
-    - ``'full_trajectory'`` keeps full per-timepoint resolution but flattens
-      ``n_categories * window_size`` onto the last axis, shape
-      ``(N, C, n_categories * window_size)``. Un-flattened and folded here
-      into ``C * n_categories`` channels with the real window axis restored,
-      preserving the per-timepoint information.
-
-    Only reshapes the tensor handed to this specific call; the categorical
-    processor's own stored data and its behavior in every other mode are
-    untouched. The reshape itself lives in
-    :func:`~neural_mi.data.shift_windowing.categorical_to_channel_layout`,
-    shared with the shifted route.
-    """
-    from .data.shift_windowing import categorical_to_channel_layout
-    # Shared with the shifted route, which has to do the same re-layout before
-    # it can concatenate a categorical W onto X. One definition, so the two
-    # routes cannot drift on the un-flatten order.
-    return categorical_to_channel_layout(
-        w_run_data, cat_dataset.n_categories, cat_dataset.encoding)
-
-
 def run(
     x_data: Union[np.ndarray, torch.Tensor, List],
     y_data: Optional[Union[np.ndarray, torch.Tensor, List]] = None,
@@ -886,7 +828,6 @@ def _run_flat(
     train_subset_size: Optional[Union[int, str]] = None,
     test_subset_size: Optional[Union[int, str]] = None,
     track_spectral_history: bool = False,
-    max_index_reduction: float = 0.05,
     tau_grid: Optional[List[float]] = None,
     corrupt_target: str = 'x',
     corruption_method: str = 'rounding',
@@ -1051,7 +992,6 @@ def _run_flat(
         _inject(base_params, 'use_amp', use_amp)
 
         _inject(base_params, 'track_spectral_history', track_spectral_history)
-        _inject(base_params, 'max_index_reduction', max_index_reduction)
 
         _inject(base_params, 'processor_type_x', processor_type_x)
         _inject(base_params, 'processor_params_x', processor_params_x)
@@ -1239,32 +1179,8 @@ def _run_flat(
             """An array as a float32 tensor, 2-D input with its trailing window axis of 1."""
             return with_window_axis(float_tensor(arr))
 
-        # Window shifting needs the raw arrays to reach each training task, so a
-        # call that shifts leaves windowing to the tasks, as a processor sweep
-        # and mode='lag' do. _SHIFT_SAFE_MODES and its relatives (module scope)
-        # say which modes each mechanism reaches. Transfer entropy builds its
-        # histories itself and takes neither. Y without a processor reads with
-        # X's.
+        # Y without a processor reads with X's.
         _effective_processor_type_y = processor_type_y if processor_type_y is not None else processor_type_x
-        _shift_pair_family = shift_family(processor_type_x, _effective_processor_type_y)
-        # shift_windows reslices a regular grid: continuous or categorical on
-        # each side, in any combination.
-        _defer_for_shift_windows = (mode in _SHIFT_WINDOWS_SAFE_MODES and base_params.get('shift_windows')
-                                    and _shift_pair_family == 'regular')
-        # shift_time shifts the time axis itself. It applies to spike pairs,
-        # both sides in seconds, and to a spike stream paired with a regular one
-        # that has 'sample_rate' set, so that a shift means the same time on
-        # both sides. Regular pairs use shift_windows, which does the same job
-        # at lower cost. 'rigorous' takes the spike+spike case only.
-        _defer_for_shift_time = (
-            base_params.get('shift_time')
-            and (
-                (_shift_pair_family == 'spike' and mode in _SHIFT_TIME_RIGOROUS_SAFE_MODES)
-                or (_shift_pair_family == 'mixed' and mode in _SHIFT_TIME_SAFE_MODES
-                    and mixed_pair_sample_rate_ok(
-                        processor_type_x, processor_params_x, processor_params_y))
-            )
-        )
         # A W stream without a processor of its own reads with X's, and without
         # parameters of its own reads with X's parameters, kept to the keys its
         # processor takes. The same rule Processing documents for Y. A W that is
@@ -1296,96 +1212,62 @@ def _run_flat(
                                          check=_rows is None,
                                          encoder_scales=base_params.get('input_scaling') is not None)
             x_data, y_data, w_data = _prepared['x'], _prepared['y'], _prepared['w']
-        # conditional and interaction window W together with X inside each task
-        # when X and W are both regular (continuous or categorical, in any
-        # combination) under shift_windows, or both spike trains. The raw
-        # arrays are concatenated channel-wise and windowed on X's grid (the
-        # raw_deferred path of conditional.py and interaction.py), each block
-        # encoded by its own processor. rigorous=True cuts its chunks the same
-        # way. align='dual_branch' keeps W apart and is handled below.
-        _cond_var_type = w_processor_type if mode in ('conditional', 'interaction') else None
-        _regular_types = ('continuous', 'categorical')
-        _not_dual_branch = (mode != 'conditional' or analysis_kwargs.get('align') != 'dual_branch')
-        _defer_regular_conditional_interaction = (
-            mode in ('conditional', 'interaction') and _not_dual_branch
-            and base_params.get('shift_windows')
-            and processor_type_x in _regular_types and _cond_var_type in _regular_types
-        )
-        # A spike X with a spike W is always windowed inside the task. That is
-        # what lets shift_time reach the data, since the three-stream bundle
-        # built here is already windowed when training starts.
-        _defer_spike_conditional_interaction = (
-            mode in ('conditional', 'interaction') and _not_dual_branch
-            and processor_type_x == 'spike' and _cond_var_type == 'spike'
-        )
-        _defer_for_conditional_interaction = (
-            _defer_regular_conditional_interaction or _defer_spike_conditional_interaction
-        )
-        # align='dual_branch' never concatenates X and W. Under shift_windows
-        # each task windows X, W and Y together from the raw arrays
-        # (shift_windowing.try_build_shift_windows_dataset_tuple), and the term
-        # whose X is W alone cuts Y on W's grid.
-        _defer_for_dual_branch_shift_windows = (
-            mode == 'conditional' and analysis_kwargs.get('align') == 'dual_branch'
-            and base_params.get('shift_windows')
-            and processor_type_x in _regular_types and _cond_var_type in _regular_types
-            # The three-way shifter needs Y on a regular grid as well; without
-            # it the call would fall back to create_dataset with a tuple X.
-            and _effective_processor_type_y in _regular_types
-        )
-        if _defer_for_conditional_interaction or _defer_for_dual_branch_shift_windows:
-            # Every term windows W on X's grid, the concatenated array with X's
-            # window_size and step_size and the dual-branch terms with the
-            # grid of their X, so a W that sets different ones is refused.
-            for _key in ('window_size', 'step_size'):
-                _x_value = (processor_params_x or {}).get(_key)
-                _w_value = (w_processor_params or {}).get(_key)
-                if _w_value is not None and _w_value != _x_value:
-                    raise ValueError(
-                        f"mode='{mode}' windows W on X's window grid here. The two need the "
-                        f"same {_key}. Processing(w_params=...) sets {_key}={_w_value} and "
-                        f"Processing(x_params=...) sets {_x_value}. Remove {_key} from "
-                        f"w_params to use X's or set them equal."
-                    )
-        if _defer_for_conditional_interaction:
-            # It is also windowed on X's clock, so a different w_time is
-            # refused. Equal clocks, the usual case, pass.
-            if w_time is not None and x_time is not None:
-                _wt, _xt = np.asarray(w_time), np.asarray(x_time)
-                if _wt.shape != _xt.shape or not np.allclose(_wt, _xt):
-                    _alternative = (" or set Training(shift_windows=False), which windows W "
-                                    "on its own clock" if base_params.get('shift_windows') else "")
-                    raise ValueError(
-                        f"mode='{mode}' windows W on X's clock here. A w_time that differs "
-                        f"from x_time cannot be used. Resample W onto X's clock and drop "
-                        f"Processing(w_time=...){_alternative}."
-                    )
-        # W joins X and Y on one grid whenever it needs windowing and no task
-        # windows it later. Each grid starts at the latest start among its own
-        # streams, so a W windowed on a grid of its own would start somewhere
-        # else and share no window times with X and Y.
-        _bundle_w = (
-            mode in ('conditional', 'interaction')
-            and w_data is not None
-            and w_processor_type is not None
-            and not _defer_for_conditional_interaction
-            and not _defer_for_dual_branch_shift_windows
-        )
-        # shift_time leaves X and Y raw for each task to window, and a W joins
-        # their grid only where the three are windowed together, here.
-        if _bundle_w and _defer_for_shift_time:
-            raise ValueError(
-                f"mode='{mode}' cannot shift time with this W. Under shift_time, which is on by "
-                f"default, X and Y are windowed inside each training task because one of them "
-                f"holds spike times, and a {w_processor_type} W has no way to join their grid "
-                f"there. Pass Training(shift_time=False) to window X, Y and W once, on one grid."
-            )
+        # Every mode but transfer entropy, which builds its histories itself, cuts
+        # its rows from one plan of the streams it reads (neural_mi/data/plan.py).
+        # Under shift_windows the rows move each epoch, and a call whose rows
+        # move, a processor sweep and mode='lag' leave the cutting to each
+        # training task. Every other call cuts them once, here.
+        from .data.plan import RowPlan, Stream, resolve_stream
+        _windowed = processor_type_x is not None
+        _w_built = (mode in ('conditional', 'interaction') and w_data is not None
+                    and getattr(w_data, 'ndim', None) == 3)
+        _shifts = (bool(base_params.get('shift_windows')) and _windowed and mode != 'transfer'
+                   and not _w_built)
+        _streams = OrderedDict()
+        if _windowed and mode != 'transfer':
+            _streams['x'] = resolve_stream(x_data, x_time, processor_type_x, processor_params_x)
+            if mode in ('conditional', 'interaction') and w_data is not None and not _w_built:
+                _streams['w'] = resolve_stream(w_data, w_time, w_processor_type, w_processor_params)
+            if y_data is not None:
+                _streams['y'] = resolve_stream(
+                    y_data, y_time, _effective_processor_type_y,
+                    processor_params_y if processor_params_y is not None else processor_params_x)
         if mode == 'transfer':
             # Transfer entropy builds its histories from rows of a (T, C) series;
             # the transfer branch below puts the streams on one grid itself.
             x_run_data, y_run_data = x_data, y_data
-        elif (is_proc_sweep or mode == 'lag' or _defer_for_shift_windows or _defer_for_shift_time
-                or _defer_for_conditional_interaction or _defer_for_dual_branch_shift_windows):
+        elif mode in ('conditional', 'interaction'):
+            if w_data is None:
+                raise ValueError(f"`w_data` must be provided for mode='{mode}'.")
+            if y_data is None:
+                raise ValueError(f"y_data must be provided for mode '{mode}'.")
+            if _windowed:
+                _plan = RowPlan(_streams, shift=_shifts)
+                if _w_built:
+                    # A W built already joins the rows X and Y are cut into, one
+                    # for one, and the call's rows stay where they are.
+                    _xy = _plan.materialize()
+                    _plan = RowPlan(OrderedDict(x=_xy.streams['x'], w=Stream(w_data), y=_xy.streams['y']),
+                                    identity=_xy.identity())
+            else:
+                _plan = RowPlan(OrderedDict(x=Stream(x_data),
+                                            w=resolve_stream(w_data, w_time, w_processor_type, w_processor_params),
+                                            y=Stream(y_data)))
+            _n_rows = len(_plan)
+            if not _shifts:
+                _plan = _plan.materialize() if _plan.route != 'rows' else _plan
+            _rows_built = _plan.rows()
+            if _rows_built['retention'] is not None:
+                base_params['_window_retention'] = _rows_built['retention'][2]
+                base_params['_n_windows_built'] = _rows_built['retention'][0]
+                base_params['_n_windows_retained'] = _rows_built['retention'][1]
+            if _plan.geometry() is not None:
+                record_rows(base_params, _plan.geometry())
+            _warn_small_sample(_n_rows, 'windows' if _windowed else 'samples', base_params, mode,
+                               rows=dict(_rows_built['windows']),
+                               processors={name: s.processor for name, s in _streams.items()})
+            x_run_data, y_run_data = _plan, None
+        elif is_proc_sweep or mode == 'lag' or _shifts:
             logger.info("Windowing inside each training task.")
             x_run_data, y_run_data = x_data, y_data
             if not is_proc_sweep:
@@ -1425,80 +1307,41 @@ def _run_flat(
             if mode not in ('dimensionality', 'pairwise') and y_run_data is None:
                 raise ValueError(f"y_data must be provided for mode '{mode}'.")
         else:
-            # One grid, however many streams the mode needs. A conditioning
-            # stream joins the same call: built on its own it would derive its
-            # own grid origin and could end up sharing no window times with the
-            # pair it conditions.
-            streams = OrderedDict()
-            streams['x'] = dict(data=x_data, time=x_time,
-                                processor_type=processor_type_x,
-                                processor_params=processor_params_x)
-            if mode != 'dimensionality' or y_data is not None:
-                # A Y without parameters of its own reads X's, as in the
-                # two-argument form of create_dataset.
-                streams['y'] = dict(data=y_data, time=y_time,
-                                    processor_type=_effective_processor_type_y,
-                                    processor_params=(processor_params_y if processor_params_y is not None
-                                                      else processor_params_x))
-            if _bundle_w:
-                streams['w'] = dict(data=w_data, time=w_time,
-                                    processor_type=w_processor_type,
-                                    processor_params=w_processor_params)
-            dataset = create_dataset(streams)
-
+            # The pair's rows, cut once, here, from one plan of the streams.
+            _plan = RowPlan(_streams)
+            _rows_built = _plan.rows()
+            if mode in ('dimensionality', 'pairwise'):
+                # dimensionality and pairwise can operate on x_data alone
+                x_run_data = _rows_built['windows']['x']
+                y_run_data = _rows_built['windows'].get('y') if y_data is not None else None
+            else:
+                if y_data is None: raise ValueError(f"y_data must be provided for mode '{mode}'.")
+                x_run_data = _rows_built['windows']['x']
+                y_run_data = _rows_built['windows']['y']
             base_params['processor_type_x'] = None
             base_params['processor_type_y'] = None
-
             if base_params.get('processor_params_x') is None: base_params['processor_params_x'] = {}
             if base_params.get('processor_params_y') is None: base_params['processor_params_y'] = {}
             base_params['processor_params_x']['preprocessed'] = True
             base_params['processor_params_y']['preprocessed'] = True
-
-            # Windowing happens once, here -- the dataset that reaches the
-            # Trainer downstream is a plain, already-windowed PairedDataset
-            # with no window_manager of its own (processor_type_x/y were just
-            # wiped to None above). Record the rows' geometry now, while
-            # dataset.window_manager is still live (data/rows.py).
-            _wm = getattr(dataset, 'window_manager', None)
-            if _wm is not None:
-                record_rows(base_params, window_rows(_wm.window_size, _wm.resolve_step()))
-
+            # The rows' geometry, while the plan still knows it (data/rows.py).
+            record_rows(base_params, _plan.geometry())
             # Retention is reported per task (see analysis/task.py), since it
             # varies between tasks and one run-level scalar would misdescribe
             # every row but one on a sweep. When windowing happens here the
-            # tasks receive already-windowed tensors and never see this
-            # dataset, so hand the value down through base_params for them to
-            # report. Tasks that window for themselves prefer their own.
-            if getattr(dataset, 'window_retention', None) is not None:
-                base_params['_window_retention'] = dataset.window_retention
-                base_params['_n_windows_built'] = dataset.n_windows_built
-                base_params['_n_windows_retained'] = dataset.n_windows_retained
-
-            _n_built = dataset.x_data.shape[0] if getattr(dataset, 'x_data', None) is not None else 0
-            _warn_small_sample(_n_built, 'windows', base_params, mode,
-                               rows={'x': getattr(dataset, 'x_data', None), 'y': getattr(dataset, 'y_data', None)},
+            # tasks receive already-windowed tensors and never see the plan, so
+            # the value goes down through base_params for them to report.
+            if _rows_built['retention'] is not None:
+                base_params['_n_windows_built'], base_params['_n_windows_retained'], \
+                    base_params['_window_retention'] = _rows_built['retention']
+            _warn_small_sample(len(_plan), 'windows', base_params, mode,
+                               rows={'x': x_run_data, 'y': y_run_data},
                                processors={'x': processor_type_x, 'y': _effective_processor_type_y})
 
-            if mode in ('dimensionality', 'pairwise'):
-                # dimensionality and pairwise can operate on x_data alone
-                x_run_data = dataset.x_data
-                y_run_data = dataset.y_data if y_data is not None else None
-            else:
-                if y_data is None: raise ValueError(f"y_data must be provided for mode '{mode}'.")
-                x_run_data = dataset.x_data
-                y_run_data = dataset.y_data
-
-        _warn_if_shift_time_dead(base_params, mode, is_proc_sweep, processor_type_x,
-                                 processor_params_x, _effective_processor_type_y, processor_params_y,
-                                 user_set_keys=_pre_default_keys,
-                                 extra_reachable=_defer_spike_conditional_interaction)
-        _warn_if_shift_windows_dead(base_params, mode, processor_type_x, _effective_processor_type_y,
+        _warn_if_shift_windows_dead(base_params, mode, _shifts or (mode == 'transfer' and stride > 1),
                                     user_set_keys=_pre_default_keys,
-                                    extra_reachable=(_defer_regular_conditional_interaction
-                                                    or _defer_for_dual_branch_shift_windows
-                                                    # transfer entropy's histories shift
-                                                    # when a stride thins them
-                                                    or (mode == 'transfer' and stride > 1)))
+                                    why=("W was passed as rows built already, which cannot move with X "
+                                         "and Y" if _w_built else None))
 
         if mode not in _MODES:
             raise ValueError(
@@ -1597,46 +1440,15 @@ def _run_flat(
                    'channel_names_y': channel_names_y}
 
         elif mode in ('conditional', 'interaction'):
-            if w_data is None:
-                raise ValueError(f"`w_data` must be provided for mode='{mode}'.")
+            # x_run is the plan of X, W and Y, whose rows every term shares.
             _align = analysis_kwargs.get('align') if mode == 'conditional' else None
-            _deferred = (_defer_for_conditional_interaction
-                         or (mode == 'conditional' and _defer_for_dual_branch_shift_windows))
-            if _deferred:
-                # Raw W, windowed together with X inside the task.
-                w_run = w_data
-            elif _bundle_w:
-                # Built above as a third stream on X and Y's grid.
-                _w_stream = dataset.stream('w')
-                w_run = _w_stream.data
-                if w_processor_type == 'categorical':
-                    w_run = _reshape_categorical_w_for_conditional(w_run, _w_stream)
-            else:
-                w_run = w_data if torch.is_tensor(w_data) else torch.from_numpy(np.array(w_data)).float()
-            if _use_rigorous and mode == 'conditional' and _defer_for_dual_branch_shift_windows:
-                raise NotImplementedError(
-                    "rigorous=True is not supported together with Conditional(align='dual_branch') "
-                    "and shift_windows=True. The gamma ladder cuts every stream at X's window "
-                    "boundaries. The dual-branch conditioning stream has a window geometry of "
-                    "its own and its chunks would not line up with X's. Pass shift_windows=False "
-                    "or drop rigorous=True."
-                )
-            ctx = {'align': _align, 'raw_deferred': _deferred, 'w_processor_type': w_processor_type,
-                   'w_processor_params': w_processor_params}
+            ctx = {'align': _align}
             if _use_rigorous:
                 from .analysis.conditional import _cmi_rigorous_scalar
                 from .analysis.interaction import _ii_rigorous_scalar
-                if mode == 'conditional':
-                    _scalar, _extra = _cmi_rigorous_scalar, {'w_data': w_run, 'c_data': w_run}
-                    _extra_kwargs = {'align': _align, 'raw_deferred': _defer_for_conditional_interaction,
-                                     'w_processor_type': w_processor_type}
-                else:
-                    _scalar, _extra = _ii_rigorous_scalar, {'w_data': w_run}
-                    _extra_kwargs = {'raw_deferred': _defer_for_conditional_interaction,
-                                     'w_processor_type': w_processor_type}
-                ctx.update(rigorous=True, scalar_fn=_scalar, extra_data=_extra,
-                           extra_kwargs=_extra_kwargs,
-                           raw_deferred=_defer_for_conditional_interaction,
+                ctx.update(rigorous=True,
+                           scalar_fn=_cmi_rigorous_scalar if mode == 'conditional' else _ii_rigorous_scalar,
+                           extra_kwargs={'align': _align} if mode == 'conditional' else None,
                            rigorous_kwargs=_scalar_rigorous_kwargs(
                                analysis_kwargs, curvature_t_threshold, min_gamma_points,
                                confidence_level))
@@ -1785,7 +1597,8 @@ def _deferred_window_count(x_data, base_params: dict, largest_lag: float = 0.0):
             return None
         t_start, t_end = _spike_population_extent(x_data, base_params, 'x')
         step = resolve_step_size(window, wp.get('step_size'))
-        span = t_end - t_start - largest_lag
+        # A plan that shifts leaves one step at its end (neural_mi/data/plan.py).
+        span = t_end - t_start - largest_lag - (step if base_params.get('shift_windows') else 0.0)
         return max(0, int((span - window) // step) + 1), 'windows'
     if getattr(x_data, 'ndim', None) is None:
         return None
@@ -1794,10 +1607,10 @@ def _deferred_window_count(x_data, base_params: dict, largest_lag: float = 0.0):
     if getattr(x_data, 'ndim', None) != 2:
         return None
     period = 1.0 / wp['sample_rate'] if wp.get('sample_rate') else 1.0
-    step = resolve_step_size(window, wp.get('step_size'))
+    step = seconds_to_samples(resolve_step_size(window, wp.get('step_size')), period)
     n_rows = x_data.shape[0] - int(round(largest_lag / period))
-    return safe_n_windows(max(n_rows, 0), seconds_to_samples(window, period),
-                          seconds_to_samples(step, period)), 'windows'
+    return safe_n_windows(max(n_rows, 0), seconds_to_samples(window, period), step,
+                          step - 1 if base_params.get('shift_windows') else 0), 'windows'
 
 
 def _held_out_count(n_rows: int, base_params: dict) -> int:
@@ -1896,119 +1709,21 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
     )
 
 
-# Modes/paths where windowing is deferred to the worker that trains the model,
-# so the dataset it builds is still a genuine PairedTemporalDataset with a
-# live WindowManager -- shift_time (and anything else gated on
-# is_temporal at the Trainer) is actually reachable there. Everywhere else,
-# run.py windows the data once, up front, and hands the Trainer an
-# already-windowed static PairedDataset that has never heard of time.
-def _shift_time_is_reachable(mode: str, is_proc_sweep: bool,
-                             processor_type_x: Optional[str] = None,
-                             effective_processor_type_y: Optional[str] = None,
-                             processor_params_x: Optional[dict] = None,
-                             processor_params_y: Optional[dict] = None) -> bool:
-    if is_proc_sweep or mode == 'lag':
-        return True
-    _family = shift_family(processor_type_x, effective_processor_type_y)
-    if mode == 'rigorous':
-        # Narrower than the other modes below: 'rigorous' only supports the
-        # 'spike' family's chunk-to-raw-time-range translation, not 'mixed'.
-        return _family == 'spike'
-    if mode not in _SHIFT_TIME_SAFE_MODES:
-        return False
-    if _family == 'spike':
-        return True
-    if _family == 'mixed':
-        return mixed_pair_sample_rate_ok(processor_type_x, processor_params_x,
-                                         processor_params_y)
-    return False
-
-
-def _warn_if_shift_time_dead(base_params: dict, mode: str, is_proc_sweep: bool,
-                             processor_type_x: Optional[str] = None,
-                             processor_params_x: Optional[dict] = None,
-                             effective_processor_type_y: Optional[str] = None,
-                             processor_params_y: Optional[dict] = None,
-                             user_set_keys: Optional[set] = None,
-                             extra_reachable: bool = False) -> None:
-    """Warn when an explicit shift_time=True cannot take effect on this call.
-
-    This is the earliest point that knows both the mode and whether windowing
-    happens inside the training tasks. Only an explicit setting warns (a key in
-    `user_set_keys`, the keys present before defaults were applied); the
-    schema default stays silent.
-
-    shift_time is reachable in mode='lag', in a processor sweep, and in the
-    modes of `_SHIFT_TIME_SAFE_MODES` for a spike+spike pair or a spike stream
-    paired with a regular one that has 'sample_rate' set (see
-    `shift_windowing.mixed_pair_sample_rate_ok`). Regular pairs use
-    shift_windows, which reslices without rebuilding datasets.
-
-    extra_reachable : bool, optional
-        True when the caller knows of a path this function cannot derive from
-        the mode and processors alone: a spike X with a spike W in
-        conditional or interaction, which is windowed inside the task.
-    """
-    if user_set_keys is not None and 'shift_time' not in user_set_keys:
-        return
-    if base_params.get('shift_time') is not True:
-        return
-    if extra_reachable:
-        return
-    if _shift_time_is_reachable(mode, is_proc_sweep, processor_type_x,
-                                effective_processor_type_y, processor_params_x, processor_params_y):
-        return
-    _family = shift_family(processor_type_x, effective_processor_type_y)
-    _mixed_hint = ""
-    if mode in _SHIFT_TIME_SAFE_MODES and _family == 'mixed':
-        _mixed_hint = (
-            " This pair mixes 'spike' with a continuous or categorical stream, whose "
-            "shift is counted in samples unless it has a 'sample_rate'. Set "
-            "'sample_rate' for that stream in Processing(x_params=...) or "
-            "Processing(y_params=...) to enable shifting."
-        )
-    warnings.warn(
-        f"shift_time=True has no effect for mode='{mode}' with this configuration. "
-        f"The data are windowed once before training here. Training then receives "
-        f"fixed windows with no time left to shift. shift_time takes effect where "
-        f"windowing happens inside each training task: in mode='lag', in mode='sweep' "
-        f"with a processor parameter such as window_size in sweep_grid, and in the "
-        f"modes {list(_SHIFT_TIME_SAFE_MODES)} for a 'spike'+'spike' pair or for "
-        f"a spike stream paired with a continuous or categorical one that has "
-        f"'sample_rate' set. mode='rigorous' takes it for a 'spike'+'spike' pair."
-        f"{_mixed_hint} For continuous and categorical data, "
-        f"Training(shift_windows=True) does the same job at lower cost. Set "
-        f"Training(shift_time=False) to silence this warning.",
-        UserWarning,
-        stacklevel=user_stacklevel(),
-    )
-
-
-def _warn_if_shift_windows_dead(base_params: dict, mode: str, processor_type_x: Optional[str],
-                                effective_processor_type_y: Optional[str],
-                                user_set_keys: Optional[set] = None,
-                                extra_reachable: bool = False) -> None:
+def _warn_if_shift_windows_dead(base_params: dict, mode: str, shifts: bool,
+                                user_set_keys: Optional[set] = None, why: Optional[str] = None) -> None:
     """Warn when an explicit shift_windows=True cannot take effect on this call.
 
-    shift_windows reslices a regular grid, so it needs both X and Y read by a
-    continuous or categorical processor (in any combination) and a mode in
-    `_SHIFT_WINDOWS_SAFE_MODES`. Spike data and unprocessed input have no grid
-    to reslice. Only an explicit setting warns, as for
-    `_warn_if_shift_time_dead`.
-
-    extra_reachable : bool, optional
-        True when conditional or interaction window a regular W together with
-        X inside the task, a path this function cannot derive from X and Y.
+    Rows a processor cuts from raw streams move in every mode but transfer
+    entropy, and rows built by offset move when a stride above one thins them.
+    ``shifts`` says whether this call's rows move. Only an explicit setting
+    warns (a key in `user_set_keys`, the keys present before defaults were
+    applied); the schema default stays silent.
     """
     if user_set_keys is not None and 'shift_windows' not in user_set_keys:
         return
-    if base_params.get('shift_windows') is not True:
+    if base_params.get('shift_windows') is not True or shifts or base_params.get(PHASES_KEY):
         return
-    if extra_reachable or base_params.get(PHASES_KEY):
-        return
-    if mode in _SHIFT_WINDOWS_SAFE_MODES and shift_family(processor_type_x, effective_processor_type_y) == 'regular':
-        return
-    if processor_type_x is None and (row_geometry(base_params) is not None or mode == 'transfer'):
+    if why is None and (row_geometry(base_params) is not None or mode == 'transfer'):
         # Rows built by offset at every step of their series (stride=1).
         warnings.warn(
             f"shift_windows=True has no effect here: the rows start one step apart, so a shift "
@@ -2018,14 +1733,8 @@ def _warn_if_shift_windows_dead(base_params: dict, mode: str, processor_type_x: 
         )
         return
     warnings.warn(
-        f"shift_windows=True has no effect for mode='{mode}' with "
-        f"Processing(x={processor_type_x!r}) and Y read by "
-        f"{effective_processor_type_y!r}. It takes effect for the modes "
-        f"{list(_SHIFT_WINDOWS_SAFE_MODES)} when X and Y are both continuous or "
-        f"categorical (for example Processing(x='continuous', "
-        f"x_params={{'window_size': ...}}, y='categorical')). Spike data have no regular "
-        f"sampling grid to reslice. They use Training(shift_time=True). Set "
-        f"Training(shift_windows=False) to silence this warning.",
-        UserWarning,
-        stacklevel=user_stacklevel(),
+        f"shift_windows=True has no effect for mode='{mode}' here: "
+        f"{why or 'no processor windows the streams, so there are no windows to move'}. "
+        f"Set Training(shift_windows=False) to silence this warning.",
+        UserWarning, stacklevel=user_stacklevel(),
     )

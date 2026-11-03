@@ -66,9 +66,9 @@ def _run_pair_task(args: tuple) -> Dict[str, Any]:
     sweep = ParameterSweep(x_data=xi, y_data=yj, base_params=base_params.copy())
     # A raw (not already-windowed-3-D) per-channel slice -- a 2-D continuous/
     # categorical array/tensor, or a length-1 list of raw spike times -- means
-    # windowing was deferred to this pair (shift_windows/shift_time
-    # reachability); is_proc_sweep=True routes it through per-pair windowing
-    # instead of treating it as already pre-processed.
+    # each pair windows its own rows, which move under shift_windows;
+    # is_proc_sweep=True routes it through per-pair windowing instead of
+    # treating it as already pre-processed.
     _is_raw = not (hasattr(xi, 'ndim') and xi.ndim == 3)
     results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=_is_raw)
     def _agg(field):
@@ -182,10 +182,10 @@ def run_pairwise_mi(
           ``mi_mean``, ``mi_std``.
         - ``'n_channels'`` (int or (int, int)): number of channels.
     """
-    # A list means raw spike data (one spike-time array per neuron), windowing
-    # deferred to this call (shift_time reachability). A 2-D array/tensor means
-    # raw (T, n_channels) continuous/categorical data, windowing deferred the
-    # same way (shift_windows reachability -- run.py's _SHIFT_SAFE_MODES). A
+    # A list means raw spike data (one spike-time array per neuron), windowed
+    # by each pair's task, whose rows move under shift_windows. A 2-D
+    # array/tensor means raw (T, n_channels) continuous/categorical data,
+    # windowed the same way. A
     # 3-D array/tensor means already-windowed (n_samples, n_channels,
     # window_size) data, the ordinary eager-windowing path. Either way each
     # channel pair is windowed/resliced independently by its own worker once

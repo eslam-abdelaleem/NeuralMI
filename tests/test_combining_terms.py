@@ -194,8 +194,10 @@ class TestInteractionInformation:
             return canned.pop(0)
 
         monkeypatch.setattr(sweep_module.ParameterSweep, 'run', fake_run)
-        x, y, w = (torch.zeros(20, 1, 1) for _ in range(3))
-        out, caught = _caught(run_interaction_information, x, y, w, {'output_units': 'nats'})
+        from collections import OrderedDict
+        from neural_mi.data.plan import RowPlan, Stream
+        plan = RowPlan(OrderedDict((name, Stream(torch.zeros(20, 1, 1))) for name in ('x', 'w', 'y')))
+        out, caught = _caught(run_interaction_information, plan, {'output_units': 'nats'})
         assert out['interaction_info'] == pytest.approx(0.8 - 0.1 - 0.2)
         assert out['mi_estimate_std'] is None or math.isnan(out['mi_estimate_std'])
         assert any('1 of 2 repeats are left out' in str(c.message) and 'I(W;Y) in 1' in str(c.message)
@@ -283,18 +285,19 @@ class TestTermsReadTheSameRows:
         assert combine_terms(terms)['value'] == pytest.approx(0.2)
 
     @pytest.mark.parametrize('mode', ['conditional', 'interaction'])
-    def test_spike_times_with_a_late_w_are_refused(self, mode):
-        # Each term starts its grid at the first spike of its own streams: the joint term at 0 s, the
-        # conditioning term where W starts, 40 s later.
+    def test_spike_times_with_a_late_w_read_one_plan(self, mode):
+        # Every term reads the rows of one plan of X, W and Y, which starts where the latest stream
+        # starts: W, 40 s in.
         import neural_mi as nmi
         rng = np.random.default_rng(0)
         x, y, w = _spikes(rng, 0.0), _spikes(rng, 0.0), _spikes(rng, 40.0)
         spike = {'window_size': 0.5}
         processing = nmi.Processing(x='spike', x_params=spike, y='spike', y_params=spike, w='spike', w_params=spike)
         config = (nmi.Conditional(w_data=w) if mode == 'conditional' else nmi.Interaction(w_data=w))
-        with pytest.raises(ValueError, match=r'read different rows \(400 rows starting at .*, against 320 rows'):
-            nmi.run(x, y, mode=mode, processing=processing, estimator='ksg', show_progress=False,
-                    **{mode: config})
+        result = nmi.run(x, y, mode=mode, processing=processing, estimator='ksg', show_progress=False,
+                         **{mode: config})
+        sizes = set(result.details[0]['trainings']['eval_size'])
+        assert len(sizes) == 1 and sizes.pop() <= 320
 
     @pytest.mark.parametrize('mode', ['conditional', 'interaction'])
     def test_streams_on_one_grid_combine(self, mode):

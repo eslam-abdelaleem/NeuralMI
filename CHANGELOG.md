@@ -149,6 +149,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- `Training(shift_time=...)`, folded into `shift_windows`: one offset per epoch
+  moves every stream, spike or regular. `Output(max_index_reduction=...)`,
+  which bounded the windows a time shift could drop, now that a shift drops
+  none. The conditional and interaction code that merged X and W before
+  windowing, the trim tolerances that reconciled their row counts, and the
+  window-shift builders behind them, all replaced by the row plan.
+
 - `embedding_model='dual_branch'` and `Model(branch_model=...)`. A joint X whose
   parts have different window lengths (`Conditional(align='dual_branch')`,
   `mi_rate`, `instantaneous_exchange`, `directed_information_rate`) is branched
@@ -443,18 +450,51 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   first spike of its own streams and dropped the windows where one of them was
   silent. A W that started 40 s after X gave the joint term 400 rows from 0 s
   and the conditioning term 320 from 40 s, and the default call read 0.25 bits
-  of conditional MI where the truth is 0. Each task now reports which rows it
-  read (`data.rows.row_identity`: their count, and where the task knows them
-  the grid's origin and step, the kept rows and each stream's window), and
-  `sweep.combine_terms` refuses a repeat whose terms read different rows,
-  naming both. Under `Conditional(align='dual_branch')` with `shift_windows`, a
-  W with a window or step of its own was cut on a grid of its own, and the
-  conditioning term cut Y on that grid: the call crashed where W gave fewer rows
-  than X and read 0.18 nats against 0.55 otherwise. W now needs X's window and
-  step there, as on the path that concatenates them. Spike X and Y with a
-  continuous or categorical W crashed under the default `shift_time` with an
-  `UnboundLocalError` and are now refused with a message that names
-  `Training(shift_time=False)`.
+  of conditional MI where the truth is 0. Under
+  `Conditional(align='dual_branch')` with `shift_windows`, a W with a window or
+  step of its own was cut on a grid of its own and the conditioning term cut Y
+  on that grid: the call crashed where W gave fewer rows than X and read 0.18
+  nats against 0.55 otherwise. Spike X and Y with a continuous or categorical W
+  crashed under the default `shift_time` with an `UnboundLocalError`. With a
+  step longer than the window, X and Y were shifted by different amounts on some
+  epochs. Inside a task Y could lose the settings it took from X, interaction
+  information read W with X's settings, and the bursty-neuron exclusion was
+  fitted per term, so the terms could exclude different neurons of W.
+  `run()` now builds one row plan per call and processor configuration
+  (`neural_mi.data.plan.RowPlan`) over every stream any term reads: the grid
+  from the latest start to the earliest end, one window and one step, each
+  stream's settings resolved once from the schema, the windows kept where every
+  stream is valid, and the fits made per stream. Every term selects its streams
+  from the plan and every task builds its rows from it, so the terms read the
+  same rows by construction. The rigorous ladder cuts the plan into the plans of
+  its chunks, and a permutation trial moves X inside the plan without moving its
+  grid. Each task also reports which rows it read
+  (`data.rows.row_identity`), and `sweep.combine_terms` refuses a repeat whose
+  terms read different rows. On the example above both terms read the same 319
+  rows from 40 s. A stream that asks for a
+  window or a step other than the grid's is refused, with a pointer to
+  `nmi.offset_quantity` for a stream placed at offsets of its own. Under
+  `align='dual_branch'` with `rigorous=True` and shifting, which was refused,
+  each chunk is a plan of its own.
+
+- Window shifting is one mechanism. Each epoch draws one offset within one
+  step, and every stream's windows start that much later: the rows stay the
+  same rows, so the split, the evaluation rows and the shifts are the same in
+  every term. The grid leaves one step at its end for the shift. On a grid in
+  time (spike streams, irregular clocks, clocks that start apart) a row whose
+  moved window fails a stream's rule keeps its unmoved windows for that epoch,
+  so training never sees a silent window the estimate leaves out. Before,
+  spike streams were shifted by up to one window with the windows kept per
+  epoch, and regular streams within one step with a shift clamped per stream.
+  `shift_windows` now reaches every mode that windows raw streams.
+
+- The processor settings' defaults lived in `handler.py` and the dataset
+  classes. They are in the schema (`defaults.PROCESSOR_DEFAULTS`), which every
+  stream's settings are resolved from, and PARAMETERS.md is checked against it.
+  `drop_empty_windows=True` stays the default and is documented as the one
+  default that changes the data, since in spike times silence looks the same as
+  no recording. On the rows the quantities defined by time offsets build, which
+  keep every window, setting it warns that it has no effect.
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.

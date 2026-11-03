@@ -5,7 +5,7 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C3, C5 to C13 and C16 have landed. C17, C4, C18, C14 and C15 remain, in
+C1 to C3, C5 to C13, C16 and C17 have landed. C4, C18, C14 and C15 remain, in
 that order. C4 is built on C17's row plan, and C14 and C15 are written against
 the defaults, which C18 may change. The investigation's scripts and results,
 with the exact-value models C15 can build on, are in `scratch/` until the list
@@ -17,75 +17,6 @@ oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. C17 and C18 come from a second investigation,
 of how the terms of a difference get their rows and of window shifting. Values
 are in nats unless marked as bits.
-
-### C17. One row plan per quantity
-
-**Now.** A quantity's rows (the window times, the windows kept, the split and
-the shift) are decided per term, from the streams each term reads. The terms
-are assumed to agree because they share seeds. They disagree wherever their
-streams do:
-
-- Spike X with spike W in `mode='conditional'` or `'interaction'`. Each term
-  starts its grid at the first spikes of its own streams, so the terms train
-  and evaluate on different stretches of time. This holds under the defaults,
-  with or without shifting, and the code passes it on to rigorous runs and
-  permutation nulls. The default call reads 0.25 bits of conditional MI where
-  the truth is 0.
-- `Conditional(align='dual_branch')` with `shift_windows` and a W window unlike
-  X's. The terms step on different grids, and the conditioning term cuts Y on
-  W's grid. The call crashes where W yields fewer rows than X and is wrong
-  otherwise (0.18 nats against an intended 0.55).
-
-Smaller failures have the same cause:
-
-- Spike X and Y with a regular W crash under the default `shift_time`.
-  `run.py:1599` reads W from a dataset that the deferred path never built.
-- With a step larger than the window, X and Y drift apart on some epochs.
-- Inside a task, Y loses the settings it inherits from X.
-- The bursty-neuron exclusion is fitted per term, so the terms can drop
-  different neurons of W.
-- Interaction reads W with X's processor settings.
-
-Two more things for the plan to settle. On the route of the named quantities
-`drop_empty_windows` has no effect, because that route builds its rows without
-window validation, and nothing says so. The processor settings' defaults
-(`drop_empty_windows`, `min_coverage_fraction`, `encoding` and the rest) are
-written in `handler.py` and in the dataset classes, not in the schema.
-
-**Fix.** A guard has landed first. Every task returns the identity of its rows
-(`data.rows.row_identity`: count, origin, step, each stream's span and a digest
-of the kept rows), `combine_terms` refuses terms whose rows differ, and the
-crash route is refused with a message. Under `align='dual_branch'` with
-`shift_windows`, W now needs X's window and step, as on the concatenated path.
-The guard turns the two wrong results above into refusals. Spike X with spike W
-then runs only where every term's rows happen to coincide, and interaction
-information has no route for a spike X with a continuous W.
-
-Then one row plan per call and processor configuration. `run()` builds it over
-every stream any term reads, and it holds:
-
-- the grid: its origin is the latest start over all streams, with one step and
-  the window times that follow from them;
-- each stream's span and settings, resolved once from the schema;
-- the fits to the data, made once: the category count, the bursty exclusion and
-  the spike slot width;
-- the windows kept, folded over all streams;
-- for each seed and repeat, the split, the evaluation rows and the shift
-  schedule.
-
-A term only selects streams from the plan. One epoch offset moves every stream
-together, and `shift_time` folds into `shift_windows`. `RowGeometry`,
-`offsets.build_rows`, `create_dataset`, the rigorous `_Chunker` and the
-permutation nulls become views or producers of the plan.
-
-**Decided.** `drop_empty_windows=True` stays the default. The docs name it as
-the one default that changes the data and say why: in spike times, silence
-looks the same as no recording. Under the plan a row is kept only where every
-spike stream fired, in every term. The named quantities' route says the setting
-has no effect there. A grid has one window length and one step. A stream that
-asks for another (W or Y) is refused, and the message says to set them equal or
-to place the stream with `offset_quantity`, whose spec states where each group
-sits.
 
 ### C4. A joint X travels as a pair everywhere
 
@@ -490,7 +421,11 @@ ladder.
 
 ## Smaller items
 
-**Found while fixing the correctness items.** `mode='transfer'` never runs the
+**Found while fixing the correctness items.** A spike exactly at a window's
+start is stored as 0.0, the default `no_spike_value`, and so reads as an empty
+slot. The grid starts at the latest stream's first spike, so that stream's
+first window always holds one such spike. A `no_spike_value` outside every
+window's range (-1, say) would tell the two apart. `mode='transfer'` never runs the
 small-sample checks, since its branch of `run.py` passes raw series.
 `Training(min_reliable_samples=...)` moves only the rigorous ladder's line for
 small chunks, not the call's held-out line or the curve warnings' note, whose

@@ -17,8 +17,8 @@ from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC, NONPARAMETRIC_CONDIT
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import _EMBEDDING_BATCH, save_network
-from neural_mi.data.handler import create_dataset, AlignedStaticStreams
-from neural_mi.data.rows import IDENTITY_KEY, record_rows, row_geometry, row_identity, window_rows
+from neural_mi.data.handler import create_dataset
+from neural_mi.data.rows import IDENTITY_KEY, record_rows, row_geometry, row_identity
 from neural_mi.defaults import setting
 
 # Batch size used for embedding extraction (no effect on training).
@@ -178,30 +178,32 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Dataset construction, with module-level cache for static datasets.
     # ------------------------------------------------------------------
-    from neural_mi.data.shift_windowing import (
-        try_build_row_phase_dataset, try_build_shift_windows_dataset,
-        try_build_shift_windows_dataset_tuple,
-    )
-    # Rows built by offset at every step, kept one in every stride: at phase 0,
-    # with the shifter that moves the phase each epoch under shift_windows.
-    dataset = try_build_row_phase_dataset(x_data, y_data, params, data_device=_data_device)
-    if dataset is None and isinstance(x_data, tuple):
-        # Compound "X-role" data: two raw streams windowed independently and
-        # combined afterwards. params['_shift_pack'] says how -- kept apart for
-        # dual_branch, concatenated for a conditioning variable that shares X's
-        # window axis, or used alone for the marginal leg.
-        dataset = try_build_shift_windows_dataset_tuple(x_data, y_data, params, data_device=_data_device)
-    elif dataset is None:
-        dataset = try_build_shift_windows_dataset(x_data, y_data, params, data_device=_data_device)
+    from neural_mi.data.plan import PAIR, RowPlan, TermRows
+    from neural_mi.data.shift_windowing import try_build_row_phase_dataset
+    _plan = None
+    dataset = None
+    if isinstance(x_data, TermRows):
+        # A term of a quantity: its streams selected from the quantity's one
+        # plan, whose rows every term shares (neural_mi/data/plan.py).
+        _plan = x_data.plan
+        dataset = x_data.dataset(data_device=_data_device)
+    else:
+        # Rows built by offset at every step, kept one in every stride: at
+        # phase 0, with the shifter that moves the phase each epoch under
+        # shift_windows.
+        dataset = try_build_row_phase_dataset(x_data, y_data, params, data_device=_data_device)
+        if dataset is None and params.get('processor_type_x') is not None:
+            # Raw streams, windowed here: the pair's plan.
+            _plan = RowPlan.of_pair(x_data, y_data, params)
+            dataset = _plan.build(PAIR, data_device=_data_device)
     if dataset is not None:
-        _cache_key = None  # never cached (mutated in place every epoch); the
-        # cleanup step near the end of this function reads _cache_key back
-        # out of _DATASET_CACHE to decide whether `dataset` is safe to `del`
-        # -- None always misses, so it's always deleted, correctly, here.
+        _cache_key = None  # never cached: a shifter rewrites its data every
+        # epoch, and the cleanup step near the end of this function reads
+        # _cache_key back out of _DATASET_CACHE to decide whether `dataset` is
+        # safe to `del` -- None always misses, so it's always deleted.
     else:
         _cache_key = _dataset_cache_key(x_data, y_data,
                                         {**params, 'dataset_device': _data_device})
-        dataset = None
         with _DATASET_CACHE_LOCK:
             _cache_entry = _DATASET_CACHE.get(_cache_key)
         if _cache_entry is not None:
@@ -214,35 +216,20 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 logger.debug("Dataset cache key collision (stale data_ptr/id), rebuilding.")
 
         if dataset is None:
-            dataset = create_dataset(
-                x_data, y_data,
-                x_time=params.get('x_time'),
-                y_time=params.get('y_time'),
-                processor_type_x=params.get('processor_type_x'),
-                processor_type_y=params.get('processor_type_y'),
-                processor_params_x=params.get('processor_params_x'),
-                processor_params_y=params.get('processor_params_y'),
-                data_device=_data_device,
-            )
-            # Only cache immutable static datasets, temporal datasets are mutated
-            # by time_shift() during training and must not be shared.
-            if isinstance(dataset, AlignedStaticStreams):
-                with _DATASET_CACHE_LOCK:
-                    if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
-                        # Evict the oldest entry (dict preserves insertion order).
-                        _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
-                    _DATASET_CACHE[_cache_key] = (dataset, _safe_weakref(x_data), _safe_weakref(y_data))
-                logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
-            else:
-                logger.debug("Temporal dataset, skipping cache (mutable via time_shift).")
+            dataset = create_dataset(x_data, y_data, data_device=_data_device)
+            with _DATASET_CACHE_LOCK:
+                if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
+                    # Evict the oldest entry (dict preserves insertion order).
+                    _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
+                _DATASET_CACHE[_cache_key] = (dataset, _safe_weakref(x_data), _safe_weakref(y_data))
+            logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
         else:
             logger.debug("Dataset cache hit, reusing pre-built dataset.")
 
     # A dataset this task windowed itself records its rows' geometry here, as
     # run.py records it for a dataset windowed there (neural_mi/data/rows.py).
-    _wm = getattr(dataset, 'window_manager', None)
-    if _wm is not None:
-        record_rows(params, window_rows(_wm.window_size, _wm.resolve_step()))
+    if _plan is not None and _plan.geometry() is not None:
+        record_rows(params, _plan.geometry())
     # Which rows this task reads, for the terms of a difference to be checked
     # against each other once they are all trained (sweep.combine_terms).
     _rows = row_identity(dataset, params)
@@ -428,7 +415,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         params['batch_size'],
         train_fraction=setting(params, 'train_fraction'),
         n_test_blocks=setting(params, 'n_test_blocks'),
-        shift_time=setting(params, 'shift_time'),
         shift_seed=base_seed,
         split_seed=task_seed,
         shift_windows=setting(params, 'shift_windows'),
@@ -448,7 +434,6 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         train_subset_size=params.get('train_subset_size'),
         test_subset_size=params.get('test_subset_size'),
         track_spectral_history=setting(params, 'track_spectral_history'),
-        max_index_reduction=setting(params, 'max_index_reduction'),
         eval_train=setting(params, 'eval_train'),
         peak_fraction=setting(params, 'peak_fraction'),
         epoch_rule=setting(params, 'epoch_rule'),
@@ -469,10 +454,10 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # Optionally extract embeddings from the trained model.
     # Uses the full dataset in original sample order, no capping, no shuffling —
     # so the returned arrays align index-for-index with the caller's raw data.
-    # Reads through the frozen pre-shift snapshot when one was taken (shift_windows/
-    # shift_time were active): dataset.x_data/.y_data reflect whatever shift was
-    # last applied during training, not the canonical view best_model_state was
-    # scored against.
+    # Reads through the frozen pre-shift snapshot when one was taken (the rows
+    # shifted): dataset.x_data/.y_data reflect whatever shift was last applied
+    # during training, not the canonical view best_model_state was scored
+    # against.
     if setting(params, 'return_embeddings'):
         _all_x = results.get('_frozen_eval_x', dataset.x_data)
         _all_y = results.get('_frozen_eval_y', dataset.y_data)

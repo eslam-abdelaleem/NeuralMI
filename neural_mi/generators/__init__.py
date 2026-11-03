@@ -40,7 +40,7 @@ there is nothing in this package that fails to provide one.
 
 :func:`generate_spike_pair`'s value is the MI
 between windows that align with its own. Analysis must use the same
-``window_size`` and must not re-tile (``shift_time=False, shift_windows=False``),
+``window_size`` and must not re-tile (``shift_windows=False``),
 or a window spans two independent latent draws and can carry more.
 """
 from .oracle import (

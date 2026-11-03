@@ -406,9 +406,10 @@ should be read with its components ([THEORY.md](THEORY.md#amplification)).
 `Conditional(align='dual_branch')` passes X and W to the joint term as a pair.
 The named quantities that need it set `align` themselves
 ([the named quantities](#the-named-quantities)), and there the two parts span
-different stretches of time. A W that a processor windows takes X's window and
-step: under `shift_windows` a W that asks for others is refused, and without it
-X's are used, with a warning.
+different stretches of time. A W that a processor windows shares the grid of X
+and Y, with their window and step ([One grid for every stream](#one-grid-for-every-stream)).
+A spike window holds spike slots and a continuous one samples, so a spike X
+and a continuous W, or the other way round, need the pair.
 
 ### `interaction`
 
@@ -668,16 +669,12 @@ one thread each. Setting `OMP_NUM_THREADS` before the call keeps your own count.
 
 The terms of a difference quantity (conditional MI, transfer entropy,
 interaction information and the named quantities built on them) are separate
-trainings. Every term of a repeat draws its split and evaluation rows from a
-generator seeded with the same key, with or without a seed passed to the call,
-so terms that build the same rows split and evaluate them alike. Each term
-builds its rows from the streams it reads, and a repeat whose terms built
-different rows is refused, since its difference would compare different
-stretches of the data. Spike times are the usual case: a term's grid starts at
-the first spike of its own streams, and the windows where one of them is silent
-are dropped, so a spike W that starts later than X or falls silent elsewhere
-gives the conditioning term other rows. Binning the spike times on one clock
-and passing the counts as continuous streams puts every term on the same rows.
+trainings on the same rows. They read one plan of every stream the quantity
+reads ([One grid for every stream](#one-grid-for-every-stream)), and every term
+of a repeat draws its split, its evaluation rows and its shifts from generators
+seeded with the same key, with or without a seed passed to the call. Each task
+reports which rows it read, and a repeat whose terms read different rows would
+be refused.
 
 A script that runs with `n_workers` above 1 needs a `__main__` guard. The
 workers start by re-importing the module that launched them. A top-level
@@ -766,10 +763,11 @@ window_size`.
 
 ### One grid for every stream
 
-All the streams of a call are windowed on one grid. The grid starts at the
-latest start among the streams, a window is kept only where every stream has
-data, and a window means the same interval in X, Y and W. Each stream keeps its
-own processor, parameters and clock:
+All the streams of a call are windowed on one grid, the call's row plan. The
+grid starts at the latest start among the streams and ends at the earliest end,
+a window is kept only where every stream has data, and a window means the same
+interval in X, Y and W. Each stream keeps its own processor, parameters and
+clock:
 
 ```python
 processing = Processing(x='spike', x_params={'window_size': 1.0, 'bin_size': 0.1},
@@ -780,8 +778,18 @@ result = nmi.run(spikes, position, mode='conditional',
 ```
 
 Y and W read with X's processor when they name none. A stream that falls back to
-X's parameters keeps only the keys its own processor takes. The call reports any
-stream that asks for a `window_size` other than the one all streams share.
+X's parameters keeps only the keys its own processor takes. Every setting is
+resolved once, for the whole call, from these rules and the defaults. The grid
+has one window and one step, X's, and a stream that asks for another window, or
+for a step of another length, is refused. `nmi.offset_quantity` places a stream
+at offsets of its own, before X's window or across it
+([Quantities without a named function](#quantities-without-a-named-function)).
+
+Every term of a quantity reads the plan's rows and only selects its streams:
+the conditioning term of conditional MI reads W and Y on the same rows as the
+joint term reads X, W and Y. The fits to the data are made per stream and so
+come out the same in every term: a categorical stream's categories, a spike
+stream's bursty neurons (`exclude_bursty_neurons`) and its spike slots.
 
 A continuous or categorical window survives only when at least
 `min_coverage_fraction` of it holds samples. `details` and `runs` report the
@@ -792,8 +800,11 @@ below 50% warns and names the stream responsible.
 
 ### Silent spike windows
 
-The default drops spike windows without spikes and estimates the MI in bits per
-active window over the windows where the population fired.
+`drop_empty_windows=True` is the one default that changes the data. It drops
+spike windows without spikes and estimates the MI in bits per active window
+over the windows where the population fired. It is the default because in spike
+times silence looks the same as no recording. A row is kept only where every
+spike stream of the call fired, in every term.
 `x_params={'drop_empty_windows': False}` keeps silent windows and estimates the
 MI in bits per window. Because whether the population is active can itself carry
 information, neither quantity is a rescaled version of the other
@@ -806,9 +817,10 @@ continuous stream with its own clock in the pairing also covers it because its
 coverage check masks unobserved stretches.
 
 Dropping silent windows also breaks the time axis by leaving consecutive
-windows more than one step apart. Any analysis that indexes windows by offset
-needs them kept. A per-bin series for offsets sets `window_size` equal to `bin_size`
-and keeps silent windows.
+windows more than one step apart. The quantities defined by time offsets keep
+every window for that reason, and setting `drop_empty_windows=True` there warns
+that it has no effect. A per-bin series for offsets sets `window_size` equal to
+`bin_size`.
 
 A window sweep on spike data changes the estimand as it goes because wider
 windows are more likely to hold a spike. On a 3 Hz population, retention rose
@@ -863,39 +875,33 @@ predicts, with the option that would help.
 
 ### Window shifting
 
-By default `Training(shift_windows=True)` and `Training(shift_time=True)` make
-training re-tile the windows from a fresh random offset every epoch to show the
-network many sets of window boundaries. A shift applies where rows thin a
-series, their starts more than one sample apart, and moves them by less than one
-step. `shift_windows` re-slices a regular grid and serves continuous and
-categorical streams, and the rows a `stride` above one thins in the quantities
-built by time offsets. `shift_time` rebuilds windows
-from the raw data and serves spike streams, including a spike stream paired with
-a continuous or categorical one that has a `sample_rate`. Because evaluation
-always reads the unshifted windows, the reported values do not depend on the
-last shift drawn.
+By default `Training(shift_windows=True)` moves the training rows' windows each
+epoch, to show the network many sets of window boundaries. The rows stay the
+same rows. Each epoch draws one offset within one step, and every stream's
+windows start that much later, so X, Y and W move together and every term of a
+difference moves its rows by the same offset at the same epoch. The grid leaves
+one step at its end for the shift. Rows that start one sample apart never move,
+since a shift would only relabel them. Evaluation always reads the unshifted
+rows, so the reported values do not depend on the last shift drawn.
 
-| call | continuous and categorical | spike |
+| call | rows a processor cuts | rows passed in built already |
 |---|---|---|
-| `estimate`, `sweep`, `pairwise`, `dimensionality`, `precision`, `lag` | shifted | shifted |
-| `conditional`, `interaction` | shifted | shifted |
-| `rigorous` | shifted | shifted for spike pairs only |
-| `transfer` | shifted at `stride` above 1 | shifted at `stride` above 1 |
-| `block_mi` | shifted | shifted |
-| other named quantities, `offset_quantity` | shifted at `stride` above 1 | shifted at `stride` above 1 |
-| already-windowed data | not shifted | not shifted |
+| every mode but `transfer` | shifted | not shifted |
+| `transfer`, the named quantities, `offset_quantity` | shifted at `stride` above 1 | shifted at `stride` above 1 |
+| `block_mi` | shifted | not shifted |
 
-A spike stream paired with a continuous or categorical one is shifted only when
-that stream has a `sample_rate` that makes a shift mean the same time on both
-sides. Transfer entropy and the quantities built from offsets keep every step
-as a row at the default `stride=1`, where a shift would only relabel their rows.
-At a larger `stride` they are built at every step, and each epoch keeps one row
-in every `stride` from a phase drawn afresh, the offset counterpart of a window
-shift. A shifting row reaches up to one step further, and the split's leak
-check counts that.
-Setting a shift explicitly where it cannot apply warns. A windowed generator
-whose MI is known for its own windows needs both switched off
-([Generators](#generators-with-a-known-answer)).
+On a grid in time (a spike stream, an irregular clock or clocks that start
+apart), a row whose moved window fails a stream's rule keeps its unmoved
+windows in every stream for that epoch: a spike window that falls silent under
+`drop_empty_windows`, or a continuous window that moves onto a gap. Training
+then never sees a row the estimate leaves out. Transfer entropy and the
+quantities built from offsets keep every step as a row at the default
+`stride=1`. At a larger `stride` they are built at every step, and each epoch
+keeps one row in every `stride` from a phase drawn afresh, the offset
+counterpart of a window shift. A shifting row reaches up to one step further,
+and the split's leak check counts that. Setting `shift_windows=True` explicitly
+where it cannot apply warns. A windowed generator whose MI is known for its own
+windows needs it switched off ([Generators](#generators-with-a-known-answer)).
 
 ### `create_dataset`
 
@@ -961,7 +967,7 @@ analysis has to use the same `window_size` and no shifting:
 x, y, exact = generators.generate_spike_pair(coding='timing', window_size=1.0)
 nmi.run(x, y, mode='estimate',
         processing=Processing(x='spike', y='spike', x_params={'window_size': 1.0}),
-        training=Training(shift_time=False, shift_windows=False))
+        training=Training(shift_windows=False))
 ```
 
 With shifting on, a window spans two independent draws and can carry more than

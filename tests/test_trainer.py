@@ -399,10 +399,9 @@ class TestUnderTrainingWarning:
 
 
 class TestSelectTrainEvalIndices:
-    """A temporal eval subset is built from contiguous sub-chunks of
-        train_idx's own contiguous segments. A scattered random sample would
-        degenerate into many zero-width time ranges that collide and drop on the
-        next shift_time rebuild.
+    """An eval subset of rows in time order is built from contiguous sub-chunks
+        of train_idx's own contiguous segments, in proportion to their lengths, so
+        it covers every part of the recording.
     """
 
     def _select(self, train_idx, target_size, is_temporal):
@@ -425,9 +424,7 @@ class TestSelectTrainEvalIndices:
         """train_idx is two contiguous segments (a real blocked split leaves
         several such segments after carving out test blocks) -- the eval
         subset must be built from contiguous sub-chunks of each, not a
-        scatter, so it degenerates into only a handful of SubsetView time
-        ranges (matching train_view/test_view's own, already-correct,
-        rebuild-safe representation)."""
+        scatter."""
         seg_a = np.arange(0, 500)      # segment 1: 500 samples
         seg_b = np.arange(600, 700)    # segment 2: 100 samples (gap 500-600 excluded)
         train_idx = np.concatenate([seg_a, seg_b])
@@ -442,139 +439,58 @@ class TestSelectTrainEvalIndices:
         assert len(result) == 120
         assert set(result.tolist()) <= set(train_idx.tolist())
 
-    def test_temporal_selection_reduces_subsetview_loss_after_shift(self):
-        """End-to-end confirmation against a real PairedTemporalDataset +
-        SubsetView + a real blocked split: the contiguous-chunk selection
-        must lose dramatically less of the eval subset after a shift than
-        the scattered approach it replaces."""
-        from neural_mi.data.handler import PairedTemporalDataset
-        from neural_mi.data.temporal import SpikeWindowDataset
-        from neural_mi.data.views import SubsetView
-
-        rng = np.random.default_rng(0)
-        n_neurons, n_seconds, rate = 5, 2000.0, 5.0
-        spikes_x = [np.sort(rng.uniform(0, n_seconds, int(n_seconds * rate))) for _ in range(n_neurons)]
-        spikes_y = [np.sort(rng.uniform(0, n_seconds, int(n_seconds * rate))) for _ in range(n_neurons)]
-        x_ds = SpikeWindowDataset(spikes_x)
-        y_ds = SpikeWindowDataset(spikes_y)
-        ptd = PairedTemporalDataset(x_ds, y_ds, window_size=2.0, step_size=2.0)
-        n = ptd.window_manager.n_windows
-
-        t = Trainer.__new__(Trainer)
-        train_idx, _ = t._create_blocked_split(n, 0.9, 5, gap_fraction=0.5)
-
-        target = 200
-        np.random.seed(0)
-        scattered = np.random.choice(train_idx, target, replace=False)
-        chunked = t._select_eval_indices(train_idx, target, contiguous=True)
-
-        view_old = SubsetView(ptd, indices=scattered)
-        view_new = SubsetView(ptd, indices=chunked)
-        old_before, new_before = len(view_old.indices), len(view_new.indices)
-        ptd.time_shift(offset_x=0.5, offset_y=0.5)
-        old_after, new_after = len(view_old.indices), len(view_new.indices)
-
-        old_loss = (old_before - old_after) / old_before
-        new_loss = (new_before - new_after) / new_before
-        assert new_loss < 0.10, f"Contiguous-chunk selection lost {new_loss:.1%} after a shift"
-        assert new_loss < old_loss, (
-            f"Expected contiguous chunks to lose less than a scattered sample "
-            f"(old={old_loss:.1%}, new={new_loss:.1%})"
-        )
-
 
 class TestShiftEvaluationConsistency:
-    """shift_time and shift_windows affect training dynamics only. The
-        reported test_mi and train_mi are evaluated on content frozen before any
-        shift and on the original test and train-eval indices, so they do not
-        depend on whichever shift the last epoch left behind.
+    """Shifting affects training dynamics only. The reported test_mi and
+        train_mi are evaluated on content frozen before any shift and on the
+        original test and train-eval indices, so they do not depend on whichever
+        shift the last epoch left behind.
     """
 
-    def test_shift_windows_final_mi_matches_canonical_reeval(self):
-        from neural_mi.data.static import StaticDataset
-        from neural_mi.data.handler import PairedDataset as PD
-        from neural_mi.data.shift_windowing import PairedWindowShifter
+    @staticmethod
+    def _check(plan):
+        from neural_mi.data.plan import PAIR
         from neural_mi.estimators import infonce_lower_bound
-
-        np.random.seed(0)
-        torch.manual_seed(0)
-        T, C, window_size, step_size = 3000, 2, 20, 20
-        raw_x, raw_y = torch.randn(T, C), torch.randn(T, C)
-        shifter = PairedWindowShifter(raw_x, raw_y, window_size, step_size)
-        x0, y0 = shifter.windows_at(0)
-        dataset = PD(StaticDataset(x0), StaticDataset(y0))
-        dataset._window_shifter = shifter
-
+        dataset = plan.build(PAIR)
+        assert dataset._window_shifter is not None
+        x0, y0 = dataset.x_data.clone(), dataset.y_data.clone()
         n = len(dataset)
-        train_idx = np.arange(int(n * 0.8))
-        test_idx = np.arange(int(n * 0.8), n)
-
-        net_x = MLP(input_dim=C * window_size, hidden_dim=16, embedding_dim=8, n_layers=1)
-        net_y = MLP(input_dim=C * window_size, hidden_dim=16, embedding_dim=8, n_layers=1)
+        train_idx, test_idx = np.arange(int(n * 0.8)), np.arange(int(n * 0.8), n)
+        net_x = MLP(input_dim=x0.shape[1] * x0.shape[2], hidden_dim=16, embedding_dim=8, n_layers=1)
+        net_y = MLP(input_dim=y0.shape[1] * y0.shape[2], hidden_dim=16, embedding_dim=8, n_layers=1)
         critic = SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y)
         optimizer = torch.optim.Adam(critic.parameters(), lr=1e-3)
         trainer = Trainer(critic, infonce_lower_bound, optimizer, torch.device('cpu'))
-
-        results = trainer.train(dataset, n_epochs=8, batch_size=32, patience=3,
+        results = trainer.train(dataset, n_epochs=6, batch_size=32, patience=3,
                                 train_indices=train_idx, test_indices=test_idx,
                                 shift_windows=True, show_progress=False, verbose=False,
                                 output_units='nats')
-
-        x0b, y0b = shifter.windows_at(0)  # re-derive the canonical (shift=0) view independently
         with torch.no_grad():
-            manual_mi = trainer._safe_eval_mi(x0b[test_idx], y0b[test_idx], 5000)
-        assert abs(results['test_mi'] - manual_mi) < 1e-9, (
+            manual_mi = trainer._safe_eval_mi(x0[test_idx], y0[test_idx], 5000)
+        assert abs(results['test_mi'] - manual_mi) < 1e-6, (
             f"reported test_mi ({results['test_mi']}) should exactly match a fresh eval of the "
             f"trained model against the canonical (shift=0) view ({manual_mi})"
         )
 
-    def test_shift_time_final_mi_matches_canonical_reeval(self):
-        from neural_mi.data.handler import PairedTemporalDataset, ContinuousWindowDataset
-        from neural_mi.estimators import infonce_lower_bound
-
+    def test_rows_on_a_regular_clock(self):
+        from collections import OrderedDict
+        from neural_mi.data.plan import RowPlan, resolve_stream
         np.random.seed(0)
         torch.manual_seed(0)
-        T, C = 3000, 2
-        raw_x = np.random.randn(T, C).astype('float32')
-        raw_y = np.random.randn(T, C).astype('float32')
-        x_ds = ContinuousWindowDataset(raw_x)
-        y_ds = ContinuousWindowDataset(raw_y)
-        dataset = PairedTemporalDataset(x_ds, y_ds, window_size=20)
+        raw_x, raw_y = np.random.randn(3000, 2), np.random.randn(3000, 2)
+        self._check(RowPlan(OrderedDict(x=resolve_stream(raw_x, None, 'continuous', {'window_size': 20}),
+                                        y=resolve_stream(raw_y, None, 'continuous', {})), shift=True))
 
-        # Prime the shift grid to its final, margin-reserved size before
-        # deriving train/test indices -- Trainer.train() does this
-        # internally too, but a caller supplying custom train_indices/
-        # test_indices (as this test does) must size them against the same
-        # post-priming count Trainer will use.
-        dataset.time_shift(offset_x=0.0, offset_y=0.0)
+    def test_rows_on_a_grid_in_time(self):
+        from collections import OrderedDict
+        from neural_mi.data.plan import RowPlan, resolve_stream
+        rng = np.random.default_rng(0)
+        torch.manual_seed(0)
+        spikes = [np.sort(rng.uniform(0, 300, 1500)) for _ in range(3)]
+        self._check(RowPlan(OrderedDict(x=resolve_stream(spikes, None, 'spike', {'window_size': 0.5}),
+                                        y=resolve_stream([s + 0.02 for s in spikes], None, 'spike', {})),
+                            shift=True))
 
-        n = len(dataset)
-        train_idx = np.arange(int(n * 0.8))
-        test_idx = np.arange(int(n * 0.8), n)
-        window_size = x_ds.max_samples_per_window
-
-        # Snapshot BEFORE training mutates dataset.x_dataset.data in place.
-        x0_canonical = dataset.x_dataset.data.clone()
-        y0_canonical = dataset.y_dataset.data.clone()
-
-        net_x = MLP(input_dim=C * window_size, hidden_dim=16, embedding_dim=8, n_layers=1)
-        net_y = MLP(input_dim=C * window_size, hidden_dim=16, embedding_dim=8, n_layers=1)
-        critic = SeparableCritic(embedding_net_x=net_x, embedding_net_y=net_y)
-        optimizer = torch.optim.Adam(critic.parameters(), lr=1e-3)
-        trainer = Trainer(critic, infonce_lower_bound, optimizer, torch.device('cpu'))
-
-        results = trainer.train(dataset, n_epochs=6, batch_size=32, patience=3,
-                                train_indices=train_idx, test_indices=test_idx,
-                                shift_time=True, show_progress=False, verbose=False,
-                                output_units='nats')
-
-        with torch.no_grad():
-            manual_mi = trainer._safe_eval_mi(x0_canonical[test_idx], y0_canonical[test_idx], 5000)
-        assert abs(results['test_mi'] - manual_mi) < 1e-6, (
-            f"reported test_mi ({results['test_mi']}) should exactly match a fresh eval of the "
-            f"trained model against the canonical (shift=0) view ({manual_mi}) -- if this fails, "
-            f"either the content snapshot or the frozen test-index handling has regressed"
-        )
 
 def test_a_reported_mi_is_never_negative_and_keeps_the_measured_value():
     """A network's reported MI is 0 when its test MI never rose above zero, and

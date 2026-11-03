@@ -16,8 +16,7 @@ import copy
 import contextlib
 import time
 
-from neural_mi.data import (PairedDataset, PairedTemporalDataset, SubsetView,
-                            AlignedStreams)
+from neural_mi.data import PairedDataset, SubsetView
 from neural_mi.data.rows import RowGeometry
 from neural_mi.defaults import default_of
 from neural_mi.models.critics import _batch_size_of
@@ -234,9 +233,8 @@ class Trainer:
         self.aug_params_x = augmentation_params_x or {}
         self.aug_params_y = augmentation_params_y or {}
 
-    def train(self, dataset: Union[PairedDataset, PairedTemporalDataset], n_epochs: int, batch_size: int,
+    def train(self, dataset: PairedDataset, n_epochs: int, batch_size: int,
               train_fraction: float = default_of('train_fraction'), n_test_blocks: int = default_of('n_test_blocks'),
-              shift_time: bool = default_of('shift_time'),
               shift_windows: bool = default_of('shift_windows'),
               shift_seed: Optional[int] = None,
               split_seed: Optional[int] = None,
@@ -252,7 +250,6 @@ class Trainer:
               test_subset_size: Optional[Union[int, str]] = default_of('test_subset_size'),
               split_gap_fraction: float = default_of('split_gap_fraction'),
               track_spectral_history: bool = default_of('track_spectral_history'),
-              max_index_reduction: float = default_of('max_index_reduction'),
               eval_train: Union[bool, float, int] = default_of('eval_train'),
               peak_fraction: float = default_of('peak_fraction'),
               epoch_rule: str = default_of('epoch_rule'),
@@ -279,23 +276,14 @@ class Trainer:
             The fraction of the data to use for training.
         n_test_blocks : int, optional
             For 'blocked' split_mode, the number of contiguous blocks for the test set.
-        shift_time : bool, optional
-            For temporal, windowed data: re-tiles the windows from a fresh
-            random time offset every epoch (via `PairedTemporalDataset.time_shift`),
-            so training doesn't see one fixed set of window boundaries.
-            Shifts at full magnitude every epoch, up to `window_manager.window_size`.
-            A no-op on a non-temporal dataset.
         shift_windows : bool, optional
-            Cheaper, narrower alternative to `shift_time` for regularly-sampled
-            data windowed via a fixed `window_size`/`step_size`: re-slices
-            (not interpolates) a fresh window tiling from a random integer
-            sample offset every epoch, at negligible per-epoch cost. A shift
-            stays within one row step, so windows that start one sample apart
-            never move, and rows a stride thins change phase. Only takes
-            effect when `dataset` was built with an attached
-            `_window_shifter` (`neural_mi/data/shift_windowing.py`); a
-            no-op otherwise. Mutually exclusive in practice with
-            `shift_time` (they gate on different dataset types).
+            Every epoch the training rows' windows start one offset later,
+            drawn within one row step, the same for every stream, so training
+            does not see one fixed set of window boundaries. The rows stay the
+            same rows: evaluation reads them unshifted. Takes effect when
+            `dataset` carries a `_window_shifter` (the rows of a
+            :class:`~neural_mi.data.plan.RowPlan`, or rows a stride thins);
+            a no-op otherwise.
         shift_seed : int, optional
             Seeds the generator the shifts are drawn from.
         split_seed : int, optional
@@ -374,10 +362,6 @@ class Trainer:
             ``train_eval_view`` each epoch. Defaults to False. Independent of this
             flag, the same three values are always computed once at the best epoch
             (see ``pr_eig``, ``pr_singular``, ``spectrum`` in the returned dict).
-        max_index_reduction : float, optional
-            When using temporal datasets with windowing, random time shifting can reduce the number of valid windows
-            due to edge effects. This parameter sets a threshold for acceptable reduction in valid windows after shifting.
-            If the reduction exceeds this threshold, a warning is logged. Defaults to 0.05 (5%).
         eval_train : bool, float, or int, optional
             Controls whether train-set MI is evaluated at every epoch alongside test-set MI,
             yielding a ``'train_mi_history'`` in the returned results.
@@ -454,21 +438,6 @@ class Trainer:
             raise ValueError(f"epoch_rule={epoch_rule!r} is not a recognised value. Use one of {EPOCH_RULES}.")
         nats_to_bits = 1 / np.log(2) if output_units == 'bits' else 1.0
         self._rng = np.random.RandomState(int(split_seed) % (2 ** 31)) if split_seed is not None else np.random
-        # Any bundle carrying a window grid can rebuild its windows, not only
-        # the two-stream subclass: a three-stream conditional bundle has the
-        # same grid and the same time_shift, and testing the subclass would
-        # leave it silently unshiftable. Whether rows are in time order is a
-        # separate question, which `rows` answers.
-        is_temporal = isinstance(dataset, AlignedStreams)
-
-        # Prime the time-shift grid once, up front -- before the train/test
-        # split or the frozen eval snapshot below are computed -- so
-        # len(dataset) and every index array derived from it are sized
-        # against the final, margin-reserved window count from the start
-        # (see PairedTemporalDataset._reserve_shift_margin). A recording too
-        # short for a safe shift fails here, not partway through training.
-        if is_temporal and shift_time:
-            dataset.time_shift(offset_x=0.0, offset_y=0.0)
 
         # Move decoders to device and set to training mode
         if self.decoder_x is not None:
@@ -490,16 +459,10 @@ class Trainer:
             _leak_kwargs = {}
             if rows is not None:
                 _leak_kwargs = {'span': rows.span, 'step': rows.step}
-            if is_temporal and shift_time and 'span' in _leak_kwargs:
-                # Under a time shift a training window's content can drift by
-                # up to a full window while the frozen eval window stays at
-                # offset 0, so the safe leak-check margin is twice the span.
-                # The check only warns; it does not change the split.
-                _leak_kwargs = {**_leak_kwargs, 'span': 2 * _leak_kwargs['span']}
-            elif (shift_windows and getattr(dataset, '_window_shifter', None) is not None
-                  and 'span' in _leak_kwargs and rows.step > 1):
-                # A shift_windows shift moves a training row by less than one
-                # row step, so a row reaches that much further.
+            if (shift_windows and getattr(dataset, '_window_shifter', None) is not None
+                    and 'span' in _leak_kwargs and rows.step > 1):
+                # A shift moves a training row by less than one row step, so a
+                # row reaches that much further.
                 _leak_kwargs = {**_leak_kwargs, 'span': _leak_kwargs['span'] + rows.step}
             train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
                                                              gap_fraction=split_gap_fraction, **_leak_kwargs)
@@ -528,12 +491,12 @@ class Trainer:
         if batch_size < 2 and n_train > 1:
             raise ValueError(f"batch_size must be >= 2, got {batch_size}.")
 
-        train_view = SubsetView(dataset, indices=train_idx, max_index_reduction=max_index_reduction)
+        train_view = SubsetView(dataset, indices=train_idx)
 
         # Evaluation subsets follow the split on both sides: one contiguous
         # stretch per segment for a blocked split, random rows for a random one.
-        # Temporal data always takes stretches (see _select_eval_indices).
-        _contiguous = is_temporal or split_mode != 'random'
+        # Rows in time order always take stretches (see _select_eval_indices).
+        _contiguous = rows is not None or split_mode != 'random'
 
         # Lock in the held-out rows every evaluation scores. Drawn once, before
         # anything else draws from the run's generator, so every epoch scores the
@@ -555,7 +518,7 @@ class Trainer:
             )
         actual_test_subset_size = min(test_subset_size or max_eval_samples, len(test_idx))
         test_eval_idx = self._select_eval_indices(test_idx, actual_test_subset_size, _contiguous)
-        test_eval_view = SubsetView(dataset, indices=test_eval_idx, max_index_reduction=max_index_reduction)
+        test_eval_view = SubsetView(dataset, indices=test_eval_idx)
         if actual_test_subset_size > max_eval_samples:
             _blocks, _per_block = _blocks_of(actual_test_subset_size, max_eval_samples)
             logger.info(
@@ -592,7 +555,7 @@ class Trainer:
         # Clamp to available training samples to avoid ValueError from np.random.choice
         actual_train_subset_size = min(actual_train_subset_size, len(train_idx))
         train_eval_idx = self._select_eval_indices(train_idx, actual_train_subset_size, _contiguous)
-        train_eval_view = SubsetView(dataset, indices=train_eval_idx, max_index_reduction=max_index_reduction)
+        train_eval_view = SubsetView(dataset, indices=train_eval_idx)
 
         # Determine the subset for per-epoch train MI tracking (eval_train parameter)
         _do_epoch_train_eval = bool(eval_train is not False and eval_train is not None and eval_train != 0)
@@ -621,14 +584,7 @@ class Trainer:
                 )
             if _do_epoch_train_eval:
                 epoch_train_eval_idx = self._select_eval_indices(train_idx, epoch_train_n, _contiguous)
-                # Wrapped in a SubsetView (like train_view/test_eval_view/train_eval_view)
-                # instead of indexed as a plain fixed array -- for temporal data a
-                # shift_time rebuild can shrink window_manager.n_windows (windows
-                # failing min_coverage_fraction after the shift get dropped),
-                # which would otherwise leave this array's indices pointing past
-                # the end of the rebuilt dataset.
-                epoch_train_eval_view = SubsetView(dataset, indices=epoch_train_eval_idx,
-                                                   max_index_reduction=max_index_reduction)
+                epoch_train_eval_view = SubsetView(dataset, indices=epoch_train_eval_idx)
         else:
             _do_epoch_train_eval = False
 
@@ -692,12 +648,9 @@ class Trainer:
 
         _scaler = self._amp_scaler()
 
-        # shift_time/shift_windows are training-time augmentations only:
-        # evaluation always reads a frozen, pre-shift snapshot (both the
-        # data and the index arrays, not SubsetView's live-updating
-        # `.indices`, which can drift for `shift_time`'s real
-        # PairedTemporalDataset across rebuilds) instead of whatever the
-        # dataset currently holds. Training batches still read the live,
+        # Shifting is a training-time augmentation only: evaluation always
+        # reads a frozen, pre-shift snapshot of the data instead of whatever
+        # the dataset currently holds. Training batches read the live,
         # currently-shifted `dataset.x_dataset`/`.y_dataset` below.
         # Per-epoch shifts are drawn from their own generator, seeded from the
         # run's base seed instead of the per-task one. Quantities built as a
@@ -714,7 +667,7 @@ class Trainer:
             _shift_generator = torch.Generator()
             _shift_generator.manual_seed(int(shift_seed) % (2 ** 31))
         _window_shifter = getattr(dataset, '_window_shifter', None)
-        _shifting_active = (is_temporal and shift_time) or (shift_windows and _window_shifter is not None)
+        _shifting_active = shift_windows and _window_shifter is not None
         if _shifting_active:
             _eval_x_source = _detach_clone(dataset.x_dataset.data)
             _eval_y_source = dataset.y_dataset.data.detach().clone()
@@ -862,21 +815,11 @@ class Trainer:
             has_valid_baseline = not np.isinf(best_mi)
             improvement = (smoothed_nats - best_mi) / (abs(best_mi) + 1e-8) if has_valid_baseline else float('inf')
 
-            # Data Augmentation: Temporal Shifting
-            if is_temporal and shift_time:
-                # Same reasoning as the window shift below: drawn from the
-                # shared generator so every leg of a difference lands on the
-                # same stretch at the same epoch.
-                if _shift_generator is not None:
-                    time_shift = float(torch.rand(1, generator=_shift_generator).item()
-                                       * dataset.window_manager.window_size)
-                else:
-                    time_shift = np.random.uniform(high=dataset.window_manager.window_size)
-                dataset.time_shift(offset_x=time_shift, offset_y=time_shift)
-
-            # Data Augmentation: cheap reslice-based window shift (see
-            # neural_mi/data/shift_windowing.py). No-op unless `dataset` was
-            # built with an attached shifter.
+            # Data augmentation: the training rows' windows move by one offset,
+            # the same for every stream (neural_mi/data/plan.py). Drawn from the
+            # shared generator, so every term of a difference moves its rows by
+            # the same offset at the same epoch. No-op unless `dataset` was
+            # built with a shifter.
             if shift_windows and _window_shifter is not None:
                 _shift = _window_shifter.random_shift(_shift_generator)
                 _x_shifted, _y_shifted = _window_shifter.windows_at(_shift)
@@ -1516,40 +1459,16 @@ class Trainer:
 
         ``contiguous`` takes one contiguous stretch per segment of ``idx``
         instead of random rows: for a blocked split, like the split itself, and
-        always for temporal data, for the reason below. Under a random split
-        of static data a plain random subsample is fine. There's no temporal
-        structure whose contiguity needs to survive anything.
+        always for rows in time order, whose neighbours share samples. Under a
+        random split of rows in no order a plain random subsample is fine.
 
-        For temporal data, a *scattered* random subsample is wrong even
-        when ``shift_time``/``shift_windows`` never fires
-        for this run: ``SubsetView`` tracks a temporal subset by converting
-        it to time ranges once, then re-deriving indices from those ranges
-        whenever the dataset's windows are rebuilt (`views.py`). A random
-        scatter of individual window indices has almost no contiguous
-        runs, so it degenerates into one zero-width time range per index,
-        thousands of them for a large subset. Re-quantizing that many
-        degenerate ranges against a shifted window grid collides many of
-        them onto the same window (deduplicated away) or drops them into a
-        gap between windows entirely, silently discarding a large fraction
-        of the subset on the very next shift. This is a lossy
-        representation problem, not a "large shift" problem. It fires
-        regardless of shift magnitude once the subset is scattered enough.
-
-        The fix is to never *construct* a scattered temporal subset in the
-        first place: ``idx`` for temporal data is itself a union of a
-        handful of contiguous segments (whatever's left after
-        ``_create_blocked_split`` carves out test blocks + gap buffers).
-        Pick one contiguous sub-chunk per segment, sized proportionally to
-        that segment's length, so the eval subset stays representable as a
-        handful of wide time ranges, exactly what ``SubsetView`` already
-        handles correctly and cheaply across rebuilds (`train_view`/
-        `test_view` are also wide contiguous ranges), while still
-        covering every part of the recording instead of sampling
-        disproportionately from just one segment (a non-stationary
-        recording would otherwise bias the eval MI toward whichever
-        segment happened to be sampled, the same "don't let one chunk
-        dominate" reasoning behind the contiguous-chunking fix in
-        `analysis/rigorous.py`).
+        Each segment of ``idx`` (what ``_create_blocked_split`` leaves between
+        its test blocks and gaps) gets one contiguous sub-chunk, sized in
+        proportion to the segment's length, so the evaluated rows cover every
+        part of the recording instead of sampling from one segment only. On a
+        non-stationary recording one segment would otherwise bias the
+        evaluated MI, the reasoning behind the contiguous chunks of
+        `analysis/rigorous.py`.
         """
         if target_size >= len(idx):
             return idx.copy()

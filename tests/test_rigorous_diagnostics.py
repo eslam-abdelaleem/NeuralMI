@@ -362,54 +362,43 @@ class TestGetTrainingEmbeddings:
 # shift_windows reachability: chunk-to-raw-range translation
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestChunkWindowRangeToRaw:
-    """chunk_window_range_to_raw must translate a [lo, hi) window-index
-    chunk into a raw sample range that reproduces exactly those windows --
-    the actual correctness property rigorous's bias-correction ladder
-    depends on (gamma=2's two chunks must together equal gamma=1's chunk,
-    now expressed in raw ranges instead of window indices)."""
+class TestAChunkIsThePlanOfItsRows:
+    """A chunk of a rigorous ladder is the plan of a stretch of its rows
+    (RowPlan.cut): the same rows at offset 0, and as many at every shift."""
 
-    def test_chunk_matches_global_windowing_at_shift_zero(self):
-        from neural_mi.data.shift_windowing import (
-            chunk_window_range_to_raw, safe_n_windows, PairedWindowShifter,
-        )
-        torch.manual_seed(0)
-        T, C, window_size, step_size = 3000, 2, 20, 20
-        raw_x = torch.randn(T, C)
-        raw_y = torch.randn(T, C)
-        N = safe_n_windows(T, window_size, step_size)
+    @staticmethod
+    def _plans(shift):
+        from collections import OrderedDict
+        from neural_mi.data.plan import RowPlan, resolve_stream
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((2000, 2)).astype('float32')
+        regular = RowPlan(OrderedDict(x=resolve_stream(x, None, 'continuous', {'window_size': 20,
+                                                                               'step_size': 0.5}),
+                                      y=resolve_stream(x[:, ::-1].copy(), None, 'continuous', {})),
+                          shift=shift)
+        spikes = [np.sort(rng.uniform(0, 60, 300)) for _ in range(3)]
+        spiking = RowPlan(OrderedDict(x=resolve_stream(spikes, None, 'spike', {'window_size': 0.5}),
+                                      y=resolve_stream([s + 0.01 for s in spikes], None, 'spike', {})),
+                          shift=shift)
+        return regular, spiking
 
-        global_shifter = PairedWindowShifter(raw_x, raw_y, window_size, step_size)
-        gx0, gy0 = global_shifter.windows_at(0)
-
-        for lo, hi in [(0, N // 2), (N // 2, N), (0, N)]:
-            rx0, rx1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
-            ry0, ry1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
-            chunk_shifter = PairedWindowShifter(raw_x[rx0:rx1], raw_y[ry0:ry1], window_size, step_size)
-            assert chunk_shifter.n_windows == hi - lo, (
-                f"chunk [{lo},{hi}) should produce exactly {hi - lo} windows, "
-                f"got {chunk_shifter.n_windows}"
-            )
-            cx0, cy0 = chunk_shifter.windows_at(0)
-            torch.testing.assert_close(cx0, gx0[lo:hi])
-            torch.testing.assert_close(cy0, gy0[lo:hi])
-
-    def test_chunk_survives_any_shift_not_just_zero(self):
-        """The whole point of the margin in chunk_window_range_to_raw: the
-        chunk must still yield exactly hi-lo windows at the worst-case
-        shift (window_size - 1), not just at shift=0."""
-        from neural_mi.data.shift_windowing import chunk_window_range_to_raw, PairedWindowShifter
-        torch.manual_seed(0)
-        T, C, window_size, step_size = 3000, 2, 20, 20
-        raw_x = torch.randn(T, C)
-        raw_y = torch.randn(T, C)
-        lo, hi = 3, 10
-        rx0, rx1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
-        chunk_shifter = PairedWindowShifter(raw_x[rx0:rx1], raw_y[rx0:rx1], window_size, step_size)
-        assert chunk_shifter.n_windows == hi - lo
-        cx_max, cy_max = chunk_shifter.windows_at(window_size - 1)
-        assert cx_max.shape[0] == hi - lo
-        assert cy_max.shape[0] == hi - lo
+    @pytest.mark.parametrize('route', [0, 1], ids=['by_samples', 'in_time'])
+    @pytest.mark.parametrize('shift', [False, True])
+    def test_a_chunk_reads_its_rows(self, route, shift):
+        plan = self._plans(shift)[route]
+        lo, hi = 7, 31
+        chunk = plan.cut(np.arange(lo, hi))
+        assert len(chunk) == hi - lo
+        whole, part = plan.rows()['windows'], chunk.rows()['windows']
+        for name in whole:
+            a, b = whole[name][lo:hi], part[name]
+            width = min(a.shape[-1], b.shape[-1])
+            assert torch.allclose(a[..., :width], b[..., :width]), name
+        if shift:
+            shifter = chunk.rows()['shifter']
+            for _ in range(5):
+                windows = shifter.windows_at(shifter.random_shift())
+                assert all(w.shape[0] == hi - lo for w in windows.values())
 
 
 class TestRigorousShiftWindowsEndToEnd:
@@ -445,131 +434,12 @@ class TestRigorousShiftWindowsEndToEnd:
         assert np.all(np.isfinite(ladder['train_mi'].values))
 
 
-def _spike_window_content(tensor: torch.Tensor, no_spike_value: float):
-    """[n_windows, n_channels, max_spikes] -> per-window/per-channel sorted
-    lists of the *real* (non-padding) within-window spike offsets.
+class TestRigorousShiftingSpikesEndToEnd:
+    """A real (un-mocked) run confirming that rigorous's chunks of a spike
+    plan that shifts dispatch the expected number of tasks and produce finite
+    results."""
 
-    Two SpikeWindowDataset constructions covering the same windows can
-    legitimately allocate different ``max_samples_per_window`` (it's the max
-    spike count observed over each construction's *own* windows, generally
-    smaller for a smaller chunk) -- comparing padded tensors directly would
-    spuriously fail on shape alone. This strips the ``no_spike_value``
-    padding first so only the actual spike content is compared.
-
-    ``no_spike_value`` is required rather than defaulted: it must come from the
-    dataset under test, since what this compares is window content, not which
-    value marks an empty slot.
-    """
-    arr = tensor.numpy()
-    return [
-        [sorted(arr[w, c][arr[w, c] != no_spike_value].tolist()) for c in range(arr.shape[1])]
-        for w in range(arr.shape[0])
-    ]
-
-
-class TestChunkToRawTimeRangeSpike:
-    """Spike analogue of TestChunkWindowRangeToRaw: chunk_window_range_to_time
-    (paired with an explicit t_start=0/t_end=chunk_span on the chunk's own
-    PairedTemporalDataset, so its base span matches the assumed one instead
-    of a shorter, data-dependent extent) must translate a [lo, hi)
-    window-index chunk into a raw time range that reproduces exactly those
-    windows -- the property mode='rigorous' + spike's bias-correction ladder
-    depends on."""
-
-    def test_chunk_matches_global_windowing_at_shift_zero(self):
-        from neural_mi.data.shift_windowing import (
-            spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
-        )
-        from neural_mi.data.temporal import SpikeWindowDataset
-        from neural_mi.data.handler import PairedTemporalDataset
-
-        rng = np.random.default_rng(0)
-        x_data = [np.sort(rng.random(800) * 200.0)]
-        y_data = [np.sort(rng.random(700) * 200.0)]
-        window_size, step_size = 5.0, 5.0
-        params = {'processor_params_x': {'window_size': window_size, 'step_size': step_size}}
-
-        N, base_t_start, ws, ss = spike_shift_grid_info(x_data, y_data, params)
-        assert N > 4
-
-        global_x_ds = SpikeWindowDataset(x_data)
-        global_y_ds = SpikeWindowDataset(y_data)
-        global_paired = PairedTemporalDataset(global_x_ds, global_y_ds, window_size=ws, step_size=ss)
-        global_paired.time_shift(offset_x=0.0, offset_y=0.0)
-        global_x = global_paired.x_data.detach().clone()
-        assert len(global_paired) == N
-
-        for lo, hi in [(0, N // 2), (N // 2, N), (0, N)]:
-            t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, ws, ss)
-            chunk_span = t1_rel - t0_rel
-            t0_abs, t1_abs = base_t_start + t0_rel, base_t_start + t1_rel
-            x_chunk = slice_spike_data_to_time_range(x_data, t0_abs, t1_abs)
-            y_chunk = slice_spike_data_to_time_range(y_data, t0_abs, t1_abs)
-
-            chunk_x_ds = SpikeWindowDataset(x_chunk)
-            chunk_y_ds = SpikeWindowDataset(y_chunk)
-            chunk_paired = PairedTemporalDataset(chunk_x_ds, chunk_y_ds, window_size=ws, step_size=ss,
-                                                 t_start=0.0, t_end=chunk_span)
-            chunk_paired.time_shift(offset_x=0.0, offset_y=0.0)
-
-            assert len(chunk_paired) == hi - lo, (
-                f"chunk [{lo},{hi}) should produce exactly {hi - lo} windows, "
-                f"got {len(chunk_paired)}"
-            )
-            chunk_content = _spike_window_content(chunk_paired.x_data.detach(),
-                                                  chunk_x_ds.no_spike_value)
-            global_content = _spike_window_content(global_x[lo:hi],
-                                                   global_x_ds.no_spike_value)
-            for w, (c_win, g_win) in enumerate(zip(chunk_content, global_content)):
-                for c, (c_ch, g_ch) in enumerate(zip(c_win, g_win)):
-                    assert c_ch == pytest.approx(g_ch, abs=1e-4), (
-                        f"window {w} (global index {lo + w}), channel {c}: chunk spikes "
-                        f"{c_ch} != global spikes {g_ch}"
-                    )
-
-    def test_chunk_survives_any_shift_not_just_zero(self):
-        """The whole point of the margin: the chunk must still yield exactly
-        hi-lo windows at the worst-case shift (just under window_size), not
-        just at shift=0."""
-        from neural_mi.data.shift_windowing import (
-            spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
-        )
-        from neural_mi.data.temporal import SpikeWindowDataset
-        from neural_mi.data.handler import PairedTemporalDataset
-
-        rng = np.random.default_rng(1)
-        x_data = [np.sort(rng.random(900) * 250.0)]
-        y_data = [np.sort(rng.random(800) * 250.0)]
-        window_size, step_size = 5.0, 5.0
-        params = {'processor_params_x': {'window_size': window_size, 'step_size': step_size}}
-        N, base_t_start, ws, ss = spike_shift_grid_info(x_data, y_data, params)
-
-        lo, hi = 2, 6
-        t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, ws, ss)
-        chunk_span = t1_rel - t0_rel
-        t0_abs, t1_abs = base_t_start + t0_rel, base_t_start + t1_rel
-        x_chunk = slice_spike_data_to_time_range(x_data, t0_abs, t1_abs)
-        y_chunk = slice_spike_data_to_time_range(y_data, t0_abs, t1_abs)
-
-        chunk_x_ds = SpikeWindowDataset(x_chunk)
-        chunk_y_ds = SpikeWindowDataset(y_chunk)
-        chunk_paired = PairedTemporalDataset(chunk_x_ds, chunk_y_ds, window_size=ws, step_size=ss,
-                                             t_start=0.0, t_end=chunk_span)
-        chunk_paired.time_shift(offset_x=0.0, offset_y=0.0)
-        assert len(chunk_paired) == hi - lo
-
-        chunk_paired.time_shift(offset_x=ws - 1e-6, offset_y=ws - 1e-6)
-        assert len(chunk_paired) == hi - lo
-
-
-class TestRigorousShiftTimeSpikeEndToEnd:
-    """A real (un-mocked) run confirming rigorous's spike shift_time path
-    dispatches the expected number of tasks and produces finite results --
-    if the chunk-to-raw-time-range translation were wrong, this would either
-    crash or silently create wrong-sized chunks (caught by the task-count
-    check already built into AnalysisWorkflow.run)."""
-
-    def test_rigorous_shift_time_spike_no_crash_and_expected_task_count(self):
+    def test_rigorous_shifting_spikes_no_crash_and_expected_task_count(self):
         import neural_mi as nmi
         from neural_mi import Training, Rigorous
 
@@ -583,7 +453,7 @@ class TestRigorousShiftTimeSpikeEndToEnd:
                 x_spikes, y_spikes, mode='rigorous',
                 processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
                 model=nmi.Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-                training=Training(n_epochs=1, batch_size=16, shift_time=True,
+                training=Training(n_epochs=1, batch_size=16, shift_windows=True,
                                   min_reliable_samples=1),
                 rigorous=Rigorous(gamma_range=range(1, 4)),
                 n_workers=1, show_progress=False, seed=0,
@@ -630,28 +500,17 @@ def test_a_chunk_keeps_its_combination_warnings_to_itself():
 
 
 def test_a_fractional_step_cuts_each_chunk_with_the_step_the_windows_use():
-    """The window count applies the step convention, so the chunk-to-raw
-    translation must too: step_size=0.5 is half a 20-sample window."""
-    import neural_mi as nmi
-    from unittest.mock import patch
-    from neural_mi.analysis import rigorous
+    """The step convention reaches the chunks: step_size=0.5 is half a 20-sample window, so each chunk's
+    rows start 10 samples apart, as the whole plan's do."""
+    from collections import OrderedDict
+    from neural_mi.data.plan import RowPlan, resolve_stream
     rng = np.random.default_rng(0)
     x = rng.standard_normal((2000, 2)).astype(np.float32)
-    y = (x + 0.5 * rng.standard_normal((2000, 2))).astype(np.float32)
-    steps = []
-    real = rigorous.chunk_window_range_to_raw
-
-    def spy(lo, hi, window_size, step_size):
-        steps.append(step_size)
-        return real(lo, hi, window_size, step_size)
-
-    with patch.object(rigorous, 'chunk_window_range_to_raw', side_effect=spy):
-        nmi.run(x, y, mode='rigorous', rigorous=nmi.Rigorous(gamma_range=range(1, 3)),
-                processing=nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 0.5},
-                                          y='continuous', y_params={'window_size': 20, 'step_size': 0.5}),
-                model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-                training=nmi.Training(n_epochs=1, batch_size=32), show_progress=False)
-    assert steps and set(steps) == {10}
+    plan = RowPlan(OrderedDict(x=resolve_stream(x, None, 'continuous', {'window_size': 20, 'step_size': 0.5}),
+                               y=resolve_stream(x.copy(), None, 'continuous', {})), shift=True)
+    chunk = plan.cut(np.arange(3, 40))
+    assert chunk.step == 10 and len(chunk) == 37
+    assert np.allclose(np.diff(plan.rows()['times'][3:40]), 10.0)
 
 
 def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma():

@@ -275,18 +275,13 @@ def _difference_scalars(mode, rows, bidirectional=False) -> Dict[str, Any]:
 def _call_difference(mode, x, y, w, params, repeat_grid, ctx, n_workers):
     """One configuration's call into the mode's analysis function."""
     if mode == 'conditional':
+        # x is the plan of X, W and Y (neural_mi/data/plan.py).
         from neural_mi.analysis.conditional import run_conditional_mi
-        return run_conditional_mi(x, y, w, params, sweep_grid=repeat_grid, n_workers=n_workers,
-                                  align=ctx.get('align'), c_data=w,
-                                  raw_deferred=ctx.get('raw_deferred', False),
-                                  w_processor_type=ctx.get('w_processor_type'),
-                                  c_processor_type=ctx.get('w_processor_type'),
-                                  c_processor_params=ctx.get('w_processor_params'))
+        return run_conditional_mi(x, params, sweep_grid=repeat_grid, n_workers=n_workers,
+                                  align=ctx.get('align'))
     if mode == 'interaction':
         from neural_mi.analysis.interaction import run_interaction_information
-        return run_interaction_information(x, y, w, params, sweep_grid=repeat_grid, n_workers=n_workers,
-                                           raw_deferred=ctx.get('raw_deferred', False),
-                                           w_processor_type=ctx.get('w_processor_type'))
+        return run_interaction_information(x, params, sweep_grid=repeat_grid, n_workers=n_workers)
     from neural_mi.analysis.transfer import run_transfer_entropy
     return run_transfer_entropy(x, y, params, history_window=ctx['history_window'],
                                 prediction_horizon=ctx.get('prediction_horizon', 1),
@@ -335,7 +330,6 @@ def produce_difference_rigorous(mode, x, y, base_params, grid, *, to_bits, ctx, 
                 scalar_fn=ctx['scalar_fn'], x_data=x, y_data=y, base_params=rep_params,
                 extra_data=ctx.get('extra_data'),
                 extra_kwargs=ctx.get('extra_kwargs'), n_workers=n_workers,
-                raw_deferred=ctx.get('raw_deferred', False),
                 **(ctx.get('temporal_kwargs') or {}), **ctx['rigorous_kwargs'])
             rows.append({'config_id': cid, **{k: cfg.get(k) for k in config_keys}, 'run_id': rid,
                          **_fit_row(fit, to_bits, quantity=mode)})

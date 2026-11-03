@@ -150,22 +150,22 @@ class TestRigorousChunks:
         return _Chunker(x, x, params, **kwargs)
 
     def test_recorded_rows_are_cut_in_time_order(self):
-        chunker = self._chunker(torch.zeros(10, 1, 3), {'row_step': 1, 'row_span': 3}, deferred=False)
+        chunker = self._chunker(torch.zeros(10, 1, 3), {'row_step': 1, 'row_span': 3})
         assert chunker.mode == 'contiguous'
         assert [c.tolist() for c in chunker.chunks(2)] == [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]]
 
     def test_other_rows_are_cut_in_a_random_order_unless_told(self):
         np.random.seed(0)
-        assert self._chunker(torch.zeros(10, 1), {}, deferred=False).mode == 'permuted'
-        assert self._chunker(torch.zeros(10, 1), {}, deferred=False, temporal_chunking=True).mode == 'contiguous'
+        assert self._chunker(torch.zeros(10, 1), {}).mode == 'permuted'
+        assert self._chunker(torch.zeros(10, 1), {}, temporal_chunking=True).mode == 'contiguous'
 
     def test_a_recording_each_chunk_windows_cannot_be_permuted(self):
         params = {'processor_type_x': 'continuous', 'processor_type_y': 'continuous', 'shift_windows': True,
                   'processor_params_x': {'window_size': 5}}
         x = torch.zeros(200, 1)
-        assert self._chunker(x, params, deferred=True).mode == 'contiguous'
+        assert self._chunker(x, params).mode == 'contiguous'
         with pytest.raises(ValueError, match=r"temporal_chunking=False\) cannot apply"):
-            self._chunker(x, params, deferred=True, temporal_chunking=False)
+            self._chunker(x, params, temporal_chunking=False)
 
     @pytest.mark.parametrize('call', [
         lambda x, y, **kw: nmi.active_information_storage(x, k=3, **kw),
@@ -295,14 +295,17 @@ class TestRowIdentity:
         assert identity['step'] == 0.5 and identity['spans'] == {'x': 0.5, 'y': 0.5}
         assert identity['count'] == len(dataset) and identity['kept']
 
-    def test_rows_resliced_from_the_raw_arrays_start_at_their_first_sample(self):
-        from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
+    def test_rows_of_a_plan_carry_the_plans_identity(self):
+        from neural_mi.data.plan import PAIR, RowPlan
         x, y = _series()
         params = {'shift_windows': True, 'processor_type_x': 'continuous', 'processor_type_y': 'continuous',
                   'processor_params_x': {'window_size': 10, 'step_size': 0.5}}
-        dataset = try_build_shift_windows_dataset(x, y, params)
-        assert row_identity(dataset, params) == {'count': len(dataset), 'origin': 0.0, 'step': 5.0,
-                                                 'spans': {'x': 10.0, 'y': 10.0}, 'kept': None}
+        plan = RowPlan.of_pair(x, y, params)
+        dataset = plan.build(PAIR)
+        identity = row_identity(dataset, params)
+        assert identity == plan.identity()
+        assert identity['count'] == len(dataset) and identity['origin'] == 0.0 and identity['step'] == 5.0
+        assert identity['spans'] == {'x': 10.0, 'y': 10.0}
 
     def test_rows_built_before_the_task_are_known_by_their_count_and_record(self):
         from neural_mi.data.handler import PairedDataset

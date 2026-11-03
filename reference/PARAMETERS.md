@@ -61,11 +61,15 @@ clock. With no `Processing`, the data are taken as already windowed:
 | `x_time`, `y_time`, `w_time` | `None` | A timestamp per sample. With a clock `window_size` and `step_size` are in the clock's units. Without one they are in samples (seconds with `sample_rate`). |
 
 Every stream of a call is windowed on one grid on which a window means the same
-interval in X, Y and W and is kept only where every stream is valid.
+interval in X, Y and W and is kept only where every stream is valid. Every term
+of a quantity reads the rows of that grid ([USING.md](USING.md#one-grid-for-every-stream)).
 
 ### Processor parameters
 
-`window_size` must be set for at least one stream and is shared by every stream.
+`window_size` must be set for at least one stream. The grid's window and step
+are those of the first stream that names a `window_size`, and a stream asking
+for another window, or for a step of another length, is refused.
+`nmi.offset_quantity` places a stream at offsets of its own.
 
 **`'continuous'`** reads a regularly sampled signal of shape `(n_timepoints,
 n_channels)`.
@@ -89,7 +93,7 @@ neuron.
 | `max_spikes_per_window` | `None` | Cap on the spike-time slots per window; spikes beyond it are dropped. |
 | `no_spike_value` | `0.0` | Value of an empty spike-time slot. |
 | `n_seconds` | `None` | Recording length in seconds, when it runs past the last spike. |
-| `drop_empty_windows` | `True` | Drop windows without spikes. `False` keeps silent windows and so changes the quantity estimated (see [USING.md](USING.md)). |
+| `drop_empty_windows` | `True` | Drop windows without spikes. The one default that changes the data: in spike times silence looks the same as no recording. A row is kept only where every spike stream fired, in every term of a quantity. `False` keeps silent windows and so changes the quantity estimated (see [USING.md](USING.md#silent-spike-windows)). No effect on the rows the quantities defined by time offsets build, which keep every window. |
 | `exclude_bursty_neurons` | `False` | Leave out neurons whose peak count exceeds `burst_threshold_multiplier` times the median. |
 | `burst_threshold_multiplier` | `5.0` | The threshold for `exclude_bursty_neurons`. |
 | `sample_rate` | `None` | `mode='lag'` reads it to put lags in seconds. |
@@ -187,8 +191,7 @@ The optimisation loop and what is evaluated after it.
 | `train_subset_size` | `None` | Size of the fixed training subset the reported estimate is evaluated on: a count, or `'full'` for the whole training set; `None` takes `min(n_train, max_eval_samples)`. Like the held-out subset, it is one contiguous stretch per training segment for a blocked split and random rows for a random split. A subset larger than `max_eval_samples` is evaluated in blocks. Training uses every training sample either way. |
 | `test_subset_size` | `None` | Size of the fixed held-out subset evaluated at every epoch: a count, or `'full'` for the whole held-out set; `None` takes `min(n_test, max_eval_samples)`. Drawn once, right after the split: one contiguous stretch per held-out block for a blocked split, random rows for a random split. A subset larger than `max_eval_samples` is evaluated in blocks at every epoch. |
 | `eval_train` | `False` | Also record the train-side MI every epoch: `True`, a fraction, a sample count, or `'full'`. A set larger than `max_eval_samples` is evaluated in blocks. |
-| `shift_time` | `True` | Temporal data: re-tile the windows from a fresh random time offset every epoch. |
-| `shift_windows` | `True` | The cheaper re-slicing form of `shift_time`, for regularly sampled continuous and categorical data, and for the rows a `stride` above one thins in the quantities built by time offsets. A shift moves rows by less than one step, so rows that start one sample apart never move. |
+| `shift_windows` | `True` | Every epoch the training rows' windows start one offset later, drawn within one step and the same for every stream. The rows stay the same rows, the grid leaves one step at its end for the shift, and evaluation reads the rows unshifted. It moves the rows a processor cuts from raw streams in every mode but transfer entropy, and the rows a `stride` above one thins in the quantities built by time offsets. Rows that start one sample apart never move. |
 | `augmentation_params` | `{}` | Augmentations applied to both X and Y during training (listed in [USING.md](USING.md)). |
 | `augmentation_params_x` | `augmentation_params` | X's augmentations; `{}` turns them off for X. |
 | `augmentation_params_y` | `augmentation_params` | Y's augmentations. |
@@ -232,7 +235,6 @@ Units, extra diagnostics, embeddings and display names.
 | `return_rotated_embeddings` | `False` | Also keep the embeddings rotated so that dimension 0 carries the most shared variance. |
 | `rotated_embeddings_per_epoch` | `False` | With tracked embeddings, rotate each epoch on its own, not with the best epoch's rotation. |
 | `return_rotation_matrices` | `False` | Keep the rotation matrices, to project new data into the same basis. |
-| `max_index_reduction` | `0.05` | Largest fraction of windows time shifting may remove before a warning. |
 | `channel_names_x`, `channel_names_y` | `None` | Channel names, for the pairwise heatmap. |
 
 ## Mode configs

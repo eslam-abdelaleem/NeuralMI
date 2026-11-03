@@ -1,50 +1,21 @@
 # tests/test_shift_windowing.py
-"""Tests for neural_mi/data/shift_windowing.py: pair classification, the
-sample-rate-aware unit conversion, the categorical reslice+encode path, and
-the vectorized spike windowing it sits alongside (data/temporal.py)."""
+"""Tests for neural_mi/data/shift_windowing.py: the sample-rate-aware unit
+conversion, the categorical reslice+encode path, the bundle that keeps streams
+in step, the vectorized spike windowing it sits alongside (data/temporal.py),
+and which route a row plan takes (data/plan.py)."""
 import warnings
 import numpy as np
 import torch
 import pytest
 
 from neural_mi.data.shift_windowing import (
-    shift_family, mixed_pair_sample_rate_ok, seconds_to_samples, resolve_step_size,
-    make_categorical_encoder, make_multi_categorical_encoder, WindowShifter, PairedWindowShifter,
+    seconds_to_samples, resolve_step_size, make_categorical_encoder, WindowShifter,
 )
 from neural_mi.data.temporal import (
     CategoricalWindowDataset, relabel_categorical_data,
     SpikeWindowDataset,
 )
 from neural_mi.data.handler import WindowManager
-
-
-class TestShiftFamily:
-    def test_regular_pairs(self):
-        assert shift_family('continuous', 'continuous') == 'regular'
-        assert shift_family('continuous', 'categorical') == 'regular'
-        assert shift_family('categorical', 'categorical') == 'regular'
-
-    def test_spike_pair(self):
-        assert shift_family('spike', 'spike') == 'spike'
-
-    def test_mixed_pairs(self):
-        assert shift_family('continuous', 'spike') == 'mixed'
-        assert shift_family('spike', 'categorical') == 'mixed'
-
-    def test_static_side_is_never_shiftable(self):
-        assert shift_family(None, 'continuous') is None
-        assert shift_family('spike', None) is None
-        assert shift_family(None, None) is None
-
-
-class TestMixedPairSampleRateOk:
-    def test_true_when_regular_side_has_sample_rate(self):
-        assert mixed_pair_sample_rate_ok('continuous', {'sample_rate': 100.0}, {})
-        assert mixed_pair_sample_rate_ok('spike', {}, {'sample_rate': 50.0})
-
-    def test_false_when_missing(self):
-        assert not mixed_pair_sample_rate_ok('continuous', {}, {})
-        assert not mixed_pair_sample_rate_ok('continuous', None, None)
 
 
 def test_seconds_to_samples():
@@ -138,101 +109,35 @@ class TestCategoricalEncoderMatchesCategoricalWindowDataset:
         assert np.allclose(old[:n], new[:n])
 
 
-class TestMakeMultiCategoricalEncoder:
-    """The block-aware encoder for a categorical X with a categorical W: each
-        block keeps its own n_categories, not one value inferred from the combined
-        array's maximum.
-    """
-
-    @pytest.mark.parametrize("encoding", ["majority_vote", "probability", "full_trajectory"])
-    def test_single_block_folds_category_axis_into_channels(self, encoding):
-        """A single-block spec must reproduce make_categorical_encoder's own
-        per-block content, folded into the channel axis exactly the way
-        run._reshape_categorical_w_for_conditional already folds a single
-        categorical conditioning variable -- the shape convention the whole
-        multi-block design (letting differently-sized blocks concatenate)
-        is built on."""
-        rng = np.random.default_rng(0)
-        n_windows, n_channels, window_size, n_categories = 5, 3, 6, 4
-        raw = torch.as_tensor(rng.integers(0, n_categories, size=(n_windows, n_channels, window_size)),
-                              dtype=torch.long)
-        single = make_categorical_encoder(n_categories, encoding)(raw)
-        multi = make_multi_categorical_encoder([(n_channels, n_categories)], encoding)(raw)
-        if encoding == 'full_trajectory':
-            expected = single.reshape(n_windows, n_channels, window_size, n_categories) \
-                             .permute(0, 1, 3, 2).reshape(n_windows, n_channels * n_categories, window_size)
-        else:
-            expected = single.reshape(n_windows, n_channels * n_categories, 1)
-        torch.testing.assert_close(multi, expected)
-
-    @pytest.mark.parametrize("encoding", ["majority_vote", "probability", "full_trajectory"])
-    def test_two_blocks_with_different_n_categories_are_not_conflated(self, encoding):
-        """The core correctness property: block A (n_categories=3) and block
-        B (n_categories=5) must each be one-hot encoded against their own
-        category count -- not one shared count inferred from the combined
-        array's max value (which would be 4, wrong for both blocks, and
-        would silently corrupt every category index >= 4 in block A's
-        one-hot as well as block B's)."""
-        n_windows, window_size = 2, 4
-        raw = torch.zeros(n_windows, 2, window_size, dtype=torch.long)
-        raw[0, 0, :] = 2  # block A (3 categories): category 2
-        raw[0, 1, :] = 4  # block B (5 categories): category 4 -- out of range for n_categories=3
-        raw[1, 0, :] = 0
-        raw[1, 1, :] = 1
-        block_specs = [(1, 3), (1, 5)]
-        encoded = make_multi_categorical_encoder(block_specs, encoding)(raw)
-
-        # Independently re-derive each block's expected encoding via the
-        # existing, already-proven single-block encoder, applied to that
-        # block's own channel slice with its own n_categories.
-        expected_a = make_categorical_encoder(3, encoding)(raw[:, 0:1, :])
-        expected_b = make_categorical_encoder(5, encoding)(raw[:, 1:2, :])
-        if encoding == 'full_trajectory':
-            expected_a = expected_a.reshape(n_windows, 1, window_size, 3).permute(0, 1, 3, 2) \
-                                    .reshape(n_windows, 3, window_size)
-            expected_b = expected_b.reshape(n_windows, 1, window_size, 5).permute(0, 1, 3, 2) \
-                                    .reshape(n_windows, 5, window_size)
-        else:
-            expected_a = expected_a.reshape(n_windows, 3, 1)
-            expected_b = expected_b.reshape(n_windows, 5, 1)
-        expected = torch.cat([expected_a, expected_b], dim=1)
-
-        assert encoded.shape == expected.shape
-        torch.testing.assert_close(encoded, expected)
-
-    def test_channel_count_mismatch_raises(self):
-        raw = torch.zeros(2, 3, 4, dtype=torch.long)
-        with pytest.raises(ValueError):
-            make_multi_categorical_encoder([(1, 3), (1, 5)], 'majority_vote')(raw)  # sums to 2, raw has 3
-
-
-class TestPairedWindowShifterDifferentSampleRates:
+class TestBundleShifterDifferentSampleRates:
     def test_shapes_stay_fixed_across_shifts(self):
+        from collections import OrderedDict
+        from neural_mi.data.shift_windowing import BundleShifter, stream_spec
         raw_x = torch.randn(10000, 2)  # 1000 Hz, 10 sec
         raw_y = torch.randn(5000, 2)   # 500 Hz, 10 sec
         period_x, period_y = 1.0 / 1000.0, 1.0 / 500.0
-        wsx = seconds_to_samples(0.5, period_x)
-        ssx = seconds_to_samples(0.5, period_x)
-        wsy = seconds_to_samples(0.5, period_y)
-        ssy = seconds_to_samples(0.5, period_y)
-        shifter = PairedWindowShifter(raw_x, raw_y, wsx, ssx, wsy, ssy,
-                                           period_x=period_x, period_y=period_y)
+        wsx, wsy = seconds_to_samples(0.5, period_x), seconds_to_samples(0.5, period_y)
+        shifter = BundleShifter(OrderedDict(x=stream_spec(raw_x, wsx, wsx, period=period_x),
+                                            y=stream_spec(raw_y, wsy, wsy, period=period_y)), shift=True)
         n_windows = shifter.n_windows
         assert n_windows > 0
-        for shift_x in [0, 100, 400, ssx - 1]:
-            x, y = shifter.windows_at(shift_x)
-            assert x.shape == (n_windows, 2, wsx)
-            assert y.shape == (n_windows, 2, wsy)
+        for shift_x in [0, 100, 400, wsx - 1]:
+            windows = shifter.windows_at(shift_x)
+            assert windows['x'].shape == (n_windows, 2, wsx)
+            assert windows['y'].shape == (n_windows, 2, wsy)
 
-    def test_same_rate_both_sides_matches_original_behavior(self):
-        # period_x == period_y == 1.0 (no sample_rate on either side) reduces
-        # exactly to the same shift value on both sides.
-        raw_x = torch.randn(1000, 2)
-        raw_y = torch.randn(1000, 2)
-        shifter = PairedWindowShifter(raw_x, raw_y, 20, 20)
-        x0, y0 = shifter.windows_at(5)
-        assert torch.equal(x0, raw_x[5:].unfold(0, 20, 20)[:shifter.n_windows].contiguous())
-        assert torch.equal(y0, raw_y[5:].unfold(0, 20, 20)[:shifter.n_windows].contiguous())
+    def test_a_step_longer_than_the_window_moves_every_stream_by_the_same_time(self):
+        """With a step of 30 samples and windows of 10, a shift reaches 29 samples. Every stream moves by
+        all of it, where a shift clamped to one window would leave Y behind X."""
+        from collections import OrderedDict
+        from neural_mi.data.shift_windowing import BundleShifter, stream_spec
+        ramp = torch.arange(3000, dtype=torch.float32)[:, None]
+        slow = torch.arange(0, 3000, 2, dtype=torch.float32)[:, None]
+        shifter = BundleShifter(OrderedDict(x=stream_spec(ramp, 10, 30, period=1.0),
+                                            y=stream_spec(slow, 5, 15, period=2.0)), shift=True)
+        windows = shifter.windows_at(28)
+        assert float(windows['x'][0, 0, 0]) == 28.0
+        assert float(windows['y'][0, 0, 0]) == 28.0
 
 
 def _reference_spike_windows(spike_trains, window_times, window_size, max_samples_per_window,
@@ -264,9 +169,8 @@ def _reference_spike_windows(spike_trains, window_times, window_size, max_sample
 
 class TestCreateDatasetCrossUnitWarning:
     """create_dataset must flag a spike+continuous/categorical pairing that
-    lacks a shared time unit, independent of whether shifting is ever used
-    -- window alignment for such a pair is already questionable (see
-    shift_family/mixed_pair_sample_rate_ok's docstrings)."""
+    lacks a shared time unit: spike times are in seconds and a regular stream
+    without a clock is in samples, so their windows cover different times."""
 
     def _spikes(self, n=3, seconds=300.0, rate=5.0, seed=0):
         rng = np.random.default_rng(seed)
@@ -278,7 +182,7 @@ class TestCreateDatasetCrossUnitWarning:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             create_dataset(x, self._spikes(), processor_type_x='continuous',
-                           processor_params_x={'window_size': 20, 'step_size': 20},
+                           processor_params_x={'window_size': 5.0, 'step_size': 5.0},
                            processor_type_y='spike',
                            processor_params_y={'window_size': 5.0, 'step_size': 5.0})
         assert any('sample_rate' in str(w.message) and 'meaningless' in str(w.message) for w in caught)
@@ -332,12 +236,7 @@ class TestVectorizedSpikeWindowingMatchesReference:
 
 
 class TestBundleShifter:
-    """One shift, any number of streams, each in its own sample units.
-
-    The pair and dual-branch shifters were the same algorithm written twice and
-    differed only in how they packed their streams into the estimator's two
-    roles. They are now packings over this.
-    """
+    """One shift, any number of streams, each in its own sample units."""
 
     @staticmethod
     def _ramp(n, channels=1):
@@ -350,7 +249,7 @@ class TestBundleShifter:
             (chr(ord('a') + i), dict(raw=self._ramp(400), window_size=window,
                                      step_size=step, period=1.0))
             for i in range(n_streams)
-        ))
+        ), shift=True)
 
     @pytest.mark.parametrize("n_streams", [1, 2, 3, 4])
     def test_any_number_of_streams(self, n_streams):
@@ -373,21 +272,10 @@ class TestBundleShifter:
         bundle = BundleShifter(OrderedDict((
             ('fast', dict(raw=self._ramp(400), window_size=20, step_size=20, period=1.0)),
             ('slow', dict(raw=self._ramp(200), window_size=10, step_size=10, period=2.0)),
-        )))
+        )), shift=True)
         windows = bundle.windows_at(8)
         assert float(windows['fast'][0, 0, 0]) == 8.0
         assert float(windows['slow'][0, 0, 0]) == 4.0     # 8 fast samples = 4 slow ones
-
-    def test_pack_is_the_only_difference_between_the_two_wrappers(self):
-        from neural_mi.data.shift_windowing import (PairedWindowShifter,
-                                                    DualBranchWindowShifter)
-        raw = self._ramp(400)
-        pair = PairedWindowShifter(raw, raw, 10, 10)
-        triple = DualBranchWindowShifter(raw, raw, raw, 10, 10, 10, 10)
-        x, y = pair.windows_at(2)
-        (a, c), y2 = triple.windows_at(2)
-        assert torch.equal(x, a) and torch.equal(y, y2) and torch.equal(a, c)
-        assert pair.n_windows == triple.n_windows
 
 
 class TestContinuousReslicePathMatchesTheGrid:
@@ -400,8 +288,8 @@ class TestContinuousReslicePathMatchesTheGrid:
     agree wherever both apply. Categorical and spike already have such a check;
     this is continuous.
 
-    The reslice path builds one window fewer by design: safe_n_windows reserves
-    a margin so the count stays fixed across every shift in [0, window_size).
+    The reslice path builds full windows only, and with a margin for shifts it
+    builds fewer still.
     """
 
     @pytest.mark.parametrize("window_size,step_size", [(10, 10), (10, 5), (7, 7), (20, 4)])
@@ -421,7 +309,7 @@ class TestContinuousReslicePathMatchesTheGrid:
     def test_a_shift_moves_the_windows_by_exactly_that_many_samples(self):
         T, window_size = 400, 10
         ramp = np.arange(T, dtype=np.float32)[:, None]
-        shifter = WindowShifter(torch.as_tensor(ramp), window_size, window_size)
+        shifter = WindowShifter(torch.as_tensor(ramp), window_size, window_size, max_shift=window_size - 1)
         base = shifter.windows_at(0)
         for shift in (1, 4, 9):
             moved = shifter.windows_at(shift)
@@ -429,23 +317,22 @@ class TestContinuousReslicePathMatchesTheGrid:
 
 
 class TestTheTwoRoutesReadTheSameClock:
-    """A time vector means the same thing on both windowing routes.
+    """A time vector means the same thing on both routes of a row plan.
 
-        The eager route reads the timestamps, so `window_size=1.0` is one second.
-        The reslice route converts a window size into a sample count once, up
-        front, and takes the sample period from the time vector when there is no
-        `sample_rate`, so a 100 Hz recording gets windows a hundred samples wide and
-        the streams are cut to a common duration.
+        The grid in time reads the timestamps, so `window_size=1.0` is one
+        second. The route by sample number converts a window size into a sample
+        count once, up front, and takes the sample period from the time vector
+        when there is no `sample_rate`, so a 100 Hz recording gets windows a
+        hundred samples wide and the streams are cut to a common duration.
     """
 
     WIN = {'window_size': 1.0, 'step_size': 1.0}
 
-    def _params(self, x_time, y_time):
-        return dict(shift_windows=True, processor_type_x='continuous',
-                    processor_type_y='continuous',
-                    processor_params_x=dict(self.WIN),
-                    processor_params_y=dict(self.WIN),
-                    x_time=x_time, y_time=y_time)
+    def _plan(self, x, y, x_time, y_time):
+        from collections import OrderedDict
+        from neural_mi.data.plan import RowPlan, resolve_stream
+        return RowPlan(OrderedDict(x=resolve_stream(x, x_time, 'continuous', dict(self.WIN)),
+                                   y=resolve_stream(y, y_time, 'continuous', dict(self.WIN))), shift=True)
 
     def _eager(self, x, y, x_time, y_time):
         from neural_mi.data.handler import create_dataset
@@ -462,14 +349,14 @@ class TestTheTwoRoutesReadTheSameClock:
         return xt, yt, np.sin(xt)[:, None], np.cos(yt)[:, None]
 
     def test_window_width_comes_from_the_timestamps(self):
-        from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
         xt, yt, x, y = self._regular_pair()
-        shifted = try_build_shift_windows_dataset(x, y, self._params(xt, yt))
+        plan = self._plan(x, y, xt, yt)
+        assert plan.route == 'unfold'
+        windows = plan.rows()['windows']
         eager = self._eager(x, y, xt, yt)
-        assert shifted is not None
         # One second holds 100 samples of X and 25 of Y on either route.
-        assert shifted.x_data.shape[2] == eager.x_data.shape[2] == 100
-        assert shifted.y_data.shape[2] == eager.y_data.shape[2] == 25
+        assert windows['x'].shape[2] == eager.x_data.shape[2] == 100
+        assert windows['y'].shape[2] == eager.y_data.shape[2] == 25
 
     def test_sample_rate_still_wins_over_the_timestamps(self):
         from neural_mi.data.shift_windowing import stream_period
@@ -480,38 +367,20 @@ class TestTheTwoRoutesReadTheSameClock:
         assert stream_period({}, None) == 1.0
         assert stream_period(None, None) == 1.0
 
-    def test_a_gap_sends_the_pairing_to_the_eager_route(self):
-        # The reslice route indexes by sample number and cannot skip a gap, so
-        # a clock with one has no single period that holds across the
-        # recording. Declining is what routes it to the eager path, which
+    def test_a_gap_puts_the_plan_on_the_grid_in_time(self):
+        # Windowing by sample number cannot skip a gap, so a clock with one has
+        # no single period that holds across the recording. The grid in time
         # checks each window's coverage against the timestamps themselves.
-        from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
         xt, _, x, _ = self._regular_pair()
         yt_gap = np.concatenate([np.arange(0, 20, 1 / 25.0), np.arange(40, 80, 1 / 25.0)])
-        y_gap = np.cos(yt_gap)[:, None]
-        assert try_build_shift_windows_dataset(x, y_gap, self._params(xt, yt_gap)) is None
+        assert self._plan(x, np.cos(yt_gap)[:, None], xt, yt_gap).route == 'grid'
 
-    def test_clocks_that_start_apart_go_to_the_eager_route(self):
-        # The eager route starts the grid at the latest start among the
-        # streams; this one lines them up by sample number, which would pair
-        # X's first window with a stretch of Y five seconds earlier.
-        from neural_mi.data.shift_windowing import try_build_shift_windows_dataset
+    def test_clocks_that_start_apart_put_the_plan_on_the_grid_in_time(self):
+        # The grid in time starts at the latest start among the streams;
+        # windowing by sample number would pair X's first window with a
+        # stretch of Y five seconds earlier.
         _, yt, _, y = self._regular_pair()
         xt_late = np.arange(5, 60, 1 / 100.0)
-        x_late = np.sin(xt_late)[:, None]
-        assert try_build_shift_windows_dataset(x_late, y, self._params(xt_late, yt)) is None
-
-
-@pytest.mark.parametrize('step_size, expected', [(None, 0.05), (0.5, 0.025)])
-def test_the_spike_rigorous_grid_reads_the_step_like_every_other_path(step_size, expected):
-    """An unset step is one window. Filling it in with window_size before the
-    WindowManager sees it would read 0.05 as 5% of a 0.05 s window."""
-    from neural_mi.data.shift_windowing import spike_shift_grid_info
-    rng = np.random.default_rng(0)
-    spikes = [np.sort(rng.uniform(0, 10.0, 200)) for _ in range(3)]
-    params = {'processor_params_x': {'window_size': 0.05, 'step_size': step_size}}
-    n, _, window, step = spike_shift_grid_info(spikes, spikes, params)
-    assert window == 0.05 and step == pytest.approx(expected)
-    # The shift margin and the spikes' own extent take a few windows off the
-    # count. A step read as a fraction a second time would multiply it by 20.
-    assert n == pytest.approx(10.0 / expected, rel=0.1)
+        plan = self._plan(np.sin(xt_late)[:, None], y, xt_late, yt)
+        assert plan.route == 'grid'
+        assert plan.rows()['origin'] == pytest.approx(5.0)

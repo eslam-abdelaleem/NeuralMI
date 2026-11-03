@@ -13,31 +13,21 @@ machinery (``ParameterSweep``, the joint/marginal-difference pattern) is
 reused verbatim from ``analysis/sweep.py``/``analysis/conditional.py``.
 """
 import math
-import torch
 from typing import Dict, Any, Optional
 
-from neural_mi.data.shift_windowing import (SHIFT_PACK_CONCAT, SHIFT_PACK_FIRST,
-                                            SHIFT_PACK_SECOND,
-                                            _REGULAR_GRID_PROCESSOR_TYPES)
-from neural_mi.analysis.conditional import (_merge_raw_blocks, _SAMPLE_COUNT_TRIM_TOLERANCE,
-                                            _WINDOW_SIZE_TRIM_TOLERANCE)
 from neural_mi.analysis.sweep import (combined_spread, combine_terms, rung, ParameterSweep,
                                       _joint_marginal_difference, warn_combination,
                                       amplification_factor)
-import warnings
-from neural_mi.logger import logger, user_stacklevel
+from neural_mi.data.plan import Roles, RowPlan, TermRows
+from neural_mi.logger import logger
 from neural_mi.embeddings_io import with_model_labels
-from neural_mi.utils import mi_report_units, with_window_axis
-
-# The trim tolerances are conditional.py's: both modes window W paired with Y
-# through the same create_dataset call (see run.py), so both see the same
-# small boundary effects.
+from neural_mi.utils import mi_report_units
 
 
 def _train_single_term(
-    x: torch.Tensor, y: torch.Tensor, base_params: Dict[str, Any],
+    x, y, base_params: Dict[str, Any],
     sweep_grid: Optional[Dict[str, Any]], n_workers: int,
-    *, quantity_name: str, label: str, is_proc_sweep: bool = False,
+    *, quantity_name: str, label: str,
 ) -> list:
     """Train one term on its own with ``ParameterSweep`` and return its task results.
 
@@ -48,21 +38,17 @@ def _train_single_term(
     """
     logger.info(f"{quantity_name}: estimating I({label})...")
     sweep = ParameterSweep(x_data=x, y_data=y, base_params=base_params.copy())
-    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
+    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
     if not any('train_mi' in r for r in results):
         raise RuntimeError(f"{quantity_name}: all I({label}) runs failed, no valid train_mi values.")
     return results
 
 
 def run_interaction_information(
-    x_data: torch.Tensor,
-    y_data: torch.Tensor,
-    w_data: torch.Tensor,
+    plan: RowPlan,
     base_params: Dict[str, Any],
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
-    raw_deferred: bool = False,
-    w_processor_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Estimates interaction information II = I(X,W;Y) - I(X;Y) - I(W;Y).
 
@@ -70,40 +56,20 @@ def run_interaction_information(
     pair, which yields both I(X,W;Y) and I(X;Y) for free, plus one standalone
     ``_train_single_term`` call for I(W;Y), three sweeps total, not four,
     avoiding a redundant recomputation of I(X;Y). The three are combined repeat
-    by repeat by :func:`neural_mi.analysis.sweep.combine_terms`.
+    by repeat by :func:`neural_mi.analysis.sweep.combine_terms`. Every term
+    selects its streams from ``plan``, so all three read the same rows.
 
     Parameters
     ----------
-    x_data : torch.Tensor
-        Data for population X, shape ``(n_samples, n_channels_x, window_size)``.
-    y_data : torch.Tensor
-        Data for population Y, shape ``(n_samples, n_channels_y, window_size)``.
-    w_data : torch.Tensor
-        Data for the third population W, shape ``(n_samples, n_channels_w, window_size)``.
-        Concatenated with X along the channel axis to build the joint
-        I(X,W;Y) term. Window count and window size must match X's, up to a
-        1-sample edge-case boundary difference (see
-        ``_SAMPLE_COUNT_TRIM_TOLERANCE``/``_WINDOW_SIZE_TRIM_TOLERANCE``)
-        that's trimmed instead of raised.
+    plan : RowPlan
+        The plan of the streams ``'x'``, ``'w'`` and ``'y'``. The joint term
+        reads X and W joined along the channel axis.
     base_params : Dict[str, Any]
         Fixed parameters for the MI estimator. Passed to all three sweeps.
     sweep_grid : Dict[str, List], optional
         Optional hyperparameter grid, e.g. ``{'run_id': range(5)}``.
     n_workers : int, optional
         Number of parallel workers. Defaults to 1.
-    raw_deferred : bool, optional
-        ``True`` when ``x_data``/``y_data``/``w_data`` are raw, unwindowed
-        arrays and windowing should be deferred to each sweep's own
-        dispatch (shift_windows/shift_time reachability), the caller
-        (``run.py``) has already verified W's processor family matches X's,
-        so the raw channel-concat below produces the same paired,
-        shift-aware windowing every other reachable mode already gets.
-        Skips the windowed-shape validation below entirely, since raw 2-D
-        arrays don't share a meaningful "window size" to compare yet.
-    w_processor_type : str, optional
-        W's own processor type when ``raw_deferred``, needed because W's
-        type may now genuinely differ from X's (a mixed continuous +
-        categorical pair). ``None`` (default) inherits X's own type.
 
     Returns
     -------
@@ -123,152 +89,20 @@ def run_interaction_information(
           :func:`neural_mi.analysis.sweep.amplification_factor`.
         - ``'raw_xw_y'``, ``'raw_x_y'``, ``'raw_w_y'`` : list of result dicts.
     """
-    # joint_bp/marginal_x_bp/marginal_w_bp: separate base_params for each of
-    # the three sweeps below.  Identical to base_params (the marginal_x/w
-    # overrides unused) except for a categorical raw_deferred X/W pair,
-    # where each sweep's raw "X-role" data is a differently-shaped
-    # concatenation (XW: two channel blocks; X alone / W alone: one block
-    # each) and so needs its own processor_params_x['_categorical_block_specs']
-    # -- try_build_shift_windows_dataset builds one encoder per call from
-    # whatever's in processor_params_x, so a single shared dict can't serve
-    # all three.
-    joint_bp, marginal_x_bp, marginal_w_bp = base_params, None, base_params
-    if raw_deferred:
-        # x_data/y_data/w_data arrive here exactly as the caller passed
-        # them in (not yet tensors, possibly numpy arrays) -- torch.cat
-        # below needs actual tensors of a matching dtype.
-        _to_t = lambda a: a if torch.is_tensor(a) else torch.as_tensor(a, dtype=torch.float32)
-        _x_kind = base_params.get('processor_type_x')
-        _w_kind = w_processor_type if w_processor_type is not None else _x_kind
-        # Y's own type may differ from X's/W's -- "None means inherit X" is
-        # only the fallback when it isn't set explicitly.
-        _y_kind = base_params.get('processor_type_y') or _x_kind
-        y_data = list(y_data) if _y_kind == 'spike' else _to_t(y_data)
-
-        # The shifted tuple builder takes only a regular-grid triple, and the
-        # eager fallback behind it cannot window a tuple, so anything outside
-        # that family still merges X and W before windowing.
-        _all_regular = all(kind in _REGULAR_GRID_PROCESSOR_TYPES
-                           for kind in (_x_kind, _w_kind, _y_kind))
-        if _x_kind == 'spike' or not _all_regular:
-            if _x_kind == 'spike':
-                # A "list of per-neuron spike-time arrays" is never a tensor at
-                # this stage, so this concatenation is a Python list concat.
-                xw_data = list(x_data) + list(w_data)
-                joint_bp = marginal_x_bp = marginal_w_bp = base_params
-            else:
-                xw_data, joint_bp, marginal_x_bp, marginal_w_bp = _merge_raw_blocks(
-                    x_data, w_data, _x_kind, _w_kind, base_params, _to_t)
-                # _merge_raw_blocks returns None for a marginal that needs no
-                # block specs; interaction's third leg is estimated on its own
-                # and always needs a real params dict.
-                marginal_x_bp = marginal_x_bp or base_params
-                marginal_w_bp = marginal_w_bp or base_params
-            x_role, w_role = x_data, w_data
-        else:
-            # X and W stay separate raw streams, each windowed by its own
-            # processor and merged only afterwards. All three legs read the same
-            # pair; the pack picks out what each one needs, so no leg has to be
-            # assembled early to survive a shift.
-            if _x_kind != 'categorical':
-                x_data = _to_t(x_data)
-            if _w_kind != 'categorical':
-                w_data = _to_t(w_data)
-            _second = {
-                '_second_processor_type': _w_kind,
-                # run.py's gate requires W's window_size to match X's on this
-                # path, and interaction is never handed W's params separately,
-                # so X's are the right geometry for both streams.
-                '_second_processor_params': base_params.get('processor_params_x'),
-            }
-            xw_data = x_role = w_role = (x_data, w_data)
-            joint_bp = {**base_params, **_second, '_shift_pack': SHIFT_PACK_CONCAT}
-            marginal_x_bp = {**base_params, **_second, '_shift_pack': SHIFT_PACK_FIRST}
-            marginal_w_bp = {**base_params, **_second, '_shift_pack': SHIFT_PACK_SECOND}
-
-    else:
-        x_data = with_window_axis(x_data)
-        y_data = with_window_axis(y_data)
-        w_data = with_window_axis(w_data)
-        device = x_data.device
-        y_data = y_data.to(device)
-        w_data = w_data.to(device)
-
-        if x_data.shape[0] != y_data.shape[0]:
-            # X and Y are windowed together via a single shared WindowManager
-            # (create_dataset), so they should always match exactly. A
-            # mismatch here means something else is wrong -- always a hard
-            # error (mirrors conditional.py's identical reasoning).
-            raise ValueError(
-                "x_data, y_data and w_data must have the same number of samples. Their "
-                f"shapes are {tuple(x_data.shape)}, {tuple(y_data.shape)} and {tuple(w_data.shape)}."
-            )
-        if x_data.shape[0] != w_data.shape[0]:
-            if abs(x_data.shape[0] - w_data.shape[0]) <= _SAMPLE_COUNT_TRIM_TOLERANCE:
-                min_n = min(x_data.shape[0], w_data.shape[0])
-                warnings.warn(
-                    f"mode='interaction': x_data and y_data have {x_data.shape[0]} windows and w_data "
-                    f"has {w_data.shape[0]}. All three are truncated to the first {min_n}. This is "
-                    f"correct only if the extra window is at an edge. A window missing in the "
-                    f"middle pairs every later window with its neighbour. nmi.run() aligns the "
-                    f"streams by "
-                    f"window time first and never reaches this. Reaching it means raw tensors were "
-                    f"passed to the engine directly without window times to align on. Pass arrays "
-                    f"that already agree in length if the ordering matters.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-                x_data = x_data[:min_n]
-                y_data = y_data[:min_n]
-                w_data = w_data[:min_n]
-            else:
-                raise ValueError(
-                    "x_data, y_data and w_data must have the same number of samples. Their "
-                    f"shapes are {tuple(x_data.shape)}, {tuple(y_data.shape)} and {tuple(w_data.shape)}."
-                )
-        if x_data.shape[2] != w_data.shape[2]:
-            if w_data.shape[2] == 1:
-                # W has no temporal extent within the window (e.g. a
-                # per-window categorical summary already folded into
-                # channels) -- broadcast it across X's window so the two can
-                # be concatenated along the channel axis.
-                w_data = w_data.expand(-1, -1, x_data.shape[2])
-            elif abs(x_data.shape[2] - w_data.shape[2]) <= _WINDOW_SIZE_TRIM_TOLERANCE:
-                min_w = min(x_data.shape[2], w_data.shape[2])
-                warnings.warn(
-                    f"mode='interaction': x_data window size ({x_data.shape[2]}) and w_data window size "
-                    f"({w_data.shape[2]}) differ by {abs(x_data.shape[2] - w_data.shape[2])} "
-                    f"sample(s). Every processor emits window_size slots for a window of "
-                    f"window_size. Check that Processing(x_params=...) and Processing(w_params=...) "
-                    f"agree on window_size and sample_rate. Both are trimmed to their first "
-                    f"{min_w} samples.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-                x_data = x_data[:, :, :min_w]
-                w_data = w_data[:, :, :min_w]
-            else:
-                raise ValueError(
-                    "x_data and w_data must have the same window size to be concatenated "
-                    f"into XW. Got window sizes {x_data.shape[2]} and {w_data.shape[2]} "
-                    f"(full shapes {tuple(x_data.shape)}, {tuple(w_data.shape)})."
-                )
-        xw_data = torch.cat([x_data, w_data], dim=1)
-        x_role, w_role = x_data, w_data
-
     _, _, _, raw_xw_y, raw_x_y, _ = _joint_marginal_difference(
-        xw_data, y_data, x_role, y_data,
-        joint_bp, sweep_grid, n_workers,
+        TermRows(plan, Roles(x=('x', 'w'), channels=True)), None,
+        TermRows(plan, Roles(x=('x',), channels=True)), None,
+        base_params, sweep_grid, n_workers,
         quantity_name="Interaction information",
         joint_label="X,W;Y", marginal_label="X;Y",
         joint_key="mi_xw_y", marginal_key="mi_x_y", condition_at='first',
-        is_proc_sweep=raw_deferred,
-        marginal_base_params=marginal_x_bp,
         reported=False,
     )
     raw_w_y = _train_single_term(
-        w_role, y_data, {**with_model_labels(marginal_w_bp, component='mi_w_y'), '_difference_term': True},
+        TermRows(plan, Roles(x=('w',), channels=True)), None,
+        {**with_model_labels(base_params, component='mi_w_y'), '_difference_term': True},
         sweep_grid, n_workers,
         quantity_name="Interaction information", label="W;Y",
-        is_proc_sweep=raw_deferred,
     )
 
     # The three terms are combined repeat by repeat, by the rule every combined
@@ -302,8 +136,7 @@ def run_interaction_information(
     }
 
 
-def _ii_rigorous_scalar(x_s, y_s, bp, w_data=None, sweep_grid=None, raw_deferred=False,
-                        w_processor_type=None) -> float:
+def _ii_rigorous_scalar(plan, _y, bp, sweep_grid=None) -> float:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of
     interaction information.
 
@@ -311,16 +144,7 @@ def _ii_rigorous_scalar(x_s, y_s, bp, w_data=None, sweep_grid=None, raw_deferred
     gamma-chunk) to a multiprocessing pool when ``n_workers > 1``, must be
     a module-level function (not a closure) to be picklable, and always runs
     with ``n_workers=1`` internally to avoid nested pools, matching
-    ``_cmi_rigorous_scalar``'s convention. ``w_data`` arrives here already
-    sliced to this gamma-chunk's samples via ``extra_data``.
-
-    ``raw_deferred`` : forwarded straight through to
-    ``run_interaction_information``, ``x_s``/``y_s``/``w_data`` are raw,
-    unwindowed 2-D chunks (already translated to a raw sample range by
-    ``run_rigorous_scalar_analysis``'s own ``_is_raw_deferred`` handling)
-    when set, letting this gamma-chunk's own sweep dispatch reach
-    ``shift_windows``.
+    ``_cmi_rigorous_scalar``'s convention. ``plan`` is the chunk's plan.
     """
-    raw = run_interaction_information(x_s, y_s, w_data, bp, sweep_grid=sweep_grid, n_workers=1,
-                                      raw_deferred=raw_deferred, w_processor_type=w_processor_type)
+    raw = run_interaction_information(plan, bp, sweep_grid=sweep_grid, n_workers=1)
     return rung(raw, (('mi_xw_y', 1), ('mi_x_y', -1), ('mi_w_y', -1)))

@@ -135,44 +135,36 @@ class TestInteractionInformationPlumbing:
             nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
                    model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
 
-    def test_sample_count_trim_tolerance_matches_conditional(self):
-        """interaction.py's eager path tolerates a one-window difference
-                between X and W, as conditional.py does. Calls
-                run_interaction_information directly to construct the exact boundary
-                condition: W with one fewer window than X and Y.
+    @staticmethod
+    def _plan(x, y, w):
+        from collections import OrderedDict
+        from neural_mi.data.plan import RowPlan, Stream
+        return RowPlan(OrderedDict(x=Stream(x), w=Stream(w), y=Stream(y)))
+
+    def test_rows_that_do_not_line_up_are_refused(self):
+        """Rows built before the call come one per row of every other stream:
+                a W with one row fewer than X and Y is refused, not trimmed.
         """
         from neural_mi.analysis.interaction import run_interaction_information
-        x = torch.randn(50, 1, 4)
-        y = torch.randn(50, 1, 4)
-        w = torch.randn(49, 1, 4)  # exactly _SAMPLE_COUNT_TRIM_TOLERANCE short
-        raw = run_interaction_information(x, y, w, _PARAMS,
-                                          n_workers=1)
-        assert np.isfinite(raw['interaction_info'])
-        assert raw['raw_xw_y'][0]['train_mi'] is not None
+        plan = self._plan(torch.randn(50, 1, 4), torch.randn(50, 1, 4), torch.randn(49, 1, 4))
+        with pytest.raises(ValueError, match="rows do not line up"):
+            run_interaction_information(plan, _PARAMS, n_workers=1)
 
     def test_window_size_broadcast_matches_conditional(self):
         """A W with a collapsed (size-1) window axis, such as a per-window
                 categorical summary, is broadcast across X's window, as in
-                conditional.py.
+                conditional MI.
         """
         from neural_mi.analysis.interaction import run_interaction_information
-        x = torch.randn(50, 1, 4)
-        y = torch.randn(50, 1, 4)
-        w = torch.randn(50, 1, 1)  # collapsed window axis
-        raw = run_interaction_information(x, y, w, _PARAMS,
-                                          n_workers=1)
+        plan = self._plan(torch.randn(50, 1, 4), torch.randn(50, 1, 4), torch.randn(50, 1, 1))
+        raw = run_interaction_information(plan, _PARAMS, n_workers=1)
         assert np.isfinite(raw['interaction_info'])
 
-    def test_window_size_gap_beyond_tolerance_still_raises(self):
-        """The trim tolerance stays narrow: a gap bigger than
-                _WINDOW_SIZE_TRIM_TOLERANCE, and not a size-1 broadcast, raises.
-        """
+    def test_a_window_of_another_width_raises(self):
         from neural_mi.analysis.interaction import run_interaction_information
-        x = torch.randn(50, 1, 4)
-        y = torch.randn(50, 1, 4)
-        w = torch.randn(50, 1, 6)
-        with pytest.raises(ValueError):
-            run_interaction_information(x, y, w, _PARAMS, n_workers=1)
+        plan = self._plan(torch.randn(50, 1, 4), torch.randn(50, 1, 4), torch.randn(50, 1, 6))
+        with pytest.raises(ValueError, match="cannot be joined into one input"):
+            run_interaction_information(plan, _PARAMS, n_workers=1)
 
     def test_summary_runs(self, capsys):
         x, y, w = np.random.randn(N, 1), np.random.randn(N, 1), np.random.randn(N, 1)
@@ -534,10 +526,9 @@ class TestInteractionShiftWindowsMixedTypes:
             )
 
 
-class TestInteractionShiftTimeSpike:
-    """shift_time reachability for a spike+spike W (X='spike' and W='spike',
-    matching family only) -- mirrors TestInteractionShiftWindows, adapted
-    for shift_time/spike concatenation (Python list concat, not torch.cat)."""
+class TestInteractionShiftingSpikes:
+    """A spike X with a spike W: every term reads the rows of one plan of X, W
+    and Y, which move together under shift_windows."""
 
     def test_engages_silently_for_matching_spike_pair(self):
         import warnings
@@ -553,17 +544,17 @@ class TestInteractionShiftTimeSpike:
                 interaction=Interaction(w_data=w_spikes),
                 processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
                 model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-                training=Training(n_epochs=1, patience=1, shift_time=True),
+                training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
-        msgs = [str(w_msg.message) for w_msg in caught if 'shift_time' in str(w_msg.message)]
-        assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"
+        msgs = [str(w_msg.message) for w_msg in caught if 'shift_windows' in str(w_msg.message)]
+        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
         assert np.isfinite(r.mi_estimate)
 
     def test_w_equal_to_x_gives_consistent_components_under_shift(self):
         """Correctness/desync check: W as an exact copy of X's spike-neuron
         population should make I(X,W;Y) and I(W;Y) both closely match
-        I(X;Y) -- with shift_time on."""
+        I(X;Y) -- with the rows shifting."""
         np.random.seed(0)
         torch.manual_seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
@@ -574,7 +565,7 @@ class TestInteractionShiftTimeSpike:
             interaction=Interaction(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=15, patience=5, batch_size=32, shift_time=True),
+            training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
         details = _components(results)
@@ -586,12 +577,11 @@ class TestInteractionShiftTimeSpike:
             assert abs(a - b) < 0.3, (
                 f"W=X exactly should make {name_a}={a:.3f} closely match {name_b}={b:.3f} -- "
                 f"a large gap suggests X and W's spike-list concatenation desynchronized "
-                f"under shift_time."
+                f"under shifting."
             )
 
-    def test_rigorous_shift_time_spike_no_crash_and_finite(self):
-        """rigorous=True sub-path: exercises run_rigorous_scalar_analysis's
-        new _is_spike_deferred chunk-to-raw-time-range translation."""
+    def test_rigorous_shifting_spikes_no_crash_and_finite(self):
+        """rigorous=True: every chunk is the plan of a stretch of the rows."""
         np.random.seed(0)
         torch.manual_seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
@@ -604,16 +594,14 @@ class TestInteractionShiftTimeSpike:
                                    rigorous=True, gamma_range=range(1, 4)),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=1, patience=1, shift_time=True),
+            training=Training(n_epochs=1, patience=1, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
         assert results.mi_estimate is not None
         assert np.isfinite(results.mi_estimate)
 
-    def test_no_crash_with_shift_time_false(self):
-        """A spike X and spike W are merged before windowing whether or not
-                shift_time is active, so the call succeeds with shift_time=False.
-        """
+    def test_no_crash_without_shifting(self):
+        """The plan of X, W and Y cuts their rows whether or not they move."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=800, window_size=0.05, seed=0)
@@ -624,16 +612,14 @@ class TestInteractionShiftTimeSpike:
             interaction=Interaction(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=2, patience=1, shift_time=False),
+            training=Training(n_epochs=2, patience=1, shift_windows=False),
             n_workers=1, show_progress=False, seed=0,
         )
         assert np.isfinite(results.mi_estimate)
 
-    def test_rigorous_no_crash_with_shift_time_false(self):
-        """The rigorous path cuts a spike+spike pair as time ranges whether or
-                not shift_time is active, and returns a finite estimate with
-                shift_time=False.
-        """
+    def test_rigorous_no_crash_without_shifting(self):
+        """A rigorous chunk is the plan of a stretch of the rows, whether or not
+        they move, and returns a finite estimate."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=400, window_size=0.05, seed=0)
@@ -645,7 +631,7 @@ class TestInteractionShiftTimeSpike:
                                    rigorous=True, gamma_range=range(1, 4), min_gamma_points=2),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-            training=Training(n_epochs=2, patience=1, shift_time=False, batch_size=16),
+            training=Training(n_epochs=2, patience=1, shift_windows=False, batch_size=16),
             n_workers=1, show_progress=False, seed=0,
         )
         assert results.mi_estimate is not None
@@ -894,16 +880,3 @@ class TestEarlyMergeFallback:
         from neural_mi.config import Conditional
         result = self._run('conditional', lambda w, t: {'conditional': Conditional(w_data=w)})
         assert np.isfinite(result.mi_estimate)
-
-    def test_the_helper_returns_all_three_marginals(self):
-        """Conditional uses two of them, interaction all three."""
-        from neural_mi.analysis.conditional import _merge_raw_blocks
-        rng = np.random.default_rng(0)
-        x = rng.standard_normal((200, 2)).astype(np.float32)
-        w = rng.integers(0, 3, size=(200, 1))
-        to_t = lambda a: a if torch.is_tensor(a) else torch.as_tensor(a, dtype=torch.float32)
-        xw, joint, marg_x, marg_w = _merge_raw_blocks(
-            x, w, 'continuous', 'categorical', {'processor_params_x': {}}, to_t)
-        assert xw.shape[1] == 3
-        specs = lambda bp: bp['processor_params_x']['_categorical_block_specs']
-        assert len(specs(joint)) == 2 and len(specs(marg_x)) == 1 and len(specs(marg_w)) == 1

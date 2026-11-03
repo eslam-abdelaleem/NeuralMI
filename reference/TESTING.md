@@ -67,7 +67,8 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_data_processors.py` | window construction for continuous, spike and categorical data, time shifting, noise, rounding, every split mode, and mixed-modality alignment |
-| `test_shift_windowing.py` | the `unfold` reslice route: shift families, step-size resolution, categorical re-encoding parity with `CategoricalWindowDataset`, differing sample rates, cross-unit warnings |
+| `test_shift_windowing.py` | windowing by sample number: step-size resolution, categorical re-encoding parity with `CategoricalWindowDataset`, streams at different sample rates moving by the same time, cross-unit warnings, and which route a row plan takes |
+| `test_plan.py` | one row plan per quantity: one grid over every stream, every term on the same rows, settings resolved once, fits made per stream, one offset per epoch for every stream, one window and one step per grid |
 | `test_augmentations.py` | each augmentation's effect and shape contract, the spatial-on-3-D warning, custom callables, application order, and the boolean shortcuts |
 | `test_empty_windows.py` | `drop_empty_windows`, its independence from the continuous coverage rule, retention reporting, and the mixed-unit warning |
 | `test_rows.py` | how rows lie in time: the geometry each builder records, the split's leak checks, the rigorous chunks and the block shuffle that read it, the phase shifter of strided rows, and the identity of the rows each task reports |
@@ -124,7 +125,7 @@ Each file covers one functional area. Run
 | `test_dimensionality.py` | the grid chosen from the reference fit, the curve and its reading against curves of known dimension, the early stop and the extension, the median over splits, every warning, the settings and refusals, every split method, and a run through `run()` |
 | `test_interaction.py` | interaction information's plumbing and accuracy, and its shift routes across categorical, mixed and spike pairings |
 | `test_permutation.py` | the permutation null: X moved by a circular shift or reordered blocks for windowed rows, raw series and spike times, one null per row, `p_value`, the default trial count, and the modes that compute no null |
-| `test_conditional.py` | CMI independence and correlation properties, the component details, categorical conditioning variables, and the spike pair with a regular W refused under `shift_time` |
+| `test_conditional.py` | CMI independence and correlation properties, the component details, categorical conditioning variables, spike and mixed streams on one grid |
 | `test_combining_terms.py` | the one rule for terms trained apart: measured, learned nothing or failed, repeats paired by position, terms that read different rows refused, the repeat rows and the rigorous rungs |
 | `test_rigorous_diagnostics.py` | fit diagnostics, their presence in corrected results, scalar rigorous analysis, chunk-range translation |
 | `test_sweep.py` | sweep mechanics: dimension inference, subsampling, processor-param sweeps, save-path collisions |

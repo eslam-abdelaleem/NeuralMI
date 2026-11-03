@@ -85,9 +85,8 @@ class TestPairwiseMI:
         assert results.mode == 'pairwise'
 
     def test_pairwise_deferred_windowing_preserves_channel_identity(self):
-        """Reachability for shift_windows/shift_time defers windowing to each
-        pair's own dispatch (raw per-channel slices, not a pre-windowed
-        array). A slicing bug in that path could silently swap or misalign
+        """Under shift_windows each pair windows its own raw per-channel
+        slices, not a pre-windowed array. A slicing bug in that path could silently swap or misalign
         channels; a real, channel-selective correlation structure would catch
         it, unlike the finite-value-only checks above."""
         np.random.seed(0)

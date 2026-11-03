@@ -10,10 +10,12 @@ which puts every stream on one grid of rows one step wide that tile time
 (:func:`spec_geometry`), which :func:`neural_mi.run` records for everything
 that depends on the rows' time order (:mod:`neural_mi.data.rows`).
 """
+import warnings
 from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
 
 from neural_mi.data.rows import RowGeometry, offset_rows
+from neural_mi.logger import user_stacklevel
 from neural_mi.utils import build_offset_arrays
 
 
@@ -94,6 +96,15 @@ def grid_rows(specs):
     from neural_mi.data.handler import create_dataset
     from neural_mi.data.rows import window_rows
     specs = OrderedDict((n, s) for n, s in specs.items() if s.get('data') is not None)
+    for name, spec in specs.items():
+        if (spec.get('processor_type') == 'spike'
+                and (spec.get('processor_params') or {}).get('drop_empty_windows') is True):
+            warnings.warn(
+                f"drop_empty_windows=True has no effect on stream {name!r} here. The rows a "
+                f"quantity defined by time offsets builds keep every window, since dropping one "
+                f"would put two distant windows next to each other and change what an offset means.",
+                UserWarning, stacklevel=user_stacklevel(),
+            )
     bundle = create_dataset(specs, validate_windows=False)
     rows = OrderedDict((name, bundle.stream(name).data) for name in bundle.stream_names)
     manager = getattr(bundle, 'window_manager', None)

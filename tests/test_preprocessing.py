@@ -221,7 +221,7 @@ class TestTheRowsPartOfTheCheck:
             warnings.simplefilter('always')
             nmi.run(spikes, spikes, processing=nmi.Processing(x='spike', x_params=params),
                     model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-                    training=nmi.Training(n_epochs=1, shift_time=False), show_progress=False, seed=0)
+                    training=nmi.Training(n_epochs=1, shift_windows=False), show_progress=False, seed=0)
         return [str(w.message) for w in caught if 'typical scale' in str(w.message)]
 
     def test_it_reports_the_rows_their_held_out_count_and_scale(self, caplog):

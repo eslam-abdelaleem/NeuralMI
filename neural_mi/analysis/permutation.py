@@ -2,7 +2,8 @@
 """Permutation nulls: rerun a mode's producer with X moved in time.
 
 A trial shifts X, the source, once and runs the producer the observed call
-ran. Y, and W where there is one, stay as they are, so every relation that
+ran. Y, and W where there is one, stay as they are (inside a quantity's row
+plan, whose grid stays where it is), so every relation that
 does not involve X (Y's own history in transfer entropy, the Y-W link in the
 conditional quantities) survives into the null, and only X's alignment with
 the rest is broken. The trial's repeats are averaged into one value per
@@ -182,6 +183,14 @@ def shift_x(x_data: Any, base_params: Dict[str, Any], permutation_shuffle: str,
     in time; any other X is moved along its first (time or sample) axis.
     """
     ctx = ctx or {}
+    from neural_mi.data.plan import RowPlan
+    if isinstance(x_data, RowPlan):
+        # X moves inside the quantity's plan, whose grid stays where it is, so
+        # every term of the trial reads the same rows as every other.
+        stream = x_data.streams['x']
+        side = ({**base_params, 'processor_params_x': stream.params, 'x_time': stream.time}
+                if stream.processor is not None else base_params)
+        return x_data.replace('x', shift_x(stream.data, side, permutation_shuffle, ctx))
     if _is_spike_list(x_data):
         t_start, t_end = _spike_population_extent(x_data, base_params, 'x')
         if permutation_shuffle == 'block':

@@ -200,7 +200,9 @@ class ParameterSweep:
         # When data has already been pre-processed (processor ran upstream in run()),
         # the sequential-model check below is not applicable, the tensor is already
         # shaped correctly for GRU/LSTM regardless of what processor_type_x says.
-        _already_preprocessed = bool(
+        # The rows of a plan carry their own time axis (neural_mi/data/plan.py).
+        from neural_mi.data.plan import TermRows
+        _already_preprocessed = isinstance(self.x_data, TermRows) or bool(
             self.base_params.get('processor_params_x', {}) and
             self.base_params.get('processor_params_x', {}).get('preprocessed', False)
         )
@@ -585,8 +587,6 @@ def _joint_marginal_difference(
     joint_label: str, marginal_label: str,
     joint_key: str, marginal_key: str,
     condition_at: Optional[str] = None,
-    is_proc_sweep: bool = False,
-    marginal_base_params: Optional[Dict[str, Any]] = None,
     reported: bool = True,
     raw_key: str = 'mi_raw',
 ) -> tuple:
@@ -602,9 +602,11 @@ def _joint_marginal_difference(
 
     Parameters
     ----------
-    joint_x, joint_y : torch.Tensor
-        Data for the joint-sweep ParameterSweep(x_data=joint_x, y_data=joint_y).
-    marginal_x, marginal_y : torch.Tensor
+    joint_x, joint_y
+        Data for the joint-sweep ParameterSweep(x_data=joint_x, y_data=joint_y):
+        rows, or the term's streams of a row plan
+        (:class:`~neural_mi.data.plan.TermRows`) with ``joint_y=None``.
+    marginal_x, marginal_y
         Data for the marginal-sweep ParameterSweep(x_data=marginal_x, y_data=marginal_y).
     quantity_name : str
         Human-readable name of the estimated quantity for log/error/warning
@@ -623,21 +625,6 @@ def _joint_marginal_difference(
         (``BranchedEmbedding``), and a nonparametric estimator conditions on
         it. ``None`` for a joint X that arrives as the pair (rest, conditioning
         set), which carries the split itself.
-    is_proc_sweep : bool, optional
-        Pass ``True`` when ``joint_x``/``marginal_x`` are raw, unwindowed
-        data (shift_windows/shift_time reachability. The caller has
-        already concatenated the conditioning variable onto X at the raw
-        level, before windowing, so both sweeps window and shift their own
-        copy independently). Default ``False`` matches every other caller's
-        already-windowed data.
-    marginal_base_params : Dict[str, Any], optional
-        Use this instead of ``base_params`` for the marginal sweep only.
-        Needed when the joint and marginal legs are raw, differently-shaped
-        categorical concatenations (e.g. joint=XZ with two channel blocks,
-        marginal=Z alone with one) that each need their own
-        ``processor_params_x['_categorical_block_specs']``, and a single
-        shared ``base_params`` cannot carry both. ``None`` (default) reuses
-        ``base_params`` for both sweeps.
     reported : bool, optional
         ``True`` when the difference is the quantity the caller reads: it is
         checked with :func:`warn_combination` and returned as 0 when it comes
@@ -659,10 +646,9 @@ def _joint_marginal_difference(
     """
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
-                                    base_params={**with_model_labels(marginal_base_params or base_params,
-                                                                     component=marginal_key),
+                                    base_params={**with_model_labels(base_params, component=marginal_key),
                                                  '_difference_term': True})
-    results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
+    results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 
     logger.info(f"{quantity_name}: estimating I({joint_label})...")
     joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True}
@@ -670,7 +656,7 @@ def _joint_marginal_difference(
         n = next(r['n_channels_x'] for r in results_marginal if 'n_channels_x' in r)
         joint_params = {**joint_params, '_condition': (condition_at, n)}
     sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
-    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
+    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 
     if not any('train_mi' in r for r in results_joint):
         raise RuntimeError(f"{quantity_name}: all I({joint_label}) runs failed, no valid train_mi values.")

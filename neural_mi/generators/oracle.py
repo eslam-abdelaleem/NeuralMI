@@ -841,9 +841,9 @@ def generate_spike_pair(n_windows: int = 4000, window_size: float = 1.0,
                    processing=nmi.Processing(x='spike', y='spike',
                                              x_params={'window_size': 1.0},
                                              y_params={'window_size': 1.0}),
-                   training=nmi.Training(shift_time=False, shift_windows=False))
+                   training=nmi.Training(shift_windows=False))
 
-       With ``shift_time`` or ``shift_windows`` left on (both default ``True``),
+       With ``shift_windows`` left on (the default),
        or with a different ``window_size``, an analysis window spans two
        independent latent draws and can carry *more* than the returned value.
        An estimate above it therefore signals an error in the setup. A quick check: the number of windows built should

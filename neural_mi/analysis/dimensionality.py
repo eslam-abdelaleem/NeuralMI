@@ -76,12 +76,12 @@ def _warn_if_near_ceiling(fits: List[Dict[str, Any]], ceiling_mi_fraction: float
 def _n_samples_for_shared_split(x_data, y_data, analysis_params: Dict[str, Any]) -> int:
     """Number of rows the shared train/test split is computed over.
 
-    For windowed data it is ``x_data.shape[0]``. When windowing is deferred
-    (raw 2-D data with ``shift_windows`` on a regular grid) it is the window
-    count, from :func:`~neural_mi.data.shift_windowing.n_windows_if_deferred`.
+    For windowed data it is ``x_data.shape[0]``. When each fit windows raw
+    streams itself it is the count of rows their plan holds
+    (:func:`~neural_mi.data.plan.count_rows`).
     """
-    from neural_mi.data.shift_windowing import n_windows_if_deferred
-    return n_windows_if_deferred(x_data, y_data, analysis_params)
+    from neural_mi.data.plan import count_rows
+    return count_rows(x_data, y_data, analysis_params)
 
 
 def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int) -> Tuple[np.ndarray, np.ndarray]:

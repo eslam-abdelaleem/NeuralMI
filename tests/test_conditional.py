@@ -119,16 +119,18 @@ class TestConditionalMI:
                     n_workers=1)
 
     def test_mismatched_x_w_window_sizes_raises_clear_error(self):
-        """X and W with different window sizes must raise a clear ValueError
+        """X and W rows of different window sizes must raise a clear ValueError
         before the concatenation into XW, not a bare torch.cat shape error."""
+        from collections import OrderedDict
         from neural_mi.analysis.conditional import run_conditional_mi
+        from neural_mi.data.plan import RowPlan, Stream
 
-        x = torch.randn(N, 2, 5)   # window size 5
-        y = torch.randn(N, 2, 5)
-        w = torch.randn(N, 2, 3)   # window size 3 -- mismatched by 2, past the trim tolerance
-
-        with pytest.raises(ValueError, match="window size"):
-            run_conditional_mi(x, y, w, base_params=_PARAMS, n_workers=1)
+        plan = RowPlan(OrderedDict(x=Stream(torch.randn(N, 2, 5)), w=Stream(torch.randn(N, 2, 3)),
+                                   y=Stream(torch.randn(N, 2, 5))))
+        with pytest.raises(ValueError, match="cannot be joined into one input"):
+            from neural_mi.defaults import BASE_PARAMS_SCHEMA
+            params = {**{k: v['default'] for k, v in BASE_PARAMS_SCHEMA.items() if 'default' in v}, **_PARAMS}
+            run_conditional_mi(plan, base_params=params, n_workers=1)
 
 
 class TestConditionalMICategoricalW:
@@ -547,11 +549,9 @@ class TestConditionalShiftWindowsMixedTypes:
         )
 
 
-class TestConditionalShiftTimeSpike:
-    """shift_time reachability for a spike+spike conditioning variable
-    (X='spike' and W='spike', matching family only) -- mirrors
-    TestConditionalShiftWindows, adapted for shift_time/spike concatenation
-    (Python list concat, not torch.cat)."""
+class TestConditionalShiftingSpikes:
+    """A spike X with a spike conditioning variable: both terms read the rows
+    of one plan of X, W and Y, which move together under shift_windows."""
 
     def test_engages_silently_for_matching_spike_pair(self):
         import warnings
@@ -567,17 +567,17 @@ class TestConditionalShiftTimeSpike:
                 conditional=Conditional(w_data=w_spikes),
                 processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
                 model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-                training=Training(n_epochs=1, patience=1, shift_time=True),
+                training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
-        msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
-        assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"
+        msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
         assert np.isfinite(r.mi_estimate)
 
     def test_w_equal_to_x_gives_near_zero_cmi_under_shift(self):
         """Correctness/desync check: W as an exact copy of X's spike-neuron
         population carries zero information beyond X, so CMI should be
-        near zero -- with shift_time on. A desync in the per-population
+        near zero -- with the rows shifting. A desync in the per-population
         list-concatenation would make the concatenated W look like
         genuinely new information relative to X, inflating I(XW;Y) above
         I(W;Y)/I(X;Y) and breaking this expectation."""
@@ -591,7 +591,7 @@ class TestConditionalShiftTimeSpike:
             conditional=Conditional(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=15, patience=5, batch_size=32, shift_time=True),
+            training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
         details = _components(results)
@@ -599,17 +599,14 @@ class TestConditionalShiftTimeSpike:
         assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
             f"W=X exactly should make I(XW;Y)={details['mi_xw_y']:.3f} closely match "
             f"I(W;Y)={details['mi_w_y']:.3f} -- a large gap suggests X and W's spike-list "
-            f"concatenation desynchronized under shift_time."
+            f"concatenation desynchronized under shifting."
         )
         assert abs(results.mi_estimate) < 0.3, (
             f"CMI should be near zero when W=X exactly, got {results.mi_estimate:.3f}"
         )
 
-    def test_rigorous_shift_time_spike_no_crash_and_finite(self):
-        """rigorous=True sub-path: mirrors
-        TestRigorousShiftTimeSpikeEndToEnd, for conditional's spike-W case
-        -- exercises run_rigorous_scalar_analysis's new _is_spike_deferred
-        chunk-to-raw-time-range translation."""
+    def test_rigorous_shifting_spikes_no_crash_and_finite(self):
+        """rigorous=True: every chunk is the plan of a stretch of the rows."""
         np.random.seed(0)
         torch.manual_seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
@@ -622,17 +619,14 @@ class TestConditionalShiftTimeSpike:
                                    rigorous=True, gamma_range=range(1, 4)),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=1, patience=1, shift_time=True),
+            training=Training(n_epochs=1, patience=1, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
         assert results.mi_estimate is not None
         assert np.isfinite(results.mi_estimate)
 
-    def test_no_crash_with_shift_time_false(self):
-        """A spike X and spike W are merged before windowing whether or not
-                shift_time is active, so X's and W's windows are valid on the same
-                rule and the call succeeds with shift_time=False.
-        """
+    def test_no_crash_without_shifting(self):
+        """The plan of X, W and Y cuts their rows whether or not they move."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=800, window_size=0.05, seed=0)
@@ -643,16 +637,14 @@ class TestConditionalShiftTimeSpike:
             conditional=Conditional(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=2, patience=1, shift_time=False),
+            training=Training(n_epochs=2, patience=1, shift_windows=False),
             n_workers=1, show_progress=False, seed=0,
         )
         assert np.isfinite(results.mi_estimate)
 
-    def test_rigorous_no_crash_with_shift_time_false(self):
-        """The rigorous path cuts a spike+spike pair as time ranges whether or
-                not shift_time is active, and returns a finite estimate with
-                shift_time=False.
-        """
+    def test_rigorous_no_crash_without_shifting(self):
+        """A rigorous chunk is the plan of a stretch of the rows, whether or not
+        they move, and returns a finite estimate."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=400, window_size=0.05, seed=0)
@@ -664,7 +656,7 @@ class TestConditionalShiftTimeSpike:
                                    rigorous=True, gamma_range=range(1, 4), min_gamma_points=2),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-            training=Training(n_epochs=2, patience=1, shift_time=False, batch_size=16),
+            training=Training(n_epochs=2, patience=1, shift_windows=False, batch_size=16),
             n_workers=1, show_progress=False, seed=0,
         )
         assert results.mi_estimate is not None
@@ -672,26 +664,37 @@ class TestConditionalShiftTimeSpike:
 
 
 class TestSpikePairWithARegularW:
-    """Under shift_time, on by default, X and Y are left raw for each task to
-    window when one of them holds spike times, and a regular W has no way to
-    join their grid there. The call is refused before anything is built."""
+    """Spike X and Y with a continuous W: every stream on one grid in time,
+    whose rows move together. A spike window holds spike slots and a
+    continuous one samples, so X and W reach the joint term as a pair."""
 
-    @pytest.mark.parametrize('mode', ['conditional', 'interaction'])
-    def test_refused_under_shift_time(self, mode):
+    @staticmethod
+    def _streams():
         rng = np.random.default_rng(0)
         x = [np.sort(rng.uniform(0, 60, 300)) for _ in range(3)]
         y = [np.sort(rng.uniform(0, 60, 300)) for _ in range(3)]
-        sample_rate = 100.0
         w = rng.standard_normal((6000, 2)).astype('float32')
         processing = nmi.Processing(x='spike', x_params={'window_size': 0.5},
                                     y='spike', y_params={'window_size': 0.5},
-                                    w='continuous', w_params={'window_size': 0.5, 'sample_rate': sample_rate},
-                                    w_time=np.arange(6000) / sample_rate)
-        config = Conditional(w_data=w) if mode == 'conditional' else nmi.Interaction(w_data=w)
-        with pytest.raises(ValueError, match=r"cannot shift time with this W\..*Pass "
-                                             r"Training\(shift_time=False\)"):
-            nmi.run(x, y, mode=mode, processing=processing, estimator='ksg', show_progress=False,
-                    **{mode: config})
+                                    w='continuous', w_params={'sample_rate': 100.0},
+                                    w_time=np.arange(6000) / 100.0)
+        return x, y, w, processing
+
+    @pytest.mark.parametrize('shift', [True, False])
+    def test_the_terms_read_one_grid(self, shift):
+        x, y, w, processing = self._streams()
+        result = nmi.run(x, y, mode='conditional', processing=processing,
+                         conditional=Conditional(w_data=w, align='dual_branch'),
+                         model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                         training=Training(n_epochs=1, batch_size=32, shift_windows=shift),
+                         show_progress=False, seed=0)
+        assert np.isfinite(result.mi_estimate)
+
+    def test_joining_spike_slots_with_samples_is_refused(self):
+        x, y, w, processing = self._streams()
+        with pytest.raises(ValueError, match="cannot be joined into one input"):
+            nmi.run(x, y, mode='conditional', processing=processing, conditional=Conditional(w_data=w),
+                    estimator='ksg', show_progress=False)
 
 
 def _gappy_timeline(duty_on=8.0, period=40.0, span=400.0, dt=0.02):

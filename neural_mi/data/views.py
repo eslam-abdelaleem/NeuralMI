@@ -39,7 +39,7 @@ class SubsetView:
             Channel indices to select from Y data
         max_index_reduction : float, optional
             Maximum tolerated fractional drop in the number of valid windows
-            after a dataset rebuild (e.g. due to shift_time).
+            after a dataset rebuild (e.g. a new window size).
             If the window count drops by more than this fraction, the old and
             new counts are logged at the info level. Default is 0.05 (5%).
         """
@@ -232,11 +232,3 @@ class SubsetView:
     def apply_precision(self, precision_x=0, precision_y=0):
         """Forward precision operations to underlying dataset."""
         self.dataset.apply_precision(precision_x, precision_y)
-    
-    def time_shift(self, offset_x=0.0, offset_y=0.0):
-        """Forward time shift operations to underlying dataset."""
-        if not self.is_temporal:
-            logger.debug("Tried to time-shift a non-windowed dataset, skipping")
-            return
-        self.dataset.time_shift(offset_x, offset_y)
-        # Note: indices will be updated automatically via _on_dataset_updated callback

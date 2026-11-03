@@ -123,15 +123,13 @@ def test_every_processor_parameter_is_documented(processor):
 
 
 def test_processor_defaults_match_the_code():
-    from neural_mi.data import handler
-    source = inspect.getsource(handler.create_single_dataset)
-    code_defaults = {k: ast.literal_eval(v)
-                     for k, v in re.findall(r"\.get\('(\w+)', ([^)]+)\)", source)}
-    for processor in PROCESSOR_PARAMS_SCHEMA:
+    """Every processor default PARAMETERS.md states is the schema's (neural_mi.defaults.PROCESSOR_DEFAULTS)."""
+    from neural_mi.defaults import PROCESSOR_DEFAULTS
+    for processor, defaults in PROCESSOR_DEFAULTS.items():
         for name, cell in TABLES[f"processor:{processor}"].items():
             stated = _literal(cell)
-            if stated is not _MISSING and name in code_defaults:
-                assert stated == code_defaults[name], (processor, name)
+            if stated is not _MISSING:
+                assert stated == defaults[name], (processor, name)
 
 
 # ---------------------------------------------------------------------------

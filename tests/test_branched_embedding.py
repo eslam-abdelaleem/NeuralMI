@@ -359,7 +359,8 @@ class TestPairUnderShiftWindows:
         y = np.random.randn(T, 2).astype('float32')
         processing = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
                                     y='continuous', y_params={'window_size': 20, 'step_size': 20})
-        with pytest.raises(ValueError, match=f"windows W on X's window grid here. The two need the same {key}"):
+        with pytest.raises(ValueError, match=f"Stream 'w' asks for {key}=.* The streams of one quantity "
+                                             f"share one grid"):
             nmi.run(
                 x, y, mode='conditional',
                 conditional=Conditional(w_data=c, align='dual_branch'),
@@ -406,11 +407,9 @@ class TestPairUnderShiftWindows:
             f"CMI should be near zero when C=X exactly, got {results.mi_estimate:.3f}"
         )
 
-    def test_rigorous_with_shift_windows_raises_not_implemented(self):
-        """rigorous=True + align='dual_branch' + shift_windows=True must
-        raise a clear error rather than silently misalign C's raw data
-        (run_rigorous_scalar_analysis's chunk translation uses X's own
-        window_size for every extra_data array)."""
+    def test_rigorous_with_shift_windows_cuts_the_plan(self):
+        """rigorous=True + align='dual_branch' + shift_windows=True: every
+        chunk is the plan of a stretch of the rows, which both terms read."""
         np.random.seed(0)
         T = 2000
         x = np.random.randn(T, 2).astype('float32')
@@ -418,13 +417,13 @@ class TestPairUnderShiftWindows:
         y = np.random.randn(T, 2).astype('float32')
         processing = nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 20},
                                     y='continuous', y_params={'window_size': 20, 'step_size': 20})
-        with pytest.raises(NotImplementedError):
-            nmi.run(
-                x, y, mode='conditional',
-                conditional=Conditional(w_data=c,
-                                       align='dual_branch', rigorous=True, gamma_range=range(1, 4)),
-                processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': 20, 'step_size': 20}),
-                model=_DB_MODEL,
-                training=Training(n_epochs=1, patience=1, shift_windows=True),
-                n_workers=1, show_progress=False, seed=0,
-            )
+        result = nmi.run(
+            x, y, mode='conditional',
+            conditional=Conditional(w_data=c, align='dual_branch', rigorous=True,
+                                    gamma_range=range(1, 4), min_gamma_points=2),
+            processing=dataclasses.replace(processing, w='continuous', w_params={'window_size': 20, 'step_size': 20}),
+            model=_DB_MODEL,
+            training=Training(n_epochs=1, patience=1, shift_windows=True, min_reliable_samples=1),
+            n_workers=1, show_progress=False, seed=0,
+        )
+        assert result.details[0]['trainings'].shape[0] == 6

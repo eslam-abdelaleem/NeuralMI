@@ -353,18 +353,6 @@ Because the requested blocks do not fit the dataset, the split fell back to a
 random split that leaks between neighbouring windows of a time series. Reduce
 `n_test_blocks` or use more data.
 
-**`mode='conditional': x_data and y_data have ... windows and w_data has ...`**, **`mode='interaction': x_data and y_data have ... windows and w_data has ...`**
-The three variables reached the engine with slightly different window counts and
-were all cut to the shorter length. Because `nmi.run()` aligns streams by window
-time before this point, the message means already-windowed arrays were passed to
-the engine directly. The cut is correct only when the extra window is at an
-edge. Pass arrays that agree in length.
-
-**`mode='conditional': x_data window size (...) and w_data window size (...) differ`**, **`mode='interaction': x_data window size (...) and w_data window size (...) differ`**
-The windows of X and W differ in length by a sample or two and were trimmed to
-match. Check that `Processing(x_params=...)` and `Processing(w_params=...)`
-agree on `window_size` and `sample_rate`.
-
 **`ContinuousWindowDataset: .../... interpolated time points (...) are zero-padded due to data gaps`**
 More than a tenth of the interpolated points fall outside the recorded range and
 were filled with zeros. Check the time vector against the data.
@@ -380,28 +368,6 @@ cap if the dropped spikes matter.
 **`Spike tensor allocation dominated by burst`**
 The unused width costs memory because one neuron's peak count sets the tensor
 width for every neuron. `exclude_bursty_neurons=True` leaves such neurons out.
-
-**`time_shift got offset_x=... != offset_y=...`**
-Only `offset_x` is applied because every stream shares one window grid.
-
-**`Stream ... specifies window_size=.... Every stream shares a single WindowManager`**
-The first stream to name a window size sets it for the one grid every stream
-shares. Give every stream the same value.
-
-**`Stream ... specifies step_size=... against the ... already set by an earlier stream`**
-The same rule for the step.
-
-**`shift_windows is off for this run because stream ... was given a time vector whose sampling is irregular`**
-A clock with a gap has no single sampling period for the reslicing route to use.
-The slower route builds the windows instead by checking every window against the
-timestamps and dropping those that straddle the gap. The run loses the cheap
-per-epoch shift without any effect on the estimate. A `sample_rate` in that
-stream's processor parameters states a period and keeps the reslicing route.
-
-**`shift_windows is off for this run because the streams' time vectors start ... apart`**
-The reslicing route lines streams up by a sample number that matches real time
-only when their clocks start together. The slower route used instead starts the
-grid at the latest start among the streams.
 
 ---
 
@@ -651,9 +617,17 @@ spelled out at its default does not count.
 **`'lag' in sweep_grid is ignored when using mode='lag'`**
 The mode sets the lag itself.
 
-**`shift_time=True has no effect for mode='...'`**, **`shift_windows=True has no effect for mode='...'`**
-The shift cannot reach this mode with these processors. The message says where
-it can ([USING.md](USING.md#window-shifting)).
+**`shift_windows=True has no effect for mode='...' here`**
+The call's rows cannot move: no processor windows the streams (rows passed in
+built already), or W was passed as rows built already and cannot move with X
+and Y. Shifting moves the rows a processor cuts from raw streams, in every mode
+but transfer entropy ([USING.md](USING.md#window-shifting)).
+
+**`drop_empty_windows=True has no effect on stream ... here`**
+The rows a quantity defined by time offsets builds keep every window: dropping
+one would put two distant windows next to each other and change what an offset
+means. Silent stretches stay as silent rows, and gaps in the recording stay
+visible to the coverage warnings.
 
 **`return_rotated_embeddings=True has no effect for critic_type='concat'`**, **`return_rotated_embeddings=True was requested and this trainer's model exposes no embedding_net_x`**
 The concat critic has no separate encoders whose embeddings could be rotated.
@@ -834,5 +808,5 @@ Because every null trial repeats the full call with every configuration of the
 grid, the test costs `n_permutations` times the call.
 
 **`SubsetView: window count dropped from ... to ...`**
-`shift_time` moved windows outside the valid recording range, so that epoch
-trained on fewer windows. Evaluation reads the unshifted windows.
+The windows of the dataset a `SubsetView` looks at were built again (a new
+window size, for one), and fewer of them fall in the view's time regions.

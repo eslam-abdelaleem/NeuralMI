@@ -28,12 +28,8 @@ from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.exceptions import CombinationWarning, InsufficientDataError, TrainingError
 from neural_mi.utils import _ensure_cpu
+from neural_mi.data.plan import PAIR, RowPlan, TermRows
 from neural_mi.data.rows import kept_rows, rows_in_time
-from neural_mi.data.shift_windowing import (
-    n_windows_if_deferred, shift_family, chunk_window_range_to_raw, seconds_to_samples,
-    spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
-    resolve_step_size,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -547,46 +543,36 @@ class _Chunker:
     of the order it receives, and a chunk of shuffled rows would make those
     blocks random in time, the leak the blocked split is there to prevent. Rows
     in time order are those whose builder recorded their geometry
-    (:mod:`neural_mi.data.rows`), and the raw series and spike populations a
-    chunk's task windows for itself. Other rows are cut in a random order,
-    which keeps each chunk representative of the whole when rows are
-    independent. ``temporal_chunking`` overrides the choice for rows that exist
-    already. Contiguous chunks trade that representativeness for time order:
-    on a process that drifts, chunks at high gamma sample different stretches,
-    which ``per_gamma_train_mi_spread`` shows.
+    (:mod:`neural_mi.data.rows`), and the rows of a plan that each chunk's task
+    builds itself. Other rows are cut in a random order, which keeps each chunk
+    representative of the whole when rows are independent.
+    ``temporal_chunking`` overrides the choice for rows that exist already.
+    Contiguous chunks trade that representativeness for time order: on a
+    process that drifts, chunks at high gamma sample different stretches, which
+    ``per_gamma_train_mi_spread`` shows.
 
-    ``deferred`` says that the caller hands over raw data that each chunk's task
-    windows: a spike population (cut to a time range) or a raw series on a
-    regular grid under ``shift_windows`` (cut to a sample range, per side).
+    Raw streams that each chunk's task windows come as their row plan
+    (:class:`~neural_mi.data.plan.RowPlan`), the quantity's or, for raw X and Y
+    with a processor, the pair's. A chunk is then the plan of its rows
+    (:meth:`~neural_mi.data.plan.RowPlan.cut`), whose rows every task of the
+    chunk reads.
     """
 
-    def __init__(self, x_data, y_data, params: Dict[str, Any], *, deferred: bool,
-                 temporal_chunking: Optional[bool] = None):
-        proc_x = params.get('processor_type_x')
-        proc_y = params.get('processor_type_y') or proc_x
-        family = shift_family(proc_x, proc_y)
-        self.spike = bool(deferred and isinstance(x_data, list) and family == 'spike')
-        self.raw = bool(deferred and not self.spike and getattr(x_data, 'ndim', None) == 2
-                        and params.get('shift_windows') and family == 'regular')
-        if self.spike:
-            self.n, self._t_start, self._window, self._step = spike_shift_grid_info(x_data, y_data, params)
-        elif self.raw:
-            self.n = n_windows_if_deferred(x_data, y_data, params)
-            # Per-side window and step in raw samples, fixed for the whole call:
-            # a processor parameter in the grid runs one setting per call
-            # (run._run_processor_grid).
-            side_x = params.get('processor_params_x') or {}
-            side_y = params.get('processor_params_y') or side_x
-            window = side_x.get('window_size')
-            step = resolve_step_size(window, side_x.get('step_size'))
-            self._samples = {}
-            for side, side_params in (('x', side_x), ('y', side_y)):
-                period = 1.0 / side_params['sample_rate'] if side_params.get('sample_rate') else 1.0
-                self._samples[side] = (seconds_to_samples(window, period), seconds_to_samples(step, period))
+    def __init__(self, x_data, y_data, params: Dict[str, Any], *, temporal_chunking: Optional[bool] = None):
+        if isinstance(x_data, RowPlan):
+            self.plan = x_data
+        elif params.get('processor_type_x') is not None and getattr(x_data, 'ndim', None) != 3:
+            self.plan = RowPlan.of_pair(x_data, y_data, params)
+        else:
+            self.plan = None
+        raw = self.plan is not None and self.plan.route != 'rows'
+        if self.plan is not None:
+            self.n = len(self.plan)
+            in_time = raw or self.plan.geometry() is not None or rows_in_time(params)
         else:
             self.n = x_data.shape[0] if hasattr(x_data, 'shape') else len(x_data)
-        in_time = rows_in_time(params) or self.raw or self.spike
-        if (self.raw or self.spike) and temporal_chunking is False:
+            in_time = rows_in_time(params)
+        if raw and temporal_chunking is False:
             raise ValueError(
                 "Rigorous(temporal_chunking=False) cannot apply here: each chunk's task windows a raw "
                 "recording for itself, and a chunk of a recording is a stretch of it. Leave "
@@ -604,40 +590,12 @@ class _Chunker:
         """The row indices of each chunk at ``gamma``."""
         return np.array_split(self.order, gamma)
 
-    def cut(self, chunk: np.ndarray, arrays: Dict[str, Any],
-            params: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """``arrays`` cut to one chunk, and the params its task runs with.
-
-        ``arrays`` holds ``'x'``, ``'y'`` and any extra array (W, a conditioning
-        set) by name. Every array but Y is cut with X's range, since an extra
-        array shares X's grid. A chunk of a spike population carries its own
-        time span in the params, which is never the caller's dict.
-        """
-        if self.spike:
-            # The chunk's window range becomes a time range with a margin of
-            # 2 * window_size for the shifts (chunk_window_range_to_time), and
-            # each spike list is sliced to it and re-zeroed. The streams share
-            # one grid, so every one uses the same range. The chunk's dataset
-            # spans [0, span), the span that function assumed, and not the
-            # narrower extent of wherever its spikes fall.
-            lo, hi = int(chunk[0]), int(chunk[-1]) + 1
-            t0, t1 = chunk_window_range_to_time(lo, hi, self._window, self._step)
-            start, end = self._t_start + t0, self._t_start + t1
-            cut = {name: slice_spike_data_to_time_range(data, start, end) for name, data in arrays.items()}
-            params = {**params, 'processor_params_x': {**(params.get('processor_params_x') or {}),
-                                                       't_start': 0.0, 't_end': t1 - t0}}
-            return cut, params
-        if self.raw:
-            # A contiguous window-index range becomes the raw sample range that
-            # reproduces exactly that many windows under any per-epoch shift.
-            lo, hi = int(chunk[0]), int(chunk[-1]) + 1
-            ranges = {side: chunk_window_range_to_raw(lo, hi, *self._samples[side]) for side in ('x', 'y')}
-            cut = {}
-            for name, data in arrays.items():
-                r0, r1 = ranges['y' if name == 'y' else 'x']
-                cut[name] = _ensure_cpu(data[r0:r1])
-            return cut, params
-        return {name: _ensure_cpu(data[chunk]) for name, data in arrays.items()}, params
+    def cut(self, chunk: np.ndarray, arrays: Dict[str, Any]) -> Dict[str, Any]:
+        """``arrays`` cut to one chunk: ``'x'``, ``'y'`` and any extra array by name, or for a plan
+        ``{'x': the chunk's plan, 'y': None}``."""
+        if self.plan is not None:
+            return {'x': self.plan.cut(chunk), 'y': None}
+        return {name: _ensure_cpu(data[chunk]) for name, data in arrays.items()}
 
 
 def _warn_if_chunks_small(gamma: int, chunks: List[np.ndarray], params: Dict[str, Any]) -> None:
@@ -817,10 +775,10 @@ class AnalysisWorkflow:
         keys, values = zip(*param_grid.items()) if param_grid else ([], [])
         param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if param_grid else [{}]
 
-        # Raw data reach this path only when each chunk's task windows them:
-        # a spike population under shift_time, a raw series under
-        # shift_windows. run.py windows everything else once.
-        chunker = _Chunker(self.x_data, self.y_data, self.base_params, deferred=True,
+        # Raw data reach this path only when each chunk's task windows them,
+        # whose rows move under shift_windows. run.py windows everything else
+        # once.
+        chunker = _Chunker(self.x_data, self.y_data, self.base_params,
                            temporal_chunking=temporal_chunking)
         self.resolved_chunking_mode = chunker.mode
 
@@ -832,8 +790,10 @@ class AnalysisWorkflow:
                 chunks = chunker.chunks(gamma)
                 _warn_if_chunks_small(gamma, chunks, current_params)
                 for i_subset, subset_indices in enumerate(chunks):
-                    cut, chunk_params = chunker.cut(subset_indices, {'x': self.x_data, 'y': self.y_data},
-                                                    current_params)
+                    cut = chunker.cut(subset_indices, {'x': self.x_data, 'y': self.y_data})
+                    if isinstance(cut['x'], RowPlan):
+                        cut = {'x': TermRows(cut['x'], PAIR), 'y': None}
+                    chunk_params = current_params
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
                     # Purely deterministic per-task key for run_training_task's seeding
                     # (see task.py) -- unlike task_run_id above, excludes the random
@@ -952,7 +912,6 @@ def run_rigorous_scalar_analysis(
     residual_threshold: float = 2.5,
     leverage_threshold: float = 0.20,
     temporal_chunking: Optional[bool] = None,
-    raw_deferred: bool = False,
 ) -> Dict[str, Any]:
     """Bias-corrected estimation of a compound scalar quantity via rigorous extrapolation.
 
@@ -1013,15 +972,6 @@ def run_rigorous_scalar_analysis(
     temporal_chunking : bool, optional
         Contiguous (``True``) or permuted (``False``) chunks, overriding the
         choice :class:`_Chunker` makes from the rows' recorded geometry.
-    raw_deferred : bool, optional
-        ``True`` when ``x_data``/``y_data`` (and every array in
-        ``extra_data``) are raw data that each chunk's task windows, so a chunk
-        is a range of samples or of time (:class:`_Chunker`). Set by the caller
-        (``run.py``'s ``_defer_for_conditional_interaction``) and not inferred
-        from ``base_params``: ``mode='transfer'`` passes raw 2-D series as well,
-        which its histories are built from and which are never windowed.
-        Defaults to ``False``.
-
     Returns
     -------
     Dict[str, Any]
@@ -1059,12 +1009,10 @@ def run_rigorous_scalar_analysis(
         If fewer than ``min_gamma_points`` rows are collected across all gamma
         values (i.e. almost every ``scalar_fn`` call failed).
     """
-    # raw_deferred: X, Y and the extra arrays are raw and each chunk's task
-    # windows them. mode='transfer' passes raw 2-D series too, which are its
-    # histories' source and never windowed, so this is the caller's word and
-    # not inferred.
-    chunker = _Chunker(x_data, y_data, base_params, deferred=raw_deferred,
-                       temporal_chunking=temporal_chunking)
+    # A plan (conditional MI, interaction information) is cut into the plans of
+    # its chunks. mode='transfer' passes raw 2-D series, which its histories
+    # are built from by offset and which no processor windows.
+    chunker = _Chunker(x_data, y_data, base_params, temporal_chunking=temporal_chunking)
     resolved_chunking_mode = chunker.mode
 
     tasks = []
@@ -1072,10 +1020,9 @@ def run_rigorous_scalar_analysis(
         chunks = chunker.chunks(gamma)
         _warn_if_chunks_small(gamma, chunks, base_params)
         for chunk, chunk_idx in enumerate(chunks):
-            cut, task_base_params = chunker.cut(chunk_idx, {'x': x_data, 'y': y_data, **(extra_data or {})},
-                                                base_params)
-            extra_sub = {key: cut[key] for key in (extra_data or {})}
-            tasks.append((scalar_fn, cut['x'], cut['y'], dict(task_base_params),
+            cut = chunker.cut(chunk_idx, {'x': x_data, 'y': y_data, **(extra_data or {})})
+            extra_sub = {key: cut[key] for key in (extra_data or {}) if key in cut}
+            tasks.append((scalar_fn, cut['x'], cut['y'], dict(base_params),
                          extra_sub, extra_kwargs, gamma, chunk, len(chunk_idx)))
 
     show_progress = base_params.get('show_progress', True)

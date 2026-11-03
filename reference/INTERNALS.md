@@ -20,9 +20,9 @@ the networks and returns rows that the shared assembly layer turns into a
 
 | file | holds |
 |---|---|
-| `neural_mi/run.py` | `run()` (lowers the config objects into keyword arguments for `_run_flat()`); `_run_flat()` (validates, applies defaults, windows or defers windowing, and calls the producer); the call-level checks (`_announce_call`, the processor-grid loop `_run_processor_grid`, the `_SHIFT_*_SAFE_MODES` tuples that say where window shifting reaches) |
+| `neural_mi/run.py` | `run()` (lowers the config objects into keyword arguments for `_run_flat()`); `_run_flat()` (validates, applies defaults, builds the call's row plan and cuts its rows once or leaves them to the tasks, and calls the producer); the call-level checks (`_announce_call`, the processor-grid loop `_run_processor_grid`, `_warn_if_shift_windows_dead`) |
 | `neural_mi/config.py` | the config dataclasses, `Processing` through `Pairwise`, and `as_config` |
-| `neural_mi/defaults.py` | `BASE_PARAMS_SCHEMA`, `MODE_KWARGS_SCHEMA` and `PROCESSOR_PARAMS_SCHEMA`: every setting's type and default |
+| `neural_mi/defaults.py` | `BASE_PARAMS_SCHEMA`, `MODE_KWARGS_SCHEMA` and `PROCESSOR_DEFAULTS` (with `PROCESSOR_PARAMS_SCHEMA`, the names it declares): every setting's type and default |
 | `neural_mi/validation.py` | `ParameterValidator`, the allowed values, and the per-stream processor checks |
 | `neural_mi/results.py` | the `Results` object: `get`, `summary`, `plot`, `compare`, `animate`, `save`, `load`, `to_dict`, `to_json` |
 | `neural_mi/quantities.py` | the named quantities, on one engine: `_named` expands an iterable parameter into configurations, `_call` runs one configuration through `run()`, `_task` is the unit sent to a worker |
@@ -45,13 +45,16 @@ the networks and returns rows that the shared assembly layer turns into a
 | `conditional.py`, `interaction.py`, `transfer.py` | the component trainings of the difference quantities |
 | `offsets.py` | the one path to the rows of every quantity defined by time offsets: `build_rows` (the rows a spec defines, through `utils.build_offset_arrays`, and their geometry), `one_step_series` (streams onto one grid of rows one step wide that tile time, the one route of `processing=`) and `grid_rows` |
 
-**`neural_mi/data/`** holds the preprocessing. `handler.py` has
-`create_dataset` for any number of streams on one grid, `create_single_dataset`
-for one stream, and the stream containers (`AlignedStreams`, `StreamBundle`,
+**`neural_mi/data/`** holds the preprocessing. `plan.py` has `RowPlan`, the
+one plan of every stream a quantity reads, from which every task cuts its rows
+and every term selects its streams (see [The row plan](#the-row-plan) below).
+`handler.py` has `create_dataset` for any number of streams on one grid,
+`create_single_dataset` for one stream, `one_grid` (the grid's one window and
+step), and the stream containers (`AlignedStreams`, `StreamBundle`,
 `PairedTemporalDataset`, `PairedDataset`). `temporal.py` and `static.py` have
 the per-processor datasets, `views.py` the `SubsetView` used for splits, and
-`shift_windowing.py` both window-shifting mechanisms. The module docstring of
-`shift_windowing.py` describes their reach and guarantees.
+`shift_windowing.py` the windowing by sample number behind a plan's moves and
+the phase shifter of rows a stride thins.
 
 **`neural_mi/models/`** has the critics (`SeparableCritic`, `HybridCritic`,
 `ConcatCritic`), the encoders and `VariationalWrapper` in `embeddings.py`, and
@@ -135,12 +138,11 @@ is NaN). The line between the last two is `epochs.stands_above_zero`, the same
 test the trainer uses to word its warning about a negative training-side value,
 so a network's warning and its place in a combination agree. Before it reads a
 value, `combine_terms` compares the rows each term's task read
-(`data.rows.row_identity`, in the task's result under `_row_identity`): their
-count, and the grid's origin and step, a digest of the kept rows' start times
-and Y's window wherever both tasks know them (`data.rows.same_rows`). A repeat
-whose terms read different rows is refused. Rows built before the tasks, by
-`run()` or by offsets, are known by their count and the recorded geometry, and
-every term receives the same ones.
+(`data.rows.row_identity`, in the task's result under `_row_identity`, which a
+plan's dataset carries from `RowPlan.identity`): their count, and the grid's
+origin and step, a digest of the kept rows' start times and Y's window wherever
+both tasks know them (`data.rows.same_rows`). A repeat whose terms read
+different rows is refused: the check that every term read its plan's rows.
 
 ### Processor parameters in a grid
 
@@ -232,7 +234,8 @@ record still gives the kept rows' step, `data.rows.kept_rows` their count.
 Rows without the record are not
 known to be in time order: arrays passed in already built, or samples in no
 order. The record is reported per network in `runs` and
-`details[config_id]['trainings']`.
+`details[config_id]['trainings']`. A plan records its own grid's geometry
+(`RowPlan.geometry`).
 
 Everything that depends on the time order reads the record and nothing else.
 The trainer's blocked split warns when its gap is shorter than a row's span,
@@ -240,9 +243,36 @@ and its random split warns when rows share samples, as does the split
 `mode='dimensionality'` shares across its fits. The rigorous ladder cuts
 recorded rows into contiguous chunks through `rigorous._Chunker`, the one
 chunker of both rigorous paths. A block shuffle moves blocks of the rows one
-row's span takes in. Whether a dataset can rebuild its windows under a time
-shift is a different question, which the trainer answers from the dataset's
-type.
+row's span takes in. Whether rows move each epoch is a different question,
+which the trainer answers from the shifter a dataset carries.
+
+### The row plan
+
+`run()` builds one `RowPlan` per call and processor configuration over every
+stream the call reads (`data/plan.py`). Each stream carries its processor and
+every setting, resolved once from the call's parameters and the schema
+(`resolve_stream`), and the grid has the window and step of `one_grid`. A plan
+cuts its rows one of two ways (`RowPlan.route`): streams on a regular clock that
+start together are windowed by sample number (`shift_windowing.BundleShifter`),
+and any other plan puts every stream on one grid in time, from the latest start
+to the earliest end, through the processors' own datasets, and keeps a window
+only where every stream is valid. A plan of rows built already (`'rows'`) packs
+them as given.
+
+A term reads the plan through `TermRows`, the plan and its `Roles`: which
+streams make its X (joined along the channels or as a pair) and which its Y.
+Every term of a difference therefore reads the same rows, the same kept
+windows and the same per-stream fits, and `task.py` builds every raw dataset
+this way: a term's from its `TermRows`, a pair's from `RowPlan.of_pair`. A plan
+that does not shift is cut once in `run()` (`RowPlan.materialize`) and its rows
+reach the tasks built. A plan that shifts reaches each task raw, and its
+dataset carries a shifter whose one offset per epoch, drawn within one step,
+moves every stream: by sample number, or on the grid in time by windowing
+every stream again at the rows' starts plus the offset (`plan.GridShifter`),
+where a row that fails a stream's rule at that offset keeps its unmoved
+windows. The rigorous ladder cuts a plan into the plans of its chunks
+(`RowPlan.cut`), and a permutation trial moves X inside the plan without moving
+its grid (`RowPlan.replace`).
 
 ### Rigorous fits in $\gamma$
 

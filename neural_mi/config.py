@@ -152,7 +152,6 @@ class Training:
     test_subset_size: Optional[Union[int, str]] = None    # count | 'full'
     lr_head_multiplier: Optional[float] = None
     save_best_model_path: Optional[str] = None
-    shift_time: Optional[bool] = None
     shift_windows: Optional[bool] = None
     augmentation_params: Optional[Dict[str, Any]] = None
     augmentation_params_x: Optional[Dict[str, Any]] = None
@@ -195,7 +194,6 @@ class Output:
     """Result units, spectral tracking, embedding returns, and display labels."""
     units: Optional[str] = None                    # 'bits'|'nats'
     track_spectral_history: Optional[bool] = None  # per-epoch pr_eig/pr_singular/spectrum
-    max_index_reduction: Optional[float] = None
     return_embeddings: Optional[bool] = None
     track_embeddings: Optional[Union[bool, float, int, str]] = None
     return_rotated_embeddings: Optional[bool] = None
