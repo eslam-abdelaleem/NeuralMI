@@ -5,9 +5,10 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C18 have landed. C19 came out of the measurements for C18, and C20 out
-of writing C15's tests. Both are open. The investigations' scripts and results,
-with those behind C19 and C20, are in `scratch/` until the list is done.
+C1 to C18 have landed. C19 came out of the measurements for C18, C20 out of
+writing C15's tests, and C21 and C22 out of the full runs of the tutorials. All
+four are open. The investigations' scripts and results, with those behind C19
+to C22, are in `scratch/` until the list is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
@@ -52,6 +53,48 @@ use the trained estimators on spike data (`scratch/investigation/c20_ksg_ties.py
 tied group, at its mid-rank) so that a copy of a variable stays a copy, and
 warn when most of a variable's values tie, where KSG's neighbour counts do not
 hold.
+
+### C21. `is_reliable` passes a ladder of unresolved rungs
+
+**Now.** `mode='rigorous'` marks its fit reliable when enough gamma values
+remain, the curvature test finds a linear region, no point has high leverage and
+no rung saturates its ceiling. None of these asks whether the rungs learned
+anything. A rung whose held-out curve does not rise above its own noise (the C16
+test) enters the fit with whatever it read. Noisy rungs pass the curvature test
+easily, because noise hides curvature. In tutorial 02's full run on the
+defaults, the ladder at 400 samples cut chunks smaller than one training batch,
+the library warned that many held-out curves did not rise above their noise,
+the fit explained almost none of the rungs' variation, and the extrapolated
+value sat far below both the single run and the exact value. `is_reliable` was
+True.
+
+**Fix.** Leave unresolved rungs out of the fit, as rungs that produced nothing
+are left out now, and name them in the warning. `enough_gamma_points` then
+decides whether what is left can be fitted. Tutorial 02 section 5 is then rerun
+and its reading rewritten: on the defaults the ladder now shows its slope at the
+baseline size, and its text still expects it at the starved one.
+
+### C22. A random split of overlapping windows no longer reads high
+
+**Now.** Tutorial 04 section 7 sweeps the overlap of windows under a blocked
+and a random split against an exact block MI. Its outputs from before the
+correctness fixes read the random split far above the exact value at heavy
+overlap and the blocked one a little below it. The library's warning for a
+random split of rows that share samples says the held-out curve follows the
+training rows, so the epoch it chooses comes late and the value read there is
+high. On the current library the full run read both splits alike, a little
+below the exact value, at every overlap. The old model and training, window
+shifting turned off, and stopping turned off each left the two splits alike,
+and both reached their tops within the first few epochs. Either a fix on this
+list removed the effect here, or the old inflation came from something that was
+wrong. Until that is known, the warning and the section may describe what the
+library no longer does.
+
+**Fix.** Find which change removed the difference, by running the section's
+data on the commits of this list, and whether a random split of near-duplicate
+rows still reads high in some setting (less data, a network that fits its rows,
+spikes). Then make the warning and `MESSAGES.md` say what holds, and rerun and
+rewrite tutorial 04 section 7.
 
 ## Design work
 
