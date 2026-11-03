@@ -171,11 +171,11 @@ The optimisation loop and what is evaluated after it.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `n_epochs` | `50` | Training epochs. |
+| `n_epochs` | `300` | The most epochs training runs. Training usually ends earlier, once the smoothed held-out curve has not improved for `patience` epochs. |
 | `learning_rate` | `0.0005` | Optimiser learning rate. |
 | `batch_size` | `128` | Training batch size. It sets how many negatives each training step sees and does not cap the reported estimate. |
-| `patience` | `1000` | Epochs without improvement before training stops. The default exceeds `n_epochs` and keeps early stopping off until this is lowered. Stopping decides only when training ends: the network evaluated is always the one at `best_epoch`. |
-| `min_improvement` | `0.001` | Rise in the smoothed test MI that counts as an improvement for `patience`. |
+| `patience` | `30` | Epochs without improvement of the smoothed held-out curve before training stops. With `shift_windows` the curve keeps rising for longer, and training runs as long as it does. Without shifting the curve often tops early and falls, and training ends soon after. A value of `n_epochs` or more turns stopping off. Stopping decides only when training ends: the network evaluated is always the one at `best_epoch`. |
+| `min_improvement` | `0.001` | The rise in the smoothed held-out MI, as a fraction of its best value so far, that counts as an improvement for `patience`. |
 | `median_window` | `5` | Width of the median filter on the test-MI curve before the epoch is read from it. |
 | `smoothing_sigma` | `1.0` | Width of the Gaussian filter applied after the median filter. |
 | `epoch_rule` | `'plateau_start'` | Which epoch of the smoothed held-out curve the reported values are read at (`best_epoch`): the earliest at its top, within half the curve's own noise of the top's level (`'plateau_start'`), or its maximum (`'peak'`). On a clean peak the two agree; on a plateau `'plateau_start'` reads its start, before the network fits its training rows further. `runs` gives the maximum as `peak_epoch` and a diagnosis of the curve as `curve_diagnosis`. |

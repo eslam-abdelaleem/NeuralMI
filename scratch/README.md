@@ -1,6 +1,6 @@
 # scratch
 
-Working material for the correctness fixes in `ROADMAP.md` (C3 to C15). It is
+Working material for the correctness fixes in `ROADMAP.md` (C3 to C19). It is
 not part of the library, nothing imports it, and the folder is deleted once the
 correctness fixes are done.
 
@@ -33,5 +33,11 @@ What is reusable for the remaining items:
 - `check_*.py`: the small checks behind individual findings, among them
   `check_k0_equivalence.py` (C3), `check_spike_scale*.py` (C8),
   `check_custom_critic.py` (C9) and `check_c1_case.py` (the 2.41 case of C1).
+- `c18_budget.py`, `c18_analyse.py`: the epoch-budget measurement behind C18
+  and C19. The first trains five oracles with and without shifted windows for
+  300 epochs with stopping off and records every network's curves
+  (`results/c18_budget.json`). The second replays shorter budgets and patience
+  rules on those curves with the library's own smoothing and epoch rule. Both
+  take the repository as their first argument.
 
 `results/` holds the JSON outputs those scripts wrote.

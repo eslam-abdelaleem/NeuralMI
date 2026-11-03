@@ -358,9 +358,9 @@ class TestPeakFraction:
 
 class TestUnderTrainingWarning:
     """Warn when training exhausts all epochs while test MI is still
-    climbing (patience defaults high enough that early stopping rarely fires,
-    so nothing else signals this -- and since these are lower-bound
-    estimators, under-training silently biases the estimate downward)."""
+    climbing. Patience ends training only once the curve stops improving, so
+    nothing else signals a run cut off on the rise, and since these are
+    lower-bound estimators, under-training biases the estimate downward."""
 
     def _trainer(self, dummy_model, custom_smoothing_fn):
         optimizer = torch.optim.Adam(dummy_model.parameters(), lr=0.01)
@@ -396,6 +396,40 @@ class TestUnderTrainingWarning:
             warnings.simplefilter("always")
             trainer.train(dummy_data, n_epochs=10, batch_size=20, patience=1, verbose=False)
         assert not any("under-trained lower bound" in str(w.message) for w in caught)
+
+
+class TestTheDefaultStoppingRule:
+    """Training stops once the smoothed held-out curve has not improved for `patience` epochs, and `n_epochs`
+    caps a curve that keeps improving. Shifted windows keep the curve rising for longer, and a curve without
+    them often tops early and falls, so no one fixed budget serves both (ROADMAP C18)."""
+
+    def _epochs_trained(self, curve, dummy_data, dummy_model, monkeypatch):
+        from neural_mi.defaults import default_of
+        values = iter(curve)
+        evaluate = Trainer._safe_eval_mi
+        monkeypatch.setattr(Trainer, '_safe_eval_mi', lambda self, *a, **k: next(values, None) or evaluate(self, *a, **k))
+        optimizer = torch.optim.Adam(dummy_model.parameters(), lr=0.01)
+        trainer = Trainer(dummy_model, dummy_estimator, optimizer, torch.device('cpu'))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = trainer.train(dummy_data, n_epochs=default_of('n_epochs'), batch_size=20, verbose=False)
+        return len(result['test_mi_history']), [str(w.message) for w in caught]
+
+    def test_a_curve_that_tops_early_stops_patience_epochs_later(self, dummy_data, dummy_model, monkeypatch):
+        from neural_mi.defaults import default_of
+        top = 10
+        curve = [min(e, top) / top for e in range(1, default_of('n_epochs') + 1)]
+        trained, _ = self._epochs_trained(curve, dummy_data, dummy_model, monkeypatch)
+        assert top + default_of('patience') <= trained < top + default_of('patience') + 10
+
+    def test_a_curve_that_keeps_improving_trains_every_epoch_and_says_so(self, dummy_data, dummy_model,
+                                                                        monkeypatch):
+        from neural_mi.defaults import default_of
+        n = default_of('n_epochs')
+        rising = 0.01 * np.arange(1, n + 1) + 0.001 * np.random.default_rng(0).standard_normal(n)
+        trained, messages = self._epochs_trained(rising, dummy_data, dummy_model, monkeypatch)
+        assert trained == n
+        assert any('still rising' in m for m in messages)
 
 
 class TestSelectTrainEvalIndices:

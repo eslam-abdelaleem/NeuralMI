@@ -12,13 +12,14 @@ import torch
 # Each entry is (type_check, min_value or validation_function)
 BASE_PARAMS_SCHEMA = {
     # Trainer parameters
-    'n_epochs': {'type': int, 'min': 1, 'default': 50},
+    'n_epochs': {'type': int, 'min': 1, 'default': 300},
     'learning_rate': {'type': float, 'min': 0.0, 'default': 5e-4},
     'batch_size': {'type': int, 'min': 1, 'default': 128},
-    # Default of 1000 effectively disables early stopping for the default n_epochs=50.
-    # To enable early stopping, set patience to a value smaller than n_epochs
-    # (e.g. patience=20 with n_epochs=200).
-    'patience': {'type': int, 'min': 0, 'default': 1000},
+    # Training stops once the smoothed held-out curve has not improved for
+    # `patience` epochs, and n_epochs caps a curve that keeps improving. Shifted
+    # windows keep the curve rising for longer, and a curve without shifting often
+    # tops early and falls (ROADMAP C18).
+    'patience': {'type': int, 'min': 0, 'default': 30},
     'output_units': {'type': str, 'default': 'bits'},
     # Real-time grids for X and Y, carried so that windowing deferred to the
     # task layer sees the same grid the eager path gets via create_dataset.

@@ -158,6 +158,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   occurs. It used to average them over the window, which discards the lag of a
   history window. `Model(cnn_pooling='mean')` restores the average. Results of
   CNN encoders change, and the CNN's last layers grow with the window length.
+- Training stops once the smoothed held-out curve has not improved for
+  `patience` epochs, 30 by default, and `n_epochs`, now 300, caps a curve that
+  keeps improving. Every network used to train for 50 epochs with stopping off.
+  Shifted windows give the network new windows every epoch, so its held-out
+  curve keeps rising for longer. On slowly varying data with known answers a
+  run with shifted windows was still rising at 50 epochs and reached its top
+  only many epochs later. Without shifting the curve tops within a few epochs
+  and falls, and a longer fixed budget made those runs read lower, because the
+  epoch rule then read an earlier epoch (ROADMAP C19). Stopping gives each run
+  the epochs it needs. Calls with shifted windows on slowly varying data take
+  longer than before.
 
 ### Removed
 
@@ -465,16 +476,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   read the same rows only where those streams agreed. With spike times in
   `mode='conditional'` or `'interaction'`, each term started its grid at the
   first spike of its own streams and dropped the windows where one of them was
-  silent. A W that started 40 s after X gave the joint term 400 rows from 0 s
-  and the conditioning term 320 from 40 s, and the default call read 0.25 bits
-  of conditional MI where the truth is 0. Under
-  `Conditional(align='dual_branch')` (since removed) with `shift_windows`, a W with a window or
-  step of its own was cut on a grid of its own and the conditioning term cut Y
-  on that grid: the call crashed where W gave fewer rows than X and read 0.18
-  nats against 0.55 otherwise. Spike X and Y with a continuous or categorical W
-  crashed under the default `shift_time` with an `UnboundLocalError`. With a
-  step longer than the window, X and Y were shifted by different amounts on some
-  epochs. Inside a task Y could lose the settings it took from X, interaction
+  silent. A W that started 40 s after X gave the joint term rows from 0 s and
+  the conditioning term rows from 40 s, and the default call read a clearly
+  positive conditional MI where the truth is 0. Under
+  `Conditional(align='dual_branch')` (since removed) with `shift_windows`, a W
+  with a window or step of its own was cut on a grid of its own and the
+  conditioning term cut Y on that grid: the call crashed where W gave fewer
+  rows than X and read far below the true value otherwise. Spike X and Y with a
+  continuous or categorical W crashed under the default `shift_time` with an
+  `UnboundLocalError`. With a step longer than the window, X and Y were
+  shifted by different amounts on some epochs. Inside a task Y could lose the settings it took from X, interaction
   information read W with X's settings, and the bursty-neuron exclusion was
   fitted per term, so the terms could exclude different neurons of W.
   `run()` now builds one row plan per call and processor configuration
@@ -487,7 +498,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   its chunks, and a permutation trial moves X inside the plan without moving its
   grid. Each task also reports which rows it read
   (`data.rows.row_identity`), and `sweep.combine_terms` refuses a repeat whose
-  terms read different rows. On the example above both terms read the same 319
+  terms read different rows. On the example above both terms read the same
   rows from 40 s. A stream that asks for a
   window or a step other than the grid's is refused, with a pointer to
   `nmi.offset_quantity` for a stream placed at offsets of its own. A pair under

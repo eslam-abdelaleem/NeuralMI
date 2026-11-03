@@ -5,10 +5,10 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C13, C16 and C17 have landed. C18, C14 and C15 remain, in that order.
-C14 and C15 are written against the defaults, which C18 may change. The
-investigation's scripts and results, with the exact-value models C15 can build
-on, are in `scratch/` until the list is done.
+C1 to C13 and C16 to C18 have landed. C14 and C15 remain, in that order. C19
+came out of the measurements for C18 and is open. The investigation's scripts
+and results, with the exact-value models C15 can build on, are in `scratch/`
+until the list is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
@@ -16,15 +16,6 @@ oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. C17 and C18 come from a second investigation,
 of how the terms of a difference get their rows and of window shifting. Values
 are in nats unless marked as bits.
-
-### C18. Epoch budget under shifting
-
-**Now.** Window shifting helps the network. The held-out value was higher with
-it in 22 of 23 paired runs. At the default 50 epochs, shifted runs are still
-rising.
-
-**Fix.** Measure on several oracles, then set `n_epochs` or a stopping rule
-from what they show.
 
 ### C14. Docs, tests and tutorials on the defaults
 
@@ -51,6 +42,23 @@ setting reaching every network. Known-answer cases for C17: spike trains with a
 W that starts late, estimated with KSG, where the true conditional MI is 0; a W
 window unlike X's, refused by `run()` and placed by `offset_quantity` on a
 Gaussian with a known answer; a step larger than the window.
+
+### C19. The epoch read moves earlier the longer training runs past the top
+
+**Now.** `epoch_rule='plateau_start'` reads the first epoch within half the
+curve's noise of its top, and the noise is measured over the whole held-out
+curve. A curve that falls after its top, as one without window shifting does
+once the network fits its training rows, grows noisier as it falls, and a long
+fall then dominates the measure. The threshold drops and the epoch read moves
+earlier, to a network that has not finished learning. In the C18 measurements,
+runs without shifting read lower at every longer fixed budget, and `mi_rate` at
+300 epochs read its first epoch, far below the exact value, where a 50-epoch run
+read most of it. The default stopping rule ends training `patience` epochs
+after the curve stops improving, which keeps the fall short, but a call that
+turns stopping off or sets a long `patience` still meets it.
+
+**Fix.** Measure the noise where the rule reads the curve, near its top, and
+check the diagnosis thresholds again on the simulated curves of `epochs.py`.
 
 ## Design work
 
