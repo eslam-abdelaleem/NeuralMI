@@ -5,10 +5,9 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C14 and C16 to C18 have landed. C15 remains. C19 came out of the
-measurements for C18 and is open. The investigation's scripts and results, with
-the exact-value models C15 can build on, are in `scratch/` until the list is
-done.
+C1 to C18 have landed. C19 came out of the measurements for C18, and C20 out
+of writing C15's tests. Both are open. The investigations' scripts and results,
+with those behind C19 and C20, are in `scratch/` until the list is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
@@ -16,21 +15,6 @@ oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. C17 and C18 come from a second investigation,
 of how the terms of a difference get their rows and of window shifting. Values
 are in nats unless marked as bits.
-
-### C15. Tests that would have caught these
-
-**Now.** The one end-to-end accuracy test of `mi_rate` runs in the easy regime
-(errors amplified 2.7 times), with a GRU, and accepts ±0.5 bits on a 0.85-bit
-target.
-
-**Fix.** Accuracy on a smooth, self-predictable process after whitening, with
-the default model and a tolerance that fails on the errors above; unchanged
-estimates across units with channel preprocessing; independent repeats with a
-custom critic; the row-geometry contract for every temporal quantity; every
-setting reaching every network. Known-answer cases for C17: spike trains with a
-W that starts late, estimated with KSG, where the true conditional MI is 0; a W
-window unlike X's, refused by `run()` and placed by `offset_quantity` on a
-Gaussian with a known answer; a step larger than the window.
 
 ### C19. The epoch read moves earlier the longer training runs past the top
 
@@ -48,6 +32,26 @@ turns stopping off or sets a long `patience` still meets it.
 
 **Fix.** Measure the noise where the rule reads the curve, near its top, and
 check the diagnosis thresholds again on the simulated curves of `epochs.py`.
+
+### C20. KSG on tied values
+
+**Now.** Before its neighbour search KSG gives every column tie-breaking noise,
+drawn for each variable apart, and with `gaussianize=True` (the default) maps
+each column through its ranks to a standard normal. On values that tie, such as
+a spike window's padded slots or a count, a tied group comes out of the ranks
+in a random order of its own in each variable and is spread over a range of
+normal quantiles. A variable and an exact copy of it then stop looking alike.
+With a spike W that was X's own record from 40 s on, so that I(X; Y | W) = 0 on
+every row, KSG read a positive conditional MI on every seed tried. Conditioning
+the same spike rows on an exact copy of X read above zero with the rank map,
+below zero without it, and close to zero once X and its copy had their ties
+broken alike. On continuous values KSG read 0 exactly. `USING.md` now says to
+use the trained estimators on spike data (`scratch/investigation/c20_ksg_ties.py`).
+
+**Fix.** Keep tied values tied through the rank transform (one quantile for a
+tied group, at its mid-rank) so that a copy of a variable stays a copy, and
+warn when most of a variable's values tie, where KSG's neighbour counts do not
+hold.
 
 ## Design work
 

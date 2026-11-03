@@ -39,5 +39,7 @@ What is reusable for the remaining items:
   (`results/c18_budget.json`). The second replays shorter budgets and patience
   rules on those curves with the library's own smoothing and epoch rule. Both
   take the repository as their first argument.
+- `c20_ksg_ties.py`: KSG's conditional estimate on spike windows where the
+  truth is 0, behind C20. It takes the repository as its first argument.
 
 `results/` holds the JSON outputs those scripts wrote.

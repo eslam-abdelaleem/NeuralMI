@@ -216,9 +216,10 @@ class TestInteractionInformationAccuracy:
             interaction=Interaction(w_data=torch.from_numpy(w)),
             n_workers=1, seed=0, show_progress=False,
         )
-        assert r.mi_estimate < 0.3  # not a tight match (II is a 3-term combination,
-        # the same "small residual" fragility discussed in THEORY.md applies), but the
-        # redundancy signature (clearly not a large positive synergy value) should hold.
+        # II combines three networks, each with its own error, so it is read more
+        # loosely than one MI: within a quarter of the exact value, and negative.
+        assert r.mi_estimate < 0
+        assert abs(r.mi_estimate - ii_exact) < 0.25 * abs(ii_exact)
 
 
 class TestInteractionShiftWindows:

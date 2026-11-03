@@ -294,7 +294,8 @@ class TestConvenienceFunctionsSweep:
 
 # --------------------------------------------------------------------------
 # Accuracy against exact Gaussian ground truth, with the default model and
-# training.
+# training. The defaults read these within a few percent, and each test allows
+# 15% of the exact value.
 # --------------------------------------------------------------------------
 class TestAccuracyAgainstOracle:
     _oracle = _SharedLatentOracle(phi=0.85, a=1.0, b=1.0, sx=0.5, sy=0.5)
@@ -306,7 +307,7 @@ class TestAccuracyAgainstOracle:
         r = nmi.active_information_storage(
             torch.from_numpy(x), k=k, show_progress=False, seed=0,
         )
-        assert abs(r.mi_estimate - exact) < 0.5
+        assert abs(r.mi_estimate - exact) < 0.15 * exact
 
     def test_predictive_information_at_least_ais(self):
         """E_X >= AIS_X always (a longer future window can only reveal more)."""
@@ -322,8 +323,8 @@ class TestAccuracyAgainstOracle:
         r_ee = nmi.predictive_information(
             torch.from_numpy(x), k=k, show_progress=False, seed=0,
         )
-        assert abs(r_ais.mi_estimate - ais_exact) < 0.5
-        assert abs(r_ee.mi_estimate - ee_exact) < 0.5
+        assert abs(r_ais.mi_estimate - ais_exact) < 0.15 * ais_exact
+        assert abs(r_ee.mi_estimate - ee_exact) < 0.15 * ee_exact
 
     def test_cross_predictive_information_accuracy(self):
         k = 5
@@ -333,7 +334,7 @@ class TestAccuracyAgainstOracle:
             torch.from_numpy(x), torch.from_numpy(y), k=k,
             show_progress=False, seed=0,
         )
-        assert abs(r.mi_estimate - exact) < 0.5
+        assert abs(r.mi_estimate - exact) < 0.15 * exact
 
     def test_instantaneous_mi_accuracy(self):
         x, y = self._oracle.sample(4000, seed=3)
@@ -342,7 +343,7 @@ class TestAccuracyAgainstOracle:
             torch.from_numpy(x), torch.from_numpy(y),
             show_progress=False, seed=0,
         )
-        assert abs(r.mi_estimate - exact) < 0.5
+        assert abs(r.mi_estimate - exact) < 0.15 * exact
 
     def test_block_mi_accuracy(self):
         # Block MI combines information across every position in the window, a
@@ -355,7 +356,7 @@ class TestAccuracyAgainstOracle:
             torch.from_numpy(x), torch.from_numpy(y), window_size=w,
             show_progress=False, seed=0,
         )
-        assert abs(r.mi_estimate - exact) < 1.0
+        assert abs(r.mi_estimate - exact) < 0.15 * exact
 
 
 # --------------------------------------------------------------------------

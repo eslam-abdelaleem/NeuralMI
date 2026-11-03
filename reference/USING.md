@@ -1227,6 +1227,12 @@ with the square of the rows: 5000 rows of 1000 dimensions took about 15 s on a
 laptop CPU. `neural_mi.estimators.ksg_mi(x, y)` and `ksg_cmi(x, y, z)` take
 arrays directly and return nats.
 
+KSG assumes continuous values. Spike windows, whose padded slots and counts tie,
+are not: each variable's ties are broken by noise of its own, so a variable and
+an exact copy of it stop looking alike, and a conditional estimate given that
+copy reads away from zero where the truth is 0. Use the trained estimators on
+spike data.
+
 ### Encoders
 
 Each side passes through an encoder before the critic scores it. Every encoder

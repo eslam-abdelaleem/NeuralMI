@@ -309,7 +309,8 @@ class TestQuantitiesShapesAndSweep:
 
 # --------------------------------------------------------------------------
 # Accuracy against exact Gaussian ground truth, with the default model and
-# training.
+# training. The defaults read these within a few percent, and each test allows
+# 15% of the exact value.
 # --------------------------------------------------------------------------
 class TestAccuracyAgainstOracle:
     _oracle = _SharedLatentOracle(phi=0.85, a=1.0, b=1.0, sx=0.5, sy=0.5)
@@ -321,7 +322,7 @@ class TestAccuracyAgainstOracle:
         exact = self._oracle.mi_rate_exact(h, W)
         r = nmi.mi_rate(torch.from_numpy(x), torch.from_numpy(y), h=h, half_width=W,
                         show_progress=False, seed=0)
-        assert abs(r.mi_estimate - exact) < 0.5
+        assert abs(r.mi_estimate - exact) < 0.15 * exact
 
     @pytest.mark.slow
     def test_instantaneous_exchange_accuracy(self):
@@ -330,7 +331,7 @@ class TestAccuracyAgainstOracle:
         exact = self._oracle.inst_exchange_exact(k)
         r = nmi.instantaneous_exchange(torch.from_numpy(x), torch.from_numpy(y), k=k,
                                        show_progress=False, seed=0)
-        assert abs(r.mi_estimate - exact) < 0.5
+        assert abs(r.mi_estimate - exact) < 0.15 * exact
 
     @pytest.mark.slow
     def test_directed_information_rate_accuracy(self):
@@ -339,7 +340,7 @@ class TestAccuracyAgainstOracle:
         exact = self._oracle.dir_info_rate_exact(k)
         r = nmi.directed_information_rate(torch.from_numpy(x), torch.from_numpy(y), k=k,
                                           show_progress=False, seed=0)
-        assert abs(r.mi_estimate - exact) < 0.5
+        assert abs(r.mi_estimate - exact) < 0.15 * exact
 
     def test_dir_info_rate_identity_cross_check(self):
         """dir_info_rate == TE(X->Y) + instantaneous_exchange, exact on the

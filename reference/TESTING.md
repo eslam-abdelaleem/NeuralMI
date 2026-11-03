@@ -67,6 +67,12 @@ Each file covers one functional area. Run
 | `test_estimators.py` | the InfoNCE and SMILE bound functions, accuracy on known-MI data, SMILE's `clip` through the full pipeline |
 | `test_ksg.py` | KSG and its conditional form: agreement with scikit-learn, accuracy on Gaussian data, invariance under monotone transforms, the k-d tree and brute-force paths, the time window, and the modes through `run()` |
 
+### Known answers
+
+| file | covers |
+|---|---|
+| `test_known_answers.py` | known answers the correctness fixes were found against, each with a tolerance that fails on the error its fix removed: the rate of a smooth process after whitening, an estimate unchanged across units under channel preprocessing, a W that starts late reading no conditional information, a W window unlike X's refused by `run()` and placed by `offset_quantity`, and a step longer than the window |
+
 ### Data
 
 | file | covers |
@@ -171,7 +177,7 @@ Each file covers one functional area. Run
 
 | area | files |
 |---|---|
-| a wrong estimate or the estimator maths | `test_estimators.py`, `test_ksg.py`, `test_oracle.py` |
+| a wrong estimate or the estimator maths | `test_known_answers.py`, `test_estimators.py`, `test_ksg.py`, `test_oracle.py` |
 | a column, row or field of `Results` missing or misplaced | `test_contract.py`, `test_results.py` |
 | a reference page that no longer matches the code | `test_docs_drift.py` |
 | a permutation null or p-value | `test_permutation.py` |

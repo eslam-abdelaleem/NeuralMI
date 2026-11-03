@@ -41,16 +41,24 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `min(n_test, max_eval_samples)`. A set larger than `max_eval_samples` is
   evaluated in blocks like the training side, the trainer logs it, and `runs`
   reports `test_eval_blocks`.
+- Tests of the known answers the correctness fixes were found against
+  (`tests/test_known_answers.py`), each with a tolerance that fails on the
+  error its fix removed: the rate of a smooth process after whitening, an
+  estimate unchanged across units under channel preprocessing, a W that starts
+  late, a W window unlike X's placed by `offset_quantity`, and a step longer
+  than the window. The accuracy tests against the oracle now allow a fraction
+  of the exact value instead of half a bit. Writing them showed that KSG
+  misreads values that tie, such as spike windows, and `USING.md` now says to
+  use the trained estimators there (ROADMAP C20).
 
 ### Changed
 
-- Helpers written twice now have one definition each: the trim tolerances of
-  conditional MI and interaction information (in `conditional.py`), the
-  promotion of a 2-D array to rows with a window axis
-  (`utils.with_window_axis`, which replaces both `_ensure_3d`s), the
-  conversion to a float tensor (`utils.float_tensor`, behind `run.py`'s and
-  `embeddings_io.py`'s `_to_tensor`), `_batch_size_of` (in `models/critics.py`)
-  and the embedding batch size (in `embeddings_io.py`).
+- Helpers written twice now have one definition each: the promotion of a 2-D
+  array to rows with a window axis (`utils.with_window_axis`, which replaces
+  both `_ensure_3d`s), the conversion to a float tensor (`utils.float_tensor`,
+  behind `run.py`'s and `embeddings_io.py`'s `_to_tensor`), `_batch_size_of`
+  (in `models/critics.py`) and the embedding batch size (in
+  `embeddings_io.py`).
 
 - Every term of a difference quantity (`mode='conditional'`, `'transfer'` and
   `'interaction'`, with or without `rigorous=True`, their permutation trials,
