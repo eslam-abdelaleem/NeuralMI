@@ -1064,6 +1064,54 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
         return self
 
 
+class ChannelScaling(nn.Module):
+    """Centres and scales each channel of its input by the mean and standard deviation of the training rows.
+
+    The statistics are buffers, so they are saved with the network and applied
+    wherever it is used again. They start as the identity and :meth:`fit` sets
+    them. A channel that does not vary keeps a scale of 1. ``Model(input_scaling=
+    'standard')`` puts one in front of every encoder (:class:`InputScaling`), or
+    of each side of the concat critic.
+    """
+
+    def __init__(self, n_channels: int):
+        super().__init__()
+        self.register_buffer('shift', torch.zeros(n_channels))
+        self.register_buffer('scale', torch.ones(n_channels))
+
+    @torch.no_grad()
+    def fit(self, x: torch.Tensor) -> None:
+        """Set the statistics from the rows ``x``, shaped ``(n, n_channels, ...)``."""
+        x = x.float()
+        dims = [d for d in range(x.ndim) if d != 1]
+        std = x.std(dim=dims) if x.shape[0] > 1 else torch.ones(x.shape[1])
+        self.shift.copy_(x.mean(dim=dims))
+        self.scale.copy_(torch.where(std > 1e-8, std, torch.ones_like(std)))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        view = (1, -1) + (1,) * (x.ndim - 2)
+        return (x - self.shift.view(view)) / self.scale.view(view)
+
+
+class InputScaling(nn.Module):
+    """An encoder whose input passes through :class:`ChannelScaling` first, one per part of a paired input."""
+
+    def __init__(self, encoder: nn.Module, n_channels):
+        super().__init__()
+        self.encoder = encoder
+        channels = n_channels if isinstance(n_channels, tuple) else (n_channels,)
+        self.scalers = nn.ModuleList(ChannelScaling(c) for c in channels)
+
+    def fit(self, x) -> None:
+        for scaler, part in zip(self.scalers, x if isinstance(x, (tuple, list)) else (x,)):
+            scaler.fit(part)
+
+    def forward(self, x):
+        if isinstance(x, (tuple, list)):
+            return self.encoder(tuple(scaler(part) for scaler, part in zip(self.scalers, x)))
+        return self.encoder(self.scalers[0](x))
+
+
 class VariationalWrapper(nn.Module):
     """Generic variational wrapper for any embedding model.
 

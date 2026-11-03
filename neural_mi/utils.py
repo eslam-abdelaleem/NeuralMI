@@ -18,7 +18,7 @@ import tempfile
 
 from neural_mi.models.embeddings import (
     DeepSets,
-    MLP, VariationalWrapper,
+    MLP, VariationalWrapper, ChannelScaling, InputScaling,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
     PretrainedBackboneEmbedding, LRUEmbedding, BranchedEmbedding,
 )
@@ -524,14 +524,14 @@ ARCHITECTURE_KEYS = (
     'custom_critic', 'custom_embedding_cls', 'custom_embedding_cls_y', 'hidden_dim_head', 'n_layers_head',
     'use_variational', 'shared_encoder', 'max_n_batches',
     'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
-    '_difference_term', '_condition', 'processor_params_x', 'processor_params_y',
+    '_difference_term', '_condition', 'processor_params_x', 'processor_params_y', 'input_scaling',
 ) + MODEL_SETTINGS
 
 
 # What a custom critic recipe can take, by name: the input sizes the task
 # computed, and the architecture settings.
 CRITIC_SIZES = ('input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y', 'window_size_x', 'window_size_y')
-CRITIC_SETTINGS = ('embedding_dim', 'hidden_dim', 'n_layers') + MODEL_SETTINGS
+CRITIC_SETTINGS = ('embedding_dim', 'hidden_dim', 'n_layers', 'input_scaling') + MODEL_SETTINGS
 
 
 def check_custom_critic(recipe) -> None:
@@ -827,6 +827,23 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                   if difference_term else Model_x(input_dim_x, **model_kwargs))
     net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
 
+    # Model(input_scaling='standard'): every encoder reads its input centred and
+    # scaled channel by channel, by statistics the trainer sets from the
+    # training rows (models.critics.fit_input_scaling). They are buffers of the
+    # network, saved and applied with it.
+    input_scaling = setting(embedding_params, 'input_scaling')
+    if input_scaling == 'standard':
+        for Model_ in (Model_x, Model_y):
+            if Model_ is DeepSets and critic_type != 'concat':
+                raise ValueError(
+                    "Model(input_scaling='standard') cannot serve embedding_model='deepsets'. DeepSets tells a "
+                    "spike from padding by the padding value, which scaling moves. Use another encoder, or "
+                    "leave input_scaling unset."
+                )
+        if critic_type != 'concat':
+            net_x_base = InputScaling(net_x_base, embedding_params['n_channels_x'])
+            net_y_base = net_x_base if shared_encoder else InputScaling(net_y_base, embedding_params['n_channels_y'])
+
     # Optionally wrap with VariationalWrapper, works for every encoder type
     if use_variational:
         net_x = VariationalWrapper(net_x_base, spec_x['embedding_dim'], bias=bias_x)
@@ -876,7 +893,9 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             # regularises the scores. There is no per-variable embedding here
             # for it to compress.
             concat_net = VariationalWrapper(concat_net, 1, bias=bias_x)
-        return ConcatCritic(embedding_net=concat_net, **critic_kwargs)
+        scaling = ((ChannelScaling(embedding_params['n_channels_x']), ChannelScaling(embedding_params['n_channels_y']))
+                   if input_scaling == 'standard' else None)
+        return ConcatCritic(embedding_net=concat_net, scaling=scaling, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
 

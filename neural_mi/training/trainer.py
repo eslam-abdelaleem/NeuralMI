@@ -29,6 +29,7 @@ from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks,
                              warn_if_random_split_leaks)
 from neural_mi.augmentations import apply_augmentations
+from neural_mi.models.critics import fit_input_scaling, has_input_scaling
 
 # Fraction of the (smoothed) test-MI history that must sit above
 # TEST_TRACE_SATURATION_THRESHOLD * ceiling before peak-epoch selection is
@@ -754,6 +755,12 @@ class Trainer:
         display_progress = show_progress if show_progress is not None else verbose
         epoch_iterator = tqdm(range(n_epochs), desc="Training", leave=False,
                               disable=not display_progress)
+
+        # Model(input_scaling='standard'): the scaling of every encoder's input
+        # takes its statistics from the training rows, before the first epoch.
+        if has_input_scaling(self.model):
+            fit_input_scaling(self.model, _index_batch(_eval_x_source, _eval_train_eval_idx),
+                              _eval_y_source[_eval_train_eval_idx, ...])
         
         # 3. Epoch Loop
         for epoch in epoch_iterator:

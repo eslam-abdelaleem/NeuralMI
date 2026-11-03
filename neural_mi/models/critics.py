@@ -296,14 +296,20 @@ class ConcatCritic(BaseCritic):
                  embedding_dim: int = None,
                  max_n_batches: int = 512,
                  use_variational: bool = False,
+                 scaling: Optional[Tuple[nn.Module, nn.Module]] = None,
                  **kwargs):
         super().__init__()
         self.embedding_net = embedding_net
         self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
+        # Model(input_scaling='standard'): each side's ChannelScaling, applied
+        # before the pair is formed.
+        self.scaling = nn.ModuleList(scaling) if scaling is not None else None
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.scaling is not None:
+            x, y = self.scaling[0](x), self.scaling[1](y)
         batch_size = x.size(0)
         x_flat = x.view(batch_size, -1)
         y_flat = y.view(batch_size, -1)
@@ -350,3 +356,31 @@ class ConcatCritic(BaseCritic):
             kl_tensor = torch.tensor(0.0, device=x.device)
 
         return scores, kl_tensor
+
+def fit_input_scaling(critic: nn.Module, x, y) -> None:
+    """Set every input scaling of ``critic`` (``Model(input_scaling='standard')``) from the training rows ``x``
+    and ``y``. A shared encoder takes its statistics from both sides' rows. Nothing happens without one."""
+    from neural_mi.models.embeddings import InputScaling
+    scaling = getattr(critic, 'scaling', None)
+    if scaling is not None:
+        scaling[0].fit(x)
+        scaling[1].fit(y)
+        return
+
+    def find(net):
+        return next((m for m in net.modules() if isinstance(m, InputScaling)), None) if net is not None else None
+
+    sx, sy = find(getattr(critic, 'embedding_net_x', None)), find(getattr(critic, 'embedding_net_y', None))
+    if sx is not None and sx is sy:
+        sx.fit(torch.cat([x, y], dim=0))
+        return
+    if sx is not None:
+        sx.fit(x)
+    if sy is not None:
+        sy.fit(y)
+
+
+def has_input_scaling(critic: nn.Module) -> bool:
+    """Whether ``critic`` scales its inputs (``Model(input_scaling='standard')``)."""
+    from neural_mi.models.embeddings import ChannelScaling
+    return any(isinstance(m, ChannelScaling) for m in critic.modules())

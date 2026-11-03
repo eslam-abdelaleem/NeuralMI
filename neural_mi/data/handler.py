@@ -741,7 +741,7 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
         drop_empty = (proc_params or {}).get('drop_empty_windows', True)
         bin_size = (proc_params or {}).get('bin_size', None)
         if bin_size is not None:
-            normalize = (proc_params or {}).get('normalize_bins', True)
+            normalize = (proc_params or {}).get('normalize_bins', False)
             return BinnedSpikeDataset(data, bin_size=bin_size, device=device,
                                       normalize=normalize, data_device=data_device,
                                       drop_empty_windows=drop_empty)

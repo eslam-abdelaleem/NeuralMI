@@ -46,6 +46,9 @@ BASE_PARAMS_SCHEMA = {
     # behind both the participation ratios and the rotated embeddings.
     'whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},
+    # Every encoder's input centred and scaled channel by channel by the training
+    # rows' statistics, saved with the network: None (off) or 'standard'.
+    'input_scaling': {'type': (str, type(None)), 'default': None},
     'use_decoder': {'type': bool, 'default': False},
     'decoder_lambda': {'type': float, 'min': 0.0, 'default': 0.001},
     'decoder_lambda_x': {'type': (float, type(None)), 'min': 0.0, 'default': None},

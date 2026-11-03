@@ -825,7 +825,7 @@ class BinnedSpikeDataset(TemporalWindowDataset):
     device : str or torch.device, optional
     normalize : bool, optional
         If True, divide bin counts by bin_size to express as spikes/second.
-        Default True. Set False to keep raw counts.
+        Default False, which keeps the counts.
     drop_empty_windows : bool, optional
         Whether a window with no spikes is discarded. Defaults to True, estimating
         the quantity restricted to the active subensemble in bits per *active*
@@ -840,7 +840,7 @@ class BinnedSpikeDataset(TemporalWindowDataset):
     """
 
     def __init__(self, spike_times, bin_size: float,
-                 window_manager=None, device=None, normalize: bool = True,
+                 window_manager=None, device=None, normalize: bool = False,
                  data_device='cpu', drop_empty_windows: bool = True):
         super().__init__(window_manager, device, data_device)
         self.drop_empty_windows = drop_empty_windows

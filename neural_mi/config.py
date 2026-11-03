@@ -105,6 +105,7 @@ class Model:
     dropout: Optional[float] = None
     norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
+    input_scaling: Optional[str] = None            # None | 'standard': each encoder's input centred and scaled
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None
     max_n_batches: Optional[int] = None            # critic chunking

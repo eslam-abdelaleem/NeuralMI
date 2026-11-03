@@ -1312,6 +1312,18 @@ class MyCritic(nmi.models.BaseCritic):
 result = nmi.run(x, y, model=Model(custom_critic=MyCritic, embedding_dim=16))
 ```
 
+### The scale of the rows
+
+The networks read their rows at the scale they arrive in, and an estimate
+depends on it: a pair carrying 2 nats reads close to 2 at unit scale and 0 at
+×1e3 or ×1e-3. `Model(input_scaling='standard')` centres and scales each
+encoder's input channel by channel, by the mean and standard deviation of the
+training rows, which removes the dependence on units. The statistics are part
+of the network, saved with it and applied by `extract_embeddings`. It is off by
+default, like every change to the data. Binned spikes enter as counts unless
+`normalize_bins=True` turns them into rates, which in 1 ms bins makes one spike
+1,000.
+
 ### Regularised objectives
 
 `Model(use_variational=True)` makes any encoder variational and adds a KL term
