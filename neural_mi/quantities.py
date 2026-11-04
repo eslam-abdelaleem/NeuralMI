@@ -52,7 +52,7 @@ from neural_mi.parallel import dispatch_tasks
 from neural_mi.analysis.assemble import merge_results
 from neural_mi.analysis.offsets import (build_rows, one_step_series, resolve_stream_processing,
                                         spec_geometry)
-from neural_mi.utils import _as_tensor, validate_stride, validate_window
+from neural_mi.utils import _as_tensor, encoders_scale, validate_stride, validate_window
 from neural_mi.preprocessing import describe as describe_preprocessing
 from neural_mi.embeddings_io import model_file, resolve_model_path, announce_saving_several
 
@@ -322,8 +322,9 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     # run(), which receives rows built already (neural_mi/preprocessing.py).
     preprocessing = run_kwargs.pop('preprocessing', None)
     model = run_kwargs.get('model')
-    scales = (model.get('input_scaling') if isinstance(model, dict) else getattr(model, 'input_scaling', None))
-    series = _prepared_series(series, processing, preprocessing, quantity, encoder_scales=scales is not None)
+    model = model if isinstance(model, dict) else vars(model) if model is not None else {}
+    series = _prepared_series(series, processing, preprocessing, quantity,
+                              encoder_scales=encoders_scale(model.get('input_scaling'), model.get('custom_critic')))
     if preprocessing is not None:
         construction = {**construction, 'preprocessing': describe_preprocessing(preprocessing)}
     # Rows a stride thins shift under shift_windows: built at every step, of

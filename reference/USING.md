@@ -1366,7 +1366,11 @@ calls it under its own seed with the parameters it names among the input sizes
 difference trains a critic of its own, sized for its X. In the joint term of a
 difference X is the pair (rest of X, conditioning set): the critic receives a
 tuple of two tensors, and each size of X it names is a pair of the two parts'
-sizes. An architecture setting it does not name is ignored with a warning. An object is refused, since one
+sizes. An architecture setting it does not name is ignored with a warning, and
+`input_scaling` reaches it only when it names it. `use_variational` and `beta`
+apply as to any critic: the loss is the KL term its `forward` returns minus
+`beta` times the MI term. `use_decoder` is refused, since a decoder rebuilds a
+side from the embedding of an encoder the library built. An object is refused, since one
 object would be trained in place and shared by every repeat. With
 `n_workers` above 1 the class or function must be defined at module level so
 the workers can import it.

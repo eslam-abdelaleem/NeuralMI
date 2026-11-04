@@ -103,6 +103,33 @@ def test_a_setting_the_recipe_does_not_take_says_so():
     assert said and 'hidden_dim' in said[0] and 'embedding_dim' not in said[0].split('ignored:')[1]
 
 
+def test_the_variational_settings_apply_and_are_not_called_ignored():
+    """The trainer's loss is the KL term the critic returns minus beta times the MI term, whatever builds
+    the critic, so the two settings change the training and the warning does not list them."""
+    x, y = _data()
+    _, messages = _run(x, y, model=nmi.Model(custom_critic=Recipe, use_variational=True, beta=4.0), seed=0)
+    said = ' '.join(m for m in messages if 'no effect' in m)
+    assert 'use_variational' not in said and 'beta' not in said
+    _, messages = _run(x, y, model=nmi.Model(custom_critic=Recipe, beta=4.0), seed=0)
+    assert any('beta (use_variational=True only)' in m for m in messages)
+
+
+def test_a_decoder_is_refused():
+    x, y = _data()
+    with pytest.raises(ValueError, match='use_decoder=True cannot serve a custom_critic'):
+        nmi.run(x, y, model=nmi.Model(custom_critic=Recipe, use_decoder=True), training=_TRAINING,
+                show_progress=False)
+
+
+def test_input_scaling_the_recipe_does_not_take_leaves_the_scale_check_on():
+    """Rows far from unit scale warn unless the encoders scale them. A recipe that does not name
+    input_scaling never receives it, so the check still warns."""
+    x, y = _data()
+    _, messages = _run(1000 * x, 1000 * y, model=nmi.Model(custom_critic=Recipe, input_scaling='standard'),
+                       seed=0)
+    assert any('from unit scale' in m for m in messages)
+
+
 def test_a_recipe_that_needs_more_than_the_library_passes_is_refused():
     def needs_more(input_dim_x, something_else):
         return Recipe(input_dim_x, 2, 4)

@@ -624,8 +624,10 @@ branched encoder, the pretrained backbone's head), which read all four. Under
 apply. The head
 settings apply to `critic_type='hybrid'`, `beta` to `use_variational=True`, and
 the decoder settings to `use_decoder=True`. With `custom_critic` the recipe builds
-the critic and takes only the settings it names; every other `Model` setting is
-ignored. Of the `Output` settings,
+the critic and takes only the architecture settings it names, and the others are
+ignored. `use_variational` and `beta` still apply, since the trainer's loss is
+the KL term the critic returns minus `beta` times the MI term, and
+`use_decoder=True` is refused. Of the `Output` settings,
 `return_rotated_embeddings` needs `return_embeddings` or `track_embeddings`,
 `rotated_embeddings_per_epoch` needs both `track_embeddings` and
 `return_rotated_embeddings`, and `return_rotation_matrices` needs

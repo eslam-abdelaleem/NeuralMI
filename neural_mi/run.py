@@ -290,10 +290,14 @@ def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Opti
         from .utils import CRITIC_SETTINGS, critic_recipe_takes
         takes = critic_recipe_takes(model.custom_critic)
         taken = set(CRITIC_SETTINGS) if takes is None else takes
-        others = sorted(chosen - {'custom_critic'} - taken)
+        # The trainer reads use_variational and beta whatever builds the critic:
+        # the loss is the KL term the critic returns minus beta times the MI term.
+        others = sorted(chosen - {'custom_critic', 'use_variational', 'beta'} - taken)
         if others:
             ignored.append(f"{', '.join(others)} (custom_critic builds the critic and takes only the "
                            f"settings it names)")
+        if 'beta' in chosen and not (model.use_variational or False):
+            ignored.append("beta (use_variational=True only)")
     else:
         if model is not None:
             ignored += _unread_model_settings(mode, model, chosen)
@@ -653,6 +657,12 @@ def run(
     if model is not None:
         from .utils import check_custom_critic
         check_custom_critic(model.custom_critic)
+        if model.custom_critic is not None and model.use_decoder:
+            raise ValueError(
+                "use_decoder=True cannot serve a custom_critic. A decoder rebuilds each side from the "
+                "embedding of an encoder the library built, at the sizes the Model settings give, and a custom "
+                "critic builds networks of its own. Leave use_decoder unset with a custom_critic."
+            )
     training = as_config(training, Training)
     split = as_config(split, Split)
     output = as_config(output, Output)
@@ -1204,7 +1214,7 @@ def _run_flat(
             _prepared = _prepare_streams(OrderedDict(x=x_data, y=y_data, w=w_data), _processor_of,
                                          preprocessing, quantity=f"mode='{mode}'", rate=False,
                                          check=_rows is None,
-                                         encoder_scales=base_params.get('input_scaling') is not None)
+                                         encoder_scales=_encoders_scale(base_params))
             x_data, y_data, w_data = _prepared['x'], _prepared['y'], _prepared['w']
         # Every mode but transfer entropy, which builds its histories itself, cuts
         # its rows from one plan of the streams it reads (neural_mi/data/plan.py).
@@ -1499,7 +1509,7 @@ def _run_flat(
             _prepared = _prepare_streams(OrderedDict(x=x_run, y=y_run, w=w_run), _processor_of,
                                          preprocessing, quantity="mode='transfer'", rate=True,
                                          check=_rows is None,
-                                         encoder_scales=base_params.get('input_scaling') is not None)
+                                         encoder_scales=_encoders_scale(base_params))
             x_run, y_run, w_run = _prepared['x'], _prepared['y'], _prepared['w']
             # The histories are built here, so the training tasks read them as given.
             base_params['processor_type_x'] = None
@@ -1622,6 +1632,12 @@ def _held_out_count(n_rows: int, base_params: dict) -> int:
     return held_out_rows(n_rows, base_params.get('train_fraction', 0.9))
 
 
+def _encoders_scale(base_params: dict) -> bool:
+    """Whether the encoders this call builds scale their own input (utils.encoders_scale)."""
+    from .utils import encoders_scale
+    return encoders_scale(base_params.get('input_scaling'), base_params.get('custom_critic'))
+
+
 def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
                  rows: Optional[dict], processors: Optional[dict]) -> None:
     """The part of the data check that needs the rows: how many reach the estimator, how many are held out,
@@ -1647,7 +1663,7 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
         scales.append(f"{name} {scale:.3g}")
         kind = (processors or {}).get(name)
         if (kind in ('spike', 'categorical') and not 1.0 / SCALE_BAND <= scale <= SCALE_BAND
-                and base_params.get('input_scaling') is None):
+                and not _encoders_scale(base_params)):
             side = base_params.get(f'processor_params_{name}') or {}
             if kind == 'categorical':
                 held_in = "They hold the processor's encoding of the categories."

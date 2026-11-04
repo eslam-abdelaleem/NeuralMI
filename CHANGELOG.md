@@ -631,6 +631,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   never reported their scale, and spike-time or categorical rows far from unit
   scale did not warn. It now reads the rows at offset 0 on that path too.
 
+- With `Model(custom_critic=...)` the warning about settings that have no
+  effect listed `use_variational` and `beta`, while the trainer applied both:
+  its loss is the KL term the critic returns minus `beta` times the MI term.
+  `use_decoder=True` built decoders at the library's embedding sizes and failed
+  on the critic's own. The warning now leaves the two variational settings out,
+  and `use_decoder` is refused with a custom critic. The data check also took
+  a set `input_scaling` to scale the rows when a recipe that does not name it
+  never received it, and stayed silent about rows far from unit scale.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

@@ -564,6 +564,17 @@ def critic_recipe_takes(recipe) -> Optional[set]:
     return set(parameters) & set(CRITIC_SIZES + CRITIC_SETTINGS)
 
 
+def encoders_scale(input_scaling, custom_critic=None) -> bool:
+    """Whether the encoders scale their own input: ``Model(input_scaling=...)`` is set and reaches them. Every
+    encoder the library builds takes it, and a ``custom_critic`` only when its recipe names it."""
+    if input_scaling is None:
+        return False
+    if custom_critic is None:
+        return True
+    takes = critic_recipe_takes(custom_critic)
+    return takes is None or 'input_scaling' in takes
+
+
 def _custom_critic(recipe, params: Dict[str, Any]) -> nn.Module:
     """The critic a ``custom_critic`` recipe builds, called with the sizes and settings it names."""
     check_custom_critic(recipe)
