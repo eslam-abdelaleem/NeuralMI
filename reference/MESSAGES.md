@@ -374,8 +374,10 @@ width for every neuron. `exclude_bursty_neurons=True` leaves such neurons out.
 
 **`gamma=...: the smallest data subset has ... samples. Below about ... the held-out partition of a chunk cannot fill one evaluation batch`**
 The values of the deep rungs can be dominated by noise because their chunks are
-too small to evaluate reliably. A straight line through noisy rungs still looks
-straight. Use a smaller `gamma_range` or more data.
+too small to evaluate reliably. The fit leaves out the rungs whose held-out
+curves do not resolve (the entry on rungs that did not resolve below). Those
+that resolve can still be noisy, and a straight line through noisy rungs still
+looks straight. Use a smaller `gamma_range` or more data.
 `Training(min_reliable_samples=...)` moves the point at which this fires.
 
 **`... of ... rungs of the gamma ladder produced nothing`**
@@ -386,16 +388,31 @@ difference quantity carries its signed measured value otherwise, a negative one
 included. The fit leaves them out like failed chunks and counts them in the
 `zero_rungs` column of `runs`. The message gives the count at each $\gamma$.
 
-**`...half or more of the rungs produced nothing at gamma=...`**
-The chunks at those values of $\gamma$ are likely too small to estimate the
-quantity. A $\gamma$ with no rung left drops
-out of the fit. With fewer than `min_gamma_points` values of $\gamma$ left the
-fit is unreliable. Use a smaller `gamma_range` or more data.
+**`... of ... rungs of the gamma ladder did not resolve`**
+The held-out curves of the networks behind those rungs do not rise clearly above
+their own noise (the curve entry above), so their values say nothing about the
+dependence. They would enter the fit anyway and pass its checks, because noise
+hides curvature. The fit leaves them out and counts them in the
+`unresolved_rungs` column of `runs`. A rung of a difference quantity is left
+out when its joint term does not resolve, the term that holds every variable the
+others hold, since a smaller term can read nothing because it is zero. The
+message gives the count at each $\gamma$.
 
-**`...every rung of the gamma ladder produced nothing`**, **`...only gamma=... has rungs that produced a value`**
-Since a line needs two values of $\gamma$, the fit reports 0 when no rung is
-left and NaN when only one value of $\gamma$ is left. Either way `is_reliable`
-is `False`. Use a smaller `gamma_range`, more data or more training.
+**`...half or more of the rungs at gamma=... are left out, and so are those values of gamma`**
+The rungs there produced nothing or did not resolve. The chunks at those values
+of $\gamma$ are likely too small to estimate the quantity, and the rungs they
+keep are the networks that happened to learn, which would tilt the line. The
+fit leaves those values of $\gamma$ out with all their rungs. With fewer than
+`min_gamma_points` values of $\gamma$ left the fit is unreliable. Use a
+smaller `gamma_range` or more data.
+
+**`...every rung of the gamma ladder produced nothing`**, **`...no value of gamma is left`**, **`...only gamma=... has rungs left`**
+Since a line needs two values of $\gamma$, the fit reports 0 when every rung
+produced nothing, because no network learned anything at any chunk size. It
+reports NaN when no value of $\gamma$ is left otherwise, since nothing then
+says the dependence is 0, and NaN when only one value of $\gamma$ is left. Either way `is_reliable` is `False`. Use a smaller
+`gamma_range`, more data or more training. With no rung left the data may hold
+no dependence at all, which `permutation_test=True` on a single estimate tests.
 
 **`Fit for ... is unreliable (final gamma points < ...)`**
 `is_reliable` is `False` because too few rungs remain to fit. Widen

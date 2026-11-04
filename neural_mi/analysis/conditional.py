@@ -79,7 +79,7 @@ def run_conditional_mi(
     }
 
 
-def _cmi_rigorous_scalar(plan, _y, bp, sweep_grid=None) -> float:
+def _cmi_rigorous_scalar(plan, _y, bp, sweep_grid=None) -> dict:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of CMI.
 
     ``run_rigorous_scalar_analysis`` dispatches many of these (one per
@@ -91,4 +91,4 @@ def _cmi_rigorous_scalar(plan, _y, bp, sweep_grid=None) -> float:
     (:meth:`neural_mi.data.plan.RowPlan.cut`), whose rows both terms read.
     """
     raw = run_conditional_mi(plan, bp, sweep_grid=sweep_grid, n_workers=1)
-    return rung(raw, (('mi_xw_y', 1), ('mi_w_y', -1)))
+    return rung(raw, (('mi_xw_y', 1), ('mi_w_y', -1)), joint='raw_xw_y')

@@ -394,14 +394,25 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
         )
 
 
-def rung(raw: Dict[str, Any], terms) -> Any:
+def rung(raw: Dict[str, Any], terms, joint: str) -> Dict[str, Any]:
     """One rung of a rigorous ladder of a difference quantity, from its call's result: the signed
-    combination of the ``(key, sign)`` terms as measured, a measurement whatever its sign, with the saved
-    networks' paths when there are any. The terms come combined by :func:`combine_terms`, so a rung whose
-    term failed is NaN, and the fit leaves it out."""
+    combination of the ``(key, sign)`` terms as measured under ``'train_mi'``, a measurement whatever its
+    sign, the saved networks' paths under ``'model_path'`` when there are any, and under
+    ``'curve_diagnosis'`` whether the joint term resolved, whose networks' results are ``raw[joint]``.
+
+    The terms come combined by :func:`combine_terms`, so a rung whose term failed is NaN, and the fit
+    leaves it out. The joint term holds every variable the others hold. On a chunk too small for it, its
+    networks do not resolve and the difference says nothing, so the rung is ``'not resolved'`` when any of
+    them is, and the fit leaves it out too. A smaller term can read nothing because there is nothing there
+    (W independent of Y), so its own curve does not decide."""
     value = float(sum(sign * raw[key] for key, sign in terms))
+    diagnoses = [r.get('curve_diagnosis') for r in raw.get(joint) or [] if isinstance(r, dict)]
+    out = {'train_mi': value, 'curve_diagnosis': 'not resolved' if 'not resolved' in diagnoses else
+           next((d for d in diagnoses if d), None)}
     paths = saved_paths(raw)
-    return (value, paths) if paths else value
+    if paths:
+        out['model_path'] = tuple(paths)
+    return out
 
 
 def combined_spread(value_lists, signs) -> Optional[float]:

@@ -136,7 +136,7 @@ def run_interaction_information(
     }
 
 
-def _ii_rigorous_scalar(plan, _y, bp, sweep_grid=None) -> float:
+def _ii_rigorous_scalar(plan, _y, bp, sweep_grid=None) -> dict:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of
     interaction information.
 
@@ -147,4 +147,4 @@ def _ii_rigorous_scalar(plan, _y, bp, sweep_grid=None) -> float:
     ``_cmi_rigorous_scalar``'s convention. ``plan`` is the chunk's plan.
     """
     raw = run_interaction_information(plan, bp, sweep_grid=sweep_grid, n_workers=1)
-    return rung(raw, (('mi_xw_y', 1), ('mi_x_y', -1), ('mi_w_y', -1)))
+    return rung(raw, (('mi_xw_y', 1), ('mi_x_y', -1), ('mi_w_y', -1)), joint='raw_xw_y')

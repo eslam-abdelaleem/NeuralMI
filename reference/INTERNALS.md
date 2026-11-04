@@ -125,8 +125,11 @@ repeat carries one, and floors only the mean. Elsewhere it leaves the values
 reported as 0 out of `mi_mean` and `mi_std` and counts them in `n_zero`. The
 permutation test summarises each trial with `aggregate` too. A rung of a
 difference's rigorous ladder is its signed measured value (`sweep.rung`), and
-`rigorous._drop_zero_rungs` leaves out only the rungs reported as 0, whose
-networks learned nothing, and the NaN rungs, whose term failed.
+`rigorous._drop_rungs` leaves out only the rungs reported as 0, whose networks
+learned nothing, the NaN rungs, whose term failed, and the rungs whose network,
+or for a difference whose joint term (`sweep.rung`), has a held-out curve that
+did not resolve (`curve_diagnosis == 'not resolved'`), with every $\gamma$ that
+loses half or more of its rungs to them.
 Interaction information is signed and is left as measured.
 
 Every quantity combined from separately trained networks goes through

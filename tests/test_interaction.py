@@ -566,7 +566,8 @@ class TestInteractionShiftingSpikes:
             )
 
     def test_rigorous_shifting_spikes_no_crash_and_finite(self):
-        """rigorous=True: every chunk is the plan of a stretch of the rows."""
+        """rigorous=True: every chunk is the plan of a stretch of the rows, and every rung comes out
+        finite. One epoch resolves nothing, so the fit itself leaves every rung out (ROADMAP C21)."""
         np.random.seed(0)
         torch.manual_seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
@@ -582,8 +583,8 @@ class TestInteractionShiftingSpikes:
             training=Training(n_epochs=1, patience=1, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert results.mi_estimate is not None
-        assert np.isfinite(results.mi_estimate)
+        ladder = results.details[0]['trainings']
+        assert len(ladder) == sum(range(1, 4)) and np.isfinite(ladder['train_mi']).all()
 
     def test_no_crash_without_shifting(self):
         """The plan of X, W and Y cuts their rows whether or not they move."""
@@ -604,7 +605,8 @@ class TestInteractionShiftingSpikes:
 
     def test_rigorous_no_crash_without_shifting(self):
         """A rigorous chunk is the plan of a stretch of the rows, whether or not
-        they move, and returns a finite estimate."""
+        they move, and every rung comes out finite. Two epochs resolve nothing,
+        so the fit itself leaves every rung out (ROADMAP C21)."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=400, window_size=0.05, seed=0)
@@ -619,8 +621,8 @@ class TestInteractionShiftingSpikes:
             training=Training(n_epochs=2, patience=1, shift_windows=False, batch_size=16),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert results.mi_estimate is not None
-        assert np.isfinite(results.mi_estimate)
+        ladder = results.details[0]['trainings']
+        assert len(ladder) == sum(range(1, 4)) and np.isfinite(ladder['train_mi']).all()
 
 
 class TestWProcessorInheritance:

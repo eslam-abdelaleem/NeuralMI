@@ -241,14 +241,14 @@ class TestRepeatRows:
 class TestRigorousRungs:
 
     def test_a_rung_whose_term_failed_is_left_out_like_one_that_produced_nothing(self):
-        from neural_mi.analysis.rigorous import _drop_zero_rungs
+        from neural_mi.analysis.rigorous import _drop_rungs
         group = pd.DataFrame({'gamma': [1, 2, 2, 3, 3, 3],
                               'train_mi': [0.5, 0.4, math.nan, 0.3, 0.0, 0.35]})
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            kept, n_dropped = _drop_zero_rungs(group, '')
+            kept, n_dropped, _ = _drop_rungs(group, '')
         assert n_dropped == 2
-        assert kept['train_mi'].tolist() == [0.5, 0.4, 0.3, 0.35]
+        assert kept['train_mi'].tolist() == [0.5, 0.3, 0.35]           # gamma 2 lost half its rungs
         assert any('2 of 6 rungs of the gamma ladder produced nothing' in str(w.message) for w in caught)
 
 

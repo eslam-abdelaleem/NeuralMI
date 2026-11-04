@@ -514,19 +514,135 @@ def test_a_fractional_step_cuts_each_chunk_with_the_step_the_windows_use():
 
 
 def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma():
-    """A rung at 0 produced nothing. The fit leaves it out and says how many per gamma,
-    and warns again where half or more of a gamma's rungs produced nothing."""
-    from neural_mi.analysis.rigorous import _drop_zero_rungs
-    ladder = _make_df([1, 2, 2, 3, 3, 3], [0.5, 0.4, 0.0, 0.3, 0.0, 0.0])
+    """A rung at 0 produced nothing. The fit leaves it out and says how many per gamma. A gamma
+    that loses half or more of its rungs drops out with the rest of them, which would be the
+    networks that happened to learn."""
+    from neural_mi.analysis.rigorous import _drop_rungs
+    ladder = _make_df([1, 2, 2, 3, 3, 3, 3], [0.5, 0.4, 0.0, 0.3, 0.0, 0.35, 0.32])
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        kept, n = _drop_zero_rungs(ladder, "Rigorous fit: ")
-    assert n == 3 and list(kept['train_mi']) == [0.5, 0.4, 0.3]
+        kept, n, n_unresolved = _drop_rungs(ladder, "Rigorous fit: ")
+    assert n == 2 and n_unresolved == 0 and list(kept['train_mi']) == [0.5, 0.3, 0.35, 0.32]
     messages = [str(w.message) for w in caught]
-    assert any(m.startswith("Rigorous fit: 3 of 6 rungs") and "gamma 2: 1 of 2, gamma 3: 2 of 3" in m
+    assert any(m.startswith("Rigorous fit: 2 of 7 rungs") and "gamma 2: 1 of 2, gamma 3: 1 of 4" in m
                for m in messages)
-    assert any("half or more of the rungs produced nothing at gamma=[2, 3]" in m for m in messages)
+    assert any("half or more of the rungs at gamma=[2] are left out, and so are those values of gamma"
+               in m for m in messages)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        kept, n = _drop_zero_rungs(_make_df([1, 2], [0.5, 0.4]), "")
-    assert n == 0 and len(kept) == 2 and not caught
+        kept, n, n_unresolved = _drop_rungs(_make_df([1, 2], [0.5, 0.4]), "")
+    assert n == 0 and n_unresolved == 0 and len(kept) == 2 and not caught
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rungs that did not resolve (ROADMAP C21)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_rungs_that_did_not_resolve_are_left_out_and_counted_apart_from_zero_rungs():
+    """A rung whose held-out curve does not rise above its noise says nothing about the dependence. The fit
+    leaves it out, names it per gamma and counts it in unresolved_rungs. A rung at 0 counts as a zero rung,
+    although its curve did not resolve either."""
+    from neural_mi.analysis.rigorous import _drop_rungs
+    ladder = pd.DataFrame({'gamma': [1, 2, 2, 3, 3, 3, 3, 3],
+                           'train_mi': [0.5, 0.4, 0.45, 0.3, 0.9, 0.35, 0.0, 0.32],
+                           'curve_diagnosis': ['ok', 'ok', 'not resolved', 'ok', 'not resolved',
+                                               'fuzzy start', 'not resolved', 'ok']})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        kept, n_zero, n_unresolved = _drop_rungs(ladder, "Rigorous fit: ")
+    assert (n_zero, n_unresolved) == (1, 2)
+    # gamma 2 lost one of its two rungs, so its resolved one goes with it.
+    assert list(kept['train_mi']) == [0.5, 0.3, 0.35, 0.32]
+    messages = [str(w.message) for w in caught]
+    assert any(m.startswith("Rigorous fit: 2 of 8 rungs of the gamma ladder did not resolve")
+               and "gamma 2: 1 of 2, gamma 3: 1 of 5" in m for m in messages)
+    assert any("half or more of the rungs at gamma=[2] are left out" in m for m in messages)
+
+
+def _fit(ladder, **kwargs):
+    from neural_mi.analysis.rigorous import _post_process_and_correct
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        fit = _post_process_and_correct(ladder, sweep_grid={}, curvature_t_threshold=2.0,
+                                        min_gamma_points=kwargs.get('min_gamma_points', 5),
+                                        confidence_level=0.68)[0]
+    return fit, [str(w.message) for w in caught]
+
+
+def test_a_ladder_with_no_rung_left_reports_nan_unless_every_rung_produced_nothing():
+    """When every rung produced nothing, no network learned anything at any chunk size, and the fit reports
+    an unreliable 0. Once rungs that did not resolve are out as well, nothing says the dependence is 0, so
+    the fit reports NaN."""
+    nothing = pd.DataFrame({'gamma': [1, 2, 2], 'train_mi': [0.0, 0.0, 0.0],
+                            'curve_diagnosis': ['not resolved'] * 3})
+    fit, messages = _fit(nothing, min_gamma_points=2)
+    assert fit['mi_corrected'] == 0.0 and fit['is_reliable'] is False
+    assert (fit['zero_rungs'], fit['unresolved_rungs']) == (3, 0)
+    assert any("every rung of the gamma ladder produced nothing" in m for m in messages)
+    unresolved = nothing.assign(train_mi=[0.0, 0.3, 0.2])
+    fit, messages = _fit(unresolved, min_gamma_points=2)
+    assert np.isnan(fit['mi_corrected']) and fit['is_reliable'] is False
+    assert (fit['zero_rungs'], fit['unresolved_rungs']) == (1, 2)
+    assert any("no value of gamma is left" in m for m in messages)
+
+
+def test_a_ladder_whose_deep_rungs_did_not_resolve_is_not_reliable():
+    """The C21 case, after tutorial 02 at its starved size. Only the shallow rungs resolve and every rung
+    reads noise about one level. A line through all of them passed every check of the fit, since noise
+    hides curvature, and the fit was reliable. Without the rungs that did not resolve, too few values of
+    gamma are left."""
+    rng = np.random.default_rng(0)
+    rows = [{'gamma': g, 'chunk': c, 'train_mi': 2.5 + rng.normal(0, 0.5),
+             'curve_diagnosis': 'ok' if g <= 3 else 'not resolved'}
+            for g in range(1, 11) for c in range(g)]
+    ladder = pd.DataFrame(rows)
+    blind, _ = _fit(ladder.assign(curve_diagnosis='ok'))
+    assert blind['is_reliable'] is True
+    fit, messages = _fit(ladder)
+    assert fit['is_reliable'] is False and fit['enough_gamma_points'] is False
+    assert fit['unresolved_rungs'] == 55 - 6 and sorted(fit['gammas_used']) == [1, 2, 3]
+    assert any("49 of 55 rungs of the gamma ladder did not resolve" in m for m in messages)
+
+
+def test_a_rung_of_a_difference_resolves_with_its_joint_term():
+    """The joint term holds every variable the others hold. On a chunk too small for it the difference says
+    nothing, and the rung is 'not resolved'. A smaller term reads nothing when it is zero (W independent of
+    Y), so its own curve does not decide."""
+    from neural_mi.analysis.sweep import rung
+    terms = (('mi_xw_y', 1), ('mi_w_y', -1))
+
+    def raw(joint, marginal):
+        return {'mi_xw_y': 0.9, 'mi_w_y': 0.1,
+                'raw_xw_y': [{'curve_diagnosis': joint}], 'raw_w_y': [{'curve_diagnosis': marginal}]}
+
+    resolved = rung(raw('ok', 'not resolved'), terms, joint='raw_xw_y')
+    assert resolved['train_mi'] == pytest.approx(0.8) and resolved['curve_diagnosis'] == 'ok'
+    assert 'model_path' not in resolved
+    assert rung(raw('not resolved', 'ok'), terms, joint='raw_xw_y')['curve_diagnosis'] == 'not resolved'
+    saved = raw('ok', 'ok')
+    saved['raw_xw_y'][0]['model_path'] = 'joint.pt'
+    assert rung(saved, terms, joint='raw_xw_y')['model_path'] == ('joint.pt',)
+
+
+def test_the_scalar_ladder_leaves_out_chunks_whose_joint_term_did_not_resolve():
+    """The scalar path reads the rung a difference's function returns. A chunk whose joint term did not
+    resolve is left out of the fit and counted, and raw_results_df keeps it with its diagnosis."""
+    from neural_mi.analysis.rigorous import run_rigorous_scalar_analysis
+    rng = np.random.default_rng(0)
+
+    def scalar(x_s, y_s, bp):
+        n = x_s.shape[0]
+        return {'train_mi': 1.0 - 20.0 / n + rng.normal(0, 0.005),
+                'curve_diagnosis': 'ok' if n >= 100 else 'not resolved'}
+
+    x, y = torch.randn(600, 2, 1), torch.randn(600, 2, 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        fit = run_rigorous_scalar_analysis(scalar, x, y, base_params={}, gamma_range=range(1, 9),
+                                           min_gamma_points=3)
+    assert fit['unresolved_rungs'] == 7 + 8 and fit['zero_rungs'] == 0
+    assert max(fit['gammas_used']) <= 6
+    assert fit['mi_corrected'] == pytest.approx(1.0, abs=0.05)
+    ladder = fit['raw_results_df']
+    assert len(ladder) == sum(range(1, 9))
+    assert (ladder['curve_diagnosis'] == 'not resolved').sum() == 15

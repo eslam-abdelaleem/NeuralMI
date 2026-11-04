@@ -222,7 +222,7 @@ def run_transfer_entropy(
 
 def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
                         prediction_horizon=1, bidirectional=False, w_data=None,
-                        stride=1) -> float:
+                        stride=1) -> dict:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of TE.
 
     ``run_rigorous_scalar_analysis`` dispatches many of these (one per
@@ -247,4 +247,4 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
         w_data=w_data,
         stride=stride,
     )
-    return rung(raw, (('i_xypast_yfuture', 1), ('i_ypast_yfuture', -1)))
+    return rung(raw, (('i_xypast_yfuture', 1), ('i_ypast_yfuture', -1)), joint='raw_xypast_yfuture')

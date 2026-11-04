@@ -82,7 +82,11 @@ def _unreliable_reasons(fit: Dict[str, Any]) -> List[str]:
     """
     reasons = []
     if fit.get('enough_gamma_points') is False:
-        reasons.append("too few gamma points (enough_gamma_points=False)")
+        left_out = [f"{int(n)} {what}" for n, what in ((fit.get('zero_rungs'), 'produced nothing'),
+                                                       (fit.get('unresolved_rungs'), 'did not resolve'))
+                    if _finite(n) and n]
+        reasons.append("too few gamma points (enough_gamma_points=False"
+                       + (f"; rungs left out: {', '.join(left_out)}" if left_out else "") + ")")
     if fit.get('linear_region_found') is False:
         reasons.append("no linear region found (linear_region_found=False)")
     if fit.get('leverage_warning'):

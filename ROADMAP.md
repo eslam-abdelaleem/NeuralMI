@@ -5,9 +5,9 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C18 have landed. C19 came out of the measurements for C18, C20 out of
-writing C15's tests, and C21 to C23 out of the full runs of the tutorials. All
-five are open. The investigations' scripts and results, with those behind C19
+C1 to C18 and C21 have landed. C19 came out of the measurements for C18, C20
+out of writing C15's tests, and C22 and C23 out of the full runs of the
+tutorials. All four are open. The investigations' scripts and results, with those behind C19
 to C23, are in `scratch/` until the list is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
@@ -54,26 +54,6 @@ tied group, at its mid-rank) so that a copy of a variable stays a copy, and
 warn when most of a variable's values tie, where KSG's neighbour counts do not
 hold.
 
-### C21. `is_reliable` passes a ladder of unresolved rungs
-
-**Now.** `mode='rigorous'` marks its fit reliable when enough gamma values
-remain, the curvature test finds a linear region, no point has high leverage and
-no rung saturates its ceiling. None of these asks whether the rungs learned
-anything. A rung whose held-out curve does not rise above its own noise (the C16
-test) enters the fit with whatever it read. Noisy rungs pass the curvature test
-easily, because noise hides curvature. In tutorial 02's full run on the
-defaults, the ladder at 400 samples cut chunks smaller than one training batch,
-the library warned that many held-out curves did not rise above their noise,
-the fit explained almost none of the rungs' variation, and the extrapolated
-value sat far below both the single run and the exact value. `is_reliable` was
-True.
-
-**Fix.** Leave unresolved rungs out of the fit, as rungs that produced nothing
-are left out now, and name them in the warning. `enough_gamma_points` then
-decides whether what is left can be fitted. Tutorial 02 section 5 is then rerun
-and its reading rewritten: on the defaults the ladder now shows its slope at the
-baseline size, and its text still expects it at the starved one.
-
 ### C22. A random split of overlapping windows no longer reads high
 
 **Now.** Tutorial 04 section 7 sweeps the overlap of windows under a blocked
@@ -103,8 +83,8 @@ text reads only a few: the ceiling, the slow approach to the top, a step size
 read as a fraction, window retention and the amplification of a difference. The
 rest have four causes.
 
-- The library is wrong where they fire: tutorial 02 section 5 (C21) and 04
-  section 7 (C22).
+- The library is wrong where they fire: tutorial 04 section 7 (C22). Tutorial
+  02 section 5, where it was (C21, fixed), waits on its rerun.
 - The warning that fewer rows are held out than one training batch fires on
   every dataset smaller than ten training batches at the defaults, whatever the
   curve then shows. Tutorial 01 meets it at a sample its text calls enough and

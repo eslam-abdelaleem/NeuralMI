@@ -332,11 +332,23 @@ that reaches `min_gamma_points` with the trend still curved stops there and sets
 The fit treats a rung reported as 0, one whose networks learned nothing that
 generalises ([the reported number](#the-reported-number)), as a failed chunk
 that produced nothing and counts it in `zero_rungs`, and so does a rung of a
-difference whose term has no value on its chunk (NaN). A rung of a difference
-carries its signed measured value, a negative one included, since leaving out
-the negative rungs of a small difference would push its fit up. `min_gamma_points` then decides whether enough values
-of $\gamma$ remain once those with no rung left have dropped out. The fit warns
-about zero rungs and warns again where they make up half or more of a $\gamma$.
+difference whose term has no value on its chunk (NaN). It also leaves out a rung
+whose network's held-out curve does not rise clearly above its own noise, and
+counts it in `unresolved_rungs`. Such a rung says nothing about the dependence,
+and the checks of the fit cannot catch it, because noise hides curvature: on a
+ladder whose deep chunks are too small for their networks, a line through every
+rung passed them all and extrapolated far from the true value. A rung of a
+difference is left out when its joint term does not resolve, the term that holds
+every variable the others hold, since a smaller term can read nothing because
+it is zero. A rung of a difference carries its signed measured value, a negative
+one included, since leaving out the negative rungs of a small difference would
+push its fit up. A $\gamma$ that loses half or more of its rungs to either
+cause drops out with the rest of them. Its chunks are too small for the
+quantity, and the rungs it keeps are the networks that happened to learn, which
+read high for their chunk size and tilt the line. `min_gamma_points` then
+decides whether enough values of $\gamma$ remain. The fit warns about both
+kinds of rung and about every $\gamma$ it drops. A ladder with fewer than two
+values of $\gamma$ left reports NaN, or 0 when every rung produced nothing.
 
 A fit is reliable when it used at least `min_gamma_points` values of $\gamma$,
 found a linear region, does not move by more than `leverage_threshold` when the

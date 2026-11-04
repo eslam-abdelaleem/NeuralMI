@@ -181,22 +181,31 @@ def _fit_label(param_dict: Dict[str, Any]) -> str:
     return f"Fit for {_fit_target(param_dict)}: "
 
 
-def _unfittable_ladder(kept: pd.DataFrame, where: str) -> Optional[Dict[str, Any]]:
+def _unfittable_ladder(kept: pd.DataFrame, where: str, all_zero: bool = False) -> Optional[Dict[str, Any]]:
     """The fit of a ladder with fewer than two values of gamma left, or None.
 
-    A line needs two values of gamma. With none left every rung produced nothing
-    and the fit reports 0. With one left the ladder cannot be extrapolated and
-    the fit reports NaN. Either way it is unreliable.
+    A line needs two values of gamma. With none left because every rung
+    produced nothing (``all_zero``), no network learned anything at any chunk
+    size and the fit reports 0. With none left otherwise, or with one value of
+    gamma left, the ladder cannot be extrapolated and the fit reports NaN.
+    Either way it is unreliable.
     """
     gammas = sorted(int(g) for g in kept['gamma'].unique())
     if len(gammas) >= 2:
         return None
-    if not gammas:
+    if not gammas and all_zero:
         warnings.warn(f"{where}every rung of the gamma ladder produced nothing. The fit "
                       f"reports 0 and is unreliable.", UserWarning, stacklevel=user_stacklevel())
         value = 0.0
+    elif not gammas:
+        warnings.warn(f"{where}no value of gamma is left once the rungs that produced nothing or did "
+                      f"not resolve are left out. The networks resolved no dependence on enough chunks, "
+                      f"either because there is none or because the chunks are too small for it. The fit "
+                      f"reports NaN and is unreliable. permutation_test=True on a single estimate tests "
+                      f"whether there is any.", UserWarning, stacklevel=user_stacklevel())
+        value = float('nan')
     else:
-        warnings.warn(f"{where}only gamma={gammas[0]} has rungs that produced a value. A line "
+        warnings.warn(f"{where}only gamma={gammas[0]} has rungs left. A line "
                       f"needs two values of gamma. The fit reports NaN and is unreliable.",
                       UserWarning, stacklevel=user_stacklevel())
         value = float('nan')
@@ -207,40 +216,66 @@ def _unfittable_ladder(kept: pd.DataFrame, where: str) -> Optional[Dict[str, Any
             'r_squared': nan, 'max_abs_residual': nan, 'loo_intercept_shift': nan}
 
 
-def _drop_zero_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int]:
-    """The ladder without its rungs that produced nothing, and how many there were.
+def _per_gamma(group: pd.DataFrame, left_out: pd.Series) -> str:
+    """How many rungs at each gamma ``left_out`` marks, for a message: 'gamma 2: 1 of 2, ...'."""
+    per_gamma = left_out.groupby(group['gamma']).agg(['sum', 'count'])
+    return ', '.join(f"gamma {int(g)}: {int(r['sum'])} of {int(r['count'])}"
+                     for g, r in per_gamma.iterrows() if r['sum'] > 0)
+
+
+def _drop_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int, int]:
+    """The ladder without the rungs the fit cannot use, and how many of them produced nothing and how
+    many did not resolve.
 
     A rung produced nothing when it is 0, because the networks behind it learned
     nothing that generalises, or NaN, because a term of a difference failed
-    (:func:`neural_mi.analysis.sweep.combine_terms`). A rung of a difference
-    carries its signed measured value otherwise. The fit leaves those rungs out
-    like failed chunks. A gamma with no rung left drops out of the fit, where
-    ``min_gamma_points`` decides whether enough remain.
+    (:func:`neural_mi.analysis.sweep.combine_terms`). A rung did not resolve when
+    the held-out curve of its network, or of the joint term of a difference
+    (:func:`neural_mi.analysis.sweep.rung`), does not rise clearly above its own
+    noise (``curve_diagnosis`` is ``'not resolved'``,
+    :func:`neural_mi.training.epochs.choose_epoch`). Its value then says nothing
+    about the dependence, and it would enter the fit anyway: noisy rungs pass
+    the curvature test easily, because noise hides curvature. A rung of a
+    difference carries its signed measured value otherwise. The fit leaves both
+    kinds out like failed chunks. A gamma that loses half or more of its rungs
+    this way drops out of the fit with the rest of them: its chunks are too
+    small for the quantity, and the rungs it keeps are the networks that
+    happened to learn, which tilt the line. ``min_gamma_points`` then decides
+    whether enough values of gamma remain.
     """
-    is_zero = (group['train_mi'] == 0) | group['train_mi'].isna()
-    if not is_zero.any():
-        return group, 0
-    per_gamma = group.assign(_zero=is_zero).groupby('gamma')['_zero'].agg(['sum', 'count'])
-    hit = per_gamma[per_gamma['sum'] > 0]
-    counts = ', '.join(f"gamma {int(g)}: {int(r['sum'])} of {int(r['count'])}"
-                       for g, r in hit.iterrows())
-    warnings.warn(
-        f"{where}{int(is_zero.sum())} of {len(group)} rungs of the gamma ladder produced "
-        f"nothing and are left out of the fit ({counts}). A rung produces nothing when the "
-        f"networks behind it learned nothing that generalises (it is reported as 0), or when a "
-        f"term of a difference failed on its chunk (NaN). runs counts them in zero_rungs.",
-        UserWarning, stacklevel=user_stacklevel()
-    )
-    half = [int(g) for g, r in per_gamma.iterrows() if r['sum'] >= 0.5 * r['count']]
-    if half:
+    zero = (group['train_mi'] == 0) | group['train_mi'].isna()
+    unresolved = ~zero & (group['curve_diagnosis'] == 'not resolved'
+                          if 'curve_diagnosis' in group else False)
+    if zero.any():
         warnings.warn(
-            f"{where}half or more of the rungs produced nothing at gamma={half}. The chunks "
-            f"there are likely too small to estimate this quantity. A gamma with no rung left "
-            f"drops out of the fit. The fit is unreliable with fewer than min_gamma_points "
-            f"values of gamma.",
+            f"{where}{int(zero.sum())} of {len(group)} rungs of the gamma ladder produced "
+            f"nothing and are left out of the fit ({_per_gamma(group, zero)}). A rung produces "
+            f"nothing when the networks behind it learned nothing that generalises (it is reported "
+            f"as 0), or when a term of a difference failed on its chunk (NaN). runs counts them in "
+            f"zero_rungs.",
             UserWarning, stacklevel=user_stacklevel()
         )
-    return group[~is_zero], int(is_zero.sum())
+    if unresolved.any():
+        warnings.warn(
+            f"{where}{int(unresolved.sum())} of {len(group)} rungs of the gamma ladder did not "
+            f"resolve and are left out of the fit ({_per_gamma(group, unresolved)}). A rung does "
+            f"not resolve when the held-out curve of its network, or of the joint term of a "
+            f"difference, does not rise clearly above its own noise, so its value says nothing "
+            f"about the dependence. runs counts them in unresolved_rungs.",
+            UserWarning, stacklevel=user_stacklevel()
+        )
+    left_out = zero | unresolved
+    per_gamma = left_out.groupby(group['gamma']).agg(['sum', 'count'])
+    half = [int(g) for g, r in per_gamma.iterrows() if r['sum'] > 0 and r['sum'] >= 0.5 * r['count']]
+    if half:
+        warnings.warn(
+            f"{where}half or more of the rungs at gamma={half} are left out, and so are those "
+            f"values of gamma. Their chunks are likely too small to estimate this quantity, and "
+            f"the rungs left there would be the networks that happened to learn. The fit is "
+            f"unreliable with fewer than min_gamma_points values of gamma.",
+            UserWarning, stacklevel=user_stacklevel()
+        )
+    return group[~left_out & ~group['gamma'].isin(half)], int(zero.sum()), int(unresolved.sum())
 
 
 def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
@@ -439,11 +474,13 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
     for params, group in valid_df.groupby(grouper):
         param_values = params if isinstance(params, tuple) else (params,)
         param_dict = dict(zip(group_keys, param_values))
-        group, zero_rungs = _drop_zero_rungs(group, _fit_label(param_dict))
-        unfittable = _unfittable_ladder(group, _fit_label(param_dict))
+        n_rungs = len(group)
+        group, zero_rungs, unresolved_rungs = _drop_rungs(group, _fit_label(param_dict))
+        unfittable = _unfittable_ladder(group, _fit_label(param_dict), zero_rungs == n_rungs)
         if unfittable is not None:
             param_dict.update(unfittable, chunking_mode=chunking_mode,
-                              n_tasks_created=n_tasks_created, zero_rungs=zero_rungs)
+                              n_tasks_created=n_tasks_created, zero_rungs=zero_rungs,
+                              unresolved_rungs=unresolved_rungs)
             param_dict.pop('dummy_group', None)
             corrected_results.append(param_dict)
             continue
@@ -517,6 +554,7 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                 'chunking_mode': chunking_mode,
                 'n_tasks_created': n_tasks_created,
                 'zero_rungs': zero_rungs,
+                'unresolved_rungs': unresolved_rungs,
             })
             param_dict.update(diagnostics)
             param_dict.update(per_gamma_diagnostics)
@@ -620,11 +658,12 @@ def _warn_if_chunks_small(gamma: int, chunks: List[np.ndarray], params: Dict[str
             f"of a chunk cannot fill one evaluation batch "
             f"(batch_size={params.get('batch_size', 128)}, "
             f"train_fraction={params.get('train_fraction', 0.9)}). "
-            f"MI values from chunks this small are dominated by noise. A "
-            f"straight line through noisy rungs still looks straight and the "
-            f"linearity check cannot catch it. Use a smaller gamma_range or "
-            f"more data. Set Training(min_reliable_samples=...) to move this "
-            f"line.",
+            f"MI values from chunks this small are dominated by noise. The "
+            f"fit leaves out the rungs whose held-out curves do not resolve. "
+            f"The others can still be noisy, and a straight line through "
+            f"noisy rungs still looks straight, so the linearity check cannot "
+            f"catch it. Use a smaller gamma_range or more data. Set "
+            f"Training(min_reliable_samples=...) to move this line.",
             UserWarning, stacklevel=user_stacklevel()
         )
 
@@ -888,10 +927,11 @@ def _run_scalar_fn_task(args: tuple) -> Dict[str, Any]:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', CombinationWarning)
             value = scalar_fn(x_sub, y_sub, params, **extra_sub, **(extra_kwargs or {}))
-        # A scalar_fn may also return the paths of the networks it saved.
-        value, paths = value if isinstance(value, tuple) else (value, None)
-        return {'gamma': gamma, 'chunk': chunk, 'train_mi': value, '_error': None,
-                'model_path': tuple(paths) if paths else None}
+        # A scalar_fn returns its value, or a rung (sweep.rung): the value with the
+        # paths of the networks it saved and the diagnosis of its joint term's curve.
+        rung = value if isinstance(value, dict) else {'train_mi': value}
+        return {'gamma': gamma, 'chunk': chunk, 'train_mi': rung['train_mi'], '_error': None,
+                'model_path': rung.get('model_path'), 'curve_diagnosis': rung.get('curve_diagnosis')}
     except Exception as exc:
         return {'gamma': gamma, 'chunk': chunk, 'train_mi': None,
                 '_error': f"gamma={gamma} (chunk size={chunk_size}): {exc}"}
@@ -932,10 +972,14 @@ def run_rigorous_scalar_analysis(
     ----------
     scalar_fn : callable
         A **module-level, picklable** function with signature
-        ``scalar_fn(x_sub, y_sub, params, **extra_sub, **extra_kwargs) -> float``.
-        It must return a single scalar MI (or MI-like) value.  It cannot be a
-        closure or lambda when ``n_workers > 1``, since it is sent to worker
-        processes by reference.
+        ``scalar_fn(x_sub, y_sub, params, **extra_sub, **extra_kwargs)``.
+        It returns a single scalar MI (or MI-like) value, or a rung
+        (:func:`neural_mi.analysis.sweep.rung`): a dict with the value under
+        ``'train_mi'``, the saved networks under ``'model_path'`` and the
+        diagnosis of the joint term's held-out curve under
+        ``'curve_diagnosis'``. A rung whose diagnosis is ``'not resolved'`` is
+        left out of the fit. It cannot be a closure or lambda when
+        ``n_workers > 1``, since it is sent to worker processes by reference.
     x_data : array-like, shape (N, ...)
         Data for variable X.  The first axis is the sample axis.
     y_data : array-like, shape (N, ...)
@@ -1052,8 +1096,9 @@ def run_rigorous_scalar_analysis(
                           UserWarning, stacklevel=user_stacklevel())
         else:
             row = {'gamma': r['gamma'], 'chunk': r['chunk'], 'train_mi': r['train_mi']}
-            if r.get('model_path'):
-                row['model_path'] = r['model_path']
+            for key in ('model_path', 'curve_diagnosis'):
+                if r.get(key):
+                    row[key] = r[key]
             rows.append(row)
 
     if len(rows) < min_gamma_points:
@@ -1064,15 +1109,16 @@ def run_rigorous_scalar_analysis(
         )
 
     ladder = pd.DataFrame(rows, columns=['gamma', 'chunk', 'train_mi']
-                          + (['model_path'] if any('model_path' in r for r in rows) else []))
-    # The fit uses the rungs that produced a value. The ladder reported in
-    # raw_results_df keeps every rung.
-    df, zero_rungs = _drop_zero_rungs(ladder, "Rigorous fit (rigorous=True): ")
-    unfittable = _unfittable_ladder(df, "Rigorous fit (rigorous=True): ")
+                          + [key for key in ('model_path', 'curve_diagnosis')
+                             if any(key in r for r in rows)])
+    # The fit uses the rungs that produced a value and resolved. The ladder
+    # reported in raw_results_df keeps every rung.
+    df, zero_rungs, unresolved_rungs = _drop_rungs(ladder, "Rigorous fit (rigorous=True): ")
+    unfittable = _unfittable_ladder(df, "Rigorous fit (rigorous=True): ", zero_rungs == len(ladder))
     if unfittable is not None:
         return {**unfittable, 'raw_results_df': ladder, 'chunking_mode': resolved_chunking_mode,
                 'n_tasks_created': len(tasks), 'zero_rungs': zero_rungs,
-                'per_gamma_train_mi_spread': {}}
+                'unresolved_rungs': unresolved_rungs, 'per_gamma_train_mi_spread': {}}
 
     gammas_used, linear_region_found, curvature_stats = _find_linear_region(
         df, curvature_t_threshold, min_gamma_points)
@@ -1143,5 +1189,6 @@ def run_rigorous_scalar_analysis(
         'n_tasks_created': len(tasks),
         'per_gamma_train_mi_spread': per_gamma_spread,
         'zero_rungs': zero_rungs,
+        'unresolved_rungs': unresolved_rungs,
         **diagnostics,
     }

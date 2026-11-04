@@ -540,6 +540,26 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   no recording. On the rows the quantities defined by time offsets build, which
   keep every window, setting it warns that it has no effect.
 
+- A rigorous fit (`mode='rigorous'`, `rigorous=True`) used every rung that
+  produced a value, including rungs whose held-out curves never rose above their
+  own noise. Those rungs read noise, noise hides curvature, and none of the
+  checks behind `is_reliable` asked whether a rung had learned anything. In
+  tutorial 02 at its starved size the ladder's deep chunks were too small for
+  their networks, the extrapolated value sat far below both the single run and
+  the exact value, and `is_reliable` was `True`. A rung whose held-out curve does
+  not resolve is now left out of the fit like one that produced nothing, a
+  warning gives the count at each $\gamma$, and the new `unresolved_rungs`
+  column of `runs` counts them. A rung of a difference is left out when its
+  joint term does not resolve, since a smaller term can read nothing because it
+  is zero. A $\gamma$ that loses half or more of its rungs to either cause now
+  drops out of the fit with the rest of them, which would be the networks that
+  happened to learn. Kept, those rungs tilt the line: on a sample a little
+  larger than the starved one, a fit that kept them read below the exact value
+  by more than its interval and was called reliable. `min_gamma_points` then
+  decides whether enough values of $\gamma$ remain, and `result.summary()` gives
+  both counts when too few do. A ladder with no value of $\gamma$ left reports
+  an unreliable NaN, or an unreliable 0 when every rung produced nothing.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

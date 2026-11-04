@@ -32,7 +32,7 @@ _FIT_KEYS = (
     'enough_gamma_points', 'curvature_coefficient', 'curvature_se', 'curvature_t',
     'curvature_slope', 'fit_quality_warning', 'leverage_warning', 'r_squared',
     'max_abs_residual', 'loo_intercept_shift', 'gammas_used', 'chunking_mode',
-    'n_tasks_created', 'saturated_gammas', 'zero_rungs',
+    'n_tasks_created', 'saturated_gammas', 'zero_rungs', 'unresolved_rungs',
 )
 
 # The components of each difference quantity: (column, raw-results key, sign).

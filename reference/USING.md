@@ -283,16 +283,19 @@ extrapolated to the infinite-data limit at $\gamma = 0$
 half-width `mi_error` and prediction half-width `mi_error_pred`, the `slope`,
 `is_reliable`, the checks behind it (`enough_gamma_points`,
 `linear_region_found`, `leverage_warning`, `saturated_gammas`), the diagnostics
-reported beside it (`fit_quality_warning`, `r_squared`, `max_abs_residual`, and
-`zero_rungs` for the rungs that produced nothing), and the curvature statistics
-the linear region was chosen on. When the fit extrapolates below zero `mi` is 0
-and `mi_raw` holds the fitted value. `details[config_id]['trainings']` holds
-every network of the ladder.
+reported beside it (`fit_quality_warning`, `r_squared`, `max_abs_residual`,
+`zero_rungs` for the rungs that produced nothing and `unresolved_rungs` for
+those whose held-out curves did not resolve, both left out of the fit), and the
+curvature statistics the linear region was chosen on. When the fit extrapolates
+below zero `mi` is 0 and `mi_raw` holds the fitted value.
+`details[config_id]['trainings']` holds every network of the ladder.
 
 `is_reliable` is `False` when the fit used fewer than `min_gamma_points` values
 of $\gamma$, when no linear region was found, when leaving out $\gamma = 1$
 shifts the intercept by more than `leverage_threshold`, and, in
 `mode='rigorous'`, when a $\gamma$ in the fit sits at its estimator's ceiling.
+The rungs left out go first, so a ladder whose deep chunks are too small for
+their networks ends with too few values of $\gamma$ instead of fitting noise.
 An unreliable fit should not be reported even with a caveat. A reliable one
 means the part of the bias that shrinks with more data has been removed and the
 fit is well determined. Bias that is the same at every chunk size passes through

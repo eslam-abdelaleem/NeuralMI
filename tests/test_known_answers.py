@@ -155,3 +155,20 @@ def test_a_step_longer_than_the_window_reads_the_exact_block_mi():
                processing=nmi.Processing(x='continuous', x_params=p, y='continuous', y_params=p))
     exact = g.block_mi(5)
     assert abs(r.mi_estimate - exact) < 0.25 * exact, f"{r.mi_estimate:.4f} bits against an exact {exact:.4f}"
+
+
+# --------------------------------------------------------------------------
+# A rigorous ladder on a starved sample (C21)
+# --------------------------------------------------------------------------
+@pytest.mark.slow
+def test_a_ladder_of_chunks_too_small_to_resolve_is_not_reliable():
+    """Tutorial 02's data at 400 samples, exact 4 bits. From gamma=5 on a chunk holds 8 or fewer held-out
+    rows, where no curve can resolve: its top, at most log(n) nats on n rows, stays within 3 standard errors,
+    sqrt(2 log(n) / n), of zero. Those rungs read noise, the line through every rung extrapolated far below
+    the exact value, and is_reliable was True. Without them too few values of gamma are left."""
+    x, y = nmi.generators.generate_nonlinear_from_latent(n_samples=400, latent_dim=10, observed_dim=500,
+                                                         mi=4.0, seed=0)
+    r = _quiet(nmi.run, x, y, mode='rigorous', split=nmi.Split(mode='random'), seed=0)
+    fit = r.runs.iloc[0]
+    assert not fit['is_reliable'] and not fit['enough_gamma_points']
+    assert fit['zero_rungs'] + fit['unresolved_rungs'] >= sum(range(5, 11))

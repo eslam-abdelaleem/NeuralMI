@@ -31,19 +31,20 @@ class TestConditionalRigorous:
     def test_conditional_rigorous_returns_mi_estimate(self):
         """run() with mode='conditional' and rigorous=True should return a bias-corrected MI."""
         import neural_mi as nmi
-        N = 400
-        x = _make_random_3d(N, 2, 8, seed=1)
-        y = x + _make_random_3d(N, 2, 8, seed=2)      # X carries information about Y beyond W
-        w = _make_random_3d(N, 2, 8, seed=3)
-        # A rung whose two networks both learn nothing is left out of the fit, so the joint
-        # network has to find X's dependence within the chunks' few steps per epoch.
+        N = 600
+        x = _make_random_3d(N, 2, 1, seed=1)
+        y = x + 0.3 * _make_random_3d(N, 2, 1, seed=2)      # X carries information about Y beyond W
+        w = _make_random_3d(N, 2, 1, seed=3)
+        # A rung whose joint network does not resolve is left out of the fit (ROADMAP C21), so
+        # the dependence is strong and low-dimensional, and every chunk's joint network resolves
+        # it within a few epochs.
         result = nmi.run(
             x, y,
             mode='conditional',
             conditional=Conditional(w_data=w, rigorous=True,
                                     gamma_range=range(1, 4), min_gamma_points=2),
-            model=_MODEL,
-            training=Training(n_epochs=5, batch_size=64, patience=1000, learning_rate=1e-2),
+            model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
+            training=Training(n_epochs=30, batch_size=64, patience=1000, learning_rate=3e-3),
             verbose=False, show_progress=False, seed=0,
         )
         assert result.mi_estimate is not None, "rigorous conditional should set mi_estimate"
@@ -118,16 +119,18 @@ class TestTransferRigorous:
     def test_transfer_rigorous_returns_mi_estimate(self):
         """run() with mode='transfer' and rigorous=True should return a bias-corrected TE."""
         import neural_mi as nmi
-        T = 500
+        T = 800
         rng = np.random.default_rng(13)
         x = rng.normal(size=(T, 2)).astype(np.float32)
-        y = (np.roll(x, 1, axis=0) + rng.normal(size=(T, 2))).astype(np.float32)     # X's past drives Y
+        y = (np.roll(x, 1, axis=0) + 0.3 * rng.normal(size=(T, 2))).astype(np.float32)     # X's past drives Y
+        # A rung whose joint network does not resolve is left out of the fit (ROADMAP C21), so
+        # X's past drives Y strongly enough for every chunk's joint network to resolve it.
         result = nmi.run(
             x, y,
             mode='transfer',
             transfer=Transfer(history_window=5, rigorous=True,
                               gamma_range=range(1, 4), min_gamma_points=2),
-            model=_MODEL, training=Training(n_epochs=30, learning_rate=1e-3, batch_size=32, patience=10),
+            model=_MODEL, training=Training(n_epochs=30, learning_rate=3e-3, batch_size=32, patience=10),
             verbose=False, show_progress=False, seed=0,
         )
         assert result.mi_estimate is not None, "rigorous transfer should set mi_estimate"

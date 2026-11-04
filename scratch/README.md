@@ -45,6 +45,10 @@ What is reusable for the remaining items:
   defaults lost, under the old settings and variants of the defaults, behind
   C21 and C22 (`results/c21_c22_tutorial_settings.txt`). It takes the
   repository as its first argument.
+- `c21_rung_rules.py`: rigorous ladders on tutorial 02's data at several sample
+  sizes and on independent data, refitted under four rules for which rungs the
+  fit uses, behind C21 (`results/c21_rung_rules.txt`). It takes the repository
+  as its first argument.
 - `c23_tutorial_warnings.py`: every warning the tutorials' saved outputs show,
   by cell and section, with the library's count of each, behind C23. It takes
   the repository and a git revision (`results/c23_tutorial_warnings.txt` holds

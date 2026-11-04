@@ -72,7 +72,7 @@ Each file covers one functional area. Run
 
 | file | covers |
 |---|---|
-| `test_known_answers.py` | known answers the correctness fixes were found against, each with a tolerance that fails on the error its fix removed: the rate of a smooth process after whitening, an estimate unchanged across units under channel preprocessing, a W that starts late reading no conditional information, a W window unlike X's refused by `run()` and placed by `offset_quantity`, and a step longer than the window |
+| `test_known_answers.py` | known answers the correctness fixes were found against, each with a tolerance that fails on the error its fix removed: the rate of a smooth process after whitening, an estimate unchanged across units under channel preprocessing, a W that starts late reading no conditional information, a W window unlike X's refused by `run()` and placed by `offset_quantity`, a step longer than the window, and a rigorous ladder on a starved sample that is not reliable |
 
 ### Data
 
@@ -148,7 +148,7 @@ Each file covers one functional area. Run
 | `test_conditional.py` | CMI independence and correlation properties, the component details, categorical conditioning variables, spike and mixed streams on one grid |
 | `test_combining_terms.py` | the one rule for terms trained apart: measured, learned nothing or failed, repeats paired by position, terms that read different rows refused, the repeat rows and the rigorous rungs |
 | `test_paired_terms.py` | the terms of a difference split and evaluate the same rows, with or without a seed |
-| `test_rigorous_diagnostics.py` | fit diagnostics, their presence in corrected results, scalar rigorous analysis, chunk-range translation |
+| `test_rigorous_diagnostics.py` | fit diagnostics, their presence in corrected results, scalar rigorous analysis, chunk-range translation, and the rungs the fit leaves out: those that produced nothing or did not resolve, a difference's rung judged by its joint term, and every gamma that loses half of its rungs |
 | `test_sweep.py` | sweep mechanics: dimension inference, subsampling, processor-param sweeps, save-path collisions |
 | `test_transfer.py` | transfer entropy in both directions and the directionality index |
 | `test_conditional_transfer_rigorous.py` | conditional MI and transfer entropy through the rigorous path, including unit conversion |
