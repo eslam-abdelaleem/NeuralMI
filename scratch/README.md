@@ -1,6 +1,6 @@
 # scratch
 
-Working material for the correctness fixes in `ROADMAP.md` (C3 to C22). It is
+Working material for the correctness fixes in `ROADMAP.md` (C3 to C23). It is
 not part of the library, nothing imports it, and the folder is deleted once the
 correctness fixes are done.
 
@@ -45,5 +45,9 @@ What is reusable for the remaining items:
   defaults lost, under the old settings and variants of the defaults, behind
   C21 and C22 (`results/c21_c22_tutorial_settings.txt`). It takes the
   repository as its first argument.
+- `c23_tutorial_warnings.py`: every warning the tutorials' saved outputs show,
+  by cell and section, with the library's count of each, behind C23. It takes
+  the repository and a git revision (`results/c23_tutorial_warnings.txt` holds
+  the full run on the defaults and the October run before the fixes).
 
 `results/` holds the JSON outputs those scripts wrote.

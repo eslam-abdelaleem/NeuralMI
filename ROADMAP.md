@@ -6,9 +6,9 @@ Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
 C1 to C18 have landed. C19 came out of the measurements for C18, C20 out of
-writing C15's tests, and C21 and C22 out of the full runs of the tutorials. All
-four are open. The investigations' scripts and results, with those behind C19
-to C22, are in `scratch/` until the list is done.
+writing C15's tests, and C21 to C23 out of the full runs of the tutorials. All
+five are open. The investigations' scripts and results, with those behind C19
+to C23, are in `scratch/` until the list is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
@@ -95,6 +95,44 @@ data on the commits of this list, and whether a random split of near-duplicate
 rows still reads high in some setting (less data, a network that fits its rows,
 spikes). Then make the warning and `MESSAGES.md` say what holds, and rerun and
 rewrite tutorial 04 section 7.
+
+### C23. The tutorials print warnings their text does not read
+
+**Now.** The full runs of the tutorials print many kinds of warning, and their
+text reads only a few: the ceiling, the slow approach to the top, a step size
+read as a fraction, window retention and the amplification of a difference. The
+rest have four causes.
+
+- The library is wrong where they fire: tutorial 02 section 5 (C21) and 04
+  section 7 (C22).
+- The warning that fewer rows are held out than one training batch fires on
+  every dataset smaller than ten training batches at the defaults, whatever the
+  curve then shows. Tutorial 01 meets it at a sample its text calls enough and
+  where its estimate lands near the exact value. When a small held-out set does
+  harm, the curve warnings already fire and name the count.
+- A setting the section is not about. In 03 several networks reach their top
+  within the first few epochs, and the library advises a lower learning rate.
+  02's smallest samples fit in one batch and train one step an epoch. In 04
+  sections 9 and 10 part of the kept windows are bridged by interpolation across
+  gaps in the position tracking.
+- Data starved on purpose: 02 section 2's smallest samples, 02's ceiling
+  section, the small evaluation of 05 section 1 and 05's smallest population.
+  The warnings there are right, and the text does not say so.
+
+The count of repeated warnings is also wrong. Python shows a warning once per
+line and text, so a text that repeats exactly never reaches the library's count,
+and a cell reports a few raises where it had dozens. Two kinds whose first
+sentence is the same print two identical count lines.
+
+**Fix.** Move the held-out warning into the data check, which already counts the
+held-out rows, or keep it and give 01 and 03 a larger held-out fraction. Count
+every raise, exact repeats included, and give a count line the text it counts.
+Try a lower learning rate on 03's data. Give 02's smallest samples tutorial 05's
+batch rule. Make 04 say why windows are bridged, or raise
+`min_coverage_fraction`. Make each section that starves its data say that the
+library flags those points and why. Every warning a tutorial prints is then
+read by its text or gone (`scratch/investigation/c23_tutorial_warnings.py`
+lists them).
 
 ## Design work
 
