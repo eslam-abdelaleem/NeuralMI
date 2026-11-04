@@ -24,7 +24,7 @@ from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import saved_paths, with_model_labels
 from neural_mi.utils import mi_report_units
 from neural_mi.utils import _ensure_cpu
-from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA, setting
+from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA, setting, stream_processing
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
     """Helper to create a list of dictionaries from a grid."""
@@ -46,12 +46,16 @@ def merge_grid_values(base_params: Dict[str, Any], values: Dict[str, Any],
     """
     params = {**base_params, **values}
     proc_type_x = base_params.get('processor_type_x', None)
-    proc_type_y = base_params.get('processor_type_y', proc_type_x)
+    # Y reads with X's processor and settings when it has none of its own.
+    proc_type_y, params_y = stream_processing(base_params.get('processor_type_y'),
+                                              base_params.get('processor_params_y'),
+                                              proc_type_x, base_params.get('processor_params_x'))
+    own = {'x': base_params.get('processor_params_x'), 'y': params_y}
     all_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
     extra = extra_processor_params or {}
     for side, proc_type in (('x', proc_type_x), ('y', proc_type_y)):
         accepted = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type, all_keys if proc_type is None else []))
-        merged = dict(base_params.get(f'processor_params_{side}') or {})
+        merged = dict(own[side] or {})
         merged.update(extra.get(f'processor_params_{side}', {}))
         merged.update({k: v for k, v in values.items() if k in accepted})
         params[f'processor_params_{side}'] = merged

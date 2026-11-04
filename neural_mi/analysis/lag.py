@@ -58,16 +58,16 @@ def run_lag_analysis(
     """
     all_tasks = []
 
+    from neural_mi.defaults import stream_processing
     proc_type_x = base_params.get('processor_type_x')
-    proc_type_y = base_params.get('processor_type_y')
-    if proc_type_y is None:
-        proc_type_y = proc_type_x
-        logger.info("Processing(y=...) is not set and Y is read with X's processor.")
+    params_x = base_params.get('processor_params_x') or {}
+    proc_type_y, params_y = stream_processing(base_params.get('processor_type_y'),
+                                              base_params.get('processor_params_y'), proc_type_x, params_x)
 
     # Infer sample_rate from processor_params to resolve unit ambiguity
-    sample_rate = base_params.get('processor_params_x', {}).get('sample_rate', None)
+    sample_rate = params_x.get('sample_rate', None)
     if sample_rate is None:
-        sample_rate = base_params.get('processor_params_y', {}).get('sample_rate', None)
+        sample_rate = (params_y or {}).get('sample_rate', None)
 
     other_sweep_grid = sweep_grid.copy() if sweep_grid is not None else {}
     if 'lag' in other_sweep_grid:

@@ -46,19 +46,13 @@ def resolve_stream_processing(processing) -> dict:
     ``'x'``, ``'y'`` and ``'w'``.
     """
     from neural_mi.config import Processing
-    from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
+    from neural_mi.defaults import stream_processing
     if isinstance(processing, dict):
         processing = Processing(**processing)
-    out = {}
-    for name in ('x', 'y', 'w'):
-        proc = getattr(processing, name)
-        if proc is None:
-            proc = processing.x
-        params = getattr(processing, f'{name}_params')
-        if params is None and name != 'x':
-            accepted = PROCESSOR_PARAMS_SCHEMA.get(proc)
-            params = {k: v for k, v in (processing.x_params or {}).items()
-                      if accepted is None or k in accepted}
+    out = {'x': (processing.x, dict(processing.x_params or {}), processing.x_time)}
+    for name in ('y', 'w'):
+        proc, params = stream_processing(getattr(processing, name), getattr(processing, f'{name}_params'),
+                                         processing.x, processing.x_params)
         out[name] = (proc, dict(params or {}), getattr(processing, f'{name}_time'))
     return out
 

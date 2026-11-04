@@ -680,6 +680,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   run that stops by `patience` does not reach, and that
   `pytorch_predefined=None` reads `'resnet18'`.
 
+- Y and W read with X's processor and parameters when they name none, as
+  `Processing` says, but the rule was written out in seven places and held in
+  only some of them. Under `shift_windows`, the default, every task gave a Y
+  without parameters of its own an empty dict, so it lost X's `sample_rate` and
+  any spike or categorical setting: a recording at 1,000 Hz given only
+  `x_params` trained on a handful of rows. The lag scan read Y's units the same
+  way, and a processor grid gave a W with a processor of its own the grid's
+  values without X's other parameters. One function,
+  `defaults.stream_processing`, now states the rule. `run()` applies it to Y and
+  W once for the whole call, and every other place that resolves a stream's
+  processor (`create_dataset`, the named quantities, the row plan, a task's grid
+  values, the lag scan) calls it.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

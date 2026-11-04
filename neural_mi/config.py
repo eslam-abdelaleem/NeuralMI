@@ -226,7 +226,9 @@ class Processing:
     ``w`` is the third stream of ``mode='conditional'``, ``'interaction'`` and
     ``'transfer'`` and of the named quantities that take one. A stream whose
     processor is unset reads with X's, and one whose parameters are unset reads
-    with X's parameters. Every stream of a call is built on one window grid.
+    with X's parameters, kept to the keys its processor takes
+    (``defaults.stream_processing``). Every stream of a call is built on one
+    window grid.
     """
     x: Optional[str] = None                        # processor_type_x
     x_params: Optional[Dict[str, Any]] = None

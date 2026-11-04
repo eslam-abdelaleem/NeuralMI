@@ -691,20 +691,18 @@ def _stream_specs_from_pair(x_data, y_data, x_time, y_time,
                             processor_type_y, processor_params_y):
     """The two-argument form, as an ordered stream mapping.
 
-    ``processor_type_y=None`` means "inherit X's", the convention callers have
-    always used, so it is resolved here where the pair is still visible.
+    Y without a processor or settings of its own reads with X's
+    (:func:`neural_mi.defaults.stream_processing`), resolved here where the
+    pair is still visible.
     """
+    from neural_mi.defaults import stream_processing
     specs = OrderedDict()
     specs['x'] = dict(data=x_data, time=x_time, processor_type=processor_type_x,
                       processor_params=processor_params_x)
     if y_data is not None:
-        specs['y'] = dict(
-            data=y_data, time=y_time,
-            processor_type=(processor_type_y if processor_type_y is not None
-                            else processor_type_x),
-            processor_params=(processor_params_y if processor_params_y is not None
-                              else processor_params_x),
-        )
+        kind_y, params_y = stream_processing(processor_type_y, processor_params_y,
+                                             processor_type_x, processor_params_x)
+        specs['y'] = dict(data=y_data, time=y_time, processor_type=kind_y, processor_params=params_y)
     return specs
 
 

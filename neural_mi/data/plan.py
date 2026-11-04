@@ -124,15 +124,14 @@ class RowPlan:
     def of_pair(cls, x_data, y_data, params: Dict[str, Any]) -> 'RowPlan':
         """The plan of an X and a Y read with the processors and settings in a task's ``params``. A Y
         without a processor or settings of its own reads with X's."""
-        from neural_mi.defaults import setting
+        from neural_mi.defaults import setting, stream_processing
         kind_x = params.get('processor_type_x')
-        kind_y = params.get('processor_type_y') or kind_x
         params_x = params.get('processor_params_x') or {}
-        params_y = params.get('processor_params_y')
+        kind_y, params_y = stream_processing(params.get('processor_type_y'), params.get('processor_params_y'),
+                                             kind_x, params_x)
         streams = OrderedDict(x=resolve_stream(x_data, params.get('x_time'), kind_x, params_x))
         if y_data is not None:
-            streams['y'] = resolve_stream(y_data, params.get('y_time'), kind_y,
-                                          params_y if params_y is not None else params_x)
+            streams['y'] = resolve_stream(y_data, params.get('y_time'), kind_y, params_y)
         return cls(streams, shift=setting(params, 'shift_windows'))
 
     def geometry(self):

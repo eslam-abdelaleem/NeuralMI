@@ -25,7 +25,7 @@ from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
 from .embeddings_io import model_file, resolve_model_path, announce_saving_several
-from .defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, setting
+from .defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, setting, stream_processing
 import inspect as _inspect
 from .config import (
     Model, Training, Split, Estimator, Output, Processing, Preprocessing,
@@ -466,7 +466,6 @@ def _run_processor_grid(call_args: dict, proc_grid: dict, streams: dict) -> Resu
     analysis_kwargs = args.pop('analysis_kwargs')
     full_grid = dict(args['sweep_grid'])
     inner = {k: v for k, v in full_grid.items() if k not in proc_grid} or None
-    w_inherits = args.get('w_processor_type') is None
     parts = []
     for fixed in split_grid(proc_grid)[0]:
         part = dict(args, sweep_grid=inner, _grid_part=fixed)
@@ -476,18 +475,11 @@ def _run_processor_grid(call_args: dict, proc_grid: dict, streams: dict) -> Resu
         x_params = {**(args.get('processor_params_x') or {}),
                     **_accepted(fixed, streams['processor_params_x'])}
         part['processor_params_x'] = x_params
+        # Y and W arrive with their settings resolved (_run_flat), X's where
+        # they had none, so each part adds the grid's values its processor takes.
         for slot in ('processor_params_y', 'w_processor_params'):
-            if slot not in streams:
-                continue
-            values = _accepted(fixed, streams[slot])
-            own = args.get(slot)
-            if own is not None:
-                part[slot] = {**own, **values}
-            elif slot == 'w_processor_params' and not w_inherits:
-                part[slot] = values or None
-            elif any(k not in x_params for k in values):
-                # Reads X's parameters, and needs one X does not take.
-                part[slot] = {**x_params, **values}
+            if slot in streams and args.get(slot) is not None:
+                part[slot] = {**args[slot], **_accepted(fixed, streams[slot])}
         parts.append((fixed, _run_flat(**part, **analysis_kwargs)))
     params = dict(parts[0][1].params)
     for key in ('processor_params_x', 'processor_params_y'):
@@ -896,6 +888,20 @@ def _run_flat(
     """
     sweep_grid = _normalise_grid(sweep_grid)
     _call_args = dict(locals())
+    # Y and W read with X's processor and settings when they have none of their
+    # own (defaults.stream_processing), resolved here once for every path below:
+    # the rows cut here, the tasks that cut their own, and a processor grid's
+    # parts. A W passed as rows built already (3-D) is read as given.
+    _w_reads_x = (mode in ('conditional', 'interaction', 'transfer') and w_data is not None
+                  and getattr(w_data, 'ndim', None) != 3)
+    _w_takes_xs_processor = _w_reads_x and w_processor_type is None and processor_type_x is not None
+    processor_type_y, processor_params_y = stream_processing(
+        processor_type_y, processor_params_y, processor_type_x, processor_params_x)
+    if _w_reads_x:
+        w_processor_type, w_processor_params = stream_processing(
+            w_processor_type, w_processor_params, processor_type_x, processor_params_x)
+    _call_args.update(processor_type_y=processor_type_y, processor_params_y=processor_params_y,
+                      w_processor_type=w_processor_type, w_processor_params=w_processor_params)
 
     # run(verbose=True) logs INFO for this call and verbose=False only warnings
     # and errors. None keeps the level nmi.set_verbosity() chose.
@@ -936,14 +942,6 @@ def _run_flat(
         if base_params is None: base_params = {}
         # Copy so we never mutate the caller's dict across multiple calls
         base_params = dict(base_params)
-
-        # A Y with a processor of its own and no parameters reads with X's
-        # parameters, kept to the keys its processor takes. W follows the same
-        # rule further down, once its processor is resolved.
-        if processor_type_y is not None and processor_params_y is None:
-            _accepted_y = PROCESSOR_PARAMS_SCHEMA.get(processor_type_y, ())
-            processor_params_y = {k: v for k, v in (processor_params_x or {}).items()
-                                  if k in _accepted_y}
 
         def _inject(bp: dict, key: str, val) -> None:
             """Set bp[key] to val when val was given."""
@@ -1183,25 +1181,15 @@ def _run_flat(
             """An array as a float32 tensor, 2-D input with its trailing window axis of 1."""
             return with_window_axis(float_tensor(arr))
 
-        # Y without a processor reads with X's.
-        _effective_processor_type_y = processor_type_y if processor_type_y is not None else processor_type_x
-        # A W stream without a processor of its own reads with X's, and without
-        # parameters of its own reads with X's parameters, kept to the keys its
-        # processor takes. The same rule Processing documents for Y. A W that is
-        # already windowed (3-D) is used as given.
-        if (mode in ('conditional', 'interaction', 'transfer') and w_data is not None
-                and getattr(w_data, 'ndim', None) != 3):
-            if w_processor_type is None and processor_type_x is not None:
-                w_processor_type = processor_type_x
-                logger.info(
-                    f"mode='{mode}': w_data has no processor of its own and reads with X's "
-                    f"('{processor_type_x}'), on the same grid. Set Processing(w=...) to read "
-                    f"it differently."
-                )
-            if w_processor_type is not None and w_processor_params is None:
-                _accepted_w = PROCESSOR_PARAMS_SCHEMA.get(w_processor_type, ())
-                w_processor_params = {k: v for k, v in (processor_params_x or {}).items()
-                                      if k in _accepted_w}
+        # Y and W were resolved at the top: each reads with X's processor and
+        # settings when it has none of its own.
+        _effective_processor_type_y = processor_type_y
+        if _w_takes_xs_processor:
+            logger.info(
+                f"mode='{mode}': w_data has no processor of its own and reads with X's "
+                f"('{processor_type_x}'), on the same grid. Set Processing(w=...) to read "
+                f"it differently."
+            )
         # The streams as Preprocessing(...) asks, before any rows are built from
         # them, and the data check, which changes nothing
         # (neural_mi/preprocessing.py). Transfer entropy takes both in its
@@ -1235,7 +1223,7 @@ def _run_flat(
             if y_data is not None:
                 _streams['y'] = resolve_stream(
                     y_data, y_time, _effective_processor_type_y,
-                    processor_params_y if processor_params_y is not None else processor_params_x)
+                    processor_params_y)
         if mode == 'transfer':
             # Transfer entropy builds its histories from rows of a (T, C) series;
             # the transfer branch below puts the streams on one grid itself.
@@ -1482,8 +1470,7 @@ def _run_flat(
                                    processor_params=processor_params_x)
                 _specs['y'] = dict(data=y_data, time=y_time,
                                    processor_type=_effective_processor_type_y,
-                                   processor_params=(processor_params_y if processor_params_y is not None
-                                                     else processor_params_x))
+                                   processor_params=processor_params_y)
                 if w_data is not None:
                     _specs['w'] = dict(data=w_data, time=w_time, processor_type=w_processor_type,
                                        processor_params=w_processor_params)

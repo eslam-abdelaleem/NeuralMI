@@ -57,7 +57,7 @@ clock. With no `Processing`, the data are taken as already windowed:
 | `y` | X's | Y's processor. |
 | `y_params` | X's | Y's processor parameters. When Y falls back to X's, only the keys Y's processor takes are kept. |
 | `w` | X's | The third stream's processor, for `mode='conditional'`, `'interaction'`, `'transfer'` and the named quantities that take one. |
-| `w_params` | X's | The third stream's processor parameters. |
+| `w_params` | X's | The third stream's processor parameters. When W falls back to X's, only the keys W's processor takes are kept. |
 | `x_time`, `y_time`, `w_time` | `None` | A timestamp per sample. With a clock `window_size` and `step_size` are in the clock's units. Without one they are in samples (seconds with `sample_rate`). |
 
 Every stream of a call is windowed on one grid on which a window means the same
