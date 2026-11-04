@@ -18,18 +18,15 @@ from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import _EMBEDDING_BATCH, save_network
 from neural_mi.data.handler import create_dataset
 from neural_mi.data.rows import IDENTITY_KEY, record_rows, row_geometry, row_identity
-from neural_mi.defaults import setting
-
-# Batch size used for embedding extraction (no effect on training).
-# Large enough to keep GPU utilisation high; small enough to avoid OOM.
+from neural_mi.defaults import default_of, setting
 
 # ---------------------------------------------------------------------------
 # Module-level dataset cache
 # ---------------------------------------------------------------------------
 # Keyed by (x_data_ptr, y_data_ptr, frozenset_of_construction_params).
 # Only *static* (PairedDataset) instances are cached because temporal datasets
-# are mutated in-place by time_shift() during training and cannot be safely
-# shared across sequential tasks.
+# move their windows in place during training (window shifting) and cannot be
+# shared safely across sequential tasks.
 #
 # In sequential sweeps where data and processor params are constant across
 # tasks, this means create_dataset() is called once and every subsequent task
@@ -110,7 +107,7 @@ def _decoder_lambda(params: Dict[str, Any], axis: str) -> float:
     value = params.get(f'decoder_lambda_{axis}')
     if value is None:
         value = params.get('decoder_lambda')
-    return 0.001 if value is None else float(value)
+    return default_of('decoder_lambda') if value is None else float(value)
 
 
 def _reported(params: Dict[str, Any]) -> Dict[str, Any]:

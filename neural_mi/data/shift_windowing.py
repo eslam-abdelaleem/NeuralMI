@@ -32,7 +32,7 @@ import torch
 import torch.nn.functional as F
 
 import warnings
-from neural_mi.data.rows import PHASES_KEY, kept_rows, record_rows, window_rows
+from neural_mi.data.rows import PHASES_KEY, kept_rows
 from neural_mi.logger import user_stacklevel
 
 

@@ -95,9 +95,12 @@ same for every mode.
 Every setting's default is written once, in `BASE_PARAMS_SCHEMA`
 (`neural_mi/defaults.py`). Code below `run()` reads a setting with
 `defaults.setting(params, name)`, which falls back to that default, and every
-signature default of a setting, in `Trainer`, the encoder and decoder classes,
-is `defaults.default_of(name)`. `tests/test_schema_defaults.py` checks the
-signatures.
+signature default of a setting below the public signatures is
+`defaults.default_of(name)`. `run()`, the named quantities and `_run_flat` keep
+literal defaults in their signatures until design item 1 of the roadmap.
+`tests/test_schema_defaults.py` checks the signatures of `Trainer`, the encoder,
+decoder and critic classes against the schema, and fails on any default written
+a second time as a literal.
 
 `build_critic` reads only the settings in `utils.ARCHITECTURE_KEYS`, and
 `save_network` saves exactly those with a network, so `extract_embeddings`
@@ -226,8 +229,7 @@ Whatever builds rows from a time series records their geometry once, in the
 parameters every task receives (`neural_mi/data/rows.py`): `row_step`, the
 distance between the starts of consecutive rows, and `row_span`, the stretch one
 row covers, in one unit. A processor records its windows (`run.py` when it
-windows once for the call, `task.py` and `shift_windowing.py` when a task
-windows for itself). Rows built by offset get their geometry from the spec
+windows once for the call, `task.py` when a task windows for itself). Rows built by offset get their geometry from the spec
 that builds them (`offsets.build_rows` and `offsets.spec_geometry`): a named
 quantity or `offset_quantity` hands it to `run()` through the private `_rows`
 argument, and transfer entropy records it for its histories (`transfer.te_spec`).
@@ -264,7 +266,8 @@ only where every stream is valid. A plan of rows built already (`'rows'`) packs
 them as given.
 
 A term reads the plan through `TermRows`, the plan and its `Roles`: which
-streams make its X (joined along the channels or as a pair) and which its Y.
+streams make its X (one stream, or a pair of the rest of X and the conditioning
+set) and which its Y.
 Every term of a difference therefore reads the same rows, the same kept
 windows and the same per-stream fits, and `task.py` builds every raw dataset
 this way: a term's from its `TermRows`, a pair's from `RowPlan.of_pair`. A plan
@@ -277,6 +280,13 @@ where a row that fails a stream's rule at that offset keeps its unmoved
 windows. The rigorous ladder cuts a plan into the plans of its chunks
 (`RowPlan.cut`), and a permutation trial moves X inside the plan without moving
 its grid (`RowPlan.replace`).
+
+The plan holds the rows and not what a task does with them. The split, the
+rows each epoch evaluates and the shifts are drawn in each term's task, from a
+split seed and a shift seed every term of a call shares, so they match across
+the terms without the plan holding them. `create_dataset` and the offset
+builder (`offsets.build_rows`) still build their rows themselves: the first for
+the offset route under `processing=`, the second for every named quantity.
 
 ### Rigorous fits in $\gamma$
 

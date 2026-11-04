@@ -39,6 +39,7 @@ import torch
 import torch.nn.functional as F
 from typing import Any, Dict
 
+from neural_mi.defaults import setting
 from neural_mi.logger import user_stacklevel
 
 # All keys that require 4-D input
@@ -154,7 +155,7 @@ def apply_augmentations(x: torch.Tensor, aug_params: Dict[str, Any]) -> torch.Te
         if 'gaussian_blur' in aug_params:
             cfg = aug_params['gaussian_blur']
             if isinstance(cfg, dict):
-                kernel_size = cfg.get('kernel_size', 3)
+                kernel_size = setting(cfg, 'kernel_size')
                 sigma = cfg.get('sigma', 1.0)
             else:
                 kernel_size, sigma = 3, 1.0

@@ -50,8 +50,8 @@ def run_conditional_mi(
     Dict[str, Any]
         Dictionary with keys:
         - ``'cmi_estimate'`` (float): point estimate of I(X;Y|W).
-        - ``'mi_xw_y'`` (float): mean test MI for I(XW; Y).
-        - ``'mi_w_y'`` (float): mean test MI for I(W; Y).
+        - ``'mi_xw_y'`` (float): mean training-side estimate of I(XW; Y), the value each network reports.
+        - ``'mi_w_y'`` (float): mean training-side estimate of I(W; Y).
         - ``'amplification_factor'`` (float): error-amplification factor
           ``(|I(XW;Y)| + |I(W;Y)|) / |CMI|``.  CMI is a difference of two
           separately-trained estimates, so a relative error of ``eps`` on each

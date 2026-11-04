@@ -535,7 +535,7 @@ def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Rungs that did not resolve (ROADMAP C21)
+# Rungs that did not resolve
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_rungs_that_did_not_resolve_are_left_out_and_counted_apart_from_zero_rungs():
@@ -587,7 +587,7 @@ def test_a_ladder_with_no_rung_left_reports_nan_unless_every_rung_produced_nothi
 
 
 def test_a_ladder_whose_deep_rungs_did_not_resolve_is_not_reliable():
-    """The C21 case, after tutorial 02 at its starved size. Only the shallow rungs resolve and every rung
+    """The case that made the fit leave unresolved rungs out, after tutorial 02 at its starved size. Only the shallow rungs resolve and every rung
     reads noise about one level. A line through all of them passed every check of the fit, since noise
     hides curvature, and the fit was reliable. Without the rungs that did not resolve, too few values of
     gamma are left."""

@@ -23,7 +23,7 @@ from neural_mi.models.embeddings import (
     PretrainedBackboneEmbedding, LRUEmbedding, BranchedEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
-from neural_mi.defaults import setting
+from neural_mi.defaults import default_of, processor_setting, setting
 from neural_mi.logger import logger, user_stacklevel
 
 # Every built-in embedding_model string -> class.
@@ -505,7 +505,7 @@ def mi_report_units(base_params: Optional[Dict[str, Any]] = None,
     >>> f"{0.6931 * scale:.3f} {units}"
     '1.000 bits'
     """
-    units = output_units or (base_params or {}).get('output_units', 'bits')
+    units = output_units or setting(base_params or {}, 'output_units')
     to_bits = units == 'bits'
     return (1.0 / np.log(2) if to_bits else 1.0), ('bits' if to_bits else 'nats')
 
@@ -627,10 +627,8 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                  custom_embedding_cls: Optional[type] = None) -> BaseCritic:
     """Builds and returns a critic model based on the provided parameters.
 
-    This function expects `embedding_params` to be fully populated with
-    defaults (e.g., via `ParameterValidator.apply_defaults`). It strictly
-    accesses required parameters and will raise a KeyError if something is missing,
-    preventing silent failures from missing defaults.
+    A setting missing from `embedding_params` takes the schema's default
+    (`defaults.setting`), and only the keys in `ARCHITECTURE_KEYS` are read.
 
     For ``critic_type='hybrid'``, the decision head MLP that scores the
     concatenated embeddings can be configured independently of the embedding
@@ -841,7 +839,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                                 (Model_y, model_kwargs_y, 'processor_params_y')):
         if _accepts_kwarg(Model_, 'no_spike_value'):
             params = embedding_params.get(key) or {}
-            kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
+            kwargs['no_spike_value'] = processor_setting('spike', params, 'no_spike_value')
 
     net_x_base = (BranchedEmbedding(input_dim_x, branch_cls=Model_x, head=head_settings, **model_kwargs)
                   if difference_term else Model_x(input_dim_x, **model_kwargs))
@@ -1047,7 +1045,7 @@ def _whiten(z: np.ndarray, whitening: Optional[str]) -> np.ndarray:
     return z
 
 
-def cross_covariance_svd(zx, zy, whitening: Optional[str] = 'std') -> Dict[str, np.ndarray]:
+def cross_covariance_svd(zx, zy, whitening: Optional[str] = default_of('whitening')) -> Dict[str, np.ndarray]:
     """The SVD of the cross-covariance of two embeddings.
 
     The one computation behind both the spectrum that participation ratios are
@@ -1093,7 +1091,7 @@ def cross_covariance_svd(zx, zy, whitening: Optional[str] = 'std') -> Dict[str, 
             'rotation_x': u, 'rotation_y': vt.T}
 
 
-def compute_cross_covariance_spectrum(zx, zy, whitening: Optional[str] = 'std') -> np.ndarray:
+def compute_cross_covariance_spectrum(zx, zy, whitening: Optional[str] = default_of('whitening')) -> np.ndarray:
     """Singular values of the cross-covariance of two embeddings.
 
     See :func:`cross_covariance_svd` for `whitening`.
@@ -1101,7 +1099,7 @@ def compute_cross_covariance_spectrum(zx, zy, whitening: Optional[str] = 'std') 
     return cross_covariance_svd(zx, zy, whitening)['singular_values']
 
 
-def compute_cross_covariance_rotation(zx, zy, whitening: Optional[str] = 'std') -> Dict[str, np.ndarray]:
+def compute_cross_covariance_rotation(zx, zy, whitening: Optional[str] = default_of('whitening')) -> Dict[str, np.ndarray]:
     """Embeddings re-expressed so that dimension 0 carries the most shared variance.
 
     The rotation comes from :func:`cross_covariance_svd`. Whitening sets the

@@ -558,7 +558,7 @@ class TCN(BaseEmbedding):
 
     # Inner class for a TCN block
     class TemporalBlock(nn.Module):
-        def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout, bias=True):
+        def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout, bias=default_of('bias')):
             super().__init__()
             self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp1 = TCN.Chomp1d(padding)

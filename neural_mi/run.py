@@ -19,13 +19,13 @@ from .analysis.assemble import build_results
 from collections import OrderedDict
 from dataclasses import fields
 
-from .data.rows import PHASES_KEY, RowGeometry, kept_rows, record_rows, row_geometry, window_rows
+from .data.rows import PHASES_KEY, RowGeometry, kept_rows, record_rows, row_geometry
 from .utils import float_tensor, with_window_axis
 from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
 from .embeddings_io import model_file, resolve_model_path, announce_saving_several
-from .defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
+from .defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, setting
 import inspect as _inspect
 from .config import (
     Model, Training, Split, Estimator, Output, Processing, Preprocessing,
@@ -565,7 +565,7 @@ def run(
     model : Model or dict, optional
         Architecture, e.g. ``Model(embedding_dim=16, hidden_dim=64, critic_type='separable')``.
     training : Training or dict, optional
-        Optimisation loop, e.g. ``Training(n_epochs=50, learning_rate=1e-3, batch_size=128)``.
+        Optimisation loop, e.g. ``Training(learning_rate=1e-3, batch_size=128)``.
     split : Split or dict, optional
         Splitting strategy, e.g. ``Split(mode='random')``.
     estimator : Estimator, str, or dict, optional
@@ -635,7 +635,7 @@ def run(
     ...     x_raw, y_raw, mode='rigorous',
     ...     processing=Processing(x='continuous', x_params={'window_size': 1}),
     ...     model=Model(embedding_dim=16, hidden_dim=64),
-    ...     training=Training(n_epochs=50, batch_size=128),
+    ...     training=Training(batch_size=128),
     ...     split=Split(mode='random'),
     ...     rigorous=Rigorous(confidence_level=0.68),
     ...     n_workers=4, seed=42,
@@ -1082,9 +1082,9 @@ def _run_flat(
         # Announce what beta and the lambdas mean whenever the bottleneck terms
         # are in play, since the same numbers meant something else under an
         # absolute-weight reading of the reconstruction terms.
-        _variational = bool(base_params.get('use_variational', False))
-        if base_params.get('use_decoder', False):
-            _beta = float(base_params.get('beta', 1024.0))
+        _variational = bool(setting(base_params, 'use_variational'))
+        if setting(base_params, 'use_decoder'):
+            _beta = float(setting(base_params, 'beta'))
             _lam_x = _decoder_lambda(base_params, 'x')
             _lam_y = _decoder_lambda(base_params, 'y')
             if _variational:
@@ -1116,14 +1116,14 @@ def _run_flat(
         elif _variational:
             logger.info(
                 f"With a variational encoder the loss is KL - beta * MI. "
-                f"beta={float(base_params.get('beta', 1024.0)):g} sets how far the MI term "
+                f"beta={float(setting(base_params, 'beta')):g} sets how far the MI term "
                 f"outweighs the KL penalty on the embedding."
             )
 
         DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
     
         _processor = base_params.get('processor_type_x', None)
-        _embedding = base_params.get('embedding_model', 'mlp')
+        _embedding = setting(base_params, 'embedding_model')
         # A 3-D array/tensor passed with processor_type=None is already
         # pre-windowed (N, C, W) sequential data, not a StaticDataset -- this
         # matches the same auto-detection ParameterSweep uses (`is_proc_sweep`)
@@ -1629,7 +1629,7 @@ def _held_out_count(n_rows: int, base_params: dict) -> int:
     test_indices = base_params.get('test_indices')
     if test_indices is not None:
         return len(test_indices)
-    return held_out_rows(n_rows, base_params.get('train_fraction', 0.9))
+    return held_out_rows(n_rows, setting(base_params, 'train_fraction'))
 
 
 def _encoders_scale(base_params: dict) -> bool:
@@ -1648,7 +1648,7 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
     from .training.trainer import too_few_held_out
     held = ("a nonparametric estimate holds none out"
             if base_params.get('estimator_name') in NONPARAMETRIC else f"{n_held_out} of them held out")
-    batch = base_params.get('batch_size', 128)
+    batch = setting(base_params, 'batch_size')
     if base_params.get('estimator_name') not in NONPARAMETRIC and too_few_held_out(n_held_out, batch):
         # Not a warning: the curve warnings name the count when it matters.
         held += (f", fewer than one training batch (batch_size={batch}), so the held-out curve's noise is "
@@ -1697,12 +1697,12 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
     if not 0 < n_samples < _SMALL_SAMPLE:
         return
     tips = []
-    if base_params.get('dropout', 0.0) == 0.0:
+    if setting(base_params, 'dropout') == 0.0:
         tips.append("dropout=0.2")
     norm = base_params.get('norm_layer')
     if norm in (None, 'none') or (norm == 'auto' and mode != 'dimensionality'):
         tips.append("norm_layer='layer'")
-    hidden, embed = base_params.get('hidden_dim', 64), base_params.get('embedding_dim', 64)
+    hidden, embed = setting(base_params, 'hidden_dim'), setting(base_params, 'embedding_dim')
     if isinstance(hidden, int) and hidden > 32:
         tips.append(f"hidden_dim=32 (current: {hidden})")
     if embed > 32:

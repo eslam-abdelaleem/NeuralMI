@@ -385,10 +385,14 @@ start is stored as 0.0, the default `no_spike_value`, and so reads as an empty
 slot. The grid starts at the latest stream's first spike, so that stream's
 first window always holds one such spike. A `no_spike_value` outside every
 window's range (-1, say) would tell the two apart. `mode='transfer'` never runs the
-small-sample checks, since its branch of `run.py` passes raw series.
+small-sample checks or the part of the data check that reads the rows, since
+its branch of `run.py` passes raw series.
 `Training(min_reliable_samples=...)` moves only the rigorous ladder's line for
 small chunks, not the call's held-out line or the curve warnings' note, whose
-defaults agree with it; one setting could move all three.
+defaults agree with it; one setting could move all three. An MLP encoder with
+`n_layers=0` is linear and reads none of `dropout`, `norm_layer` and
+`use_spectral_norm`, and nothing warns that they had no effect
+(`BaseEmbedding.reads` does not look at `n_layers`).
 
 **Pointers in messages.** The amplification warning of a difference names
 whitening (`Preprocessing(time='ar')`) and the block-MI route. Each term's curve diagnosis is carried

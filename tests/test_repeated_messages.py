@@ -68,7 +68,7 @@ def test_an_exact_repeat_is_counted():
     """Python holds back a warning repeated with the same text at the same line unless a filter says
     otherwise, before showwarning could count it. Tutorial 02's grid said a warning was raised 5 times
     where it was raised 45. Every raise is counted now, and the call leaves the filters as it found
-    them (ROADMAP C23)."""
+    them."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.resetwarnings()
         with collect_repeats():
@@ -82,7 +82,7 @@ def test_an_exact_repeat_is_counted():
 
 def test_messages_that_share_their_first_sentence_have_one_count_line():
     """A curve warning with and without the note on its held-out rows is one kind. The call used to end
-    with two count lines quoting the same words (ROADMAP C23)."""
+    with two count lines quoting the same words."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         with collect_repeats():

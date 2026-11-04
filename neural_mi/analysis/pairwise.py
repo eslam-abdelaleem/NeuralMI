@@ -29,6 +29,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 from typing import Dict, Any, Optional, List, Tuple
 
+from neural_mi.defaults import setting
 from neural_mi.analysis.sweep import ParameterSweep
 from neural_mi.logger import CapturedTask, logger, released
 from neural_mi.parallel import worker_pool
@@ -223,7 +224,7 @@ def run_pairwise_mi(
         )
 
         mi_matrix = np.zeros((n_ch_x, n_ch_y))
-        show_progress = base_params.get('show_progress', True)
+        show_progress = setting(base_params, 'show_progress')
         pair_tasks = [
             (i, j, _ensure_cpu(_slice_channel(x_data, i)), _ensure_cpu(_slice_channel(y_data, j)),
              base_params, sweep_grid)
@@ -258,7 +259,7 @@ def run_pairwise_mi(
         )
 
         mi_matrix = np.zeros((n_channels, n_channels))
-        show_progress = base_params.get('show_progress', True)
+        show_progress = setting(base_params, 'show_progress')
         pair_tasks = [
             (i, j, _ensure_cpu(_slice_channel(x_data, i)), _ensure_cpu(_slice_channel(x_data, j)),
              base_params, sweep_grid)

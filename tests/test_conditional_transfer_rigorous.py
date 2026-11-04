@@ -35,7 +35,7 @@ class TestConditionalRigorous:
         x = _make_random_3d(N, 2, 1, seed=1)
         y = x + 0.3 * _make_random_3d(N, 2, 1, seed=2)      # X carries information about Y beyond W
         w = _make_random_3d(N, 2, 1, seed=3)
-        # A rung whose joint network does not resolve is left out of the fit (ROADMAP C21), so
+        # A rung whose joint network does not resolve is left out of the fit, so
         # the dependence is strong and low-dimensional, and every chunk's joint network resolves
         # it within a few epochs.
         result = nmi.run(
@@ -123,7 +123,7 @@ class TestTransferRigorous:
         rng = np.random.default_rng(13)
         x = rng.normal(size=(T, 2)).astype(np.float32)
         y = (np.roll(x, 1, axis=0) + 0.3 * rng.normal(size=(T, 2))).astype(np.float32)     # X's past drives Y
-        # A rung whose joint network does not resolve is left out of the fit (ROADMAP C21), so
+        # A rung whose joint network does not resolve is left out of the fit, so
         # X's past drives Y strongly enough for every chunk's joint network to resolve it.
         result = nmi.run(
             x, y,

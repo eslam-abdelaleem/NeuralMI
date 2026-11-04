@@ -22,6 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as manim
 
+from neural_mi.defaults import setting
 from neural_mi.logger import logger, user_stacklevel
 
 
@@ -199,7 +200,7 @@ def animate_training(
         raise ValueError("No panels could be created. Check panels= against what this repeat recorded.")
 
     ncols = len(col_spec)
-    units = result.params.get('output_units', 'bits')
+    units = setting(result.params, 'output_units')
     figsize = kwargs.pop('figsize', (max(5 * ncols, 6), 4))
 
     # ---- build figure with per-column projections ----

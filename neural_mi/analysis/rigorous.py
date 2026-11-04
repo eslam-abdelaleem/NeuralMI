@@ -20,6 +20,7 @@ import statsmodels.api as sm
 from tqdm.auto import tqdm
 from typing import Any, Dict, List, Optional, Tuple
 
+from neural_mi.defaults import setting
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.device import with_device
@@ -653,18 +654,19 @@ def _warn_if_chunks_small(gamma: int, chunks: List[np.ndarray], params: Dict[str
     """
     if params.get('estimator_name') in NONPARAMETRIC:
         return
+    from neural_mi.training.trainer import rows_to_fill_a_batch
     smallest = min(kept_rows(len(c), params) for c in chunks)
     line = params.get('min_reliable_samples')
     if line is None:
-        held_out = max(1.0 - float(params.get('train_fraction', 0.9)), 1e-6)
-        line = int(np.ceil(params.get('batch_size', 128) / held_out))
+        # The line the call's held-out check draws (trainer.too_few_held_out).
+        line = rows_to_fill_a_batch(setting(params, 'batch_size'), float(setting(params, 'train_fraction')))
     if smallest < line:
         warnings.warn(
             f"gamma={gamma}: the smallest data subset has {smallest} "
             f"samples. Below about {line} the held-out partition "
             f"of a chunk cannot fill one evaluation batch "
-            f"(batch_size={params.get('batch_size', 128)}, "
-            f"train_fraction={params.get('train_fraction', 0.9)}). "
+            f"(batch_size={setting(params, 'batch_size')}, "
+            f"train_fraction={setting(params, 'train_fraction')}). "
             f"MI values from chunks this small are dominated by noise. The "
             f"fit leaves out the rungs whose held-out curves do not resolve. "
             f"The others can still be noisy, and a straight line through "
@@ -749,7 +751,7 @@ class AnalysisWorkflow:
               row per training run.  Key columns: ``gamma``, ``train_mi``.
         """
         n_workers = n_workers if n_workers is not None else 1
-        show_progress = self.base_params.get('show_progress', True)
+        show_progress = setting(self.base_params, 'show_progress')
         logger.info(f"Starting rigorous analysis with {n_workers} workers...")
         tasks = with_device(self._prepare_tasks(param_grid, gamma_range, temporal_chunking=temporal_chunking),
                             n_workers)
@@ -1076,7 +1078,7 @@ def run_rigorous_scalar_analysis(
             tasks.append((scalar_fn, cut['x'], cut['y'], dict(base_params),
                          extra_sub, extra_kwargs, gamma, chunk, len(chunk_idx)))
 
-    show_progress = base_params.get('show_progress', True)
+    show_progress = setting(base_params, 'show_progress')
     effective_workers = n_workers if n_workers is not None else 1
 
     if effective_workers <= 1 or len(tasks) <= 1:

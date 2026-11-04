@@ -44,7 +44,7 @@ class TestTheHeadsReadTheMLPSettings:
 
     def test_branched_head_over_a_recurrent_branch(self):
         params = _params(embedding_model='gru', input_dim_x=6, n_channels_x=2, _difference_term=True,
-                         _condition=('last', 1), dropout=0.3, norm_layer='layer', use_spectral_norm=False)
+                         dropout=0.3, norm_layer='layer', use_spectral_norm=False)
         head = build_critic('separable', params).embedding_net_x.head
         assert _modules(head, nn.Dropout) and _modules(head, nn.LayerNorm) and not _spectral(head)
 

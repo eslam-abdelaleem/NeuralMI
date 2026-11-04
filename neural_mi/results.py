@@ -17,6 +17,7 @@ from typing import Optional, Any, Dict, List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from neural_mi.defaults import setting
 from neural_mi.logger import logger
 
 # How summary() names the value of a quantity that is not a plain MI.
@@ -300,7 +301,7 @@ class Results:
     def summary(self) -> None:
         """Print a readable summary of the result to stdout."""
         sep = "─" * 56
-        units = self.params.get('output_units', 'bits')
+        units = setting(self.params, 'output_units')
         df = self.dataframe
         print(sep)
         print(f"  NeuralMI Results  |  mode = '{self.mode}'")
@@ -407,7 +408,7 @@ class Results:
         )
 
         show = kwargs.pop('show', True)
-        units = kwargs.pop('units', self.params.get('output_units', 'bits'))
+        units = kwargs.pop('units', setting(self.params, 'output_units'))
         n_cfg = len(self.config_ids)
         grouped = self._grouped_keys()
         per_config_modes = ('pairwise', 'dimensionality', 'precision')
@@ -661,7 +662,7 @@ class Results:
 
         show = kwargs.pop('show', True)
         figsize = kwargs.pop('figsize', (10, 6))
-        units = kwargs.pop('units', results_list[0].params.get('output_units', 'bits'))
+        units = kwargs.pop('units', setting(results_list[0].params, 'output_units'))
         if ax is None:
             _, ax = plt.subplots(1, 1, figsize=figsize)
         colours = [p['color'] for p in plt.rcParams['axes.prop_cycle']]

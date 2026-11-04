@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from neural_mi.defaults import default_of, setting
 from neural_mi.analysis.assemble import (
     config_lookup, convert_record, embedding_values, network_values, single_network_rows,
     split_grid, NATS_TO_BITS, NETWORK_KEYS,
@@ -210,7 +211,7 @@ def _combined(spec, raw, n_repeats, scale):
             {col: padded(combined['components'][col]) for col, _, _ in spec}, failed)
 
 
-def _difference_rows(mode, raw, cid, cfg, config_keys, run_ids, to_bits, bidirectional=False):
+def _difference_rows(mode, raw, cid, cfg, config_keys, run_ids, to_bits, bidirectional=default_of('bidirectional')):
     """Pair the components' repeats by position and combine each pair.
 
     A repeat in which a term failed has no value: its combination and its terms
@@ -256,7 +257,7 @@ def _mean_with_value(values) -> float:
     return float(np.mean(kept)) if kept else math.nan
 
 
-def _difference_scalars(mode, rows, bidirectional=False) -> Dict[str, Any]:
+def _difference_scalars(mode, rows, bidirectional=default_of('bidirectional')) -> Dict[str, Any]:
     """Amplification of the configuration's aggregate, from the component means.
 
     It uses the measured combination, since a value reported as 0 would make
@@ -285,7 +286,7 @@ def _call_difference(mode, x, y, w, params, repeat_grid, ctx, n_workers):
     return run_transfer_entropy(x, y, params, history_window=ctx['history_window'],
                                 prediction_horizon=ctx.get('prediction_horizon', 1),
                                 stride=ctx.get('stride', 1), sweep_grid=repeat_grid,
-                                n_workers=n_workers, bidirectional=ctx.get('bidirectional', False),
+                                n_workers=n_workers, bidirectional=setting(ctx, 'bidirectional'),
                                 w_data=w)
 
 
@@ -294,7 +295,7 @@ def produce_difference(mode, x, y, w, base_params, grid, *, to_bits, ctx, n_work
     configs, run_ids = split_grid(grid)
     config_keys = [k for k in (grid or {}) if k != 'run_id']
     repeat_grid = {'run_id': run_ids} if 'run_id' in (grid or {}) else None
-    bidirectional = mode == 'transfer' and ctx.get('bidirectional', False)
+    bidirectional = mode == 'transfer' and setting(ctx, 'bidirectional')
     rows, details, scalars = [], {}, {}
     for cid, cfg in enumerate(configs):
         params = merge_grid_values(base_params, cfg)

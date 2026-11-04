@@ -262,10 +262,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   values of their own. The settings saved with a network for
   `extract_embeddings` lacked `bias`, `cnn_pooling`, the Y-side settings, the
   head sizes, the difference-term settings and the processor parameters, so
-  such a network could not be rebuilt as it was trained. Every default now
-  comes from the schema (`defaults.default_of`), and the settings
-  `build_critic` reads and those `save_network` saves are one list
-  (`utils.ARCHITECTURE_KEYS`).
+  such a network could not be rebuilt as it was trained. Below the signatures
+  of `run()` and the named quantities, every default now comes from the schema
+  (`defaults.default_of`, `defaults.setting`), and a test fails on a default
+  written a second time. The settings `build_critic` reads and those
+  `save_network` saves are one list (`utils.ARCHITECTURE_KEYS`).
 
 - `shift_windows` reached `block_mi`, which windows through a processor, but
   never the quantities built by time offsets on the same data, and a window
@@ -336,10 +337,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `trainer.held_out_rows`, which both splits use. The blocked split used to
   round it down for round counts, holding out 29 of 300 rows at
   `train_fraction=0.9`, while the random split held out 30. A call whose
-  held-out rows are fewer than one training batch now warns: the held-out
-  curve chooses the epoch the estimate is read at, its rows are each other's
-  negatives, and on so few rows its noise is large and its ceiling lies below
-  that of a training batch. It counts the caller's own `test_indices` when
+  held-out rows are fewer than one training batch now says so, in the data
+  check's line on the rows: the held-out curve chooses the epoch the estimate
+  is read at, its rows are each other's negatives, and on so few rows its noise
+  is large and its ceiling lies below that of a training batch. It counts the caller's own `test_indices` when
   given, and does not apply to a nonparametric estimator. Every warning about
   the held-out curve then names the count.
 
@@ -350,9 +351,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   a little above zero and pass: a value just above zero on 14 held-out rows
   was read as resolved, with a warning that blamed a top reached too fast. A top must now
   also stand 3 standard errors of its held-out rows above zero
-  (`epochs.stands_above_zero`), the line C1 draws for the terms of a combined
-  quantity, so the diagnosis, the trainer's warnings and the combination read
-  one line. The fuzzy-start check leaves out a training-side value at or below
+  (`epochs.stands_above_zero`), the line that decides how the terms of a
+  combined quantity enter it, so the diagnosis, the trainer's warnings and the
+  combination read one line. The fuzzy-start check leaves out a training-side value at or below
   zero, whose standard error from a single block is 0 and made any shift count.
 
 - Whether rows are in time order was decided in six places from different
@@ -663,6 +664,21 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   sentence. The InfoNCE ceiling warning and the spike processor's burst warning
   wrote "vs.", whose period ended that sentence early, so their count lines
   stopped at "vs". Both now say "against".
+
+- The rigorous ladder's warning about chunks too small to fill one evaluation
+  batch drew its line at `batch_size / (1 - train_fraction)`, which floating
+  point rounded up a row further, and a few rows above the line the call's own
+  held-out check draws (`trainer.held_out_rows`). It now draws that same line
+  (`trainer.rows_to_fill_a_batch`): at the defaults a chunk of 1,271 rows holds
+  out one full batch.
+
+- Text that still named what this release removed or changed: an info line of
+  `SubsetView` named `shift_time`, the examples in `run()`'s docstring cut
+  training at 50 epochs, `USING.md` said that a call with few held-out rows
+  warns, and the paper said the epoch is read at the curve's peak. `PARAMETERS.md`
+  now says that the named schedulers are sized on `n_epochs`, the cap, which a
+  run that stops by `patience` does not reach, and that
+  `pytorch_predefined=None` reads `'resnet18'`.
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.

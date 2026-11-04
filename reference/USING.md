@@ -51,9 +51,9 @@ network on the rest, finds the earliest epoch at which the smoothed MI on the
 held-out blocks reaches its top, and reports the MI on the training samples at
 that epoch as `mi_estimate`. The value is in bits unless `Output(units='nats')` asks for
 nats. [THEORY.md](THEORY.md#the-reported-number) explains why the training side
-is the value reported. The held-out rows choose that epoch, so a call with
-fewer of them than one training batch warns, and so does every message about
-the held-out curve.
+is the value reported. The held-out rows choose that epoch, so the data check's
+line says when there are fewer of them than one training batch, and so does
+every message about the held-out curve.
 
 Every setting belongs to a config object: `Processing` for how raw data are
 read, `Model` for the networks, `Training` for the optimisation loop, `Split`

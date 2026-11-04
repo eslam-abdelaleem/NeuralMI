@@ -5,7 +5,7 @@ it is resolved. Its rows are each other's negatives, so on fewer rows than a
 training batch its ceiling sits below the objective's and its noise is large.
 The data check says so, and every warning about the curve names the count. It
 is not a warning of its own, which fired on every dataset smaller than ten
-batches whatever its curve then showed (ROADMAP C23).
+batches whatever its curve then showed.
 """
 import logging
 import warnings

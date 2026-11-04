@@ -177,7 +177,7 @@ class SubsetView:
         If the number of valid windows drops by more than
         `max_index_reduction` (default 5%) after the rebuild, a warning is
         emitted with the old and new counts. This makes silent dataset shrinkage
-        visible when shift_time pushes windows out of valid range.
+        visible when a rebuild moves windows out of the view's time regions.
         """
         if not self.is_temporal or self.times is None:
             return
@@ -198,8 +198,8 @@ class SubsetView:
                 logger.info(
                     f"SubsetView: window count dropped from {old_count} to "
                     f"{new_count} ({reduction:.1%} reduction) after dataset "
-                    f"rebuild. shift_time moved windows outside the valid "
-                    f"recording range for this epoch. A smaller shift keeps more of them."
+                    f"rebuild. Fewer of the rebuilt windows fall in this view's time "
+                    f"regions."
                 )
     
     def __len__(self):

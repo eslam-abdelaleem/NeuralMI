@@ -4,7 +4,7 @@
 Every case has an exact value: a Gaussian model's exact conditional information, the rate of a smooth
 process from its spectra, or a conditional MI that is zero because W is a copy of X on every row the
 quantity reads. Each runs the default model and training. Each tolerance was set from repeated runs and
-fails on the error its fix removed (ROADMAP C15 and C17).
+fails on the error its fix removed.
 """
 import warnings
 
@@ -85,7 +85,7 @@ def test_an_estimate_does_not_depend_on_the_units_with_channel_preprocessing():
 
 
 # --------------------------------------------------------------------------
-# One row plan per quantity (C17)
+# One row plan per quantity
 # --------------------------------------------------------------------------
 class TestAWThatStartsLate:
     """W is X's own record from 40 s on. On the rows every term reads, from 40 s, W is X, so
@@ -158,7 +158,7 @@ def test_a_step_longer_than_the_window_reads_the_exact_block_mi():
 
 
 # --------------------------------------------------------------------------
-# A rigorous ladder on a starved sample (C21)
+# A rigorous ladder on a starved sample
 # --------------------------------------------------------------------------
 @pytest.mark.slow
 def test_a_ladder_of_chunks_too_small_to_resolve_is_not_reliable():

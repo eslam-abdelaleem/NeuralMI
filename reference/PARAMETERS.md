@@ -154,7 +154,7 @@ The networks that embed X and Y and score their pairing.
 | `custom_critic` | `None` | A class or function that builds the whole critic. Every task calls it under its own seed, so each repeat and each term of a difference trains a critic of its own, with the parameters it names among `input_dim_x`, `input_dim_y`, `n_channels_x`, `n_channels_y`, `window_size_x`, `window_size_y`, `embedding_dim`, `hidden_dim`, `n_layers` and the network settings above. In the joint term of a difference X arrives as the pair (rest of X, conditioning set), and each size of X is a pair. An object is refused. Settings it does not name are ignored with a warning. |
 | `custom_embedding_cls` | `None` | An encoder class to use in place of `embedding_model`, as each branch in a difference quantity. |
 | `custom_embedding_cls_y` | X's | Y's encoder class. |
-| `pytorch_predefined` | `None` | A torchvision model name, such as `'resnet18'`, for `embedding_model='pretrained_backbone'`. |
+| `pytorch_predefined` | `None` | A torchvision model name, such as `'resnet18'`, for `embedding_model='pretrained_backbone'`. `None` reads `'resnet18'`. |
 | `pretrained` | `False` | Load that backbone's ImageNet weights. |
 | `use_variational` | `False` | A variational encoder for any `embedding_model`, trained with a KL term (see [THEORY.md](THEORY.md)). Under `critic_type='concat'` it makes each pair's score variational. |
 | `beta` | `1024.0` | Weight of the MI term against the KL term in the variational loss. |
@@ -182,7 +182,7 @@ The optimisation loop and what is evaluated after it.
 | `peak_fraction` | `1.0` | Below 1, report the first epoch whose smoothed test MI reaches this fraction of its maximum, when that is earlier than the epoch `epoch_rule` reads. Meant for a curve that saturates, whose top may be the estimator's ceiling rather than the information; the value is then read before the curve reaches its top. The chosen epoch is `conservative_epoch` in `runs`. |
 | `optimizer` | `'adam'` | `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`, or a `torch.optim.Optimizer` class. |
 | `optimizer_params` | `{}` | Extra arguments for the optimiser, such as `{'weight_decay': 1e-4}`. |
-| `scheduler` | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or a `torch.optim.lr_scheduler` class. |
+| `scheduler` | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or a `torch.optim.lr_scheduler` class. The named schedules are sized on `n_epochs`, the cap, so a run that stops by `patience` ends before they do; `'plateau'` follows the held-out curve instead. |
 | `scheduler_params` | `{}` | Extra arguments for the scheduler. |
 | `lr_head_multiplier` | `None` | Learning-rate multiplier for the hybrid critic's head. |
 | `gradient_clip_val` | `None` | Clip the gradient norm to this value. |

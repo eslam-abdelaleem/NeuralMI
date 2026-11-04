@@ -736,7 +736,8 @@ class TestStride:
 
     @pytest.mark.slow
     def test_estimate_survives_a_change_of_stride(self):
-        """Same quantity, half the rows, same answer within estimator noise."""
+        """Same quantity, half the rows, same answer within estimator noise. The half-bit tolerance checks
+        that the stride reaches the rows, not the estimator's accuracy, so a small network serves."""
         x, _y = self._oracle.sample(8000, seed=1)
         exact = self._oracle.ais_exact(5)
         got = [nmi.active_information_storage(

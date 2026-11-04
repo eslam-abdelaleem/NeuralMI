@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from typing import Dict, Any, Optional, Tuple
 
+from neural_mi.defaults import setting
 from neural_mi.logger import logger
 from neural_mi.utils import build_critic, float_tensor, get_device
 
@@ -239,7 +240,7 @@ def extract_embeddings(
 
     # --- Rebuild critic ---
     _device = get_device(device)
-    critic = build_critic(bp.get('critic_type', 'separable'), bp)
+    critic = build_critic(setting(bp, 'critic_type'), bp)
     critic.load_state_dict(state_dict, strict=True)
     critic = critic.to(_device)
     critic.eval()

@@ -15,6 +15,7 @@ offset (:func:`neural_mi.analysis.offsets.build_rows`), with the offsets of
 import torch
 from typing import Dict, Any, Optional
 
+from neural_mi.defaults import default_of
 from neural_mi.analysis.sweep import (combined_spread, rung, _joint_marginal_difference,
                                       amplification_factor)
 from neural_mi.analysis.offsets import build_rows, spec_geometry
@@ -48,7 +49,7 @@ def run_transfer_entropy(
     prediction_horizon: int = 1,
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
-    bidirectional: bool = False,
+    bidirectional: bool = default_of('bidirectional'),
     w_data: Optional[torch.Tensor] = None,
     stride: int = 1,
 ) -> Dict[str, Any]:
@@ -221,7 +222,7 @@ def run_transfer_entropy(
 
 
 def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
-                        prediction_horizon=1, bidirectional=False, w_data=None,
+                        prediction_horizon=1, bidirectional=default_of('bidirectional'), w_data=None,
                         stride=1) -> dict:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of TE.
 
@@ -233,9 +234,8 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
     dimensionality-mode splits.
 
     ``w_data`` arrives here already sliced to this gamma-chunk's samples (via
-    ``run_rigorous_scalar_analysis``'s ``extra_data`` mechanism, the same one
-    ``mode='conditional'``'s rigorous path also uses for its own ``w_data``),
-    not the full signal, forwarded straight through to ``run_transfer_entropy``.
+    ``run_rigorous_scalar_analysis``'s ``extra_data`` mechanism), not the full
+    signal, forwarded straight through to ``run_transfer_entropy``.
     """
     raw = run_transfer_entropy(
         x_s, y_s, bp,

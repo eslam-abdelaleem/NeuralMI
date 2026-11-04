@@ -80,6 +80,19 @@ def held_out_rows(n_rows: int, train_fraction: float) -> int:
     return int(n_rows) - int(np.floor(n_rows * train_fraction + 1e-9))
 
 
+def rows_to_fill_a_batch(batch_size: int, train_fraction: float) -> int:
+    """The fewest rows whose held-out part (:func:`held_out_rows`) fills one training batch: the line below
+    which :func:`too_few_held_out` holds."""
+    lo, hi = int(batch_size), int(np.ceil(batch_size / max(1.0 - train_fraction, 1e-6))) + 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if held_out_rows(mid, train_fraction) >= batch_size:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
 def too_few_held_out(n_held_out: int, batch_size: int) -> bool:
     """Whether a held-out set is smaller than one training batch.
 
@@ -225,10 +238,10 @@ class Trainer:
         self.gradient_clip_val = gradient_clip_val
         self.decoder_x = decoder_x.to(device) if decoder_x is not None else None
         self.decoder_y = decoder_y.to(device) if decoder_y is not None else None
-        self.decoder_lambda_x = decoder_lambda_x if decoder_lambda_x is not None else 0.001
-        self.decoder_lambda_y = decoder_lambda_y if decoder_lambda_y is not None else 0.001
-        self.decoder_output_activation_x = decoder_output_activation_x or 'linear'
-        self.decoder_output_activation_y = decoder_output_activation_y or 'linear'
+        self.decoder_lambda_x = decoder_lambda_x if decoder_lambda_x is not None else default_of('decoder_lambda')
+        self.decoder_lambda_y = decoder_lambda_y if decoder_lambda_y is not None else default_of('decoder_lambda')
+        self.decoder_output_activation_x = decoder_output_activation_x or default_of('decoder_output_activation_x')
+        self.decoder_output_activation_y = decoder_output_activation_y or default_of('decoder_output_activation_y')
         self.use_amp = use_amp
         self.aug_params_x = augmentation_params_x or {}
         self.aug_params_y = augmentation_params_y or {}
@@ -658,13 +671,13 @@ class Trainer:
         # Per-epoch shifts are drawn from their own generator, seeded from the
         # run's base seed instead of the per-task one. Quantities built as a
         # difference of estimates (conditional MI, interaction information) train
-        # one leg per term, and those legs carry different task seeds by design,
-        # so drawing shifts from the global stream had every leg looking at a
-        # different stretch of the recording each epoch. Subtracting estimates
-        # taken on different data adds between-chunk variance to a residual that
-        # is already a small difference of large numbers. A shared seed puts
-        # every leg on the same shift at the same epoch, which costs nothing:
-        # no coordination between runs, just a generator they can each rebuild.
+        # one leg per term. Drawn from the global stream, the shifts had every leg
+        # looking at a different stretch of the recording each epoch, and
+        # subtracting estimates taken on different data adds between-chunk
+        # variance to a residual that is already a small difference of large
+        # numbers. A shared seed puts every leg on the same shift at the same
+        # epoch, which costs nothing: no coordination between runs, just a
+        # generator they can each rebuild.
         _shift_generator = None
         if shift_seed is not None:
             _shift_generator = torch.Generator()

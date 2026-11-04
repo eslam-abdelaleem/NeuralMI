@@ -32,6 +32,7 @@ import pandas as pd
 import torch
 from tqdm.auto import tqdm
 
+from neural_mi.defaults import setting
 from neural_mi.analysis.assemble import _hashable, aggregate
 from neural_mi.data.rows import PHASES_KEY, RowGeometry, row_geometry
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
@@ -265,7 +266,7 @@ def permutation_nulls(mode: str, x, y, w, base_params: Dict[str, Any], grid, *, 
     trial_params.pop('_model_labels', None)
     args = [(mode, x, y, w, trial_params, grid, ctx, to_bits, seed, permutation_shuffle)
             for seed in seeds]
-    show_progress = base_params.get('show_progress', True)
+    show_progress = setting(base_params, 'show_progress')
     logger.info(f"Permutation test: {n_permutations} trials for mode='{mode}' across "
                 f"{n_workers} worker(s).")
     if n_workers > 1 and n_permutations > 1:

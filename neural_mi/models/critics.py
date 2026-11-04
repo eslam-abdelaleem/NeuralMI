@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 from typing import Any, Optional, Tuple
 
+from neural_mi.defaults import default_of
+
 
 def _batch_size_of(x) -> int:
     """Batch size of x, whether x is a plain tensor or a tuple/list of
@@ -210,8 +212,8 @@ class SeparableCritic(BaseCritic):
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
                  embedding_dim: int = None, 
-                 max_n_batches: int = 512, 
-                 use_variational: bool = False,
+                 max_n_batches: int = default_of('max_n_batches'), 
+                 use_variational: bool = default_of('use_variational'),
                  **kwargs):
         super().__init__()
         self.embedding_net_x = embedding_net_x
@@ -239,8 +241,8 @@ class HybridCritic(BaseCritic):
                  embedding_net_y: Optional[nn.Module] = None,
                  decision_head: nn.Module,
                  embedding_dim: int = None, 
-                 max_n_batches: int = 512, 
-                 use_variational: bool = False,
+                 max_n_batches: int = default_of('max_n_batches'), 
+                 use_variational: bool = default_of('use_variational'),
                  **kwargs):
         super().__init__()
         self.embedding_net_x = embedding_net_x
@@ -302,8 +304,8 @@ class ConcatCritic(BaseCritic):
     def __init__(self,
                  embedding_net: nn.Module,
                  embedding_dim: int = None,
-                 max_n_batches: int = 512,
-                 use_variational: bool = False,
+                 max_n_batches: int = default_of('max_n_batches'),
+                 use_variational: bool = default_of('use_variational'),
                  scaling: Optional[Tuple[nn.Module, nn.Module]] = None,
                  **kwargs):
         super().__init__()

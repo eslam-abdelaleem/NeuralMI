@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Union
 
+from neural_mi.defaults import setting
 from neural_mi.analysis.task import run_training_task
 from neural_mi.device import with_device
 from neural_mi.data.corruption import corrupt, METHODS
@@ -143,7 +144,7 @@ def run_precision_analysis(
     _corrupt_y_source = baseline_results.get('_frozen_eval_y', dataset.y_data)
     x_train_raw = _corrupt_x_source[train_idx, ...]
     y_train_raw = _corrupt_y_source[train_idx, ...]
-    max_eval = base_params.get('max_eval_samples', 5000)
+    max_eval = setting(base_params, 'max_eval_samples')
 
     results_list = []
     # Every individual evaluation, one per tau for rounding and one per noise

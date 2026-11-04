@@ -24,7 +24,7 @@ from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import saved_paths, with_model_labels
 from neural_mi.utils import mi_report_units
 from neural_mi.utils import _ensure_cpu
-from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
+from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA, setting
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
     """Helper to create a list of dictionaries from a grid."""
@@ -116,13 +116,13 @@ class ParameterSweep:
         # Default to sequential if n_workers is not specified or is 1
         effective_workers = n_workers if n_workers is not None else 1
 
-        show_progress = self.base_params.get('show_progress', True)
+        show_progress = setting(self.base_params, 'show_progress')
 
         if effective_workers <= 1:
             logger.info("Starting parameter sweep sequentially (n_workers=1)...")
             # Pre-flight memory warning: on-device dataset storage with many tasks
             # can exhaust accelerator/unified memory (see dataset_device param).
-            _dd = self.base_params.get('dataset_device', 'cpu')
+            _dd = setting(self.base_params, 'dataset_device')
             _dd_str = str(_dd).lower()
             if _dd_str not in ('cpu', 'none') and len(tasks) > 20:
                 _ds_bytes = 0
@@ -202,7 +202,7 @@ class ParameterSweep:
             self.base_params.get('processor_params_x', {}).get('preprocessed', False)
         )
         for i_combo, params in enumerate(param_combinations):
-            _emb = params.get('embedding_model', self.base_params.get('embedding_model', 'mlp'))
+            _emb = params.get('embedding_model', setting(self.base_params, 'embedding_model'))
             _proc = params.get('processor_type_x', self.base_params.get('processor_type_x', None))
             if not _already_preprocessed and _proc is None and str(_emb).lower() in ('gru', 'lstm'):
                 raise ValueError(

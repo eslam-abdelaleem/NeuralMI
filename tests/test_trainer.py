@@ -401,7 +401,7 @@ class TestUnderTrainingWarning:
 class TestTheDefaultStoppingRule:
     """Training stops once the smoothed held-out curve has not improved for `patience` epochs, and `n_epochs`
     caps a curve that keeps improving. Shifted windows keep the curve rising for longer, and a curve without
-    them often tops early and falls, so no one fixed budget serves both (ROADMAP C18)."""
+    them often tops early and falls, so no one fixed budget serves both."""
 
     def _epochs_trained(self, curve, dummy_data, dummy_model, monkeypatch):
         from neural_mi.defaults import default_of

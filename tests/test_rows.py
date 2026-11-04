@@ -124,7 +124,7 @@ class TestTheSplitReadsTheRecord:
     def test_a_random_split_of_overlapping_rows_warns(self):
         """The warning names the encoders the copies fool: in tutorial 04's windows a recurrent encoder
         and a CNN averaging over positions read a random split far above the exact value, and the MLP
-        did not (ROADMAP C22)."""
+        did not."""
         x, _ = _series()
         _, messages = _quiet(nmi.active_information_storage, x, k=4, split=nmi.Split(mode='random'))
         leak = [m for m in messages if 'Random split of rows that share samples' in m]

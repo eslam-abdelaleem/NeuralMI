@@ -5,28 +5,84 @@ Every default below ``run()`` is the schema's (``defaults.default_of``), and
 ``save_network`` saves, so ``extract_embeddings`` rebuilds a network as it was
 trained.
 """
+import ast
 import inspect
+import pathlib
 
 import numpy as np
 import pytest
 import torch
 
+import neural_mi
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, default_of
 from neural_mi.embeddings_io import extract_embeddings, save_network
-from neural_mi.models import decoders, embeddings
+from neural_mi.models import critics, decoders, embeddings
 from neural_mi.training.trainer import Trainer
 from neural_mi.utils import ARCHITECTURE_KEYS, build_critic
 
-# Signature parameters that share a setting's name but hold something else.
-_OTHER_MEANING = {('Trainer.train', 'scheduler'), ('Trainer.__init__', 'estimator_params')}
+# Signature parameters that share a setting's name but hold something else. A critic left without an
+# embedding_dim reads it from its encoders.
+_OTHER_MEANING = {('Trainer.train', 'scheduler'), ('Trainer.__init__', 'estimator_params'),
+                  ('SeparableCritic', 'embedding_dim'), ('HybridCritic', 'embedding_dim'),
+                  ('ConcatCritic', 'embedding_dim')}
+
+PACKAGE = pathlib.Path(neural_mi.__file__).resolve().parent
+_SETTINGS = {name for name, schema in BASE_PARAMS_SCHEMA.items() if schema.get('default') is not None}
 
 
 def _signatures():
     out = [('Trainer.train', Trainer.train), ('Trainer.__init__', Trainer.__init__)]
-    for module in (embeddings, decoders):
+    for module in (embeddings, decoders, critics):
         out += [(name, cls.__init__) for name, cls in inspect.getmembers(module, inspect.isclass)
                 if cls.__module__ == module.__name__]
     return out
+
+
+def _public_interface(where, name):
+    """The signatures that keep literal defaults: run() and the named quantities, whose signatures are the
+    interface until ROADMAP design item 1 declares each setting once, _run_flat, which that item replaces,
+    and a generator's own network width, which only shares a setting's name."""
+    return ((where == 'run.py' and name in ('run', '_run_flat'))
+            or (where == 'quantities.py' and not name.startswith('_'))
+            or (where == 'generators/oracle.py' and name == 'generate_nonlinear_from_latent'))
+
+
+def _literal(node):
+    """A literal other than None, which means unset."""
+    if isinstance(node, ast.Constant):
+        return node.value is not None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant):
+        return True
+    return isinstance(node, (ast.Tuple, ast.List)) and all(_literal(e) for e in node.elts)
+
+
+def _literal_copies():
+    """Every place in the package that writes a setting's default as a literal: a ``.get(name, literal)``
+    fallback, or a parameter default outside the public interface."""
+    found = []
+    for path in sorted(PACKAGE.rglob('*.py')):
+        where = path.relative_to(PACKAGE).as_posix()
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'get'
+                    and len(node.args) == 2 and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value in _SETTINGS and _literal(node.args[1])):
+                found.append(f"{where}:{node.lineno} .get({node.args[0].value!r}, {ast.unparse(node.args[1])})")
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _public_interface(where, node.name):
+                a = node.args
+                positional = a.posonlyargs + a.args
+                pairs = list(zip(positional[len(positional) - len(a.defaults):], a.defaults))
+                pairs += [(arg, d) for arg, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None]
+                found += [f"{where}:{node.lineno} {node.name}({arg.arg}={ast.unparse(d)})"
+                          for arg, d in pairs if arg.arg in _SETTINGS and _literal(d)]
+    return found
+
+
+def test_no_default_is_written_a_second_time():
+    """A setting's default is written once, in the schema. Below the public signatures a function reads it
+    with setting() or default_of(). A ``.get(name, literal)`` fallback or a literal parameter default would
+    be a second copy, free to drift from the schema's."""
+    copies = _literal_copies()
+    assert not copies, "defaults written outside the schema:\n" + "\n".join(copies)
 
 
 @pytest.mark.parametrize('label, fn', _signatures(), ids=[label for label, _ in _signatures()])

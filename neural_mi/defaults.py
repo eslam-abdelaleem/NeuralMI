@@ -18,7 +18,7 @@ BASE_PARAMS_SCHEMA = {
     # Training stops once the smoothed held-out curve has not improved for
     # `patience` epochs, and n_epochs caps a curve that keeps improving. Shifted
     # windows keep the curve rising for longer, and a curve without shifting often
-    # tops early and falls (ROADMAP C18).
+    # tops early and falls.
     'patience': {'type': int, 'min': 0, 'default': 30},
     'output_units': {'type': str, 'default': 'bits'},
     # Real-time grids for X and Y, carried so that windowing deferred to the

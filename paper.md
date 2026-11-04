@@ -155,8 +155,8 @@ setting that would have no effect is refused or named in a warning.
 **A number that can be reported.** Neural estimators are lower bounds capped at
 the logarithm of the number of samples scored together [@mcallester2020formal].
 `NeuralMI` trains each network on one partition of the data and evaluates both
-partitions after every epoch. The peak of the smoothed held-out curve selects
-the epoch. The training-side estimate at that epoch is reported with its ceiling
+partitions after every epoch. The smoothed held-out curve selects the epoch, at
+the start of its top. The training-side estimate at that epoch is reported with its ceiling
 [@abdelaleem2025accurate]. The default split holds out contiguous blocks with a
 gap because overlapping windows are near copies of one another.
 `mode='rigorous'` estimates the MI on the data cut into $\gamma = 1, \ldots, 10$

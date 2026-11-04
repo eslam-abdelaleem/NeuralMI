@@ -119,7 +119,7 @@ def test_plateau_start_reads_and_evaluates_the_start_of_the_top(monkeypatch):
 @pytest.mark.parametrize('se, diagnosis', [(0.0, 'fuzzy start'), (np.inf, 'ok')])
 def test_a_slow_approach_is_fuzzy_when_its_start_moves_the_estimate(monkeypatch, se, diagnosis):
     """The network at the start of the approach to the top is read on the same rows before the network
-    reported, and the start is uncertain when the two readings differ by more than two standard errors."""
+    reported, and the start is uncertain when the two readings differ by more than FUZZY_SE standard errors."""
     from neural_mi.training import trainer as trainer_module
     monkeypatch.setattr(trainer_module, 'standard_error', lambda values, n: se)
     e = np.arange(N_EPOCHS)

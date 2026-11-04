@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 from .sweep import ParameterSweep
+from neural_mi.defaults import setting
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.utils import _ensure_cpu, mi_report_units
@@ -98,15 +99,15 @@ def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int)
     from neural_mi.data.rows import row_geometry
     from neural_mi.training.trainer import Trainer
     from neural_mi.utils import warn_if_random_split_leaks
-    split_mode = analysis_params.get('split_mode', 'blocked')
-    train_fraction = analysis_params.get('train_fraction', 0.9)
+    split_mode = setting(analysis_params, 'split_mode')
+    train_fraction = setting(analysis_params, 'train_fraction')
     rows = row_geometry(analysis_params)
     if split_mode == 'random':
         if rows is not None and rows.overlapping:
             warn_if_random_split_leaks(rows)
         return Trainer._create_random_split(None, n_samples, train_fraction)
-    n_test_blocks = analysis_params.get('n_test_blocks', 5)
-    gap_fraction = analysis_params.get('split_gap_fraction', 0.5)
+    n_test_blocks = setting(analysis_params, 'n_test_blocks')
+    gap_fraction = setting(analysis_params, 'split_gap_fraction')
     geometry = {'span': rows.span, 'step': rows.step} if rows is not None else {}
     return Trainer._create_blocked_split(None, n_samples, train_fraction, n_test_blocks, gap_fraction,
                                          **geometry)
@@ -126,7 +127,7 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
     def unequal(a, b):
         # Halves of different sizes cannot share one encoder. Turning off a shared
         # encoder the user asked for warns; turning off the mode's default only logs.
-        if params.get('shared_encoder', False) and int(np.prod(a.shape[1:])) != int(np.prod(b.shape[1:])):
+        if setting(params, 'shared_encoder') and int(np.prod(a.shape[1:])) != int(np.prod(b.shape[1:])):
             text = (f"split_method='{split_method}' produced unequal halves "
                     f"(X: {tuple(a.shape[1:])}, Y: {tuple(b.shape[1:])}). shared_encoder=True needs "
                     f"equal halves and is turned off for this run.")
@@ -203,7 +204,7 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
     elif split_method == 'col_interleaved':
         x_a, x_b = x_data[:, :, :, 0::2], x_data[:, :, :, 1::2]
     else:  # diagonal or antidiagonal: triangular pixel masks
-        embedding_model = params.get('embedding_model', 'mlp')
+        embedding_model = setting(params, 'embedding_model')
         if embedding_model in ('cnn2d', 'cnn'):
             raise ValueError(
                 f"split_method='{split_method}' produces irregularly-shaped triangular "
@@ -431,7 +432,7 @@ def run_dimensionality_analysis(
         )
     else:
         params['critic_type'] = 'hybrid'
-    if params['critic_type'] == 'hybrid' and params.get('norm_layer', 'auto') == 'auto':
+    if params['critic_type'] == 'hybrid' and setting(params, 'norm_layer') == 'auto':
         # Layer norm stops the fits at k = d from stalling. It also divides out
         # each sample's scale. The reading is taken against a plateau measured
         # the same way.
