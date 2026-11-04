@@ -659,6 +659,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   the one the fit read. It now averages the rungs the fit used, by the fit's
   own rule, and still shows every rung as a point.
 
+- The count line of a repeated warning names the warning by its first
+  sentence. The InfoNCE ceiling warning and the spike processor's burst warning
+  wrote "vs.", whose period ended that sentence early, so their count lines
+  stopped at "vs". Both now say "against".
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

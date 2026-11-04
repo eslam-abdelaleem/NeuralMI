@@ -919,10 +919,10 @@ class Trainer:
         if self.estimator_fn is infonce_lower_bound:
             _tripped = []
             if _test_ceiling_mi is not None and final_test_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _test_ceiling_mi:
-                _tripped.append(f"test MI ({final_test_mi * _scale:.3f} {_units}) vs. test ceiling "
+                _tripped.append(f"test MI ({final_test_mi * _scale:.3f} {_units}) against the test ceiling "
                                 f"log(rows per evaluation={_test_block_size})={_test_ceiling_mi:.3f} {_units}")
             if _train_ceiling_mi is not None and final_train_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _train_ceiling_mi:
-                _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) vs. train-eval ceiling "
+                _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) against the train-eval ceiling "
                                 f"log(rows per evaluation={_train_block_size})={_train_ceiling_mi:.3f} {_units}")
             if _tripped:
                 warnings.warn(

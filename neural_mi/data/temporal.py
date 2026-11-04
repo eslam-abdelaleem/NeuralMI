@@ -669,7 +669,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
             worst_neuron = int(np.argmax(per_neuron_max))
             warnings.warn(
                 f"Spike tensor allocation dominated by burst: neuron {worst_neuron} "
-                f"has peak {self.max_samples_per_window} spikes/window vs. median "
+                f"has peak {self.max_samples_per_window} spikes per window against a median of "
                 f"{median_max:.1f}. Consider exclude_bursty_neurons=True.",
                 UserWarning, stacklevel=user_stacklevel()
             )
