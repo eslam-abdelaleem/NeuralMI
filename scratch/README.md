@@ -56,6 +56,11 @@ What is reusable for the remaining items:
   reads high on the current library: less data, smooth data, and encoders that
   read a pattern wherever it sits (`results/c22_leak_settings.txt`). It takes
   the repository as its first argument.
+- `c22_gru_overlap_sweep.py`: tutorial 04 section 7's GRU cell over every
+  overlap, run with its table and figure cells before the full run, with the
+  epoch each run read and the warnings the cell raised
+  (`results/c22_gru_overlap_sweep.txt`). It takes the repository as its first
+  argument.
 - `c23_tutorial_warnings.py`: every warning the tutorials' saved outputs show,
   by cell and section, with the library's count of each, behind C23. It takes
   the repository and a git revision (`results/c23_tutorial_warnings.txt` holds
