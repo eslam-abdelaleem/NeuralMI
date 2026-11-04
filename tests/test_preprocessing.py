@@ -242,6 +242,19 @@ class TestTheRowsPartOfTheCheck:
         messages = self._spike_call({'window_size': 0.1, 'bin_size': 0.001, 'normalize_bins': True})
         assert messages and 'normalize_bins=False keeps the counts' in messages[0]
 
+    def test_rows_the_tasks_cut_are_checked_too(self, caplog):
+        """With shift_windows on, the default, each task cuts and moves its own rows. The check reads the
+        rows at offset 0, so the call still reports their scale and warns."""
+        rng = np.random.default_rng(17)
+        spikes = [np.sort(rng.uniform(0, 20, 400)) for _ in range(3)]
+        with warnings.catch_warnings(record=True) as caught, caplog.at_level(logging.INFO, logger='neural_mi'):
+            warnings.simplefilter('always')
+            nmi.run(spikes, spikes, processing=nmi.Processing(x='spike', x_params={'window_size': 0.01}),
+                    model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                    training=nmi.Training(n_epochs=1), show_progress=False, seed=0)
+        assert any('spike times within each window' in str(w.message) for w in caught)
+        assert 'their scale is x ' in caplog.text
+
 
 class TestTheCheckOnLargeStreams:
 

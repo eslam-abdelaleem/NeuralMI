@@ -625,6 +625,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   variable would keep a copy a copy, but would make unrelated variables that
   tie in the same rows look dependent.
 
+- The part of the data check that reads the rows ran only where `run()` cut
+  them itself. Under `shift_windows`, the default, the tasks of `estimate`,
+  `sweep`, `rigorous` and `lag` calls cut and move their own rows, so the check
+  never reported their scale, and spike-time or categorical rows far from unit
+  scale did not warn. It now reads the rows at offset 0 on that path too.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

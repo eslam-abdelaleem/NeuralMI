@@ -1273,7 +1273,14 @@ def _run_flat(
                 _largest_lag = max((abs(float(v)) for v in _lags), default=0.0) if _lags is not None else 0.0
                 _counted = _deferred_window_count(x_data, base_params, _largest_lag)
                 if _counted is not None:
-                    _warn_small_sample(*_counted, base_params=base_params, mode=mode)
+                    # The data check reads the rows' scale from the rows at
+                    # offset 0, which the tasks move from. They are built here
+                    # for the check alone and let go after it.
+                    _at_zero = RowPlan(_streams, shift=_shifts).rows()['windows'] if _streams else None
+                    _warn_small_sample(*_counted, base_params=base_params, mode=mode,
+                                       rows=None if _at_zero is None else dict(_at_zero),
+                                       processors={name: s.processor for name, s in _streams.items()})
+                    del _at_zero
         elif processor_type_x is None and processor_type_y is None:
             # Fast path: data is already pre-processed. Convert to tensors inline and skip
             # the full create_dataset / PairedDataset allocation.
