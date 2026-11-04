@@ -168,15 +168,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   CNN encoders change, and the CNN's last layers grow with the window length.
 - Training stops once the smoothed held-out curve has not improved for
   `patience` epochs, 30 by default, and `n_epochs`, now 300, caps a curve that
-  keeps improving. Every network used to train for 50 epochs with stopping off.
-  Shifted windows give the network new windows every epoch, so its held-out
-  curve keeps rising for longer. On slowly varying data with known answers a
-  run with shifted windows was still rising at 50 epochs and reached its top
-  only many epochs later. Without shifting the curve tops within a few epochs
-  and falls, and a longer fixed budget made those runs read lower, because the
-  epoch rule then read an earlier epoch (ROADMAP C19). Stopping gives each run
-  the epochs it needs. Calls with shifted windows on slowly varying data take
-  longer than before.
+  keeps improving. Every network outside `mode='dimensionality'`, which keeps its
+  own budget, used to train for 50 epochs with stopping off. Shifted windows
+  give the network new windows every epoch, so its held-out curve keeps rising
+  for longer. On slowly varying data with known answers a run with shifted
+  windows was still rising at 50 epochs and reached its top only many epochs
+  later. Without shifting the curve tops within a few epochs and falls, and a
+  longer fixed budget made those runs read lower, because the epoch rule then
+  read an earlier epoch (see the curve's noise under Fixed). Stopping gives each
+  run the epochs it needs. Calls with shifted windows on slowly varying data
+  take longer than before.
 - The tutorials, the README quickstart, the examples in `USING.md` and the
   tests that check an estimate against an exact value train the default model
   with the default training. Each used to set a configuration of its own, and
@@ -603,6 +604,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Its window sweep in section 3 keeps the default rate. A wider window leaves
   fewer rows and so fewer steps per epoch. At the lower rate the networks of
   the widest windows were still learning when training ended.
+
+- The epoch rule measured a held-out curve's noise over the whole curve. Past
+  its top a curve falls as the network fits its training rows, and it grows
+  noisier as it falls. The longer training ran past the top, the larger the
+  noise, the lower the level the top had to reach and the earlier the epoch
+  read. With stopping off, runs without window shifting read lower at every
+  longer budget, and `mi_rate` on a smooth process read its first epoch, far
+  below the exact value, where a 50-epoch run read most of it. The noise is now
+  measured up to 60 epochs past the smoothed top (`epochs.NOISE_SPAN`), more
+  than any default patience trains past it. A run that stops by patience reads
+  as before, and a longer one no longer reads earlier for having trained on.
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.

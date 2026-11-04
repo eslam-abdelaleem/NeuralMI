@@ -222,7 +222,10 @@ lands wherever the noise happens to be highest, often many epochs into a stretch
 where the network no longer improves on held-out data and only fits its training
 rows further, which raises the training-side value. The curve's noise is
 measured from the curve itself, from its changes between epochs with smooth
-trends removed. The level of the top is the median of the smoothed curve within
+trends removed, up to 60 epochs past its top (`NOISE_SPAN`). Past its top a
+curve falls as the network fits its training rows and grows noisier as it falls.
+Counted in the noise, that fall would move the epoch read earlier the longer
+training ran. The level of the top is the median of the smoothed curve within
 twice that noise of its maximum, and the epoch read is the first whose smoothed
 value comes within half the noise of that level (`epoch_rule='plateau_start'`;
 `'peak'` reads the maximum). `curve_diagnosis` says when the curve cannot

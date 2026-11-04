@@ -5,8 +5,8 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C18 and C21 to C23 have landed. C19 came out of the measurements for C18
-and C20 out of writing C15's tests. Both are open. The investigations' scripts
+C1 to C19 and C21 to C23 have landed. C20 came out of writing C15's tests and
+is open. The investigations' scripts
 and results, with those behind C19 to C23, are in `scratch/` until the list is
 done.
 
@@ -16,23 +16,6 @@ oscillation under larger private ones, finely sampled, as in field potentials)
 and the library's own generators. C17 and C18 come from a second investigation,
 of how the terms of a difference get their rows and of window shifting. Values
 are in nats unless marked as bits.
-
-### C19. The epoch read moves earlier the longer training runs past the top
-
-**Now.** `epoch_rule='plateau_start'` reads the first epoch within half the
-curve's noise of its top, and the noise is measured over the whole held-out
-curve. A curve that falls after its top, as one without window shifting does
-once the network fits its training rows, grows noisier as it falls, and a long
-fall then dominates the measure. The threshold drops and the epoch read moves
-earlier, to a network that has not finished learning. In the C18 measurements,
-runs without shifting read lower at every longer fixed budget, and `mi_rate` at
-300 epochs read its first epoch, far below the exact value, where a 50-epoch run
-read most of it. The default stopping rule ends training `patience` epochs
-after the curve stops improving, which keeps the fall short, but a call that
-turns stopping off or sets a long `patience` still meets it.
-
-**Fix.** Measure the noise where the rule reads the curve, near its top, and
-check the diagnosis thresholds again on the simulated curves of `epochs.py`.
 
 ### C20. KSG on tied values
 

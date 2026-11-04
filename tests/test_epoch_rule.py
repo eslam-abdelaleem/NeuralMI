@@ -65,6 +65,20 @@ def test_each_diagnosis(curve, ran_to_limit, diagnosis):
     assert np.mean(_reads(curve, sigma=0.01, ran_to_limit=ran_to_limit)[2] == diagnosis) >= 0.85
 
 
+def test_a_long_fall_after_the_top_does_not_move_the_epoch_read():
+    """A curve tops early and falls ever more noisily once its network fits its training rows. Its noise is
+    measured near the top, so the epoch read is the same whether training stopped 60 epochs past the top or
+    ran on for 260 more. Measured over the whole curve, the noise of the fall moved it earlier."""
+    e = np.arange(300, dtype=float)
+    curve = np.where(e < 40, 1 - np.exp(-(e + 1) / 3), 1 - 0.003 * (e - 40))
+    sigma = np.where(e < 40, 0.01, 0.01 + 0.0005 * (e - 40))
+    for seed in range(20):
+        history = curve + sigma * np.random.default_rng(seed).standard_normal(300)
+        reads = {budget: choose_epoch(history[:budget], Trainer._smooth(None, list(history[:budget]), 1.0, 5),
+                                      'plateau_start', REACH, False)[0] for budget in (100, 200, 300)}
+        assert reads[100] == reads[200] == reads[300]
+
+
 def test_a_slow_approach_starts_well_before_the_epoch_read():
     epochs, _, diagnoses, approaches = _reads(1 - np.exp(-(np.arange(120) + 1) / 12), sigma=0.01)
     assert np.median(epochs - approaches) >= 8 and np.mean(diagnoses == 'ok') >= 0.85
