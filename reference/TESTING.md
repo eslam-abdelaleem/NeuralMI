@@ -116,7 +116,7 @@ Each file covers one functional area. Run
 | `test_trainer.py` | the training loop, chunked evaluation, spectral tracking, custom smoothing, and the default stopping rule |
 | `test_epoch_rule.py` | the epoch the estimate is read at and the diagnosis of the held-out curve, on many noisy draws of curves of each shape |
 | `test_best_epoch.py` | that the network evaluated is the one at the reported best epoch, for each epoch rule and `peak_fraction` |
-| `test_held_out.py` | the held-out rows counted once, and a held-out set smaller than one training batch named |
+| `test_held_out.py` | the held-out rows counted once, and a held-out set smaller than one training batch named in the data check and in every warning about the curve, without a warning of its own |
 | `test_blocked_evaluation.py` | which rows the trainer evaluates, and an evaluation set larger than `max_eval_samples` scored in blocks |
 | `test_amp_and_names.py` | mixed-precision training and named-variable propagation into results |
 
@@ -128,7 +128,7 @@ Each file covers one functional area. Run
 | `test_validation.py` | `ParameterValidator` and `DataValidator`, plus integration-level checks through `nmi.run` |
 | `test_config.py` | the typed config objects and how they lower into `base_params` |
 | `test_run.py` | mode routing, the continuous processor pipeline, spike-data rigorous end to end, and that every warning points at the caller's line |
-| `test_repeated_messages.py` | repeated warnings and log lines shown once with a count, across worker processes and at the caller's line |
+| `test_repeated_messages.py` | repeated warnings and log lines shown once with a count, exact repeats included, one count line per text, across worker processes and at the caller's line |
 | `test_run_config_api.py` | the config-object call surface of `run()` |
 
 ### Named quantities

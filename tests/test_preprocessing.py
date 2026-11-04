@@ -229,7 +229,10 @@ class TestTheRowsPartOfTheCheck:
         with caplog.at_level(logging.INFO, logger='neural_mi'):
             nmi.run(x, x, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
                     training=nmi.Training(n_epochs=1), show_progress=False, seed=0)
-        assert 'Data check: 300 samples reach the estimator, 30 of them held out; their scale is x 1' in caplog.text
+        # 30 held-out rows are fewer than one default batch of 128, which the line says (ROADMAP C23).
+        assert ('Data check: 300 samples reach the estimator, 30 of them held out, fewer than one training '
+                'batch (batch_size=128)') in caplog.text
+        assert "ceiling of log(30) low; their scale is x 1" in caplog.text
 
     def test_spike_times_far_from_unit_scale_warn(self):
         messages = self._spike_call({'window_size': 0.01})

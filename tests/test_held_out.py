@@ -3,7 +3,11 @@
 The held-out curve chooses the epoch the estimate is read at and says whether
 it is resolved. Its rows are each other's negatives, so on fewer rows than a
 training batch its ceiling sits below the objective's and its noise is large.
+The data check says so, and every warning about the curve names the count. It
+is not a warning of its own, which fired on every dataset smaller than ten
+batches whatever its curve then showed (ROADMAP C23).
 """
+import logging
 import warnings
 
 import numpy as np
@@ -44,28 +48,38 @@ class TestTheCount:
         assert not too_few_held_out(0, 64)
 
 
-class TestTheCallSaysSo:
+def _data_check(caplog, n, **kwargs):
+    """The data check's line on the rows, which the call logs at the info level."""
+    with caplog.at_level(logging.INFO, logger='neural_mi'):
+        messages = _messages(n, verbose=True, **kwargs)
+    [line] = [r.getMessage() for r in caplog.records if r.getMessage().startswith('Data check:')]
+    return line, messages
 
-    def test_fewer_held_out_rows_than_a_batch_warn(self):
-        messages = _messages(300)
-        [held] = [m for m in messages if 'are held out' in m]
-        assert held.startswith('Only 30 of the 300 samples are held out') and 'batch_size=64' in held
 
-    def test_enough_held_out_rows_are_quiet(self):
-        assert not any('are held out' in m for m in _messages(1000))
+class TestTheDataCheckSaysSo:
 
-    def test_the_callers_own_held_out_rows_are_counted(self):
-        messages = _messages(1000, split=nmi.Split(train_indices=np.arange(980), test_indices=np.arange(980, 1000)))
-        assert any(m.startswith('Only 20 of the 1000 samples are held out') for m in messages)
+    def test_fewer_held_out_rows_than_a_batch_are_named_and_do_not_warn(self, caplog):
+        line, messages = _data_check(caplog, 300)
+        assert '30 of them held out, fewer than one training batch (batch_size=64)' in line
+        assert not any('are held out' in m for m in messages)
 
-    def test_a_nonparametric_estimate_holds_nothing_out(self):
+    def test_enough_held_out_rows_say_nothing_of_a_batch(self, caplog):
+        line, _ = _data_check(caplog, 1000)
+        assert '100 of them held out' in line and 'training batch' not in line
+
+    def test_the_callers_own_held_out_rows_are_counted(self, caplog):
+        line, _ = _data_check(caplog, 1000, split=nmi.Split(train_indices=np.arange(980),
+                                                             test_indices=np.arange(980, 1000)))
+        assert '20 of them held out, fewer than one training batch' in line
+
+    def test_a_nonparametric_estimate_holds_nothing_out(self, caplog):
         rng = np.random.default_rng(0)
         x = rng.standard_normal((300, 2)).astype(np.float32)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
             nmi.run(x, x + rng.standard_normal((300, 2)).astype(np.float32), estimator='ksg',
-                    show_progress=False)
-        assert not any('are held out' in str(w.message) for w in caught)
+                    show_progress=False, verbose=True)
+        [line] = [r.getMessage() for r in caplog.records if r.getMessage().startswith('Data check:')]
+        assert 'a nonparametric estimate holds none out' in line and 'training batch' not in line
 
 
 class TestTheCurveWarningsNameIt:

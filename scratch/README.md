@@ -60,5 +60,10 @@ What is reusable for the remaining items:
   by cell and section, with the library's count of each, behind C23. It takes
   the repository and a git revision (`results/c23_tutorial_warnings.txt` holds
   the full run on the defaults and the October run before the fixes).
+- `c23_tutorial03_lr.py`: tutorial 03 section 4's quantities at the default
+  learning rate and lower ones, with each one's error and how often the
+  library warned that a held-out curve topped too early or approached its top
+  slowly (`results/c23_tutorial03_lr.txt`). It takes the repository as its
+  first argument.
 
 `results/` holds the JSON outputs those scripts wrote.

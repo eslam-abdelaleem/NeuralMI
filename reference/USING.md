@@ -1528,7 +1528,8 @@ quantity combined from several networks share the class `nmi.CombinationWarning`
 so that `warnings.filterwarnings` can silence them as a group.
 
 Within one call each kind of warning or log message is shown the first time it
-comes up. Later ones that differ only in their numbers are counted. The call ends
+comes up. Later ones whose first sentence differs only in its numbers are
+counted, exact repeats included. The call ends
 with one line per kind giving how often it was raised. In IPython and Jupyter the
 count runs over every NeuralMI call of a cell. The line then comes when the cell
 ends. A loop of calls in one cell therefore shows each warning once. In a script,

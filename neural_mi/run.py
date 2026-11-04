@@ -1622,8 +1622,14 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
     stream's scale was checked before its rows were built (neural_mi/preprocessing.py)."""
     from .estimators import NONPARAMETRIC
     from .preprocessing import SCALE_BAND
+    from .training.trainer import too_few_held_out
     held = ("a nonparametric estimate holds none out"
             if base_params.get('estimator_name') in NONPARAMETRIC else f"{n_held_out} of them held out")
+    batch = base_params.get('batch_size', 128)
+    if base_params.get('estimator_name') not in NONPARAMETRIC and too_few_held_out(n_held_out, batch):
+        # Not a warning: the curve warnings name the count when it matters.
+        held += (f", fewer than one training batch (batch_size={batch}), so the held-out curve's noise is "
+                 f"large and its ceiling of log({n_held_out}) low")
     scales = []
     for name, data in (rows or {}).items():
         if not (torch.is_tensor(data) or isinstance(data, np.ndarray)) or len(data) == 0:
@@ -1656,25 +1662,15 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
 def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
                        mode: str = 'estimate', rows: Optional[dict] = None,
                        processors: Optional[dict] = None) -> None:
-    """The warnings for a small dataset, whether the caller passed arrays or the
+    """The warning for a small dataset, whether the caller passed arrays or the
     library windowed the data (``unit`` is 'samples' or 'windows'): too few rows
-    in all, and too few held out for the curve that reads them. The rows' part
-    of the data check (:func:`_report_rows`) is reported here, where their count
-    is known."""
-    from .estimators import NONPARAMETRIC
-    from .training.trainer import too_few_held_out
+    in all. The rows' part of the data check (:func:`_report_rows`) is reported
+    here, where their count is known. It says when fewer rows are held out than
+    one training batch, which is not a warning of its own: it costs the curve
+    only where the curve then cannot be read, and every warning about the curve
+    names the count (:func:`neural_mi.training.epochs.warn_about_curve`)."""
     n_held_out = _held_out_count(n_samples, base_params)
     _report_rows(n_samples, unit, n_held_out, base_params, rows, processors)
-    if (base_params.get('estimator_name') not in NONPARAMETRIC
-            and too_few_held_out(n_held_out, base_params.get('batch_size', 128))):
-        warnings.warn(
-            f"Only {n_held_out} of the {n_samples} {unit} are held out, fewer than one training batch "
-            f"(batch_size={base_params.get('batch_size', 128)}). The held-out curve chooses the epoch "
-            f"the estimate is read at and says whether it is resolved. On so few rows its noise is "
-            f"large and its ceiling, log({n_held_out}), lies below that of a training batch. Use more "
-            f"data, or hold out more with Split(train_fraction=...).",
-            UserWarning, stacklevel=user_stacklevel(),
-        )
     if not 0 < n_samples < _SMALL_SAMPLE:
         return
     tips = []

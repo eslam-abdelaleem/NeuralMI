@@ -179,17 +179,6 @@ information nor the information $I$ itself is known before estimating.
 ([THEORY.md](THEORY.md#finite-sampling-bias)). The message also lists the
 regularisation settings not yet in use.
 
-**`Only ... of the ... are held out, fewer than one training batch`**
-The held-out rows are what `train_fraction` leaves (or the caller's
-`test_indices`), counted the way the split counts them. The held-out curve
-chooses the epoch the estimate is read at and says whether the estimate is
-resolved. Its rows are each other's negatives, so its ceiling is the log of
-their count, below that of the training batch whose objective it follows, and
-its noise grows as they shrink. The rigorous ladder draws the same line for its
-chunks. Use more data or a lower `Split(train_fraction=...)`. Every curve
-warning below then also names the count. With `estimator='ksg'` nothing is
-held out and the message does not apply.
-
 **`The held-out MI was still rising when training reached n_epochs=...`**
 Training used every epoch it was allowed, and the smoothed held-out curve rose
 by more than 3 times its own noise over the last 20 epochs. The reported value
@@ -198,7 +187,8 @@ curve stops improving. A higher `learning_rate` gets further in each epoch
 instead. Raised too far, it brings the top into the first few epochs, which the
 message about a top reached at epoch ... and gone soon after reports. Here and
 in the three entries below, the message ends by naming the count of held-out
-rows when they are fewer than one training batch (the entry above).
+rows when they are fewer than one training batch (the data check's line on the
+rows, `Data check: ... reach the estimator, ...`).
 
 **`The held-out MI curve does not rise clearly above its own noise`**
 The top of the smoothed held-out curve stands less than 8 times the curve's
@@ -682,7 +672,8 @@ the first samples only.
 **`... was raised ... times in this ... and shown once`**
 A rigorous ladder, a parallel grid or a loop of calls can raise the same warning
 or log message many times. The first one was shown when it happened. Later ones
-that differed only in their numbers were counted and not shown. The count covers
+whose first sentence differed only in its numbers were counted and not shown,
+exact repeats included. The count covers
 one call, one notebook cell or one `nmi.grouped_warnings()` block. The message
 quotes the start of the first one.
 The line comes through the channel of the message it counts: a warning of the
@@ -738,8 +729,17 @@ with `verbose=True` or `nmi.set_verbose(True)`, and ask for no action.
 The part of the check that needs the rows, reported where they are counted:
 how many reach the estimator, how many of them are held out (counted as the
 split counts them), and the typical scale of each variable's rows where they
-are built at that point. A held-out set smaller than one training batch also
-warns.
+are built at that point. The held-out rows are what `train_fraction` leaves, or
+the caller's `test_indices`. When they are fewer than one training batch the
+line says so. The held-out curve chooses the epoch the estimate is read at and
+says whether the estimate is resolved. Its rows are each other's negatives, so
+its ceiling is the log of their count, below that of the training batch whose
+objective it follows, and its noise grows as they shrink. That costs the curve
+only where it then cannot be read, and every warning about the curve names the
+count (the curve entries under [Training](#training)). More data or a lower
+`Split(train_fraction=...)` gives the curve more rows. The rigorous ladder draws
+the same line for its chunks and warns. With `estimator='ksg'` nothing is held
+out.
 
 **`Data check for ...`**
 The check every call runs on its streams before rows are built, after any

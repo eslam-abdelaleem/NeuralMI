@@ -574,6 +574,33 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `MESSAGES.md` now say which encoders it concerns, and tutorial 04 section 7
   measures both.
 
+- The warning that fewer rows are held out than one training batch fired on
+  every dataset smaller than ten batches at the defaults, whatever the held-out
+  curve then showed, including where the estimate landed near the exact value.
+  The data check's line on the rows now says so instead, and every warning
+  about the held-out curve still names the count when it is small.
+
+- The count of repeated warnings missed exact repeats. Python shows a warning
+  once per line and text unless a filter says otherwise, so a message that
+  repeated exactly never reached the count, and a notebook cell reported a few
+  raises where it had dozens. A call now lets every raise through to be
+  counted, by a filter of the lowest priority that the caller's own filters
+  still come before. Two messages whose first sentence is the same, such as a
+  curve warning with and without its note on the held-out rows, are one kind
+  with one count line, where the cell used to end with two lines quoting the
+  same words.
+
+- The tutorials printed many kinds of warning their text did not read. Each
+  one now says which warnings its runs print and why: tutorial 02's starved
+  points, tutorial 03's small differences, tutorial 04's random split and
+  bridged windows, and tutorial 05's small evaluation and smallest populations.
+  Tutorial 02's smallest samples train with a batch that shrinks with the
+  sample, as tutorial 05's do, so that an epoch is more than one step.
+  Tutorial 03 trains at a learning rate below the default. At the default its
+  networks reached their top within the first few epochs, too early for the
+  library to place it, and the library warned and advised a lower rate. At the
+  lower rate those warnings are gone and the estimates read as before.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 
