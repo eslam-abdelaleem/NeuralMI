@@ -67,8 +67,9 @@ def test_each_diagnosis(curve, ran_to_limit, diagnosis):
 
 def test_a_long_fall_after_the_top_does_not_move_the_epoch_read():
     """A curve tops early and falls ever more noisily once its network fits its training rows. Its noise is
-    measured near the top, so the epoch read is the same whether training stopped 60 epochs past the top or
-    ran on for 260 more. Measured over the whole curve, the noise of the fall moved it earlier."""
+    measured near the top, up to the smoothing's reach past it, so the epoch read is the same whether
+    training ran 100, 200 or 300 epochs. Measured over the whole curve, the noise of the fall moved it
+    earlier."""
     e = np.arange(300, dtype=float)
     curve = np.where(e < 40, 1 - np.exp(-(e + 1) / 3), 1 - 0.003 * (e - 40))
     sigma = np.where(e < 40, 0.01, 0.01 + 0.0005 * (e - 40))
