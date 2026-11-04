@@ -645,6 +645,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   of 0.1, whatever `Model(dropout)` said. It now reads the setting, as the
   transformer encoder does.
 
+- The blocked split's leak check lets a training row reach one step further
+  when window shifting can move it. It decided that by comparing the rows' step
+  with 1 in the rows' own unit, so rows counted in seconds, with a
+  `sample_rate`, a clock or spike times, never got the margin, and a gap short
+  of a shifting row's reach did not warn. Each shifter now says whether it can
+  move its rows. On a grid in time it always can, since rows one sample apart
+  move there by part of a sample, and `USING.md` and `PARAMETERS.md` now say so.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

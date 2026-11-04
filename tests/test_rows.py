@@ -276,6 +276,19 @@ class TestShiftingRowsAStrideThins:
             _, messages = _quiet(nmi.active_information_storage, x, k=4, stride=3, training=training)
             assert any('Blocked split may leak' in m for m in messages) == leaks
 
+    @pytest.mark.parametrize('params', [{'window_size': 5, 'step_size': 3},
+                                        {'window_size': 0.005, 'step_size': 0.6, 'sample_rate': 1000.0}],
+                             ids=['samples', 'seconds'])
+    def test_the_step_a_shift_adds_does_not_depend_on_the_unit(self, params):
+        """The same rows cut by run(), counted in samples and in seconds (a step below 1 is a fraction of
+        the window): 200 rows of 5 samples every 3, whose gap of 2 rows clears a row that stays put and
+        is short of a shifting row's reach. The rows move by whole samples either way, so both warn."""
+        x, y = _series(605)
+        training = nmi.Training(n_epochs=2, batch_size=16)
+        processing = nmi.Processing(x='continuous', x_params=params, y='continuous', y_params=params)
+        _, messages = _quiet(nmi.run, x, y, processing=processing, training=training)
+        assert any('Blocked split may leak' in m for m in messages)
+
     def test_a_block_of_rows_built_at_every_step_holds_one_span(self):
         from neural_mi.analysis.permutation import _window_rows
         params = {'row_step': 3.0, 'row_span': 5.0, '_row_phases': 3}

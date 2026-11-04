@@ -459,10 +459,13 @@ class Trainer:
             _leak_kwargs = {}
             if rows is not None:
                 _leak_kwargs = {'span': rows.span, 'step': rows.step}
-            if (shift_windows and getattr(dataset, '_window_shifter', None) is not None
-                    and 'span' in _leak_kwargs and rows.step > 1):
+            _shifter = getattr(dataset, '_window_shifter', None)
+            if (shift_windows and _shifter is not None and getattr(_shifter, 'moves', True)
+                    and 'span' in _leak_kwargs):
                 # A shift moves a training row by less than one row step, so a
-                # row reaches that much further.
+                # row reaches that much further. Whether it can move is the
+                # shifter's to say: the step is in the rows' own unit, seconds
+                # or samples.
                 _leak_kwargs = {**_leak_kwargs, 'span': _leak_kwargs['span'] + rows.step}
             train_idx, test_idx = self._create_blocked_split(len(dataset), train_fraction, n_test_blocks,
                                                              gap_fraction=split_gap_fraction, **_leak_kwargs)

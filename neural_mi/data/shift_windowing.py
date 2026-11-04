@@ -175,6 +175,11 @@ class WindowShifter:
         one sample apart never move."""
         return int(torch.randint(0, max(1, self.step_size), (1,), generator=generator).item())
 
+    @property
+    def moves(self) -> bool:
+        """Whether a shift can move the windows: they start more than one sample apart."""
+        return self.step_size > 1
+
 
 class RowPhaseShifter:
     """Rows built by offset at every step of their series, kept one in every ``phases`` from a phase
@@ -204,6 +209,11 @@ class RowPhaseShifter:
 
     def random_shift(self, generator: torch.Generator = None) -> int:
         return int(torch.randint(0, self.phases, (1,), generator=generator).item())
+
+    @property
+    def moves(self) -> bool:
+        """Whether a shift can move the rows: one in more than one step is kept."""
+        return self.phases > 1
 
 
 def try_build_row_phase_dataset(x_data, y_data, params: dict, data_device: str = 'cpu'):
@@ -298,6 +308,11 @@ class BundleShifter:
 
     def random_shift(self, generator: torch.Generator = None) -> int:
         return self.shifters[self.reference].random_shift(generator)
+
+    @property
+    def moves(self) -> bool:
+        """Whether a shift can move the windows, drawn in the reference stream's samples."""
+        return self.shifters[self.reference].moves
 
 
 def _prep_shift_side(data, proc_type, proc_params):

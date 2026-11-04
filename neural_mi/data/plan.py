@@ -391,6 +391,10 @@ class RoleShifter:
     def random_shift(self, generator: Optional[torch.Generator] = None):
         return self.shifter.random_shift(generator)
 
+    @property
+    def moves(self) -> bool:
+        return self.shifter.moves
+
     def windows_at(self, shift):
         return pack(self.shifter.windows_at(shift), self.roles)
 
@@ -407,6 +411,12 @@ class GridShifter:
         draw = (float(torch.rand(1, generator=generator).item()) if generator is not None
                 else float(np.random.uniform()))
         return draw * self.step
+
+    @property
+    def moves(self) -> bool:
+        """Whether a shift can move the rows. On a grid in time it can always, by up to one step: rows
+        one sample apart move by part of a sample, their streams read between samples."""
+        return self.step > 0
 
     def windows_at(self, shift: float):
         if not shift:

@@ -883,8 +883,10 @@ epoch, to show the network many sets of window boundaries. The rows stay the
 same rows. Each epoch draws one offset within one step, and every stream's
 windows start that much later, so X, Y and W move together and every term of a
 difference moves its rows by the same offset at the same epoch. The grid leaves
-one step at its end for the shift. Rows that start one sample apart never move,
-since a shift would only relabel them. Evaluation always reads the unshifted
+one step at its end for the shift. Rows cut by sample number that start one
+sample apart never move, since a shift would only relabel them. On a grid in
+time they move by part of a sample, read between samples. Evaluation always
+reads the unshifted
 rows, so the reported values do not depend on the last shift drawn.
 
 | call | rows a processor cuts | rows passed in built already |
