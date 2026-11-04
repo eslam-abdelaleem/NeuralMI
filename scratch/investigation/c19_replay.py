@@ -3,8 +3,8 @@
 Replays every network's held-out curve at fixed budgets with stopping off and at
 the default patience, and reads each run's value the way the library does: once
 with the curve's noise measured over the whole curve, as before C19, and once
-with the library's own rule, which measures it up to NOISE_SPAN epochs past the
-smoothed top.
+with the library's own rule, which measures it on the raw curve up to its
+smoothed top and the epochs the smoothing reads past it.
 
 Usage: python scratch/investigation/c19_replay.py <repo> [out.txt]
 """
@@ -25,7 +25,6 @@ def main(repo, out_path=None):
     from neural_mi.training import epochs
     from neural_mi.training.trainer import Trainer
     reach = Trainer._smoothing_reach(1.0, 5)
-    span = epochs.NOISE_SPAN
     lines = []
 
     def say(text=''):
@@ -35,13 +34,19 @@ def main(repo, out_path=None):
     def smooth(h):
         return Trainer._smooth(None, list(h), 1.0, 5)
 
+    def whole_curve_epoch(h, s):
+        """The rule before C19: the noise of the whole curve."""
+        peak = int(np.nanargmax(s))
+        noise = epochs.curve_noise(h)
+        level = float(np.median(s[s >= s[peak] - 2 * noise]))
+        return int(np.flatnonzero(s >= level - 0.5 * noise)[0])
+
     def read(net, budget, whole_curve):
         """The epoch a run of `budget` epochs reads and its train-side value in bits."""
         h = np.asarray(net['test_mi_history'][:budget], dtype=float) * LN2   # stored in bits; the rule reads nats
-        epochs.NOISE_SPAN = 10 ** 9 if whole_curve else span
-        best = epochs.choose_epoch(h, smooth(h), 'plateau_start', reach, ran_to_limit=True,
-                                   n_rows=int(net['eval_size']))[0]
-        epochs.NOISE_SPAN = span
+        s = np.asarray(smooth(h))
+        best = (whole_curve_epoch(h, s) if whole_curve else
+                epochs.choose_epoch(h, s, 'plateau_start', reach, ran_to_limit=True, n_rows=int(net['eval_size']))[0])
         return best, net['train_mi_history'][best]
 
     def stop_epoch(net, patience, cap):
@@ -70,8 +75,8 @@ def main(repo, out_path=None):
     groups = defaultdict(list)
     for r in runs:
         groups[(r['name'], r['shift'])].append(r)
-    say(f"NOISE_SPAN = {span}; percentages are of the exact value, epochs per seed\n")
-    same_at_default, drift = 0, {True: [], False: []}
+    say(f"smoothing reach {reach} epochs; percentages are of the exact value, epochs per seed\n")
+    drift, error = {True: [], False: []}, {True: [], False: []}
     for (name, shift), rs in sorted(groups.items()):
         exact = rs[0]['exact']
         say(f"== {name}  shift={shift}  exact={exact:.3f} bits  ({len(rs)} seeds)")
@@ -86,14 +91,13 @@ def main(repo, out_path=None):
                 values[(label, whole)] = np.mean([x[1] for x in v])
                 row.append(f"{100 * values[(label, whole)] / exact:6.1f}%  {str([x[0] for x in v]):<14}")
             say(f"   {label:<16} {row[0]:>30} {row[1]:>30}")
-        same_at_default += int(np.isclose(values[(f'patience {PATIENCE}', True)], values[(f'patience {PATIENCE}', False)]))
         for whole in (True, False):
             drift[whole].append(100 * (values[('off, 300 epochs', whole)] - values[('off, 50 epochs', whole)]) / exact)
+            error[whole].append(100 * abs(values[(f'patience {PATIENCE}', whole)] - exact) / exact)
         say()
-    say(f"default patience reads the same under both: {same_at_default} of {len(groups)} groups")
     for whole, label in ((True, 'whole curve'), (False, 'near the top')):
-        say(f"stopping off, 300 against 50 epochs, {label}: {min(drift[whole]):+.1f} to {max(drift[whole]):+.1f} "
-            f"points of the exact value")
+        say(f"{label}: stopping off, 300 against 50 epochs, {min(drift[whole]):+.1f} to {max(drift[whole]):+.1f} "
+            f"points of the exact value; at patience {PATIENCE}, mean error {np.mean(error[whole]):.1f} points")
     if out_path:
         with open(out_path, 'w') as f:
             f.write('\n'.join(lines) + '\n')

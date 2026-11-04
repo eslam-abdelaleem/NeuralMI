@@ -613,9 +613,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   read. With stopping off, runs without window shifting read lower at every
   longer budget, and `mi_rate` on a smooth process read its first epoch, far
   below the exact value, where a 50-epoch run read most of it. The noise is now
-  measured up to 60 epochs past the smoothed top (`epochs.NOISE_SPAN`), more
-  than any default patience trains past it. A run that stops by patience reads
-  as before, and a longer one no longer reads earlier for having trained on.
+  measured near the top: on the raw curve up to its smoothed top and the
+  epochs the smoothing reads past it, a span the smoothing settings set and no
+  constant of its own. A run reads the same epoch however long it trains past
+  its top. Runs that stop by patience read differently too, since the epochs
+  of their fall had entered the noise as well: on curves with known answers
+  they read closer to the exact value on average.
 
 - KSG breaks ties with noise drawn for each variable apart. On values that tie,
   such as a spike window's empty slots or a count, a variable and an exact copy

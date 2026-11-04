@@ -1,31 +1,31 @@
-NOISE_SPAN = 60; percentages are of the exact value, epochs per seed
+smoothing reach 6 epochs; percentages are of the exact value, epochs per seed
 
 == block_2d  shift=False  exact=0.715 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
-   off, 50 epochs           101.6%  [9, 7, 7]              101.6%  [9, 7, 7]     
-   off, 100 epochs           97.0%  [8, 6, 6]               97.0%  [8, 6, 6]     
-   off, 150 epochs           91.0%  [7, 5, 5]               97.0%  [8, 6, 6]     
-   off, 200 epochs           89.2%  [6, 5, 5]               97.0%  [8, 6, 6]     
-   off, 300 epochs           82.7%  [5, 4, 4]               97.0%  [8, 6, 6]     
-   patience 30              103.1%  [9, 7, 8]              103.1%  [9, 7, 8]     
+   off, 50 epochs           101.6%  [9, 7, 7]              104.8%  [9, 8, 8]     
+   off, 100 epochs           97.0%  [8, 6, 6]              104.8%  [9, 8, 8]     
+   off, 150 epochs           91.0%  [7, 5, 5]              104.8%  [9, 8, 8]     
+   off, 200 epochs           89.2%  [6, 5, 5]              104.8%  [9, 8, 8]     
+   off, 300 epochs           82.7%  [5, 4, 4]              104.8%  [9, 8, 8]     
+   patience 30              103.1%  [9, 7, 8]              104.8%  [9, 8, 8]     
 
 == block_2d  shift=True  exact=0.715 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
    off, 50 epochs            95.7%  [29, 39, 20]            95.7%  [29, 39, 20]  
-   off, 100 epochs           96.8%  [29, 40, 20]            96.8%  [29, 40, 20]  
-   off, 150 epochs           95.8%  [29, 26, 20]            96.8%  [29, 40, 20]  
-   off, 200 epochs           95.6%  [28, 26, 20]            96.8%  [29, 40, 20]  
-   off, 300 epochs           95.4%  [28, 26, 19]            96.8%  [29, 40, 20]  
-   patience 30               96.8%  [29, 40, 20]            96.8%  [29, 40, 20]  
+   off, 100 epochs           96.8%  [29, 40, 20]            95.7%  [29, 39, 20]  
+   off, 150 epochs           95.8%  [29, 26, 20]            95.7%  [29, 39, 20]  
+   off, 200 epochs           95.6%  [28, 26, 20]            95.7%  [29, 39, 20]  
+   off, 300 epochs           95.4%  [28, 26, 19]            95.7%  [29, 39, 20]  
+   patience 30               96.8%  [29, 40, 20]            95.7%  [29, 39, 20]  
 
 == block_8d  shift=False  exact=1.591 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
-   off, 50 epochs            82.0%  [8, 7, 8]               82.0%  [8, 7, 8]     
-   off, 100 epochs           69.8%  [6, 6, 7]               79.0%  [7, 7, 8]     
-   off, 150 epochs           66.2%  [6, 6, 6]               79.0%  [7, 7, 8]     
-   off, 200 epochs           66.2%  [6, 6, 6]               79.0%  [7, 7, 8]     
-   off, 300 epochs           59.1%  [6, 5, 5]               79.0%  [7, 7, 8]     
-   patience 30               84.2%  [8, 8, 8]               84.2%  [8, 8, 8]     
+   off, 50 epochs            82.0%  [8, 7, 8]               92.0%  [9, 9, 9]     
+   off, 100 epochs           69.8%  [6, 6, 7]               92.0%  [9, 9, 9]     
+   off, 150 epochs           66.2%  [6, 6, 6]               92.0%  [9, 9, 9]     
+   off, 200 epochs           66.2%  [6, 6, 6]               92.0%  [9, 9, 9]     
+   off, 300 epochs           59.1%  [6, 5, 5]               92.0%  [9, 9, 9]     
+   patience 30               84.2%  [8, 8, 8]               92.0%  [9, 9, 9]     
 
 == block_8d  shift=True  exact=1.591 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
@@ -34,16 +34,16 @@ NOISE_SPAN = 60; percentages are of the exact value, epochs per seed
    off, 150 epochs           98.0%  [42, 66, 94]            98.0%  [43, 66, 94]  
    off, 200 epochs           96.9%  [42, 65, 94]            98.0%  [43, 66, 94]  
    off, 300 epochs           97.8%  [41, 63, 93]            98.0%  [43, 66, 94]  
-   patience 30               96.2%  [43, 65, 90]            96.2%  [43, 65, 90]  
+   patience 30               96.2%  [43, 65, 90]            97.3%  [43, 66, 90]  
 
 == block_slow  shift=False  exact=2.498 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
-   off, 50 epochs            81.2%  [10, 7, 10]             81.2%  [10, 7, 10]   
-   off, 100 epochs           74.3%  [9, 6, 8]               76.2%  [9, 6, 9]     
-   off, 150 epochs           70.3%  [8, 5, 8]               76.2%  [9, 6, 9]     
-   off, 200 epochs           70.3%  [8, 5, 8]               76.2%  [9, 6, 9]     
-   off, 300 epochs           66.3%  [7, 5, 7]               76.2%  [9, 6, 9]     
-   patience 30               81.2%  [10, 7, 10]             81.2%  [10, 7, 10]   
+   off, 50 epochs            81.2%  [10, 7, 10]             82.6%  [10, 7, 11]   
+   off, 100 epochs           74.3%  [9, 6, 8]               82.6%  [10, 7, 11]   
+   off, 150 epochs           70.3%  [8, 5, 8]               82.6%  [10, 7, 11]   
+   off, 200 epochs           70.3%  [8, 5, 8]               82.6%  [10, 7, 11]   
+   off, 300 epochs           66.3%  [7, 5, 7]               82.6%  [10, 7, 11]   
+   patience 30               81.2%  [10, 7, 10]             82.6%  [10, 7, 11]   
 
 == block_slow  shift=True  exact=2.498 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
@@ -56,26 +56,26 @@ NOISE_SPAN = 60; percentages are of the exact value, epochs per seed
 
 == mi_rate_stride4  shift=False  exact=0.612 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
-   off, 50 epochs            79.9%  [3, 3, 4]               79.9%  [3, 3, 4]     
-   off, 100 epochs           65.2%  [2, 1, 3]               79.9%  [3, 3, 4]     
-   off, 150 epochs           31.1%  [1, 0, 1]               79.9%  [3, 3, 4]     
-   off, 200 epochs           19.4%  [1, 0, 0]               79.9%  [3, 3, 4]     
-   off, 300 epochs            6.4%  [0, 0, 0]               79.9%  [3, 3, 4]     
-   patience 30               83.9%  [4, 4, 4]               83.9%  [4, 4, 4]     
+   off, 50 epochs            79.9%  [3, 3, 4]               84.0%  [4, 6, 4]     
+   off, 100 epochs           65.2%  [2, 1, 3]               84.0%  [4, 6, 4]     
+   off, 150 epochs           31.1%  [1, 0, 1]               84.0%  [4, 6, 4]     
+   off, 200 epochs           19.4%  [1, 0, 0]               84.0%  [4, 6, 4]     
+   off, 300 epochs            6.4%  [0, 0, 0]               84.0%  [4, 6, 4]     
+   patience 30               83.9%  [4, 4, 4]               84.0%  [4, 6, 4]     
 
 == mi_rate_stride4  shift=True  exact=0.612 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
-   off, 50 epochs            92.6%  [3, 3, 3]               92.6%  [3, 3, 3]     
-   off, 100 epochs           92.3%  [2, 2, 3]               92.6%  [3, 3, 3]     
-   off, 150 epochs           90.5%  [2, 1, 2]               92.6%  [3, 3, 3]     
-   off, 200 epochs           76.4%  [1, 0, 1]               92.6%  [3, 3, 3]     
-   off, 300 epochs           70.9%  [0, 0, 1]               92.6%  [3, 3, 3]     
-   patience 30               96.2%  [3, 3, 4]               96.2%  [3, 3, 4]     
+   off, 50 epochs            92.6%  [3, 3, 3]               99.1%  [4, 3, 5]     
+   off, 100 epochs           92.3%  [2, 2, 3]               99.1%  [4, 3, 5]     
+   off, 150 epochs           90.5%  [2, 1, 2]               99.1%  [4, 3, 5]     
+   off, 200 epochs           76.4%  [1, 0, 1]               99.1%  [4, 3, 5]     
+   off, 300 epochs           70.9%  [0, 0, 1]               99.1%  [4, 3, 5]     
+   patience 30               96.2%  [3, 3, 4]               99.1%  [4, 3, 5]     
 
 == spike_count  shift=False  exact=1.152 bits  (3 seeds)
    stopping               whole curve (before C19)             near the top (now)
    off, 50 epochs            98.6%  [23, 11, 9]             98.6%  [23, 11, 9]   
-   off, 100 epochs           98.5%  [21, 10, 9]             98.5%  [21, 10, 9]   
+   off, 100 epochs           98.5%  [21, 10, 9]             98.6%  [22, 10, 9]   
    off, 150 epochs           98.5%  [18, 10, 9]             98.6%  [22, 10, 9]   
    off, 200 epochs           98.3%  [18, 9, 8]              98.6%  [22, 10, 9]   
    off, 300 epochs           98.2%  [17, 9, 8]              98.6%  [22, 10, 9]   
@@ -85,11 +85,10 @@ NOISE_SPAN = 60; percentages are of the exact value, epochs per seed
    stopping               whole curve (before C19)             near the top (now)
    off, 50 epochs            91.6%  [16, 21, 35]            91.6%  [16, 21, 35]  
    off, 100 epochs           91.2%  [26, 34, 44]            91.2%  [26, 34, 44]  
-   off, 150 epochs           91.9%  [34, 34, 44]            91.7%  [35, 34, 44]  
-   off, 200 epochs           91.9%  [34, 34, 44]            91.4%  [34, 22, 44]  
-   off, 300 epochs           92.6%  [34, 34, 37]            91.1%  [26, 22, 43]  
+   off, 150 epochs           91.9%  [34, 34, 44]            91.2%  [26, 34, 44]  
+   off, 200 epochs           91.9%  [34, 34, 44]            91.2%  [26, 34, 44]  
+   off, 300 epochs           92.6%  [34, 34, 37]            90.7%  [26, 22, 44]  
    patience 30               92.3%  [19, 21, 45]            92.3%  [19, 21, 45]  
 
-default patience reads the same under both: 10 of 10 groups
-stopping off, 300 against 50 epochs, whole curve: -73.6 to +9.5 points of the exact value
-stopping off, 300 against 50 epochs, near the top: -5.1 to +9.5 points of the exact value
+whole curve: stopping off, 300 against 50 epochs, -73.6 to +9.5 points of the exact value; at patience 30, mean error 7.7 points
+near the top: stopping off, 300 against 50 epochs, -0.9 to +9.5 points of the exact value; at patience 30, mean error 6.6 points

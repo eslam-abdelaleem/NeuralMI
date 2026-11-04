@@ -40,8 +40,9 @@ What is reusable for the remaining items:
   rules on those curves with the library's own smoothing and epoch rule. Both
   take the repository as their first argument.
 - `c19_replay.py`: the same curves read with the curve's noise measured over the
-  whole curve, as before C19, and near the top, as the library does now
-  (`results/c19_replay.txt`). It takes the repository as its first argument.
+  whole curve, as before C19, and near the top, up to the smoothed top and the
+  smoothing's reach past it, as the library does now (`results/c19_replay.txt`).
+  It takes the repository as its first argument.
 - `c20_ksg_ties.py`: KSG's conditional estimate on spike windows where the
   truth is 0, behind C20. It takes the repository as its first argument.
 - `c21_c22_tutorial_settings.py`: the two tutorial results the full run on the

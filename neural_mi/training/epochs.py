@@ -8,11 +8,12 @@ no longer improves on held-out data and only fits its training rows further,
 which raises the training-side value that the estimate reads.
 
 ``'plateau_start'`` reads the earliest epoch at the top instead. The noise of the
-curve is measured from the curve itself, up to NOISE_SPAN epochs past its
-smoothed top. A curve keeps falling after its top once the network fits its
-training rows, and grows noisier as it falls. Counted in the noise, that fall
-would lower the threshold and move the epoch read earlier the longer training
-ran. The level of the top is the median of the smoothed curve near its maximum,
+curve is measured from the curve itself, near its top: on the raw curve up to its
+smoothed top and the epochs the smoothing reads past it, a span the smoothing
+settings set and no constant of its own. A curve keeps falling after its top
+once the network fits its training rows, and grows noisier as it falls. Counted
+in the noise, that fall would lower the threshold and move the epoch read
+earlier, the more so the longer training ran. The level of the top is the median of the smoothed curve near its maximum,
 and the epoch read is the first whose smoothed value comes within half the noise
 of that level: the peak of a clean peak, the start of a plateau. ``'peak'``
 reads the smoothed maximum.
@@ -43,7 +44,6 @@ FUZZY_SE = 3            # readings at the approach and at the epoch read this ma
 CLEAR_SE = 3            # a held-out value this many standard errors above zero shows the network learned something
 RISING_EPOCHS = 20      # a curve that rose by RISING_NOISE noise units over this many final epochs
 RISING_NOISE = 3        # when training ran to its limit was still rising
-NOISE_SPAN = 60         # the noise is measured up to this many epochs past the top, more than any default patience
 
 
 def curve_noise(history) -> float:
@@ -105,7 +105,7 @@ def choose_epoch(history, smoothed, rule: str, reach: Optional[int],
     """
     s = np.asarray(smoothed, dtype=float)
     peak = int(np.nanargmax(s))
-    noise = curve_noise(np.asarray(history, dtype=float)[:peak + NOISE_SPAN + 1])
+    noise = curve_noise(np.asarray(history, dtype=float)[:peak + (reach or 0) + 1])
     level = float(np.median(s[s >= s[peak] - 2 * noise]))
     start = int(np.flatnonzero(s >= level - 0.5 * noise)[0])
     epoch = start if rule == 'plateau_start' else peak
