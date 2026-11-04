@@ -122,9 +122,13 @@ class TestTheSplitReadsTheRecord:
         assert any('Blocked split may leak raw samples' in m for m in messages)
 
     def test_a_random_split_of_overlapping_rows_warns(self):
+        """The warning names the encoders the copies fool: in tutorial 04's windows a recurrent encoder
+        and a CNN averaging over positions read a random split far above the exact value, and the MLP
+        did not (ROADMAP C22)."""
         x, _ = _series()
         _, messages = _quiet(nmi.active_information_storage, x, k=4, split=nmi.Split(mode='random'))
-        assert any('Random split of rows that share samples' in m for m in messages)
+        leak = [m for m in messages if 'Random split of rows that share samples' in m]
+        assert leak and 'recurrent' in leak[0] and 'default MLP, is less exposed' in leak[0]
 
     def test_a_random_split_of_rows_that_share_nothing_is_quiet(self):
         x, y = _series()

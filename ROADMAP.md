@@ -5,10 +5,10 @@
 Each item below gives a wrong or misleading result today, or is one thing
 implemented in several places that can disagree. They are being fixed now. An
 item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C18 and C21 have landed. C19 came out of the measurements for C18, C20
-out of writing C15's tests, and C22 and C23 out of the full runs of the
-tutorials. All four are open. The investigations' scripts and results, with those behind C19
-to C23, are in `scratch/` until the list is done.
+C1 to C18, C21 and C22 have landed. C19 came out of the measurements for C18,
+C20 out of writing C15's tests, and C23 out of the full runs of the tutorials.
+All three are open. The investigations' scripts and results, with those behind
+C19 to C23, are in `scratch/` until the list is done.
 
 The evidence comes from an investigation of `mi_rate` on data with known
 answers: exact Gaussian values for a smooth two-process model (a shared damped
@@ -54,28 +54,6 @@ tied group, at its mid-rank) so that a copy of a variable stays a copy, and
 warn when most of a variable's values tie, where KSG's neighbour counts do not
 hold.
 
-### C22. A random split of overlapping windows no longer reads high
-
-**Now.** Tutorial 04 section 7 sweeps the overlap of windows under a blocked
-and a random split against an exact block MI. Its outputs from before the
-correctness fixes read the random split far above the exact value at heavy
-overlap and the blocked one a little below it. The library's warning for a
-random split of rows that share samples says the held-out curve follows the
-training rows, so the epoch it chooses comes late and the value read there is
-high. On the current library the full run read both splits alike, a little
-below the exact value, at every overlap. The old model and training, window
-shifting turned off, and stopping turned off each left the two splits alike,
-and both reached their tops within the first few epochs. Either a fix on this
-list removed the effect here, or the old inflation came from something that was
-wrong. Until that is known, the warning and the section may describe what the
-library no longer does.
-
-**Fix.** Find which change removed the difference, by running the section's
-data on the commits of this list, and whether a random split of near-duplicate
-rows still reads high in some setting (less data, a network that fits its rows,
-spikes). Then make the warning and `MESSAGES.md` say what holds, and rerun and
-rewrite tutorial 04 section 7.
-
 ### C23. The tutorials print warnings their text does not read
 
 **Now.** The full runs of the tutorials print many kinds of warning, and their
@@ -83,8 +61,8 @@ text reads only a few: the ceiling, the slow approach to the top, a step size
 read as a fraction, window retention and the amplification of a difference. The
 rest have four causes.
 
-- The library is wrong where they fire: tutorial 04 section 7 (C22). Tutorial
-  02 section 5, where it was (C21, fixed), waits on its rerun.
+- The library was wrong where they fire: tutorial 02 section 5 (C21) and 04
+  section 7 (C22). Both are fixed and wait on their reruns.
 - The warning that fewer rows are held out than one training batch fires on
   every dataset smaller than ten training batches at the defaults, whatever the
   curve then shows. Tutorial 01 meets it at a sample its text calls enough and

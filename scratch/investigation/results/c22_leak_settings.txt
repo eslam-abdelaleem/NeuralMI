@@ -1,0 +1,25 @@
+# Ratio to the exact block MI, mean of two repeats, and the epochs read (blocked / random).
+# Defaults unless noted, on library 7924c8e (after C21).
+
+tutorial 04 data, exact 4.52 bits  (13s)
+   90% overlap: blocked 0.92 random 0.92 (epochs [12, 14] / [12, 14])
+    0% overlap: blocked 0.94 random 0.93 (epochs [110, 164] / [162, 208])
+less data (T=2000), exact 4.52 bits  (7s)
+   90% overlap: blocked 0.62 random 0.81 (epochs [9, 10] / [15, 16])
+    0% overlap: blocked 0.70 random 0.73 (epochs [95, 125] / [75, 142])
+slow latent, little noise, exact 2.52 bits  (15s)
+   90% overlap: blocked 0.97 random 0.98 (epochs [13, 11] / [17, 24])
+    0% overlap: blocked 0.96 random 0.96 (epochs [74, 87] / [117, 168])
+little noise, exact 3.03 bits  (17s)
+   90% overlap: blocked 0.81 random 0.81 (epochs [54, 13] / [12, 65])
+    0% overlap: blocked 0.73 random 0.71 (epochs [80, 165] / [109, 171])
+CNN encoder, mean pooling, exact 4.52 bits  (382s)
+   90% overlap: blocked 0.61 random 1.60 (epochs [2, 2] / [194, 109])
+    0% overlap: blocked 0.60 random 0.69 (epochs [12, 34] / [53, 139])
+GRU encoder, exact 4.52 bits  (234s)
+   90% overlap: blocked 0.87 random 2.24 (epochs [9, 9] / [228, 206])
+    0% overlap: blocked 0.86 random 0.88 (epochs [108, 40] / [90, 149])
+
+# A first run of the two smooth settings kept the tutorial's coupling, which put the exact
+# value above 40 bits, far over any ceiling, and both splits read about a quarter of it.
+# They were rerun with a weak coupling.

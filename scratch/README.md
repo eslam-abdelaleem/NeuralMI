@@ -49,6 +49,13 @@ What is reusable for the remaining items:
   sizes and on independent data, refitted under four rules for which rungs the
   fit uses, behind C21 (`results/c21_rung_rules.txt`). It takes the repository
   as its first argument.
+- `c22_split_bisect.py`: tutorial 04 section 7's October call on the library of
+  any commit, run by `git bisect` behind C22 (`results/c22_split_bisect.txt`).
+  It takes the checkout to test, which `PYTHONPATH` must also name.
+- `c22_leak_settings.py`: where a random split of overlapping windows still
+  reads high on the current library: less data, smooth data, and encoders that
+  read a pattern wherever it sits (`results/c22_leak_settings.txt`). It takes
+  the repository as its first argument.
 - `c23_tutorial_warnings.py`: every warning the tutorials' saved outputs show,
   by cell and section, with the library's count of each, behind C23. It takes
   the repository and a git revision (`results/c23_tutorial_warnings.txt` holds

@@ -1141,9 +1141,10 @@ every `n` steps:
 r = nmi.active_information_storage(x, k=5, stride=4)
 ```
 
-Neighbouring rows that nearly duplicate each other inflate a random split and
-overstate the $\log K$ ceiling because $K$ counts rows without knowing how many
-are near copies. `stride` counts whole rows and refuses a fraction. It is kept
+Neighbouring rows that nearly duplicate each other can inflate a random split,
+read by an encoder that takes them for copies (a recurrent one, or a CNN that
+averages over positions). They also overstate the $\log K$ ceiling because $K$
+counts rows without knowing how many are near copies. `stride` counts whole rows and refuses a fraction. It is kept
 apart from `step_size` because the fractional reading of `step_size` refers to a
 single window length these quantities do not have.
 

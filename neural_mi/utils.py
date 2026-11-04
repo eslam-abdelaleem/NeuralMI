@@ -1177,13 +1177,20 @@ def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
 
 def warn_if_random_split_leaks(rows) -> None:
     """Warn that a random split of rows that share samples leaves each held-out row among training rows
-    that nearly copy it (``rows`` is a :class:`neural_mi.data.rows.RowGeometry`)."""
+    that nearly copy it (``rows`` is a :class:`neural_mi.data.rows.RowGeometry`).
+
+    Whether the copies give the held-out rows away depends on the encoder. On the windows of tutorial 04
+    a recurrent encoder and a CNN that averages over positions read a random split far above the exact
+    value, and the default MLP read it like a blocked one."""
     warnings.warn(
         f"Random split of rows that share samples: consecutive rows start {rows.step:.3g} apart and "
         f"each covers {rows.span:.3g}, so a held-out row shares samples with up to "
-        f"{2 * (rows.rows_per_span - 1)} rows around it, most of them in training. The held-out "
-        f"curve then follows the training rows and keeps rising as the network overfits, so the "
-        f"epoch it chooses comes late and the value read there is high. Split(mode='blocked') "
-        f"holds out contiguous blocks with a gap around each.",
+        f"{2 * (rows.rows_per_span - 1)} rows around it, most of them in training. An encoder that "
+        f"reads a pattern wherever it sits in a row, such as a recurrent one or a CNN that averages "
+        f"over positions, takes those rows for copies of the held-out one. Its held-out curve then "
+        f"follows the training rows and keeps rising as the network overfits, so the epoch it "
+        f"chooses comes late and the value read there is high. An encoder that reads each position "
+        f"on its own, such as the default MLP, is less exposed. Split(mode='blocked') holds out "
+        f"contiguous blocks with a gap around each.",
         UserWarning, stacklevel=user_stacklevel()
     )

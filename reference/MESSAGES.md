@@ -341,11 +341,15 @@ message gives.
 **`Random split of rows that share samples`**
 `Split(mode='random')` drew the held-out rows one by one from rows that overlap
 in time, so each held-out row sits among training rows that share most of its
-samples. The held-out curve then cannot tell fitting the training rows from
-learning the dependence: it keeps rising as the network overfits, the epoch it
-chooses comes late, and the value read there is high. Use the default
-`Split(mode='blocked')`, which holds out contiguous blocks with a gap around
-each.
+samples. An encoder that reads a pattern wherever it sits in a row, such as a
+recurrent encoder or a CNN that averages over positions, takes those rows for
+copies of the held-out one. Its held-out curve then cannot tell fitting the
+training rows from learning the dependence: it keeps rising as the network
+overfits, the epoch it chooses comes late, and the value read there is high. An
+encoder that reads each position of a row on its own, such as the default MLP,
+takes a row shifted by one step for a different input and is less exposed. Use
+the default `Split(mode='blocked')`, which holds out contiguous blocks with a gap
+around each.
 
 **`Blocked split parameters produced an invalid configuration`**
 Because the requested blocks do not fit the dataset, the split fell back to a

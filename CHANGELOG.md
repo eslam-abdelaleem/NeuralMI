@@ -560,6 +560,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   both counts when too few do. A ladder with no value of $\gamma$ left reports
   an unreliable NaN, or an unreliable 0 when every rung produced nothing.
 
+- The warning for a random split of rows that share samples said that the
+  held-out curve follows the training rows and the value read is high, and
+  tutorial 04 measured that on windows one sample apart. That measurement came
+  from window shifting, which moved windows one sample apart by up to a whole
+  window each epoch until it moved them only within one step (the entry above
+  on `shift_windows` and `block_mi`), so that training windows landed on the
+  held-out ones.
+  On the same windows a random split now reads like a blocked one with the
+  default MLP, which takes a window one sample over for a different input. It
+  reads far above the exact value with a recurrent encoder or a CNN that
+  averages over positions, which take that window for a copy. The warning and
+  `MESSAGES.md` now say which encoders it concerns, and tutorial 04 section 7
+  measures both.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 
