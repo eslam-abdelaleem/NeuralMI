@@ -158,7 +158,7 @@ The networks that embed X and Y and score their pairing.
 | `pretrained` | `False` | Load that backbone's ImageNet weights. |
 | `use_variational` | `False` | A variational encoder for any `embedding_model`, trained with a KL term (see [THEORY.md](THEORY.md)). Under `critic_type='concat'` it makes each pair's score variational. |
 | `beta` | `1024.0` | Weight of the MI term against the KL term in the variational loss. |
-| `use_decoder` | `False` | Add a decoder that reconstructs each input from its embedding. |
+| `use_decoder` | `False` | Add a decoder that reconstructs each input from its embedding. Needs a critic that gives an embedding of each side (not `critic_type='concat'`). |
 | `decoder_lambda` | `0.001` | Weight of both reconstruction terms, measured against the MI term. |
 | `decoder_lambda_x` | `decoder_lambda` | Weight of X's reconstruction term. |
 | `decoder_lambda_y` | `decoder_lambda` | Weight of Y's reconstruction term. |

@@ -114,11 +114,28 @@ def test_the_variational_settings_apply_and_are_not_called_ignored():
     assert any('beta (use_variational=True only)' in m for m in messages)
 
 
-def test_a_decoder_is_refused():
+class WithEmbeddings(Recipe):
+    """The recipe above, giving the embedding of each side that a decoder rebuilds the side from."""
+
+    def get_training_embeddings(self, x, y):
+        parts = x if isinstance(x, tuple) else (x,)
+        x = torch.cat([part.reshape(part.shape[0], -1) for part in parts], dim=1)
+        return self.fx(x), self.fy(y.reshape(y.shape[0], -1))
+
+
+def test_a_decoder_needs_the_embedding_of_each_side():
+    """A decoder rebuilds each side from the critic's embedding of it. A recipe that gives none is refused,
+    and one that gives them trains with decoders at the size of its embeddings, whatever Model's
+    embedding_dim says."""
     x, y = _data()
-    with pytest.raises(ValueError, match='use_decoder=True cannot serve a custom_critic'):
-        nmi.run(x, y, model=nmi.Model(custom_critic=Recipe, use_decoder=True), training=_TRAINING,
-                show_progress=False)
+    with pytest.raises(ValueError, match='needs a critic that gives an embedding of each side'):
+        _run(x, y, model=nmi.Model(custom_critic=Recipe, use_decoder=True), seed=0)
+
+    def six_wide(input_dim_x, input_dim_y):
+        return WithEmbeddings(input_dim_x, input_dim_y, 6)
+
+    result, _ = _run(x, y, model=nmi.Model(custom_critic=six_wide, use_decoder=True), seed=0)
+    assert np.isfinite(result.mi_estimate)
 
 
 def test_input_scaling_the_recipe_does_not_take_leaves_the_scale_check_on():

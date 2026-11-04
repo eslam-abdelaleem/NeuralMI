@@ -649,12 +649,6 @@ def run(
     if model is not None:
         from .utils import check_custom_critic
         check_custom_critic(model.custom_critic)
-        if model.custom_critic is not None and model.use_decoder:
-            raise ValueError(
-                "use_decoder=True cannot serve a custom_critic. A decoder rebuilds each side from the "
-                "embedding of an encoder the library built, at the sizes the Model settings give, and a custom "
-                "critic builds networks of its own. Leave use_decoder unset with a custom_critic."
-            )
     training = as_config(training, Training)
     split = as_config(split, Split)
     output = as_config(output, Output)

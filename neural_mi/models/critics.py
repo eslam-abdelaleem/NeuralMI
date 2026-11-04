@@ -79,6 +79,36 @@ def _slice_batch(x, start: int, end: int):
     return x[start:end]
 
 
+def _gives_own_embeddings(critic: nn.Module) -> bool:
+    """Whether a critic gives its embeddings through a ``get_training_embeddings`` of its own, as a custom
+    critic can, rather than through an encoder per side."""
+    own = getattr(type(critic), 'get_training_embeddings', None)
+    return own is not None and own is not BaseCritic.get_training_embeddings
+
+
+def side_embedding_sizes(critic: nn.Module, x, y) -> Optional[Tuple[int, int]]:
+    """The size of the embedding of each side a critic gives, which a decoder rebuilds that side from, or
+    None when it gives none.
+
+    The separable and hybrid critics embed each side with an encoder of its own,
+    and a custom critic gives its embeddings through a ``get_training_embeddings``
+    of its own. The concat critic scores the pair without embedding either side.
+    The sizes are read on the rows ``x`` and ``y`` in eval mode, without gradients
+    and on a forked random stream, so that asking changes nothing in the training
+    that follows.
+    """
+    if not hasattr(critic, 'embedding_net_x') and not _gives_own_embeddings(critic):
+        return None
+    was_training = critic.training
+    critic.eval()
+    try:
+        with torch.no_grad(), torch.random.fork_rng(devices=[]):
+            z_x, z_y = critic.get_training_embeddings(x, y)
+    finally:
+        critic.train(was_training)
+    return int(z_x.shape[-1]), int(z_y.shape[-1])
+
+
 class BaseCritic(nn.Module):
     """Abstract base class for critic models.
 
@@ -165,6 +195,10 @@ class BaseCritic(nn.Module):
         """Public API to extract chunked embeddings from a trained critic."""
         if hasattr(self, 'embedding_net_x'):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
+        elif _gives_own_embeddings(self):
+            # A critic that gives its embeddings itself is read the same way
+            # wherever its embeddings are read: decoders, returned embeddings.
+            return self.get_training_embeddings(x, y)
         else:
             # ConcatCritic: no separate embedding networks, return flat inputs.
             # This is semantically honest, concat critics have no separable embedding.

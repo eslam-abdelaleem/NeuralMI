@@ -298,12 +298,29 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     decoder_x = None
     decoder_y = None
     if setting(params, 'use_decoder'):
+        from neural_mi.models.critics import side_embedding_sizes
         from neural_mi.models.decoders import PairDecoder, build_decoder
+        from neural_mi.training.trainer import _to_device
 
-        def _decoder(n_channels, input_dim, activation, height=None, width=None):
+        # A decoder rebuilds each side from the critic's embedding of it, at the
+        # size the critic gives, read on two rows.
+        _probe = torch.arange(min(2, len(dataset)))
+        _on = next(critic.parameters()).device
+        _sizes = side_embedding_sizes(critic, _to_device(dataset.x_dataset[_probe, ...], _on),
+                                      _to_device(dataset.y_dataset[_probe, ...], _on))
+        if _sizes is None:
+            raise ValueError(
+                "use_decoder=True needs a critic that gives an embedding of each side, which a decoder "
+                "rebuilds that side from. The separable and hybrid critics do, and a custom_critic does when "
+                "it defines get_training_embeddings(x, y) returning (z_x, z_y). critic_type='concat' scores "
+                "the pair without embedding either side."
+            )
+        _size_x, _size_y = _sizes
+
+        def _decoder(n_channels, input_dim, activation, embedding_dim, height=None, width=None):
             return build_decoder(
                 embedding_model=setting(params, 'embedding_model'),
-                embedding_dim=setting(params, 'embedding_dim'),
+                embedding_dim=embedding_dim,
                 hidden_dim=setting(params, 'hidden_dim'),
                 n_channels=n_channels,
                 window_size=max(1, input_dim // n_channels),
@@ -320,15 +337,15 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         # part, each by a decoder of its own shape.
         _act_x = setting(params, 'decoder_output_activation_x')
         if isinstance(params['n_channels_x'], tuple):
-            decoder_x = PairDecoder([_decoder(c, d, _act_x)
+            decoder_x = PairDecoder([_decoder(c, d, _act_x, _size_x)
                                      for c, d in zip(params['n_channels_x'], params['input_dim_x'])])
         else:
-            decoder_x = _decoder(params['n_channels_x'], params['input_dim_x'], _act_x,
+            decoder_x = _decoder(params['n_channels_x'], params['input_dim_x'], _act_x, _size_x,
                                  params.get('input_height_x'), params.get('input_width_x'))
         # Always build a dedicated decoder_y -- X and Y may differ in n_channels/
         # window_size/activation even when shared_encoder=True.
         decoder_y = _decoder(params['n_channels_y'], params['input_dim_y'],
-                             setting(params, 'decoder_output_activation_y'),
+                             setting(params, 'decoder_output_activation_y'), _size_y,
                              params.get('input_height_y'), params.get('input_width_y'))
         logger.debug(
             f"Built decoder_x ({type(decoder_x).__name__}) and decoder_y ({type(decoder_y).__name__}) "

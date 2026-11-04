@@ -1373,8 +1373,10 @@ tuple of two tensors, and each size of X it names is a pair of the two parts'
 sizes. An architecture setting it does not name is ignored with a warning, and
 `input_scaling` reaches it only when it names it. `use_variational` and `beta`
 apply as to any critic: the loss is the KL term its `forward` returns minus
-`beta` times the MI term. `use_decoder` is refused, since a decoder rebuilds a
-side from the embedding of an encoder the library built. An object is refused, since one
+`beta` times the MI term. A recipe gives the embedding of each side, which a
+decoder rebuilds that side from, by defining `get_training_embeddings(x, y)`
+returning `(z_x, z_y)`, and the library reads the same embeddings wherever it
+reads a critic's (decoders, returned embeddings, `extract_embeddings`). An object is refused, since one
 object would be trained in place and shared by every repeat. With
 `n_workers` above 1 the class or function must be defined at module level so
 the workers can import it.
@@ -1413,7 +1415,11 @@ weighted against the MI term by `beta`. Under the concat critic the variational
 layer acts on each pair's score because there are no separate encoders.
 
 `Model(use_decoder=True)` adds a decoder that reconstructs each input from its
-embedding. Its reconstruction loss, weighted by `decoder_lambda` (or
+embedding, built at the size of the embedding the critic gives. It needs a
+critic that gives an embedding of each side: the separable and hybrid critics
+do, a custom critic does through `get_training_embeddings`, and
+`critic_type='concat'`, which scores the pair without embedding either side,
+refuses it. Its reconstruction loss, weighted by `decoder_lambda` (or
 `decoder_lambda_x` and `decoder_lambda_y`), keeps the embedding from collapsing.
 The decoder mirrors the encoder: an MLP, CNN, CNN2D, GRU, LSTM, LRU, TCN or
 transformer decoder for the matching encoder, and an MLP decoder with a warning

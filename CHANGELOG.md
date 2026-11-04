@@ -639,8 +639,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   effect listed `use_variational` and `beta`, while the trainer applied both:
   its loss is the KL term the critic returns minus `beta` times the MI term.
   `use_decoder=True` built decoders at the library's embedding sizes and failed
-  on the critic's own. The warning now leaves the two variational settings out,
-  and `use_decoder` is refused with a custom critic. The data check also took
+  on the critic's own, as it did with `critic_type='concat'`, which embeds
+  neither side. The warning now leaves the two variational settings out. A
+  decoder is now built at the size of the embeddings the critic gives: the
+  separable and hybrid critics through their encoders, a custom critic through a
+  `get_training_embeddings` of its own, which the library then reads wherever it
+  reads a critic's embeddings. A critic that gives none, concat included,
+  refuses `use_decoder` with one message. The data check also took
   a set `input_scaling` to scale the rows when a recipe that does not name it
   never received it, and stayed silent about rows far from unit scale.
 

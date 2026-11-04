@@ -81,6 +81,17 @@ class TestBuildDecoderDispatch:
         assert "No dedicated decoder" not in caplog.text
 
 
+def test_a_critic_without_an_embedding_of_each_side_refuses_a_decoder():
+    """The concat critic scores the pair without embedding either side, so a decoder has nothing to
+    rebuild a side from. It used to fail on mismatched shapes."""
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((200, 3)).astype(np.float32)
+    with pytest.raises(ValueError, match='needs a critic that gives an embedding of each side'):
+        nmi.run(x, x + rng.standard_normal((200, 3)).astype(np.float32),
+                model=Model(critic_type='concat', use_decoder=True, embedding_dim=4, hidden_dim=8),
+                training=Training(n_epochs=1, batch_size=32), show_progress=False, seed=0)
+
+
 class TestUseDecoderEndToEnd:
     """End-to-end: use_decoder=True through nmi.run(), first-batch shapes."""
 

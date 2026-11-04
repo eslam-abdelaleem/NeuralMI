@@ -627,7 +627,8 @@ the decoder settings to `use_decoder=True`. With `custom_critic` the recipe buil
 the critic and takes only the architecture settings it names, and the others are
 ignored. `use_variational` and `beta` still apply, since the trainer's loss is
 the KL term the critic returns minus `beta` times the MI term, and
-`use_decoder=True` is refused. Of the `Output` settings,
+`use_decoder=True` reads the embeddings the recipe gives through
+`get_training_embeddings`. Of the `Output` settings,
 `return_rotated_embeddings` needs `return_embeddings` or `track_embeddings`,
 `rotated_embeddings_per_epoch` needs both `track_embeddings` and
 `return_rotated_embeddings`, and `return_rotation_matrices` needs
