@@ -1234,7 +1234,7 @@ KSG assumes continuous values. Spike windows, whose padded slots and counts tie,
 are not: each variable's ties are broken by noise of its own, so a variable and
 an exact copy of it stop looking alike, and a conditional estimate given that
 copy reads away from zero where the truth is 0. Use the trained estimators on
-spike data.
+spike data. KSG warns when most values of a column tie.
 
 ### Encoders
 

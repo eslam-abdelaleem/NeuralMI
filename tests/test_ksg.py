@@ -68,6 +68,18 @@ class TestEstimator:
         monkeypatch.setattr(K, 'KD_TREE_MAX_DIM', 1000)
         assert one_pass == pytest.approx((ksg_mi(x, y, exclude=3), ksg_cmi(x, y, z, exclude=3)), abs=1e-12)
 
+    def test_values_that_mostly_tie_warn(self):
+        """Counts tie, and KSG breaks each variable's ties apart, so a copy stops looking like a copy. It
+        warns there and stays silent on continuous values."""
+        rng = np.random.default_rng(0)
+        counts = rng.poisson(0.3, size=(2000, 3)).astype(float)
+        with pytest.warns(UserWarning, match=r"KSG assumes continuous values, and .* of X's values in column"):
+            ksg_mi(counts, rng.standard_normal(2000))
+        assert K.tied_share(counts).min() > K.TIED_SHARE
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            ksg_mi(*_pair())
+
     def test_autocorrelation_time(self):
         rng = np.random.default_rng(0)
         assert K.autocorrelation_time(rng.standard_normal((5000, 2))) == 0

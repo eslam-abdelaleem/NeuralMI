@@ -16,6 +16,11 @@ from a seeded generator so a seeded call is reproducible. With
 normal (Holmes and Nemenman, 2019): the information is unchanged, and KSG's
 bias falls on skewed and heavy-tailed data.
 
+KSG assumes continuous values. On values that tie, such as a spike window's
+empty slots or a count, the noise breaks each variable's ties in an order of its
+own, so a variable and an exact copy of it stop looking alike. A column whose
+values mostly tie, more than ``TIED_SHARE`` of its rows, warns.
+
 Rows of a time series are not independent. Rows a few steps apart resemble each
 other, and the nearest neighbours of a row are then its own neighbours in time,
 which reads as dependence. Rows within ``exclude`` steps of each other are
@@ -27,6 +32,7 @@ below 1/e.
 The implementations checked against are ``bmi`` (Czyż et al., 2023), JIDT
 (Lizier, 2014) and scikit-learn's ``mutual_info_regression``.
 """
+import warnings
 from typing import Optional, Union
 
 import numpy as np
@@ -34,17 +40,40 @@ import torch
 from scipy.spatial import cKDTree
 from scipy.special import digamma
 
+from neural_mi.logger import user_stacklevel
+
 NOISE = 1e-8              # tie-breaking noise, in standard deviations of each column
+TIED_SHARE = 0.5          # a column with more than this share of its rows tied warns
 KD_TREE_MAX_DIM = 20      # above this many dimensions comparing every pair is faster than a k-d tree
 _CHUNK = 256              # rows compared with every row at once on the brute-force path
 
 
-def prepare(a, gaussianize: bool, rng: np.random.Generator) -> np.ndarray:
+def tied_share(a: np.ndarray) -> np.ndarray:
+    """For each column of the 2-D array ``a``, the share of its rows whose value another row repeats."""
+    s = np.sort(a, axis=0)
+    same = s[1:] == s[:-1]
+    tied = np.zeros(s.shape, dtype=bool)
+    tied[1:] |= same
+    tied[:-1] |= same
+    return tied.mean(axis=0)
+
+
+def prepare(a, gaussianize: bool, rng: np.random.Generator, name: str = 'a variable') -> np.ndarray:
     """Rows of ``a`` flattened to columns, each scaled to unit variance with tie-breaking noise, and with
     ``gaussianize`` mapped through its ranks to a standard normal, by the transforms ``Preprocessing``
-    applies to streams (:mod:`neural_mi.preprocessing`)."""
+    applies to streams (:mod:`neural_mi.preprocessing`). A column whose values mostly tie warns, naming
+    the variable as ``name``."""
     from neural_mi.preprocessing import Copula, ZScore
     a = np.asarray(a, dtype=float).reshape(len(a), -1)
+    share = tied_share(a) if len(a) > 1 else np.zeros(a.shape[1])
+    if share.size and share.max() > TIED_SHARE:
+        column = f" in column {int(np.argmax(share))}" if a.shape[1] > 1 else ""
+        warnings.warn(
+            f"KSG assumes continuous values, and {share.max():.0%} of {name}'s values{column} tie with another "
+            f"row's. KSG breaks ties with noise drawn for each variable apart, so a variable and an exact copy of "
+            f"it stop looking alike, and an estimate conditioned on that copy reads away from zero where the "
+            f"truth is 0. Use the trained estimators on spike windows, counts and other values that tie.",
+            UserWarning, stacklevel=user_stacklevel())
     a = ZScore().fit(a).transform(a) + NOISE * rng.standard_normal(a.shape)
     if gaussianize:
         a = Copula().fit(a).transform(a)
@@ -153,7 +182,7 @@ def ksg_mi(x, y, k: int = 4, gaussianize: bool = True, exclude: Union[int, str] 
     """
     rng = np.random.default_rng(seed)
     w = _resolve_exclude(exclude, (x, y))
-    x, y = prepare(x, gaussianize, rng), prepare(y, gaussianize, rng)
+    x, y = prepare(x, gaussianize, rng, 'X'), prepare(y, gaussianize, rng, 'Y')
     eps, (n_x, n_y) = _neighbours([x, y], [(0,), (1,)], k, w)
     return float(digamma(k) + digamma(_candidates(len(x), w) + 1).mean()
                  - (digamma(n_x + 1) + digamma(n_y + 1)).mean())
@@ -169,6 +198,6 @@ def ksg_cmi(x, y, z, k: int = 4, gaussianize: bool = True, exclude: Union[int, s
     """
     rng = np.random.default_rng(seed)
     w = _resolve_exclude(exclude, (x, y, z))
-    x, y, z = (prepare(a, gaussianize, rng) for a in (x, y, z))
+    x, y, z = (prepare(a, gaussianize, rng, name) for a, name in ((x, 'X'), (y, 'Y'), (z, 'Z')))
     eps, (n_xz, n_yz, n_z) = _neighbours([x, y, z], [(0, 2), (1, 2), (2,)], k, w)
     return float(digamma(k) - (digamma(n_xz + 1) + digamma(n_yz + 1) - digamma(n_z + 1)).mean())

@@ -49,7 +49,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   than the window. The accuracy tests against the oracle now allow a fraction
   of the exact value instead of half a bit. Writing them showed that KSG
   misreads values that tie, such as spike windows, and `USING.md` now says to
-  use the trained estimators there (ROADMAP C20).
+  use the trained estimators there. KSG also warns when it meets such values.
 
 ### Changed
 
@@ -615,6 +615,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   measured up to 60 epochs past the smoothed top (`epochs.NOISE_SPAN`), more
   than any default patience trains past it. A run that stops by patience reads
   as before, and a longer one no longer reads earlier for having trained on.
+
+- KSG breaks ties with noise drawn for each variable apart. On values that tie,
+  such as a spike window's empty slots or a count, a variable and an exact copy
+  of it then stop looking alike, and a conditional estimate given that copy
+  read away from zero where the truth was 0, with nothing to say so. A column
+  whose values mostly tie now warns, and the message names the variable and the
+  column. The estimator itself is unchanged: ties broken alike in every
+  variable would keep a copy a copy, but would make unrelated variables that
+  tie in the same rows look dependent.
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.

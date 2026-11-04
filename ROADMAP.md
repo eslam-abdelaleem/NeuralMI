@@ -1,41 +1,11 @@
 # Roadmap
 
-## Correctness fixes
-
-Each item below gives a wrong or misleading result today, or is one thing
-implemented in several places that can disagree. They are being fixed now. An
-item leaves this list when its fix lands, and the changelog records the fix.
-C1 to C19 and C21 to C23 have landed. C20 came out of writing C15's tests and
-is open. The investigations' scripts
-and results, with those behind C19 to C23, are in `scratch/` until the list is
-done.
-
-The evidence comes from an investigation of `mi_rate` on data with known
-answers: exact Gaussian values for a smooth two-process model (a shared damped
-oscillation under larger private ones, finely sampled, as in field potentials)
-and the library's own generators. C17 and C18 come from a second investigation,
-of how the terms of a difference get their rows and of window shifting. Values
-are in nats unless marked as bits.
-
-### C20. KSG on tied values
-
-**Now.** Before its neighbour search KSG gives every column tie-breaking noise,
-drawn for each variable apart, and with `gaussianize=True` (the default) maps
-each column through its ranks to a standard normal. On values that tie, such as
-a spike window's padded slots or a count, a tied group comes out of the ranks
-in a random order of its own in each variable and is spread over a range of
-normal quantiles. A variable and an exact copy of it then stop looking alike.
-With a spike W that was X's own record from 40 s on, so that I(X; Y | W) = 0 on
-every row, KSG read a positive conditional MI on every seed tried. Conditioning
-the same spike rows on an exact copy of X read above zero with the rank map,
-below zero without it, and close to zero once X and its copy had their ties
-broken alike. On continuous values KSG read 0 exactly. `USING.md` now says to
-use the trained estimators on spike data (`scratch/investigation/c20_ksg_ties.py`).
-
-**Fix.** Keep tied values tied through the rank transform (one quantile for a
-tied group, at its mid-rank) so that a copy of a variable stays a copy, and
-warn when most of a variable's values tie, where KSG's neighbour counts do not
-hold.
+Several items below cite measurements on data with known answers: exact
+Gaussian values for a smooth two-process model (a shared damped oscillation
+under larger private ones, finely sampled, as in field potentials) and the
+library's own generators. Values are in nats unless marked as bits. The
+correctness fixes those measurements found have all landed, and the changelog
+records them.
 
 ## Design work
 
@@ -213,9 +183,9 @@ the error against the exact value fell to 0.44 mbit, from 0.80 with one fixed
 setting. There the term of the target's own past did best with more
 regularisation and the full term with more capacity. Elsewhere the choice made
 little difference, including where only the ratio of the terms' input sizes grew
-(99 sources against the target's own 5 lags). On the smooth model of the
-correctness section, the joint term of `mi_rate` was often still rising at the
-default 50 epochs while its conditioning term had settled. Reading each term at
+(99 sources against the target's own 5 lags). On the smooth two-process model,
+the joint term of `mi_rate` was often still rising at what was then the default
+of 50 epochs while its conditioning term had settled. Reading each term at
 its own epoch cannot make up for a budget they share.
 
 **Scope.**
@@ -261,15 +231,16 @@ cheaper after design item 1.
 estimates the conditioning term that `mi_rate` subtracts, so it suits processes
 whose own past predicts them well, where the chain route of `mi_rate` amplifies
 errors. The chain route suits processes with a large rate and little memory,
-where block MI reaches the ceiling within a few samples. On the smooth model of
-the correctness section, the slope between windows of 5 and 10 samples needs
+where block MI reaches the ceiling within a few samples. On the smooth
+two-process model, the slope between windows of 5 and 10 samples needs
 block MI of 1.4 and amplifies errors 2.4 times, against 56 for `mi_rate`. In
 the easy regime of the accuracy test the same slope needs 6.3.
 
 **Evidence so far.** On the raw smooth signals the library's defaults read about
 0.05 against 0.57 at a 5-sample window. Learning rates from 1e-4 to 1e-2, with
 wider networks and longer training, did no better, and every one of those
-curves was not resolved. After whitening (C7) the defaults read 0.70 against
+curves was not resolved. After whitening (`Preprocessing(time='ar')`) the
+defaults read 0.70 against
 0.75 at 5 samples and 1.31 against 1.53 at 10 (still rising), and fell short at
 20 samples, where 1,000 windows were left, with 99 of them held out.
 
@@ -282,7 +253,7 @@ run pointing to it (see "Pointers in messages" under Smaller items).
 ### Two-modality preprocessing (PLS, CCA)
 
 **Idea.** Directions chosen for X and Y together, as a channel-domain option of
-C7.
+`Preprocessing`.
 
 **Constraints.** It uses both streams, so fitting it on every row would let the
 held-out rows shape the transform. It is fitted inside each task on that task's
@@ -299,8 +270,30 @@ negatives and no `log N` ceiling, and the two terms' errors are paired row by
 row instead of coming from two separate networks. It fits the objective choice
 of the first item under "Estimators and quantities from other toolboxes".
 
-**Revisit if** whitening (C7) does not make the conditioned quantities reliable
-on real recordings.
+**Revisit if** whitening (`Preprocessing(time='ar')`) does not make the
+conditioned quantities reliable on real recordings.
+
+### Keeping KSG's ties tied (considered, not planned)
+
+**Idea.** Map a tied group through KSG's ranks to one quantile, at its mid-rank,
+so that a variable and an exact copy of it stay alike on values that tie, such
+as a spike window's empty slots or a count.
+
+**Evidence.** KSG breaks ties with noise drawn for each variable apart. With a
+spike W that was X's own record from 40 s on, so that I(X; Y | W) = 0 on every
+row, KSG read a positive conditional MI on every seed tried. Conditioning the
+same spike rows on an exact copy of X read above zero with the rank map, below
+zero without it, and close to zero once X and its copy had their ties broken
+alike. On continuous values KSG read 0 exactly.
+
+**Why not.** Ties kept in place put rows at distance zero, where KSG's neighbour
+counts do not hold. Ties broken alike in every variable keep a copy a copy but
+make unrelated variables that tie in the same rows look dependent. The trained
+estimators read such data, `USING.md` says to use them there, and KSG warns
+when most values of a column tie.
+
+**Revisit if** a neighbour estimator for discrete values is wanted beside the
+plug-in estimators under "Discrete estimators for spike words".
 
 ### Starting the joint term from the trained conditioning term
 
@@ -339,14 +332,15 @@ its own held-out value preferred (bits):
 Turning it off often raised the training-side value while the held-out value
 fell (binned counts: 0.70 reported against 0.58), which is overfitting. Away
 from unit scale it fixes nothing either way: at ×1e-3 both settings fail, and at
-the scale of default spike binning (C8) turning it off is worse.
+the scale of spike binning when it divided counts by the bin width by default,
+turning it off is worse.
 
 **Why not.** On is better or tied everywhere except one easy case, where off
 leads by 0.08 bits.
 
 **Revisit if** a recording shows held-out values rising with it off. The spike
 case that prompted the idea is the first to rerun, since its loss may have come
-from the bin scaling of C8.
+from that bin scaling, which `normalize_bins=False` now leaves out by default.
 
 ## Estimators and quantities from other toolboxes
 
@@ -355,8 +349,8 @@ infomeasure (October 2026).
 
 **Preprocessing, embedding and objective as separate choices.** Rationale:
 several estimators of other toolboxes are combinations of the three. Options:
-- preprocessing: now correctness item C7 (channel domain: z-score, ZCA, PCA,
-  copula; time domain: whitening), with PLS and CCA under Estimation;
+- preprocessing: `Preprocessing` (channel domain: z-score, ZCA, PCA, copula;
+  time domain: whitening), with PLS and CCA under Estimation;
 - embedding: linear (an MLP with `n_layers=0`, already possible) or any
   existing architecture;
 - objective: InfoNCE, SMILE, or a Gaussian objective (log-determinant of the
@@ -397,7 +391,7 @@ small chunks, not the call's held-out line or the curve warnings' note, whose
 defaults agree with it; one setting could move all three.
 
 **Pointers in messages.** The amplification warning of a difference names
-whitening (C7) and the block-MI route. Each term's curve diagnosis is carried
+whitening (`Preprocessing(time='ar')`) and the block-MI route. Each term's curve diagnosis is carried
 onto the combined row in `dataframe`, so a difference read from two unfinished
 terms says so where its value is shown.
 

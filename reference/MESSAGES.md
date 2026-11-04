@@ -533,6 +533,17 @@ image-shaped input.
 **`Spatial augmentations ... require 4-D input`**
 The image augmentations are skipped because the batch is not image-shaped.
 
+**`KSG assumes continuous values, and ... of ...'s values... tie with another row's`**
+KSG reads the information from the distances between neighbouring rows, and two
+rows that tie lie at distance zero. It breaks ties with noise drawn for each
+variable apart, so a tied group comes out of the ranks in an order of its own in
+each variable. A variable and an exact copy of it then stop looking alike, and a
+conditional estimate given that copy reads away from zero where the truth is 0.
+The empty slots of spike windows, spike counts and categories tie. Use the
+trained estimators on them. X, Y and Z are the variables of the estimate as KSG
+reads it, Z the conditioning set of a conditional one, and the message names the
+column whose values tie most.
+
 ---
 
 ## Dimensionality

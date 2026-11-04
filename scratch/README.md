@@ -1,8 +1,8 @@
 # scratch
 
-Working material for the correctness fixes in `ROADMAP.md` (C3 to C23). It is
-not part of the library, nothing imports it, and the folder is deleted once the
-correctness fixes are done.
+Working material for the correctness fixes C3 to C23, which have all landed and
+which the changelog records. It is not part of the library, nothing imports it,
+and the folder is deleted in the cleanup that follows them.
 
 ## investigation/
 

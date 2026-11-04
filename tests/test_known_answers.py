@@ -107,7 +107,7 @@ class TestAWThatStartsLate:
     def test_a_clock_that_starts_late_reads_none_with_ksg(self):
         """The same grid route on continuous streams, where KSG reads exactly: X and W are the same rows, so
         the joint term's conditional estimate given W has nothing to add. (KSG cannot read this case on
-        spike windows, whose padded slots tie: ROADMAP C20.)"""
+        spike windows, whose empty slots tie, and warns there.)"""
         g = LatentGaussian.shared(dims={'x': 2, 'y': 2}, d=1, phi=0.9, coupling=1.0, seed=0)
         data = g.sample(12000, seed=0)
         t = np.arange(12000) / 100.0
