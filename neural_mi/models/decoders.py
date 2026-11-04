@@ -388,6 +388,7 @@ class TransformerDecoder(BaseDecoder):
         n_layers: int = default_of('n_layers'),
         nhead: int = default_of('nhead'),
         output_activation: str = default_of('decoder_output_activation_x'),
+        dropout: float = default_of('dropout'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -403,8 +404,10 @@ class TransformerDecoder(BaseDecoder):
         self.memory_proj = nn.Linear(embedding_dim, hidden_dim)
         # Learned position queries (one per time step)
         self.pos_queries = nn.Parameter(torch.randn(1, window_size, hidden_dim) * 0.02)
+        # Model(dropout), as the transformer encoder reads it. PyTorch's own
+        # default of 0.1 applied whatever the call set.
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=hidden_dim, nhead=nhead, batch_first=True
+            d_model=hidden_dim, nhead=nhead, dropout=dropout, batch_first=True
         )
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=max(1, n_layers))
         self.output_proj = nn.Linear(hidden_dim, n_channels)
@@ -522,7 +525,10 @@ def build_decoder(
     output_activation : str
         Final activation: ``'linear'``, ``'sigmoid'``, or ``'softmax'``.
     kernel_size, nhead, dropout
-        The call's settings, read by the decoders whose encoder reads them.
+        The call's settings, each read by the decoders that have the part it
+        names: ``kernel_size`` by the CNN, CNN2D and TCN decoders, ``nhead`` by
+        the transformer's, and ``dropout`` by the LRU and transformer decoders,
+        the only ones with layers that drop out.
     height, width : int, optional
         The spatial layout for ``'cnn2d'``, square from ``window_size`` when
         unknown.
@@ -560,7 +566,7 @@ def build_decoder(
     elif name == 'tcn':
         return TCNDecoder(**common, window_size=window_size, kernel_size=kernel_size)
     elif name == 'transformer':
-        return TransformerDecoder(**common, window_size=window_size, nhead=nhead)
+        return TransformerDecoder(**common, window_size=window_size, nhead=nhead, dropout=dropout)
     else:
         # Custom or unknown encoder (e.g. 'pretrained_backbone') has no
         # dedicated decoder -- fall back to MLP and make that visible, so a

@@ -67,6 +67,14 @@ class TestBuildDecoderDispatch:
         assert isinstance(d, MLPDecoder)
         assert "No dedicated decoder" in caplog.text
 
+    @pytest.mark.parametrize('dropout', [0.0, 0.3])
+    def test_the_transformer_decoder_drops_out_at_the_calls_rate(self, dropout):
+        """Its layers used PyTorch's own dropout of 0.1 whatever Model(dropout) said."""
+        d = _build('transformer', embedding_dim=4, hidden_dim=8, n_channels=2, window_size=10, n_layers=2,
+                   nhead=2, dropout=dropout)
+        rates = {m.p for m in d.modules() if isinstance(m, torch.nn.Dropout)}
+        assert rates == {dropout}
+
     def test_dedicated_decoders_do_not_fall_back(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
             _build('gru', embedding_dim=4, hidden_dim=8, n_channels=2, window_size=10, n_layers=1)

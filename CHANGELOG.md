@@ -640,6 +640,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   a set `input_scaling` to scale the rows when a recipe that does not name it
   never received it, and stayed silent about rows far from unit scale.
 
+- The transformer decoder (`use_decoder=True` with
+  `embedding_model='transformer'`) built its layers with PyTorch's own dropout
+  of 0.1, whatever `Model(dropout)` said. It now reads the setting, as the
+  transformer encoder does.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 
