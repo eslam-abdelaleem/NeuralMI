@@ -653,6 +653,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   move its rows. On a grid in time it always can, since rows one sample apart
   move there by part of a sample, and `USING.md` and `PARAMETERS.md` now say so.
 
+- `result.plot()` of a rigorous result drew its mean per $\gamma$ from every
+  rung that produced a value, including rungs whose held-out curves did not
+  resolve and values of $\gamma$ the fit dropped, so the line it drew was not
+  the one the fit read. It now averages the rungs the fit used, by the fit's
+  own rule, and still shows every rung as a point.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

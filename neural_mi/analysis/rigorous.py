@@ -223,6 +223,15 @@ def _per_gamma(group: pd.DataFrame, left_out: pd.Series) -> str:
                      for g, r in per_gamma.iterrows() if r['sum'] > 0)
 
 
+def rungs_left_out(group: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+    """Which rungs of a ladder the fit leaves out, as two masks: those that produced nothing (0 or NaN) and
+    those that did not resolve (:func:`_drop_rungs`)."""
+    zero = (group['train_mi'] == 0) | group['train_mi'].isna()
+    unresolved = ~zero & (group['curve_diagnosis'] == 'not resolved'
+                          if 'curve_diagnosis' in group else False)
+    return zero, unresolved
+
+
 def _drop_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int, int]:
     """The ladder without the rungs the fit cannot use, and how many of them produced nothing and how
     many did not resolve.
@@ -243,9 +252,7 @@ def _drop_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int, int
     happened to learn, which tilt the line. ``min_gamma_points`` then decides
     whether enough values of gamma remain.
     """
-    zero = (group['train_mi'] == 0) | group['train_mi'].isna()
-    unresolved = ~zero & (group['curve_diagnosis'] == 'not resolved'
-                          if 'curve_diagnosis' in group else False)
+    zero, unresolved = rungs_left_out(group)
     if zero.any():
         warnings.warn(
             f"{where}{int(zero.sum())} of {len(group)} rungs of the gamma ladder produced "

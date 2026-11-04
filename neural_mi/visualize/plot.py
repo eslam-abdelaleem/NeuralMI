@@ -375,10 +375,13 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     fit_color = 'red' if color is None else color
 
     sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color=raw_color, alpha=0.5)
-    # The mean per gamma uses the rungs the fit used. A rung reported as 0
-    # produced nothing and still shows as a point.
-    produced = raw_results_df[raw_results_df['train_mi'] != 0]
-    agg = produced.groupby('gamma')['train_mi'].mean().reset_index()
+    # The mean per gamma uses the rungs the fit used: not those that produced
+    # nothing or did not resolve, and only at the values of gamma the fit kept
+    # (analysis/rigorous.py). Every rung still shows as a point.
+    from neural_mi.analysis.rigorous import rungs_left_out
+    zero, unresolved = rungs_left_out(raw_results_df)
+    used = ~(zero | unresolved) & raw_results_df['gamma'].isin(corrected_result['gammas_used'])
+    agg = raw_results_df[used].groupby('gamma')['train_mi'].mean().reset_index()
 
     # A single label collapses the three elements below to one legend entry
     # (via the proxy artist added after them) instead of three near-duplicate
