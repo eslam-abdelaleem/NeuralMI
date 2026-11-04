@@ -69,6 +69,13 @@ What is reusable for the remaining items:
   learning rate and lower ones, with each one's error and how often the
   library warned that a held-out curve topped too early or approached its top
   slowly (`results/c23_tutorial03_lr.txt`). It takes the repository as its
+  first argument. It covers section 4 only. Section 3's window sweep keeps
+  the default rate: at the lower one its widest windows are still learning
+  when training ends.
+- `c23_tutorial05_early_top.py`: which run of tutorial 05 section 4 warned
+  that its held-out curve reached its top too early. It repeats the
+  section's seeded calls one at a time and matches the notebook's table
+  (`results/c23_tutorial05_early_top.txt`). It takes the repository as its
   first argument.
 
 `results/` holds the JSON outputs those scripts wrote.

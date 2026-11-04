@@ -600,6 +600,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   networks reached their top within the first few epochs, too early for the
   library to place it, and the library warned and advised a lower rate. At the
   lower rate those warnings are gone and the estimates read as before.
+  Its window sweep in section 3 keeps the default rate. A wider window leaves
+  fewer rows and so fewer steps per epoch. At the lower rate the networks of
+  the widest windows were still learning when training ended.
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
