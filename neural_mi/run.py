@@ -644,13 +644,12 @@ def run(
         Worker processes for parallelisable modes.
     seed : int, optional
         Random seed (``random``/``numpy``/``torch``). **Reproducible at any
-        ``n_workers``.** Each parallel task re-seeds inside its own worker from
-        ``seed`` plus a deterministic per-task key
-        (``analysis/task.py::run_training_task``), so which worker runs which
-        task, and in what order, does not affect the result. Verified
-        bit-identical between ``n_workers=1`` and ``n_workers=3`` for the shared
-        task path, ``mode='dimensionality'``'s fits over splits, sizes and restarts, and
-        ``mode='pairwise'``'s per-pair dispatch. Without a seed one is drawn and
+        ``n_workers``.** Each task seeds itself from ``seed``, its repeat and
+        its role (``neural_mi/seeds.py``), so which worker runs which task, and
+        in what order, does not change what it draws. Results at different
+        ``n_workers`` agree to within float rounding. On some platforms a worker
+        process rounds the last digits of its arithmetic differently from the
+        calling process. Without a seed one is drawn and
         recorded in ``Results.params['random_seed']``: the terms of a difference
         quantity share their split and evaluation rows through it.
     verbose : bool, optional
@@ -987,10 +986,10 @@ def _run_flat(
                            save_path=save_best_model_path)
             if _proc_grid:
                 return _run_processor_grid(_call_args, _proc_grid, _streams)
-        # Results do not depend on n_workers: run_training_task re-seeds
-        # random/numpy/torch inside each worker from random_seed plus a
-        # deterministic per-task key, so which worker runs a task, and when,
-        # does not change it. Measured bit-identical at n_workers=1 and 3.
+        # Results do not depend on n_workers beyond float rounding:
+        # run_training_task seeds random/numpy/torch inside each worker from the
+        # call's seed, the task's repeat and its role (neural_mi/seeds.py), so
+        # which worker runs a task, and when, does not change what it draws.
 
         if base_params is None: base_params = {}
         # Copy so we never mutate the caller's dict across multiple calls

@@ -854,6 +854,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   rungs of a ladder draw apart. Every number a seeded call reports changes
   once. `tests/test_seeds.py` checks the rule.
 
+- `run()` said a seeded call reads bit-identical results at any `n_workers`.
+  Every task draws the same seeds wherever it runs. On some platforms a worker
+  process still rounds the last digits of its arithmetic differently from the
+  calling process, and CI on Linux found a `mode='dimensionality'` fit that
+  did. `run()`'s `seed` now says results agree to within float rounding, and
+  `tests/test_reproducibility.py` compares serial and parallel results to
+  within it.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 
