@@ -16,7 +16,8 @@ import pytest
 
 import neural_mi as nmi
 from neural_mi import config as cfg
-from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
+from neural_mi.analysis.modes import MODES
+from neural_mi.defaults import BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
 REFERENCE = pathlib.Path(__file__).resolve().parents[1] / 'reference'
 _MISSING = object()
@@ -67,9 +68,8 @@ CONFIGS = [cfg.Model, cfg.Training, cfg.Split, cfg.Estimator, cfg.Output, cfg.Pr
 SCHEMA_NAME = {'Split': {'mode': 'split_mode', 'gap_fraction': 'split_gap_fraction'},
                'Estimator': {'name': 'estimator_name', 'params': 'estimator_params'},
                'Output': {'units': 'output_units'}}
-MODE_OF = {'Rigorous': 'rigorous', 'Precision': 'precision', 'Lag': 'lag', 'Transfer': 'transfer',
-           'Conditional': 'conditional', 'Interaction': 'interaction', 'Pairwise': 'pairwise',
-           'Dimensionality': 'dimensionality'}
+# Each mode config's mode, as the registry declares it.
+MODE_OF = {mode.config.__name__: name for name, mode in MODES.items() if mode.config is not None}
 
 
 @pytest.mark.parametrize('cls', CONFIGS, ids=lambda c: c.__name__)
@@ -84,7 +84,7 @@ def test_every_config_field_is_documented_once(cls):
 @pytest.mark.parametrize('cls', CONFIGS, ids=lambda c: c.__name__)
 def test_every_documented_default_matches_the_code(cls):
     rename = SCHEMA_NAME.get(cls.__name__, {})
-    mode_schema = MODE_KWARGS_SCHEMA.get(MODE_OF.get(cls.__name__), {})
+    mode_schema = MODES[MODE_OF[cls.__name__]].settings if cls.__name__ in MODE_OF else {}
     for name, cell in TABLES[cls.__name__].items():
         stated = _literal(cell)
         if stated is _MISSING:

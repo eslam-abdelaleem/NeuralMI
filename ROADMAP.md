@@ -55,9 +55,9 @@ three groups. `_run_flat()` takes them as 75 parameters, copies them into a
 settings dictionary and then validates and fills defaults. The split lets the
 processor-grid loop re-enter the engine once per value of a processor setting
 and keeps the public signature small. Neither needs the keyword layer that
-holds the second copy of the defaults. Each mode's own settings reach its
-producer through a chain of branches on the mode's name in `_run_flat()` (the
-producer's `ctx`).
+holds the second copy of the defaults. Each mode's declaration prepares its own
+settings for its producer from a record of the call that `_run_flat()` builds
+out of those parameters.
 
 **Design.** `run()` resolves the configs once into a read-only settings object
 holding the user's values, the declared defaults and the mode's own overrides.

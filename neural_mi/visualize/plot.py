@@ -83,9 +83,12 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     if created_fig:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
-    ax.plot(summary_df[param_col], summary_df[mean_col], 'o-', label='Mean MI', **kwargs)
+    # A curve of its own (Results.compare overlays several) carries its label, and its band takes its colour.
+    label = kwargs.pop('label', 'Mean MI')
+    line, = ax.plot(summary_df[param_col], summary_df[mean_col], 'o-', label=label, **kwargs)
     ax.fill_between(summary_df[param_col], summary_df[mean_col] - summary_df[std_col],
-                    summary_df[mean_col] + summary_df[std_col], alpha=0.2, label='±1 Std Dev')
+                    summary_df[mean_col] + summary_df[std_col], alpha=0.2, color=line.get_color(),
+                    label='±1 Std Dev' if label == 'Mean MI' else None)
 
     if true_value is not None:
         ax.axvline(x=true_value, color='r', linestyle='--', label=f'True Value = {true_value}')

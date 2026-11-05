@@ -3,7 +3,8 @@ import dataclasses
 import pytest
 
 from neural_mi import config as cfg
-from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA
+from neural_mi.analysis.modes import MODES
+from neural_mi.defaults import BASE_PARAMS_SCHEMA
 
 
 def _fill_all(cls):
@@ -106,11 +107,11 @@ def test_processing_keys_are_run_processor_keys():
     (cfg.Dimensionality, "dimensionality"),
 ])
 def test_mode_config_keys_are_valid_mode_kwargs(cls, mode):
-    # Precision, Lag, and Dimensionality map exactly onto MODE_KWARGS_SCHEMA.
+    # Precision, Lag, and Dimensionality map exactly onto their modes' settings.
     # (Rigorous/Transfer/Conditional also carry keys consumed directly by their
     # analysis functions, such as gamma_range, so they are not asserted against
     # the schema here; their lowering is covered above.)
     emitted = set(_fill_all(cls).to_analysis_kwargs())
-    allowed = set(MODE_KWARGS_SCHEMA[mode])
+    allowed = set(MODES[mode].settings)
     unknown = emitted - allowed
     assert not unknown, f"{cls.__name__} emits unknown {mode} kwargs: {sorted(unknown)}"

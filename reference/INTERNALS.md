@@ -22,7 +22,7 @@ the networks and returns rows that the shared assembly layer turns into a
 |---|---|
 | `neural_mi/run.py` | `run()` (lowers the config objects into keyword arguments for `_run_flat()`); `_run_flat()` (validates, applies defaults, builds the call's row plan and cuts its rows once or leaves them to the tasks, and calls the producer); the call-level checks (`_announce_call`, the processor-grid loop `_run_processor_grid`, `_warn_if_shift_windows_dead`) |
 | `neural_mi/config.py` | the config dataclasses, `Processing` through `Pairwise`, and `as_config` |
-| `neural_mi/defaults.py` | `BASE_PARAMS_SCHEMA`, `MODE_KWARGS_SCHEMA` and `PROCESSOR_DEFAULTS` (with `PROCESSOR_PARAMS_SCHEMA`, the names it declares): every setting's type and default |
+| `neural_mi/defaults.py` | `BASE_PARAMS_SCHEMA` and `PROCESSOR_DEFAULTS` (with `PROCESSOR_PARAMS_SCHEMA`, the names it declares): every setting's type and default. A mode's own settings are part of its declaration in `analysis/modes.py` |
 | `neural_mi/validation.py` | `ParameterValidator`, the allowed values, and the per-stream processor checks |
 | `neural_mi/results.py` | the `Results` object: `get`, `summary`, `plot`, `compare`, `animate`, `save`, `load`, `to_dict`, `to_json` |
 | `neural_mi/quantities.py` | the named quantities, on one engine: `_named` expands an iterable parameter into configurations, `_call` runs one configuration through `run()`, `_task` is the unit sent to a worker |
@@ -340,14 +340,17 @@ To add an analysis mode:
 2. Add a producer to `neural_mi/analysis/modes.py` that returns its repeat rows
    through `_produced(...)` with the columns to aggregate.
 3. Add its config dataclass to `neural_mi/config.py`, export it from
-   `neural_mi/__init__.py`, add its settings and defaults to
-   `MODE_KWARGS_SCHEMA` in `neural_mi/defaults.py`, and add a parameter of its
-   name to `run()`.
-4. Declare it in `MODES`: its producer, its config, the axis it adds, and what it
-   does with repeats, a configuration grid, `rigorous`, a permutation null,
-   returned embeddings and custom split indices, with the reason it gives for
-   each request it refuses. `run()`, the grid and data checks and the results
-   read the declaration. Its `table` is its row of the capability table in
+   `neural_mi/__init__.py`, and add a parameter of its name to `run()`.
+4. Declare it in `MODES`: its producer, its config and its settings with their
+   types and defaults, the axis it adds, and what it does with repeats, a
+   configuration grid, `rigorous`, a permutation null, returned embeddings and
+   custom split indices, with the reason it gives for each request it refuses.
+   Name the function that prepares its own settings for its producer from the
+   call (`prepare`), the checks of its settings (`check`), and its figure,
+   summary lines and overlay (`draw`, `summarize`, `overlay`, which take the
+   functions in `results.py` as a model). `run()`, the checks, the producers and
+   the results read the declaration, and none of them names a mode. Its `table`
+   is its row of the capability table in
    [USING.md](USING.md#what-each-mode-accepts), which
    `tests/test_mode_registry.py` checks, and `tests/test_contract.py` runs it
    with every kind of grid against the shared `Results` shape.

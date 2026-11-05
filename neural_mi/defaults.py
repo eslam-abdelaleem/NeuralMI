@@ -5,7 +5,6 @@ Centralized definition of default parameters and allowed keys for validation.
 import copy
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 import torch
 
 # Allowed parameters for base_params
@@ -181,95 +180,6 @@ BASE_PARAMS_SCHEMA = {
     # Precision mode overrides this to 'auto' unless the user sets it explicitly.
     'dataset_device': {'type': (str, type(None)), 'default': 'cpu'},
 }
-
-# Parameters allowed in analysis_kwargs for each mode
-MODE_KWARGS_SCHEMA = {
-    'estimate': {
-        'n_workers': {'type': int, 'default': 1},
-    },
-    'sweep': {
-        'n_workers': {'type': int, 'default': 1},
-    },
-    'dimensionality': {
-        'n_workers': {'type': int, 'default': 1},
-        # The embedding dimensions to fit. None chooses them from the reference fit.
-        'embedding_dims': {'type': (list, tuple, range, type(None)), 'default': None},
-        'n_restarts': {'type': int, 'min': 1, 'default': 4},
-        'saturation_ratio': {'type': float, 'min': 0.0, 'default': 0.95},
-        # None is 64, refitted larger when its participation ratio comes close to that.
-        'reference_dim': {'type': (int, type(None)), 'min': 2, 'default': None},
-        'split_method': {'type': str, 'default': 'random'}, # 'random'|'spatial'|'temporal'|'index'|'horizontal'|'vertical'|'row_interleaved'|'col_interleaved'|'diagonal'|'antidiagonal'
-        # Random channel splits of X; the other split methods give one split.
-        'n_splits': {'type': (int, type(None)), 'min': 1, 'default': None},
-        'lag': {'type': int, 'default': 1}, # if split_method='temporal'
-        # Required when split_method='index': list of channel indices assigned to X.
-        # Y is automatically the complement (all remaining channels).
-        'channel_indices_x': {'type': (list, type(None)), 'default': None},
-        # Warn when the reference fit's MI is this close to its evaluation ceiling.
-        'ceiling_mi_fraction': {'type': float, 'default': 0.85},
-    },
-    'rigorous': {
-        'n_workers': {'type': int, 'default': 1},
-        'curvature_t_threshold': {'type': float, 'default': 2.0},
-        'min_gamma_points': {'type': int, 'default': 5},
-        'confidence_level': {'type': float, 'default': 0.68},
-        'residual_threshold': {'type': float, 'default': 2.5},
-        'leverage_threshold': {'type': float, 'default': 0.20},
-        # None: contiguous chunks for rows recorded in time order
-        # (neural_mi/data/rows.py), permuted otherwise; True/False overrides.
-        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
-    },
-    'lag': {
-        'n_workers': {'type': int, 'default': 1},
-        'lag_range': {'type': (range, list, np.ndarray), 'required': True},
-        'equalize_n': {'type': bool, 'default': False},
-    },
-    'precision': {
-        'n_workers': {'type': int, 'default': 1},
-        'tau_grid': {'type': list, 'required': True},
-        # corrupt_target: 'x' corrupts only X, 'y' only Y, 'both' corrupts both
-        # simultaneously (useful for measuring shared spike-timing precision).
-        'corrupt_target': {'type': str, 'default': 'x'},
-        'corruption_method': {'type': str, 'default': 'rounding'},
-        'n_noise_samples': {'type': int, 'default': 50},
-        'threshold_ratio': {'type': (float, list, tuple), 'default': 0.9},
-    },
-    'conditional': {
-        'n_workers': {'type': int, 'default': 1},
-        'rigorous': {'type': bool, 'default': False},
-        'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'curvature_t_threshold': {'type': float, 'default': 2.0},
-        'min_gamma_points': {'type': int, 'default': 5},
-        'confidence_level': {'type': float, 'default': 0.68},
-        'residual_threshold': {'type': float, 'default': 2.5},
-        'leverage_threshold': {'type': float, 'default': 0.20},
-    },
-    'transfer': {
-        'n_workers': {'type': int, 'default': 1},
-        'rigorous': {'type': bool, 'default': False},
-        'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'curvature_t_threshold': {'type': float, 'default': 2.0},
-        'min_gamma_points': {'type': int, 'default': 5},
-        'confidence_level': {'type': float, 'default': 0.68},
-        'residual_threshold': {'type': float, 'default': 2.5},
-        'leverage_threshold': {'type': float, 'default': 0.20},
-    },
-    'interaction': {
-        'n_workers': {'type': int, 'default': 1},
-        'rigorous': {'type': bool, 'default': False},
-        'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'curvature_t_threshold': {'type': float, 'default': 2.0},
-        'min_gamma_points': {'type': int, 'default': 5},
-        'confidence_level': {'type': float, 'default': 0.68},
-        'residual_threshold': {'type': float, 'default': 2.5},
-        'leverage_threshold': {'type': float, 'default': 0.20},
-    },
-    'pairwise': {
-        'n_workers': {'type': int, 'default': 1},
-        'pairs': {'type': (list, type(None)), 'default': None},
-    },
-}
-
 
 # The processor settings' defaults, by processor. ``None`` means unset: a
 # window_size has to be given, a step_size of None is one window, and so on.

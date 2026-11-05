@@ -423,6 +423,13 @@ class TestCompareEstimateMode:
             Results.compare([rf.estimate(), repeated], show=False)
 
     @patch('matplotlib.pyplot.show')
+    def test_compare_overlays_curves_over_one_swept_key(self, mock_show):
+        """Each result's curve carries its own label. plot_sweep_curve once passed the label beside its own
+        and every overlay of curves failed."""
+        ax = Results.compare([rf.sweep(), rf.sweep(means=(0.4, 0.8, 1.0, 1.1))], labels=['a', 'b'], show=False)
+        assert [line.get_label() for line in ax.get_lines()] == ['a', 'b']
+
+    @patch('matplotlib.pyplot.show')
     def test_compare_needs_one_swept_key_for_other_modes(self, mock_show):
         r1, r2 = rf.precision(), rf.precision()
         with pytest.raises(ValueError, match="exactly one swept key"):

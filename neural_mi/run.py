@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from typing import Union, Optional, Dict, Any, List, Tuple
 import random
+from types import SimpleNamespace
 
 from .analysis.task import _decoder_lambda
 from .analysis.assemble import build_results
@@ -25,7 +26,7 @@ from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
 from .embeddings_io import model_file, resolve_model_path, announce_saving_several
-from .defaults import (BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, default_of, norm_layer_of,
+from .defaults import (BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, default_of, norm_layer_of,
                        setting, stream_processing)
 from .analysis.modes import MODES
 import inspect as _inspect
@@ -38,33 +39,7 @@ from .config import (
 # Each mode is declared once, in analysis/modes.py (MODES): its config, its
 # producer, what it accepts and the settings it sets itself.
 
-# Rigorous(...) settings that run_rigorous_analysis takes as keywords, beside the
-# three that _run_flat names (curvature_t_threshold, min_gamma_points,
-# confidence_level).
-_RIGOROUS_FIT_KEYS = ('gamma_range', 'residual_threshold', 'leverage_threshold',
-                      'temporal_chunking')
-
 _PROCESSOR_KEYS = frozenset().union(*PROCESSOR_PARAMS_SCHEMA.values())
-
-
-def _to_2d(t):
-    """``(T, C, 1)`` back to ``(T, C)``, the shape transfer entropy builds its histories from."""
-    if hasattr(t, 'ndim') and t.ndim == 3 and t.shape[-1] == 1:
-        return t.reshape(t.shape[0], t.shape[1]).contiguous()
-    return t
-
-
-def _scalar_rigorous_kwargs(analysis_kwargs: dict, curvature_t_threshold: float,
-                            min_gamma_points: int, confidence_level: float) -> dict:
-    """The fit settings of a difference quantity run with ``rigorous=True``."""
-    return {
-        'gamma_range': analysis_kwargs.get('gamma_range') or range(1, 11),
-        'curvature_t_threshold': analysis_kwargs.get('curvature_t_threshold', curvature_t_threshold),
-        'min_gamma_points': analysis_kwargs.get('min_gamma_points', min_gamma_points),
-        'confidence_level': analysis_kwargs.get('confidence_level', confidence_level),
-        'residual_threshold': analysis_kwargs.get('residual_threshold', 2.5),
-        'leverage_threshold': analysis_kwargs.get('leverage_threshold', 0.20),
-    }
 
 
 def _stream_processors(mode, processor_type_x, processor_type_y, w_processor_type, w_data) -> dict:
@@ -141,7 +116,7 @@ def _check_grid(mode: str, sweep_grid: Optional[dict], model: Optional[Model] = 
                 f"mode='{mode}' sets '{key}' itself, through {through}. A sweep_grid over it would "
                 f"be overridden in every configuration. Remove '{key}' from sweep_grid."
             )
-    mode_keys = set(MODE_KWARGS_SCHEMA.get(mode, {})) - {'n_workers'}
+    mode_keys = set(spec.settings) - {'n_workers'}
     if spec.config is not None:
         mode_keys |= {f.name for f in dataclasses.fields(spec.config)}
     for key in sweep_grid or {}:
@@ -1388,143 +1363,32 @@ def _run_flat(
         n_workers = analysis_kwargs.get('n_workers', 1)
         grid = dict(sweep_grid or {})
 
-        _use_rigorous = bool(analysis_kwargs.get('rigorous', False))
 
         # The params recorded on the result: the resolved configuration, with every
         # grid key holding its grid.
         _record = {**run_params, 'base_params': {**base_params, **grid}}
-        ctx: Dict[str, Any] = {}
-        x_run, y_run, w_run = x_run_data, y_run_data, None
-
-        if mode == 'lag':
-            # `lag_range` reaches here already unpacked from Lag(...) by run(); the
-            # analysis_kwargs fallback covers direct _run_flat callers.
-            lag_range_val = lag_range if lag_range is not None else analysis_kwargs.get('lag_range')
-            if lag_range_val is None:
-                raise ValueError(
-                    "`lag_range` must be provided for mode='lag'. Pass it in the per-mode "
-                    "config: nmi.run(..., mode='lag', lag=Lag(lag_range=range(-10, 11)))."
-                )
-            ctx = {'lag_range': lag_range_val, 'equalize_n': analysis_kwargs.get('equalize_n', False)}
-            _record['lag_range'] = list(lag_range_val)
-
-        elif mode == 'precision':
-            if tau_grid is None:
-                raise ValueError("`tau_grid` must be provided for mode='precision'.")
-            ctx = {'precision_kwargs': dict(tau_grid=tau_grid, corrupt_target=corrupt_target,
-                                            corruption_method=corruption_method,
-                                            n_noise_samples=n_noise_samples,
-                                            threshold_ratio=threshold_ratio)}
-            _record['tau_grid'] = list(tau_grid)
-
-        elif mode == 'rigorous':
-            _rig = {k: v for k, v in analysis_kwargs.items() if k in _RIGOROUS_FIT_KEYS}
-            _rig.update(curvature_t_threshold=curvature_t_threshold,
-                        min_gamma_points=min_gamma_points, confidence_level=confidence_level)
-            ctx = {'rigorous_kwargs': _rig}
-
-        elif mode == 'dimensionality':
-            ctx = {'dim_kwargs': {k: v for k, v in analysis_kwargs.items() if k != 'n_workers'},
-                   'user_set_keys': _pre_default_keys}
-
-        elif mode == 'pairwise':
-            y_run = y_run_data if y_data is not None else None
-            ctx = {'pairs': analysis_kwargs.get('pairs'), 'channel_names_x': channel_names_x,
-                   'channel_names_y': channel_names_y}
-
-        elif _spec.terms is not None and not _spec.builds_own_rows:
-            # x_run is the plan of X, W and Y, whose rows every term shares.
-            ctx = {}
-            if _use_rigorous:
-                from .analysis.conditional import _cmi_rigorous_scalar
-                from .analysis.interaction import _ii_rigorous_scalar
-                ctx.update(rigorous=True,
-                           scalar_fn=_cmi_rigorous_scalar if mode == 'conditional' else _ii_rigorous_scalar,
-                           rigorous_kwargs=_scalar_rigorous_kwargs(
-                               analysis_kwargs, curvature_t_threshold, min_gamma_points,
-                               confidence_level))
-                _record['rigorous'] = True
-
-        elif mode == 'transfer':
-            if history_window is None:
-                raise ValueError("`history_window` must be provided for mode='transfer'.")
-            from .utils import validate_window
-            history_window = validate_window(history_window, 'history_window', "mode='transfer'", 1)
-            prediction_horizon = validate_window(prediction_horizon, 'prediction_horizon',
-                                                 "mode='transfer'", 1)
-            if y_data is None:
-                raise ValueError("y_data must be provided for mode='transfer'.")
-            for _name, _arr in (('x_data', x_data), ('y_data', y_data), ('w_data', w_data)):
-                if getattr(_arr, 'ndim', None) == 3 and _arr.shape[-1] != 1:
-                    raise ValueError(
-                        f"mode='transfer' requires {_name} of shape (n_timepoints, n_channels) "
-                        f"and received a 3-D array of shape {tuple(_arr.shape)}. Transfer "
-                        f"entropy builds its histories from the raw series. Pass it unwindowed "
-                        f"or set Processing(...) with one-step windows to put streams of other "
-                        f"kinds on one grid."
-                    )
-            if any(t is not None for t in (processor_type_x, processor_type_y, w_processor_type)):
-                # Every stream on one grid of rows one step wide that tile
-                # time, which the histories index by offset: the one path of
-                # processing= for every quantity defined by time offsets.
-                from .analysis.offsets import one_step_series
-                _specs = OrderedDict()
-                _specs['x'] = dict(data=x_data, time=x_time, processor_type=processor_type_x,
-                                   processor_params=processor_params_x)
-                _specs['y'] = dict(data=y_data, time=y_time,
-                                   processor_type=_effective_processor_type_y,
-                                   processor_params=processor_params_y)
-                if w_data is not None:
-                    _specs['w'] = dict(data=w_data, time=w_time, processor_type=w_processor_type,
-                                       processor_params=w_processor_params)
-                _one_step = one_step_series(_specs, "mode='transfer'")
-                x_run, y_run, w_run = _one_step['x'], _one_step['y'], _one_step.get('w')
-            else:
-                x_run, y_run = _to_2d(_to_tensor(x_data)), _to_2d(_to_tensor(y_data))
-                if w_data is not None:
-                    w_run = _to_2d(_to_tensor(w_data))
-            # Preprocessing(...) and the data check act on the series the
-            # histories are built from, after any grid. Transfer entropy is a
-            # rate quantity, which a time transform leaves unchanged.
-            from .preprocessing import prepare as _prepare_streams
-            _prepared = _prepare_streams(OrderedDict(x=x_run, y=y_run, w=w_run), _processor_of,
-                                         preprocessing, quantity="mode='transfer'", rate=True,
-                                         check=_rows is None,
-                                         encoder_scales=_encoders_scale(base_params))
-            x_run, y_run, w_run = _prepared['x'], _prepared['y'], _prepared['w']
-            # The histories are built here, so the training tasks read them as given.
-            base_params['processor_type_x'] = None
-            base_params['processor_type_y'] = None
-            for _key in ('processor_params_x', 'processor_params_y'):
-                base_params[_key] = {**(base_params.get(_key) or {}), 'preprocessed': True}
-            ctx = {'history_window': history_window, 'prediction_horizon': prediction_horizon,
-                   'stride': stride, 'bidirectional': bidirectional_te}
-            _record['history_window'] = history_window
-            # The histories are rows in time order, recorded before anything
-            # reads them: the ladder's chunks, the permutation's blocks.
-            from .analysis.offsets import spec_geometry
-            from .analysis.transfer import te_spec
-            _histories = spec_geometry(te_spec(history_window, prediction_horizon), stride)
-            record_rows(base_params, _histories)
-            # The data check, as every other route runs it: the histories every
-            # term trains on, counted from the series' length, and the scale of
-            # the series they are cut from.
-            _n_histories = max(0, int((x_run.shape[0] - _histories.span) // stride) + 1)
-            _warn_small_sample(kept_rows(_n_histories, base_params), 'samples', base_params, mode,
-                               rows={name: series for name, series in (('x', x_run), ('y', y_run), ('w', w_run))
-                                     if series is not None},
-                               processors=_processor_of)
-            if _use_rigorous:
-                from .analysis.transfer import _te_rigorous_scalar
-                ctx.update(rigorous=True, scalar_fn=_te_rigorous_scalar,
-                           extra_data={'w_data': w_run} if w_run is not None else None,
-                           extra_kwargs={'history_window': history_window,
-                                         'prediction_horizon': prediction_horizon,
-                                         'stride': stride, 'bidirectional': bidirectional_te},
-                           rigorous_kwargs=_scalar_rigorous_kwargs(
-                               analysis_kwargs, curvature_t_threshold, min_gamma_points,
-                               confidence_level))
-                _record['rigorous'] = True
+        # The mode's own settings for its producer (its ctx), which its
+        # declaration prepares from the call (analysis/modes.py, MODES). A mode
+        # that builds its own rows from the series puts them in call.x_run,
+        # call.y_run and call.w_run.
+        call = SimpleNamespace(
+            mode=mode, base_params=base_params, record=_record, analysis_kwargs=analysis_kwargs,
+            x_run=x_run_data, y_run=y_run_data, w_run=None, x_data=x_data, y_data=y_data, w_data=w_data,
+            x_time=x_time, y_time=y_time, w_time=w_time,
+            processor_type_x=processor_type_x, processor_params_x=processor_params_x,
+            processor_type_y=_effective_processor_type_y, processor_params_y=processor_params_y,
+            w_processor_type=w_processor_type, w_processor_params=w_processor_params,
+            processor_of=_processor_of, preprocessing=preprocessing, rows=_rows,
+            lag_range=lag_range, tau_grid=tau_grid, corrupt_target=corrupt_target,
+            corruption_method=corruption_method, n_noise_samples=n_noise_samples,
+            threshold_ratio=threshold_ratio, curvature_t_threshold=curvature_t_threshold,
+            min_gamma_points=min_gamma_points, confidence_level=confidence_level,
+            history_window=history_window, prediction_horizon=prediction_horizon, stride=stride,
+            bidirectional=bidirectional_te, channel_names_x=channel_names_x,
+            channel_names_y=channel_names_y, user_set_keys=_pre_default_keys,
+            rigorous=bool(analysis_kwargs.get('rigorous', False)))
+        ctx = _spec.prepare(call) if _spec.prepare is not None else {}
+        x_run, y_run, w_run = call.x_run, call.y_run, call.w_run
 
         from .analysis.modes import produce
         from .analysis.permutation import permutation_nulls, attach_nulls
@@ -1711,9 +1575,9 @@ def _warn_if_shift_windows_dead(base_params: dict, mode: str, shifts: bool,
     if row_geometry(base_params) is not None or offsets:
         # Rows built by offset at every step of their series (stride=1).
         warnings.warn(
-            f"shift_windows=True has no effect here: the rows start one step apart, so a shift "
-            f"would only relabel them. The rows of a quantity built by time offsets shift when a "
-            f"stride above one thins them. Set Training(shift_windows=False) to silence this warning.",
+            "shift_windows=True has no effect here: the rows start one step apart, so a shift "
+            "would only relabel them. The rows of a quantity built by time offsets shift when a "
+            "stride above one thins them. Set Training(shift_windows=False) to silence this warning.",
             UserWarning, stacklevel=user_stacklevel(),
         )
         return

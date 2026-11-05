@@ -12,7 +12,7 @@ import warnings
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import DataShapeError
 from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC
-from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
+from neural_mi.defaults import BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
 def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
     """Raise TypeError unless `value` matches `expected_type`.
@@ -169,6 +169,91 @@ class DataValidator:
                 from neural_mi.data.plan import rows_line_up
                 rows_line_up({'x': self.x_data.shape[0], 'y': self.y_data.shape[0]})
 
+
+def check_lag_settings(validator) -> None:
+    """lag_range entries must be numeric (int for sample lags, float for time lags)."""
+    _, lr = validator._mode_kwarg('lag_range')
+    if lr is not None:
+        items = list(lr)
+        non_numeric = [x for x in items
+                       if not isinstance(x, (int, float, np.integer, np.floating))]
+        if non_numeric:
+            raise ValueError(
+                f"lag_range entries must all be numeric. Non-numeric "
+                f"values: {non_numeric[:5]}{'...' if len(non_numeric) > 5 else ''}. "
+                f"Use range(-10, 11), a list of integers or np.arange(...) for "
+                f"time-based lags (for example spike trains)."
+            )
+
+
+def check_precision_settings(validator) -> None:
+    """threshold_ratio lies in (0, 1]."""
+    tr = validator.params.get('threshold_ratio')
+    if tr is not None:
+        ratios = tr if isinstance(tr, (list, tuple)) else [tr]
+        for r in ratios:
+            if not isinstance(r, (int, float)) or not (0 < r <= 1):
+                raise ValueError(
+                    f"threshold_ratio must be a float in (0, 1] "
+                    f"(or a list of such floats), got {r!r}."
+                )
+
+
+def check_dimensionality_settings(validator) -> None:
+    """The counts and the grid, refused where they were passed, and a Y-side encoder reported."""
+    for key in ('n_splits', 'n_restarts'):
+        _, n = validator._mode_kwarg(key)
+        if n is not None and (not isinstance(n, (int, np.integer))
+                              or isinstance(n, bool) or n < 1):
+            raise ValueError(f"{key} must be a whole number of 1 or more, got {n!r}.")
+    _, ratio = validator._mode_kwarg('saturation_ratio')
+    if ratio is not None and not (0 < ratio <= 1):
+        raise ValueError(f"saturation_ratio must lie in (0, 1], got {ratio!r}.")
+    _, ref = validator._mode_kwarg('reference_dim')
+    if ref is not None and (not isinstance(ref, (int, np.integer))
+                            or isinstance(ref, bool) or ref < 2):
+        raise ValueError(f"reference_dim must be a whole number of 2 or more, got {ref!r}.")
+    _, dims = validator._mode_kwarg('embedding_dims')
+    if dims is not None:
+        dims = list(dims)
+        bad = [k for k in dims if not isinstance(k, (int, np.integer))
+               or isinstance(k, bool) or k < 1]
+        if not dims or bad:
+            raise ValueError(
+                f"embedding_dims must hold whole numbers of 1 or more, got {dims!r}."
+            )
+
+    # The two sides of this mode are two halves of one recording. An
+    # encoder that differs between them is allowed and reported, because
+    # it is usually unintended.
+    _bp = validator.params.get('base_params') or {}
+    _y_side = [k for k in ('embedding_model_y', 'custom_embedding_cls_y',
+                           'hidden_dim_y', 'n_layers_y', 'embedding_dim_y')
+               if _bp.get(k) is not None]
+    if _y_side:
+        warnings.warn(
+            f"{_y_side[0]} was set for mode='dimensionality'. The mode's two "
+            f"sides are two halves of the same recording. An encoder that differs "
+            f"between the halves makes the curve hard to read. Leave the Y "
+            f"overrides unset unless you mean the halves to be read differently.",
+            UserWarning, stacklevel=user_stacklevel()
+        )
+
+
+def check_rigorous_settings(validator) -> None:
+    """curvature_t_threshold is positive and confidence_level lies in (0, 1)."""
+    dt = validator.params.get('curvature_t_threshold')
+    if dt is not None and (not isinstance(dt, (int, float)) or dt <= 0):
+        raise ValueError(
+            f"curvature_t_threshold must be a positive float, got {dt!r}."
+        )
+    cl = validator.params.get('confidence_level')
+    if cl is not None and (not isinstance(cl, (int, float)) or not (0 < cl < 1)):
+        raise ValueError(
+            f"confidence_level must be a float in (0, 1), got {cl!r}."
+        )
+
+
 class ParameterValidator:
     """Validates the hyperparameter dictionary provided to the `run` function."""
     def __init__(self, params: Dict[str, Any]):
@@ -273,7 +358,9 @@ class ParameterValidator:
 
     def _validate_mode_kwargs(self):
         """Validates **analysis_kwargs passed to run() for the specific mode."""
-        mode_schema = MODE_KWARGS_SCHEMA.get(self.mode, {})
+        from neural_mi.analysis.modes import MODES
+        spec = MODES.get(self.mode)
+        mode_schema = spec.settings if spec is not None else {}
         if not mode_schema:
             return
 
@@ -293,86 +380,9 @@ class ParameterValidator:
                 if expected_type:
                     _check_type(val, expected_type, key, f"Keyword argument (mode='{self.mode}')")
 
-        # lag_range entries must be numeric (int for sample lags, float for time lags)
-        if self.mode == 'lag':
-            _, lr = self._mode_kwarg('lag_range')
-            if lr is not None:
-                items = list(lr)
-                non_numeric = [x for x in items
-                               if not isinstance(x, (int, float, np.integer, np.floating))]
-                if non_numeric:
-                    raise ValueError(
-                        f"lag_range entries must all be numeric. Non-numeric "
-                        f"values: {non_numeric[:5]}{'...' if len(non_numeric) > 5 else ''}. "
-                        f"Use range(-10, 11), a list of integers or np.arange(...) for "
-                        f"time-based lags (for example spike trains)."
-                    )
-
-        # Precision mode: validate threshold_ratio bounds
-        if self.mode == 'precision':
-            tr = self.params.get('threshold_ratio')
-            if tr is not None:
-                ratios = tr if isinstance(tr, (list, tuple)) else [tr]
-                for r in ratios:
-                    if not isinstance(r, (int, float)) or not (0 < r <= 1):
-                        raise ValueError(
-                            f"threshold_ratio must be a float in (0, 1] "
-                            f"(or a list of such floats), got {r!r}."
-                        )
-
-        # Dimensionality mode: the counts and the grid, refused here where they
-        # were passed.
-        if self.mode == 'dimensionality':
-            for key in ('n_splits', 'n_restarts'):
-                _, n = self._mode_kwarg(key)
-                if n is not None and (not isinstance(n, (int, np.integer))
-                                      or isinstance(n, bool) or n < 1):
-                    raise ValueError(f"{key} must be a whole number of 1 or more, got {n!r}.")
-            _, ratio = self._mode_kwarg('saturation_ratio')
-            if ratio is not None and not (0 < ratio <= 1):
-                raise ValueError(f"saturation_ratio must lie in (0, 1], got {ratio!r}.")
-            _, ref = self._mode_kwarg('reference_dim')
-            if ref is not None and (not isinstance(ref, (int, np.integer))
-                                    or isinstance(ref, bool) or ref < 2):
-                raise ValueError(f"reference_dim must be a whole number of 2 or more, got {ref!r}.")
-            _, dims = self._mode_kwarg('embedding_dims')
-            if dims is not None:
-                dims = list(dims)
-                bad = [k for k in dims if not isinstance(k, (int, np.integer))
-                       or isinstance(k, bool) or k < 1]
-                if not dims or bad:
-                    raise ValueError(
-                        f"embedding_dims must hold whole numbers of 1 or more, got {dims!r}."
-                    )
-
-            # The two sides of this mode are two halves of one recording. An
-            # encoder that differs between them is allowed and reported, because
-            # it is usually unintended.
-            _bp = self.params.get('base_params') or {}
-            _y_side = [k for k in ('embedding_model_y', 'custom_embedding_cls_y',
-                                   'hidden_dim_y', 'n_layers_y', 'embedding_dim_y')
-                       if _bp.get(k) is not None]
-            if _y_side:
-                warnings.warn(
-                    f"{_y_side[0]} was set for mode='dimensionality'. The mode's two "
-                    f"sides are two halves of the same recording. An encoder that differs "
-                    f"between the halves makes the curve hard to read. Leave the Y "
-                    f"overrides unset unless you mean the halves to be read differently.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-
-        # Rigorous mode: validate curvature_t_threshold and confidence_level
-        if self.mode == 'rigorous':
-            dt = self.params.get('curvature_t_threshold')
-            if dt is not None and (not isinstance(dt, (int, float)) or dt <= 0):
-                raise ValueError(
-                    f"curvature_t_threshold must be a positive float, got {dt!r}."
-                )
-            cl = self.params.get('confidence_level')
-            if cl is not None and (not isinstance(cl, (int, float)) or not (0 < cl < 1)):
-                raise ValueError(
-                    f"confidence_level must be a float in (0, 1), got {cl!r}."
-                )
+        # The mode's own checks of its settings, which its declaration names.
+        if spec is not None and spec.check is not None:
+            spec.check(self)
 
     def apply_defaults(self):
         """Populates missing parameters in base_params with defaults."""

@@ -63,19 +63,37 @@ def test_every_declaration_is_complete(name):
         assert mode.critic is not None, name
 
 
-def test_run_asks_a_modes_declaration_instead_of_listing_modes():
-    """No membership test against a literal list of mode names, and no module-level table of them,
-    is left in run.py: each such fact is a field of the mode's declaration."""
-    tree = ast.parse((ROOT / 'neural_mi' / 'run.py').read_text())
-    listed = [node.lineno for node in ast.walk(tree) if isinstance(node, ast.Compare)
-              and isinstance(node.left, ast.Name) and node.left.id == 'mode'
-              and any(isinstance(c, (ast.Tuple, ast.List, ast.Set)) for c in node.comparators)]
-    tables = [node.targets[0].id for node in tree.body if isinstance(node, ast.Assign)
-              and isinstance(node.targets[0], ast.Name) and isinstance(node.value, (ast.Tuple, ast.Dict))
-              and any(isinstance(e, ast.Constant) and e.value in MODES
-                      for e in (node.value.elts if isinstance(node.value, ast.Tuple) else node.value.keys))]
-    assert not listed, f"run.py lists modes by name at lines {listed}"
-    assert not tables, f"run.py keeps tables of modes: {tables}"
+def _names_a_mode(node) -> bool:
+    """A literal mode name, or a literal list of them."""
+    if isinstance(node, ast.Constant):
+        return node.value in MODES
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return any(_names_a_mode(e) for e in node.elts)
+    return False
+
+
+def test_no_module_branches_on_a_modes_name():
+    """Nothing in the package compares a mode with a mode's name, and no module keeps a table keyed by
+    mode names outside the registry: each such fact is a field of the mode's declaration."""
+    found = []
+    for path in sorted((ROOT / 'neural_mi').rglob('*.py')):
+        tree = ast.parse(path.read_text())
+        where = path.relative_to(ROOT).as_posix()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare):
+                sides = [node.left, *node.comparators]
+                named = [s for s in sides if isinstance(s, (ast.Name, ast.Attribute))
+                         and (s.id if isinstance(s, ast.Name) else s.attr) == 'mode']
+                if named and any(_names_a_mode(s) for s in sides):
+                    found.append(f"{where}:{node.lineno}")
+        if where == 'neural_mi/analysis/modes.py':
+            continue
+        for node in tree.body:
+            keys = [k for k in node.value.keys if k is not None] if (
+                isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)) else []
+            if len(keys) > 1 and all(_names_a_mode(k) for k in keys):
+                found.append(f"{where}:{node.lineno} (a table keyed by mode names)")
+    assert not found, f"branches on a mode's name: {found}"
 
 
 def test_every_field_is_read_somewhere():

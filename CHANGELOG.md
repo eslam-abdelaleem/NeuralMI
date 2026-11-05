@@ -774,9 +774,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   (`neural_mi/analysis/modes.py`): its producer, its config class, the axis it
   adds, its row of USING.md's table of what each mode accepts, each request it
   refuses with the reason, the streams it reads and the settings it sets
-  itself. `run()`, the grid and data checks, the dispatch and the results read
-  the declaration. The comparisons with a mode's name that remain assemble each
-  mode's own settings for its producer, draw its plot and check its config. A
+  itself. It also holds the mode's settings with their types and defaults,
+  which `defaults.MODE_KWARGS_SCHEMA` held, and names the function that
+  prepares the mode's own settings for its producer, the checks of its settings,
+  the analysis its terms run, and its figure, summary lines and overlay in
+  `compare()`. `run()`, the checks, the producers and the results read the
+  declaration, and no comparison with a mode's name remains. The fit settings of
+  a rigorous ladder, which the schema wrote out four times and
+  `_scalar_rigorous_kwargs` repeated in part, are written once. A
   request a mode cannot serve is refused before any work in every mode, where a
   permutation null under `mode='dimensionality'`, or under `mode='pairwise'`
   without `y_data`, used to warn once the call had run. The defaults of
@@ -803,6 +808,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   period, and its windows lie within its samples on every route
   (`temporal._SampledStream`). `min_coverage_fraction` judges gaps inside the
   recording.
+
+- `Results.compare()` of results over a swept key (sweep, lag, or any mode over
+  a one-key grid) failed every time: `plot_sweep_curve` labelled its curve
+  'Mean MI' and passed the caller's label to matplotlib beside it. A curve now
+  carries the label it is given, and its band takes its colour.
 
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.

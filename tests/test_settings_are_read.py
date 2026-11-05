@@ -17,7 +17,8 @@ import pytest
 
 import neural_mi
 from neural_mi import config
-from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
+from neural_mi.analysis.modes import MODES
+from neural_mi.defaults import BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
 DECLARED = {'defaults.py', 'config.py', 'validation.py'}
 ROUTING = {'run', '_run_flat'}
@@ -112,7 +113,7 @@ def _config_settings():
 
 
 SETTINGS = ([('base', k) for k in BASE_PARAMS_SCHEMA]
-            + [(f'mode {m}', k) for m, schema in MODE_KWARGS_SCHEMA.items() for k in schema]
+            + [(f'mode {m}', k) for m, mode in MODES.items() for k in mode.settings]
             + [(f'processor {p}', k) for p, schema in PROCESSOR_PARAMS_SCHEMA.items()
                for k in schema])
 CONFIG_SETTINGS = _config_settings()
