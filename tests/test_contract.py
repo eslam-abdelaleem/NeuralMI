@@ -16,6 +16,7 @@ import pytest
 
 import neural_mi as nmi
 from neural_mi import Model, Training, Split
+from neural_mi.analysis.modes import MODES as DECLARED
 
 N = 360
 _MODEL = Model(embedding_dim=4, hidden_dim=8, n_layers=1)
@@ -57,8 +58,7 @@ GRIDS = {
     'both': {'embedding_dim': [4, 8], 'run_id': [0, 1]},
     'processor': {'window_size': [1, 2]},
 }
-MODES = ['estimate', 'sweep', 'rigorous', 'lag', 'precision', 'conditional', 'interaction',
-         'transfer', 'pairwise', 'dimensionality']
+MODES = list(DECLARED)
 # Combinations that must refuse, with the message that says why.
 REFUSED = {
     ('dimensionality', 'repeats'): "n_restarts",
@@ -69,8 +69,8 @@ REFUSED = {
 # A mode that trains one network runs no grid, and refuses one before any work.
 REFUSED.update({(mode, grid): "runs no sweep_grid" for mode in ('estimate', 'precision')
                 for grid in ('repeats', 'configs', 'both', 'processor')})
-AXIS = {'lag': ['lag'], 'precision': ['tau'], 'pairwise': ['ch_x', 'ch_y'],
-        'dimensionality': ['split_id', 'embedding_dim']}
+# Each mode's axis, as the registry declares it: the producers must return the same.
+AXIS = {name: list(spec.axis) for name, spec in DECLARED.items() if spec.axis}
 
 
 def _expected_shape(mode, grid_name):

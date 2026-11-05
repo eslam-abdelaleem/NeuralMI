@@ -22,7 +22,6 @@ import numpy as np
 import torch
 
 from .sweep import ParameterSweep
-from neural_mi.models.critics import embeds_each_side
 from neural_mi.defaults import setting
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.logger import logger, user_stacklevel
@@ -348,6 +347,30 @@ def _run_grid(views, grid: List[int], n_restarts: int, n_workers: int, ratio: fl
 # The analysis
 # ---------------------------------------------------------------------------
 
+def mode_defaults(params: Dict[str, Any], user_set: set, has_y: bool) -> Dict[str, Any]:
+    """The settings mode='dimensionality' sets itself where the caller left them unset, declared once
+    (analysis/modes.py, MODES) and applied wherever a configuration's settings are resolved: by run() for
+    the call and here for each point of a grid, whose keys count as set."""
+    out = {}
+    if 'critic_type' not in user_set:
+        out['critic_type'] = 'hybrid'
+    if out.get('critic_type', params.get('critic_type')) == 'hybrid' and setting(params, 'norm_layer') == 'auto':
+        # Layer norm stops the fits at k = d from stalling. It also divides out
+        # each sample's scale. The reading is taken against a plateau measured
+        # the same way.
+        out['norm_layer'] = 'layer'
+    if 'n_epochs' not in user_set:
+        out['n_epochs'] = 500
+    if 'patience' not in user_set:
+        out['patience'] = 50
+    if 'shared_encoder' not in user_set:
+        # Two halves of one recording can share an encoder; X and Y need not.
+        out['shared_encoder'] = not has_y
+    if 'whitening' not in params:
+        out['whitening'] = 'std'
+    return out
+
+
 def run_dimensionality_analysis(
     x_data: torch.Tensor,
     base_params: Dict[str, Any],
@@ -416,36 +439,16 @@ def run_dimensionality_analysis(
     user_set = set(user_set_keys) if user_set_keys is not None else set(base_params)
 
     # The hybrid critic is this mode's default. A separable critic works with a
-    # warning; a concat critic has no embedding of either side.
-    critic_type = params.get('critic_type') if 'critic_type' in user_set else None
-    if critic_type is not None and not embeds_each_side(critic_type):
-        raise ValueError(
-            f"mode='dimensionality' cannot use critic_type='{critic_type}'. That critic scores X "
-            f"and Y jointly and has no embedding of either side for the curve to vary. Use the "
-            f"default 'hybrid' or 'separable'."
-        )
-    if critic_type == 'separable':
+    # warning. run() refuses a critic without an embedding of each side before
+    # any work (MODES['dimensionality'].reads_embeddings).
+    if 'critic_type' in user_set and params.get('critic_type') == 'separable':
         warnings.warn(
             "mode='dimensionality' with critic_type='separable' overstates the dimension. A "
             "dot-product critic needs more embedding dimensions than the shared structure has. "
             "This mode defaults to 'hybrid'.",
             UserWarning, stacklevel=user_stacklevel(),
         )
-    else:
-        params['critic_type'] = 'hybrid'
-    if params['critic_type'] == 'hybrid' and setting(params, 'norm_layer') == 'auto':
-        # Layer norm stops the fits at k = d from stalling. It also divides out
-        # each sample's scale. The reading is taken against a plateau measured
-        # the same way.
-        params['norm_layer'] = 'layer'
-    if 'n_epochs' not in user_set:
-        params['n_epochs'] = 500
-    if 'patience' not in user_set:
-        params['patience'] = 50
-    if 'shared_encoder' not in user_set:
-        # Two halves of one recording can share an encoder; X and Y need not.
-        params['shared_encoder'] = y_data is None
-    params.setdefault('whitening', 'std')
+    params.update(mode_defaults(params, user_set, y_data is not None))
 
     if y_data is not None and n_splits is not None:
         raise ValueError(

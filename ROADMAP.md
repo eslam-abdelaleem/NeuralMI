@@ -11,7 +11,7 @@ records them.
 
 The design items aim to declare every fact about a setting or a mode in one
 place. Everything else is then derived from that declaration or checked against
-it. The first three items depend on each other and are best done in
+it. The first two items depend on each other and are best done in
 order. The charectrization of the problem is correct, but solutions can vary, so whatever is below is a good suggestion at best.
 
 ### 1. One declaration per setting
@@ -55,9 +55,9 @@ three groups. `_run_flat()` takes them as 75 parameters, copies them into a
 settings dictionary and then validates and fills defaults. The split lets the
 processor-grid loop re-enter the engine once per value of a processor setting
 and keeps the public signature small. Neither needs the keyword layer that
-holds the second copy of the defaults. Modes also rewrite settings partway
-through a run. `mode='dimensionality'` sets `critic_type`, `norm_layer`,
-`n_epochs`, `patience` and `shared_encoder` inside its own module.
+holds the second copy of the defaults. Each mode's own settings reach its
+producer through a chain of branches on the mode's name in `_run_flat()` (the
+producer's `ctx`).
 
 **Design.** `run()` resolves the configs once into a read-only settings object
 holding the user's values, the declared defaults and the mode's own overrides.
@@ -77,32 +77,10 @@ refactor (identical numbers on its reference calls), and the five tutorials
 re-executed to identical outputs. Because the tutorials are seeded, any
 difference in them is a change.
 
-### 3. One mode registry
+### 3. Split the largest modules
 
-**Now.** What a mode accepts is spread over eight tuples in `run.py` (`_MODES`,
-`_MODE_CONFIG_CLASSES`, `_PERMUTABLE_MODES`, `_WINDOWS_IN_TASK` and the four
-`_SHIFT_*` tuples), the dispatch in `produce()` in `analysis/modes.py`, the
-defaults some modes set inside their own code, and the capability table in
-USING.md. Adding a mode takes the six steps listed in INTERNALS.md, across six
-modules and two reference documents.
-
-**Design.** Each mode is declared once: its config class, its producer, its axis
-keys, what it accepts (repeats, a configuration grid, `rigorous`, a permutation
-null, returned embeddings, custom split indices), whether it windows inside its
-tasks, where window shifting is safe, and its default overrides. The tuples, the
-dispatch and the scattered overrides are generated from the registry or deleted.
-A test checks the USING.md capability table against it. Adding a mode becomes a
-config class, a producer and one registry entry.
-
-**Public interface.** Unchanged.
-
-**Verification.** The contract test (every mode against repeats, grids and
-rigorous), the full suite and a test that the registry and USING.md agree.
-
-### 4. Split the largest modules
-
-`run.py` (about 1,800 lines) shrinks with items 2 and 3 and should be split
-after them. `training/trainer.py` (about 1,350 lines) mixes the training loop,
+`run.py` (about 1,700 lines) shrinks with item 2 and should be split after
+it. `training/trainer.py` (about 1,350 lines) mixes the training loop,
 evaluation, the split builders and the window shifting. `analysis/rigorous.py`
 (about 1,300) mixes the fit with the orchestration of the ladder.
 `data/temporal.py` (about 1,250) holds all three processors.
@@ -113,13 +91,13 @@ be split along those lines without changing what it exports.
 
 **Verification.** The full suite and an import check of every public name.
 
-### 5. The engine working on config objects end to end
+### 4. The engine working on config objects end to end
 
-Items 1 to 3 give one source of truth while keeping the flat names the engine
-reads. Moving the engine onto the config objects themselves would touch about
+Items 1 and 2, with the mode registry (`MODES` in `analysis/modes.py`), give
+one source of truth while keeping the flat names the engine reads. Moving the engine onto the config objects themselves would touch about
 320 reads of the settings across 20 modules and 60 places in the tests. It would
 also change the public `sweep_grid` keys and the layout of `result.params` and
-so need a major version. It is for later, after items 1 to 3.
+so need a major version. It is for later, after items 1 and 2.
 
 **Public interface.** `sweep_grid` keys and `result.params` change.
 

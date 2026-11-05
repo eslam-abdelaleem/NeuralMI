@@ -655,10 +655,10 @@ n)$.
 The smallest p-value $n$ trials can give is $1/(n+1)$. A test with fewer than
 100 trials warns. Every trial reruns the whole call with every configuration of the grid. The test therefore costs $n$ times the call.
 
-`rigorous`, `precision` and `rigorous=True` refuse a permutation test.
-`dimensionality` warns and computes no null because its curve is no single
-value for a null to sit under. `pairwise` without `y_data` warns and computes no
-null because moving X would move both sides of each pair.
+`rigorous`, `precision` and `rigorous=True` refuse a permutation test before
+any work. So does `dimensionality`, because its curve is no single value for a
+null to sit under, and `pairwise` without `y_data`, because moving X would move
+both sides of each pair.
 
 ### Workers and seeds
 

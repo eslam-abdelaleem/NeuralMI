@@ -766,6 +766,31 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   check now counts the histories every term trains on and reads the scale of
   the series they are cut from.
 
+- What a mode accepts was spread over tables of mode names in `run.py`
+  (`_MODES`, `_MODE_CONFIG_CLASSES`, `_PERMUTABLE_MODES`, `_BRANCHED_MODES`,
+  `_ROWS_DIFFER`), the dispatch in `produce()`, the defaults
+  `mode='dimensionality'` set inside its own module, and 124 comparisons of
+  `mode` with a mode's name. Each mode is now declared once, in `MODES`
+  (`neural_mi/analysis/modes.py`): its producer, its config class, the axis it
+  adds, its row of USING.md's table of what each mode accepts, each request it
+  refuses with the reason, the streams it reads and the settings it sets
+  itself. `run()`, the grid and data checks, the dispatch and the results read
+  the declaration. The comparisons with a mode's name that remain assemble each
+  mode's own settings for its producer, draw its plot and check its config. A
+  request a mode cannot serve is refused before any work in every mode, where a
+  permutation null under `mode='dimensionality'`, or under `mode='pairwise'`
+  without `y_data`, used to warn once the call had run. The defaults of
+  `mode='dimensionality'` (the hybrid critic, layer normalisation for it, 500
+  epochs, a patience of 50, a shared encoder without Y and whitening by standard
+  deviation) are applied where every other setting is resolved. An unknown mode
+  is refused before anything else. `tests/test_mode_registry.py` checks
+  USING.md's table and `run()`'s signature against the declarations.
+
+- `norm_layer='auto'` was resolved by one line in each of two builders, and the
+  small-sample warning read it a third way that named `mode='dimensionality'`.
+  `defaults.norm_layer_of` now resolves it for all three, and the warning no
+  longer suggests layer normalisation where the mode already applies it.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

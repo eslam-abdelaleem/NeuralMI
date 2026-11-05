@@ -13,7 +13,8 @@ worker process.
 import hashlib
 import math
 import warnings
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -26,6 +27,9 @@ from neural_mi.analysis.assemble import (
 from neural_mi.analysis.sweep import (ParameterSweep, amplification_factor, combine_terms,
                                       merge_grid_values)
 from neural_mi.logger import user_stacklevel
+from neural_mi.analysis.dimensionality import mode_defaults as dimensionality_defaults
+from neural_mi.config import (Conditional, Dimensionality, Interaction, Lag, Pairwise, Precision,
+                              Rigorous, Transfer)
 
 # Repeat-level fit values a rigorous extrapolation reports.
 _FIT_KEYS = (
@@ -36,20 +40,8 @@ _FIT_KEYS = (
     'n_tasks_created', 'saturated_gammas', 'zero_rungs', 'unresolved_rungs',
 )
 
-# The components of each difference quantity: (column, raw-results key, sign).
-_DIFFERENCES = {
-    'conditional': [('mi_xw_y', 'raw_xw_y', 1), ('mi_w_y', 'raw_w_y', -1)],
-    'interaction': [('mi_xw_y', 'raw_xw_y', 1), ('mi_x_y', 'raw_x_y', -1), ('mi_w_y', 'raw_w_y', -1)],
-    'transfer': [('i_xypast_yfuture', 'raw_xypast_yfuture', 1),
-                 ('i_ypast_yfuture', 'raw_ypast_yfuture', -1)],
-}
 _TRANSFER_REVERSE = [('i_yxpast_xfuture', 'raw_yxpast_xfuture', 1),
                      ('i_xpast_xfuture', 'raw_xpast_xfuture', -1)]
-# Interaction information is signed. The other combined quantities are
-# information and cannot be negative.
-_SIGNED = ('interaction',)
-_QUANTITY_NAMES = {'conditional': 'Conditional MI', 'transfer': 'TE(X→Y)',
-                   'interaction': 'Interaction information', 'rigorous': 'MI'}
 
 
 def _floor_at_zero(row: Dict[str, Any], key: str) -> bool:
@@ -63,9 +55,11 @@ def _floor_at_zero(row: Dict[str, Any], key: str) -> bool:
     return negative
 
 
-def _produced(rows, details, config_keys, *, axis_keys=(), mean_cols=('test_mi',), std_cols=(),
+def _produced(rows, details, config_keys, *, mean_cols=('test_mi',), std_cols=(),
               first_cols=(), row_scalars=None) -> Dict[str, Any]:
-    return dict(rows=rows, details=details, config_keys=list(config_keys), axis_keys=list(axis_keys),
+    """A producer's rows and how to aggregate them. The axis they run along within each configuration is
+    the mode's own, declared in MODES, which produce() adds."""
+    return dict(rows=rows, details=details, config_keys=list(config_keys),
                 mean_cols=list(mean_cols), std_cols=list(std_cols), first_cols=list(first_cols),
                 row_scalars=row_scalars or {})
 
@@ -107,7 +101,7 @@ def produce_lag(x, y, base_params, grid, *, to_bits, lag_range, n_workers=1, equ
     results = run_lag_analysis(x, y, base_params, lag_range=lag_range, sweep_grid=grid,
                                n_workers=n_workers, equalize_n=equalize_n)
     rows, details, config_keys = single_network_rows(results, grid, to_bits, axis=('lag',))
-    return _produced(rows, details, config_keys, axis_keys=('lag',), first_cols=('n_windows_built',))
+    return _produced(rows, details, config_keys, first_cols=('n_windows_built',))
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +373,7 @@ def produce_pairwise(x, y, base_params, grid, *, to_bits, n_workers=1, pairs=Non
         if embeddings:
             entry['embeddings'] = embeddings
         details[cid] = entry
-    return _produced(rows, details, config_keys, axis_keys=('ch_x', 'ch_y'), first_cols=('eval_size',))
+    return _produced(rows, details, config_keys, first_cols=('eval_size',))
 
 
 def produce_dimensionality(x, y, base_params, grid, *, to_bits, n_workers=1, dim_kwargs=None,
@@ -427,7 +421,7 @@ def produce_dimensionality(x, y, base_params, grid, *, to_bits, n_workers=1, dim
             entry['embeddings_at_bound'] = at_bound
         details[cid] = entry
     rows.sort(key=lambda row: (row['config_id'], row['split_id'], row['embedding_dim'], row['run_id']))
-    return _produced(rows, details, config_keys, axis_keys=('split_id', 'embedding_dim'),
+    return _produced(rows, details, config_keys,
                      mean_cols=('test_mi', 'pr_eig', 'pr_singular'),
                      first_cols=('mi_best', 'mi_curve'))
 
@@ -458,12 +452,156 @@ def produce_precision(x, y, base_params, *, to_bits, n_workers=1, precision_kwar
         if entry.get('threshold_value') is not None:
             entry['threshold_value'] = entry['threshold_value'] * scale
     info.pop('raw_results', None)
-    return _produced(rows, {0: info}, (), axis_keys=('tau',), mean_cols=())
+    return _produced(rows, {0: info}, (), mean_cols=())
 
 
 # ---------------------------------------------------------------------------
-# Dispatch
+# The modes, each declared once
 # ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Mode:
+    """Everything the library knows about a mode, declared once.
+
+    run(), the grid and data checks, the results and the reference pages read
+    these fields, and a test checks USING.md's table of what each mode accepts
+    against them. Adding a mode takes a config class, a producer and one entry
+    in :data:`MODES`.
+    """
+    # Runs the mode: (mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers).
+    produce: Callable[..., Dict[str, Any]]
+    # Its config class, or None for a mode that takes no config of its own.
+    config: Optional[type] = None
+    # The axis its producer adds within each configuration (result.params['axis_keys']).
+    axis: Tuple[str, ...] = ()
+    # Its row of USING.md's table: repeats, a configuration grid, rigorous.
+    table: Tuple[str, str, str] = ('yes', 'yes', 'refused')
+    # It runs a configuration grid and needs one.
+    needs_grid: bool = False
+    # For a mode that trains one network and so runs no grid: what it trains and what to use instead.
+    one_network: Optional[Tuple[str, str]] = None
+    # Each repeat of each configuration is one network.
+    one_network_per_repeat: bool = False
+    # Why a permutation null means nothing for it, or None when one does.
+    permutation: Optional[str] = None
+    # Why it cannot return embeddings, or None when it can.
+    embeddings: Optional[str] = None
+    # The grid keys it sets itself, and the setting it takes each from.
+    sets_itself: Mapping[str, str] = field(default_factory=dict)
+    # Why its networks train on rows other than the ones passed, which custom split indices would misread.
+    rows_differ: Optional[str] = None
+    # It reads a third stream, W.
+    reads_w: bool = False
+    # It needs Y.
+    needs_y: bool = True
+    # The terms of a difference quantity: (column, raw-results key, sign).
+    terms: Optional[Tuple[Tuple[str, str, int], ...]] = None
+    # The quantity can be negative.
+    signed: bool = False
+    # The quantity's name in messages.
+    label: Optional[str] = None
+    # It windows inside each training task.
+    windows_in_task: bool = False
+    # It builds its own rows from the raw series.
+    builds_own_rows: bool = False
+    # It reads a trained critic, which a nonparametric estimator does not train.
+    reads_critic: bool = False
+    # It reads the critic's embedding of each side.
+    reads_embeddings: bool = False
+    # Its critic when the caller names none.
+    critic: Optional[str] = None
+    # The settings it sets itself when the caller left them unset: (params, user_set, has_y) -> settings.
+    overrides: Optional[Callable[[Dict[str, Any], set, bool], Dict[str, Any]]] = None
+
+
+def _single(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers):
+    return produce_single_network(mode, x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers)
+
+
+def _lag(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers):
+    return produce_lag(x, y, base_params, grid, to_bits=to_bits, lag_range=ctx['lag_range'],
+                       n_workers=n_workers, equalize_n=ctx.get('equalize_n', False))
+
+
+def _rigorous(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers):
+    return produce_rigorous(x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers,
+                            rigorous_kwargs=ctx.get('rigorous_kwargs'))
+
+
+def _difference(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers):
+    if ctx.get('rigorous'):
+        return produce_difference_rigorous(mode, x, y, base_params, grid, to_bits=to_bits, ctx=ctx,
+                                           n_workers=n_workers)
+    return produce_difference(mode, x, y, w, base_params, grid, to_bits=to_bits, ctx=ctx, n_workers=n_workers)
+
+
+def _pairwise(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers):
+    return produce_pairwise(x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers,
+                            pairs=ctx.get('pairs'), channel_names_x=ctx.get('channel_names_x'),
+                            channel_names_y=ctx.get('channel_names_y'))
+
+
+def _dimensionality(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers):
+    return produce_dimensionality(x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers,
+                                  dim_kwargs=ctx.get('dim_kwargs'), user_set_keys=ctx.get('user_set_keys'))
+
+
+def _precision(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers):
+    return produce_precision(x, y, base_params, to_bits=to_bits, n_workers=n_workers,
+                             precision_kwargs=ctx.get('precision_kwargs'))
+
+
+_TERMS_HOLD_NO_EMBEDDINGS = ("every repeat trains one network per term of the quantity, and no one "
+                             "network's embeddings describe it")
+
+MODES: Dict[str, Mode] = {
+    'estimate': Mode(_single, table=('refused', 'refused', "through `mode='rigorous'`"),
+                     one_network=("trains one network",
+                                  "Use mode='sweep' to repeat the estimate or to sweep a setting."),
+                     one_network_per_repeat=True),
+    'sweep': Mode(_single, table=('yes', 'yes', "through `mode='rigorous'` with the same grid"),
+                  needs_grid=True, one_network_per_repeat=True),
+    'rigorous': Mode(_rigorous, config=Rigorous, table=('one extrapolation per repeat', 'yes', 'built in'),
+                     permutation="The extrapolation reports its own error estimate.",
+                     embeddings="every repeat trains a network on each chunk of the gamma ladder",
+                     rows_differ='trains on chunks of the data', label='MI'),
+    'lag': Mode(_lag, config=Lag, axis=('lag',), sets_itself={'lag': "Lag(lag_range=...)"},
+                rows_differ='trains on copies of the data shifted by each lag', windows_in_task=True),
+    'precision': Mode(_precision, config=Precision, axis=('tau',), table=('refused', 'refused', 'refused'),
+                      one_network=("trains one baseline network and evaluates it at every tau in tau_grid",
+                                   "To compare settings, run mode='precision' once per setting."),
+                      permutation="The mode reports how one trained network degrades, not an MI value to test.",
+                      embeddings=("it trains one baseline network and reports how its MI degrades, so there "
+                                  "is no repeat whose embeddings the result could hold"),
+                      reads_critic=True),
+    'conditional': Mode(_difference, config=Conditional, table=('yes', 'yes', "`rigorous=True` on the mode's config"),
+                        embeddings=_TERMS_HOLD_NO_EMBEDDINGS, reads_w=True,
+                        terms=(('mi_xw_y', 'raw_xw_y', 1), ('mi_w_y', 'raw_w_y', -1)), label='Conditional MI'),
+    'interaction': Mode(_difference, config=Interaction, table=('yes', 'yes', "`rigorous=True` on the mode's config"),
+                        embeddings=_TERMS_HOLD_NO_EMBEDDINGS, reads_w=True,
+                        terms=(('mi_xw_y', 'raw_xw_y', 1), ('mi_x_y', 'raw_x_y', -1), ('mi_w_y', 'raw_w_y', -1)),
+                        signed=True, label='Interaction information'),
+    'transfer': Mode(_difference, config=Transfer, table=('yes', 'yes', "`rigorous=True` on the mode's config"),
+                     embeddings=_TERMS_HOLD_NO_EMBEDDINGS, rows_differ='trains on histories built from the data',
+                     reads_w=True, terms=(('i_xypast_yfuture', 'raw_xypast_yfuture', 1),
+                                          ('i_ypast_yfuture', 'raw_ypast_yfuture', -1)),
+                     label='TE(X→Y)', builds_own_rows=True),
+    'pairwise': Mode(_pairwise, config=Pairwise, axis=('ch_x', 'ch_y'), needs_y=False),
+    'dimensionality': Mode(_dimensionality, config=Dimensionality, axis=('split_id', 'embedding_dim'),
+                           table=('through `n_restarts`', 'one curve per configuration', 'refused'),
+                           permutation=("The mode reports a curve over embedding dimensions and the dimension "
+                                        "at which it saturates. Neither has a null distribution."),
+                           sets_itself={'run_id': "Dimensionality(n_restarts=...)",
+                                        'embedding_dim': "Dimensionality(embedding_dims=...)"},
+                           needs_y=False, reads_critic=True, reads_embeddings=True, critic='hybrid',
+                           overrides=dimensionality_defaults),
+}
+
+# The difference quantities' terms, read by the producers above.
+_DIFFERENCES = {name: list(mode.terms) for name, mode in MODES.items() if mode.terms}
+_SIGNED = tuple(name for name, mode in MODES.items() if mode.signed)
+_QUANTITY_NAMES = {name: mode.label for name, mode in MODES.items() if mode.label}
+
 
 def produce(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers=1):
     """Run `mode`'s producer. The observed call and every permutation trial come
@@ -473,29 +611,6 @@ def produce(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers=1):
     `ctx` carries the mode's own settings (``lag_range``, the rigorous fit
     settings, ``history_window``, ...), prepared once by :func:`neural_mi.run`.
     """
-    if mode in ('estimate', 'sweep'):
-        return produce_single_network(mode, x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers)
-    if mode == 'lag':
-        return produce_lag(x, y, base_params, grid, to_bits=to_bits, lag_range=ctx['lag_range'],
-                           n_workers=n_workers, equalize_n=ctx.get('equalize_n', False))
-    if mode == 'rigorous':
-        return produce_rigorous(x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers,
-                                rigorous_kwargs=ctx.get('rigorous_kwargs'))
-    if mode in _DIFFERENCES:
-        if ctx.get('rigorous'):
-            return produce_difference_rigorous(mode, x, y, base_params, grid, to_bits=to_bits,
-                                               ctx=ctx, n_workers=n_workers)
-        return produce_difference(mode, x, y, w, base_params, grid, to_bits=to_bits, ctx=ctx,
-                                  n_workers=n_workers)
-    if mode == 'pairwise':
-        return produce_pairwise(x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers,
-                                pairs=ctx.get('pairs'), channel_names_x=ctx.get('channel_names_x'),
-                                channel_names_y=ctx.get('channel_names_y'))
-    if mode == 'dimensionality':
-        return produce_dimensionality(x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers,
-                                      dim_kwargs=ctx.get('dim_kwargs'),
-                                      user_set_keys=ctx.get('user_set_keys'))
-    if mode == 'precision':
-        return produce_precision(x, y, base_params, to_bits=to_bits, n_workers=n_workers,
-                                 precision_kwargs=ctx.get('precision_kwargs'))
-    raise ValueError(f"No producer for mode='{mode}'.")
+    spec = MODES[mode]
+    produced = spec.produce(mode, x, y, w, base_params, grid, ctx=ctx, to_bits=to_bits, n_workers=n_workers)
+    return {**produced, 'axis_keys': list(spec.axis)}

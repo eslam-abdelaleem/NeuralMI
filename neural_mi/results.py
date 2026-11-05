@@ -159,8 +159,9 @@ class Results:
         return rep + ")"
 
     def _is_rigorous(self) -> bool:
+        from neural_mi.analysis.modes import MODES
         return self.mode == 'rigorous' or (
-            self.mode in ('conditional', 'interaction', 'transfer')
+            self.mode in MODES and MODES[self.mode].terms is not None
             and bool((self.params or {}).get('rigorous')))
 
     @property
@@ -402,6 +403,7 @@ class Results:
             ``show``, ``units``, ``title``, ``figsize``, ``kind``, and anything
             the underlying plot function accepts.
         """
+        from neural_mi.analysis.modes import MODES
         from neural_mi.visualize.plot import (
             plot_sweep_curve, plot_sweep_heatmap, plot_sweep_bar,
             plot_bias_correction_fit, plot_dimensionality_curve,
@@ -523,7 +525,7 @@ class Results:
             if len(runs) > 1:
                 ax.legend(fontsize=9)
 
-        elif self.mode in ('conditional', 'interaction', 'transfer'):
+        elif self.mode in MODES and MODES[self.mode].terms is not None:
             r = row.iloc[0]
             if self.mode == 'transfer':
                 labels = ['TE(X→Y)']

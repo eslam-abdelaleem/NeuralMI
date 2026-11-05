@@ -346,6 +346,9 @@ class Transfer:
         d = _non_none(self)
         for k in self._W_FIELDS:
             d.pop(k, None)
+        # The engine knows it as bidirectional_te, apart from Model(bidirectional) of a recurrent encoder.
+        if 'bidirectional' in d:
+            d['bidirectional_te'] = d.pop('bidirectional')
         return d
 
 

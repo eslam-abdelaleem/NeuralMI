@@ -524,24 +524,18 @@ class TestPermutationAndProcessingGuards:
         )
         assert len(r.get('null_distribution')) == 2
 
-    def test_permutation_test_warns_and_computes_no_null_for_dimensionality(self):
+    def test_permutation_test_is_refused_for_dimensionality(self):
         """dimensionality reports a curve and not one MI value, so there is
-        no statistic for a null to sit under. The request warns instead of
-        being dropped in silence."""
-        rng = np.random.default_rng(1)
-        x = rng.standard_normal((400, 6)).astype('float32')
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            r = nmi.run(
-                x, mode='dimensionality',
-                dimensionality=Dimensionality(n_splits=2, n_restarts=1, reference_dim=2,
-                                              embedding_dims=[1]),
-                model=Model(embedding_dim=4, hidden_dim=16, n_layers=1),
-                training=Training(n_epochs=1, batch_size=64, patience=1),
-                permutation_test=True, n_workers=1, show_progress=False,
-            )
-        assert "has no effect for mode='dimensionality'" in ' '.join(str(w.message) for w in caught)
-        assert 'null_distribution' not in r.details
+        no statistic for a null to sit under. The request is refused before
+        any work instead of being dropped."""
+        x = np.random.default_rng(1).standard_normal((400, 6)).astype('float32')
+        with pytest.raises(ValueError, match="not supported for mode='dimensionality'"):
+            nmi.run(x, mode='dimensionality',
+                    dimensionality=Dimensionality(n_splits=2, n_restarts=1, reference_dim=2,
+                                                  embedding_dims=[1]),
+                    model=Model(embedding_dim=4, hidden_dim=16, n_layers=1),
+                    training=Training(n_epochs=1, batch_size=64, patience=1),
+                    permutation_test=True, n_workers=1, show_progress=False)
 
 
 # ---------------------------------------------------------------------------

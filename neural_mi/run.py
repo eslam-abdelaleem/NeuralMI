@@ -25,7 +25,9 @@ from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
 from .embeddings_io import model_file, resolve_model_path, announce_saving_several
-from .defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, setting, stream_processing
+from .defaults import (BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, default_of, norm_layer_of,
+                       setting, stream_processing)
+from .analysis.modes import MODES
 import inspect as _inspect
 from .config import (
     Model, Training, Split, Estimator, Output, Processing, Preprocessing,
@@ -33,15 +35,8 @@ from .config import (
     Interaction, Pairwise, as_config,
 )
 
-# Mode name -> its dedicated config class (modes not listed take no mode config).
-_MODE_CONFIG_CLASSES = {
-    'rigorous': Rigorous, 'precision': Precision, 'lag': Lag,
-    'transfer': Transfer, 'dimensionality': Dimensionality, 'conditional': Conditional,
-    'interaction': Interaction, 'pairwise': Pairwise,
-}
-
-_MODES = ('estimate', 'sweep', 'rigorous', 'lag', 'precision', 'conditional',
-          'interaction', 'transfer', 'pairwise', 'dimensionality')
+# Each mode is declared once, in analysis/modes.py (MODES): its config, its
+# producer, what it accepts and the settings it sets itself.
 
 # Rigorous(...) settings that run_rigorous_analysis takes as keywords, beside the
 # three that _run_flat names (curvature_t_threshold, min_gamma_points,
@@ -76,7 +71,7 @@ def _stream_processors(mode, processor_type_x, processor_type_y, w_processor_typ
     """Each stream's parameter slot, mapped to the processor that reads it, Y's and W's as _run_flat
     resolved them."""
     streams = {'processor_params_x': processor_type_x, 'processor_params_y': processor_type_y}
-    if mode in ('conditional', 'interaction', 'transfer') and w_data is not None:
+    if MODES[mode].reads_w and w_data is not None:
         streams['w_processor_params'] = w_processor_type
     return streams
 
@@ -116,12 +111,6 @@ def _normalise_grid(sweep_grid: Optional[dict]) -> Optional[dict]:
     return grid
 
 
-# The grid keys a mode sets itself, and the setting it takes them from.
-_SETS_ITSELF = {'lag': {'lag': "Lag(lag_range=...)"},
-                'dimensionality': {'run_id': "Dimensionality(n_restarts=...)",
-                                   'embedding_dim': "Dimensionality(embedding_dims=...)"}}
-
-
 def _check_grid(mode: str, sweep_grid: Optional[dict], model: Optional[Model] = None,
                 training: Optional[Training] = None, output: Optional[Output] = None,
                 split: Optional[Split] = None, estimator: Optional[Estimator] = None) -> None:
@@ -135,29 +124,26 @@ def _check_grid(mode: str, sweep_grid: Optional[dict], model: Optional[Model] = 
     (:func:`_unread_settings`), in every configuration of the grid.
     """
     import dataclasses
-    if mode == 'sweep' and not sweep_grid:
-        raise ValueError("'sweep_grid' required for mode='sweep'.")
+    spec = MODES[mode]
+    if spec.needs_grid and not sweep_grid:
+        raise ValueError(f"'sweep_grid' required for mode='{mode}'.")
     if not sweep_grid:
         return
-    if mode in ('estimate', 'precision'):
-        _one_network = ("trains one network" if mode == 'estimate' else
-                        "trains one baseline network and evaluates it at every tau in tau_grid")
-        _instead = ("Use mode='sweep' to repeat the estimate or to sweep a setting."
-                    if mode == 'estimate' else
-                    "To compare settings, run mode='precision' once per setting.")
+    if spec.one_network is not None:
+        trains, instead = spec.one_network
         raise ValueError(
-            f"mode='{mode}' {_one_network} and runs no sweep_grid. The grid {sorted(sweep_grid)} would "
-            f"run once with the base configuration. {_instead}"
+            f"mode='{mode}' {trains} and runs no sweep_grid. The grid {sorted(sweep_grid)} would "
+            f"run once with the base configuration. {instead}"
         )
-    for key, through in _SETS_ITSELF.get(mode, {}).items():
+    for key, through in spec.sets_itself.items():
         if key in sweep_grid:
             raise ValueError(
                 f"mode='{mode}' sets '{key}' itself, through {through}. A sweep_grid over it would "
                 f"be overridden in every configuration. Remove '{key}' from sweep_grid."
             )
     mode_keys = set(MODE_KWARGS_SCHEMA.get(mode, {})) - {'n_workers'}
-    if mode in _MODE_CONFIG_CLASSES:
-        mode_keys |= {f.name for f in dataclasses.fields(_MODE_CONFIG_CLASSES[mode])}
+    if spec.config is not None:
+        mode_keys |= {f.name for f in dataclasses.fields(spec.config)}
     for key in sweep_grid or {}:
         if key == 'run_id' or key in _PROCESSOR_KEYS:
             continue
@@ -214,9 +200,6 @@ def _check_grid(mode: str, sweep_grid: Optional[dict], model: Optional[Model] = 
 # Settings that only take effect with particular encoders, read the way
 # utils.build_critic routes them to each side's model.
 _HEAD_SETTINGS = ('n_layers_head', 'hidden_dim_head')
-# Modes whose X encoder is a difference term's branched encoder, an MLP head
-# over the branches (neural_mi/models/embeddings.py, BranchedEmbedding).
-_BRANCHED_MODES = ('conditional', 'transfer', 'interaction')
 # What a critic without an encoder per side (the concat critic) does not
 # build: it scores the raw pair with one MLP.
 _ENCODER_ONLY = ('embedding_model', 'embedding_dim', 'custom_embedding_cls', 'embedding_model_y',
@@ -233,10 +216,13 @@ def _unread_model_settings(mode: str, model: Model, chosen: set) -> List[Tuple[L
     encoder) read the MLP settings.
     """
     from .utils import _EMBEDDING_CLASSES, MODEL_SETTINGS, _accepts_kwarg, _names
-    from .models.critics import embeds_each_side
+    from .models.critics import CRITICS, embeds_each_side
     from .models.embeddings import MLP
-    critic = model.critic_type or ('hybrid' if mode == 'dimensionality' else 'separable')
-    heads = critic in ('hybrid', 'concat') or mode in _BRANCHED_MODES
+    critic = model.critic_type or _default_critic(mode)
+    # The MLPs around the encoders: the hybrid critic's head, the concat
+    # critic's network, and the head of a difference term's branched encoder
+    # (neural_mi/models/embeddings.py, BranchedEmbedding).
+    heads = getattr(CRITICS.get(critic), 'has_mlp_head', False) or MODES[mode].terms is not None
 
     def encoder(custom, name):
         return custom if custom is not None else _EMBEDDING_CLASSES.get((name or 'mlp').lower())
@@ -291,7 +277,7 @@ def _rotation_settings_ignored(output: Optional[Output], chosen: Optional[set] =
     if output is None:
         return []
     returned, tracked = bool(output.return_embeddings), bool(output.track_embeddings)
-    rotated, per_epoch = bool(output.return_rotated_embeddings), bool(output.rotated_embeddings_per_epoch)
+    rotated = bool(output.return_rotated_embeddings)
     asked = (lambda name: name in chosen) if chosen is not None else (lambda name: bool(getattr(output, name)))
     ignored = []
     if asked('return_rotated_embeddings') and not (returned or tracked):
@@ -303,6 +289,11 @@ def _rotation_settings_ignored(output: Optional[Output], chosen: Optional[set] =
     if asked('return_rotation_matrices') and not rotated:
         ignored.append((['return_rotation_matrices'], "return_rotation_matrices (needs return_rotated_embeddings)"))
     return ignored
+
+
+def _default_critic(mode: str) -> str:
+    """The critic a call of ``mode`` builds when it names none: the mode's own, or the schema's default."""
+    return MODES[mode].critic or default_of('critic_type')
 
 
 def _unread_settings(mode: str, model: Optional[Model], training: Optional[Training],
@@ -356,8 +347,7 @@ def _unread_settings(mode: str, model: Optional[Model], training: Optional[Train
     else:
         if model is not None:
             groups += _unread_model_settings(mode, model, model_set)
-        critic = (model.critic_type if model is not None else None) or (
-            'hybrid' if mode == 'dimensionality' else 'separable')
+        critic = (model.critic_type if model is not None else None) or _default_critic(mode)
         head = [n for n in _HEAD_SETTINGS if n in model_set]
         if set_away(training, 'lr_head_multiplier'):
             head.append('lr_head_multiplier')
@@ -368,9 +358,9 @@ def _unread_settings(mode: str, model: Optional[Model], training: Optional[Train
         decoder = [n for n in _DECODER_SETTINGS if n in model_set]
         if decoder and not (model.use_decoder or False):
             groups.append((decoder, f"{', '.join(decoder)} (use_decoder=True only)"))
-    if mode == 'dimensionality' and 'embedding_dim' in model_set:
-        groups.append((['embedding_dim'], "embedding_dim (mode='dimensionality' sets it from "
-                                          "Dimensionality(embedding_dims=...))"))
+    for key, through in MODES[mode].sets_itself.items():
+        if key in model_set:
+            groups.append(([key], f"{key} (mode='{mode}' sets it from {through})"))
     groups += _rotation_settings_ignored(output, chosen)
     if split is not None and (split.train_indices is not None or split.test_indices is not None):
         keys = {'mode': 'split_mode', 'train_fraction': 'train_fraction', 'n_test_blocks': 'n_test_blocks',
@@ -400,6 +390,51 @@ def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Opti
         )
 
 
+def _check_requests(mode: str, model: Optional[Model], output: Optional[Output], sweep_grid: Optional[dict],
+                    has_y: bool, permutation_test: bool, rigorous: bool) -> None:
+    """Refuse, before any work, what the call asks of a mode or critic that cannot give it: a permutation
+    null, returned embeddings, or the embeddings of a critic that has none (analysis/modes.py, MODES)."""
+    from .models.critics import embeds_each_side
+    spec = MODES[mode]
+    if permutation_test:
+        if spec.permutation is not None:
+            raise ValueError(
+                f"permutation_test=True is not supported for mode='{mode}'. {spec.permutation} "
+                f"Permutation testing is available for "
+                f"{', '.join(repr(m) for m, s in MODES.items() if s.permutation is None)}."
+            )
+        if rigorous:
+            raise ValueError(
+                "permutation_test=True is not supported with rigorous=True or with "
+                "mode='rigorous'. The extrapolation reports its own error estimate. Test "
+                "the plain estimate (rigorous=False) against its null."
+            )
+        if not has_y:
+            raise ValueError(
+                f"permutation_test=True needs y_data for mode='{mode}'. The null moves X against Y. "
+                f"Without Y every pair is two channels of X, which move together and leave no null "
+                f"to compute."
+            )
+    flags = [k for k in ('return_embeddings', 'track_embeddings', 'return_rotated_embeddings',
+                         'return_rotation_matrices') if output is not None and getattr(output, k)]
+    if flags and spec.embeddings is not None:
+        raise ValueError(
+            f"Output({flags[0]}=...) is not available for mode='{mode}': {spec.embeddings}. "
+            f"Use mode='estimate' or mode='sweep' on the pair whose embeddings you want."
+        )
+    if spec.reads_embeddings and (model is None or model.custom_critic is None):
+        critics = {(model.critic_type if model is not None else None) or _default_critic(mode)}
+        if 'critic_type' in (sweep_grid or {}):
+            critics |= set(sweep_grid['critic_type'])
+        cannot = sorted(c for c in critics if not embeds_each_side(c))
+        if cannot:
+            raise ValueError(
+                f"mode='{mode}' reads the critic's embedding of each side, and critic_type='{cannot[0]}' "
+                f"gives none: it scores X and Y jointly. Use the default '{_default_critic(mode)}' or "
+                f"'separable'."
+            )
+
+
 def _check_estimator_params(estimator: Optional[Estimator]) -> None:
     """Refuse estimator parameters the chosen estimator does not take, before any work."""
     from .estimators import ESTIMATORS, NONPARAMETRIC
@@ -418,13 +453,6 @@ def _check_estimator_params(estimator: Optional[Estimator]) -> None:
         )
 
 
-# Why a mode's networks train on rows other than the ones the caller passed,
-# which custom split indices would then index wrongly.
-_ROWS_DIFFER = {'rigorous': 'trains on chunks of the data',
-                'lag': 'trains on copies of the data shifted by each lag',
-                'transfer': 'trains on histories built from the data'}
-
-
 def _check_custom_split(mode: str, train_indices, test_indices, processed: bool,
                         analysis_kwargs: dict) -> None:
     """Refuse custom split indices wherever they would index the wrong rows.
@@ -437,10 +465,10 @@ def _check_custom_split(mode: str, train_indices, test_indices, processed: bool,
             "Split(train_indices=...) and Split(test_indices=...) are used together. "
             "Pass both or neither."
         )
-    reason = _ROWS_DIFFER.get(mode)
+    reason = MODES[mode].rows_differ
     if reason is None and analysis_kwargs.get('rigorous'):
         reason = 'trains on chunks of the data with rigorous=True'
-    if reason is None and mode == 'dimensionality' and analysis_kwargs.get('lag'):
+    if reason is None and analysis_kwargs.get('lag'):
         reason = 'shifts one half of the data in time by lag'
     if reason is None and processed:
         reason = 'windows the data first and trains on the windows it builds'
@@ -459,7 +487,7 @@ def _processor_grid(mode: str, sweep_grid: Optional[dict], streams: dict) -> dic
     Raises when the grid varies a processor parameter that no stream's
     processor reads.
     """
-    if mode in ('estimate', 'precision') or not sweep_grid:
+    if MODES[mode].one_network is not None or not sweep_grid:
         return {}
     keys = [k for k in sweep_grid if k in _PROCESSOR_KEYS]
     for key in keys:
@@ -475,11 +503,8 @@ def _processor_grid(mode: str, sweep_grid: Optional[dict], streams: dict) -> dic
 
 
 def _trains_one_network(mode: str, n_configs: int, n_repeats: int) -> bool:
-    if mode in ('estimate', 'precision'):
-        return True
-    if mode == 'sweep':
-        return n_configs * n_repeats == 1
-    return False
+    spec = MODES[mode]
+    return spec.one_network is not None or (spec.one_network_per_repeat and n_configs * n_repeats == 1)
 
 
 def _announce_call(mode: str, sweep_grid: Optional[dict], permutation_test: bool,
@@ -487,10 +512,9 @@ def _announce_call(mode: str, sweep_grid: Optional[dict], permutation_test: bool
                    save_path: Optional[str] = None) -> None:
     """Messages about the cost of the whole call, given once per call."""
     from .analysis.assemble import split_grid
-    used_grid = None if mode in ('estimate', 'precision') else sweep_grid
-    configs, run_ids = split_grid(used_grid)
+    configs, run_ids = split_grid(sweep_grid)
     n_configs = len(configs)
-    if permutation_test and mode in _PERMUTABLE_MODES and (has_y or mode != 'pairwise'):
+    if permutation_test:
         across = (f" with all {n_configs} configurations of sweep_grid"
                   if n_configs > 1 else "")
         cost = (f"Each permutation reruns the whole call{across}. The test costs "
@@ -514,11 +538,6 @@ def _announce_call(mode: str, sweep_grid: Optional[dict], permutation_test: bool
             f"has nothing to run in parallel.",
             UserWarning, stacklevel=user_stacklevel(),
         )
-
-
-# Modes whose result a permutation test can be built for.
-_PERMUTABLE_MODES = ('estimate', 'sweep', 'lag', 'conditional', 'interaction', 'transfer',
-                     'pairwise')
 
 
 def _run_processor_grid(call_args: dict, proc_grid: dict, streams: dict) -> Results:
@@ -700,9 +719,14 @@ def run(
     ...     n_workers=4, seed=42,
     ... )
     """
+    if mode not in MODES:
+        raise ValueError(
+            f"Unknown mode: '{mode}'. Expected one of: "
+            f"{', '.join(repr(m) for m in MODES)}."
+        )
     if _removed:
-        _per_mode = ', '.join(f"{name}={cls.__name__}(...)"
-                              for name, cls in _MODE_CONFIG_CLASSES.items())
+        _per_mode = ', '.join(f"{name}={spec.config.__name__}(...)"
+                              for name, spec in MODES.items() if spec.config is not None)
         raise TypeError(
             f"run() got unexpected keyword argument(s) {sorted(_removed)}. "
             f"Parameters are grouped into config objects: model=Model(...), "
@@ -733,7 +757,7 @@ def run(
     _check_estimator_params(estimator)
     _check_grid(mode, sweep_grid, model, training, output, split, estimator)
     from .estimators import NONPARAMETRIC
-    if estimator is not None and estimator.name in NONPARAMETRIC and mode in ('dimensionality', 'precision'):
+    if estimator is not None and estimator.name in NONPARAMETRIC and MODES[mode].reads_critic:
         raise ValueError(
             f"mode='{mode}' reads the embeddings of a trained critic, and estimator='{estimator.name}' "
             f"trains none. Use a critic estimator ('infonce' or 'smile') for this mode."
@@ -785,23 +809,14 @@ def run(
             f"ignored. Only the config of the active mode is used.",
             UserWarning, stacklevel=user_stacklevel(),
         )
-    if mode in _MODE_CONFIG_CLASSES:
-        mode_cfg = as_config(_provided[mode], _MODE_CONFIG_CLASSES[mode])
-        if mode_cfg is not None:
-            if isinstance(mode_cfg, Transfer):
-                flat.update(mode_cfg.to_w_kwargs())
-                ak = mode_cfg.to_analysis_kwargs()
-                if 'bidirectional' in ak:
-                    flat['bidirectional_te'] = ak.pop('bidirectional')
-                _route_analysis(ak)
-            elif isinstance(mode_cfg, Conditional):
-                flat.update(mode_cfg.to_w_kwargs())
-                _route_analysis(mode_cfg.to_analysis_kwargs())
-            elif isinstance(mode_cfg, Interaction):
-                flat.update(mode_cfg.to_w_kwargs())
-                _route_analysis(mode_cfg.to_analysis_kwargs())
-            else:
-                _route_analysis(mode_cfg.to_analysis_kwargs())
+    _spec = MODES[mode]
+    mode_cfg = as_config(_provided[mode], _spec.config) if _spec.config is not None else None
+    if mode_cfg is not None:
+        if _spec.reads_w:
+            flat.update(mode_cfg.to_w_kwargs())
+        _route_analysis(mode_cfg.to_analysis_kwargs())
+    _check_requests(mode, model, output, sweep_grid, y_data is not None, permutation_test,
+                    bool(getattr(mode_cfg, 'rigorous', None)))
 
     # Runtime / dispatch args (always forwarded).
     flat['mode'] = mode
@@ -955,7 +970,8 @@ def _run_flat(
     # own (defaults.stream_processing), resolved here once for every path below:
     # the rows cut here, the tasks that cut their own, and a processor grid's
     # parts. A stream passed as rows built already (3-D) inherits nothing.
-    _w_reads_x = mode in ('conditional', 'interaction', 'transfer') and w_data is not None
+    _spec = MODES[mode]
+    _w_reads_x = _spec.reads_w and w_data is not None
     _w_named = w_processor_type
     processor_type_y, processor_params_y = stream_processing(
         processor_type_y, processor_params_y, processor_type_x, processor_params_x, y_data)
@@ -1087,33 +1103,14 @@ def _run_flat(
                 f"permutation_shuffle must be 'circular' or 'block', got {permutation_shuffle!r}."
             )
 
-        if permutation_test and mode in ('rigorous', 'precision'):
-            raise ValueError(
-                f"permutation_test=True is not supported for mode='{mode}'. "
-                + ("The extrapolation reports its own error estimate. "
-                   if mode == 'rigorous' else
-                   "The mode reports how one trained network degrades, not an MI value to test. ")
-                + "Permutation testing is available for mode='estimate', 'sweep', 'lag', "
-                  "'conditional', 'interaction', 'transfer' and 'pairwise'."
-            )
-        if (permutation_test and mode in ('conditional', 'interaction', 'transfer')
-                and analysis_kwargs.get('rigorous')):
-            raise ValueError(
-                "permutation_test=True is not supported with rigorous=True or with "
-                "mode='rigorous'. The extrapolation reports its own error estimate. Test "
-                "the plain estimate (rigorous=False) against its null."
-            )
-
         # Verify conditional-MI / interaction-information / conditional-TE input.
         # w_data is the shared "third variable" slot for all three modes
         # (Conditional/Interaction/Transfer all name it identically, see
         # config.py) -- one variable, three possible roles, dispatched by mode.
-        if w_data is not None and mode not in ('conditional', 'interaction', 'transfer'):
+        if w_data is not None and not _spec.reads_w:
             warnings.warn(
-                f"w_data was provided but mode='{mode}' does not use it. "
-                f"w_data is only consumed by mode='conditional' (conditional MI), "
-                f"mode='interaction' (interaction information) and mode='transfer' "
-                f"(conditional transfer entropy).",
+                f"w_data was provided but mode='{mode}' does not use it. w_data is read only by "
+                f"{', '.join(repr(m) for m, s in MODES.items() if s.reads_w)}.",
                 UserWarning, stacklevel=user_stacklevel()
             )
 
@@ -1122,6 +1119,12 @@ def _run_flat(
         param_validator = ParameterValidator(locals())
         param_validator.validate()
         param_validator.apply_defaults()
+        # The settings the mode sets itself where the caller left them unset
+        # (analysis/modes.py, MODES). A grid key counts as set: each grid point
+        # is resolved where it is merged.
+        if _spec.overrides is not None:
+            base_params.update(_spec.overrides(base_params, _pre_default_keys | set(sweep_grid or {}),
+                                               y_data is not None))
         # Rows the caller built in time order carry their geometry from here on.
         record_rows(base_params, _rows)
         if _row_phases and int(_row_phases) > 1:
@@ -1197,7 +1200,7 @@ def _run_flat(
         # catch. Everywhere else (mode='estimate'/'conditional'/'interaction'/
         # etc.), the caller is expected to have already windowed the data
         # themselves before it reaches this validation.
-        _mode_builds_own_windows = mode == 'transfer'
+        _mode_builds_own_windows = _spec.builds_own_rows
         # Checked per side, since the two sides can name different encoders and
         # are read through their own processor. A sequential encoder on Y with a
         # static Y is the same mistake as on X.
@@ -1251,7 +1254,7 @@ def _run_flat(
         # quantities do on theirs (quantities._by_offsets). Rows a named
         # quantity built (_rows) were checked there as series.
         _processor_of = {'x': processor_type_x, 'y': _effective_processor_type_y, 'w': w_processor_type}
-        if mode != 'transfer':
+        if not _spec.builds_own_rows:
             from .preprocessing import prepare as _prepare_streams
             _prepared = _prepare_streams(OrderedDict(x=x_data, y=y_data, w=w_data), _processor_of,
                                          preprocessing, quantity=f"mode='{mode}'", rate=False,
@@ -1267,16 +1270,16 @@ def _run_flat(
         from .data.plan import RowPlan, Stream, refuse_mixed_streams, resolve_stream, rows_line_up
         # Every stream is read by a processor, its own or X's, or arrives as
         # rows built already, and the two cannot share a call.
-        _reads_w = mode in ('conditional', 'interaction') and w_data is not None
+        _reads_w = _spec.reads_w and not _spec.builds_own_rows and w_data is not None
         _kinds = OrderedDict([('x', processor_type_x)] + ([('w', w_processor_type)] if _reads_w else [])
                              + ([('y', _effective_processor_type_y)] if y_data is not None else []))
-        if mode != 'transfer':
+        if not _spec.builds_own_rows:
             refuse_mixed_streams([n for n, k in _kinds.items() if k is None],
                                  [n for n, k in _kinds.items() if k is not None])
         _windowed = processor_type_x is not None
-        _shifts = bool(base_params.get('shift_windows')) and _windowed and mode != 'transfer'
+        _shifts = bool(base_params.get('shift_windows')) and _windowed and not _spec.builds_own_rows
         _streams = OrderedDict()
-        if _windowed and mode != 'transfer':
+        if _windowed and not _spec.builds_own_rows:
             _streams['x'] = resolve_stream(x_data, x_time, processor_type_x, processor_params_x)
             if _reads_w:
                 _streams['w'] = resolve_stream(w_data, w_time, w_processor_type, w_processor_params)
@@ -1284,11 +1287,11 @@ def _run_flat(
                 _streams['y'] = resolve_stream(
                     y_data, y_time, _effective_processor_type_y,
                     processor_params_y)
-        if mode == 'transfer':
+        if _spec.builds_own_rows:
             # Transfer entropy builds its histories from rows of a (T, C) series;
             # the transfer branch below puts the streams on one grid itself.
             x_run_data, y_run_data = x_data, y_data
-        elif mode in ('conditional', 'interaction'):
+        elif _spec.reads_w:
             if w_data is None:
                 raise ValueError(f"`w_data` must be provided for mode='{mode}'.")
             if y_data is None:
@@ -1309,14 +1312,13 @@ def _run_flat(
                                rows=dict(_rows_built['windows']),
                                processors={name: s.processor for name, s in _streams.items()})
             x_run_data, y_run_data = _plan, None
-        elif mode == 'lag' or _shifts:
+        elif _spec.windows_in_task or _shifts:
             logger.info("Windowing inside each training task.")
             x_run_data, y_run_data = x_data, y_data
             # The windows are built later, in each task. X's extent, window
             # and step give their count now. Each lag trains on what the
             # shift leaves, so a lag scan is counted at its largest lag.
-            _lags = (lag_range if lag_range is not None
-                     else analysis_kwargs.get('lag_range')) if mode == 'lag' else None
+            _lags = lag_range if lag_range is not None else analysis_kwargs.get('lag_range')
             _largest_lag = max((abs(float(v)) for v in _lags), default=0.0) if _lags is not None else 0.0
             _counted = _deferred_window_count(x_data, base_params, _largest_lag)
             if _counted is not None:
@@ -1345,14 +1347,14 @@ def _run_flat(
             base_params['processor_params_y']['preprocessed'] = True
             _warn_small_sample(kept_rows(x_run_data.shape[0], base_params), 'samples', base_params, mode,
                                rows={'x': x_run_data, 'y': y_run_data})
-            if mode not in ('dimensionality', 'pairwise') and y_run_data is None:
+            if _spec.needs_y and y_run_data is None:
                 raise ValueError(f"y_data must be provided for mode '{mode}'.")
         else:
             # The pair's rows, cut once, here, from one plan of the streams.
             _plan = RowPlan(_streams)
             _rows_built = _plan.rows()
-            if mode in ('dimensionality', 'pairwise'):
-                # dimensionality and pairwise can operate on x_data alone
+            if not _spec.needs_y:
+                # A mode that does not need Y can operate on x_data alone
                 x_run_data = _rows_built['windows']['x']
                 y_run_data = _rows_built['windows'].get('y') if y_data is not None else None
             else:
@@ -1379,36 +1381,14 @@ def _run_flat(
                                rows={'x': x_run_data, 'y': y_run_data},
                                processors={'x': processor_type_x, 'y': _effective_processor_type_y})
 
-        _warn_if_shift_windows_dead(base_params, mode, _shifts or (mode == 'transfer' and stride > 1),
-                                    user_set_keys=_pre_default_keys)
+        _warn_if_shift_windows_dead(base_params, mode, _shifts or (_spec.builds_own_rows and stride > 1),
+                                    user_set_keys=_pre_default_keys, offsets=_spec.builds_own_rows)
 
-        if mode not in _MODES:
-            raise ValueError(
-                f"Unknown mode: '{mode}'. Expected one of: "
-                f"{', '.join(repr(m) for m in _MODES)}."
-            )
         _to_bits = output_units == 'bits'
         n_workers = analysis_kwargs.get('n_workers', 1)
         grid = dict(sweep_grid or {})
 
-        _embedding_flags = [k for k in ('return_embeddings', 'track_embeddings',
-                                        'return_rotated_embeddings', 'return_rotation_matrices')
-                            if base_params.get(k)]
         _use_rigorous = bool(analysis_kwargs.get('rigorous', False))
-        if _embedding_flags and (mode in ('rigorous', 'precision')
-                                 or (mode in ('conditional', 'interaction', 'transfer'))):
-            if mode == 'precision':
-                _why = ("it trains one baseline network and reports how its MI degrades, so there "
-                        "is no repeat whose embeddings the result could hold")
-            elif mode == 'rigorous':
-                _why = "every repeat trains a network on each chunk of the gamma ladder"
-            else:
-                _why = ("every repeat trains one network per term of the quantity, and no one "
-                        "network's embeddings describe it")
-            raise ValueError(
-                f"Output({_embedding_flags[0]}=...) is not available for mode='{mode}': {_why}. "
-                f"Use mode='estimate' or mode='sweep' on the pair whose embeddings you want."
-            )
 
         # The params recorded on the result: the resolved configuration, with every
         # grid key holding its grid.
@@ -1452,7 +1432,7 @@ def _run_flat(
             ctx = {'pairs': analysis_kwargs.get('pairs'), 'channel_names_x': channel_names_x,
                    'channel_names_y': channel_names_y}
 
-        elif mode in ('conditional', 'interaction'):
+        elif _spec.terms is not None and not _spec.builds_own_rows:
             # x_run is the plan of X, W and Y, whose rows every term shares.
             ctx = {}
             if _use_rigorous:
@@ -1557,27 +1537,12 @@ def _run_flat(
                                std_cols=produced['std_cols'], details=produced['details'],
                                row_scalars=produced['row_scalars'])
         if permutation_test:
-            if mode == 'dimensionality':
-                warnings.warn(
-                    "permutation_test=True has no effect for mode='dimensionality'. The mode "
-                    "reports a curve over embedding dimensions and the dimension at which it "
-                    "saturates. Neither has a null distribution. No null is computed.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-            elif mode == 'pairwise' and y_run is None:
-                warnings.warn(
-                    "permutation_test=True has no effect for mode='pairwise' without y_data. "
-                    "Every pair is two channels of X. Moving X moves both sides of each pair "
-                    "together and leaves no null to compute. Cross-pairwise MI with y_data "
-                    "supports permutation testing.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-            else:
-                trials = permutation_nulls(
-                    mode, x_run, y_run, w_run, base_params, grid, ctx=ctx, to_bits=_to_bits,
-                    n_permutations=n_permutations, n_workers=n_workers,
-                    permutation_shuffle=permutation_shuffle)
-                attach_nulls(result, trials, produced['axis_keys'])
+            # run() refused a null the mode cannot give (_check_requests).
+            trials = permutation_nulls(
+                mode, x_run, y_run, w_run, base_params, grid, ctx=ctx, to_bits=_to_bits,
+                n_permutations=n_permutations, n_workers=n_workers,
+                permutation_shuffle=permutation_shuffle)
+            attach_nulls(result, trials, produced['axis_keys'])
         return result
     finally:
         logger.setLevel(_prev_level)
@@ -1709,8 +1674,7 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
     tips = []
     if setting(base_params, 'dropout') == 0.0:
         tips.append("dropout=0.2")
-    norm = base_params.get('norm_layer')
-    if norm in (None, 'none') or (norm == 'auto' and mode != 'dimensionality'):
+    if norm_layer_of(base_params) is None:
         tips.append("norm_layer='layer'")
     hidden, embed = setting(base_params, 'hidden_dim'), setting(base_params, 'embedding_dim')
     if isinstance(hidden, int) and hidden > 32:
@@ -1731,7 +1695,7 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
 
 
 def _warn_if_shift_windows_dead(base_params: dict, mode: str, shifts: bool,
-                                user_set_keys: Optional[set] = None) -> None:
+                                user_set_keys: Optional[set] = None, offsets: bool = False) -> None:
     """Warn when an explicit shift_windows=True cannot take effect on this call.
 
     Rows a processor cuts from raw streams move in every mode but transfer
@@ -1744,7 +1708,7 @@ def _warn_if_shift_windows_dead(base_params: dict, mode: str, shifts: bool,
         return
     if base_params.get('shift_windows') is not True or shifts or base_params.get(PHASES_KEY):
         return
-    if row_geometry(base_params) is not None or mode == 'transfer':
+    if row_geometry(base_params) is not None or offsets:
         # Rows built by offset at every step of their series (stride=1).
         warnings.warn(
             f"shift_windows=True has no effect here: the rows start one step apart, so a shift "
@@ -1755,7 +1719,7 @@ def _warn_if_shift_windows_dead(base_params: dict, mode: str, shifts: bool,
         return
     warnings.warn(
         f"shift_windows=True has no effect for mode='{mode}' here: no processor windows the streams, so "
-        f"there are no windows to move. "
+        "there are no windows to move. "
         f"Set Training(shift_windows=False) to silence this warning.",
         UserWarning, stacklevel=user_stacklevel(),
     )

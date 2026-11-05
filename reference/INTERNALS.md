@@ -35,7 +35,7 @@ the networks and returns rows that the shared assembly layer turns into a
 
 | file | holds |
 |---|---|
-| `modes.py` | one producer per mode and the `produce()` dispatcher. A producer takes the prepared data and the grid and returns the repeat rows, the per-configuration details and the columns to aggregate |
+| `modes.py` | one producer per mode, and `MODES`, which declares each mode once: its producer, its config class, the axis it adds, what it accepts (repeats, a grid, `rigorous`, a permutation null, returned embeddings, custom split indices), the streams it reads and the settings it sets itself. `produce()` runs a mode's producer. A producer takes the prepared data and the grid and returns the repeat rows, the per-configuration details and the columns to aggregate |
 | `assemble.py` | `build_results` and `aggregate` (repeat rows into `runs` and `dataframe`), `merge_results` (the parts of a processor grid into one result), `convert_record` (the one conversion from nats), `NETWORK_KEYS` (what a trained network reports about itself) |
 | `permutation.py` | `shift_x` (moving X for a null trial), `permutation_nulls` (running the trials), `attach_nulls` (the null columns and `p_value`) |
 | `sweep.py` | `ParameterSweep`, the engine that trains one network per grid point and repeat; `amplification_factor` |
@@ -338,17 +338,18 @@ To add an analysis mode:
 1. Write the procedure in a module under `neural_mi/analysis/` when it is more
    than a few lines.
 2. Add a producer to `neural_mi/analysis/modes.py` that returns its repeat rows
-   through `_produced(...)` with its axis keys and the columns to aggregate.
-   Route the mode to it in `produce()`.
+   through `_produced(...)` with the columns to aggregate.
 3. Add its config dataclass to `neural_mi/config.py`, export it from
-   `neural_mi/__init__.py` and add its settings and defaults to
-   `MODE_KWARGS_SCHEMA` in `neural_mi/defaults.py`.
-4. Register it in `neural_mi/run.py`: in `_MODES` and `_MODE_CONFIG_CLASSES`, in
-   `_PERMUTABLE_MODES` if a permutation null means something for it.
-5. Decide what it does with repeats, a configuration grid and `rigorous`. Record
-   the decision in the capability table in
-   [USING.md](USING.md#what-each-mode-accepts) and add the mode to the check in
-   `tests/test_contract.py` that every mode returns the shared `Results` shape or
-   refuses clearly.
-6. Document its config in [PARAMETERS.md](PARAMETERS.md) and the messages it
+   `neural_mi/__init__.py`, add its settings and defaults to
+   `MODE_KWARGS_SCHEMA` in `neural_mi/defaults.py`, and add a parameter of its
+   name to `run()`.
+4. Declare it in `MODES`: its producer, its config, the axis it adds, and what it
+   does with repeats, a configuration grid, `rigorous`, a permutation null,
+   returned embeddings and custom split indices, with the reason it gives for
+   each request it refuses. `run()`, the grid and data checks and the results
+   read the declaration. Its `table` is its row of the capability table in
+   [USING.md](USING.md#what-each-mode-accepts), which
+   `tests/test_mode_registry.py` checks, and `tests/test_contract.py` runs it
+   with every kind of grid against the shared `Results` shape.
+5. Document its config in [PARAMETERS.md](PARAMETERS.md) and the messages it
    prints in [MESSAGES.md](MESSAGES.md). `tests/test_docs_drift.py` checks both.

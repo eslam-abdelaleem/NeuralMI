@@ -275,16 +275,6 @@ needs 100 trials or more. The message also states what the test costs.
 One trial raised an exception or every trial did. Without a null the test is
 inconclusive. The log shows each failure.
 
-**`permutation_test=True has no effect for mode='dimensionality'`**
-The curve and the dimension read from it are no single MI value for a null to
-sit under. Run `mode='estimate'` with `permutation_test=True` to test whether
-the two views share any information.
-
-**`permutation_test=True has no effect for mode='pairwise' without y_data`**
-Because every pair is two channels of X, moving X moves both sides of each pair
-together and no null is computed. Cross-pairwise MI with `y_data` supports the
-test.
-
 ---
 
 ## Windowing and coverage

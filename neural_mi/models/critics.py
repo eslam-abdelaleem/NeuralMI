@@ -264,6 +264,9 @@ class SeparableCritic(BaseCritic):
     """A critic with a separable architecture based on a dot product."""
     # Whether the critic gives an embedding of each side (an encoder per side); see
     # embeds_each_side.
+    # Whether it builds an MLP that scores the pair (the hybrid critic's head, the
+    # concat critic's network), which reads the MLP settings.
+    has_mlp_head = False
     embeds_each_side = True
 
     def __init__(self, 
@@ -296,6 +299,9 @@ class HybridCritic(BaseCritic):
     """
     # Whether the critic gives an embedding of each side (an encoder per side); see
     # embeds_each_side.
+    # Whether it builds an MLP that scores the pair (the hybrid critic's head, the
+    # concat critic's network), which reads the MLP settings.
+    has_mlp_head = True
     embeds_each_side = True
 
     def __init__(self, 
@@ -365,6 +371,9 @@ class ConcatCritic(BaseCritic):
     """
     # Whether the critic gives an embedding of each side (one MLP over the flattened pair and no encoder); see
     # embeds_each_side.
+    # Whether it builds an MLP that scores the pair (the hybrid critic's head, the
+    # concat critic's network), which reads the MLP settings.
+    has_mlp_head = True
     embeds_each_side = False
 
     def __init__(self,
