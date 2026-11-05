@@ -152,7 +152,7 @@ class TestDifferenceOfTwoNetworks:
         from neural_mi.analysis import sweep as sweep_module
         calls = {'n': 0}
 
-        def fake_run(self, sweep_grid=None, n_workers=1, is_proc_sweep=False, **kwargs):
+        def fake_run(self, sweep_grid=None, n_workers=1, windows_in_task=False, **kwargs):
             calls['n'] += 1     # the conditioning term trains first
             return marginal if calls['n'] == 1 else joint
 
@@ -190,7 +190,7 @@ class TestInteractionInformation:
         canned = [[{**_net(0.1), 'n_channels_x': 1}, {**_net(0.1), 'n_channels_x': 1}],
                   [_net(0.9), _net(0.8)], [CONTRADICTING, _net(0.2)]]
 
-        def fake_run(self, sweep_grid=None, n_workers=1, is_proc_sweep=False, **kwargs):
+        def fake_run(self, sweep_grid=None, n_workers=1, windows_in_task=False, **kwargs):
             return canned.pop(0)
 
         monkeypatch.setattr(sweep_module.ParameterSweep, 'run', fake_run)

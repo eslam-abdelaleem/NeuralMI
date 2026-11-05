@@ -20,13 +20,13 @@ class TestSweepMechanics:
         assert sweep.base_params['n_channels_y'] == 5
 
     def test_prepare_tasks_proc_sweep(self):
-        # Checks that raw data is passed if is_proc_sweep=True
+        # Checks that raw data is passed if windows_in_task=True
         x = np.random.randn(100, 5)
         y = np.random.randn(100, 5)
         base_params = {}
         sweep = ParameterSweep(x, y, base_params)
 
-        tasks = sweep._prepare_tasks(sweep_grid={'window_size': [10]}, is_proc_sweep=True)
+        tasks = sweep._prepare_tasks(sweep_grid={'window_size': [10]}, windows_in_task=True)
         task_x, task_y, params, _ = tasks[0]
 
         # Verify params got updated
@@ -41,7 +41,7 @@ class TestSweepMechanics:
         base_params = {'save_best_model_path': 'model.pth'}
         sweep = ParameterSweep(x, y, base_params)
 
-        tasks = sweep._prepare_tasks(sweep_grid={'dim': [4]}, is_proc_sweep=False)
+        tasks = sweep._prepare_tasks(sweep_grid={'dim': [4]}, windows_in_task=False)
         _, _, params, _ = tasks[0]
         from neural_mi.embeddings_io import model_file
         assert model_file(params) == 'model_dim-4.pth'
@@ -55,7 +55,7 @@ class TestSweepMechanics:
         x = np.random.randn(20, 4)
         y = np.random.randn(20, 4)
         sweep = ParameterSweep(x, y, {})
-        tasks = sweep._prepare_tasks(sweep_grid={}, is_proc_sweep=False)
+        tasks = sweep._prepare_tasks(sweep_grid={}, windows_in_task=False)
         _, _, params, _ = tasks[0]
         # dataset_device should be absent (resolved inside task.py) or 'cpu'
         assert params.get('dataset_device', 'cpu') in ('cpu', None)
@@ -133,7 +133,7 @@ class TestSweepMechanics:
                                       'embedding_dim': 4, 'hidden_dim': 8, 'n_layers': 1})
         tasks = sweep._prepare_tasks(
             sweep_grid={'embedding_dim': list(range(4, 30))},  # >20 tasks
-            is_proc_sweep=False,
+            windows_in_task=False,
         )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter('always')
@@ -159,7 +159,7 @@ class TestJointMarginalDifference:
         from neural_mi.analysis import sweep as sweep_module
         calls = {'n': 0}
 
-        def fake_run(self, sweep_grid=None, n_workers=1, is_proc_sweep=False, **kwargs):
+        def fake_run(self, sweep_grid=None, n_workers=1, windows_in_task=False, **kwargs):
             calls['n'] += 1
             return [{'train_mi': v} for v in (marginal_vals if calls['n'] == 1 else joint_vals)]
 
@@ -185,7 +185,7 @@ class TestJointMarginalDifference:
         from neural_mi.analysis.sweep import _joint_marginal_difference
         from neural_mi.analysis import sweep as sweep_module
 
-        def fake_run(self, sweep_grid=None, n_workers=1, is_proc_sweep=False, **kwargs):
+        def fake_run(self, sweep_grid=None, n_workers=1, windows_in_task=False, **kwargs):
             return [{'no_mi_here': True}]  # no 'train_mi' key -> filtered out
 
         monkeypatch.setattr(sweep_module.ParameterSweep, 'run', fake_run)

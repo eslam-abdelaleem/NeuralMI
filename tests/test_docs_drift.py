@@ -244,3 +244,63 @@ def test_every_warning_is_documented():
                for level, where, text in MESSAGES
                if level == 'warning' and text and not any(_key_matches(k, text) for k in KEYS)]
     assert not missing, "warnings without an entry in MESSAGES.md:\n" + "\n".join(missing)
+
+
+# ---------------------------------------------------------------------------
+# Names and files the reference pages give
+# ---------------------------------------------------------------------------
+
+ROOT = REFERENCE.parent
+PACKAGE_DIR = ROOT / 'neural_mi'
+# Named in INTERNALS.md as what the library does not call.
+_NAMED_AS_UNUSED = {'logger.warning'}
+
+
+def _package_names():
+    """Every name the package defines or assigns, every argument and every string it holds."""
+    names = {p.stem for p in PACKAGE_DIR.rglob('*.py')} | {p.name for p in PACKAGE_DIR.rglob('*') if p.is_dir()}
+    for path in PACKAGE_DIR.rglob('*.py'):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+                names.add(node.attr)
+            elif isinstance(node, ast.arg):
+                names.add(node.arg)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                names.add(node.value)
+    return names
+
+
+def test_every_code_name_the_reference_pages_give_exists():
+    """A private name, or a dotted path into the package, in backticks on a reference page or the
+    roadmap names something the package still has, and a file name names a file the repository still
+    has. A page that names a removed table or function fails here."""
+    names = _package_names()
+    files = {p.name for p in ROOT.rglob('*.py') if '.claude' not in p.relative_to(ROOT).parts}
+    modules = ({p.stem for p in PACKAGE_DIR.rglob('*.py')} | {p.name for p in PACKAGE_DIR.rglob('*') if p.is_dir()}
+               | {'nmi', 'neural_mi'})
+    stale = []
+    for page in sorted(REFERENCE.glob('*.md')) + [ROOT / 'ROADMAP.md']:
+        for ref in re.findall(r'`([A-Za-z_][\w.]*)(?:\(\))?`', page.read_text()):
+            if ref in _NAMED_AS_UNUSED:
+                continue
+            if ref.endswith('.py'):
+                if ref.split('/')[-1] not in files:
+                    stale.append(f"{page.name}: {ref}")
+                continue
+            parts = ref.split('.')
+            private = parts[-1].startswith('_') and not parts[-1].startswith('__')
+            dotted = len(parts) > 1 and parts[0] in modules
+            if (private or dotted) and parts[-1] not in names:
+                stale.append(f"{page.name}: {ref}")
+    assert not stale, f"names the package no longer has: {sorted(set(stale))}"
+
+
+def test_testing_md_lists_every_test_file():
+    listed = set(re.findall(r'`(test_\w+\.py)`', (REFERENCE / 'TESTING.md').read_text()))
+    present = {p.name for p in (ROOT / 'tests').glob('test_*.py')}
+    assert present - listed == set(), f"test files TESTING.md does not list: {sorted(present - listed)}"
+    assert listed - present == set(), f"TESTING.md lists test files that do not exist: {sorted(listed - present)}"

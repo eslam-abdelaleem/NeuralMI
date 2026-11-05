@@ -131,6 +131,8 @@ Each file covers one functional area. Run
 | `test_repeated_messages.py` | repeated warnings and log lines shown once with a count, exact repeats included, one count line per text, across worker processes and at the caller's line |
 | `test_run_config_api.py` | the config-object call surface of `run()` |
 | `test_one_reaction.py` | one reaction to each thing a call cannot do: a setting nothing reads warns, a request the critic cannot serve and a grid that varies nothing are refused, in every mode, and the critics declare whether they embed each side |
+| `test_mode_registry.py` | each mode declared once in `MODES`: USING.md's table of what each mode accepts and `run()`'s signature against it, and no list of modes by name left in `run.py` |
+| `test_data_check_routes.py` | every route through `run()` reaches the data check: each setting of a processor grid with its own rows, and transfer entropy on every route with its histories |
 | `test_stream_inheritance.py` | Y and W read with X's processor and settings when they have none of their own, by one rule on every path: the rows each network reads are the same whether the settings are inherited or spelled out |
 
 ### Named quantities

@@ -184,7 +184,7 @@ def test_separable_critic_embedding_dim_sweep_does_not_raise():
     sweep = ParameterSweep(x, y, bp)
     tasks = sweep._prepare_tasks(
         {'embedding_dim': [4, 8]},
-        is_proc_sweep=False,
+        windows_in_task=False,
     )
     assert len(tasks) == 2
 

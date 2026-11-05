@@ -162,26 +162,24 @@ class ParameterSweep:
     def _prepare_tasks(
         self,
         sweep_grid: Dict[str, List],
-        is_proc_sweep: Optional[bool] = None,
+        windows_in_task: Optional[bool] = None,
         **kwargs,
     ) -> List[tuple]:
         """Prepares the tasks for the parameter sweep.
 
         Parameters
         ----------
-        is_proc_sweep : bool or None, optional
-            When ``True``, raw (un-processed) data is forwarded to each task
-            so that each worker runs the processor independently, required
-            when processor parameters are part of the sweep grid.  When
-            ``False``, the pre-processed tensors stored in ``self.x_data`` are
-            forwarded directly (faster; avoids repeated processing).
-            If ``None`` (default), the value is inferred automatically: data
+        windows_in_task : bool or None, optional
+            When ``True``, raw (un-processed) data is forwarded to each task,
+            which cuts its own rows: rows that move under ``shift_windows``.
+            When ``False``, the rows stored in ``self.x_data`` are forwarded
+            as they are. If ``None`` (default), the value is inferred: data
             that is already a 3-D ``torch.Tensor`` (shape ``(N, C, W)``) is
-            treated as pre-processed; everything else is treated as raw.
+            rows; everything else is raw.
         """
         # Auto-detect when not provided
-        if is_proc_sweep is None:
-            is_proc_sweep = not (isinstance(self.x_data, torch.Tensor) and self.x_data.ndim == 3)
+        if windows_in_task is None:
+            windows_in_task = not (isinstance(self.x_data, torch.Tensor) and self.x_data.ndim == 3)
         tasks = []
         run_id_base = str(uuid.uuid4())
         sweep_grid = sweep_grid or {}
@@ -213,7 +211,7 @@ class ParameterSweep:
             # Each network saved from a grid is named by its grid values.
             current_params = with_model_labels(current_params, **params)
 
-            if is_proc_sweep:
+            if windows_in_task:
                 # Raw data path: processor runs inside the worker, so tensors
                 # must still be on CPU before crossing the process boundary.
                 task_data_x = _ensure_cpu(self.x_data)
@@ -233,10 +231,10 @@ class ParameterSweep:
         logger.debug(f"Created {len(tasks)} tasks for the sweep.")
         return tasks
 
-    def run(self, sweep_grid: Dict[str, List], is_proc_sweep: Optional[bool] = None, n_workers: Optional[int] = None,
+    def run(self, sweep_grid: Dict[str, List], windows_in_task: Optional[bool] = None, n_workers: Optional[int] = None,
             **kwargs) -> List[Dict[str, Any]]:
         """Executes the hyperparameter sweep in parallel."""
-        tasks = with_device(self._prepare_tasks(sweep_grid, is_proc_sweep, **kwargs), n_workers or 1)
+        tasks = with_device(self._prepare_tasks(sweep_grid, windows_in_task, **kwargs), n_workers or 1)
         results = self._run_parallel(tasks, n_workers)
         logger.info("Parameter sweep finished.")
         return results

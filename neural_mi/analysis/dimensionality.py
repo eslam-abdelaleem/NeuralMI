@@ -267,7 +267,7 @@ def _fit(views: List[Tuple[int, Any, Any, Dict[str, Any]]], ks: Sequence[int], n
                                base_params=with_model_labels(params, split_id=split_id))
         runner = runner or sweep
         grid = {'embedding_dim': list(ks), 'run_id': list(range(n_restarts))}
-        for task_x, task_y, task_params, task_id in sweep._prepare_tasks(grid, is_proc_sweep=False):
+        for task_x, task_y, task_params, task_id in sweep._prepare_tasks(grid, windows_in_task=False):
             task_params = dict(task_params, split_id=split_id)
             # A seed of its own for every split, k and restart.
             task_params['_seed_key'] = (f"s{split_id}k{task_params['embedding_dim']}"

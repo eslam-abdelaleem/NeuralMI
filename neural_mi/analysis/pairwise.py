@@ -68,10 +68,10 @@ def _run_pair_task(args: tuple) -> Dict[str, Any]:
     # A raw (not already-windowed-3-D) per-channel slice -- a 2-D continuous/
     # categorical array/tensor, or a length-1 list of raw spike times -- means
     # each pair windows its own rows, which move under shift_windows;
-    # is_proc_sweep=True routes it through per-pair windowing instead of
+    # windows_in_task=True routes it through per-pair windowing instead of
     # treating it as already pre-processed.
     _is_raw = not (hasattr(xi, 'ndim') and xi.ndim == 3)
-    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=_is_raw)
+    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, windows_in_task=_is_raw)
     def _agg(field):
         """mean/std over this pair's runs, NaN when the field is never present
         and the std NaN when there is only one run."""
