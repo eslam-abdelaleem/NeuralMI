@@ -190,10 +190,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   channels per side, read by `mode='rigorous'` with a network of its own. KSG
   climbed steadily with the samples there, as if more data would close the
   gap. The figure now shows twenty shared dimensions in five thousand channels
-  per side, read by NeuralMI on its defaults without bias correction and
-  repeated on the same data. NeuralMI climbs to the true value with fewer
-  samples than channels, and KSG stays far below it and barely moves. The
-  README and the docs' landing page describe it that way.
+  per side, read by NeuralMI on its defaults without bias correction. Every
+  point averages both estimators over independent datasets. The figures
+  notebook estimates them at once in the library's worker pool, through a
+  function in `docs/figures/sample_sweep_draw.py` that the workers import.
+  NeuralMI climbs close to the true value with fewer samples than channels. KSG
+  stays far below it and barely moves. The README and the docs' landing page
+  describe it that way.
 
 ### Removed
 

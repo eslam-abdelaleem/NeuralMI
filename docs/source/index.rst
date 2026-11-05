@@ -17,8 +17,8 @@ arrived on.
    :width: 78%
 
 Both sides above are five thousand channels wide and share twenty latent
-dimensions carrying exactly four bits. NeuralMI climbs to the four bits with
-fewer samples than channels. KSG on the same data stays far below them and
+dimensions carrying exactly four bits. NeuralMI climbs close to the four bits
+with fewer samples than channels. KSG on the same data stays far below them and
 barely moves as the samples grow.
 
 Every analysis goes through the one function ``nmi.run()`` with a ``mode`` that
