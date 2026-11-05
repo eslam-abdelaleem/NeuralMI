@@ -83,7 +83,7 @@ print(f"exact    : 2.000 bits")
 ```
 
 ```
-estimate : 2.078 bits
+estimate : 2.092 bits
 exact    : 2.000 bits
 ```
 <!-- quickstart-end -->
