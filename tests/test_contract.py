@@ -16,6 +16,7 @@ import pytest
 
 import neural_mi as nmi
 from neural_mi import Model, Training, Split
+from neural_mi.analysis.modes import MODES as DECLARED
 
 N = 360
 _MODEL = Model(embedding_dim=4, hidden_dim=8, n_layers=1)
@@ -57,8 +58,7 @@ GRIDS = {
     'both': {'embedding_dim': [4, 8], 'run_id': [0, 1]},
     'processor': {'window_size': [1, 2]},
 }
-MODES = ['estimate', 'sweep', 'rigorous', 'lag', 'precision', 'conditional', 'interaction',
-         'transfer', 'pairwise', 'dimensionality']
+MODES = list(DECLARED)
 # Combinations that must refuse, with the message that says why.
 REFUSED = {
     ('dimensionality', 'repeats'): "n_restarts",
@@ -66,16 +66,15 @@ REFUSED = {
     ('dimensionality', 'both'): "n_restarts",
     ('transfer', 'processor'): "one time step wide",
 }
-# A mode that ignores the grid with a warning, and runs its base configuration once.
-IGNORES_GRID = {'estimate', 'precision'}
-AXIS = {'lag': ['lag'], 'precision': ['tau'], 'pairwise': ['ch_x', 'ch_y'],
-        'dimensionality': ['split_id', 'embedding_dim']}
+# A mode that trains one network runs no grid, and refuses one before any work.
+REFUSED.update({(mode, grid): "runs no sweep_grid" for mode in ('estimate', 'precision')
+                for grid in ('repeats', 'configs', 'both', 'processor')})
+# Each mode's axis, as the registry declares it: the producers must return the same.
+AXIS = {name: list(spec.axis) for name, spec in DECLARED.items() if spec.axis}
 
 
 def _expected_shape(mode, grid_name):
     grid = dict(GRIDS[grid_name] or {})
-    if mode in IGNORES_GRID:
-        grid = {}
     run_ids = grid.pop('run_id', [0])
     configs = list(itertools.product(*grid.values())) or [()]
     # dimensionality: one split at embedding_dim 1, 2 and the reference 4.
@@ -106,7 +105,7 @@ def _check(result, mode, grid_name):
     config_keys, n_configs, n_axis, n_repeats = _expected_shape(mode, grid_name)
     df, runs = result.dataframe, result.runs
     assert df is not None and runs is not None
-    for col in ('config_id', 'mi_mean', 'mi_std', 'n_runs', 'n_zero'):
+    for col in ('config_id', 'mi_mean', 'mi_std', 'n_runs', 'n_zero', 'n_failed'):
         assert col in df.columns, col
     assert result.params['config_keys'] == config_keys
     assert result.params['axis_keys'] == AXIS.get(mode, [])
@@ -137,6 +136,7 @@ def _check(result, mode, grid_name):
         if 'mi_raw' in runs.columns:
             measured = runs.loc[mask, 'mi_raw'].astype(float).dropna()
             assert row['n_zero'] == 0
+            assert row['n_failed'] == int(mask.sum()) - len(measured)
             if len(measured):
                 assert row['mi_raw_mean'] == pytest.approx(measured.mean())
                 assert row['mi_mean'] == pytest.approx(max(measured.mean(), 0.0))
@@ -144,6 +144,7 @@ def _check(result, mode, grid_name):
         values = runs.loc[mask, 'mi'].astype(float)
         produced = values[values.notna() & (values != 0)]
         assert row['n_zero'] == int((values == 0).sum())
+        assert row['n_failed'] == int(values.isna().sum())
         if len(produced):
             assert row['mi_mean'] == pytest.approx(produced.mean())
         elif (values == 0).any():

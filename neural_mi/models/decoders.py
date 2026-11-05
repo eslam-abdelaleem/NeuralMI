@@ -33,7 +33,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from typing import Optional
 
+from neural_mi.defaults import default_of
 from neural_mi.logger import logger
 
 
@@ -83,6 +85,18 @@ class BaseDecoder(nn.Module):
                     nn.init.zeros_(m.bias)
 
 
+class PairDecoder(BaseDecoder):
+    """Reconstructs a pair X, the joint term's X of a difference, part by part: one decoder per part, each
+    of its part's shape, all from the one embedding."""
+
+    def __init__(self, decoders):
+        super().__init__()
+        self.parts = nn.ModuleList(decoders)
+
+    def forward(self, z: torch.Tensor):
+        return tuple(decoder(z) for decoder in self.parts)
+
+
 class MLPDecoder(BaseDecoder):
     """Mirror MLP decoder for the :class:`~neural_mi.models.embeddings.MLP` encoder.
 
@@ -95,8 +109,8 @@ class MLPDecoder(BaseDecoder):
         hidden_dim: int,
         n_channels: int,
         window_size: int,
-        n_layers: int = 2,
-        output_activation: str = 'linear',
+        n_layers: int = default_of('n_layers'),
+        output_activation: str = default_of('decoder_output_activation_x'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -130,9 +144,9 @@ class CNN1DDecoder(BaseDecoder):
         hidden_dim: int,
         n_channels: int,
         window_size: int,
-        n_layers: int = 2,
-        kernel_size: int = 7,
-        output_activation: str = 'linear',
+        n_layers: int = default_of('n_layers'),
+        kernel_size: int = default_of('kernel_size'),
+        output_activation: str = default_of('decoder_output_activation_x'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -184,8 +198,8 @@ class GRUDecoder(BaseDecoder):
         hidden_dim: int,
         n_channels: int,
         window_size: int,
-        n_layers: int = 1,
-        output_activation: str = 'linear',
+        n_layers: int = default_of('n_layers'),
+        output_activation: str = default_of('decoder_output_activation_x'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -219,8 +233,8 @@ class LSTMDecoder(BaseDecoder):
         hidden_dim: int,
         n_channels: int,
         window_size: int,
-        n_layers: int = 1,
-        output_activation: str = 'linear',
+        n_layers: int = default_of('n_layers'),
+        output_activation: str = default_of('decoder_output_activation_x'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -259,9 +273,9 @@ class LRUDecoder(BaseDecoder):
         hidden_dim: int,
         n_channels: int,
         window_size: int,
-        n_layers: int = 1,
-        output_activation: str = 'linear',
-        dropout: float = 0.3,
+        n_layers: int = default_of('n_layers'),
+        output_activation: str = default_of('decoder_output_activation_x'),
+        dropout: float = default_of('dropout'),
     ):
         super().__init__()
         from neural_mi.models.embeddings import LRUBlock
@@ -298,9 +312,9 @@ class TCNDecoder(BaseDecoder):
         hidden_dim: int,
         n_channels: int,
         window_size: int,
-        n_layers: int = 2,
-        kernel_size: int = 3,
-        output_activation: str = 'linear',
+        n_layers: int = default_of('n_layers'),
+        kernel_size: int = default_of('kernel_size'),
+        output_activation: str = default_of('decoder_output_activation_x'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -371,9 +385,10 @@ class TransformerDecoder(BaseDecoder):
         hidden_dim: int,
         n_channels: int,
         window_size: int,
-        n_layers: int = 2,
-        nhead: int = 4,
-        output_activation: str = 'linear',
+        n_layers: int = default_of('n_layers'),
+        nhead: int = default_of('nhead'),
+        output_activation: str = default_of('decoder_output_activation_x'),
+        dropout: float = default_of('dropout'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -389,8 +404,10 @@ class TransformerDecoder(BaseDecoder):
         self.memory_proj = nn.Linear(embedding_dim, hidden_dim)
         # Learned position queries (one per time step)
         self.pos_queries = nn.Parameter(torch.randn(1, window_size, hidden_dim) * 0.02)
+        # Model(dropout), as the transformer encoder reads it. PyTorch's own
+        # default of 0.1 applied whatever the call set.
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=hidden_dim, nhead=nhead, batch_first=True
+            d_model=hidden_dim, nhead=nhead, dropout=dropout, batch_first=True
         )
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=max(1, n_layers))
         self.output_proj = nn.Linear(hidden_dim, n_channels)
@@ -425,9 +442,9 @@ class CNN2DDecoder(BaseDecoder):
         n_channels: int,
         height: int,
         width: int,
-        n_layers: int = 2,
-        kernel_size: int = 3,
-        output_activation: str = 'linear',
+        n_layers: int = default_of('n_layers'),
+        kernel_size: int = default_of('kernel_size'),
+        output_activation: str = default_of('decoder_output_activation_x'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -478,9 +495,14 @@ def build_decoder(
     hidden_dim: int,
     n_channels: int,
     window_size: int,
-    n_layers: int = 2,
-    output_activation: str = 'linear',
-    **kwargs,
+    *,
+    n_layers: int,
+    output_activation: str,
+    kernel_size: int,
+    nhead: int,
+    dropout: float,
+    height: Optional[int] = None,
+    width: Optional[int] = None,
 ) -> BaseDecoder:
     """Build a decoder matching the given embedding model.
 
@@ -498,13 +520,18 @@ def build_decoder(
         Sequence length of the reconstructed output. For ``'cnn2d'``, used
         only as a fallback (assumed square) when ``height``/``width`` are not
         given in ``**kwargs``.
-    n_layers : int, optional
-        Number of decoder layers. Defaults to 2.
-    output_activation : str, optional
+    n_layers : int
+        Number of decoder layers.
+    output_activation : str
         Final activation: ``'linear'``, ``'sigmoid'``, or ``'softmax'``.
-    **kwargs
-        Forwarded to the decoder constructor (e.g. ``kernel_size``, ``nhead``,
-        or ``height``/``width`` for ``'cnn2d'``).
+    kernel_size, nhead, dropout
+        The call's settings, each read by the decoders that have the part it
+        names: ``kernel_size`` by the CNN, CNN2D and TCN decoders, ``nhead`` by
+        the transformer's, and ``dropout`` by the LRU and transformer decoders,
+        the only ones with layers that drop out.
+    height, width : int, optional
+        The spatial layout for ``'cnn2d'``, square from ``window_size`` when
+        unknown.
 
     Returns
     -------
@@ -522,26 +549,24 @@ def build_decoder(
     if name == 'mlp':
         return MLPDecoder(**common, window_size=window_size)
     elif name == 'cnn':
-        return CNN1DDecoder(**common, window_size=window_size, kernel_size=kwargs.get('kernel_size', 7))
+        return CNN1DDecoder(**common, window_size=window_size, kernel_size=kernel_size)
     elif name == 'cnn2d':
-        height, width = kwargs.get('height'), kwargs.get('width')
         if height is None or width is None:
             # Caller doesn't know the true (height, width) split -- fall back
             # to a square spatial layout inferred from window_size (= H*W).
             side = max(1, int(round(math.sqrt(window_size))))
             height, width = height or side, width or side
-        return CNN2DDecoder(**common, height=height, width=width,
-                            kernel_size=kwargs.get('kernel_size', 3))
+        return CNN2DDecoder(**common, height=height, width=width, kernel_size=kernel_size)
     elif name == 'gru':
         return GRUDecoder(**common, window_size=window_size)
     elif name == 'lstm':
         return LSTMDecoder(**common, window_size=window_size)
     elif name == 'lru':
-        return LRUDecoder(**common, window_size=window_size, dropout=kwargs.get('dropout', 0.3))
+        return LRUDecoder(**common, window_size=window_size, dropout=dropout)
     elif name == 'tcn':
-        return TCNDecoder(**common, window_size=window_size, kernel_size=kwargs.get('kernel_size', 3))
+        return TCNDecoder(**common, window_size=window_size, kernel_size=kernel_size)
     elif name == 'transformer':
-        return TransformerDecoder(**common, window_size=window_size, nhead=kwargs.get('nhead', 4))
+        return TransformerDecoder(**common, window_size=window_size, nhead=nhead, dropout=dropout)
     else:
         # Custom or unknown encoder (e.g. 'pretrained_backbone') has no
         # dedicated decoder -- fall back to MLP and make that visible, so a

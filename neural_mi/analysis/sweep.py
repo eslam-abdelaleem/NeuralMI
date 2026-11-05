@@ -4,16 +4,19 @@
 This module defines the core logic for executing multiple training runs in
 parallel across a grid of hyperparameters.
 """
+import math
 import warnings
 import torch
 import itertools
 import uuid
 import numpy as np
 from tqdm.auto import tqdm
-from typing import List, Dict, Any, Optional, Sequence
+from typing import List, Dict, Any, Optional, Sequence, Tuple
 
 from neural_mi.analysis.task import run_training_task
+from neural_mi.data.rows import IDENTITY_KEY, describe_rows, same_rows
 from neural_mi.exceptions import CombinationWarning
+from neural_mi.training.epochs import stands_above_zero
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.device import with_device
 from neural_mi.estimators import NONPARAMETRIC_CONDITIONAL
@@ -21,7 +24,7 @@ from neural_mi.parallel import worker_pool
 from neural_mi.embeddings_io import saved_paths, with_model_labels
 from neural_mi.utils import mi_report_units
 from neural_mi.utils import _ensure_cpu
-from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA
+from neural_mi.defaults import PROCESSOR_PARAMS_SCHEMA, setting, stream_processing
 
 def _product_dict(**kwargs: Dict[str, List]) -> List[Dict[str, Any]]:
     """Helper to create a list of dictionaries from a grid."""
@@ -43,12 +46,16 @@ def merge_grid_values(base_params: Dict[str, Any], values: Dict[str, Any],
     """
     params = {**base_params, **values}
     proc_type_x = base_params.get('processor_type_x', None)
-    proc_type_y = base_params.get('processor_type_y', proc_type_x)
+    # Y reads with X's processor and settings when it has none of its own.
+    proc_type_y, params_y = stream_processing(base_params.get('processor_type_y'),
+                                              base_params.get('processor_params_y'),
+                                              proc_type_x, base_params.get('processor_params_x'))
+    own = {'x': base_params.get('processor_params_x'), 'y': params_y}
     all_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
     extra = extra_processor_params or {}
     for side, proc_type in (('x', proc_type_x), ('y', proc_type_y)):
         accepted = set(PROCESSOR_PARAMS_SCHEMA.get(proc_type, all_keys if proc_type is None else []))
-        merged = dict(base_params.get(f'processor_params_{side}') or {})
+        merged = dict(own[side] or {})
         merged.update(extra.get(f'processor_params_{side}', {}))
         merged.update({k: v for k, v in values.items() if k in accepted})
         params[f'processor_params_{side}'] = merged
@@ -86,15 +93,10 @@ class ParameterSweep:
                 **kwargs
             })
         elif isinstance(x_data, tuple) and isinstance(x_data[0], torch.Tensor) and x_data[0].ndim == 3:
-            # Compound "X-role" data (BranchedEmbedding's two-tensor input,
-            # mode='conditional'(align='dual_branch')) -- dims become a
-            # matching 2-tuple instead of a single int, exactly what
-            # BranchedEmbedding's constructor expects as `input_dim`. Only
-            # when already windowed (3-D): a raw (2-D) tuple -- shift_windows
-            # reachability for dual_branch, X and C not yet windowed -- has
-            # no `.shape[2]` to read yet either, and falls through to the
-            # `else` branch below, dims inferred later by task.py once
-            # actually windowed, same as a raw single tensor already does.
+            # A pair X (BranchedEmbedding's two-tensor input, the joint term
+            # of a difference) -- dims become a matching 2-tuple instead of a
+            # single int, exactly what BranchedEmbedding's constructor expects
+            # as `input_dim`.
             a_data, c_data = x_data
             self.base_params.update({
                 'input_dim_x': (a_data.shape[1] * a_data.shape[2], c_data.shape[1] * c_data.shape[2]),
@@ -118,13 +120,13 @@ class ParameterSweep:
         # Default to sequential if n_workers is not specified or is 1
         effective_workers = n_workers if n_workers is not None else 1
 
-        show_progress = self.base_params.get('show_progress', True)
+        show_progress = setting(self.base_params, 'show_progress')
 
         if effective_workers <= 1:
             logger.info("Starting parameter sweep sequentially (n_workers=1)...")
             # Pre-flight memory warning: on-device dataset storage with many tasks
             # can exhaust accelerator/unified memory (see dataset_device param).
-            _dd = self.base_params.get('dataset_device', 'cpu')
+            _dd = setting(self.base_params, 'dataset_device')
             _dd_str = str(_dd).lower()
             if _dd_str not in ('cpu', 'none') and len(tasks) > 20:
                 _ds_bytes = 0
@@ -160,49 +162,40 @@ class ParameterSweep:
     def _prepare_tasks(
         self,
         sweep_grid: Dict[str, List],
-        is_proc_sweep: Optional[bool] = None,
+        windows_in_task: Optional[bool] = None,
         **kwargs,
     ) -> List[tuple]:
         """Prepares the tasks for the parameter sweep.
 
         Parameters
         ----------
-        is_proc_sweep : bool or None, optional
-            When ``True``, raw (un-processed) data is forwarded to each task
-            so that each worker runs the processor independently, required
-            when processor parameters are part of the sweep grid.  When
-            ``False``, the pre-processed tensors stored in ``self.x_data`` are
-            forwarded directly (faster; avoids repeated processing).
-            If ``None`` (default), the value is inferred automatically: data
+        windows_in_task : bool or None, optional
+            When ``True``, raw (un-processed) data is forwarded to each task,
+            which cuts its own rows: rows that move under ``shift_windows``.
+            When ``False``, the rows stored in ``self.x_data`` are forwarded
+            as they are. If ``None`` (default), the value is inferred: data
             that is already a 3-D ``torch.Tensor`` (shape ``(N, C, W)``) is
-            treated as pre-processed; everything else is treated as raw.
+            rows; everything else is raw.
         """
         # Auto-detect when not provided
-        if is_proc_sweep is None:
-            is_proc_sweep = not (isinstance(self.x_data, torch.Tensor) and self.x_data.ndim == 3)
+        if windows_in_task is None:
+            windows_in_task = not (isinstance(self.x_data, torch.Tensor) and self.x_data.ndim == 3)
         tasks = []
         run_id_base = str(uuid.uuid4())
         sweep_grid = sweep_grid or {}
-
-        if self.base_params.get('critic_type') == 'concat' and 'embedding_dim' in sweep_grid:
-            raise ValueError(
-                "'embedding_dim' cannot be swept when critic_type='concat'. "
-                "ConcatCritic has no separate embedding networks and ignores "
-                "embedding_dim. Remove 'embedding_dim' from sweep_grid or switch "
-                "to critic_type='separable' or 'hybrid'."
-            )
-
         param_combinations = _product_dict(**sweep_grid) if sweep_grid else [{}]
 
         # When data has already been pre-processed (processor ran upstream in run()),
         # the sequential-model check below is not applicable, the tensor is already
         # shaped correctly for GRU/LSTM regardless of what processor_type_x says.
-        _already_preprocessed = bool(
+        # The rows of a plan carry their own time axis (neural_mi/data/plan.py).
+        from neural_mi.data.plan import TermRows
+        _already_preprocessed = isinstance(self.x_data, TermRows) or bool(
             self.base_params.get('processor_params_x', {}) and
             self.base_params.get('processor_params_x', {}).get('preprocessed', False)
         )
         for i_combo, params in enumerate(param_combinations):
-            _emb = params.get('embedding_model', self.base_params.get('embedding_model', 'mlp'))
+            _emb = params.get('embedding_model', setting(self.base_params, 'embedding_model'))
             _proc = params.get('processor_type_x', self.base_params.get('processor_type_x', None))
             if not _already_preprocessed and _proc is None and str(_emb).lower() in ('gru', 'lstm'):
                 raise ValueError(
@@ -218,7 +211,7 @@ class ParameterSweep:
             # Each network saved from a grid is named by its grid values.
             current_params = with_model_labels(current_params, **params)
 
-            if is_proc_sweep:
+            if windows_in_task:
                 # Raw data path: processor runs inside the worker, so tensors
                 # must still be on CPU before crossing the process boundary.
                 task_data_x = _ensure_cpu(self.x_data)
@@ -227,21 +220,18 @@ class ParameterSweep:
                 task_data_x = _ensure_cpu(self.x_data)
                 task_data_y = _ensure_cpu(self.y_data)
 
+            # The task's label. Its seeds come from its repeat (run_id) and its
+            # role (neural_mi/seeds.py). Its place in the grid plays no part.
             task_run_id = f"{run_id_base}_c{i_combo}"
-            # A purely deterministic per-task key for run_training_task's seeding
-            # (see task.py) -- unlike task_run_id above, it does not include the
-            # random run_id_base prefix, so a fixed random_seed reproduces the
-            # same task_seed (and therefore the same result) on every call.
-            current_params['_seed_key'] = f"c{i_combo}"
             tasks.append((task_data_x, task_data_y, current_params.copy(), task_run_id))
         
         logger.debug(f"Created {len(tasks)} tasks for the sweep.")
         return tasks
 
-    def run(self, sweep_grid: Dict[str, List], is_proc_sweep: Optional[bool] = None, n_workers: Optional[int] = None,
+    def run(self, sweep_grid: Dict[str, List], windows_in_task: Optional[bool] = None, n_workers: Optional[int] = None,
             **kwargs) -> List[Dict[str, Any]]:
         """Executes the hyperparameter sweep in parallel."""
-        tasks = with_device(self._prepare_tasks(sweep_grid, is_proc_sweep, **kwargs), n_workers or 1)
+        tasks = with_device(self._prepare_tasks(sweep_grid, windows_in_task, **kwargs), n_workers or 1)
         results = self._run_parallel(tasks, n_workers)
         logger.info("Parameter sweep finished.")
         return results
@@ -394,13 +384,25 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
         )
 
 
-def rung(raw: Dict[str, Any], terms) -> Any:
+def rung(raw: Dict[str, Any], terms, joint: str) -> Dict[str, Any]:
     """One rung of a rigorous ladder of a difference quantity, from its call's result: the signed
-    combination of the ``(key, sign)`` terms as measured, a measurement whatever its sign, with the saved
-    networks' paths when there are any."""
+    combination of the ``(key, sign)`` terms as measured under ``'train_mi'``, a measurement whatever its
+    sign, the saved networks' paths under ``'model_path'`` when there are any, and under
+    ``'curve_diagnosis'`` whether the joint term resolved, whose networks' results are ``raw[joint]``.
+
+    The terms come combined by :func:`combine_terms`, so a rung whose term failed is NaN, and the fit
+    leaves it out. The joint term holds every variable the others hold. On a chunk too small for it, its
+    networks do not resolve and the difference says nothing, so the rung is ``'not resolved'`` when any of
+    them is, and the fit leaves it out too. A smaller term can read nothing because there is nothing there
+    (W independent of Y), so its own curve does not decide."""
     value = float(sum(sign * raw[key] for key, sign in terms))
+    diagnoses = [r.get('curve_diagnosis') for r in raw.get(joint) or [] if isinstance(r, dict)]
+    out = {'train_mi': value, 'curve_diagnosis': 'not resolved' if 'not resolved' in diagnoses else
+           next((d for d in diagnoses if d), None)}
     paths = saved_paths(raw)
-    return (value, paths) if paths else value
+    if paths:
+        out['model_path'] = tuple(paths)
+    return out
 
 
 def combined_spread(value_lists, signs) -> Optional[float]:
@@ -434,6 +436,145 @@ def combined_spread(value_lists, signs) -> Optional[float]:
     return float(np.std(combined, ddof=1))
 
 
+def term_values(results: Sequence[Dict[str, Any]]) -> Tuple[List[float], List[str]]:
+    """One term's value in each repeat of a combined quantity, and what the term's network read there.
+
+    The value is the term's reported ``train_mi``: a network's training-side
+    value, 0 for a network that learned nothing, or a nonparametric estimate as
+    computed. The state is one of:
+
+    - ``'measured'``: the value is a measurement.
+    - ``'nothing'``: the network learned nothing distinguishable from zero. Its
+      held-out value never rose above zero, or its training-side value came out
+      negative while its held-out value stood within noise of zero
+      (:func:`neural_mi.training.epochs.stands_above_zero`). It enters as 0,
+      which is the value of a term that is zero, and a term that is not zero
+      but that its network missed reads the same.
+    - ``'failed'``: the term has no value. Its training-side value came out
+      negative while its held-out value stood clearly above zero, so the two
+      readings of one network contradict each other, or its repeat produced no
+      value at all.
+    """
+    values, states = [], []
+    for result in results:
+        value = result.get('train_mi')
+        raw = result.get('raw_train_mi')
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            values.append(math.nan)
+            states.append('failed')
+        elif result.get('all_mi_negative'):
+            values.append(float(value))
+            states.append('nothing')
+        elif raw is not None and raw < 0:
+            learned = stands_above_zero(result.get('test_mi'), result.get('eval_size'))
+            values.append(math.nan if learned else float(value))
+            states.append('failed' if learned else 'nothing')
+        else:
+            values.append(float(value))
+            states.append('measured')
+    return values, states
+
+
+def _term_counts(keys_per_repeat, labels) -> str:
+    counts = {}
+    for keys in keys_per_repeat:
+        for key in keys:
+            counts[key] = counts.get(key, 0) + 1
+    return ', '.join(f"I({labels[key]}) in {count}" for key, count in counts.items())
+
+
+def _refuse_different_rows(terms: Sequence[tuple], n: int, quantity_name: str) -> None:
+    """Raise when the terms of one repeat read different rows (:func:`neural_mi.data.rows.same_rows`).
+
+    Each term is trained in a task of its own, which builds its rows from the
+    streams that term reads. A difference of values measured on different rows
+    compares different stretches of the data and has no meaning.
+    """
+    for i in range(n):
+        read = [(label, results[i][IDENTITY_KEY]) for label, _, results, _ in terms
+                if i < len(results) and isinstance(results[i], dict) and results[i].get(IDENTITY_KEY)]
+        for label, identity in read[1:]:
+            if not same_rows(read[0][1], identity):
+                raise ValueError(
+                    f"{quantity_name or 'A difference of trained terms'}: I({read[0][0]}) and "
+                    f"I({label}) read different rows ({describe_rows(read[0][1])}, against "
+                    f"{describe_rows(identity)}), so their difference would compare different "
+                    f"stretches of the data and has no value. Each term builds its rows from the "
+                    f"streams it reads. Spike times start the grid at the first spike of those "
+                    f"streams and drop the windows where one of them is silent, and a W with a window "
+                    f"or step of its own is cut on a grid of its own. Bin spike times on one clock and "
+                    f"pass the counts as continuous streams, or give W the window and step of X."
+                )
+
+
+def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
+                  warn: bool = False) -> Dict[str, Any]:
+    """The repeats of a quantity combined from separately trained terms, by one rule for every such quantity.
+
+    ``terms`` is a sequence of ``(label, key, results, sign)``: the term's name
+    in messages (``'C;Y'``), the key its values are reported under
+    (``'mi_w_y'``), its task results in repeat order and its sign in the
+    combination. Repeats are paired by position, and the terms of a repeat that
+    read different rows are refused. A repeat in which any term
+    failed (:func:`term_values`) has no value: its combination and every one of
+    its terms are NaN, and it is left out of the means and the spread. A term
+    that learned nothing enters as 0. With ``warn``, one warning names the terms
+    that failed and another the terms that learned nothing.
+
+    Returns a dict with ``per_repeat`` (the combination in each repeat),
+    ``components`` (``{key: values}``), ``failed`` and ``nothing`` (the keys of
+    the terms that failed, and that learned nothing, in each repeat), ``means``
+    (``{key: mean over the repeats with a value}``), ``value`` (the mean
+    combination over those repeats, NaN when there are none) and ``per_run``
+    (each term's values over those repeats, in the order of ``terms``, for
+    :func:`combined_spread`).
+    """
+    n = max((len(results) for _, _, results, _ in terms), default=0)
+    _refuse_different_rows(terms, n, quantity_name)
+    columns = []
+    for _, _, results, _ in terms:
+        values, states = term_values(results)
+        columns.append((values + [math.nan] * (n - len(values)),
+                        states + ['failed'] * (n - len(states))))
+    failed_keys = [[key for (_, key, _, _), (_, states) in zip(terms, columns) if states[i] == 'failed']
+                   for i in range(n)]
+    nothing_keys = [[key for (_, key, _, _), (_, states) in zip(terms, columns) if states[i] == 'nothing']
+                    for i in range(n)]
+    used = [i for i in range(n) if not failed_keys[i]]
+    components = {key: [values[i] if not failed_keys[i] else math.nan for i in range(n)]
+                  for (_, key, _, _), (values, _) in zip(terms, columns)}
+    per_repeat = [sum(sign * components[key][i] for _, key, _, sign in terms)
+                  if not failed_keys[i] else math.nan for i in range(n)]
+    means = {key: (float(np.mean([components[key][i] for i in used])) if used else math.nan)
+             for _, key, _, _ in terms}
+    value = float(np.mean([per_repeat[i] for i in used])) if used else math.nan
+    labels = {key: label for label, key, _, _ in terms}
+    if warn and len(used) < n:
+        warnings.warn(
+            f"{quantity_name}: {n - len(used)} of {n} repeats are left out of mi_mean and mi_std "
+            f"because a term read negative on its training rows while its held-out value stood "
+            f"clearly above zero ({_term_counts(failed_keys, labels)}). The two readings of that "
+            f"network contradict each other, so its repeat has no value. Those repeats are NaN in "
+            f"result.runs, where failed_term names the term, and each network's values are in "
+            f"details[config_id]['trainings']. The usual causes are too few epochs or samples, and "
+            f"data far from unit scale.",
+            CombinationWarning, stacklevel=user_stacklevel(),
+        )
+    if warn and any(nothing_keys[i] for i in used):
+        warnings.warn(
+            f"{quantity_name}: a term learned nothing distinguishable from zero and enters as 0 "
+            f"({_term_counts([nothing_keys[i] for i in used], labels)}). That is the value of a "
+            f"term that is zero, and a term that is not zero but that its network missed reads the "
+            f"same. A missed term that is subtracted makes the result read high by its value, and "
+            f"one that is added makes it read low. Each network's values are in "
+            f"details[config_id]['trainings'].",
+            CombinationWarning, stacklevel=user_stacklevel(),
+        )
+    return {'per_repeat': per_repeat, 'components': components, 'failed': failed_keys,
+            'nothing': nothing_keys, 'means': means, 'value': value,
+            'per_run': tuple([components[key][i] for i in used] for _, key, _, _ in terms)}
+
+
 def _joint_marginal_difference(
     joint_x, joint_y, marginal_x, marginal_y,
     base_params: Dict[str, Any], sweep_grid: Optional[Dict[str, Any]], n_workers: int,
@@ -441,9 +582,6 @@ def _joint_marginal_difference(
     quantity_name: str,
     joint_label: str, marginal_label: str,
     joint_key: str, marginal_key: str,
-    condition_at: Optional[str] = None,
-    is_proc_sweep: bool = False,
-    marginal_base_params: Optional[Dict[str, Any]] = None,
     reported: bool = True,
     raw_key: str = 'mi_raw',
 ) -> tuple:
@@ -459,9 +597,11 @@ def _joint_marginal_difference(
 
     Parameters
     ----------
-    joint_x, joint_y : torch.Tensor
-        Data for the joint-sweep ParameterSweep(x_data=joint_x, y_data=joint_y).
-    marginal_x, marginal_y : torch.Tensor
+    joint_x, joint_y
+        Data for the joint-sweep ParameterSweep(x_data=joint_x, y_data=joint_y):
+        rows, or the term's streams of a row plan
+        (:class:`~neural_mi.data.plan.TermRows`) with ``joint_y=None``.
+    marginal_x, marginal_y
         Data for the marginal-sweep ParameterSweep(x_data=marginal_x, y_data=marginal_y).
     quantity_name : str
         Human-readable name of the estimated quantity for log/error/warning
@@ -471,35 +611,12 @@ def _joint_marginal_difference(
     joint_key, marginal_key : str
         The caller's result-dict key names for the two component MI values,
         named in the negative-value warning so a user knows where to find them.
-    condition_at : {'first', 'last'}, optional
-        Where the marginal term's X sits among the joint term's channels, when
-        the caller joined them into one tensor. The conditioning term runs
-        first, and the joint term carries ``_condition = (condition_at, n)``,
-        ``n`` the channel count the conditioning term's network was built on.
-        Its X encoder then reads that block on a branch of its own
-        (``BranchedEmbedding``), and a nonparametric estimator conditions on
-        it. ``None`` for a joint X that arrives as the pair (rest, conditioning
-        set), which carries the split itself.
-    is_proc_sweep : bool, optional
-        Pass ``True`` when ``joint_x``/``marginal_x`` are raw, unwindowed
-        data (shift_windows/shift_time reachability. The caller has
-        already concatenated the conditioning variable onto X at the raw
-        level, before windowing, so both sweeps window and shift their own
-        copy independently). Default ``False`` matches every other caller's
-        already-windowed data.
-    marginal_base_params : Dict[str, Any], optional
-        Use this instead of ``base_params`` for the marginal sweep only.
-        Needed when the joint and marginal legs are raw, differently-shaped
-        categorical concatenations (e.g. joint=XZ with two channel blocks,
-        marginal=Z alone with one) that each need their own
-        ``processor_params_x['_categorical_block_specs']``, and a single
-        shared ``base_params`` cannot carry both. ``None`` (default) reuses
-        ``base_params`` for both sweeps.
     reported : bool, optional
         ``True`` when the difference is the quantity the caller reads: it is
-        checked with :func:`warn_combination`, and returned as 0 when it comes
-        out negative. Pass ``False`` when it is one term of a larger quantity,
-        whose caller checks that quantity itself.
+        checked with :func:`warn_combination` and returned as 0 when it comes
+        out negative, and :func:`combine_terms` warns about the terms that
+        failed or learned nothing. Pass ``False`` when it is one term of a
+        larger quantity, whose caller combines and checks that quantity itself.
     raw_key : str, optional
         Where the caller keeps the measured value, named in the warning.
 
@@ -507,35 +624,33 @@ def _joint_marginal_difference(
     -------
     tuple[float, float, float, list, list, tuple[list, list]]
         ``(difference, mi_joint, mi_marginal, results_joint, results_marginal,
-        per_run)``, where ``per_run`` is the two components' ``train_mi``
-        values one row per run. :func:`combined_spread` turns those into the
-        spread of the difference.
+        per_run)``. The terms are combined by :func:`combine_terms`: the means
+        and the difference are over the repeats in which both terms have a
+        value, NaN when there are none. ``per_run`` holds the two terms' values
+        in those repeats, which :func:`combined_spread` turns into the spread of
+        the difference.
     """
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
-                                    base_params={**with_model_labels(marginal_base_params or base_params,
-                                                                     component=marginal_key),
+                                    base_params={**with_model_labels(base_params, component=marginal_key),
                                                  '_difference_term': True})
-    results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
+    results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 
     logger.info(f"{quantity_name}: estimating I({joint_label})...")
     joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True}
-    if condition_at is not None:
-        n = next(r['n_channels_x'] for r in results_marginal if 'n_channels_x' in r)
-        joint_params = {**joint_params, '_condition': (condition_at, n)}
     sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
-    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=is_proc_sweep)
+    results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 
-    joint_vals = [r['train_mi'] for r in results_joint if 'train_mi' in r]
-    marginal_vals = [r['train_mi'] for r in results_marginal if 'train_mi' in r]
-    per_run = (joint_vals, marginal_vals)
-    if not joint_vals:
+    if not any('train_mi' in r for r in results_joint):
         raise RuntimeError(f"{quantity_name}: all I({joint_label}) runs failed, no valid train_mi values.")
-    if not marginal_vals:
+    if not any('train_mi' in r for r in results_marginal):
         raise RuntimeError(f"{quantity_name}: all I({marginal_label}) runs failed, no valid train_mi values.")
-    mi_joint = float(np.mean(joint_vals))
-    mi_marginal = float(np.mean(marginal_vals))
-    difference = mi_joint - mi_marginal
+    combined = combine_terms([(joint_label, joint_key, results_joint, 1),
+                              (marginal_label, marginal_key, results_marginal, -1)],
+                             quantity_name=quantity_name, warn=reported)
+    mi_joint, mi_marginal = combined['means'][joint_key], combined['means'][marginal_key]
+    difference = combined['value']
+    per_run = combined['per_run']
 
     amp = amplification_factor([mi_joint, mi_marginal], difference)
     # Report in the units the caller asked for. These values are nats internally
@@ -549,7 +664,7 @@ def _joint_marginal_difference(
         f"amplification factor={amp:.1f}x."
     )
 
-    if reported:
+    if reported and not math.isnan(difference):
         warn_combination(quantity_name, difference, (joint_label, mi_joint, joint_key),
                          [(marginal_label, mi_marginal, marginal_key)], base_params,
                          raw_key=raw_key)

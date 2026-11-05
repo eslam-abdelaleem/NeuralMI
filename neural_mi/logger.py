@@ -165,14 +165,14 @@ def set_verbose(verbose: bool):
 #
 # One call can raise the same warning many times: every chunk of a rigorous
 # ladder or every worker of a grid hits the same condition. Within a call the
-# first message of each kind is shown when it happens, later ones that differ
-# only in their numbers are counted, and the call ends with one line per kind
-# giving how often it was raised. In IPython and Jupyter the count runs over
-# every call of a cell and the line comes when the cell ends. grouped_warnings()
-# does the same over a block of a script. Only messages raised during a NeuralMI
-# call are grouped. A worker process keeps its warnings and log messages and
-# hands them back with its result, and they are raised again in the calling
-# process at the caller's line.
+# first message of each kind is shown when it happens, later ones whose first
+# sentence differs only in its numbers are counted, and the call ends with one
+# line per kind giving how often it was raised. In IPython and Jupyter the count
+# runs over every call of a cell and the line comes when the cell ends.
+# grouped_warnings() does the same over a block of a script. Only messages raised
+# during a NeuralMI call are grouped. A worker process keeps its warnings and log
+# messages and hands them back with its result, and they are raised again in the
+# calling process at the caller's line.
 # ---------------------------------------------------------------------------
 
 import re as _re
@@ -186,7 +186,10 @@ _in_worker = False       # set once a process has run a captured task
 
 
 def _kind(source: str, text: str) -> tuple:
-    return source, _NUMBER.sub('#', text)
+    """A message's kind: its first sentence with the numbers taken out, as its count line quotes it. Two
+    messages that differ only further on, such as a curve warning with and without the note on its
+    held-out rows, are one kind, so no two count lines quote the same words."""
+    return source, _snippet(_NUMBER.sub('#', text))
 
 
 class _Repeats:
@@ -276,15 +279,35 @@ def collect_repeats():
     _repeats = repeats
     _warnings.showwarning = show
     logger.addFilter(log_filter)
+    # Python shows a warning once per line and text unless a filter says
+    # otherwise, and holds the exact repeats back before showwarning could count
+    # them. A filter that lets every raise through, last in the list, reaches only
+    # the warnings no filter of the caller's matches first.
+    every_raise = ('always', None, Warning, None, 0)
+    added = every_raise not in _warnings.filters
+    if added:
+        _warnings.filterwarnings('always', append=True)
     try:
         yield
     finally:
+        if added:
+            _drop_last(_warnings.filters, every_raise)
         if _warnings.showwarning is show:
             _warnings.showwarning = previous
         logger.removeFilter(log_filter)
         _repeats = None
         if repeats is not _session:
             _summarise(repeats, 'call')
+
+
+def _drop_last(filters: list, entry: tuple) -> None:
+    """Take the last copy of ``entry`` out of the warning filters, the one :func:`collect_repeats` added
+    at the end, and tell the warnings machinery its filters changed."""
+    for i in range(len(filters) - 1, -1, -1):
+        if filters[i] == entry:
+            del filters[i]
+            break
+    _warnings._filters_mutated()
 
 
 def groups_repeats(fn):
@@ -323,7 +346,8 @@ def grouped_warnings():
 
     Every call to ``nmi.run()`` or a named quantity inside the block shares one
     count. Each kind of warning or log message is shown the first time it comes
-    up, later ones that differ only in their numbers are counted, and the block
+    up, later ones whose first sentence differs only in its numbers are counted,
+    exact repeats included, and the block
     ends with one line per kind giving the count. Messages raised outside a
     NeuralMI call are left alone. Notebook cells are grouped this way without
     it. It is meant for loops in scripts::

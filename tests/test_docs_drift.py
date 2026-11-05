@@ -16,7 +16,8 @@ import pytest
 
 import neural_mi as nmi
 from neural_mi import config as cfg
-from neural_mi.defaults import BASE_PARAMS_SCHEMA, MODE_KWARGS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
+from neural_mi.analysis.modes import MODES
+from neural_mi.defaults import BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
 
 REFERENCE = pathlib.Path(__file__).resolve().parents[1] / 'reference'
 _MISSING = object()
@@ -60,16 +61,15 @@ def _literal(cell):
 
 
 TABLES = _parameter_tables()
-CONFIGS = [cfg.Model, cfg.Training, cfg.Split, cfg.Estimator, cfg.Output, cfg.Processing,
+CONFIGS = [cfg.Model, cfg.Training, cfg.Split, cfg.Estimator, cfg.Output, cfg.Processing, cfg.Preprocessing,
            cfg.Rigorous, cfg.Precision, cfg.Lag, cfg.Transfer, cfg.Conditional, cfg.Interaction,
            cfg.Pairwise, cfg.Dimensionality]
 # Config fields stored under another name in the parameter schema.
 SCHEMA_NAME = {'Split': {'mode': 'split_mode', 'gap_fraction': 'split_gap_fraction'},
                'Estimator': {'name': 'estimator_name', 'params': 'estimator_params'},
                'Output': {'units': 'output_units'}}
-MODE_OF = {'Rigorous': 'rigorous', 'Precision': 'precision', 'Lag': 'lag', 'Transfer': 'transfer',
-           'Conditional': 'conditional', 'Interaction': 'interaction', 'Pairwise': 'pairwise',
-           'Dimensionality': 'dimensionality'}
+# Each mode config's mode, as the registry declares it.
+MODE_OF = {mode.config.__name__: name for name, mode in MODES.items() if mode.config is not None}
 
 
 @pytest.mark.parametrize('cls', CONFIGS, ids=lambda c: c.__name__)
@@ -84,7 +84,7 @@ def test_every_config_field_is_documented_once(cls):
 @pytest.mark.parametrize('cls', CONFIGS, ids=lambda c: c.__name__)
 def test_every_documented_default_matches_the_code(cls):
     rename = SCHEMA_NAME.get(cls.__name__, {})
-    mode_schema = MODE_KWARGS_SCHEMA.get(MODE_OF.get(cls.__name__), {})
+    mode_schema = MODES[MODE_OF[cls.__name__]].settings if cls.__name__ in MODE_OF else {}
     for name, cell in TABLES[cls.__name__].items():
         stated = _literal(cell)
         if stated is _MISSING:
@@ -104,8 +104,11 @@ def test_every_documented_default_matches_the_code(cls):
 
 def test_run_arguments_are_documented():
     params = inspect.signature(nmi.run).parameters
-    config_args = {'processing', 'model', 'training', 'split', 'estimator', 'output', *MODE_OF.values()}
-    run_args = {n for n, p in params.items() if p.kind is not p.VAR_KEYWORD} - config_args
+    config_args = {'processing', 'preprocessing', 'model', 'training', 'split', 'estimator', 'output',
+                   *MODE_OF.values()}
+    # A leading underscore marks an argument the library passes to itself.
+    run_args = {n for n, p in params.items()
+                if p.kind is not p.VAR_KEYWORD and not n.startswith('_')} - config_args
     assert set(TABLES['run']) == run_args
     for name, cell in TABLES['run'].items():
         stated = _literal(cell)
@@ -120,15 +123,13 @@ def test_every_processor_parameter_is_documented(processor):
 
 
 def test_processor_defaults_match_the_code():
-    from neural_mi.data import handler
-    source = inspect.getsource(handler.create_single_dataset)
-    code_defaults = {k: ast.literal_eval(v)
-                     for k, v in re.findall(r"\.get\('(\w+)', ([^)]+)\)", source)}
-    for processor in PROCESSOR_PARAMS_SCHEMA:
+    """Every processor default PARAMETERS.md states is the schema's (neural_mi.defaults.PROCESSOR_DEFAULTS)."""
+    from neural_mi.defaults import PROCESSOR_DEFAULTS
+    for processor, defaults in PROCESSOR_DEFAULTS.items():
         for name, cell in TABLES[f"processor:{processor}"].items():
             stated = _literal(cell)
-            if stated is not _MISSING and name in code_defaults:
-                assert stated == code_defaults[name], (processor, name)
+            if stated is not _MISSING:
+                assert stated == defaults[name], (processor, name)
 
 
 # ---------------------------------------------------------------------------
@@ -243,3 +244,65 @@ def test_every_warning_is_documented():
                for level, where, text in MESSAGES
                if level == 'warning' and text and not any(_key_matches(k, text) for k in KEYS)]
     assert not missing, "warnings without an entry in MESSAGES.md:\n" + "\n".join(missing)
+
+
+# ---------------------------------------------------------------------------
+# Names and files the reference pages give
+# ---------------------------------------------------------------------------
+
+ROOT = REFERENCE.parent
+PACKAGE_DIR = ROOT / 'neural_mi'
+# Named in INTERNALS.md as what the library does not call.
+_NAMED_AS_UNUSED = {'logger.warning'}
+
+
+def _package_names():
+    """Every name the package defines or assigns, every argument and every string it holds."""
+    names = {p.stem for p in PACKAGE_DIR.rglob('*.py')} | {p.name for p in PACKAGE_DIR.rglob('*') if p.is_dir()}
+    for path in PACKAGE_DIR.rglob('*.py'):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+                names.add(node.attr)
+            elif isinstance(node, ast.arg):
+                names.add(node.arg)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                names.add(node.value)
+    return names
+
+
+def test_every_code_name_the_reference_pages_give_exists():
+    """A private name, or a dotted path into the package, in backticks on a reference page or the
+    roadmap names something the package still has, and a file name names a file the repository still
+    has. A page that names a removed table or function fails here."""
+    names = _package_names()
+    files = {p.name for p in ROOT.rglob('*.py') if '.claude' not in p.relative_to(ROOT).parts}
+    modules = ({p.stem for p in PACKAGE_DIR.rglob('*.py')} | {p.name for p in PACKAGE_DIR.rglob('*') if p.is_dir()}
+               | {'nmi', 'neural_mi'})
+    stale = []
+    # The roadmap lives on dev. main carries the library without it.
+    roadmap = [p for p in [ROOT / 'ROADMAP.md'] if p.exists()]
+    for page in sorted(REFERENCE.glob('*.md')) + roadmap:
+        for ref in re.findall(r'`([A-Za-z_][\w.]*)(?:\(\))?`', page.read_text()):
+            if ref in _NAMED_AS_UNUSED:
+                continue
+            if ref.endswith('.py'):
+                if ref.split('/')[-1] not in files:
+                    stale.append(f"{page.name}: {ref}")
+                continue
+            parts = ref.split('.')
+            private = parts[-1].startswith('_') and not parts[-1].startswith('__')
+            dotted = len(parts) > 1 and parts[0] in modules
+            if (private or dotted) and parts[-1] not in names:
+                stale.append(f"{page.name}: {ref}")
+    assert not stale, f"names the package no longer has: {sorted(set(stale))}"
+
+
+def test_testing_md_lists_every_test_file():
+    listed = set(re.findall(r'`(test_\w+\.py)`', (REFERENCE / 'TESTING.md').read_text()))
+    present = {p.name for p in (ROOT / 'tests').glob('test_*.py')}
+    assert present - listed == set(), f"test files TESTING.md does not list: {sorted(present - listed)}"
+    assert listed - present == set(), f"TESTING.md lists test files that do not exist: {sorted(listed - present)}"

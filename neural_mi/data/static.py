@@ -70,9 +70,8 @@ class StaticDataset(BaseStaticDataset):
         ----------
         data : array-like, torch.Tensor, or 2-tuple of either
             Data of shape (n_observations, n_channels, ...). A 2-tuple
-            ``(a_data, c_data)`` is the compound "X-role" input used by
-            ``mode='conditional'``'s ``align='dual_branch'`` path (paired
-            with ``BranchedEmbedding``, see ``THEORY.md``): each element is
+            ``(a_data, c_data)`` is the pair a difference's joint term reads
+            (with ``BranchedEmbedding``, see ``THEORY.md``): each element is
             processed exactly like a single-array ``data`` would be, then
             stored as a matching tuple, so the two can have different
             trailing (window) shapes while sharing the leading (sample)
@@ -141,35 +140,24 @@ class StaticDataset(BaseStaticDataset):
         return self.data.shape[0]
 
     def apply_noise(self, amplitude):
-        """Add uniform noise of width `amplitude` to every nonzero entry.
+        """Add uniform noise of width `amplitude` to every nonzero entry, of each part of a pair.
 
         See :func:`neural_mi.data.corruption.corrupt`; zero entries are left as
         they are.
         """
-        if isinstance(self.data, tuple):
-            raise NotImplementedError(
-                "apply_noise is not supported for StaticDataset's compound "
-                "(tuple) data (mode='conditional'(align='dual_branch')). "
-                "mode='precision' isn't used with the quantities that need "
-                "this path (MI rate, instantaneous exchange, directed "
-                "information rate)."
-            )
-        # Allocate data_master if not allocated yet
-        if self.data_master is None:
-            self.data_master = self.data.detach().clone()
-        self.data = corrupt(self.data_master, amplitude, 'noise').clone()
+        self._corrupt(amplitude, 'noise')
 
     def apply_precision(self, precision_level):
-        """Move every nonzero entry to the centre of its bin of width `precision_level`."""
-        if isinstance(self.data, tuple):
-            raise NotImplementedError(
-                "apply_precision is not supported for StaticDataset's compound "
-                "(tuple) data (mode='conditional'(align='dual_branch')). "
-                "mode='precision' isn't used with the quantities that need "
-                "this path (MI rate, instantaneous exchange, directed "
-                "information rate)."
-            )
-        # Allocate data_master if not allocated yet
+        """Move every nonzero entry to the centre of its bin of width `precision_level`, of each part of a
+        pair."""
+        self._corrupt(precision_level, 'rounding')
+
+    def _corrupt(self, level, method):
+        # Always from the uncorrupted data, kept the first time it is corrupted.
         if self.data_master is None:
-            self.data_master = self.data.detach().clone()
-        self.data = corrupt(self.data_master, precision_level, 'rounding').clone()
+            self.data_master = (tuple(d.detach().clone() for d in self.data) if isinstance(self.data, tuple)
+                                else self.data.detach().clone())
+        if isinstance(self.data_master, tuple):
+            self.data = tuple(corrupt(d, level, method).clone() for d in self.data_master)
+        else:
+            self.data = corrupt(self.data_master, level, method).clone()

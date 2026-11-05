@@ -222,13 +222,22 @@ lands wherever the noise happens to be highest, often many epochs into a stretch
 where the network no longer improves on held-out data and only fits its training
 rows further, which raises the training-side value. The curve's noise is
 measured from the curve itself, from its changes between epochs with smooth
-trends removed. The level of the top is the median of the smoothed curve within
+trends removed, near its top: on the raw curve up to its smoothed top and the
+epochs the smoothing reads past it, a span the smoothing settings set. Past its
+top a curve falls as the network fits its training rows and grows noisier as it
+falls. Counted in the noise, that fall would move the epoch read earlier, the
+more so the longer training ran. The level of the top is the median of the smoothed curve within
 twice that noise of its maximum, and the epoch read is the first whose smoothed
 value comes within half the noise of that level (`epoch_rule='plateau_start'`;
 `'peak'` reads the maximum). `curve_diagnosis` says when the curve cannot
 support the choice: a top that does not stand clearly above the noise, a curve
 still rising when training ends, or a top reached within the smoothing's reach
-of the start. These thresholds were set on simulated curves of known shape. A
+of the start. These thresholds were set on simulated curves of known shape. The
+noise a top must clear is also the sampling error of the held-out rows, 3
+standard errors ($\sqrt{2I/N}$ for $I$ nats on $N$ rows): every epoch scores the
+same rows, so that error moves the whole curve together and never shows from
+epoch to epoch, and a network that learned nothing can sit flat a little above
+zero. A
 slow approach to the top is measured instead: the training-side value is read
 also at the first epoch within three noise units of the top, on the same rows,
 and the start of the top is uncertain when the two readings differ by more than
@@ -265,6 +274,23 @@ single network treats a value reported as 0 as a run that produced nothing and
 leaves it out. A repeat of a combination or a fit is a measurement whatever its
 sign, so its average uses every repeat's measured value
 ([the spread over repeats](#the-spread-over-repeats)).
+
+A quantity combined from separately trained networks takes each term's value
+from the network's two readings, repeat by repeat. A held-out value that stands
+clearly above zero, by more than 3 of its standard errors ($\sqrt{2I/N}$ for $I$
+nats on $N$ held-out rows), shows that the network learned something. A network
+that learned nothing enters as 0: its held-out value never rose above zero, or
+its training-side value came out negative while its held-out value stood within
+noise of zero. That is the value of a term that is zero, such as $I(X;Y)$ in a
+purely synergistic interaction. It is also what a network that missed a term
+that is not zero reads, and nothing else shows the miss, since a difference
+with one term at 0 has an amplification factor of 1. The library warns, naming
+the term. A network whose training-side value came out negative while its
+held-out value stood clearly above zero has two readings that contradict each
+other, and its term has no value. Neither has its repeat: the repeat is NaN in
+`runs` with the term named in `failed_term`, counted in `n_failed` and left out
+of the mean and the spread. Reading such a term as 0 would report the other
+terms alone, as though the term were zero.
 
 ### Finite-sampling bias
 
@@ -309,11 +335,24 @@ that reaches `min_gamma_points` with the trend still curved stops there and sets
 
 The fit treats a rung reported as 0, one whose networks learned nothing that
 generalises ([the reported number](#the-reported-number)), as a failed chunk
-that produced nothing and counts it in `zero_rungs`. A rung of a difference
-carries its signed measured value, a negative one included, since leaving out
-the negative rungs of a small difference would push its fit up. `min_gamma_points` then decides whether enough values
-of $\gamma$ remain once those with no rung left have dropped out. The fit warns
-about zero rungs and warns again where they make up half or more of a $\gamma$.
+that produced nothing and counts it in `zero_rungs`, and so does a rung of a
+difference whose term has no value on its chunk (NaN). It also leaves out a rung
+whose network's held-out curve does not rise clearly above its own noise, and
+counts it in `unresolved_rungs`. Such a rung says nothing about the dependence,
+and the checks of the fit cannot catch it, because noise hides curvature: on a
+ladder whose deep chunks are too small for their networks, a line through every
+rung passed them all and extrapolated far from the true value. A rung of a
+difference is left out when its joint term does not resolve, the term that holds
+every variable the others hold, since a smaller term can read nothing because
+it is zero. A rung of a difference carries its signed measured value, a negative
+one included, since leaving out the negative rungs of a small difference would
+push its fit up. A $\gamma$ that loses half or more of its rungs to either
+cause drops out with the rest of them. Its chunks are too small for the
+quantity, and the rungs it keeps are the networks that happened to learn, which
+read high for their chunk size and tilt the line. `min_gamma_points` then
+decides whether enough values of $\gamma$ remain. The fit warns about both
+kinds of rung and about every $\gamma$ it drops. A ladder with fewer than two
+values of $\gamma$ left reports NaN, or 0 when every rung produced nothing.
 
 A fit is reliable when it used at least `min_gamma_points` values of $\gamma$,
 found a linear region, does not move by more than `leverage_threshold` when the
@@ -344,7 +383,9 @@ repeat of a difference quantity or of a rigorous fit is a measurement whatever
 its sign: a negative one is the spread of a small value crossing zero, and
 leaving it out would select the positive repeats and read high. Their row
 averages every repeat's measured value, reports the mean as 0 when it is
-negative and keeps it as `mi_raw_mean`. A single network's repeat reported as 0
+negative and keeps it as `mi_raw_mean`. A repeat of a combination in which a
+term has no value ([the reported number](#the-reported-number)) has none itself:
+it is counted in `n_failed` and left out. A single network's repeat reported as 0
 learned nothing that generalises: it is counted in `n_zero` and left out of both
 statistics, and a row reports 0 only when all of its repeats produced
 nothing. Among clearly positive repeats a zero is most likely a failed run. When
@@ -365,7 +406,8 @@ dependence between X and Y. Each null trial reruns the whole call with X moved
 in time and everything else in place. A circular shift moves X by one random
 offset with wrap-around. The offset is at least 10% of the recording's length
 away from zero in either direction. No trial therefore leaves X nearly aligned
-with Y. A block shuffle cuts X into blocks one window long and reorders them.
+with Y. A block shuffle cuts X into blocks as long as one row's span and
+reorders them, so rows that share samples move together.
 Either way X, Y and W keep their temporal structure, apart from the seams in X.
 Only the alignment between X and the rest is removed. A spike population moves
 as a whole and keeps the structure among its neurons.
@@ -457,8 +499,10 @@ terms must learn what the conditioning set $C$ says about $Y$, and the joint ter
 must also learn what the rest of X, $A$, adds. Every term of a difference
 therefore encodes X with one branch per part of X under one small MLP head
 (`BranchedEmbedding`): branches for $A$ and $C$ in the joint term, a branch for
-$C$ alone in the conditioning term, each branch the call's encoder. $C$ takes the
-same path, branch then head, in both terms. Each term keeps its own weights,
+$C$ alone in the conditioning term, each branch the call's encoder. The joint
+term reads X as the pair $(A, C)$, so each branch sees its own part, with that
+part's channels and window length. $C$ takes the same path, branch then head, in
+both terms. Each term keeps its own weights,
 training and epoch, read from its own held-out curve. The terms share their
 architecture and their rows. Sharing the encoder of $C$ between the terms or
 training them on one loss did not improve on this in a pilot.
@@ -554,6 +598,17 @@ autocorrelation is a second-order measure. A process can have no autocorrelation
 at a lag where it has strong nonlinear dependence ([Fraser and Swinney,
 1986](https://doi.org/10.1103/PhysRevA.33.1134)). The autocorrelation time is
 only a lower bound on the timescale.
+
+A conditioning term large against the rate makes the difference fragile: the
+amplification factor is about $1 + 2M/\bar{I}$ for a conditioning term $M$, and
+on smooth, finely sampled signals Y's own past predicts its present so well that
+$M$ is several nats. Filtering each process by an invertible filter of its own
+past leaves the rate unchanged, since the filtered and the original processes
+determine each other in the limit of long windows, and an autoregressive filter
+fitted to each channel removes most of $M$. `Preprocessing(time='ar')` applies
+it. Any quantity other than a rate changes under it, because the information
+between the filtered streams at finite windows is not that between the
+original ones.
 
 A per-step quantity converts to bits per second by dividing by the bin width.
 Transfer entropy, instantaneous exchange, the directed information rate, active

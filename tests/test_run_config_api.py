@@ -2,6 +2,7 @@
 import importlib
 
 import numpy as np
+import torch
 import pytest
 
 import neural_mi as nmi
@@ -126,7 +127,7 @@ def test_end_to_end_estimate_runs():
     (Model(critic_type='separable'), Training(lr_head_multiplier=5.0), "lr_head_multiplier"),
     (Model(beta=2.0), None, "beta"),
     (Model(decoder_lambda=2.0), None, "decoder_lambda"),
-    (Model(custom_critic=object(), embedding_dim=8), None, "embedding_dim"),
+    (Model(custom_critic=torch.nn.Linear, embedding_dim=8), None, "embedding_dim"),
 ])
 def test_ineffective_setting_warns(capture_engine, model, training, named):
     with pytest.warns(UserWarning, match=f"no effect in this call.*{named}"):

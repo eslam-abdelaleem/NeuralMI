@@ -19,7 +19,7 @@ from neural_mi.data import PairedDataset
 from neural_mi.estimators import infonce_lower_bound
 from neural_mi.models.critics import SeparableCritic
 from neural_mi.models.embeddings import MLP
-from neural_mi.training.trainer import Trainer
+from neural_mi.training.trainer import Trainer, held_out_rows
 
 
 def _trainer():
@@ -65,7 +65,7 @@ class TestTrainSubsetSize:
     def _train(self, **kwargs):
         x, y = _rows(400, seed=1)
         return _trainer().train(PairedDataset(x, y), n_epochs=2, batch_size=32, split_mode='random',
-                                verbose=False, show_progress=False, **kwargs)
+                                output_units='nats', verbose=False, show_progress=False, **kwargs)
 
     def test_default_is_unchanged(self):
         results = self._train(max_eval_samples=50)
@@ -115,7 +115,7 @@ class TestHeldOutRows:
                           torch.optim.Adam(list(net.parameters()) + list(y_net.parameters()), lr=1e-3),
                           torch.device('cpu'))
         kwargs = {'n_epochs': 3, 'batch_size': 64, 'split_seed': 3, 'max_eval_samples': 100,
-                  'verbose': False, 'show_progress': False, **kwargs}
+                  'output_units': 'nats', 'verbose': False, 'show_progress': False, **kwargs}
         results = trainer.train(self._data(), **kwargs)
         return seen, results, trainer
 
@@ -139,11 +139,15 @@ class TestHeldOutRows:
     def test_training_subset_follows_the_split_too(self, monkeypatch, split_mode, contiguous):
         seen, _, trainer = self._held_out_rows(monkeypatch, 150, train_subset_size=150, split_mode=split_mode)
         runs = np.sum(np.diff(seen[-1]) > 1) + 1                        # the reported value's rows
-        segments = np.sum(np.diff(np.sort(trainer.last_train_indices)) > 1) + 1
-        assert (runs == segments) if contiguous else (runs > 20)       # one stretch per training segment
+        train = np.sort(trainer.last_train_indices)
+        starts = train[np.r_[0, np.flatnonzero(np.diff(train) > 1) + 1]]
+        drawn_from = len(np.unique(np.searchsorted(starts, seen[-1], side='right')))
+        # One stretch per training segment it draws from. A segment of a few rows
+        # between two held-out blocks can get no share of 150 rows.
+        assert (runs == drawn_from) if contiguous else (runs > 20)
 
     def test_full_evaluates_every_held_out_row_in_blocks(self, monkeypatch, caplog):
-        n_test = int(self.N * (1 - 0.9))                                # the blocked split's held-out rows
+        n_test = held_out_rows(self.N, 0.9)                              # the blocked split's held-out rows
         with caplog.at_level('INFO', logger='neural_mi'):
             seen, results, _ = self._held_out_rows(monkeypatch, n_test, test_subset_size='full', train_subset_size=150)
         assert len(seen) == 4 and len(seen[0]) == n_test
@@ -166,4 +170,4 @@ def test_full_reaches_run_and_is_reported_per_repeat():
                      seed=0, show_progress=False, verbose=False)
     run = result.runs.iloc[0]
     assert run['train_eval_size'] > 100 and run['train_eval_blocks'] == math.ceil(run['train_eval_size'] / 100)
-    assert run['eval_size'] == int(600 * (1 - 0.9)) and run['test_eval_blocks'] == 1
+    assert run['eval_size'] == held_out_rows(600, 0.9) and run['test_eval_blocks'] == 1

@@ -65,6 +65,21 @@ def test_each_diagnosis(curve, ran_to_limit, diagnosis):
     assert np.mean(_reads(curve, sigma=0.01, ran_to_limit=ran_to_limit)[2] == diagnosis) >= 0.85
 
 
+def test_a_long_fall_after_the_top_does_not_move_the_epoch_read():
+    """A curve tops early and falls ever more noisily once its network fits its training rows. Its noise is
+    measured near the top, up to the smoothing's reach past it, so the epoch read is the same whether
+    training ran 100, 200 or 300 epochs. Measured over the whole curve, the noise of the fall moved it
+    earlier."""
+    e = np.arange(300, dtype=float)
+    curve = np.where(e < 40, 1 - np.exp(-(e + 1) / 3), 1 - 0.003 * (e - 40))
+    sigma = np.where(e < 40, 0.01, 0.01 + 0.0005 * (e - 40))
+    for seed in range(20):
+        history = curve + sigma * np.random.default_rng(seed).standard_normal(300)
+        reads = {budget: choose_epoch(history[:budget], Trainer._smooth(None, list(history[:budget]), 1.0, 5),
+                                      'plateau_start', REACH, False)[0] for budget in (100, 200, 300)}
+        assert reads[100] == reads[200] == reads[300]
+
+
 def test_a_slow_approach_starts_well_before_the_epoch_read():
     epochs, _, diagnoses, approaches = _reads(1 - np.exp(-(np.arange(120) + 1) / 12), sigma=0.01)
     assert np.median(epochs - approaches) >= 8 and np.mean(diagnoses == 'ok') >= 0.85
@@ -85,3 +100,15 @@ def test_each_warning_differs_between_networks_only_in_its_numbers(diagnosis):
         warn_about_curve('ok', 3, 4, 6, 100)
     first, second = (str(w.message) for w in caught)
     assert _kind('UserWarning', first) == _kind('UserWarning', second)
+
+
+def test_a_flat_curve_a_little_above_zero_is_not_resolved_on_few_rows():
+    """Every epoch scores the same held-out rows, so their sampling error moves the whole curve together:
+    a curve that sits flat at a small positive level clears its epoch-to-epoch noise easily, and only the
+    standard error of its rows shows that it has not cleared zero."""
+    history = 0.001 + 1e-6 * np.random.default_rng(0).standard_normal(40)   # nats, nearly flat
+    smoothed = Trainer._smooth(None, list(history), 1.0, 5)
+    assert choose_epoch(history, smoothed, 'plateau_start', REACH, False)[2] == 'ok'
+    assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=14)[2] == 'not resolved'
+    # 0.001 nats clears 3 standard errors, sqrt(2 * 0.001 / N), once N exceeds 18 / 0.001 rows.
+    assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=20000)[2] == 'ok'

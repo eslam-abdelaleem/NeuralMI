@@ -20,14 +20,15 @@ the networks and returns rows that the shared assembly layer turns into a
 
 | file | holds |
 |---|---|
-| `neural_mi/run.py` | `run()` (lowers the config objects into keyword arguments for `_run_flat()`); `_run_flat()` (validates, applies defaults, windows or defers windowing, and calls the producer); the call-level checks (`_announce_call`, the processor-grid loop `_run_processor_grid`, the `_SHIFT_*_SAFE_MODES` tuples that say where window shifting reaches) |
+| `neural_mi/run.py` | `run()` (lowers the config objects into keyword arguments for `_run_flat()`); `_run_flat()` (validates, applies defaults, builds the call's row plan and cuts its rows once or leaves them to the tasks, and calls the producer); the call-level checks (`_announce_call`, the processor-grid loop `_run_processor_grid`, `_warn_if_shift_windows_dead`) |
 | `neural_mi/config.py` | the config dataclasses, `Processing` through `Pairwise`, and `as_config` |
-| `neural_mi/defaults.py` | `BASE_PARAMS_SCHEMA`, `MODE_KWARGS_SCHEMA` and `PROCESSOR_PARAMS_SCHEMA`: every setting's type and default |
+| `neural_mi/defaults.py` | `BASE_PARAMS_SCHEMA` and `PROCESSOR_DEFAULTS` (with `PROCESSOR_PARAMS_SCHEMA`, the names it declares): every setting's type and default. A mode's own settings are part of its declaration in `analysis/modes.py` |
 | `neural_mi/validation.py` | `ParameterValidator`, the allowed values, and the per-stream processor checks |
 | `neural_mi/results.py` | the `Results` object: `get`, `summary`, `plot`, `compare`, `animate`, `save`, `load`, `to_dict`, `to_json` |
 | `neural_mi/quantities.py` | the named quantities, on one engine: `_named` expands an iterable parameter into configurations, `_call` runs one configuration through `run()`, `_task` is the unit sent to a worker |
 | `neural_mi/device.py` | `choose_device` and `with_device`: the device a call trains on when it names none, chosen by timing the first network on the CPU and, when the call is long enough, on the GPU |
 | `neural_mi/parallel.py` | `worker_pool`, the one worker pool every parallel loop opens (`spawn` context, the parent's logging level, a share of the CPU threads per worker), and `dispatch_tasks` |
+| `neural_mi/seeds.py` | `repeat_seed`, `network_seed` and `generator`: every seed of a call, from the call's `seed`, the repeat (`run_id`) and the role of a network or a draw in its estimate |
 | `neural_mi/embeddings_io.py` | `extract_embeddings` (reloads a saved critic) |
 | `neural_mi/utils.py` | `build_critic` and `build_optimizer_and_scheduler`, `cross_covariance_svd` (the one whitening and SVD behind the participation ratios and the rotated embeddings), `build_offset_arrays`, `get_device` |
 
@@ -35,7 +36,7 @@ the networks and returns rows that the shared assembly layer turns into a
 
 | file | holds |
 |---|---|
-| `modes.py` | one producer per mode and the `produce()` dispatcher. A producer takes the prepared data and the grid and returns the repeat rows, the per-configuration details and the columns to aggregate |
+| `modes.py` | one producer per mode, and `MODES`, which declares each mode once: its producer, its config class, the axis it adds, what it accepts (repeats, a grid, `rigorous`, a permutation null, returned embeddings, custom split indices), the streams it reads and the settings it sets itself. `produce()` runs a mode's producer. A producer takes the prepared data and the grid and returns the repeat rows, the per-configuration details and the columns to aggregate |
 | `assemble.py` | `build_results` and `aggregate` (repeat rows into `runs` and `dataframe`), `merge_results` (the parts of a processor grid into one result), `convert_record` (the one conversion from nats), `NETWORK_KEYS` (what a trained network reports about itself) |
 | `permutation.py` | `shift_x` (moving X for a null trial), `permutation_nulls` (running the trials), `attach_nulls` (the null columns and `p_value`) |
 | `sweep.py` | `ParameterSweep`, the engine that trains one network per grid point and repeat; `amplification_factor` |
@@ -43,26 +44,30 @@ the networks and returns rows that the shared assembly layer turns into a
 | `rigorous.py` | the $\gamma$ ladder, `_find_linear_region`, `_extrapolate_mi` and the fit diagnostics, for `mode='rigorous'` and for the rigorous difference quantities |
 | `lag.py`, `precision.py`, `pairwise.py`, `dimensionality.py` | the mode-specific procedures the producers call |
 | `conditional.py`, `interaction.py`, `transfer.py` | the component trainings of the difference quantities |
-| `offsets.py` | the past and future builders of the named quantities, `grid_rows` (streams onto one grid, then rows) and `one_step_rows` (rows one time step wide, for transfer entropy) |
+| `offsets.py` | the one path to the rows of every quantity defined by time offsets: `build_rows` (the rows a spec defines, through `utils.build_offset_arrays`, and their geometry), `one_step_series` (streams onto one grid of rows one step wide that tile time, the one route of `processing=`) and `grid_rows` |
 
-**`neural_mi/data/`** holds the preprocessing. `handler.py` has
-`create_dataset` for any number of streams on one grid, `create_single_dataset`
-for one stream, and the stream containers (`AlignedStreams`, `StreamBundle`,
+**`neural_mi/data/`** holds the preprocessing. `plan.py` has `RowPlan`, the
+one plan of every stream a quantity reads, from which every task cuts its rows
+and every term selects its streams (see [The row plan](#the-row-plan) below).
+`handler.py` has `create_dataset` for any number of streams on one grid,
+`create_single_dataset` for one stream, `one_grid` (the grid's one window and
+step), and the stream containers (`AlignedStreams`, `StreamBundle`,
 `PairedTemporalDataset`, `PairedDataset`). `temporal.py` and `static.py` have
 the per-processor datasets, `views.py` the `SubsetView` used for splits, and
-`shift_windowing.py` both window-shifting mechanisms. The module docstring of
-`shift_windowing.py` describes their reach and guarantees.
+`shift_windowing.py` the windowing by sample number behind a plan's moves and
+the phase shifter of rows a stride thins.
 
 **`neural_mi/models/`** has the critics (`SeparableCritic`, `HybridCritic`,
 `ConcatCritic`), the encoders and `VariationalWrapper` in `embeddings.py`, and
 the reconstruction decoders in `decoders.py`. `BranchedEmbedding` is the X
 encoder of every term of a difference quantity. `_joint_marginal_difference`
-(`analysis/sweep.py`) marks both terms with `_difference_term`, trains the
-conditioning term first, and hands the joint term `_condition`, where its
-conditioning set sits among X's channels and how many channels the
-conditioning term's network was built on. `build_critic` then builds one branch
-per part of X from the call's encoder, and `conditioning_parts` splits a joint
-X for the branches and for a nonparametric estimator alike. **`neural_mi/estimators/`** has
+(`analysis/sweep.py`) marks both terms with `_difference_term` and trains the
+conditioning term first. The joint term's X is the pair (rest of X,
+conditioning set), packed by the plan (`pack` in `data/plan.py`) or by the
+quantity that builds its rows by offset, and `build_critic` builds one branch
+per part of X from the call's encoder. Every stage that reads X takes the pair:
+`PairDecoder`, the augmentations, `StaticDataset`'s corruptions,
+`ConcatCritic` and the nonparametric estimator. **`neural_mi/estimators/`** has
 the bounds in `bounds.py`, registered by name in `ESTIMATORS`, and KSG in
 `ksg.py`, registered in `NONPARAMETRIC` with its conditional form in
 `NONPARAMETRIC_CONDITIONAL`.
@@ -86,6 +91,24 @@ into one `dataframe` row per configuration and axis value. A mode only declares
 its networks and its combine step in its producer. The shape of `Results` is the
 same for every mode.
 
+### One place for a default
+
+Every setting's default is written once, in `BASE_PARAMS_SCHEMA`
+(`neural_mi/defaults.py`). Code below `run()` reads a setting with
+`defaults.setting(params, name)`, which falls back to that default, and every
+signature default of a setting below the public signatures is
+`defaults.default_of(name)`. `run()`, the named quantities and `_run_flat` keep
+literal defaults in their signatures until design item 1 of the roadmap.
+`tests/test_schema_defaults.py` checks the signatures of `Trainer`, the encoder,
+decoder and critic classes against the schema, and fails on any default written
+a second time as a literal.
+
+`build_critic` reads only the settings in `utils.ARCHITECTURE_KEYS`, and
+`save_network` saves exactly those with a network, so `extract_embeddings`
+rebuilds it as it was trained. A value pickle cannot store, such as a class
+defined inside a function, is saved as its name, and `extract_embeddings` asks
+for it in `base_params`.
+
 ### One unit conversion
 
 Every network trains and reports in nats. `assemble.convert_record` converts the
@@ -106,9 +129,28 @@ repeat carries one, and floors only the mean. Elsewhere it leaves the values
 reported as 0 out of `mi_mean` and `mi_std` and counts them in `n_zero`. The
 permutation test summarises each trial with `aggregate` too. A rung of a
 difference's rigorous ladder is its signed measured value (`sweep.rung`), and
-`rigorous._drop_zero_rungs` leaves out only the rungs reported as 0, whose
-networks learned nothing.
+`rigorous._drop_rungs` leaves out only the rungs reported as 0, whose networks
+learned nothing, the NaN rungs, whose term failed, and the rungs whose network,
+or for a difference whose joint term (`sweep.rung`), has a held-out curve that
+did not resolve (`curve_diagnosis == 'not resolved'`), with every $\gamma$ that
+loses half or more of its rungs to them.
 Interaction information is signed and is left as measured.
+
+Every quantity combined from separately trained networks goes through
+`sweep.combine_terms`: `_joint_marginal_difference` (conditional MI, transfer
+entropy and the quantities built on them), interaction information and the runs
+rows of `modes._difference_rows`. The rungs of their rigorous ladders call the
+same functions on each chunk. `sweep.term_values` reads each network as
+measured, as having learned nothing (it enters as 0) or as failed (its repeat
+is NaN). The line between the last two is `epochs.stands_above_zero`, the same
+test the trainer uses to word its warning about a negative training-side value,
+so a network's warning and its place in a combination agree. Before it reads a
+value, `combine_terms` compares the rows each term's task read
+(`data.rows.row_identity`, in the task's result under `_row_identity`, which a
+plan's dataset carries from `RowPlan.identity`): their count, and the grid's
+origin and step, a digest of the kept rows' start times and Y's window wherever
+both tasks know them (`data.rows.same_rows`). A repeat whose terms read
+different rows is refused: the check that every term read its plan's rows.
 
 ### Processor parameters in a grid
 
@@ -151,9 +193,22 @@ what the library did, at the info or debug level, and errors. `logger.warning`
 is not used, which `test_docs_drift.py` checks.
 
 When an outer loop runs in parallel, any loop inside one of its units runs
-with `n_workers=1` so that a pool never starts inside a pool. Each task seeds itself
-from the call's `seed` and a key fixed by its position in the grid so that the
-result does not depend on which worker ran it or when.
+with `n_workers=1` so that a pool never starts inside a pool.
+
+Every seed comes from three things (`neural_mi/seeds.py`): the call's `seed`,
+the repeat, and the role of a network or a draw in its estimate. The repeat is
+the task's `run_id`. A call without one has the repeat 0. A role is a rung's gamma and
+chunk, a dimensionality fit's channel split and width, or one draw a call makes
+outside its tasks: a channel split, the held-out rows of a dimensionality call,
+the noise of `mode='precision'`, a permutation trial's move of X. A plain
+network and the terms of a difference have no role. The repeat alone seeds the
+shifts of the windows at each epoch and the order the ladder deals its rows
+into chunks. A network's own seed sets its initialisation, batch order and
+dropout, its split and its evaluation rows. Nothing else enters a seed: not a
+configuration's settings, not a task's place in the grid, not the worker that
+runs it, not whether a processor grid runs as one call per setting. Every
+configuration therefore runs a repeat from the same seeds. This is what running
+each setting with the seeds 0 to R-1 does. `tests/test_seeds.py` checks the rule.
 
 ### Tensors are three-dimensional
 
@@ -167,6 +222,90 @@ The default split holds out `n_test_blocks` contiguous stretches spread over the
 recording and excludes a gap of `gap_fraction` of a block on either side of each
 from training. Neighbouring correlated windows cannot then sit on both sides of
 the split. A random split suits independent samples only.
+
+### Preprocessing and the data check
+
+`neural_mi/preprocessing.py` holds every transform of the data: the channel
+transforms, the autoregressive whitening and the interface a transform of your
+own follows. `utils._whiten` (the embedding spectrum) and `ksg.prepare` use the
+same `ZScore`, `ZCA` and `Copula`. `preprocessing.prepare` applies a
+`Preprocessing` to the streams of a call and runs the data check on the result,
+and every path takes it once, before rows are built: `_run_flat` on the raw
+streams for every mode but transfer entropy, the transfer branch on the series
+its histories come from (after any grid), and `quantities._by_offsets` on a
+named quantity's series, before `offsets.build_rows`. The named quantities take
+`preprocessing` out of what they pass to `run()`, which receives rows and skips
+its own check when `_rows` says a quantity built them. The part of the check
+that reads the rows (`run._warn_small_sample`) runs on every route, where the
+route counts its rows: once in `_run_flat` for rows cut there or passed in, at
+offset 0 for rows each task cuts, once per setting of a processor grid
+(`_run_processor_grid`), and on the histories of transfer entropy
+(`tests/test_data_check_routes.py`).
+
+### Rows in time order
+
+Whatever builds rows from a time series records their geometry once, in the
+parameters every task receives (`neural_mi/data/rows.py`): `row_step`, the
+distance between the starts of consecutive rows, and `row_span`, the stretch one
+row covers, in one unit. A processor records its windows (`run.py` when it
+windows once for the call, `task.py` when a task windows for itself). Rows built by offset get their geometry from the spec
+that builds them (`offsets.build_rows` and `offsets.spec_geometry`): a named
+quantity or `offset_quantity` hands it to `run()` through the private `_rows`
+argument, and transfer entropy records it for its histories (`transfer.te_spec`).
+Rows a `stride` above one thins are built at every step when windows shift,
+and `_row_phases` tells each task to keep one in every `stride`
+(`shift_windowing.RowPhaseShifter`, which moves the phase each epoch). The
+record still gives the kept rows' step, `data.rows.kept_rows` their count.
+Rows without the record are not
+known to be in time order: arrays passed in already built, or samples in no
+order. The record is reported per network in `runs` and
+`details[config_id]['trainings']`. A plan records its own grid's geometry
+(`RowPlan.geometry`).
+
+Everything that depends on the time order reads the record and nothing else.
+The trainer's blocked split warns when its gap is shorter than a row's span,
+and its random split warns when rows share samples, as does the split
+`mode='dimensionality'` shares across its fits. The rigorous ladder cuts
+recorded rows into contiguous chunks through `rigorous._Chunker`, the one
+chunker of both rigorous paths. A block shuffle moves blocks of the rows one
+row's span takes in. Whether rows move each epoch is a different question,
+which the trainer answers from the shifter a dataset carries.
+
+### The row plan
+
+`run()` builds one `RowPlan` per call and processor configuration over every
+stream the call reads (`data/plan.py`). Each stream carries its processor and
+every setting, resolved once from the call's parameters and the schema
+(`resolve_stream`), and the grid has the window and step of `one_grid`. A plan
+cuts its rows one of two ways (`RowPlan.route`): streams on a regular clock that
+start together are windowed by sample number (`shift_windowing.BundleShifter`),
+and any other plan puts every stream on one grid in time, from the latest start
+to the earliest end, through the processors' own datasets, and keeps a window
+only where every stream is valid. A plan of rows built already (`'rows'`) packs
+them as given.
+
+A term reads the plan through `TermRows`, the plan and its `Roles`: which
+streams make its X (one stream, or a pair of the rest of X and the conditioning
+set) and which its Y.
+Every term of a difference therefore reads the same rows, the same kept
+windows and the same per-stream fits, and `task.py` builds every raw dataset
+this way: a term's from its `TermRows`, a pair's from `RowPlan.of_pair`. A plan
+that does not shift is cut once in `run()` (`RowPlan.materialize`) and its rows
+reach the tasks built. A plan that shifts reaches each task raw, and its
+dataset carries a shifter whose one offset per epoch, drawn within one step,
+moves every stream: by sample number, or on the grid in time by windowing
+every stream again at the rows' starts plus the offset (`plan.GridShifter`),
+where a row that fails a stream's rule at that offset keeps its unmoved
+windows. The rigorous ladder cuts a plan into the plans of its chunks
+(`RowPlan.cut`), and a permutation trial moves X inside the plan without moving
+its grid (`RowPlan.replace`).
+
+The plan holds the rows and not what a task does with them. The split, the
+rows each epoch evaluates and the shifts are drawn in each term's task, from a
+split seed and a shift seed every term of a repeat shares, so they match across
+the terms without the plan holding them. `create_dataset` and the offset
+builder (`offsets.build_rows`) still build their rows themselves: the first for
+the offset route under `processing=`, the second for every named quantity.
 
 ### Rigorous fits in $\gamma$
 
@@ -202,28 +341,32 @@ for unwindowed data). Add a branch for its name in `create_single_dataset()` in
 [PARAMETERS.md](PARAMETERS.md) for `tests/test_docs_drift.py` to check against
 the schema.
 
-To add an encoder, subclass `BaseEmbedding`, register it in `build_critic()` in
+To add an encoder, subclass `BaseEmbedding`, declare the `Model` settings it
+reads in its `settings`, register it in `_EMBEDDING_CLASSES` in
 `neural_mi/utils.py`, add its name to the allowed values of `embedding_model` in
-`neural_mi/validation.py`, and add any new settings to `BASE_PARAMS_SCHEMA`.
+`neural_mi/validation.py`, and add any new settings to `BASE_PARAMS_SCHEMA`, to
+`MODEL_SETTINGS` in `neural_mi/utils.py`, and give them `default_of` defaults.
 
 To add an analysis mode:
 
 1. Write the procedure in a module under `neural_mi/analysis/` when it is more
    than a few lines.
 2. Add a producer to `neural_mi/analysis/modes.py` that returns its repeat rows
-   through `_produced(...)` with its axis keys and the columns to aggregate.
-   Route the mode to it in `produce()`.
+   through `_produced(...)` with the columns to aggregate.
 3. Add its config dataclass to `neural_mi/config.py`, export it from
-   `neural_mi/__init__.py` and add its settings and defaults to
-   `MODE_KWARGS_SCHEMA` in `neural_mi/defaults.py`.
-4. Register it in `neural_mi/run.py`: in `_MODES` and `_MODE_CONFIG_CLASSES`, in
-   `_PERMUTABLE_MODES` if a permutation null means something for it, in
-   `_WINDOWS_IN_TASK` if it windows inside its tasks, and in the
-   `_SHIFT_*_SAFE_MODES` tuples that apply.
-5. Decide what it does with repeats, a configuration grid and `rigorous`. Record
-   the decision in the capability table in
-   [USING.md](USING.md#what-each-mode-accepts) and add the mode to the check in
-   `tests/test_contract.py` that every mode returns the shared `Results` shape or
-   refuses clearly.
-6. Document its config in [PARAMETERS.md](PARAMETERS.md) and the messages it
+   `neural_mi/__init__.py`, and add a parameter of its name to `run()`.
+4. Declare it in `MODES`: its producer, its config and its settings with their
+   types and defaults, the axis it adds, and what it does with repeats, a
+   configuration grid, `rigorous`, a permutation null, returned embeddings and
+   custom split indices, with the reason it gives for each request it refuses.
+   Name the function that prepares its own settings for its producer from the
+   call (`prepare`), the checks of its settings (`check`), and its figure,
+   summary lines and overlay (`draw`, `summarize`, `overlay`, which take the
+   functions in `results.py` as a model). `run()`, the checks, the producers and
+   the results read the declaration, and none of them names a mode. Its `table`
+   is its row of the capability table in
+   [USING.md](USING.md#what-each-mode-accepts), which
+   `tests/test_mode_registry.py` checks, and `tests/test_contract.py` runs it
+   with every kind of grid against the shared `Results` shape.
+5. Document its config in [PARAMETERS.md](PARAMETERS.md) and the messages it
    prints in [MESSAGES.md](MESSAGES.md). `tests/test_docs_drift.py` checks both.

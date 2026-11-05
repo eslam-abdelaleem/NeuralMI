@@ -127,52 +127,38 @@ class TestInteractionInformationPlumbing:
         with pytest.raises((ValueError, TypeError)):
             nmi.run(x, y, mode='interaction', model=_MODEL, training=_TRAINING, n_workers=1)
 
-    def test_mismatched_window_size_raises(self):
+    def test_a_w_window_unlike_x_runs_as_a_pair(self):
+        """Rows of W with another window length than X's reach the joint term as the pair (W, X), each part
+        on a branch of its own."""
         x = np.random.randn(N, 1, 4)
         y = np.random.randn(N, 1, 4)
-        w = np.random.randn(N, 1, 6)  # different window size than x
-        with pytest.raises(ValueError):
-            nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
-                   model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
+        w = np.random.randn(N, 1, 6)
+        r = nmi.run(x, y, mode='interaction', interaction=Interaction(w_data=w),
+                    model=_MODEL, training=_TRAINING, n_workers=1, show_progress=False)
+        assert np.isfinite(r.mi_estimate)
 
-    def test_sample_count_trim_tolerance_matches_conditional(self):
-        """interaction.py's eager path tolerates a one-window difference
-                between X and W, as conditional.py does. Calls
-                run_interaction_information directly to construct the exact boundary
-                condition: W with one fewer window than X and Y.
+    @staticmethod
+    def _plan(x, y, w):
+        from collections import OrderedDict
+        from neural_mi.data.plan import RowPlan, Stream
+        return RowPlan(OrderedDict(x=Stream(x), w=Stream(w), y=Stream(y)))
+
+    def test_rows_that_do_not_line_up_are_refused(self):
+        """Rows built before the call come one per row of every other stream:
+                a W with one row fewer than X and Y is refused, not trimmed.
         """
         from neural_mi.analysis.interaction import run_interaction_information
-        x = torch.randn(50, 1, 4)
-        y = torch.randn(50, 1, 4)
-        w = torch.randn(49, 1, 4)  # exactly _SAMPLE_COUNT_TRIM_TOLERANCE short
-        raw = run_interaction_information(x, y, w, _PARAMS,
-                                          n_workers=1)
-        assert np.isfinite(raw['interaction_info'])
-        assert raw['raw_xw_y'][0]['train_mi'] is not None
+        plan = self._plan(torch.randn(50, 1, 4), torch.randn(50, 1, 4), torch.randn(49, 1, 4))
+        with pytest.raises(ValueError, match="rows do not line up"):
+            run_interaction_information(plan, _PARAMS, n_workers=1)
 
-    def test_window_size_broadcast_matches_conditional(self):
+    def test_a_w_of_one_value_per_row_runs(self):
         """A W with a collapsed (size-1) window axis, such as a per-window
-                categorical summary, is broadcast across X's window, as in
-                conditional.py.
-        """
+        categorical summary, keeps it as its part of the pair."""
         from neural_mi.analysis.interaction import run_interaction_information
-        x = torch.randn(50, 1, 4)
-        y = torch.randn(50, 1, 4)
-        w = torch.randn(50, 1, 1)  # collapsed window axis
-        raw = run_interaction_information(x, y, w, _PARAMS,
-                                          n_workers=1)
+        plan = self._plan(torch.randn(50, 1, 4), torch.randn(50, 1, 4), torch.randn(50, 1, 1))
+        raw = run_interaction_information(plan, _PARAMS, n_workers=1)
         assert np.isfinite(raw['interaction_info'])
-
-    def test_window_size_gap_beyond_tolerance_still_raises(self):
-        """The trim tolerance stays narrow: a gap bigger than
-                _WINDOW_SIZE_TRIM_TOLERANCE, and not a size-1 broadcast, raises.
-        """
-        from neural_mi.analysis.interaction import run_interaction_information
-        x = torch.randn(50, 1, 4)
-        y = torch.randn(50, 1, 4)
-        w = torch.randn(50, 1, 6)
-        with pytest.raises(ValueError):
-            run_interaction_information(x, y, w, _PARAMS, n_workers=1)
 
     def test_summary_runs(self, capsys):
         x, y, w = np.random.randn(N, 1), np.random.randn(N, 1), np.random.randn(N, 1)
@@ -225,21 +211,20 @@ class TestInteractionInformationAccuracy:
         assert ii_exact < 0  # exact-math sanity check on the oracle itself
 
         x, y, w = oracle.sample(4000, seed=1)
-        training = Training(n_epochs=30, learning_rate=1e-3, batch_size=128, patience=8)
         r = nmi.run(
             torch.from_numpy(x), torch.from_numpy(y), mode='interaction',
             interaction=Interaction(w_data=torch.from_numpy(w)),
-            model=_MODEL, training=training, n_workers=1, seed=0, show_progress=False,
+            n_workers=1, seed=0, show_progress=False,
         )
-        assert r.mi_estimate < 0.3  # not a tight match (II is a 3-term combination,
-        # the same "small residual" fragility discussed in THEORY.md applies), but the
-        # redundancy signature (clearly not a large positive synergy value) should hold.
+        # II combines three networks, each with its own error, so it is read more
+        # loosely than one MI: within a quarter of the exact value, and negative.
+        assert r.mi_estimate < 0
+        assert abs(r.mi_estimate - ii_exact) < 0.25 * abs(ii_exact)
 
 
 class TestInteractionShiftWindows:
-    """shift_windows reachability: W is raw-concatenated onto X before
-    windowing (rather than after) whenever W is 'continuous' and matches
-    X's processor family."""
+    """shift_windows with a continuous W: one plan of X, W and Y, whose rows
+    every term reads and one offset per epoch moves together."""
 
     def test_engages_silently_for_matching_continuous_pair(self):
         """No warning: shift_windows must actually reach mode='interaction'
@@ -265,13 +250,10 @@ class TestInteractionShiftWindows:
         assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
 
     def test_w_equal_to_x_gives_consistent_components_under_shift(self):
-        """Correctness/desync check: if W is an exact copy of X (same raw
-        array, same window_size/step_size), W adds zero information beyond
-        X, so I(X,W;Y) and I(W;Y) should both closely match I(X;Y) -- with
-        shift_windows on. A one-window desync between X's and W's
-        independent reslicing would make the concatenated W look like
-        genuinely new information relative to X, inflating I(X,W;Y) above
-        I(X;Y)/I(W;Y) and breaking this expectation."""
+        """W as an exact copy of X adds no information beyond X, so I(X,W;Y)
+        and I(W;Y) should both closely match I(X;Y) with shift_windows on. If
+        X and W moved apart, W would look like new information relative to X
+        and inflate I(X,W;Y)."""
         np.random.seed(0)
         torch.manual_seed(0)
         T, window_size = 4000, 20
@@ -296,8 +278,7 @@ class TestInteractionShiftWindows:
             assert np.isfinite(a) and np.isfinite(b)
             assert abs(a - b) < 0.3, (
                 f"W=X exactly should make {name_a}={a:.3f} closely match {name_b}={b:.3f} -- "
-                f"a large gap suggests X and W's independent reslicing desynchronized "
-                f"under shift_windows."
+                f"a large gap suggests X and W moved apart under shift_windows."
             )
 
 
@@ -353,11 +334,19 @@ class TestInteractionShiftWindowsRigorous:
             training=Training(n_epochs=10, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert np.isfinite(results.mi_estimate)
-        assert abs(results.mi_estimate) < 0.5, (
-            f"II should be near zero when W=X exactly (rigorous=True path), got "
-            f"{results.mi_estimate:.3f}"
+        # Every rung's combined value is near zero. On data without a dependence
+        # the rungs may resolve too little for a line, and the fit then reports
+        # no value. Where it extrapolates, its value is near zero too.
+        ladder = results.details[0]['trainings']
+        assert len(ladder) and (ladder['train_mi'].abs() < 0.5).all(), (
+            f"II should be near zero at every rung when W=X exactly (rigorous=True path), got "
+            f"{ladder['train_mi'].tolist()}"
         )
+        if results.mi_estimate is not None:
+            assert abs(results.mi_estimate) < 0.5, (
+                f"II should be near zero when W=X exactly (rigorous=True path), got "
+                f"{results.mi_estimate:.3f}"
+            )
 
 
 class TestInteractionShiftWindowsCategorical:
@@ -424,9 +413,8 @@ class TestInteractionShiftWindowsCategorical:
             )
 
     def test_mismatched_window_size_raises_clear_error(self):
-        """A W whose window_size differs from X's raises: the concatenated
-                array is windowed with X's geometry alone.
-        """
+        """A W whose window_size differs from X's is refused: the streams of
+        one quantity share one grid."""
         np.random.seed(0)
         x = np.random.randint(0, 3, size=(2000, 1)).astype('int64')
         y = np.random.randn(2000, 2).astype('float32')
@@ -444,11 +432,9 @@ class TestInteractionShiftWindowsCategorical:
 
 
 class TestInteractionShiftWindowsMixedTypes:
-    """shift_windows reachability for a *mixed* continuous+categorical W
-    (X and W have different processor types) -- exercises
-    shift_windowing.make_multi_categorical_encoder's continuous-passthrough
-    block and the broadcast reconciling a categorical block's collapsed
-    window axis against a continuous block's real window_size."""
+    """shift_windows with X and W of different processor types (continuous and
+    categorical): each stream is cut by its own processor on the one grid,
+    and each part of the pair keeps its own window axis."""
 
     def test_engages_silently_continuous_x_categorical_w(self):
         import warnings
@@ -529,15 +515,14 @@ class TestInteractionShiftWindowsMixedTypes:
             assert np.isfinite(a) and np.isfinite(b)
             assert abs(a - b) < 0.3, (
                 f"W as a lossless categorical recoding of X should make {name_a}={a:.3f} "
-                f"closely match {name_b}={b:.3f} -- a large gap suggests X and W's "
-                f"mixed-type concatenation desynchronized under shift_windows."
+                f"closely match {name_b}={b:.3f}; a large gap suggests X and W moved "
+                f"apart under shift_windows."
             )
 
 
-class TestInteractionShiftTimeSpike:
-    """shift_time reachability for a spike+spike W (X='spike' and W='spike',
-    matching family only) -- mirrors TestInteractionShiftWindows, adapted
-    for shift_time/spike concatenation (Python list concat, not torch.cat)."""
+class TestInteractionShiftingSpikes:
+    """A spike X with a spike W: every term reads the rows of one plan of X, W
+    and Y, which move together under shift_windows."""
 
     def test_engages_silently_for_matching_spike_pair(self):
         import warnings
@@ -553,17 +538,17 @@ class TestInteractionShiftTimeSpike:
                 interaction=Interaction(w_data=w_spikes),
                 processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
                 model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-                training=Training(n_epochs=1, patience=1, shift_time=True),
+                training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
-        msgs = [str(w_msg.message) for w_msg in caught if 'shift_time' in str(w_msg.message)]
-        assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"
+        msgs = [str(w_msg.message) for w_msg in caught if 'shift_windows' in str(w_msg.message)]
+        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
         assert np.isfinite(r.mi_estimate)
 
     def test_w_equal_to_x_gives_consistent_components_under_shift(self):
         """Correctness/desync check: W as an exact copy of X's spike-neuron
         population should make I(X,W;Y) and I(W;Y) both closely match
-        I(X;Y) -- with shift_time on."""
+        I(X;Y) -- with the rows shifting."""
         np.random.seed(0)
         torch.manual_seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
@@ -574,7 +559,7 @@ class TestInteractionShiftTimeSpike:
             interaction=Interaction(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=15, patience=5, batch_size=32, shift_time=True),
+            training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
         details = _components(results)
@@ -585,13 +570,12 @@ class TestInteractionShiftTimeSpike:
             assert np.isfinite(a) and np.isfinite(b)
             assert abs(a - b) < 0.3, (
                 f"W=X exactly should make {name_a}={a:.3f} closely match {name_b}={b:.3f} -- "
-                f"a large gap suggests X and W's spike-list concatenation desynchronized "
-                f"under shift_time."
+                f"a large gap suggests X and W moved apart under shifting."
             )
 
-    def test_rigorous_shift_time_spike_no_crash_and_finite(self):
-        """rigorous=True sub-path: exercises run_rigorous_scalar_analysis's
-        new _is_spike_deferred chunk-to-raw-time-range translation."""
+    def test_rigorous_shifting_spikes_no_crash_and_finite(self):
+        """rigorous=True: every chunk is the plan of a stretch of the rows, and every rung comes out
+        finite. One epoch resolves nothing, so the fit itself leaves every rung out."""
         np.random.seed(0)
         torch.manual_seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
@@ -604,16 +588,14 @@ class TestInteractionShiftTimeSpike:
                                    rigorous=True, gamma_range=range(1, 4)),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=1, patience=1, shift_time=True),
+            training=Training(n_epochs=1, patience=1, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert results.mi_estimate is not None
-        assert np.isfinite(results.mi_estimate)
+        ladder = results.details[0]['trainings']
+        assert len(ladder) == sum(range(1, 4)) and np.isfinite(ladder['train_mi']).all()
 
-    def test_no_crash_with_shift_time_false(self):
-        """A spike X and spike W are merged before windowing whether or not
-                shift_time is active, so the call succeeds with shift_time=False.
-        """
+    def test_no_crash_without_shifting(self):
+        """The plan of X, W and Y cuts their rows whether or not they move."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=800, window_size=0.05, seed=0)
@@ -624,16 +606,15 @@ class TestInteractionShiftTimeSpike:
             interaction=Interaction(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=2, patience=1, shift_time=False),
+            training=Training(n_epochs=2, patience=1, shift_windows=False),
             n_workers=1, show_progress=False, seed=0,
         )
         assert np.isfinite(results.mi_estimate)
 
-    def test_rigorous_no_crash_with_shift_time_false(self):
-        """The rigorous path cuts a spike+spike pair as time ranges whether or
-                not shift_time is active, and returns a finite estimate with
-                shift_time=False.
-        """
+    def test_rigorous_no_crash_without_shifting(self):
+        """A rigorous chunk is the plan of a stretch of the rows, whether or not
+        they move, and every rung comes out finite. Two epochs resolve nothing,
+        so the fit itself leaves every rung out."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=400, window_size=0.05, seed=0)
@@ -645,11 +626,11 @@ class TestInteractionShiftTimeSpike:
                                    rigorous=True, gamma_range=range(1, 4), min_gamma_points=2),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-            training=Training(n_epochs=2, patience=1, shift_time=False, batch_size=16),
+            training=Training(n_epochs=2, patience=1, shift_windows=False, batch_size=16),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert results.mi_estimate is not None
-        assert np.isfinite(results.mi_estimate)
+        ladder = results.details[0]['trainings']
+        assert len(ladder) == sum(range(1, 4)) and np.isfinite(ladder['train_mi']).all()
 
 
 class TestWProcessorInheritance:
@@ -789,11 +770,10 @@ class TestThreeWayWindowAlignment:
                     n_workers=1, show_progress=False, seed=0)
         assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
 
-    def test_one_window_difference_is_aligned_not_truncated(self):
-        """A one-window difference is resolved by window time, not by
-                truncation, so the run succeeds and the truncation warning never
-                fires.
-        """
+    def test_the_last_window_is_the_same_for_every_stream(self):
+        """Without a gap the pairings keep the same windows. A window lies within each stream's samples
+        whatever its coverage rule, so X's stricter min_coverage_fraction no longer drops an end window
+        that W's keeps, and the run has nothing to align or truncate."""
         from neural_mi import Conditional
         from neural_mi.data.handler import create_dataset
         t, x, y, w = self._series(gap=0.0)
@@ -803,7 +783,7 @@ class TestThreeWayWindowAlignment:
         wy = create_dataset(x_data=w, x_time=t, y_data=y, y_time=t,
                             processor_type_x='categorical', processor_params_x=self.W_PARAMS,
                             processor_type_y='continuous', processor_params_y=self.Y_PARAMS)
-        assert abs(xy.x_data.shape[0] - wy.x_data.shape[0]) == 1, "fixture drifted"
+        assert np.array_equal(xy.window_manager.window_times, wy.window_manager.window_times)
 
         with _capture_warnings() as seen:
             r = nmi.run(x, y, mode='conditional', processing=self._proc(t, w='categorical', w_params=self.W_PARAMS, w_time=t),
@@ -811,8 +791,7 @@ class TestThreeWayWindowAlignment:
                         model=_MODEL, training=self._training(),
                         n_workers=1, show_progress=False, seed=0)
         assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
-        assert not any('Truncating all three' in m for m in seen), (
-            "the engine trim fired; run() should have aligned by window time first")
+        assert not any('Truncating all three' in m for m in seen)
 
     def test_matching_windows_are_a_no_op(self):
         """When both pairings already agree the alignment must change nothing,
@@ -894,16 +873,3 @@ class TestEarlyMergeFallback:
         from neural_mi.config import Conditional
         result = self._run('conditional', lambda w, t: {'conditional': Conditional(w_data=w)})
         assert np.isfinite(result.mi_estimate)
-
-    def test_the_helper_returns_all_three_marginals(self):
-        """Conditional uses two of them, interaction all three."""
-        from neural_mi.analysis.conditional import _merge_raw_blocks
-        rng = np.random.default_rng(0)
-        x = rng.standard_normal((200, 2)).astype(np.float32)
-        w = rng.integers(0, 3, size=(200, 1))
-        to_t = lambda a: a if torch.is_tensor(a) else torch.as_tensor(a, dtype=torch.float32)
-        xw, joint, marg_x, marg_w = _merge_raw_blocks(
-            x, w, 'continuous', 'categorical', {'processor_params_x': {}}, to_t)
-        assert xw.shape[1] == 3
-        specs = lambda bp: bp['processor_params_x']['_categorical_block_specs']
-        assert len(specs(joint)) == 2 and len(specs(marg_x)) == 1 and len(specs(marg_w)) == 1

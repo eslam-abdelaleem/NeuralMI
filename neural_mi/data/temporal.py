@@ -148,7 +148,6 @@ class TemporalWindowDataset(Dataset, ABC):
             self.data_device = torch.device(str(data_device))
         self.data_master = None  # Allocated when moving to windows
         self.data = None         # Allocated when moving to windows
-        self.time_offset = 0     # No offset by default
 
     # ------ Window handling
     def set_window_manager(self, window_manager):
@@ -163,7 +162,7 @@ class TemporalWindowDataset(Dataset, ABC):
         Only recomputes sizing here. Actually moving data to windows is left
         to the caller: PairedTemporalDataset._build_windows() always calls
         move_data_to_windows() itself right after update_parameters() (in
-        __init__, time_shift(), and set_window_size()), and does so in the
+        __init__ and set_window_size()), and does so in the
         correct order relative to window-coverage validation. Calling it here
         too would just redo that work a second time.
         """
@@ -205,13 +204,14 @@ class TemporalWindowDataset(Dataset, ABC):
     def get_temporal_extent(self):
         """Return (t_start, t_end) of the data."""
         pass
+
+    def window_starts_end(self, window_size: float) -> float:
+        """Before what time this stream's windows start: before the end of its extent. A stream sampled
+        on a regular clock narrows it so that its windows also end within its samples
+        (:class:`_SampledStream`)."""
+        return self.get_temporal_extent()[1]
     
     # ------ Modifying data
-    @abstractmethod
-    def time_shift(self, time_offset):
-        """Apply time shift to data."""
-        pass
-
     @abstractmethod
     def apply_noise(self, amplitude):
         """Apply noise to data."""
@@ -223,7 +223,24 @@ class TemporalWindowDataset(Dataset, ABC):
         pass
 
 
-class ContinuousWindowDataset(TemporalWindowDataset):
+class _SampledStream:
+    """A stream sampled on a regular clock (continuous, categorical): its samples cover a stretch of
+    time, one period each, and a window of it lies within that stretch. The row plan's unfold route
+    (data.shift_windowing.safe_n_windows) cuts the same windows, so every route cuts the same rows from
+    the same samples. min_coverage_fraction then judges gaps inside the stretch."""
+
+    def get_temporal_extent(self):
+        """From the first sample to the end of the last one's period, where a window that starts on the
+        last sample still has it."""
+        return self.time_vector[0], self.time_vector[-1] + self.period
+
+    def window_starts_end(self, window_size: float) -> float:
+        """A window starts no later than one window before the end of the extent. Half a period of slack
+        keeps that last start when the times carry rounding."""
+        return self.get_temporal_extent()[1] - window_size + 0.5 * self.period
+
+
+class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
     """
     Dataset for continuous time series data.
 
@@ -528,18 +545,11 @@ class ContinuousWindowDataset(TemporalWindowDataset):
                     UserWarning, stacklevel=user_stacklevel()
                 )
 
-    def get_temporal_extent(self):
-        return self.time_vector[0], self.time_vector[-1]
-    
     def __getitem__(self, idx):
         return self.data[idx]
     
     def reset(self):
         self.data = self.data_master.detach().clone()
-
-    def time_shift(self, offset):
-        self.time_vector = self.time_vector + offset - self.time_offset
-        self.time_offset = offset
 
     def apply_noise(self, amplitude):
         """Add uniform jitter of width `amplitude` to every sample that holds a value.
@@ -616,7 +626,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
         self.no_spike_value = no_spike_value
         self.exclude_bursty_neurons = exclude_bursty_neurons
         self.burst_threshold_multiplier = burst_threshold_multiplier
-        self.time_offset = 0
         self._excluded_neurons = []
         self._max_spikes_cap = max_spikes_per_window
         self._n_seconds = n_seconds
@@ -669,7 +678,7 @@ class SpikeWindowDataset(TemporalWindowDataset):
             worst_neuron = int(np.argmax(per_neuron_max))
             warnings.warn(
                 f"Spike tensor allocation dominated by burst: neuron {worst_neuron} "
-                f"has peak {self.max_samples_per_window} spikes/window vs. median "
+                f"has peak {self.max_samples_per_window} spikes per window against a median of "
                 f"{median_max:.1f}. Consider exclude_bursty_neurons=True.",
                 UserWarning, stacklevel=user_stacklevel()
             )
@@ -785,14 +794,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
     def reset(self):
         self.data = self.data_master.detach().clone()
 
-    def time_shift(self, offset):
-        """Shift spike times by offset."""
-        # Undo previous offset, apply new one
-        self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
-        # Store this time offset to undo later
-        self.time_offset = offset
-        # Moving data to windows will be orchestrated by paired dataset class
-
     def apply_noise(self, amplitude):
         """Jitter every spike time by a uniform draw of width `amplitude`.
 
@@ -825,7 +826,7 @@ class BinnedSpikeDataset(TemporalWindowDataset):
     device : str or torch.device, optional
     normalize : bool, optional
         If True, divide bin counts by bin_size to express as spikes/second.
-        Default True. Set False to keep raw counts.
+        Default False, which keeps the counts.
     drop_empty_windows : bool, optional
         Whether a window with no spikes is discarded. Defaults to True, estimating
         the quantity restricted to the active subensemble in bits per *active*
@@ -840,14 +841,13 @@ class BinnedSpikeDataset(TemporalWindowDataset):
     """
 
     def __init__(self, spike_times, bin_size: float,
-                 window_manager=None, device=None, normalize: bool = True,
+                 window_manager=None, device=None, normalize: bool = False,
                  data_device='cpu', drop_empty_windows: bool = True):
         super().__init__(window_manager, device, data_device)
         self.drop_empty_windows = drop_empty_windows
         self.data_orig = [np.array(st) for st in spike_times]
         self.bin_size = bin_size
         self.normalize = normalize
-        self.time_offset = 0
         if window_manager is not None:
             self.set_window_manager(window_manager)
             self.move_data_to_windows()
@@ -941,10 +941,6 @@ class BinnedSpikeDataset(TemporalWindowDataset):
     def reset(self):
         self.data = self.data_master.detach().clone()
 
-    def time_shift(self, offset):
-        self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
-        self.time_offset = offset
-
     def apply_noise(self, amplitude):
         """Add uniform noise of width `amplitude` to every bin that holds spikes.
 
@@ -960,7 +956,7 @@ class BinnedSpikeDataset(TemporalWindowDataset):
         self.data = corrupt(self.data_master, precision_level, 'rounding').clone()
 
 
-class CategoricalWindowDataset(TemporalWindowDataset):
+class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
     """Dataset for categorical time series data with one-hot encoding."""
     
     def __init__(self, data, time_vector=None, window_manager=None, device=None,
@@ -1204,18 +1200,6 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         max_samples = self.max_samples_per_window
         min_count = max(1, int(np.ceil(self.min_coverage_fraction * max_samples)))
         return self._window_counts >= min_count
-    
-    def time_shift(self, offset):
-        """Apply time shift to data."""
-        # Undo previous offset, apply new one
-        self.time_vector = self.time_vector + offset - self.time_offset
-        # Store this time offset to undo later
-        self.time_offset = offset
-        # Moving data to windows on new time shift will be orchestrated by paired dataset
-
-    def get_temporal_extent(self):
-        """Return temporal extent of the data."""
-        return self.time_vector[0], self.time_vector[-1]
     
     def __getitem__(self, idx):
         """Return one-hot encoded windowed data at index."""

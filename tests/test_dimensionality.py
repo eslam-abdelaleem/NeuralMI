@@ -244,9 +244,15 @@ class TestSettings:
         analyse(monkeypatch, fake, *xy, embedding_dims=[1, 2, 3])
         assert fake.params[0]['shared_encoder'] is False
 
-    def test_a_concat_critic_is_refused(self, xy):
-        with pytest.raises(ValueError, match="cannot use critic_type='concat'"):
-            run_dimensionality_analysis(xy[0], {'critic_type': 'concat'}, y_data=xy[1])
+    def test_a_concat_critic_is_refused_before_any_work(self, xy):
+        """The mode reads the critic's embedding of each side, which the concat critic does not give, in
+        the call's critic or in any value of a grid."""
+        with pytest.raises(ValueError, match="critic_type='concat' gives none"):
+            nmi.run(xy[0], xy[1], mode='dimensionality', model=nmi.Model(critic_type='concat'),
+                    show_progress=False)
+        with pytest.raises(ValueError, match="critic_type='concat' gives none"):
+            nmi.run(xy[0], xy[1], mode='dimensionality', sweep_grid={'critic_type': ['hybrid', 'concat']},
+                    show_progress=False)
 
     def test_a_separable_critic_warns(self, monkeypatch, xy):
         monkeypatch.setattr(dim, '_fit', FakeFits(saturating_at(2)))

@@ -2,20 +2,23 @@
 """
 Centralized definition of default parameters and allowed keys for validation.
 """
-import numpy as np
+import copy
+from typing import Any, Dict, Optional, Tuple
+
 import torch
 
 # Allowed parameters for base_params
 # Each entry is (type_check, min_value or validation_function)
 BASE_PARAMS_SCHEMA = {
     # Trainer parameters
-    'n_epochs': {'type': int, 'min': 1, 'default': 50},
+    'n_epochs': {'type': int, 'min': 1, 'default': 300},
     'learning_rate': {'type': float, 'min': 0.0, 'default': 5e-4},
     'batch_size': {'type': int, 'min': 1, 'default': 128},
-    # Default of 1000 effectively disables early stopping for the default n_epochs=50.
-    # To enable early stopping, set patience to a value smaller than n_epochs
-    # (e.g. patience=20 with n_epochs=200).
-    'patience': {'type': int, 'min': 0, 'default': 1000},
+    # Training stops once the smoothed held-out curve has not improved for
+    # `patience` epochs, and n_epochs caps a curve that keeps improving. Shifted
+    # windows keep the curve rising for longer, and a curve without shifting often
+    # tops early and falls.
+    'patience': {'type': int, 'min': 0, 'default': 30},
     'output_units': {'type': str, 'default': 'bits'},
     # Real-time grids for X and Y, carried so that windowing deferred to the
     # task layer sees the same grid the eager path gets via create_dataset.
@@ -25,10 +28,8 @@ BASE_PARAMS_SCHEMA = {
     'show_progress': {'type': bool, 'default': True},
     'device': {'type': (str, type(None), torch.device), 'default': None},
     'split_mode': {'type': str, 'default': 'blocked'},
-    'shift_time': {'type': bool, 'default': True},
-    # Cheap reslice-based alternative to shift_time for regularly-sampled
-    # data (neural_mi/data/shift_windowing.py); wired up for mode='estimate'
-    # with a real processor only, see run.py's _warn_if_shift_windows_dead.
+    # Every epoch the windows a processor cuts start one offset later, the same
+    # for every stream, drawn within one step (neural_mi/data/plan.py).
     'shift_windows': {'type': bool, 'default': True},
     'smoothing_sigma': {'type': float, 'min': 0.0, 'default': 1.0},
     'median_window': {'type': int, 'min': 1, 'default': 5},
@@ -43,6 +44,9 @@ BASE_PARAMS_SCHEMA = {
     # behind both the participation ratios and the rotated embeddings.
     'whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},
+    # Every encoder's input centred and scaled channel by channel by the training
+    # rows' statistics, saved with the network: None (off) or 'standard'.
+    'input_scaling': {'type': (str, type(None)), 'default': None},
     'use_decoder': {'type': bool, 'default': False},
     'decoder_lambda': {'type': float, 'min': 0.0, 'default': 0.001},
     'decoder_lambda_x': {'type': (float, type(None)), 'min': 0.0, 'default': None},
@@ -63,7 +67,6 @@ BASE_PARAMS_SCHEMA = {
     'beta': {'type': float, 'min': 0.0, 'default': 1024.0},
     'train_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
     'n_test_blocks': {'type': int, 'min': 1, 'default': 5},
-    'max_index_reduction': {'type': float, 'min': 0.0, 'default': 0.05},
     'optimizer': {'type': (str, type), 'default': 'adam'},
     'optimizer_params': {'type': dict, 'default': {}},
     'lr_head_multiplier': {'type': (float, int, type(None)), 'min': 0.0, 'default': None},  # Hybrid only; None → same LR as encoders
@@ -143,7 +146,7 @@ BASE_PARAMS_SCHEMA = {
     'processor_type_y': {'type': (str, type(None))},
     'processor_params_x': {'type': (dict, type(None))},
     'processor_params_y': {'type': (dict, type(None))},
-    'custom_critic': {'type': (object, type(None))}, # torch.nn.Module
+    'custom_critic': {'type': (object, type(None))}, # class or function that builds the critic
     'custom_embedding_cls': {'type': (type, type(None))},
     'train_indices': {'type': (object, type(None))}, # numpy array
     'test_indices': {'type': (object, type(None))},
@@ -178,107 +181,66 @@ BASE_PARAMS_SCHEMA = {
     'dataset_device': {'type': (str, type(None)), 'default': 'cpu'},
 }
 
-# Parameters allowed in analysis_kwargs for each mode
-MODE_KWARGS_SCHEMA = {
-    'estimate': {
-        'n_workers': {'type': int, 'default': 1},
-    },
-    'sweep': {
-        'n_workers': {'type': int, 'default': 1},
-    },
-    'dimensionality': {
-        'n_workers': {'type': int, 'default': 1},
-        # The embedding dimensions to fit. None chooses them from the reference fit.
-        'embedding_dims': {'type': (list, tuple, range, type(None)), 'default': None},
-        'n_restarts': {'type': int, 'min': 1, 'default': 4},
-        'saturation_ratio': {'type': float, 'min': 0.0, 'default': 0.95},
-        # None is 64, refitted larger when its participation ratio comes close to that.
-        'reference_dim': {'type': (int, type(None)), 'min': 2, 'default': None},
-        'split_method': {'type': str, 'default': 'random'}, # 'random'|'spatial'|'temporal'|'index'|'horizontal'|'vertical'|'row_interleaved'|'col_interleaved'|'diagonal'|'antidiagonal'
-        # Random channel splits of X; the other split methods give one split.
-        'n_splits': {'type': (int, type(None)), 'min': 1, 'default': None},
-        'lag': {'type': int, 'default': 1}, # if split_method='temporal'
-        # Required when split_method='index': list of channel indices assigned to X.
-        # Y is automatically the complement (all remaining channels).
-        'channel_indices_x': {'type': (list, type(None)), 'default': None},
-        # Warn when the reference fit's MI is this close to its evaluation ceiling.
-        'ceiling_mi_fraction': {'type': float, 'default': 0.85},
-    },
-    'rigorous': {
-        'n_workers': {'type': int, 'default': 1},
-        'curvature_t_threshold': {'type': float, 'default': 2.0},
-        'min_gamma_points': {'type': int, 'default': 5},
-        'confidence_level': {'type': float, 'default': 0.68},
-        'residual_threshold': {'type': float, 'default': 2.5},
-        'leverage_threshold': {'type': float, 'default': 0.20},
-        # None = auto-detect from leak_check_window_size (set exactly when a
-        # windowed processor was used); True/False overrides the detector.
-        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
-    },
-    'lag': {
-        'n_workers': {'type': int, 'default': 1},
-        'lag_range': {'type': (range, list, np.ndarray), 'required': True},
-        'equalize_n': {'type': bool, 'default': False},
-    },
-    'precision': {
-        'n_workers': {'type': int, 'default': 1},
-        'tau_grid': {'type': list, 'required': True},
-        # corrupt_target: 'x' corrupts only X, 'y' only Y, 'both' corrupts both
-        # simultaneously (useful for measuring shared spike-timing precision).
-        'corrupt_target': {'type': str, 'default': 'x'},
-        'corruption_method': {'type': str, 'default': 'rounding'},
-        'n_noise_samples': {'type': int, 'default': 50},
-        'threshold_ratio': {'type': (float, list, tuple), 'default': 0.9},
-    },
-    'conditional': {
-        'n_workers': {'type': int, 'default': 1},
-        'align': {'type': (str, type(None)), 'default': None},
-        'rigorous': {'type': bool, 'default': False},
-        'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'curvature_t_threshold': {'type': float, 'default': 2.0},
-        'min_gamma_points': {'type': int, 'default': 5},
-        'confidence_level': {'type': float, 'default': 0.68},
-        'residual_threshold': {'type': float, 'default': 2.5},
-        'leverage_threshold': {'type': float, 'default': 0.20},
-        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
-    },
-    'transfer': {
-        'n_workers': {'type': int, 'default': 1},
-        'rigorous': {'type': bool, 'default': False},
-        'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'curvature_t_threshold': {'type': float, 'default': 2.0},
-        'min_gamma_points': {'type': int, 'default': 5},
-        'confidence_level': {'type': float, 'default': 0.68},
-        'residual_threshold': {'type': float, 'default': 2.5},
-        'leverage_threshold': {'type': float, 'default': 0.20},
-        # Transfer entropy is unconditionally temporal (built from
-        # unfold-based history windows); run.py always forces this True for
-        # the transfer path regardless of what's passed here -- exposed in
-        # the schema for consistency/validation, not because it's meant to
-        # be overridden per-call.
-        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
-    },
-    'interaction': {
-        'n_workers': {'type': int, 'default': 1},
-        'rigorous': {'type': bool, 'default': False},
-        'gamma_range': {'type': (range, list, type(None)), 'default': None},
-        'curvature_t_threshold': {'type': float, 'default': 2.0},
-        'min_gamma_points': {'type': int, 'default': 5},
-        'confidence_level': {'type': float, 'default': 0.68},
-        'residual_threshold': {'type': float, 'default': 2.5},
-        'leverage_threshold': {'type': float, 'default': 0.20},
-        'temporal_chunking': {'type': (bool, type(None)), 'default': None},
-    },
-    'pairwise': {
-        'n_workers': {'type': int, 'default': 1},
-        'pairs': {'type': (list, type(None)), 'default': None},
-    },
+# The processor settings' defaults, by processor. ``None`` means unset: a
+# window_size has to be given, a step_size of None is one window, and so on.
+PROCESSOR_DEFAULTS = {
+    'continuous': {'window_size': None, 'step_size': None, 'min_coverage_fraction': 0.2,
+                   'sample_rate': None},
+    'spike': {'window_size': None, 'step_size': None, 'max_spikes_per_window': None, 'n_seconds': None,
+              'sample_rate': None, 'no_spike_value': 0.0, 'bin_size': None, 'normalize_bins': False,
+              'exclude_bursty_neurons': False, 'burst_threshold_multiplier': 5.0,
+              'drop_empty_windows': True},
+    'categorical': {'window_size': None, 'step_size': None, 'sample_rate': None,
+                    'min_coverage_fraction': 0.2, 'encoding': 'majority_vote'},
 }
 
-PROCESSOR_PARAMS_SCHEMA = {
-    'continuous': ['window_size', 'step_size', 'min_coverage_fraction', 'sample_rate'],
-    'spike': ['window_size', 'step_size', 'max_spikes_per_window', 'n_seconds', 'sample_rate',
-              'no_spike_value', 'bin_size', 'normalize_bins', 'exclude_bursty_neurons',
-              'burst_threshold_multiplier', 'drop_empty_windows'],
-    'categorical': ['window_size', 'step_size', 'sample_rate', 'min_coverage_fraction', 'encoding'],
-}
+
+# The settings each processor takes.
+PROCESSOR_PARAMS_SCHEMA = {processor: list(defaults) for processor, defaults in PROCESSOR_DEFAULTS.items()}
+
+
+def stream_processing(processor: Optional[str], params: Optional[Dict[str, Any]], x_processor: Optional[str],
+                      x_params: Optional[Dict[str, Any]], data: Any = None
+                      ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """The processor and processor settings a second stream, Y or W, is read with: one rule for both.
+
+    A stream without a processor of its own reads with X's. One without
+    settings of its own reads with X's settings, kept to the keys its processor
+    takes. Settings it was given are its own and are not merged with X's. A
+    stream given as rows built already (``data`` with three dimensions) has no
+    raw series for a processor to read and inherits nothing.
+    """
+    if processor is None and getattr(data, 'ndim', None) == 3:
+        return None, params
+    processor = processor if processor is not None else x_processor
+    if params is None and processor is not None:
+        accepted = PROCESSOR_DEFAULTS.get(processor)
+        params = {k: v for k, v in (x_params or {}).items() if accepted is None or k in accepted}
+    return processor, params
+
+
+def processor_setting(processor: str, params: Dict[str, Any], name: str) -> Any:
+    """Processor setting ``name`` from ``params``, or the schema's default for ``processor`` when
+    ``params`` lacks it."""
+    params = params or {}
+    return params[name] if name in params else copy.copy(PROCESSOR_DEFAULTS[processor][name])
+
+
+def default_of(name: str) -> Any:
+    """The schema's default for setting ``name``: the one place a default is written. A mutable default comes
+    back as a copy, so a caller cannot change it for every other caller."""
+    return copy.copy(BASE_PARAMS_SCHEMA[name]['default'])
+
+
+def setting(params: Dict[str, Any], name: str) -> Any:
+    """Setting ``name`` from ``params``, or its schema default when ``params`` lacks it."""
+    return params[name] if name in params else default_of(name)
+
+
+def norm_layer_of(params: Dict[str, Any]) -> Optional[str]:
+    """The normalisation layer the networks build: ``norm_layer``, with 'auto' and 'none' read as none.
+
+    A mode that wants another reading of 'auto' sets norm_layer before anything is built, as
+    mode='dimensionality' does for its hybrid critic."""
+    norm = setting(params, 'norm_layer')
+    return None if norm in ('auto', 'none') else norm

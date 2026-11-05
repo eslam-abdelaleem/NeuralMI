@@ -11,6 +11,7 @@ from .temporal import (
 from .static import StaticDataset
 from .shift_windowing import resolve_step_size
 from torch.utils.data import Dataset
+from neural_mi.defaults import PROCESSOR_DEFAULTS, processor_setting
 from neural_mi.logger import groups_repeats, logger, user_stacklevel
 
 _REGULAR_GRID_TYPES = ('continuous', 'categorical')
@@ -19,8 +20,8 @@ _REGULAR_GRID_TYPES = ('continuous', 'categorical')
 def _truncate_leading(data, min_len: int):
     """Truncate the leading (sample) dimension to ``min_len``, whether
     ``data`` is a plain tensor or a tuple of tensors sharing that dimension
-    (``StaticDataset``'s compound "X-role" data for
-    ``mode='conditional'(align='dual_branch')``). A naive ``data[:min_len]``
+    (``StaticDataset``'s pair, the joint term's X of a difference). A naive
+    ``data[:min_len]``
     on a raw tuple would slice the *outer* 2-element tuple instead of
     truncating each inner tensor.
     """
@@ -48,6 +49,38 @@ def reset_retention_warnings() -> None:
 # reason as the retention warning above: the advice does not change between
 # tasks, and a sweep would otherwise repeat it once per task.
 _AMBIGUOUS_STEP_WARNED = set()
+
+
+def report_retention(per_stream_valid, kept):
+    """``(built, retained, retention)`` for windows kept where every stream is valid, warned about once
+    per run when fewer than half are kept.
+
+    Retention is part of the result, not just an internal detail: it says what
+    fraction of the recording the estimate covers, and so whether a per-window
+    figure is per window or per kept window.
+    """
+    built, retained = int(kept.size), int(kept.sum())
+    retention = retained / built if built else 0.0
+    if retention < 0.5 and built and 'low' not in _RETENTION_WARNED:
+        _RETENTION_WARNED.add('low')
+        # Named per stream, so a bundle of three says which of the three
+        # did the dropping instead of leaving the caller to guess.
+        dropped_by = [f"{name.upper()} ({int((~valid).sum())})"
+                      for name, valid in per_stream_valid.items() if not valid.all()]
+        warnings.warn(
+            f"Window coverage validation kept {retained} of "
+            f"{built} windows ({retention:.1%}). "
+            f"Dropped per stream: {' and '.join(dropped_by) or 'coverage rules'}. "
+            f"The estimate describes the retained windows only. A per-window "
+            f"figure is per retained window. For spike data, "
+            f"{{'drop_empty_windows': False}} in the stream's processor "
+            f"parameters keeps silent windows and estimates the unrestricted "
+            f"quantity. Retention falls quickly as more variables are required "
+            f"to be simultaneously valid. This is reported once per run. The "
+            f"per-task values are in result.runs as 'window_retention'.",
+            UserWarning, stacklevel=user_stacklevel()
+        )
+    return built, retained, retention
 
 
 class WindowManager:
@@ -164,23 +197,6 @@ class WindowManager:
         self.n_windows = len(self.window_times)
         # Initialize all windows as valid - will be updated by datasets
         self.valid_windows = np.full(self.window_times.size, True, dtype=bool)
-
-    def set_fixed_grid(self, t_start, n_windows):
-        """Deterministically build exactly ``n_windows`` window starts
-        beginning at ``t_start``, spaced by the resolved step.
-
-        Used by the time-shift path instead of ``create_windows()``'s
-        ``np.arange(t_start, t_end, step)`` so the window count stays
-        exactly fixed across repeated shifts, ``np.arange`` can drop or
-        add a trailing window across float-step boundaries as ``t_start``
-        drifts, which ``create_windows()`` never has to contend with since
-        it's only ever called once per (fixed) t_start/t_end pair.
-        """
-        step = self.resolve_step()
-        self.t_start = t_start
-        self.window_times = t_start + np.arange(n_windows) * step
-        self.n_windows = n_windows
-        self.valid_windows = np.full(n_windows, True, dtype=bool)
 
     def __len__(self):
         """len() will return however many valid windows there are"""
@@ -316,15 +332,9 @@ class AlignedStreams(_NamedStreams, Dataset):
         """Create windows over the range every stream covers."""
         extents = [ds.get_temporal_extent() for ds in self._streams.values()]
         data_start = max(start for start, _ in extents)
-        data_end = min(end for _, end in extents)
-        # Record the original recording bounds on the first call so they can
-        # be used to clamp the range after time-shifts.
-        if not hasattr(self, 'original_data_start'):
-            self.original_data_start = data_start
-            self.original_data_end = data_end
-        # Clamp the shifted extent so it cannot exceed the original recording.
-        data_start = max(data_start, self.original_data_start)
-        data_end   = min(data_end,   self.original_data_end)
+        # The windows start before every stream's own bound: within the samples
+        # of a stream on a regular clock (temporal._SampledStream).
+        data_end = min(ds.window_starts_end(self.window_manager.window_size) for ds in self._streams.values())
         # Apply user-specified bounds if provided
         final_start = t_start if t_start is not None else data_start
         final_end = t_end if t_end is not None else data_end
@@ -332,24 +342,11 @@ class AlignedStreams(_NamedStreams, Dataset):
             raise ValueError(
                 f"Invalid temporal range: t_start={final_start}, t_end={final_end}"
             )
-        # Record the effective (user-bound-aware) range once, for time_shift's
-        # fixed-grid margin reservation -- distinct from original_data_start/
-        # _end above, which is the natural full extent and can be wider than
-        # this when the caller passed an explicit t_start/t_end.
-        if not hasattr(self, '_base_t_start'):
-            self._base_t_start = final_start
-            self._base_t_end = final_end
 
         self.window_manager.update_parameters(t_start=final_start, t_end=final_end)
 
-    def _build_windows(self, time_shift=None):
-        """Move every stream into windows, then keep the ones all of them share.
-
-        Parameters
-        ----------
-        time_shift : float, optional
-            If windows are being rebuilt due to a time shift, the offset applied.
-        """
+    def _build_windows(self):
+        """Move every stream into windows, then keep the ones all of them share."""
         # Step 1: Move data to ALL windows, for every stream
         for dataset in self._streams.values():
             dataset.move_data_to_windows()
@@ -361,36 +358,8 @@ class AlignedStreams(_NamedStreams, Dataset):
             )
             # Only keep windows valid for EVERY stream
             combined_valid = np.logical_and.reduce(list(per_stream_valid.values()))
-            # Retention is part of the result, not just an internal detail:
-            # it says what fraction of the recording the estimate actually
-            # covers, and therefore whether a per-window number should be read
-            # as per-window or per-active-window.
-            self.n_windows_built = int(combined_valid.size)
-            self.n_windows_retained = int(combined_valid.sum())
-            self.window_retention = (self.n_windows_retained / self.n_windows_built
-                                     if self.n_windows_built else 0.0)
-            if (self.window_retention < 0.5 and self.n_windows_built
-                    and 'low' not in _RETENTION_WARNED):
-                _RETENTION_WARNED.add('low')
-                # Named per stream, so a bundle of three says which of the three
-                # did the dropping instead of leaving the caller to guess.
-                dropped_by = [
-                    f"{name.upper()} ({int((~valid).sum())})"
-                    for name, valid in per_stream_valid.items() if not valid.all()
-                ]
-                warnings.warn(
-                    f"Window coverage validation kept {self.n_windows_retained} of "
-                    f"{self.n_windows_built} windows ({self.window_retention:.1%}). "
-                    f"Dropped per stream: {' and '.join(dropped_by) or 'coverage rules'}. "
-                    f"The estimate describes the retained windows only. A per-window "
-                    f"figure is per retained window. For spike data, "
-                    f"{{'drop_empty_windows': False}} in the stream's processor "
-                    f"parameters keeps silent windows and estimates the unrestricted "
-                    f"quantity. Retention falls quickly as more variables are required "
-                    f"to be simultaneously valid. This is reported once per run. The "
-                    f"per-task values are in result.runs as 'window_retention'.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
+            self.n_windows_built, self.n_windows_retained, self.window_retention = \
+                report_retention(per_stream_valid, combined_valid)
 
             # Step 3: Update WindowManager's tracking
             self.window_manager.valid_windows = combined_valid
@@ -409,65 +378,13 @@ class AlignedStreams(_NamedStreams, Dataset):
             )
         else:
             self.window_manager.n_windows = len(self.window_manager.window_times)
-        self._notify_subset_views(time_shift=time_shift)
+        self._notify_subset_views()
 
-    def _notify_subset_views(self, time_shift=None):
-        """
-        Notify all registered subset views that windows have been rebuilt.
-
-        Parameters
-        ----------
-        time_shift : offset_x, optional
-            If windows were rebuilt due to time shift, contains the offset applied to x
-        """
+    def _notify_subset_views(self):
+        """Notify all registered subset views that windows have been rebuilt."""
         if hasattr(self, '_subset_views'):
             for view in self._subset_views:
-                view._on_dataset_updated(time_shift=time_shift)
-
-    def _reserve_shift_margin(self):
-        """Compute (once, cached) the window count that stays fixed for
-        every shift offset in ``[0, window_size)``.
-
-        The window grid slides forward by up to a full ``window_size`` over
-        fixed, unmutated raw data. Reserving ``2*window_size`` off the
-        effective span (one ``window_size`` so the grid can start that far
-        forward without any window running past ``_base_t_end``, and
-        another so ``set_fixed_grid`` never needs to look earlier than
-        ``_base_t_start``) keeps the same number of windows valid across the
-        whole shift range, the fixed-grid analogue of
-        ``shift_windowing.safe_n_windows``'s margin for the raw-array-slicing
-        case.
-        """
-        if not hasattr(self, '_shift_n_windows'):
-            step = self.window_manager.resolve_step()
-            window_size = self.window_manager.window_size
-            usable_span = self._base_t_end - self._base_t_start
-            margin = 2 * window_size
-            n_safe = int((usable_span - margin) // step) + 1
-            if n_safe < 1:
-                raise ValueError(
-                    f"Recording span ({usable_span:.6g}) is too short to reserve a "
-                    f"safe time-shift margin ({margin:.6g} = 2 * window_size) with "
-                    f"window_size={window_size}. Reduce window_size, increase the "
-                    f"recording length or disable shift_time."
-                )
-            self._shift_n_windows = n_safe
-        return self._shift_n_windows
-
-    def shift_grid(self, offset):
-        """Slide the (fixed-size) window grid forward by ``offset`` over the
-        fixed, unmutated raw data.
-
-        Does NOT rewrite any raw data, unlike the child datasets' own
-        ``time_shift()`` (still reachable directly for unit-level callers),
-        which mutate their stored data and derive the grid's live extent
-        from it, causing the offset to cancel out of every window-membership
-        test. One grid is shared by every stream, so one offset moves them
-        all together.
-        """
-        n_windows = self._reserve_shift_margin()
-        self.window_manager.set_fixed_grid(self._base_t_start + offset, n_windows)
-        self._build_windows(time_shift=offset)
+                view._on_dataset_updated()
 
     def set_window_size(self, window_size):
         """Change window size and rebuild windows."""
@@ -572,24 +489,6 @@ class StreamBundle(_PairAccessors, AlignedStreams):
     def __init__(self, streams, **kwargs):
         super().__init__(streams, **kwargs)
 
-    def time_shift(self, offset_x=0, offset_y=0):
-        """Slide the (fixed-size) window grid forward by ``offset_x``.
-
-        ``offset_y`` is accepted for backward compatibility with callers that
-        pass both, but only ``offset_x`` drives the single grid, which every
-        stream in the bundle shares; production call sites always pass equal
-        values. See :meth:`AlignedStreams.shift_grid` for what the shift does
-        and does not touch.
-        """
-        if offset_y != offset_x:
-            warnings.warn(
-                f"time_shift got offset_x={offset_x} != offset_y={offset_y}. Only "
-                f"offset_x is used. It shifts the single window grid every stream "
-                f"shares.",
-                UserWarning, stacklevel=user_stacklevel()
-            )
-        self.shift_grid(offset_x)
-
 
 class PairedTemporalDataset(StreamBundle):
     """Wrapper for paired X and Y datasets with temporal alignment.
@@ -657,32 +556,10 @@ class AlignedStaticStreams(_NamedStreams, Dataset):
         logger.info("Created PairedDataset")
 
     def _align_datasets(self):
-        """Truncate every stream to the shortest one's sample count.
-
-        Truncates via a leading-dimension slice on each ``self.data`` tensor,
-        because ``StaticDataset.__len__`` reads ``self.data.shape[0]`` and the
-        slice is what makes the length change take effect.
-        """
-        lengths = OrderedDict((name, len(ds)) for name, ds in self._streams.items())
-        if len(set(lengths.values())) == 1:
-            return
-        min_len, max_len = min(lengths.values()), max(lengths.values())
-        lost = max_len - min_len
-        pct = 100.0 * lost / max_len
-        names = " and ".join(name.upper() for name in lengths)
-        counts = ", ".join("%s: %d" % (name.upper(), n) for name, n in lengths.items())
-        every = "both" if len(lengths) == 2 else "all"
-        warnings.warn(
-            f"{names} have different numbers of samples ({counts}). "
-            f"Truncating {every} to {min_len} samples "
-            f"({lost} samples discarded, {pct:.1f}% of the larger dataset lost).",
-            UserWarning, stacklevel=user_stacklevel()
-        )
-        for dataset in self._streams.values():
-            dataset.data = _truncate_leading(dataset.data, min_len)
-            # Invalidate lazily-allocated data_master so it is re-cloned from
-            # the truncated data the next time apply_noise/apply_precision runs.
-            dataset.data_master = None
+        """Refuse streams whose rows do not line up one for one (data.plan.rows_line_up), as every call
+        does with rows built already."""
+        from neural_mi.data.plan import rows_line_up
+        rows_line_up(OrderedDict((name, len(ds)) for name, ds in self._streams.items()))
 
 
 class PairedDataset(_PairAccessors, AlignedStaticStreams):
@@ -725,72 +602,59 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
     if proc_type is None:
         return StaticDataset(data, device=device, data_device=data_device)
 
+    if proc_type not in PROCESSOR_DEFAULTS:
+        raise ValueError(f"Unknown processor type: '{proc_type}'.")
+    # Every setting the processor takes, from the caller's parameters or the
+    # schema's default (neural_mi.defaults.PROCESSOR_DEFAULTS).
+    s = {name: processor_setting(proc_type, proc_params, name) for name in PROCESSOR_DEFAULTS[proc_type]}
+
     if proc_type == 'continuous':
-        min_cov    = (proc_params or {}).get('min_coverage_fraction', 0.2)
-        sample_rate = (proc_params or {}).get('sample_rate', None)
         return ContinuousWindowDataset(data, time, device=device,
-                                       min_coverage_fraction=min_cov,
+                                       min_coverage_fraction=s['min_coverage_fraction'],
                                        data_device=data_device,
-                                       sample_rate=sample_rate)
+                                       sample_rate=s['sample_rate'])
 
     elif proc_type == 'spike':
         # Silence is only discarded on the spike side. A continuous partner's
         # own min_coverage_fraction is untouched by this, which is what lets a
         # timestamped continuous variable keep masking genuinely unobserved
         # stretches while silent spike windows are retained as data.
-        drop_empty = (proc_params or {}).get('drop_empty_windows', True)
-        bin_size = (proc_params or {}).get('bin_size', None)
-        if bin_size is not None:
-            normalize = (proc_params or {}).get('normalize_bins', True)
-            return BinnedSpikeDataset(data, bin_size=bin_size, device=device,
-                                      normalize=normalize, data_device=data_device,
-                                      drop_empty_windows=drop_empty)
-        no_spike_val        = (proc_params or {}).get('no_spike_value', 0.0)
-        excl_bursty         = (proc_params or {}).get('exclude_bursty_neurons', False)
-        burst_mult          = (proc_params or {}).get('burst_threshold_multiplier', 5.0)
-        max_spikes_per_win  = (proc_params or {}).get('max_spikes_per_window', None)
-        n_seconds           = (proc_params or {}).get('n_seconds', None)
+        if s['bin_size'] is not None:
+            return BinnedSpikeDataset(data, bin_size=s['bin_size'], device=device,
+                                      normalize=s['normalize_bins'], data_device=data_device,
+                                      drop_empty_windows=s['drop_empty_windows'])
         return SpikeWindowDataset(data, time, device=device,
-                                  no_spike_value=no_spike_val,
-                                  exclude_bursty_neurons=excl_bursty,
-                                  burst_threshold_multiplier=burst_mult,
+                                  no_spike_value=s['no_spike_value'],
+                                  exclude_bursty_neurons=s['exclude_bursty_neurons'],
+                                  burst_threshold_multiplier=s['burst_threshold_multiplier'],
                                   data_device=data_device,
-                                  max_spikes_per_window=max_spikes_per_win,
-                                  n_seconds=n_seconds,
-                                  drop_empty_windows=drop_empty)
+                                  max_spikes_per_window=s['max_spikes_per_window'],
+                                  n_seconds=s['n_seconds'],
+                                  drop_empty_windows=s['drop_empty_windows'])
 
-    elif proc_type == 'categorical':
-        min_cov     = (proc_params or {}).get('min_coverage_fraction', 0.2)
-        encoding    = (proc_params or {}).get('encoding', 'majority_vote')
-        sample_rate = (proc_params or {}).get('sample_rate', None)
-        return CategoricalWindowDataset(data, time, device=device,
-                                        min_coverage_fraction=min_cov,
-                                        encoding=encoding,
-                                        data_device=data_device,
-                                        sample_rate=sample_rate)
-
-    else:
-        raise ValueError(f"Unknown processor type: '{proc_type}'.")
+    return CategoricalWindowDataset(data, time, device=device,
+                                    min_coverage_fraction=s['min_coverage_fraction'],
+                                    encoding=s['encoding'],
+                                    data_device=data_device,
+                                    sample_rate=s['sample_rate'])
 
 def _stream_specs_from_pair(x_data, y_data, x_time, y_time,
                             processor_type_x, processor_params_x,
                             processor_type_y, processor_params_y):
     """The two-argument form, as an ordered stream mapping.
 
-    ``processor_type_y=None`` means "inherit X's", the convention callers have
-    always used, so it is resolved here where the pair is still visible.
+    Y without a processor or settings of its own reads with X's
+    (:func:`neural_mi.defaults.stream_processing`), resolved here where the
+    pair is still visible.
     """
+    from neural_mi.defaults import stream_processing
     specs = OrderedDict()
     specs['x'] = dict(data=x_data, time=x_time, processor_type=processor_type_x,
                       processor_params=processor_params_x)
     if y_data is not None:
-        specs['y'] = dict(
-            data=y_data, time=y_time,
-            processor_type=(processor_type_y if processor_type_y is not None
-                            else processor_type_x),
-            processor_params=(processor_params_y if processor_params_y is not None
-                              else processor_params_x),
-        )
+        kind_y, params_y = stream_processing(processor_type_y, processor_params_y,
+                                             processor_type_x, processor_params_x, y_data)
+        specs['y'] = dict(data=y_data, time=y_time, processor_type=kind_y, processor_params=params_y)
     return specs
 
 
@@ -823,6 +687,44 @@ def _warn_on_mixed_units(specs):
                 f"shared time unit.",
                 UserWarning, stacklevel=user_stacklevel()
             )
+
+
+def one_grid(params):
+    """``(window_size, step_size)`` of the one grid the streams with ``params`` share.
+
+    The grid's window and step are those of the first stream that names a
+    ``window_size``: its ``step_size``, or one window when it names none. A
+    stream asking for another window, or for a step that comes to another
+    length on that window, is refused: one grid has one window and one step,
+    and a stream cut otherwise would sit on rows of its own. ``step_size``
+    comes back as given, for the grid to read by its convention
+    (:func:`~neural_mi.data.shift_windowing.resolve_step_size`).
+    """
+    named = [(name, prm or {}) for name, prm in params.items()]
+    owner = next((name for name, prm in named if prm.get('window_size') is not None), None)
+    if owner is None:
+        return None, next((prm.get('step_size') for _, prm in named if prm.get('step_size') is not None), None)
+    window_size, step_size = params[owner]['window_size'], (params[owner] or {}).get('step_size')
+    step = resolve_step_size(window_size, step_size)
+    for name, prm in named:
+        if name == owner:
+            continue
+        clash = None
+        if prm.get('window_size') is not None and prm['window_size'] != window_size:
+            clash = ('window_size', prm['window_size'], window_size)
+        elif (prm.get('step_size') is not None
+              and abs(resolve_step_size(window_size, prm['step_size']) - step) > 1e-12 * max(1.0, step)):
+            clash = ('step_size', prm['step_size'], step_size if step_size is not None else
+                     f"{step:g} (one window)")
+        if clash is not None:
+            key, value, current = clash
+            raise ValueError(
+                f"Stream {name!r} asks for {key}={value} and stream {owner!r} for "
+                f"{key}={current}. The streams of one quantity share one grid, with one "
+                f"window and one step. Set them equal, or place the stream yourself with "
+                f"nmi.offset_quantity, whose spec says where each group of rows sits."
+            )
+    return window_size, step_size
 
 
 @groups_repeats
@@ -917,33 +819,11 @@ def create_dataset(x_data, y_data=None,
     if len(specs) > 1:
         _warn_on_mixed_units(specs)
 
-    # One grid means one window_size. The first stream that names one sets it,
-    # and another asking for a different value is reported instead of silently
-    # losing to whichever stream was built last.
-    window_size = step_size = None
-    for name, prm in params.items():
-        this_window = prm.pop('window_size', None)
-        this_step = prm.pop('step_size', None)
-        if this_window is not None:
-            if window_size is None:
-                window_size = this_window
-            elif this_window != window_size:
-                warnings.warn(
-                    f"Stream {name!r} specifies window_size={this_window}. Every "
-                    f"stream shares a single WindowManager and must use the same "
-                    f"window size. window_size={window_size} is used.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-        if this_step is not None:
-            if step_size is None:
-                step_size = this_step
-            elif this_step != step_size:
-                warnings.warn(
-                    f"Stream {name!r} specifies step_size={this_step} against the "
-                    f"{step_size} already set by an earlier stream. One grid carries "
-                    f"one step. Using step_size={step_size}.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
+    window_size, step_size = one_grid({name: prm for name, prm in params.items()
+                                       if specs[name].get('processor_type') is not None})
+    for prm in params.values():
+        prm.pop('window_size', None)
+        prm.pop('step_size', None)
 
     datasets = OrderedDict()
     for name, spec in specs.items():
@@ -954,15 +834,8 @@ def create_dataset(x_data, y_data=None,
 
     static = [n for n, ds in datasets.items() if isinstance(ds, StaticDataset)]
     windowed = [n for n in datasets if n not in static]
-    if static and windowed:
-        raise ValueError(
-            f"A pre-processed stream (processor_type=None) cannot be paired with a "
-            f"windowed processor_type. {sorted(static)} are pre-processed and "
-            f"{sorted(windowed)} are windowed. A pre-processed stream has no time axis "
-            f"to align windows against and cannot share a grid with a windowed one. "
-            f"Give every stream a real processor_type (for example 'continuous') or "
-            f"pre-process all of them and pass processor_type=None throughout."
-        )
+    from neural_mi.data.plan import refuse_mixed_streams
+    refuse_mixed_streams(static, windowed)
 
     names = list(datasets)
     is_pair_shaped = names[:2] == ['x', 'y'][:len(names)] and len(names) <= 2

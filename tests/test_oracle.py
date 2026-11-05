@@ -4,20 +4,18 @@
 Two things are locked in here. First, that ``LatentGaussian`` reproduces
 the identities the temporal taxonomy rests on, since a tutorial that claims
 Massey's conservation law holds needs both sides to be exact. Second, that the
-general :func:`build_offset_arrays` produces byte-identical arrays to every
-hand-written builder in the library, so the offset spec printed beside a named
-quantity really is the computation that quantity performs.
+general :func:`build_offset_arrays` is how every named quantity defined by
+time offsets builds its rows, from the spec printed beside it, so that spec
+really is the computation the quantity performs.
 """
 import numpy as np
 import pytest
 import torch
 
 from neural_mi.generators import LatentGaussian, generate_shared_latent_gaussian
+import neural_mi as nmi
+from neural_mi import quantities
 from neural_mi.utils import build_offset_arrays
-from neural_mi.analysis.offsets import build_past_future, build_cross_offset
-from neural_mi.quantities import (
-    _build_mi_rate_arrays, _build_inst_exchange_arrays, _build_dir_info_rate_arrays,
-)
 
 K = 25
 
@@ -235,76 +233,72 @@ class TestGeneralDynamics:
             LatentGaussian(np.array([[1.0, 0.5], [0.0, 0.5]]), {'x': np.eye(2)})
 
 
-class TestBuilderMatchesNamedQuantities:
+class TestNamedQuantitiesRunTheirSpecs:
     """The offset spec printed in the tutorials must be what the code does.
 
-    Each case builds the same quantity two ways, through the library's
-    hand-written builder and through the general spec builder, and requires the
-    arrays to be identical. A failure here means a tutorial would advertise an
-    offset pattern that does not reproduce the named function.
+    Each named quantity defined by time offsets builds its rows from a spec
+    through the one builder. Each case checks the spec against the one printed
+    beside the quantity, and that the named function builds with it.
     """
 
-    T, C, KK = 400, 3, 6
+    class _Built(Exception):
+        pass
 
-    @pytest.fixture(scope='class')
-    def data(self):
+    def _spec_used(self, monkeypatch, call):
+        """The spec a named function hands the builder, caught before anything trains."""
+        def spy(series, spec, stride=1):
+            raise self._Built(spec)
+        monkeypatch.setattr(quantities, 'build_rows', spy)
+        with pytest.raises(self._Built) as caught:
+            call()
+        return caught.value.args[0]
+
+    @pytest.fixture
+    def xy(self):
         rng = np.random.default_rng(0)
-        return {'x': rng.normal(size=(self.T, self.C)).astype('float32'),
-                'y': rng.normal(size=(self.T, self.C)).astype('float32')}
+        return rng.normal(size=(200, 2)).astype('float32'), rng.normal(size=(200, 2)).astype('float32')
 
-    def _assert_same(self, named, spec_built):
-        for got, want in zip(spec_built, named):
-            assert got.shape == want.shape
-            assert torch.allclose(got, want)
+    def test_active_information_storage(self, monkeypatch, xy):
+        printed = {'A': _past('x', 6), 'B': [('x', 0)]}
+        assert quantities._spec_active_information_storage(6) == printed
+        assert self._spec_used(monkeypatch, lambda: nmi.active_information_storage(xy[0], k=6)) == printed
 
-    def test_active_information_storage(self, data):
-        k = self.KK
-        named = build_past_future(data['x'], past_len=k, future_len=1)
-        a, b, c, _ = build_offset_arrays(
-            data, {'A': [('x', s) for s in range(-k, 0)], 'B': [('x', 0)]})
-        assert c is None
-        self._assert_same(named, (a, b))
+    def test_predictive_information(self, monkeypatch, xy):
+        printed = {'A': _past('x', 6), 'B': [('x', s) for s in range(0, 6)]}
+        assert self._spec_used(monkeypatch, lambda: nmi.predictive_information(xy[0], k=6)) == printed
 
-    def test_predictive_information(self, data):
-        k = self.KK
-        named = build_past_future(data['x'], past_len=k, future_len=k)
-        a, b, _, _ = build_offset_arrays(
-            data, {'A': [('x', s) for s in range(-k, 0)],
-                   'B': [('x', s) for s in range(0, k)]})
-        self._assert_same(named, (a, b))
+    def test_cross_predictive_information(self, monkeypatch, xy):
+        printed = {'A': _past('x', 6), 'B': [('y', s) for s in range(0, 6)]}
+        assert self._spec_used(monkeypatch, lambda: nmi.cross_predictive_information(*xy, k=6)) == printed
 
-    def test_cross_predictive_information(self, data):
-        k = self.KK
-        named = build_cross_offset(data['x'], data['y'], past_len=k, future_len=k)
-        a, b, _, _ = build_offset_arrays(
-            data, {'A': [('x', s) for s in range(-k, 0)],
-                   'B': [('y', s) for s in range(0, k)]})
-        self._assert_same(named, (a, b))
+    def test_instantaneous_mi(self, monkeypatch, xy):
+        printed = {'A': [('x', 0)], 'B': [('y', 0)]}
+        assert self._spec_used(monkeypatch, lambda: nmi.instantaneous_mi(*xy)) == printed
 
-    def test_mi_rate(self, data):
+    def test_mi_rate(self, monkeypatch, xy):
         w, h = 5, 4
-        named = _build_mi_rate_arrays(data['x'], data['y'], h, w)
-        built = build_offset_arrays(
-            data, {'A': [('x', s) for s in range(-w, w + 1)],
-                   'B': [('y', 0)],
-                   'C': [('y', s) for s in range(-h, 0)]})[:3]
-        self._assert_same(named, built)
+        printed = {'A': [('x', s) for s in range(-w, w + 1)], 'B': [('y', 0)],
+                   'C': [('y', s) for s in range(-h, 0)]}
+        assert self._spec_used(monkeypatch, lambda: nmi.mi_rate(*xy, h=h, half_width=w)) == printed
 
-    def test_instantaneous_exchange(self, data):
-        k = self.KK
-        named = _build_inst_exchange_arrays(data['x'], data['y'], k)
-        built = build_offset_arrays(
-            data, {'A': [('x', 0)], 'B': [('y', 0)],
-                   'C': [('x', s) for s in range(-k, 0)] + [('y', s) for s in range(-k, 0)]})[:3]
-        self._assert_same(named, built)
+    def test_instantaneous_exchange(self, monkeypatch, xy):
+        k = 6
+        printed = {'A': [('x', 0)], 'B': [('y', 0)],
+                   'C': [('x', s) for s in range(-k, 0)] + [('y', s) for s in range(-k, 0)]}
+        assert self._spec_used(monkeypatch, lambda: nmi.instantaneous_exchange(*xy, k=k)) == printed
 
-    def test_directed_information_rate(self, data):
-        k = self.KK
-        named = _build_dir_info_rate_arrays(data['x'], data['y'], k)
-        built = build_offset_arrays(
-            data, {'A': [('x', s) for s in range(-k, 1)], 'B': [('y', 0)],
-                   'C': [('y', s) for s in range(-k, 0)]})[:3]
-        self._assert_same(named, built)
+    def test_directed_information_rate(self, monkeypatch, xy):
+        k = 6
+        printed = {'A': [('x', s) for s in range(-k, 1)], 'B': [('y', 0)],
+                   'C': [('y', s) for s in range(-k, 0)]}
+        assert self._spec_used(monkeypatch, lambda: nmi.directed_information_rate(*xy, k=k)) == printed
+
+    def test_transfer_entropy(self):
+        from neural_mi.analysis.transfer import te_spec
+        k = 6
+        assert te_spec(k) == {'A': _past('x', k), 'B': [('y', 0)], 'C': _past('y', k)}
+        assert te_spec(k, source='y', target='x', conditioned_on_w=True) == {
+            'A': _past('y', k), 'B': [('x', 0)], 'C': _past('x', k) + _past('w', k)}
 
 
 class TestBuilderBehaviour:

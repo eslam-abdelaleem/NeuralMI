@@ -83,9 +83,12 @@ def plot_sweep_curve(summary_df: pd.DataFrame, param_col: str, mean_col: str = '
     if created_fig:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
-    ax.plot(summary_df[param_col], summary_df[mean_col], 'o-', label='Mean MI', **kwargs)
+    # A curve of its own (Results.compare overlays several) carries its label, and its band takes its colour.
+    label = kwargs.pop('label', 'Mean MI')
+    line, = ax.plot(summary_df[param_col], summary_df[mean_col], 'o-', label=label, **kwargs)
     ax.fill_between(summary_df[param_col], summary_df[mean_col] - summary_df[std_col],
-                    summary_df[mean_col] + summary_df[std_col], alpha=0.2, label='±1 Std Dev')
+                    summary_df[mean_col] + summary_df[std_col], alpha=0.2, color=line.get_color(),
+                    label='±1 Std Dev' if label == 'Mean MI' else None)
 
     if true_value is not None:
         ax.axvline(x=true_value, color='r', linestyle='--', label=f'True Value = {true_value}')
@@ -375,10 +378,13 @@ def plot_bias_correction_fit(raw_results_df: pd.DataFrame, corrected_result: Dic
     fit_color = 'red' if color is None else color
 
     sns.stripplot(x='gamma', y='train_mi', data=raw_results_df, ax=ax, color=raw_color, alpha=0.5)
-    # The mean per gamma uses the rungs the fit used. A rung reported as 0
-    # produced nothing and still shows as a point.
-    produced = raw_results_df[raw_results_df['train_mi'] != 0]
-    agg = produced.groupby('gamma')['train_mi'].mean().reset_index()
+    # The mean per gamma uses the rungs the fit used: not those that produced
+    # nothing or did not resolve, and only at the values of gamma the fit kept
+    # (analysis/rigorous.py). Every rung still shows as a point.
+    from neural_mi.analysis.rigorous import rungs_left_out
+    zero, unresolved = rungs_left_out(raw_results_df)
+    used = ~(zero | unresolved) & raw_results_df['gamma'].isin(corrected_result['gammas_used'])
+    agg = raw_results_df[used].groupby('gamma')['train_mi'].mean().reset_index()
 
     # A single label collapses the three elements below to one legend entry
     # (via the proxy artist added after them) instead of three near-duplicate

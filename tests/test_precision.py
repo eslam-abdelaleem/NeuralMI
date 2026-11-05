@@ -1,5 +1,4 @@
 # tests/test_precision.py
-import importlib
 
 import numpy as np
 import pytest
@@ -9,7 +8,7 @@ import pandas as pd
 import neural_mi.analysis.precision as precision_module
 from neural_mi.analysis.precision import run_precision_analysis
 from neural_mi.data.corruption import corrupt
-from neural_mi.data.shift_windowing import WindowShifter, PairedWindowShifter
+from neural_mi.data.shift_windowing import WindowShifter
 from neural_mi.training.trainer import Trainer
 
 
@@ -83,7 +82,7 @@ def test_precision_mode_never_corrupts_unused_spike_slots(monkeypatch):
     nmi.run(x, y, mode='precision',
             processing=nmi.Processing(x='spike', x_params={'window_size': 1.0}, y='spike'),
             model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-            training=nmi.Training(n_epochs=1, batch_size=64, shift_time=False),
+            training=nmi.Training(n_epochs=1, batch_size=64, shift_windows=False),
             precision=nmi.Precision(tau_grid=[0.05, 0.3], corruption_method='noise', n_noise_samples=2),
             show_progress=False, seed=0, device='cpu')
     # The sweep scores the training partition, clean data first; the other calls are
@@ -288,10 +287,10 @@ def test_run_precision_analysis_corruption_sweep_uses_frozen_snapshot_not_live_s
     _captured_tau0 = []
     _real_corrupt = precision_module.corrupt
 
-    def _capture_corruption(data, tau, method, empty_value=0.0):
+    def _capture_corruption(data, tau, method, empty_value=0.0, generator=None):
         if tau == 0.0:
             _captured_tau0.append(data.clone())
-        return _real_corrupt(data, tau, method, empty_value)
+        return _real_corrupt(data, tau, method, empty_value, generator=generator)
     monkeypatch.setattr(precision_module, 'corrupt', _capture_corruption)
 
     base_params = {
@@ -315,31 +314,32 @@ def test_run_precision_analysis_corruption_sweep_uses_frozen_snapshot_not_live_s
     # Independently reconstruct the canonical (shift=0) view from the same
     # raw arrays -- deterministic regardless of what shift the live dataset
     # ended training at.
-    raw_x = torch.as_tensor(x_data)
-    raw_y = torch.as_tensor(y_data)
-    shifter = PairedWindowShifter(raw_x, raw_y, window_size, window_size)
-    x0, y0 = shifter.windows_at(0)
+    from neural_mi.data.plan import RowPlan
+    windows = RowPlan.of_pair(x_data, y_data, base_params).rows()['windows']
+    x0, y0 = windows['x'], windows['y']
 
     torch.testing.assert_close(_captured_tau0[0], x0[train_idx])
     torch.testing.assert_close(_captured_tau0[1], y0[train_idx])
 
 def test_precision_windows_on_the_timestamps_like_every_other_mode(monkeypatch):
     """mode='precision' trains its baseline through the shared training task,
-        which windows on the caller's timestamps as every other mode does: a
-        25 Hz recording with window_size=1.0 gives 80 windows 25 samples wide.
-        The spy stops the run at the build, which is the only part under test.
+        which builds its rows from the pair's plan on the caller's timestamps,
+        as every other mode does: a 25 Hz recording with window_size=1.0 gives
+        80 windows 25 samples wide. The spy stops the run at the build, which is
+        the only part under test.
     """
+    from neural_mi.data.plan import RowPlan
 
     class Built(Exception):
         pass
 
     seen = {}
 
-    def spy(*args, **kwargs):
-        seen.update(kwargs)
+    def spy(self, *args, **kwargs):
+        seen['plan'] = self
         raise Built
 
-    monkeypatch.setattr(importlib.import_module('neural_mi.analysis.task'), 'create_dataset', spy)
+    monkeypatch.setattr(RowPlan, 'build', spy)
 
     t = np.arange(0, 80, 1 / 25.0)
     x = np.sin(2 * np.pi * 0.3 * t)[:, None]
@@ -354,18 +354,11 @@ def test_precision_windows_on_the_timestamps_like_every_other_mode(monkeypatch):
     with pytest.raises(Built):
         precision_module.run_precision_analysis(x, y, base_params, tau_grid=[0.1])
 
-    assert seen.get('x_time') is not None
-    assert seen.get('y_time') is not None
-
-    # And the grid that reaches training is the one the timestamps describe.
-    from neural_mi.data.handler import create_dataset
-    dataset = create_dataset(x, y, x_time=t, y_time=t,
-                             processor_type_x='continuous',
-                             processor_params_x={'window_size': 1.0, 'step_size': 1.0},
-                             processor_type_y='continuous',
-                             processor_params_y={'window_size': 1.0, 'step_size': 1.0})
-    assert dataset.x_data.shape[2] == 25
-    assert len(dataset) == 80
+    plan = seen['plan']
+    assert plan.streams['x'].time is not None and plan.streams['y'].time is not None
+    windows = plan.rows()['windows']
+    assert windows['x'].shape[2] == 25
+    assert len(plan) == 80
 
 
 def test_precision_baseline_trains_with_every_setting_other_modes_honour(monkeypatch):

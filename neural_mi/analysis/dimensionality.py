@@ -16,12 +16,15 @@ judged against. See ``THEORY.md``.
 """
 import math
 import warnings
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 
 from .sweep import ParameterSweep
+from neural_mi.defaults import setting
+from neural_mi.seeds import generator as seed_generator, network_seed
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.utils import _ensure_cpu, mi_report_units
@@ -76,12 +79,12 @@ def _warn_if_near_ceiling(fits: List[Dict[str, Any]], ceiling_mi_fraction: float
 def _n_samples_for_shared_split(x_data, y_data, analysis_params: Dict[str, Any]) -> int:
     """Number of rows the shared train/test split is computed over.
 
-    For windowed data it is ``x_data.shape[0]``. When windowing is deferred
-    (raw 2-D data with ``shift_windows`` on a regular grid) it is the window
-    count, from :func:`~neural_mi.data.shift_windowing.n_windows_if_deferred`.
+    For windowed data it is ``x_data.shape[0]``. When each fit windows raw
+    streams itself it is the count of rows their plan holds
+    (:func:`~neural_mi.data.plan.count_rows`).
     """
-    from neural_mi.data.shift_windowing import n_windows_if_deferred
-    return n_windows_if_deferred(x_data, y_data, analysis_params)
+    from neural_mi.data.plan import count_rows
+    return count_rows(x_data, y_data, analysis_params)
 
 
 def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -89,20 +92,31 @@ def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int)
 
     Every value of ``k`` and every restart is then scored on the same held-out
     rows. Explicit ``train_indices``/``test_indices`` are used as given.
-    Otherwise the split comes from the trainer's own splitting code.
+    Otherwise the split comes from the trainer's own splitting code, drawn from
+    the call's seed (neural_mi/seeds.py).
     """
     existing_train = analysis_params.get('train_indices')
     if existing_train is not None:
         return existing_train, analysis_params.get('test_indices')
 
+    from neural_mi.data.rows import row_geometry
     from neural_mi.training.trainer import Trainer
-    split_mode = analysis_params.get('split_mode', 'blocked')
-    train_fraction = analysis_params.get('train_fraction', 0.9)
+    from neural_mi.utils import warn_if_random_split_leaks
+    split_mode = setting(analysis_params, 'split_mode')
+    train_fraction = setting(analysis_params, 'train_fraction')
+    rows = row_geometry(analysis_params)
+    # The splitting code draws from its caller's generator (trainer._rng_of).
+    drawer = SimpleNamespace(_rng=np.random.RandomState(
+        network_seed(setting(analysis_params, 'random_seed'), 0, 'held-out rows')))
     if split_mode == 'random':
-        return Trainer._create_random_split(None, n_samples, train_fraction)
-    n_test_blocks = analysis_params.get('n_test_blocks', 5)
-    gap_fraction = analysis_params.get('split_gap_fraction', 0.5)
-    return Trainer._create_blocked_split(None, n_samples, train_fraction, n_test_blocks, gap_fraction)
+        if rows is not None and rows.overlapping:
+            warn_if_random_split_leaks(rows)
+        return Trainer._create_random_split(drawer, n_samples, train_fraction)
+    n_test_blocks = setting(analysis_params, 'n_test_blocks')
+    gap_fraction = setting(analysis_params, 'split_gap_fraction')
+    geometry = {'span': rows.span, 'step': rows.step} if rows is not None else {}
+    return Trainer._create_blocked_split(drawer, n_samples, train_fraction, n_test_blocks, gap_fraction,
+                                         **geometry)
 
 
 def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
@@ -119,7 +133,7 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
     def unequal(a, b):
         # Halves of different sizes cannot share one encoder. Turning off a shared
         # encoder the user asked for warns; turning off the mode's default only logs.
-        if params.get('shared_encoder', False) and int(np.prod(a.shape[1:])) != int(np.prod(b.shape[1:])):
+        if setting(params, 'shared_encoder') and int(np.prod(a.shape[1:])) != int(np.prod(b.shape[1:])):
             text = (f"split_method='{split_method}' produced unequal halves "
                     f"(X: {tuple(a.shape[1:])}, Y: {tuple(b.shape[1:])}). shared_encoder=True needs "
                     f"equal halves and is turned off for this run.")
@@ -146,8 +160,9 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
             )
         half = n_channels // 2
         out = []
-        for _ in range(n_splits if split_method == 'random' else 1):
-            order = np.random.permutation(n_channels) if split_method == 'random' else np.arange(n_channels)
+        for split in range(n_splits if split_method == 'random' else 1):
+            order = (seed_generator(setting(params, 'random_seed'), 0, f"channels{split}").permutation(n_channels)
+                     if split_method == 'random' else np.arange(n_channels))
             x_a, x_b = x_data[:, order[:half], ...], x_data[:, order[half:], ...]
             out.append((x_a, x_b, unequal(x_a, x_b)))
         return out
@@ -196,7 +211,7 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
     elif split_method == 'col_interleaved':
         x_a, x_b = x_data[:, :, :, 0::2], x_data[:, :, :, 1::2]
     else:  # diagonal or antidiagonal: triangular pixel masks
-        embedding_model = params.get('embedding_model', 'mlp')
+        embedding_model = setting(params, 'embedding_model')
         if embedding_model in ('cnn2d', 'cnn'):
             raise ValueError(
                 f"split_method='{split_method}' produces irregularly-shaped triangular "
@@ -259,11 +274,11 @@ def _fit(views: List[Tuple[int, Any, Any, Dict[str, Any]]], ks: Sequence[int], n
                                base_params=with_model_labels(params, split_id=split_id))
         runner = runner or sweep
         grid = {'embedding_dim': list(ks), 'run_id': list(range(n_restarts))}
-        for task_x, task_y, task_params, task_id in sweep._prepare_tasks(grid, is_proc_sweep=False):
-            task_params = dict(task_params, split_id=split_id)
-            # A seed of its own for every split, k and restart.
-            task_params['_seed_key'] = (f"s{split_id}k{task_params['embedding_dim']}"
-                                        f"r{task_params['run_id']}")
+        for task_x, task_y, task_params, task_id in sweep._prepare_tasks(grid, windows_in_task=False):
+            # A restart is a repeat (its run_id), and each split and k is a role
+            # of its own, so every fit draws independently (neural_mi/seeds.py).
+            task_params = dict(task_params, split_id=split_id,
+                               _role=f"split{split_id}dim{task_params['embedding_dim']}")
             tasks.append((task_x, task_y, task_params, task_id))
     return runner._run_parallel(tasks, n_workers) if tasks else []
 
@@ -339,6 +354,30 @@ def _run_grid(views, grid: List[int], n_restarts: int, n_workers: int, ratio: fl
 # The analysis
 # ---------------------------------------------------------------------------
 
+def mode_defaults(params: Dict[str, Any], user_set: set, has_y: bool) -> Dict[str, Any]:
+    """The settings mode='dimensionality' sets itself where the caller left them unset, declared once
+    (analysis/modes.py, MODES) and applied wherever a configuration's settings are resolved: by run() for
+    the call and here for each point of a grid, whose keys count as set."""
+    out = {}
+    if 'critic_type' not in user_set:
+        out['critic_type'] = 'hybrid'
+    if out.get('critic_type', params.get('critic_type')) == 'hybrid' and setting(params, 'norm_layer') == 'auto':
+        # Layer norm stops the fits at k = d from stalling. It also divides out
+        # each sample's scale. The reading is taken against a plateau measured
+        # the same way.
+        out['norm_layer'] = 'layer'
+    if 'n_epochs' not in user_set:
+        out['n_epochs'] = 500
+    if 'patience' not in user_set:
+        out['patience'] = 50
+    if 'shared_encoder' not in user_set:
+        # Two halves of one recording can share an encoder; X and Y need not.
+        out['shared_encoder'] = not has_y
+    if 'whitening' not in params:
+        out['whitening'] = 'std'
+    return out
+
+
 def run_dimensionality_analysis(
     x_data: torch.Tensor,
     base_params: Dict[str, Any],
@@ -407,36 +446,16 @@ def run_dimensionality_analysis(
     user_set = set(user_set_keys) if user_set_keys is not None else set(base_params)
 
     # The hybrid critic is this mode's default. A separable critic works with a
-    # warning; a concat critic has no embedding of either side.
-    critic_type = params.get('critic_type') if 'critic_type' in user_set else None
-    if critic_type == 'concat':
-        raise ValueError(
-            "mode='dimensionality' cannot use critic_type='concat'. A concat critic embeds X "
-            "and Y jointly and has no embedding of either side for the curve to vary. Use the "
-            "default 'hybrid' or 'separable'."
-        )
-    if critic_type == 'separable':
+    # warning. run() refuses a critic without an embedding of each side before
+    # any work (MODES['dimensionality'].reads_embeddings).
+    if 'critic_type' in user_set and params.get('critic_type') == 'separable':
         warnings.warn(
             "mode='dimensionality' with critic_type='separable' overstates the dimension. A "
             "dot-product critic needs more embedding dimensions than the shared structure has. "
             "This mode defaults to 'hybrid'.",
             UserWarning, stacklevel=user_stacklevel(),
         )
-    else:
-        params['critic_type'] = 'hybrid'
-    if params['critic_type'] == 'hybrid' and params.get('norm_layer', 'auto') == 'auto':
-        # Layer norm stops the fits at k = d from stalling. It also divides out
-        # each sample's scale. The reading is taken against a plateau measured
-        # the same way.
-        params['norm_layer'] = 'layer'
-    if 'n_epochs' not in user_set:
-        params['n_epochs'] = 500
-    if 'patience' not in user_set:
-        params['patience'] = 50
-    if 'shared_encoder' not in user_set:
-        # Two halves of one recording can share an encoder; X and Y need not.
-        params['shared_encoder'] = y_data is None
-    params.setdefault('whitening', 'std')
+    params.update(mode_defaults(params, user_set, y_data is not None))
 
     if y_data is not None and n_splits is not None:
         raise ValueError(

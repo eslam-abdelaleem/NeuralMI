@@ -233,6 +233,14 @@ class TestRigorousScalarAnalysis:
 class TestDecoderModels:
     """Test that all decoder classes produce the correct output shape."""
 
+    @staticmethod
+    def _settings(**given):
+        """The settings build_decoder requires, at their schema defaults unless given."""
+        from neural_mi.defaults import default_of
+        return {'n_layers': default_of('n_layers'), 'kernel_size': default_of('kernel_size'),
+                'nhead': default_of('nhead'), 'dropout': default_of('dropout'),
+                'output_activation': default_of('decoder_output_activation_x'), **given}
+
     @pytest.mark.parametrize("model_name,kwargs", [
         ('mlp', {}),
         ('cnn1d', {'kernel_size': 7}),
@@ -256,8 +264,7 @@ class TestDecoderModels:
             hidden_dim=hidden_dim,
             n_channels=n_channels,
             window_size=window_size,
-            n_layers=n_layers,
-            **kwargs,
+            **self._settings(n_layers=n_layers, **kwargs),
         )
         dec.eval()
         with torch.no_grad():
@@ -273,7 +280,7 @@ class TestDecoderModels:
         dec = build_decoder(
             embedding_model='mlp',
             embedding_dim=16, hidden_dim=32, n_channels=3, window_size=10,
-            output_activation=activation,
+            **self._settings(output_activation=activation),
         )
         dec.eval()
         z = torch.randn(4, 16)
@@ -288,7 +295,7 @@ class TestDecoderModels:
     def test_unknown_activation_raises(self):
         from neural_mi.models.decoders import build_decoder
         with pytest.raises(ValueError, match="Unknown output_activation"):
-            build_decoder('mlp', 16, 32, 3, 10, output_activation='relu')
+            build_decoder('mlp', 16, 32, 3, 10, **self._settings(output_activation='relu'))
 
 
 class TestDecoderInTraining:
@@ -355,54 +362,43 @@ class TestGetTrainingEmbeddings:
 # shift_windows reachability: chunk-to-raw-range translation
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestChunkWindowRangeToRaw:
-    """chunk_window_range_to_raw must translate a [lo, hi) window-index
-    chunk into a raw sample range that reproduces exactly those windows --
-    the actual correctness property rigorous's bias-correction ladder
-    depends on (gamma=2's two chunks must together equal gamma=1's chunk,
-    now expressed in raw ranges instead of window indices)."""
+class TestAChunkIsThePlanOfItsRows:
+    """A chunk of a rigorous ladder is the plan of a stretch of its rows
+    (RowPlan.cut): the same rows at offset 0, and as many at every shift."""
 
-    def test_chunk_matches_global_windowing_at_shift_zero(self):
-        from neural_mi.data.shift_windowing import (
-            chunk_window_range_to_raw, safe_n_windows, PairedWindowShifter,
-        )
-        torch.manual_seed(0)
-        T, C, window_size, step_size = 3000, 2, 20, 20
-        raw_x = torch.randn(T, C)
-        raw_y = torch.randn(T, C)
-        N = safe_n_windows(T, window_size, step_size)
+    @staticmethod
+    def _plans(shift):
+        from collections import OrderedDict
+        from neural_mi.data.plan import RowPlan, resolve_stream
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((2000, 2)).astype('float32')
+        regular = RowPlan(OrderedDict(x=resolve_stream(x, None, 'continuous', {'window_size': 20,
+                                                                               'step_size': 0.5}),
+                                      y=resolve_stream(x[:, ::-1].copy(), None, 'continuous', {})),
+                          shift=shift)
+        spikes = [np.sort(rng.uniform(0, 60, 300)) for _ in range(3)]
+        spiking = RowPlan(OrderedDict(x=resolve_stream(spikes, None, 'spike', {'window_size': 0.5}),
+                                      y=resolve_stream([s + 0.01 for s in spikes], None, 'spike', {})),
+                          shift=shift)
+        return regular, spiking
 
-        global_shifter = PairedWindowShifter(raw_x, raw_y, window_size, step_size)
-        gx0, gy0 = global_shifter.windows_at(0)
-
-        for lo, hi in [(0, N // 2), (N // 2, N), (0, N)]:
-            rx0, rx1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
-            ry0, ry1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
-            chunk_shifter = PairedWindowShifter(raw_x[rx0:rx1], raw_y[ry0:ry1], window_size, step_size)
-            assert chunk_shifter.n_windows == hi - lo, (
-                f"chunk [{lo},{hi}) should produce exactly {hi - lo} windows, "
-                f"got {chunk_shifter.n_windows}"
-            )
-            cx0, cy0 = chunk_shifter.windows_at(0)
-            torch.testing.assert_close(cx0, gx0[lo:hi])
-            torch.testing.assert_close(cy0, gy0[lo:hi])
-
-    def test_chunk_survives_any_shift_not_just_zero(self):
-        """The whole point of the margin in chunk_window_range_to_raw: the
-        chunk must still yield exactly hi-lo windows at the worst-case
-        shift (window_size - 1), not just at shift=0."""
-        from neural_mi.data.shift_windowing import chunk_window_range_to_raw, PairedWindowShifter
-        torch.manual_seed(0)
-        T, C, window_size, step_size = 3000, 2, 20, 20
-        raw_x = torch.randn(T, C)
-        raw_y = torch.randn(T, C)
-        lo, hi = 3, 10
-        rx0, rx1 = chunk_window_range_to_raw(lo, hi, window_size, step_size)
-        chunk_shifter = PairedWindowShifter(raw_x[rx0:rx1], raw_y[rx0:rx1], window_size, step_size)
-        assert chunk_shifter.n_windows == hi - lo
-        cx_max, cy_max = chunk_shifter.windows_at(window_size - 1)
-        assert cx_max.shape[0] == hi - lo
-        assert cy_max.shape[0] == hi - lo
+    @pytest.mark.parametrize('route', [0, 1], ids=['by_samples', 'in_time'])
+    @pytest.mark.parametrize('shift', [False, True])
+    def test_a_chunk_reads_its_rows(self, route, shift):
+        plan = self._plans(shift)[route]
+        lo, hi = 7, 31
+        chunk = plan.cut(np.arange(lo, hi))
+        assert len(chunk) == hi - lo
+        whole, part = plan.rows()['windows'], chunk.rows()['windows']
+        for name in whole:
+            a, b = whole[name][lo:hi], part[name]
+            width = min(a.shape[-1], b.shape[-1])
+            assert torch.allclose(a[..., :width], b[..., :width]), name
+        if shift:
+            shifter = chunk.rows()['shifter']
+            for _ in range(5):
+                windows = shifter.windows_at(shifter.random_shift())
+                assert all(w.shape[0] == hi - lo for w in windows.values())
 
 
 class TestRigorousShiftWindowsEndToEnd:
@@ -438,131 +434,12 @@ class TestRigorousShiftWindowsEndToEnd:
         assert np.all(np.isfinite(ladder['train_mi'].values))
 
 
-def _spike_window_content(tensor: torch.Tensor, no_spike_value: float):
-    """[n_windows, n_channels, max_spikes] -> per-window/per-channel sorted
-    lists of the *real* (non-padding) within-window spike offsets.
+class TestRigorousShiftingSpikesEndToEnd:
+    """A real (un-mocked) run confirming that rigorous's chunks of a spike
+    plan that shifts dispatch the expected number of tasks and produce finite
+    results."""
 
-    Two SpikeWindowDataset constructions covering the same windows can
-    legitimately allocate different ``max_samples_per_window`` (it's the max
-    spike count observed over each construction's *own* windows, generally
-    smaller for a smaller chunk) -- comparing padded tensors directly would
-    spuriously fail on shape alone. This strips the ``no_spike_value``
-    padding first so only the actual spike content is compared.
-
-    ``no_spike_value`` is required rather than defaulted: it must come from the
-    dataset under test, since what this compares is window content, not which
-    value marks an empty slot.
-    """
-    arr = tensor.numpy()
-    return [
-        [sorted(arr[w, c][arr[w, c] != no_spike_value].tolist()) for c in range(arr.shape[1])]
-        for w in range(arr.shape[0])
-    ]
-
-
-class TestChunkToRawTimeRangeSpike:
-    """Spike analogue of TestChunkWindowRangeToRaw: chunk_window_range_to_time
-    (paired with an explicit t_start=0/t_end=chunk_span on the chunk's own
-    PairedTemporalDataset, so its base span matches the assumed one instead
-    of a shorter, data-dependent extent) must translate a [lo, hi)
-    window-index chunk into a raw time range that reproduces exactly those
-    windows -- the property mode='rigorous' + spike's bias-correction ladder
-    depends on."""
-
-    def test_chunk_matches_global_windowing_at_shift_zero(self):
-        from neural_mi.data.shift_windowing import (
-            spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
-        )
-        from neural_mi.data.temporal import SpikeWindowDataset
-        from neural_mi.data.handler import PairedTemporalDataset
-
-        rng = np.random.default_rng(0)
-        x_data = [np.sort(rng.random(800) * 200.0)]
-        y_data = [np.sort(rng.random(700) * 200.0)]
-        window_size, step_size = 5.0, 5.0
-        params = {'processor_params_x': {'window_size': window_size, 'step_size': step_size}}
-
-        N, base_t_start, ws, ss = spike_shift_grid_info(x_data, y_data, params)
-        assert N > 4
-
-        global_x_ds = SpikeWindowDataset(x_data)
-        global_y_ds = SpikeWindowDataset(y_data)
-        global_paired = PairedTemporalDataset(global_x_ds, global_y_ds, window_size=ws, step_size=ss)
-        global_paired.time_shift(offset_x=0.0, offset_y=0.0)
-        global_x = global_paired.x_data.detach().clone()
-        assert len(global_paired) == N
-
-        for lo, hi in [(0, N // 2), (N // 2, N), (0, N)]:
-            t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, ws, ss)
-            chunk_span = t1_rel - t0_rel
-            t0_abs, t1_abs = base_t_start + t0_rel, base_t_start + t1_rel
-            x_chunk = slice_spike_data_to_time_range(x_data, t0_abs, t1_abs)
-            y_chunk = slice_spike_data_to_time_range(y_data, t0_abs, t1_abs)
-
-            chunk_x_ds = SpikeWindowDataset(x_chunk)
-            chunk_y_ds = SpikeWindowDataset(y_chunk)
-            chunk_paired = PairedTemporalDataset(chunk_x_ds, chunk_y_ds, window_size=ws, step_size=ss,
-                                                 t_start=0.0, t_end=chunk_span)
-            chunk_paired.time_shift(offset_x=0.0, offset_y=0.0)
-
-            assert len(chunk_paired) == hi - lo, (
-                f"chunk [{lo},{hi}) should produce exactly {hi - lo} windows, "
-                f"got {len(chunk_paired)}"
-            )
-            chunk_content = _spike_window_content(chunk_paired.x_data.detach(),
-                                                  chunk_x_ds.no_spike_value)
-            global_content = _spike_window_content(global_x[lo:hi],
-                                                   global_x_ds.no_spike_value)
-            for w, (c_win, g_win) in enumerate(zip(chunk_content, global_content)):
-                for c, (c_ch, g_ch) in enumerate(zip(c_win, g_win)):
-                    assert c_ch == pytest.approx(g_ch, abs=1e-4), (
-                        f"window {w} (global index {lo + w}), channel {c}: chunk spikes "
-                        f"{c_ch} != global spikes {g_ch}"
-                    )
-
-    def test_chunk_survives_any_shift_not_just_zero(self):
-        """The whole point of the margin: the chunk must still yield exactly
-        hi-lo windows at the worst-case shift (just under window_size), not
-        just at shift=0."""
-        from neural_mi.data.shift_windowing import (
-            spike_shift_grid_info, slice_spike_data_to_time_range, chunk_window_range_to_time,
-        )
-        from neural_mi.data.temporal import SpikeWindowDataset
-        from neural_mi.data.handler import PairedTemporalDataset
-
-        rng = np.random.default_rng(1)
-        x_data = [np.sort(rng.random(900) * 250.0)]
-        y_data = [np.sort(rng.random(800) * 250.0)]
-        window_size, step_size = 5.0, 5.0
-        params = {'processor_params_x': {'window_size': window_size, 'step_size': step_size}}
-        N, base_t_start, ws, ss = spike_shift_grid_info(x_data, y_data, params)
-
-        lo, hi = 2, 6
-        t0_rel, t1_rel = chunk_window_range_to_time(lo, hi, ws, ss)
-        chunk_span = t1_rel - t0_rel
-        t0_abs, t1_abs = base_t_start + t0_rel, base_t_start + t1_rel
-        x_chunk = slice_spike_data_to_time_range(x_data, t0_abs, t1_abs)
-        y_chunk = slice_spike_data_to_time_range(y_data, t0_abs, t1_abs)
-
-        chunk_x_ds = SpikeWindowDataset(x_chunk)
-        chunk_y_ds = SpikeWindowDataset(y_chunk)
-        chunk_paired = PairedTemporalDataset(chunk_x_ds, chunk_y_ds, window_size=ws, step_size=ss,
-                                             t_start=0.0, t_end=chunk_span)
-        chunk_paired.time_shift(offset_x=0.0, offset_y=0.0)
-        assert len(chunk_paired) == hi - lo
-
-        chunk_paired.time_shift(offset_x=ws - 1e-6, offset_y=ws - 1e-6)
-        assert len(chunk_paired) == hi - lo
-
-
-class TestRigorousShiftTimeSpikeEndToEnd:
-    """A real (un-mocked) run confirming rigorous's spike shift_time path
-    dispatches the expected number of tasks and produces finite results --
-    if the chunk-to-raw-time-range translation were wrong, this would either
-    crash or silently create wrong-sized chunks (caught by the task-count
-    check already built into AnalysisWorkflow.run)."""
-
-    def test_rigorous_shift_time_spike_no_crash_and_expected_task_count(self):
+    def test_rigorous_shifting_spikes_no_crash_and_expected_task_count(self):
         import neural_mi as nmi
         from neural_mi import Training, Rigorous
 
@@ -576,7 +453,7 @@ class TestRigorousShiftTimeSpikeEndToEnd:
                 x_spikes, y_spikes, mode='rigorous',
                 processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}),
                 model=nmi.Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-                training=Training(n_epochs=1, batch_size=16, shift_time=True,
+                training=Training(n_epochs=1, batch_size=16, shift_windows=True,
                                   min_reliable_samples=1),
                 rigorous=Rigorous(gamma_range=range(1, 4)),
                 n_workers=1, show_progress=False, seed=0,
@@ -623,44 +500,149 @@ def test_a_chunk_keeps_its_combination_warnings_to_itself():
 
 
 def test_a_fractional_step_cuts_each_chunk_with_the_step_the_windows_use():
-    """The window count applies the step convention, so the chunk-to-raw
-    translation must too: step_size=0.5 is half a 20-sample window."""
-    import neural_mi as nmi
-    from unittest.mock import patch
-    from neural_mi.analysis import rigorous
+    """The step convention reaches the chunks: step_size=0.5 is half a 20-sample window, so each chunk's
+    rows start 10 samples apart, as the whole plan's do."""
+    from collections import OrderedDict
+    from neural_mi.data.plan import RowPlan, resolve_stream
     rng = np.random.default_rng(0)
     x = rng.standard_normal((2000, 2)).astype(np.float32)
-    y = (x + 0.5 * rng.standard_normal((2000, 2))).astype(np.float32)
-    steps = []
-    real = rigorous.chunk_window_range_to_raw
-
-    def spy(lo, hi, window_size, step_size):
-        steps.append(step_size)
-        return real(lo, hi, window_size, step_size)
-
-    with patch.object(rigorous, 'chunk_window_range_to_raw', side_effect=spy):
-        nmi.run(x, y, mode='rigorous', rigorous=nmi.Rigorous(gamma_range=range(1, 3)),
-                processing=nmi.Processing(x='continuous', x_params={'window_size': 20, 'step_size': 0.5},
-                                          y='continuous', y_params={'window_size': 20, 'step_size': 0.5}),
-                model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-                training=nmi.Training(n_epochs=1, batch_size=32), show_progress=False)
-    assert steps and set(steps) == {10}
+    plan = RowPlan(OrderedDict(x=resolve_stream(x, None, 'continuous', {'window_size': 20, 'step_size': 0.5}),
+                               y=resolve_stream(x.copy(), None, 'continuous', {})), shift=True)
+    chunk = plan.cut(np.arange(3, 40))
+    assert chunk.step == 10 and len(chunk) == 37
+    assert np.allclose(np.diff(plan.rows()['times'][3:40]), 10.0)
 
 
 def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma():
-    """A rung at 0 produced nothing. The fit leaves it out and says how many per gamma,
-    and warns again where half or more of a gamma's rungs produced nothing."""
-    from neural_mi.analysis.rigorous import _drop_zero_rungs
-    ladder = _make_df([1, 2, 2, 3, 3, 3], [0.5, 0.4, 0.0, 0.3, 0.0, 0.0])
+    """A rung at 0 produced nothing. The fit leaves it out and says how many per gamma. A gamma
+    that loses half or more of its rungs drops out with the rest of them, which would be the
+    networks that happened to learn."""
+    from neural_mi.analysis.rigorous import _drop_rungs
+    ladder = _make_df([1, 2, 2, 3, 3, 3, 3], [0.5, 0.4, 0.0, 0.3, 0.0, 0.35, 0.32])
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        kept, n = _drop_zero_rungs(ladder, "Rigorous fit: ")
-    assert n == 3 and list(kept['train_mi']) == [0.5, 0.4, 0.3]
+        kept, n, n_unresolved = _drop_rungs(ladder, "Rigorous fit: ")
+    assert n == 2 and n_unresolved == 0 and list(kept['train_mi']) == [0.5, 0.3, 0.35, 0.32]
     messages = [str(w.message) for w in caught]
-    assert any(m.startswith("Rigorous fit: 3 of 6 rungs") and "gamma 2: 1 of 2, gamma 3: 2 of 3" in m
+    assert any(m.startswith("Rigorous fit: 2 of 7 rungs") and "gamma 2: 1 of 2, gamma 3: 1 of 4" in m
                for m in messages)
-    assert any("half or more of the rungs produced nothing at gamma=[2, 3]" in m for m in messages)
+    assert any("half or more of the rungs at gamma=[2] are left out, and so are those values of gamma"
+               in m for m in messages)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        kept, n = _drop_zero_rungs(_make_df([1, 2], [0.5, 0.4]), "")
-    assert n == 0 and len(kept) == 2 and not caught
+        kept, n, n_unresolved = _drop_rungs(_make_df([1, 2], [0.5, 0.4]), "")
+    assert n == 0 and n_unresolved == 0 and len(kept) == 2 and not caught
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rungs that did not resolve
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_rungs_that_did_not_resolve_are_left_out_and_counted_apart_from_zero_rungs():
+    """A rung whose held-out curve does not rise above its noise says nothing about the dependence. The fit
+    leaves it out, names it per gamma and counts it in unresolved_rungs. A rung at 0 counts as a zero rung,
+    although its curve did not resolve either."""
+    from neural_mi.analysis.rigorous import _drop_rungs
+    ladder = pd.DataFrame({'gamma': [1, 2, 2, 3, 3, 3, 3, 3],
+                           'train_mi': [0.5, 0.4, 0.45, 0.3, 0.9, 0.35, 0.0, 0.32],
+                           'curve_diagnosis': ['ok', 'ok', 'not resolved', 'ok', 'not resolved',
+                                               'fuzzy start', 'not resolved', 'ok']})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        kept, n_zero, n_unresolved = _drop_rungs(ladder, "Rigorous fit: ")
+    assert (n_zero, n_unresolved) == (1, 2)
+    # gamma 2 lost one of its two rungs, so its resolved one goes with it.
+    assert list(kept['train_mi']) == [0.5, 0.3, 0.35, 0.32]
+    messages = [str(w.message) for w in caught]
+    assert any(m.startswith("Rigorous fit: 2 of 8 rungs of the gamma ladder did not resolve")
+               and "gamma 2: 1 of 2, gamma 3: 1 of 5" in m for m in messages)
+    assert any("half or more of the rungs at gamma=[2] are left out" in m for m in messages)
+
+
+def _fit(ladder, **kwargs):
+    from neural_mi.analysis.rigorous import _post_process_and_correct
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        fit = _post_process_and_correct(ladder, sweep_grid={}, curvature_t_threshold=2.0,
+                                        min_gamma_points=kwargs.get('min_gamma_points', 5),
+                                        confidence_level=0.68)[0]
+    return fit, [str(w.message) for w in caught]
+
+
+def test_a_ladder_with_no_rung_left_reports_nan_unless_every_rung_produced_nothing():
+    """When every rung produced nothing, no network learned anything at any chunk size, and the fit reports
+    an unreliable 0. Once rungs that did not resolve are out as well, nothing says the dependence is 0, so
+    the fit reports NaN."""
+    nothing = pd.DataFrame({'gamma': [1, 2, 2], 'train_mi': [0.0, 0.0, 0.0],
+                            'curve_diagnosis': ['not resolved'] * 3})
+    fit, messages = _fit(nothing, min_gamma_points=2)
+    assert fit['mi_corrected'] == 0.0 and fit['is_reliable'] is False
+    assert (fit['zero_rungs'], fit['unresolved_rungs']) == (3, 0)
+    assert any("every rung of the gamma ladder produced nothing" in m for m in messages)
+    unresolved = nothing.assign(train_mi=[0.0, 0.3, 0.2])
+    fit, messages = _fit(unresolved, min_gamma_points=2)
+    assert np.isnan(fit['mi_corrected']) and fit['is_reliable'] is False
+    assert (fit['zero_rungs'], fit['unresolved_rungs']) == (1, 2)
+    assert any("no value of gamma is left" in m for m in messages)
+
+
+def test_a_ladder_whose_deep_rungs_did_not_resolve_is_not_reliable():
+    """The case that made the fit leave unresolved rungs out, after tutorial 02 at its starved size. Only the shallow rungs resolve and every rung
+    reads noise about one level. A line through all of them passed every check of the fit, since noise
+    hides curvature, and the fit was reliable. Without the rungs that did not resolve, too few values of
+    gamma are left."""
+    rng = np.random.default_rng(0)
+    rows = [{'gamma': g, 'chunk': c, 'train_mi': 2.5 + rng.normal(0, 0.5),
+             'curve_diagnosis': 'ok' if g <= 3 else 'not resolved'}
+            for g in range(1, 11) for c in range(g)]
+    ladder = pd.DataFrame(rows)
+    blind, _ = _fit(ladder.assign(curve_diagnosis='ok'))
+    assert blind['is_reliable'] is True
+    fit, messages = _fit(ladder)
+    assert fit['is_reliable'] is False and fit['enough_gamma_points'] is False
+    assert fit['unresolved_rungs'] == 55 - 6 and sorted(fit['gammas_used']) == [1, 2, 3]
+    assert any("49 of 55 rungs of the gamma ladder did not resolve" in m for m in messages)
+
+
+def test_a_rung_of_a_difference_resolves_with_its_joint_term():
+    """The joint term holds every variable the others hold. On a chunk too small for it the difference says
+    nothing, and the rung is 'not resolved'. A smaller term reads nothing when it is zero (W independent of
+    Y), so its own curve does not decide."""
+    from neural_mi.analysis.sweep import rung
+    terms = (('mi_xw_y', 1), ('mi_w_y', -1))
+
+    def raw(joint, marginal):
+        return {'mi_xw_y': 0.9, 'mi_w_y': 0.1,
+                'raw_xw_y': [{'curve_diagnosis': joint}], 'raw_w_y': [{'curve_diagnosis': marginal}]}
+
+    resolved = rung(raw('ok', 'not resolved'), terms, joint='raw_xw_y')
+    assert resolved['train_mi'] == pytest.approx(0.8) and resolved['curve_diagnosis'] == 'ok'
+    assert 'model_path' not in resolved
+    assert rung(raw('not resolved', 'ok'), terms, joint='raw_xw_y')['curve_diagnosis'] == 'not resolved'
+    saved = raw('ok', 'ok')
+    saved['raw_xw_y'][0]['model_path'] = 'joint.pt'
+    assert rung(saved, terms, joint='raw_xw_y')['model_path'] == ('joint.pt',)
+
+
+def test_the_scalar_ladder_leaves_out_chunks_whose_joint_term_did_not_resolve():
+    """The scalar path reads the rung a difference's function returns. A chunk whose joint term did not
+    resolve is left out of the fit and counted, and raw_results_df keeps it with its diagnosis."""
+    from neural_mi.analysis.rigorous import run_rigorous_scalar_analysis
+    rng = np.random.default_rng(0)
+
+    def scalar(x_s, y_s, bp):
+        n = x_s.shape[0]
+        return {'train_mi': 1.0 - 20.0 / n + rng.normal(0, 0.005),
+                'curve_diagnosis': 'ok' if n >= 100 else 'not resolved'}
+
+    x, y = torch.randn(600, 2, 1), torch.randn(600, 2, 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        fit = run_rigorous_scalar_analysis(scalar, x, y, base_params={}, gamma_range=range(1, 9),
+                                           min_gamma_points=3)
+    assert fit['unresolved_rungs'] == 7 + 8 and fit['zero_rungs'] == 0
+    assert max(fit['gammas_used']) <= 6
+    assert fit['mi_corrected'] == pytest.approx(1.0, abs=0.05)
+    ladder = fit['raw_results_df']
+    assert len(ladder) == sum(range(1, 9))
+    assert (ladder['curve_diagnosis'] == 'not resolved').sum() == 15

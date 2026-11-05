@@ -7,95 +7,38 @@ joint past with X, over Y's past alone:
     TE(X→Y) = I(y_future ; x_past | y_past)
              = I(x_past, y_past ; y_future) - I(y_past ; y_future)
 
-Both component MI values are estimated with ``ParameterSweep``.
-The past/future arrays are built internally from the raw time series using
-sliding windows controlled by ``history_window`` and ``prediction_horizon``.
+Both component MI values are estimated with ``ParameterSweep``. The past and
+future arrays come from the raw series through the one builder of rows by
+offset (:func:`neural_mi.analysis.offsets.build_rows`), with the offsets of
+:func:`te_spec`, set by ``history_window`` and ``prediction_horizon``.
 """
 import torch
 from typing import Dict, Any, Optional
 
+from neural_mi.defaults import default_of
 from neural_mi.analysis.sweep import (combined_spread, rung, _joint_marginal_difference,
                                       amplification_factor)
+from neural_mi.analysis.offsets import build_rows, spec_geometry
+from neural_mi.data.rows import PHASES_KEY, kept_rows, record_rows
 from neural_mi.logger import logger
 from neural_mi.utils import validate_stride
 
 
-def _build_te_arrays(
-    x_data: torch.Tensor,
-    y_data: torch.Tensor,
-    history_window: int,
-    prediction_horizon: int = 1,
-    stride: int = 1,
-) -> tuple:
-    """Build (x_past, y_past, y_future) sliding-window arrays.
+def te_spec(history_window: int, prediction_horizon: int = 1, *, source: str = 'x',
+            target: str = 'y', conditioned_on_w: bool = False) -> Dict[str, Any]:
+    """The offsets of transfer entropy from ``source`` to ``target``, as a spec for
+    :func:`neural_mi.analysis.offsets.build_rows`.
 
-    Parameters
-    ----------
-    x_data : torch.Tensor
-        Shape ``(T, n_channels_x)``: raw time series for X.
-    y_data : torch.Tensor
-        Shape ``(T, n_channels_y)``: raw time series for Y.
-    history_window : int
-        Number of past time steps to include in each past window.
-    prediction_horizon : int, optional
-        How many steps ahead to predict. Defaults to 1.
-    stride : int, optional
-        Distance in samples between consecutive rows. Defaults to 1, keeping every valid starting position so that consecutive rows share
-        ``history_window - 1`` of their samples. A larger stride thins the rows
-        without changing which quantity is measured.
-
-    Returns
-    -------
-    tuple of (x_past, y_past, y_future), each a torch.Tensor of shape
-    ``(n_valid, n_channels, history_window)`` or
-    ``(n_valid, n_channels, prediction_horizon)``.
+    A is the source's ``history_window`` steps, the rest of the joint term's X.
+    B is the target's next ``prediction_horizon`` steps. C is the conditioning
+    past, the target's ``history_window`` steps (and W's when
+    ``conditioned_on_w``): the marginal term's X, and beside A the joint term's
+    pair.
     """
-    # Accept numpy arrays and convert to tensors
-
-    stride = validate_stride(stride, 'transfer entropy')
-    from neural_mi.analysis.offsets import as_rows, slice_lags
-    x_rows, y_rows = as_rows(x_data), as_rows(y_data)
-    T = x_rows.shape[0]
-    # n_positions: the number of valid starting positions i such that
-    #   history window [i, i+H) and future [i+H, i+H+h) both fit within [0, T).
-    # Largest valid i = T - H - h  →  count = T - H - h + 1.
-    n_positions = T - history_window - prediction_horizon + 1
-    if n_positions <= 0:
-        raise ValueError(
-            f"Not enough time points to build transfer entropy arrays. "
-            f"Need > history_window + prediction_horizon = "
-            f"{history_window + prediction_horizon}, got T={T}."
-        )
-    # Only every stride-th position is kept, so the row count is how many of
-    # those steps fit inside n_positions.
-    n_valid = (n_positions - 1) // stride + 1
-
-    # Build sliding windows via unfold (a view, not a copy) instead of a
-    # Python list comprehension + torch.stack, which would materialize three
-    # large intermediate window arrays. unfold(0, size, 1) on a (T, C) tensor
-    # already produces the (n_windows, C, size) layout directly, so no permute
-    # is needed either.
-    # All three slice at the same stride from the same reference positions, so
-    # row i of each refers to the same time point. Truncating all three to
-    # n_valid keeps that true when the strided tail lands unevenly.
-    x_past = slice_lags(x_rows, history_window, stride, n_valid)
-    y_past = slice_lags(y_rows, history_window, stride, n_valid)
-    y_future = slice_lags(y_rows[history_window:], prediction_horizon, stride, n_valid)
-
-    return x_past, y_past, y_future
-
-
-def _build_w_past(w_data: torch.Tensor, history_window: int, n_valid: int,
-                  stride: int = 1) -> torch.Tensor:
-    """Build W_past, matching X_past/Y_past's construction exactly.
-
-    Same ``history_window``, same ``stride``, truncated to the same ``n_valid``
-    count, so it aligns sample-for-sample with the other arrays. The stride has
-    to be passed in instead of inferred, since ``n_valid`` alone does not fix
-    which positions were kept once the rows can be thinned.
-    """
-    from neural_mi.analysis.offsets import as_rows, slice_lags
-    return slice_lags(as_rows(w_data), history_window, stride, n_valid)
+    past = range(-history_window, 0)
+    return {'A': [(source, s) for s in past],
+            'B': [(target, s) for s in range(prediction_horizon)],
+            'C': [(target, s) for s in past] + ([('w', s) for s in past] if conditioned_on_w else [])}
 
 
 def run_transfer_entropy(
@@ -106,7 +49,7 @@ def run_transfer_entropy(
     prediction_horizon: int = 1,
     sweep_grid: Optional[Dict[str, Any]] = None,
     n_workers: int = 1,
-    bidirectional: bool = False,
+    bidirectional: bool = default_of('bidirectional'),
     w_data: Optional[torch.Tensor] = None,
     stride: int = 1,
 ) -> Dict[str, Any]:
@@ -201,38 +144,31 @@ def run_transfer_entropy(
         f"Transfer Entropy: building windows "
         f"(history_window={history_window}, prediction_horizon={prediction_horizon})..."
     )
-    # _build_te_arrays windows via unfold(0, history_window, stride), bypassing
-    # WindowManager entirely, so the blocked-split leakage check (same mechanism
-    # as the WindowManager path; see run.py/trainer.py) needs its window geometry
-    # passed explicitly here instead. The step has to be the real stride: at
-    # stride 1 a gap of one window index buys one sample of separation, so the
-    # check would otherwise wave through a split that shares almost a whole
-    # window. Set once and reused by every _joint_marginal_difference call below
-    # (joint/marginal, both directions if bidirectional), since neither
-    # history_window nor the stride changes between them.
+    # The rows come from the one builder of rows by offset, which gives their
+    # geometry too, recorded for the leak check of every term's split
+    # (neural_mi/data/rows.py). The step is the real stride: at stride 1 a gap
+    # of one row buys one sample of separation.
+    stride = validate_stride(stride, 'transfer entropy')
+    series = {'x': x_data, 'y': y_data, **({'w': w_data} if w_data is not None else {})}
+    with_w = w_data is not None
     base_params = dict(base_params)
-    base_params['leak_check_window_size'] = history_window
-    base_params['leak_check_step'] = stride
-    x_past, y_past, y_future = _build_te_arrays(
-        x_data, y_data, history_window, prediction_horizon, stride=stride
-    )
-    n_samples = x_past.shape[0]
+    # Rows a stride thins shift under shift_windows: built at every step, of
+    # which each task keeps one in every stride at a phase drawn each epoch.
+    phases = stride if stride > 1 and base_params.get('shift_windows') else 1
+    spec = te_spec(history_window, prediction_horizon, conditioned_on_w=with_w)
+    x_past, y_future, y_past_cond, _ = build_rows(series, spec, stride=1 if phases > 1 else stride)
+    record_rows(base_params, spec_geometry(spec, stride))
+    if phases > 1:
+        base_params[PHASES_KEY] = phases
+    n_samples = kept_rows(x_past.shape[0], base_params)
     logger.info(f"Transfer Entropy: {n_samples} valid samples.")
 
-    # Joint past: concatenate x_past and y_past along channel dim
-    xy_past = torch.cat([x_past, y_past], dim=1)
-    y_past_cond = y_past
-    if w_data is not None:
-        w_past = _build_w_past(w_data, history_window, n_samples, stride=stride)
-        xy_past = torch.cat([xy_past, w_past], dim=1)
-        y_past_cond = torch.cat([y_past, w_past], dim=1)
-
     te, mi_joint, mi_marginal, results_joint, results_marginal, _per_run = _joint_marginal_difference(
-        xy_past, y_future, y_past_cond, y_future,
+        (x_past, y_past_cond), y_future, y_past_cond, y_future,
         base_params, sweep_grid, n_workers,
         quantity_name="TE(X→Y)",
         joint_label="xy_past;y_future", marginal_label="y_past;y_future",
-        joint_key="i_xypast_yfuture", marginal_key="i_ypast_yfuture", condition_at='last',
+        joint_key="i_xypast_yfuture", marginal_key="i_ypast_yfuture",
     )
 
     result = {
@@ -250,25 +186,17 @@ def run_transfer_entropy(
 
     if bidirectional:
         logger.info("Transfer Entropy (bidirectional): estimating TE(Y→X)...")
-        # Swap roles of X and Y to get TE(Y→X)
-        y_past_b, x_past_b, x_future = _build_te_arrays(
-            y_data, x_data, history_window, prediction_horizon, stride=stride
-        )
-        yx_past = torch.cat([y_past_b, x_past_b], dim=1)
-        x_past_cond = x_past_b
-        if w_data is not None:
-            # Reuse the same w_past computed above -- same history_window,
-            # same n_samples, so it aligns with this direction's arrays too.
-            yx_past = torch.cat([yx_past, w_past], dim=1)
-            x_past_cond = torch.cat([x_past_b, w_past], dim=1)
+        # The same offsets with the roles of X and Y swapped, on the same rows.
+        y_past, x_future, x_past_cond, _ = build_rows(
+            series, te_spec(history_window, prediction_horizon, source='y', target='x',
+                            conditioned_on_w=with_w), stride=1 if phases > 1 else stride)
 
         te_yx, mi_joint_yx, mi_marginal_yx, results_joint_yx, results_marginal_yx, _per_run_yx = _joint_marginal_difference(
-            yx_past, x_future, x_past_cond, x_future,
+            (y_past, x_past_cond), x_future, x_past_cond, x_future,
             base_params, sweep_grid, n_workers,
             quantity_name="TE(Y→X)",
             joint_label="yx_past;x_future", marginal_label="x_past;x_future",
             joint_key="i_yxpast_xfuture", marginal_key="i_xpast_xfuture", raw_key='te_yx_raw',
-            condition_at='last',
         )
 
         # Directionality index: +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric
@@ -294,8 +222,8 @@ def run_transfer_entropy(
 
 
 def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
-                        prediction_horizon=1, bidirectional=False, w_data=None,
-                        stride=1) -> float:
+                        prediction_horizon=1, bidirectional=default_of('bidirectional'), w_data=None,
+                        stride=1) -> dict:
     """Top-level, picklable ``scalar_fn`` for rigorous bias correction of TE.
 
     ``run_rigorous_scalar_analysis`` dispatches many of these (one per
@@ -306,9 +234,8 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
     dimensionality-mode splits.
 
     ``w_data`` arrives here already sliced to this gamma-chunk's samples (via
-    ``run_rigorous_scalar_analysis``'s ``extra_data`` mechanism, the same one
-    ``mode='conditional'``'s rigorous path also uses for its own ``w_data``),
-    not the full signal, forwarded straight through to ``run_transfer_entropy``.
+    ``run_rigorous_scalar_analysis``'s ``extra_data`` mechanism), not the full
+    signal, forwarded straight through to ``run_transfer_entropy``.
     """
     raw = run_transfer_entropy(
         x_s, y_s, bp,
@@ -320,4 +247,4 @@ def _te_rigorous_scalar(x_s, y_s, bp, sweep_grid=None, history_window=None,
         w_data=w_data,
         stride=stride,
     )
-    return rung(raw, (('i_xypast_yfuture', 1), ('i_ypast_yfuture', -1)))
+    return rung(raw, (('i_xypast_yfuture', 1), ('i_ypast_yfuture', -1)), joint='raw_xypast_yfuture')

@@ -8,11 +8,9 @@ a range of specified time lags using the nonlinear cross-correlation method.
 from typing import List, Dict, Any, Optional
 
 from neural_mi.analysis.sweep import ParameterSweep, _product_dict, merge_grid_values
-import warnings
-from neural_mi.logger import logger, user_stacklevel
+from neural_mi.logger import logger
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import _shift_data
-from neural_mi.data.shift_windowing import n_windows_if_deferred, shift_family
 
 
 def run_lag_analysis(
@@ -59,22 +57,19 @@ def run_lag_analysis(
     """
     all_tasks = []
 
+    from neural_mi.defaults import stream_processing
     proc_type_x = base_params.get('processor_type_x')
-    proc_type_y = base_params.get('processor_type_y')
-    if proc_type_y is None:
-        proc_type_y = proc_type_x
-        logger.info("Processing(y=...) is not set and Y is read with X's processor.")
+    params_x = base_params.get('processor_params_x') or {}
+    proc_type_y, params_y = stream_processing(base_params.get('processor_type_y'),
+                                              base_params.get('processor_params_y'), proc_type_x, params_x, y_data)
 
     # Infer sample_rate from processor_params to resolve unit ambiguity
-    sample_rate = base_params.get('processor_params_x', {}).get('sample_rate', None)
+    sample_rate = params_x.get('sample_rate', None)
     if sample_rate is None:
-        sample_rate = base_params.get('processor_params_y', {}).get('sample_rate', None)
+        sample_rate = (params_y or {}).get('sample_rate', None)
 
+    # run() refuses a grid over 'lag', which the mode sets itself.
     other_sweep_grid = sweep_grid.copy() if sweep_grid is not None else {}
-    if 'lag' in other_sweep_grid:
-        warnings.warn("'lag' in sweep_grid is ignored when using mode='lag'.",
-                      UserWarning, stacklevel=user_stacklevel())
-        other_sweep_grid.pop('lag')
 
     param_combinations = _product_dict(**other_sweep_grid) if other_sweep_grid else [{}]
 
@@ -114,27 +109,11 @@ def run_lag_analysis(
         x_shifted, y_shifted = shifted_pairs[lag]
         for i, other_params in enumerate(param_combinations):
             task_params = merge_grid_values(base_params, other_params)
-            # The window count this lag trains on, for a task that does not
-            # report its own. Counted with the configuration's parameters,
-            # since a grid over window_size or step_size changes it. Only a
-            # regular grid can be counted before windowing.
-            n_windows_this_lag = None
-            if shift_family(proc_type_x, proc_type_y) == 'regular':
-                n_windows_this_lag = n_windows_if_deferred(x_shifted, y_shifted, task_params)
-            task_params.update({'lag': lag, '_n_windows_lag': n_windows_this_lag})
+            task_params.update({'lag': lag})
             task_params = with_model_labels(task_params, **other_params, lag=lag)
             run_id = other_params.get('run_id', f"lag{lag}_combo{i}")
             all_tasks.append((x_shifted, y_shifted, task_params, run_id))
 
     sweep_runner = ParameterSweep(x_data=None, y_data=None, base_params=base_params)
-    results_list = sweep_runner._run_parallel(all_tasks, n_workers=n_workers)
-
-    # Every lag reports the windows it trained on: the task's own count when it
-    # windowed the data itself, the count made above otherwise.
-    for result, task in zip(results_list, all_tasks):
-        if isinstance(result, dict):
-            if result.get('n_windows_built') is None:
-                result['n_windows_built'] = task[2].get('_n_windows_lag')
-            result.pop('_n_windows_lag', None)
-
-    return results_list
+    # Every lag's task windows its data and reports the windows it trained on.
+    return sweep_runner._run_parallel(all_tasks, n_workers=n_workers)

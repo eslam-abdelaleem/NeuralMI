@@ -192,14 +192,14 @@ class TestPairwisePermutation:
         cost = [w for w in caught if "reruns the whole call" in str(w.message)]
         assert len(cost) == 1
 
-    def test_self_pairwise_permutation_test_computes_no_null(self):
+    def test_self_pairwise_permutation_test_is_refused(self):
+        """Without Y every pair is two channels of X, which a shift moves together: no null to compute,
+        so the request is refused before any work, as every request a mode cannot serve."""
         rng = np.random.default_rng(0)
         x = rng.standard_normal((N, 3)).astype('float32')
-        with pytest.warns(UserWarning, match="no effect for mode='pairwise' without y_data"):
-            res = nmi.run(x, mode='pairwise', model=self._MODEL_P, training=self._TRAINING_P,
-                          permutation_test=True, n_permutations=2, n_workers=1,
-                          show_progress=False)
-        assert 'null_distribution' not in res.details[0]
+        with pytest.raises(ValueError, match="permutation_test=True needs y_data for mode='pairwise'"):
+            nmi.run(x, mode='pairwise', model=self._MODEL_P, training=self._TRAINING_P,
+                    permutation_test=True, n_permutations=2, n_workers=1, show_progress=False)
 
 
 class TestConditionalInteractionRawDeferredPermutation:
@@ -353,25 +353,22 @@ class TestSpikePermutationShuffle:
 
 
 class TestModesWithoutANullDistribution:
-    """A mode that cannot build a null says so and computes none."""
+    """A mode that cannot build a null refuses the request before any work."""
 
     @staticmethod
     def _x():
         return np.random.default_rng(0).standard_normal((300, 4)).astype(np.float32)
 
     @pytest.mark.parametrize("with_y", [False, True])
-    def test_dimensionality_reports_and_computes_no_null(self, with_y):
+    def test_dimensionality_refuses_a_null(self, with_y):
         from neural_mi.config import Dimensionality
         y = {'y_data': self._x()} if with_y else {}
-        with pytest.warns(UserWarning, match="no effect for mode='dimensionality'"):
-            result = nmi.run(x_data=self._x(), mode='dimensionality',
-                             dimensionality=Dimensionality(n_restarts=1, reference_dim=2,
-                                                           embedding_dims=[1]),
-                             model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-                             training=Training(n_epochs=1), permutation_test=True,
-                             n_permutations=3, n_workers=1, show_progress=False, **y)
-        assert 'null_distribution' not in result.details[0]
-        assert 'p_value' not in result.dataframe.columns
+        with pytest.raises(ValueError, match="not supported for mode='dimensionality'"):
+            nmi.run(x_data=self._x(), mode='dimensionality',
+                    dimensionality=Dimensionality(n_restarts=1, reference_dim=2, embedding_dims=[1]),
+                    model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                    training=Training(n_epochs=1), permutation_test=True,
+                    n_permutations=3, n_workers=1, show_progress=False, **y)
 
     @pytest.mark.parametrize("mode", ['rigorous', 'precision'])
     def test_the_refusal_names_the_modes_that_do_test(self, mode):

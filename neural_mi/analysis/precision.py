@@ -13,9 +13,11 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Union
 
+from neural_mi.defaults import setting
 from neural_mi.analysis.task import run_training_task
 from neural_mi.device import with_device
 from neural_mi.data.corruption import corrupt, METHODS
+from neural_mi.seeds import network_seed
 import warnings
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.validation import ParameterValidator
@@ -143,7 +145,7 @@ def run_precision_analysis(
     _corrupt_y_source = baseline_results.get('_frozen_eval_y', dataset.y_data)
     x_train_raw = _corrupt_x_source[train_idx, ...]
     y_train_raw = _corrupt_y_source[train_idx, ...]
-    max_eval = base_params.get('max_eval_samples', 5000)
+    max_eval = setting(base_params, 'max_eval_samples')
 
     results_list = []
     # Every individual evaluation, one per tau for rounding and one per noise
@@ -159,15 +161,19 @@ def run_precision_analysis(
     # zero-padded gaps) are never corrupted, so neither method invents activity.
     empty_x, empty_y = _empty_value(base_params, 'x'), _empty_value(base_params, 'y')
     noise = corruption_method == 'noise'
+    # The noise comes from the call's seed (neural_mi/seeds.py), not from
+    # whatever state the baseline's training left behind.
+    noise_seed = network_seed(setting(base_params, 'random_seed'), base_params.get('run_id', 0), 'corruption')
+    draws = torch.Generator().manual_seed(noise_seed) if noise_seed is not None else None
 
     with torch.no_grad():
         for tau in sorted_tau:
             # Noise is averaged over several draws; rounding is deterministic.
             mis = []
             for _ in range(n_noise_samples if noise and tau > 0 else 1):
-                x_c = (corrupt(x_train_raw, tau, corruption_method, empty_x)
+                x_c = (corrupt(x_train_raw, tau, corruption_method, empty_x, generator=draws)
                        if corrupt_target in ('x', 'both') else x_train_raw)
-                y_c = (corrupt(y_train_raw, tau, corruption_method, empty_y)
+                y_c = (corrupt(y_train_raw, tau, corruption_method, empty_y, generator=draws)
                        if corrupt_target in ('y', 'both') else y_train_raw)
                 mis.append(trainer._safe_eval_mi(x_c.to(device), y_c.to(device), max_eval))
                 sample = {'tau': tau, 'mi': mis[-1]}

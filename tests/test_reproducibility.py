@@ -7,9 +7,9 @@ and AnalysisWorkflow._prepare_tasks (rigorous.py) built each task's run_id
 with a fresh `str(uuid.uuid4())` prefix on every call. task.py then derived
 the per-task training seed by hashing that run_id -- so the effective seed
 differed on every single run() invocation regardless of an explicit
-random_seed, even with n_workers=1. Fixed by seeding from a separate,
-purely-deterministic '_seed_key' (built from the task's combination/gamma/
-subset indices) instead of the display-only run_id.
+random_seed, even with n_workers=1. Every task now seeds itself from the
+call's seed, its repeat and its role (neural_mi/seeds.py), never from the
+display-only run_id. tests/test_seeds.py checks the rule itself.
 """
 import numpy as np
 import neural_mi as nmi
@@ -75,13 +75,13 @@ class TestSweepModeReproducibility:
         train_mis = result.runs['train_mi'].tolist()
         assert len(set(train_mis)) > 1
 
-    def test_seed_key_does_not_leak_into_dataframe(self):
+    def test_role_does_not_leak_into_dataframe(self):
         x, y = _make_data()
         result = nmi.run(x, y, mode='sweep', sweep_grid={'run_id': list(range(2))},
                          model=_MODEL, training=_TRAINING, split=_SPLIT,
                          seed=7, n_workers=1, show_progress=False)
-        assert '_seed_key' not in result.runs.columns
-        assert '_seed_key' not in result.dataframe.columns
+        assert '_role' not in result.runs.columns
+        assert '_role' not in result.dataframe.columns
 
 
 class TestRigorousModeReproducibility:
@@ -97,22 +97,32 @@ class TestRigorousModeReproducibility:
 
         assert run_once() == run_once()
 
-    def test_seed_key_does_not_leak_into_rigorous_dataframe(self):
+    def test_role_does_not_leak_into_rigorous_dataframe(self):
         x, y = _make_data(n=400)
         result = nmi.run(x, y, mode='rigorous', model=_MODEL, training=_TRAINING,
                          split=_SPLIT, rigorous={'gamma_range': range(1, 4), 'min_gamma_points': 2},
                          seed=11, n_workers=1, show_progress=False)
-        assert '_seed_key' not in result.dataframe.columns
+        assert '_role' not in result.runs.columns
+        assert '_role' not in result.dataframe.columns
 
 
 class TestReproducibilityUnderParallelism:
-    """Results do not depend on n_workers.
+    """Results do not depend on n_workers beyond float rounding.
 
         `run_training_task` re-seeds random/numpy/torch inside each worker from
-        `random_seed` plus a deterministic per-task key, which makes worker count
-        and scheduling order irrelevant. These pin that for the shared task path
-        and for the two modes that dispatch differently.
+        the call's seed, the task's repeat and its role, which makes worker count
+        and scheduling order irrelevant to what each task draws. These pin that
+        for the shared task path and for the two modes that dispatch differently.
+
+        A worker process can still round the last digits differently from the
+        calling process. On CI's Linux runners one dimensionality fit read
+        0.0598410 in the calling process and 0.0598396 in a worker, a relative
+        2e-5, while on a Mac the two match bit for bit. A neighbouring seed moves
+        each value these tests compare by 39% or more, so they compare to a
+        relative 1e-3.
     """
+
+    rtol = 1e-3
 
     def test_repeats_match_between_serial_and_parallel(self):
         x, y = _make_data()
@@ -120,9 +130,9 @@ class TestReproducibilityUnderParallelism:
         kw = dict(mode='sweep', model=_MODEL, training=_TRAINING,
                   split=_SPLIT, seed=42, show_progress=False,
                   sweep_grid={'run_id': [0, 1]})
-        serial = nmi.run(x, y, n_workers=1, **kw).runs['mi'].tolist()
-        parallel = nmi.run(x, y, n_workers=2, **kw).runs['mi'].tolist()
-        assert serial == parallel
+        serial = nmi.run(x, y, n_workers=1, **kw).runs['mi'].to_numpy()
+        parallel = nmi.run(x, y, n_workers=2, **kw).runs['mi'].to_numpy()
+        np.testing.assert_allclose(parallel, serial, rtol=self.rtol)
 
     def test_no_reproducibility_warning_is_emitted(self):
         import warnings
@@ -147,8 +157,8 @@ class TestReproducibilityUnderParallelism:
         # embedding dimensions and the reading, so compare those.
         r1, r2 = nmi.run(x, y, n_workers=1, **kw), nmi.run(x, y, n_workers=2, **kw)
         for col in ('mi_curve', 'mi_best', 'pr_singular_mean'):
-            assert np.array_equal(r1.dataframe[col].to_numpy(),
-                                  r2.dataframe[col].to_numpy()), col
+            np.testing.assert_allclose(r2.dataframe[col].to_numpy(), r1.dataframe[col].to_numpy(),
+                                       rtol=self.rtol, err_msg=col)
         assert r1.get('dimension_at_most') == r2.get('dimension_at_most')
 
     def test_pairwise_matches_between_serial_and_parallel(self):
@@ -158,4 +168,4 @@ class TestReproducibilityUnderParallelism:
                   training=_TRAINING, split=_SPLIT, seed=3, show_progress=False)
         m1 = np.asarray(nmi.run(d, n_workers=1, **kw).get('mi_matrix'))
         m2 = np.asarray(nmi.run(d, n_workers=2, **kw).get('mi_matrix'))
-        assert np.array_equal(np.nan_to_num(m1), np.nan_to_num(m2))
+        np.testing.assert_allclose(np.nan_to_num(m2), np.nan_to_num(m1), rtol=self.rtol)

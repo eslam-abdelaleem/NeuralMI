@@ -10,25 +10,24 @@ import torch
 import numpy as np
 from typing import Dict, Any
 
-from neural_mi.models.embeddings import conditioning_parts
-from neural_mi.utils import build_critic, build_optimizer_and_scheduler, get_device, compute_cross_covariance_rotation
+from neural_mi.utils import (ARCHITECTURE_KEYS, build_critic, build_optimizer_and_scheduler, get_device,
+                             compute_cross_covariance_rotation)
 from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC, NONPARAMETRIC_CONDITIONAL
 from neural_mi.training.trainer import Trainer
 from neural_mi.logger import logger, user_stacklevel
-from neural_mi.embeddings_io import save_network
-from neural_mi.data.handler import create_dataset, AlignedStaticStreams
-
-# Batch size used for embedding extraction (no effect on training).
-# Large enough to keep GPU utilisation high; small enough to avoid OOM.
-_EMBEDDING_BATCH = 512
+from neural_mi.embeddings_io import _EMBEDDING_BATCH, save_network
+from neural_mi.data.handler import create_dataset
+from neural_mi.data.rows import IDENTITY_KEY, record_rows, row_geometry, row_identity
+from neural_mi.defaults import default_of, setting
+from neural_mi.seeds import network_seed, repeat_seed
 
 # ---------------------------------------------------------------------------
 # Module-level dataset cache
 # ---------------------------------------------------------------------------
 # Keyed by (x_data_ptr, y_data_ptr, frozenset_of_construction_params).
 # Only *static* (PairedDataset) instances are cached because temporal datasets
-# are mutated in-place by time_shift() during training and cannot be safely
-# shared across sequential tasks.
+# move their windows in place during training (window shifting) and cannot be
+# shared safely across sequential tasks.
 #
 # In sequential sweeps where data and processor params are constant across
 # tasks, this means create_dataset() is called once and every subsequent task
@@ -91,19 +90,11 @@ def _dataset_cache_key(x_data, y_data, params: dict):
     return (dp_x, dp_y, construction)
 
 
-# Keys needed to reconstruct a saved model's architecture for extract_embeddings().
-# Exposed at module scope so external code can inspect or verify the set.
-_BUILD_PARAMS_KEYS = [
-    'critic_type', 'embedding_model', 'hidden_dim', 'embedding_dim', 'n_layers',
-    'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
-    'use_variational', 'shared_encoder',
-    'kernel_size', 'bidirectional', 'nhead', 'max_n_batches',
-    'dropout', 'norm_layer', 'use_spectral_norm',
-    'use_decoder', 'decoder_lambda', 'decoder_lambda_x', 'decoder_lambda_y',
-    'decoder_output_activation_x', 'decoder_output_activation_y',
-    # PretrainedBackboneEmbedding architecture parameters
-    'pytorch_predefined', 'pretrained',
-]
+# Saved with a network: every setting build_critic reads (utils.ARCHITECTURE_KEYS),
+# which extract_embeddings rebuilds it from, and the decoder's settings.
+_BUILD_PARAMS_KEYS = [*ARCHITECTURE_KEYS,
+                      'use_decoder', 'decoder_lambda', 'decoder_lambda_x', 'decoder_lambda_y',
+                      'decoder_output_activation_x', 'decoder_output_activation_y']
 
 
 def _decoder_lambda(params: Dict[str, Any], axis: str) -> float:
@@ -117,35 +108,45 @@ def _decoder_lambda(params: Dict[str, Any], axis: str) -> float:
     value = params.get(f'decoder_lambda_{axis}')
     if value is None:
         value = params.get('decoder_lambda')
-    return 0.001 if value is None else float(value)
+    return default_of('decoder_lambda') if value is None else float(value)
 
 
 def _reported(params: Dict[str, Any]) -> Dict[str, Any]:
     """The task's settings as its result carries them, without the objects and private keys."""
     return {k: v for k, v in params.items()
-            if k not in ('custom_critic', 'custom_embedding_cls', '_seed_key', '_keep_trained')}
+            if k not in ('custom_critic', 'custom_embedding_cls', '_role', '_keep_trained')}
+
+
+def _seeds(params: Dict[str, Any]):
+    """The seed of the task's network and the seed of its repeat."""
+    seed, run_id = setting(params, 'random_seed'), params.get('run_id', 0)
+    return network_seed(seed, run_id, params.get('_role', '')), repeat_seed(seed, run_id)
 
 
 def _nonparametric(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
     """A nonparametric estimate (``estimator_name='ksg'``) on every row of the dataset, in nats.
 
     No network is trained, so there is no split, epoch or held-out value. The
-    joint term of a difference, whose X is the pair (rest, conditioning set) or
-    carries ``_condition``, estimates the conditioning set's own MI with Y plus
-    the conditional MI of the rest given it (Frenzel and Pompe). Its
-    conditioning term estimates that same MI on the same rows, so the
-    difference of the two is the conditional estimate itself.
+    joint term of a difference, whose X is the pair (rest, conditioning set),
+    estimates the conditioning set's own MI with Y plus the conditional MI of
+    the rest given it (Frenzel and Pompe). Its conditioning term estimates that
+    same MI on the same rows, so the difference of the two is the conditional
+    estimate itself.
     """
     as_array = lambda t: t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t)
     x, y = dataset.x_data, as_array(dataset.y_data)
-    settings = dict(params.get('estimator_params') or {}, seed=params.get('random_seed'))
-    name, condition = params['estimator_name'], params.get('_condition')
-    if isinstance(x, tuple) or condition is not None:
-        rest, z = (as_array(part) for part in conditioning_parts(x, condition))
+    settings = dict(params.get('estimator_params') or {}, seed=_seeds(params)[0])
+    name = params['estimator_name']
+    if isinstance(x, tuple):
+        rest, z = (as_array(part) for part in x)
         value = NONPARAMETRIC[name](z, y, **settings) + NONPARAMETRIC_CONDITIONAL[name](rest, y, z, **settings)
     else:
         value = NONPARAMETRIC[name](as_array(x), y, **settings)
     return {'train_mi': value, 'eval_size': len(y), 'train_eval_size': len(y)}
+
+
+# The settings that read the critic's embedding of each side.
+_READ_EMBEDDINGS = ('use_decoder', 'return_embeddings', 'track_embeddings', 'track_spectral_history')
 
 
 def run_training_task(args: tuple) -> Dict[str, Any]:
@@ -153,21 +154,11 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     import random as _random
     x_data, y_data, params, run_id = args
 
-    # Deterministic per-worker seeding: derive a seed from the base seed and a
-    # per-task key so every task is reproducible but unique. Uses '_seed_key'
-    # (set by the task-preparation code, e.g. sweep.py/rigorous.py's
-    # _prepare_tasks, from purely deterministic indices like the sweep
-    # combination/gamma/subset index) instead of 'run_id' itself, which
-    # callers may prefix with a random UUID (for display/log distinctness
-    # across repeated calls) -- hashing that directly would make the
-    # "task_seed" -- and therefore the whole run -- different on every call
-    # even with an explicit, fixed random_seed and n_workers=1.
-    base_seed = params.get('random_seed', None)
-    task_seed = None
-    if base_seed is not None:
-        import hashlib
-        seed_key = params.get('_seed_key', run_id)
-        task_seed = (base_seed + int(hashlib.md5(str(seed_key).encode()).hexdigest(), 16)) % (2**31)
+    # The task's seeds come from the call's seed, its repeat and its role
+    # (neural_mi/seeds.py), so which worker runs it, and when, and where it sits
+    # in a grid change nothing. The run_id of the task tuple only labels it.
+    task_seed, shift_seed = _seeds(params)
+    if task_seed is not None:
         _random.seed(task_seed)
         np.random.seed(task_seed)
         torch.manual_seed(task_seed)
@@ -178,32 +169,38 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # else is forwarded verbatim ('cpu', 'cuda', 'mps', …).
     # ------------------------------------------------------------------
     _compute_device = get_device(params.get('device'))
-    _raw_dd = params.get('dataset_device', 'cpu')
+    _raw_dd = setting(params, 'dataset_device')
     _data_device: str = str(_compute_device) if _raw_dd == 'auto' else (_raw_dd or 'cpu')
 
     # ------------------------------------------------------------------
     # Dataset construction, with module-level cache for static datasets.
     # ------------------------------------------------------------------
-    from neural_mi.data.shift_windowing import (
-        try_build_shift_windows_dataset, try_build_shift_windows_dataset_tuple,
-    )
-    if isinstance(x_data, tuple):
-        # Compound "X-role" data: two raw streams windowed independently and
-        # combined afterwards. params['_shift_pack'] says how -- kept apart for
-        # dual_branch, concatenated for a conditioning variable that shares X's
-        # window axis, or used alone for the marginal leg.
-        dataset = try_build_shift_windows_dataset_tuple(x_data, y_data, params, data_device=_data_device)
+    from neural_mi.data.plan import PAIR, RowPlan, TermRows
+    from neural_mi.data.shift_windowing import try_build_row_phase_dataset
+    _plan = None
+    dataset = None
+    if isinstance(x_data, TermRows):
+        # A term of a quantity: its streams selected from the quantity's one
+        # plan, whose rows every term shares (neural_mi/data/plan.py).
+        _plan = x_data.plan
+        dataset = x_data.dataset(data_device=_data_device)
     else:
-        dataset = try_build_shift_windows_dataset(x_data, y_data, params, data_device=_data_device)
+        # Rows built by offset at every step, kept one in every stride: at
+        # phase 0, with the shifter that moves the phase each epoch under
+        # shift_windows.
+        dataset = try_build_row_phase_dataset(x_data, y_data, params, data_device=_data_device)
+        if dataset is None and params.get('processor_type_x') is not None:
+            # Raw streams, windowed here: the pair's plan.
+            _plan = RowPlan.of_pair(x_data, y_data, params)
+            dataset = _plan.build(PAIR, data_device=_data_device)
     if dataset is not None:
-        _cache_key = None  # never cached (mutated in place every epoch); the
-        # cleanup step near the end of this function reads _cache_key back
-        # out of _DATASET_CACHE to decide whether `dataset` is safe to `del`
-        # -- None always misses, so it's always deleted, correctly, here.
+        _cache_key = None  # never cached: a shifter rewrites its data every
+        # epoch, and the cleanup step near the end of this function reads
+        # _cache_key back out of _DATASET_CACHE to decide whether `dataset` is
+        # safe to `del` -- None always misses, so it's always deleted.
     else:
         _cache_key = _dataset_cache_key(x_data, y_data,
                                         {**params, 'dataset_device': _data_device})
-        dataset = None
         with _DATASET_CACHE_LOCK:
             _cache_entry = _DATASET_CACHE.get(_cache_key)
         if _cache_entry is not None:
@@ -216,29 +213,23 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 logger.debug("Dataset cache key collision (stale data_ptr/id), rebuilding.")
 
         if dataset is None:
-            dataset = create_dataset(
-                x_data, y_data,
-                x_time=params.get('x_time'),
-                y_time=params.get('y_time'),
-                processor_type_x=params.get('processor_type_x'),
-                processor_type_y=params.get('processor_type_y'),
-                processor_params_x=params.get('processor_params_x'),
-                processor_params_y=params.get('processor_params_y'),
-                data_device=_data_device,
-            )
-            # Only cache immutable static datasets, temporal datasets are mutated
-            # by time_shift() during training and must not be shared.
-            if isinstance(dataset, AlignedStaticStreams):
-                with _DATASET_CACHE_LOCK:
-                    if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
-                        # Evict the oldest entry (dict preserves insertion order).
-                        _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
-                    _DATASET_CACHE[_cache_key] = (dataset, _safe_weakref(x_data), _safe_weakref(y_data))
-                logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
-            else:
-                logger.debug("Temporal dataset, skipping cache (mutable via time_shift).")
+            dataset = create_dataset(x_data, y_data, data_device=_data_device)
+            with _DATASET_CACHE_LOCK:
+                if len(_DATASET_CACHE) >= _DATASET_CACHE_MAXSIZE:
+                    # Evict the oldest entry (dict preserves insertion order).
+                    _DATASET_CACHE.pop(next(iter(_DATASET_CACHE)))
+                _DATASET_CACHE[_cache_key] = (dataset, _safe_weakref(x_data), _safe_weakref(y_data))
+            logger.debug("Dataset cached (key=%s).", str(_cache_key)[:80])
         else:
             logger.debug("Dataset cache hit, reusing pre-built dataset.")
+
+    # A dataset this task windowed itself records its rows' geometry here, as
+    # run.py records it for a dataset windowed there (neural_mi/data/rows.py).
+    if _plan is not None and _plan.geometry() is not None:
+        record_rows(params, _plan.geometry())
+    # Which rows this task reads, for the terms of a difference to be checked
+    # against each other once they are all trained (sweep.combine_terms).
+    _rows = row_identity(dataset, params)
 
     # Models that natively support 4-D input (N, C, H, W):
     #   'cnn2d', Conv2d + AdaptiveAvgPool2d; spatial structure preserved.
@@ -252,7 +243,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
 
     if isinstance(dataset.x_data, tuple):
         # Compound "X-role" data (BranchedEmbedding's two-tensor input,
-        # mode='conditional'(align='dual_branch')) -- dims become a matching
+        # the joint term of a difference) -- dims become a matching
         # 2-tuple instead of a single int. The hasattr(..., 'shape') guard
         # below is False for a tuple, so without this branch the whole
         # dim-computation block would be silently skipped and
@@ -267,7 +258,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             params['input_dim_x'] = _x.shape[1] * _x.shape[2] * _x.shape[3]
             params['input_height_x'] = _x.shape[2]
             params['input_width_x'] = _x.shape[3]
-            _emb = params.get('embedding_model', 'mlp')
+            _emb = setting(params, 'embedding_model')
             if _emb == 'cnn':
                 raise ValueError(
                     f"embedding_model='cnn' (CNN1D) does not support 4-D input "
@@ -298,74 +289,71 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             params['input_dim_y'] = _y.shape[1] * _y.shape[2]
 
     if params.get('estimator_name') in NONPARAMETRIC:
-        return {**_reported(params), **_nonparametric(dataset, params)}
+        return {**_reported(params), **_nonparametric(dataset, params), IDENTITY_KEY: _rows}
 
-    if params.get('custom_critic') is not None:
-        critic = params['custom_critic']
-        logger.debug("Using the custom critic as given, so the Model(...) architecture settings are ignored.")
-    else:
-        critic = build_critic(params.get('critic_type', 'separable'),
-                              params,
-                              params.get('custom_embedding_cls'))
+    # A custom critic is the caller's recipe, built here under this task's seed
+    # like every other critic (build_critic).
+    critic = build_critic(setting(params, 'critic_type'), params, params.get('custom_embedding_cls'))
+    # Decoders, returned and tracked embeddings and the spectrum of the
+    # embeddings read the critic's embedding of each side. A critic without one
+    # (the concat critic, or a custom critic without a get_training_embeddings
+    # of its own) cannot serve them, which is said before it trains.
+    from neural_mi.models.critics import embeds_each_side
+    if not embeds_each_side(critic):
+        _wanted = [f"{name}={setting(params, name)!r}" for name in _READ_EMBEDDINGS if setting(params, name)]
+        if _wanted:
+            raise ValueError(
+                f"{' and '.join(_wanted)} {'needs' if len(_wanted) == 1 else 'need'} the critic's embedding "
+                f"of each side, and this critic gives none. critic_type='concat' scores the pair without "
+                f"embedding either side, and a custom_critic gives embeddings only when it defines "
+                f"get_training_embeddings(x, y) returning (z_x, z_y). Use critic_type='separable' or 'hybrid'."
+            )
 
     # Build decoders if use_decoder is enabled
     decoder_x = None
     decoder_y = None
-    if params.get('use_decoder', False):
-        from neural_mi.models.decoders import build_decoder
+    if setting(params, 'use_decoder'):
+        from neural_mi.models.critics import side_embedding_sizes
+        from neural_mi.models.decoders import PairDecoder, build_decoder
+        from neural_mi.training.trainer import _to_device
 
-        _n_channels_x = params.get('n_channels_x', 1)
-        if isinstance(_n_channels_x, tuple):
-            raise NotImplementedError(
-                "use_decoder=True is not supported with a compound (tuple) "
-                "embedding input such as BranchedEmbedding in mode='conditional' "
-                "with align='dual_branch'. Reconstructing a compound (A, C) input "
-                "from one fused embedding has no single well-defined decoder "
-                "architecture. Use use_decoder=False for this path."
+        # A decoder rebuilds each side from the critic's embedding of it, at the
+        # size the critic gives, read on two rows.
+        _probe = torch.arange(min(2, len(dataset)))
+        _on = next(critic.parameters()).device
+        _size_x, _size_y = side_embedding_sizes(critic, _to_device(dataset.x_dataset[_probe, ...], _on),
+                                                _to_device(dataset.y_dataset[_probe, ...], _on))
+
+        def _decoder(n_channels, input_dim, activation, embedding_dim, height=None, width=None):
+            return build_decoder(
+                embedding_model=setting(params, 'embedding_model'),
+                embedding_dim=embedding_dim,
+                hidden_dim=setting(params, 'hidden_dim'),
+                n_channels=n_channels,
+                window_size=max(1, input_dim // n_channels),
+                n_layers=setting(params, 'n_layers'),
+                output_activation=activation,
+                kernel_size=setting(params, 'kernel_size'),
+                nhead=setting(params, 'nhead'),
+                height=height,
+                width=width,
+                dropout=setting(params, 'dropout'),
             )
-        _embedding_model = params.get('embedding_model', 'mlp')
-        _embedding_dim = params.get('embedding_dim', params.get('hidden_dim', 64))
-        _hidden_dim = params.get('hidden_dim', 64)
-        _n_layers = params.get('n_layers', 2)
-        _dec_act_x = params.get('decoder_output_activation_x', 'linear')
-        _dec_act_y = params.get('decoder_output_activation_y', 'linear')
 
-        _n_channels_y = params.get('n_channels_y', 1)
-        _input_dim_x = params.get('input_dim_x', _n_channels_x)
-        _input_dim_y = params.get('input_dim_y', _n_channels_y)
-        _window_size_x = max(1, _input_dim_x // _n_channels_x)
-        _window_size_y = max(1, _input_dim_y // _n_channels_y)
-
-        decoder_x = build_decoder(
-            embedding_model=_embedding_model,
-            embedding_dim=_embedding_dim,
-            hidden_dim=_hidden_dim,
-            n_channels=_n_channels_x,
-            window_size=_window_size_x,
-            n_layers=_n_layers,
-            output_activation=_dec_act_x,
-            kernel_size=params.get('kernel_size', 7),
-            nhead=params.get('nhead', 4),
-            height=params.get('input_height_x'),
-            width=params.get('input_width_x'),
-            dropout=params.get('dropout', 0.3),
-        )
+        # A pair X (the joint term of a difference) is reconstructed part by
+        # part, each by a decoder of its own shape.
+        _act_x = setting(params, 'decoder_output_activation_x')
+        if isinstance(params['n_channels_x'], tuple):
+            decoder_x = PairDecoder([_decoder(c, d, _act_x, _size_x)
+                                     for c, d in zip(params['n_channels_x'], params['input_dim_x'])])
+        else:
+            decoder_x = _decoder(params['n_channels_x'], params['input_dim_x'], _act_x, _size_x,
+                                 params.get('input_height_x'), params.get('input_width_x'))
         # Always build a dedicated decoder_y -- X and Y may differ in n_channels/
         # window_size/activation even when shared_encoder=True.
-        decoder_y = build_decoder(
-            embedding_model=_embedding_model,
-            embedding_dim=_embedding_dim,
-            hidden_dim=_hidden_dim,
-            n_channels=_n_channels_y,
-            window_size=_window_size_y,
-            n_layers=_n_layers,
-            output_activation=_dec_act_y,
-            kernel_size=params.get('kernel_size', 7),
-            nhead=params.get('nhead', 4),
-            height=params.get('input_height_y'),
-            width=params.get('input_width_y'),
-            dropout=params.get('dropout', 0.3),
-        )
+        decoder_y = _decoder(params['n_channels_y'], params['input_dim_y'],
+                             setting(params, 'decoder_output_activation_y'), _size_y,
+                             params.get('input_height_y'), params.get('input_width_y'))
         logger.debug(
             f"Built decoder_x ({type(decoder_x).__name__}) and decoder_y ({type(decoder_y).__name__}) "
             f"for use_decoder=True."
@@ -379,7 +367,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
 
     # Resolve augmentation params: shared baseline, per-variable override.
     # None means "fall back to shared"; {} means "explicitly no augmentation".
-    _aug_shared = params.get('augmentation_params', {})
+    _aug_shared = setting(params, 'augmentation_params')
     _aug_x = params.get('augmentation_params_x')
     _aug_y = params.get('augmentation_params_y')
     aug_x = _aug_x if _aug_x is not None else _aug_shared
@@ -391,26 +379,26 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         estimator_fn=ESTIMATORS[params['estimator_name']],
         optimizer=optimizer,
         device=device,
-        use_variational=params.get('use_variational', False),
-        beta=params.get('beta', 1024.0),
+        use_variational=setting(params, 'use_variational'),
+        beta=setting(params, 'beta'),
         estimator_params=params.get('estimator_params'),
         custom_smoothing_fn=params.get('custom_smoothing_fn'),
-        whitening=params.get('whitening', 'std'),
-        gradient_clip_val=params.get('gradient_clip_val', None),
+        whitening=setting(params, 'whitening'),
+        gradient_clip_val=setting(params, 'gradient_clip_val'),
         decoder_x=decoder_x,
         decoder_y=decoder_y,
         decoder_lambda_x=_decoder_lambda(params, 'x'),
         decoder_lambda_y=_decoder_lambda(params, 'y'),
-        decoder_output_activation_x=params.get('decoder_output_activation_x', 'linear'),
-        decoder_output_activation_y=params.get('decoder_output_activation_y', 'linear'),
-        use_amp=params.get('use_amp', 'auto'),
+        decoder_output_activation_x=setting(params, 'decoder_output_activation_x'),
+        decoder_output_activation_y=setting(params, 'decoder_output_activation_y'),
+        use_amp=setting(params, 'use_amp'),
         augmentation_params_x=aug_x,
         augmentation_params_y=aug_y,
     )
 
     if params.get('_time_steps'):
         # neural_mi.device.choose_device times this network's training steps instead of training it.
-        n_train = int(len(dataset) * params.get('train_fraction', 0.9))
+        n_train = int(len(dataset) * setting(params, 'train_fraction'))
         return {'seconds_per_step': trainer.seconds_per_step(dataset, params['batch_size']),
                 'steps_per_epoch': -(-n_train // params['batch_size'])}
 
@@ -423,39 +411,36 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         dataset,
         params['n_epochs'],
         params['batch_size'],
-        train_fraction=params.get('train_fraction', 0.9),
-        n_test_blocks=params.get('n_test_blocks', 5),
-        shift_time=params.get('shift_time', True),
-        shift_seed=base_seed,
+        train_fraction=setting(params, 'train_fraction'),
+        n_test_blocks=setting(params, 'n_test_blocks'),
+        shift_seed=shift_seed,
         split_seed=task_seed,
-        shift_windows=params.get('shift_windows', True),
+        shift_windows=setting(params, 'shift_windows'),
         patience=params['patience'],
-        smoothing_sigma=params.get('smoothing_sigma', 1.0),
-        median_window=params.get('median_window', 5),
-        min_improvement=params.get('min_improvement', 0.001),
-        output_units=params.get('output_units', 'nats'),
-        verbose=params.get('verbose', False),
-        show_progress=params.get('show_progress', True),
+        smoothing_sigma=setting(params, 'smoothing_sigma'),
+        median_window=setting(params, 'median_window'),
+        min_improvement=setting(params, 'min_improvement'),
+        output_units=setting(params, 'output_units'),
+        verbose=setting(params, 'verbose'),
+        show_progress=setting(params, 'show_progress'),
         save_best_model_path=None,  # we handle saving ourselves below (new format)
-        split_mode=params.get('split_mode', 'blocked'),
+        split_mode=setting(params, 'split_mode'),
         train_indices=params.get('train_indices'),
         test_indices=params.get('test_indices'),
-        max_eval_samples=params.get('max_eval_samples', 5000),
-        split_gap_fraction=params.get('split_gap_fraction', 0.5),
+        max_eval_samples=setting(params, 'max_eval_samples'),
+        split_gap_fraction=setting(params, 'split_gap_fraction'),
         train_subset_size=params.get('train_subset_size'),
         test_subset_size=params.get('test_subset_size'),
-        track_spectral_history=params.get('track_spectral_history', False),
-        max_index_reduction=params.get('max_index_reduction', 0.05),
-        eval_train=params.get('eval_train', False),
-        peak_fraction=params.get('peak_fraction', 1.0),
-        epoch_rule=params.get('epoch_rule', 'plateau_start'),
+        track_spectral_history=setting(params, 'track_spectral_history'),
+        eval_train=setting(params, 'eval_train'),
+        peak_fraction=setting(params, 'peak_fraction'),
+        epoch_rule=setting(params, 'epoch_rule'),
         scheduler=scheduler,
-        track_embeddings=params.get('track_embeddings', False),
-        return_rotated_embeddings=params.get('return_rotated_embeddings', False),
-        rotated_embeddings_per_epoch=params.get('rotated_embeddings_per_epoch', False),
-        return_rotation_matrices=params.get('return_rotation_matrices', False),
-        leak_check_window_size=params.get('leak_check_window_size'),
-        leak_check_step=params.get('leak_check_step'),
+        track_embeddings=setting(params, 'track_embeddings'),
+        return_rotated_embeddings=setting(params, 'return_rotated_embeddings'),
+        rotated_embeddings_per_epoch=setting(params, 'rotated_embeddings_per_epoch'),
+        return_rotation_matrices=setting(params, 'return_rotation_matrices'),
+        rows=row_geometry(params),
     )
     results['device'] = str(device)
 
@@ -467,11 +452,11 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # Optionally extract embeddings from the trained model.
     # Uses the full dataset in original sample order, no capping, no shuffling —
     # so the returned arrays align index-for-index with the caller's raw data.
-    # Reads through the frozen pre-shift snapshot when one was taken (shift_windows/
-    # shift_time were active): dataset.x_data/.y_data reflect whatever shift was
-    # last applied during training, not the canonical view best_model_state was
-    # scored against.
-    if params.get('return_embeddings', False):
+    # Reads through the frozen pre-shift snapshot when one was taken (the rows
+    # shifted): dataset.x_data/.y_data reflect whatever shift was last applied
+    # during training, not the canonical view best_model_state was scored
+    # against.
+    if setting(params, 'return_embeddings'):
         _all_x = results.get('_frozen_eval_x', dataset.x_data)
         _all_y = results.get('_frozen_eval_y', dataset.y_data)
         if _all_y is None:
@@ -487,7 +472,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         else:
             trainer.model.eval()
             # _all_x may be a plain tensor or a tuple (BranchedEmbedding's
-            # compound "X-role" data, mode='conditional'(align='dual_branch')).
+            # pair, the joint term of a difference).
             _is_tuple_x = isinstance(_all_x, tuple)
             _n = (_all_x[0] if _is_tuple_x else _all_x).shape[0]
             _zx_parts, _zy_parts = [], []
@@ -509,31 +494,24 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 f"(shape: {results['embeddings_x'].shape})."
             )
 
-            if params.get('return_rotated_embeddings', False):
-                if params.get('critic_type', 'separable') == 'concat':
-                    warnings.warn(
-                        "return_rotated_embeddings=True has no effect for critic_type='concat'. "
-                        "That critic has no separate embedding networks to rotate.",
-                        UserWarning, stacklevel=user_stacklevel(),
-                    )
-                else:
-                    _whitening = params.get('whitening', 'std')
-                    _rot = compute_cross_covariance_rotation(
-                        results['embeddings_x'], results['embeddings_y'],
-                        whitening=_whitening,
-                    )
-                    results['embeddings_x_rotated'] = _rot['zx_rotated']
-                    results['embeddings_y_rotated'] = _rot['zy_rotated']
-                    results['embeddings_rotation_singular_values'] = _rot['singular_values']
-                    if params.get('return_rotation_matrices', False):
-                        results['embeddings_rotation_x'] = _rot['rotation_x']
-                        results['embeddings_rotation_y'] = _rot['rotation_y']
-                    logger.debug("Computed rotated embeddings (whitening=%r).", _whitening)
+            if setting(params, 'return_rotated_embeddings'):
+                _whitening = setting(params, 'whitening')
+                _rot = compute_cross_covariance_rotation(
+                    results['embeddings_x'], results['embeddings_y'],
+                    whitening=_whitening,
+                )
+                results['embeddings_x_rotated'] = _rot['zx_rotated']
+                results['embeddings_y_rotated'] = _rot['zy_rotated']
+                results['embeddings_rotation_singular_values'] = _rot['singular_values']
+                if setting(params, 'return_rotation_matrices'):
+                    results['embeddings_rotation_x'] = _rot['rotation_x']
+                    results['embeddings_rotation_y'] = _rot['rotation_y']
+                logger.debug("Computed rotated embeddings (whitening=%r).", _whitening)
 
     frozen_x = results.pop('_frozen_eval_x', None)
     frozen_y = results.pop('_frozen_eval_y', None)
 
-    final_result = {**_reported(params), **results}
+    final_result = {**_reported(params), **results, IDENTITY_KEY: _rows}
     if params.get('_keep_trained'):
         # mode='precision' evaluates this network again on corrupted copies of
         # its training rows, so it needs the trainer, the dataset and, when the

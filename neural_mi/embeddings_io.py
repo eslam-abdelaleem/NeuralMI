@@ -19,14 +19,16 @@ from __future__ import annotations
 
 import datetime
 import os
+import pickle
 import re
 
 import numpy as np
 import torch
 from typing import Dict, Any, Optional, Tuple
 
+from neural_mi.defaults import setting
 from neural_mi.logger import logger
-from neural_mi.utils import build_critic, get_device
+from neural_mi.utils import build_critic, float_tensor, get_device
 
 
 MODEL_EXTENSION = '.pt'
@@ -106,6 +108,20 @@ def saved_paths(raw: Dict[str, Any]) -> list:
             for record in value if isinstance(record, dict) and record.get('model_path')]
 
 
+def _saved(value: Any) -> Any:
+    """``value`` as a saved network carries it: itself, or, for a class pickle cannot store (one defined
+    inside a function), a note naming it that ``extract_embeddings`` reports."""
+    try:
+        pickle.dumps(value)
+        return value
+    except Exception:
+        return _Unsaved(f"{getattr(value, '__module__', '?')}.{getattr(value, '__qualname__', repr(value))}")
+
+
+class _Unsaved(str):
+    """The name of a setting's value that could not be saved with a network."""
+
+
 def save_network(model: torch.nn.Module, params: Dict[str, Any], build_keys) -> Optional[str]:
     """Save `model` with what rebuilding it needs, and return the path written."""
     path = model_file(params)
@@ -114,7 +130,7 @@ def save_network(model: torch.nn.Module, params: Dict[str, Any], build_keys) -> 
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    build_params = {k: params[k] for k in build_keys if k in params}
+    build_params = {k: _saved(params[k]) for k in build_keys if k in params}
     torch.save({'state_dict': model.state_dict(), 'build_params': build_params}, path)
     logger.debug(f"Model saved to {path}.")
     return os.path.abspath(path)
@@ -155,15 +171,19 @@ def extract_embeddings(
     ----------
     model_path : str
         Path to the saved model file (``.pt`` or ``.pth``).
-    x_data : np.ndarray or torch.Tensor
+    x_data : np.ndarray or torch.Tensor, or a tuple of two
         Input data for variable X.  Shape must match what the model was trained
         on (e.g., ``(n_samples, input_dim_x)`` for MLP, or
-        ``(n_samples, n_channels, window_size)`` for CNN/GRU).
+        ``(n_samples, n_channels, window_size)`` for CNN/GRU). The joint term
+        of a difference quantity reads X as the pair ``(rest of X,
+        conditioning set)``, and its saved network takes that tuple.
     y_data : np.ndarray or torch.Tensor
         Input data for variable Y.
     base_params : dict, optional
-        Required only when loading a bare state_dict. Must include all keys
-        needed by :func:`~neural_mi.utils.build_critic`.
+        Required when loading a bare state_dict, and then holding the settings
+        :func:`~neural_mi.utils.build_critic` reads. With a bundled file it
+        supplies what could not be saved, such as a ``custom_embedding_cls``
+        defined inside a function.
     device : str, optional
         Compute device (e.g., ``'cpu'``, ``'cuda'``).  Auto-detected if None.
 
@@ -189,7 +209,14 @@ def extract_embeddings(
     if isinstance(loaded, dict) and 'state_dict' in loaded and 'build_params' in loaded:
         # New format
         state_dict = loaded['state_dict']
-        bp = loaded['build_params']
+        bp = {**loaded['build_params'], **(base_params or {})}
+        unsaved = {k: v for k, v in bp.items() if isinstance(v, _Unsaved)}
+        if unsaved:
+            raise ValueError(
+                f"'{model_path}' was trained with {', '.join(f'{k}={v}' for k, v in unsaved.items())}, "
+                f"which could not be saved with it (a class defined inside a function cannot be). "
+                f"Pass it as base_params={{{', '.join(repr(k) + ': ...' for k in unsaved)}}}."
+            )
         logger.debug(f"Loaded new-format model from {model_path} "
                      f"(critic_type={bp.get('critic_type')}, "
                      f"embedding_model={bp.get('embedding_model')}).")
@@ -213,36 +240,32 @@ def extract_embeddings(
 
     # --- Rebuild critic ---
     _device = get_device(device)
-    critic = build_critic(bp.get('critic_type', 'separable'), bp)
+    critic = build_critic(setting(bp, 'critic_type'), bp)
     critic.load_state_dict(state_dict, strict=True)
     critic = critic.to(_device)
     critic.eval()
 
     # --- Prepare tensors ---
-    def _to_tensor(arr):
-        if torch.is_tensor(arr):
-            return arr.float()
-        return torch.from_numpy(np.asarray(arr)).float()
+    pair = isinstance(x_data, tuple)
+    x_t = tuple(float_tensor(part) for part in x_data) if pair else float_tensor(x_data)
+    y_t = float_tensor(y_data)
 
-    x_t = _to_tensor(x_data)
-    y_t = _to_tensor(y_data)
-
-    if x_t.shape[0] != y_t.shape[0]:
-        raise ValueError(
-            f"x_data and y_data must have the same number of samples, "
-            f"got {x_t.shape[0]} and {y_t.shape[0]}."
-        )
+    for part in (x_t if pair else (x_t,)):
+        if part.shape[0] != y_t.shape[0]:
+            raise ValueError(
+                f"x_data and y_data must have the same number of samples, "
+                f"got {part.shape[0]} and {y_t.shape[0]}."
+            )
 
     # --- Extract embeddings in mini-batches, preserving sample order ---
-    n = x_t.shape[0]
+    n = y_t.shape[0]
     zx_parts, zy_parts = [], []
     with torch.no_grad():
         for start in range(0, n, _EMBEDDING_BATCH):
             end = min(start + _EMBEDDING_BATCH, n)
-            bzx, bzy = critic.get_embeddings(
-                x_t[start:end].to(_device),
-                y_t[start:end].to(_device),
-            )
+            bx = (tuple(part[start:end].to(_device) for part in x_t) if pair
+                  else x_t[start:end].to(_device))
+            bzx, bzy = critic.get_embeddings(bx, y_t[start:end].to(_device))
             zx_parts.append(bzx.detach().cpu())
             zy_parts.append(bzy.detach().cpu())
 

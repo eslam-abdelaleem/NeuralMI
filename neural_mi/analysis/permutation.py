@@ -2,7 +2,8 @@
 """Permutation nulls: rerun a mode's producer with X moved in time.
 
 A trial shifts X, the source, once and runs the producer the observed call
-ran. Y, and W where there is one, stay as they are, so every relation that
+ran. Y, and W where there is one, stay as they are (inside a quantity's row
+plan, whose grid stays where it is), so every relation that
 does not involve X (Y's own history in transfer entropy, the Y-W link in the
 conditional quantities) survives into the null, and only X's alignment with
 the rest is broken. The trial's repeats are averaged into one value per
@@ -18,8 +19,8 @@ Two shuffles are available through ``permutation_shuffle``:
     zero (in either direction) are excluded, since a near-zero shift would
     leave the dependence in place.
 ``'block'``
-    X is cut into contiguous blocks one window long and the blocks are
-    reordered. Structure within a window is kept; structure across windows
+    X is cut into contiguous blocks as long as one row's span and the blocks
+    are reordered. Structure within a block is kept; structure across blocks
     is not.
 """
 import math
@@ -31,9 +32,12 @@ import pandas as pd
 import torch
 from tqdm.auto import tqdm
 
+from neural_mi.defaults import setting
 from neural_mi.analysis.assemble import _hashable, aggregate
+from neural_mi.data.rows import PHASES_KEY, RowGeometry, row_geometry
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.parallel import worker_pool
+from neural_mi.seeds import network_seed
 
 # Offsets closer than this fraction of the recording to zero, in either
 # direction, are excluded from a circular shift.
@@ -128,18 +132,30 @@ def _block_shuffle_spike_population(spikes: list, t_start: float, t_end: float,
 
 
 def _window_rows(x: Any, base_params: Dict[str, Any], ctx: Dict[str, Any]) -> int:
-    """How many rows of X make one window, the block length of a block shuffle.
+    """How many rows of X one block of a block shuffle holds: the rows that one row's span takes in.
 
-    Windowed data has one window per row. A raw series that is windowed later
-    has ``window_size`` samples per window, converted with the stream's
-    sample rate or clock. Transfer entropy's raw series use the history length.
+    Rows in time order carry their geometry (:mod:`neural_mi.data.rows`), and a
+    block is as many of them as one row covers, so a block keeps whole the rows
+    that share samples. Rows not known to be in time order move one at a time.
+    A raw series that is windowed later moves in blocks of one window, its
+    ``window_size`` converted to samples with the stream's sample rate or
+    clock. Transfer entropy's raw series move in blocks of one of its rows,
+    whose recorded span is in samples.
     """
+    rows = row_geometry(base_params)
     if getattr(x, 'ndim', 2) != 2:
-        return 1
+        if rows is None:
+            return 1
+        # Rows built at every step for shifting are one step apart, not one row step.
+        phases = int(base_params.get(PHASES_KEY) or 1)
+        return RowGeometry(rows.step / phases, rows.span).rows_per_span
     params = base_params.get('processor_params_x') or {}
     window = params.get('window_size')
-    if window is None:
-        return int(ctx.get('history_window') or 1)
+    if window is None or params.get('preprocessed'):
+        # No processor windows this series later (run.py marks a series it has
+        # prepared already): its rows are built from it by offset (transfer
+        # entropy), or they are its samples.
+        return max(1, int(round(rows.span))) if rows is not None else 1
     if params.get('sample_rate'):
         period = 1.0 / float(params['sample_rate'])
     elif base_params.get('x_time') is not None and len(base_params['x_time']) > 1:
@@ -169,6 +185,14 @@ def shift_x(x_data: Any, base_params: Dict[str, Any], permutation_shuffle: str,
     in time; any other X is moved along its first (time or sample) axis.
     """
     ctx = ctx or {}
+    from neural_mi.data.plan import RowPlan
+    if isinstance(x_data, RowPlan):
+        # X moves inside the quantity's plan, whose grid stays where it is, so
+        # every term of the trial reads the same rows as every other.
+        stream = x_data.streams['x']
+        side = ({**base_params, 'processor_params_x': stream.params, 'x_time': stream.time}
+                if stream.processor is not None else base_params)
+        return x_data.replace('x', shift_x(stream.data, side, permutation_shuffle, ctx))
     if _is_spike_list(x_data):
         t_start, t_end = _spike_population_extent(x_data, base_params, 'x')
         if permutation_shuffle == 'block':
@@ -235,15 +259,18 @@ def permutation_nulls(mode: str, x, y, w, base_params: Dict[str, Any], grid, *, 
     Returns one entry per trial: its ``{row key: (mi, mi_raw)}``, or ``None``
     when the trial failed.
     """
-    rng = np.random.default_rng(base_params.get('random_seed'))
-    seeds = [int(s) for s in rng.integers(0, 2 ** 31, size=n_permutations)]
+    # Each trial moves X by draws from a seed of its own (neural_mi/seeds.py). Its
+    # networks keep the seeds the observed call's networks had, so a trial
+    # differs from the observed call only in the moved X.
+    seeds = [network_seed(base_params.get('random_seed'), 0, f"permutation{trial}")
+             for trial in range(n_permutations)]
     # A null trial's networks are never saved: they would overwrite the
     # observed networks' files with networks trained on moved data.
     trial_params = {**base_params, 'show_progress': False, 'save_best_model_path': None}
     trial_params.pop('_model_labels', None)
     args = [(mode, x, y, w, trial_params, grid, ctx, to_bits, seed, permutation_shuffle)
             for seed in seeds]
-    show_progress = base_params.get('show_progress', True)
+    show_progress = setting(base_params, 'show_progress')
     logger.info(f"Permutation test: {n_permutations} trials for mode='{mode}' across "
                 f"{n_workers} worker(s).")
     if n_workers > 1 and n_permutations > 1:

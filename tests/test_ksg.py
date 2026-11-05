@@ -11,6 +11,7 @@ from neural_mi.estimators import ksg as K
 from neural_mi.exceptions import CombinationWarning
 from neural_mi.estimators import ksg_cmi, ksg_mi
 from neural_mi.generators import LatentGaussian
+from neural_mi.seeds import network_seed
 
 LN2 = np.log(2)
 QUIET = dict(show_progress=False, verbose=False)
@@ -68,6 +69,18 @@ class TestEstimator:
         monkeypatch.setattr(K, 'KD_TREE_MAX_DIM', 1000)
         assert one_pass == pytest.approx((ksg_mi(x, y, exclude=3), ksg_cmi(x, y, z, exclude=3)), abs=1e-12)
 
+    def test_values_that_mostly_tie_warn(self):
+        """Counts tie, and KSG breaks each variable's ties apart, so a copy stops looking like a copy. It
+        warns there and stays silent on continuous values."""
+        rng = np.random.default_rng(0)
+        counts = rng.poisson(0.3, size=(2000, 3)).astype(float)
+        with pytest.warns(UserWarning, match=r"KSG assumes continuous values, and .* of X's values in column"):
+            ksg_mi(counts, rng.standard_normal(2000))
+        assert K.tied_share(counts).min() > K.TIED_SHARE
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            ksg_mi(*_pair())
+
     def test_autocorrelation_time(self):
         rng = np.random.default_rng(0)
         assert K.autocorrelation_time(rng.standard_normal((5000, 2))) == 0
@@ -102,7 +115,8 @@ class TestThroughRun:
         s, k = g.sample(3000, seed=1), 2
         r = nmi.transfer_entropy(s['x'], s['y'], history_window=k, estimator='ksg', seed=0, **QUIET)
         past = lambda v: np.stack([v[k - j - 1:len(v) - j - 1, 0] for j in range(k)], 1)
-        direct = ksg_cmi(past(s['x']), s['y'][k:], past(s['y']), seed=r.params['random_seed']) / LN2
+        # KSG breaks its ties from the network's seed (neural_mi/seeds.py).
+        direct = ksg_cmi(past(s['x']), s['y'][k:], past(s['y']), seed=network_seed(r.params['random_seed'])) / LN2
         assert r.mi_estimate == pytest.approx(direct, abs=1e-12)
         exact = g.exact([('x', -j) for j in range(1, k + 1)], [('y', 0)], [('y', -j) for j in range(1, k + 1)])
         assert r.mi_estimate == pytest.approx(exact, abs=0.03)
@@ -117,15 +131,20 @@ class TestThroughRun:
             ii = nmi.run(x, y, mode='interaction', interaction=nmi.Interaction(w_data=w), estimator='ksg', seed=0,
                          **QUIET)
         assert not [m for m in caught if issubclass(m.category, CombinationWarning)]   # the terms err together
-        assert cmi.mi_estimate == pytest.approx(ksg_cmi(x, y, w, seed=0) / LN2, abs=1e-12)
-        assert ii.mi_estimate == pytest.approx((ksg_cmi(w, y, x, seed=0) - ksg_mi(w, y, seed=0)) / LN2, abs=1e-12)
+        # Every term breaks its ties from the same network seed (neural_mi/seeds.py), on the
+        # float32 rows the run hands it. Rounding to float32 ties values the float64 sample did not.
+        seed = network_seed(0)
+        x, y, w = (np.asarray(v, dtype=np.float32) for v in (x, y, w))
+        assert cmi.mi_estimate == pytest.approx(ksg_cmi(x, y, w, seed=seed) / LN2, abs=1e-12)
+        assert ii.mi_estimate == pytest.approx((ksg_cmi(w, y, x, seed=seed) - ksg_mi(w, y, seed=seed)) / LN2,
+                                               abs=1e-12)
 
     def test_a_pair_of_different_lengths(self):
-        """align='dual_branch' hands the joint term the pair (X, C): the conditional estimate given C."""
+        """The joint term reads the pair (X, C), each part with its own window: the conditional estimate given C."""
         rng = np.random.default_rng(0)
         a, c = rng.standard_normal((1500, 2, 3)), rng.standard_normal((1500, 1, 5))
         y = a[:, :1, :1] + c[:, :, :1] + rng.standard_normal((1500, 1, 1))
-        r = nmi.run(a, y, mode='conditional', conditional=nmi.Conditional(w_data=c, align='dual_branch'),
+        r = nmi.run(a, y, mode='conditional', conditional=nmi.Conditional(w_data=c),
                     estimator='ksg', seed=0, **QUIET)
         assert r.mi_estimate == pytest.approx(ksg_cmi(a, y, c, seed=0) / LN2, abs=1e-12)
 

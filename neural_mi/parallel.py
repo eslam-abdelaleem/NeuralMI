@@ -13,6 +13,7 @@ import torch
 import torch.multiprocessing as mp
 from tqdm.auto import tqdm
 
+from neural_mi.defaults import default_of
 from neural_mi.utils import _configure_multiprocessing
 from neural_mi.logger import CapturedTask, _worker_log_init, logger, released
 
@@ -49,7 +50,7 @@ def dispatch_tasks(
     tasks: List[Any],
     fn: Callable[[Any], Any],
     n_workers: int = 1,
-    show_progress: bool = True,
+    show_progress: bool = default_of('show_progress'),
     desc: str = "Dispatching tasks",
 ) -> List[Any]:
     """Run ``fn`` over every item in *tasks*, in parallel when it pays off.

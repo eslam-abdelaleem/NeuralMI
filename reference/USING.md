@@ -51,13 +51,17 @@ network on the rest, finds the earliest epoch at which the smoothed MI on the
 held-out blocks reaches its top, and reports the MI on the training samples at
 that epoch as `mi_estimate`. The value is in bits unless `Output(units='nats')` asks for
 nats. [THEORY.md](THEORY.md#the-reported-number) explains why the training side
-is the value reported.
+is the value reported. The held-out rows choose that epoch, so the data check's
+line says when there are fewer of them than one training batch, and so does
+every message about the held-out curve.
 
 Every setting belongs to a config object: `Processing` for how raw data are
 read, `Model` for the networks, `Training` for the optimisation loop, `Split`
 for the train and test sets, `Estimator` for the bound, `Output` for units and
 extras, and one config per analysis mode. Every config is optional and can be
-replaced by a plain `dict` with the same keys.
+replaced by a plain `dict` with the same keys. The values below only show where
+each setting goes. The defaults are what the library is tested and documented
+with, and a starting point for any data.
 
 ```python
 from neural_mi import Model, Training, Split, Output
@@ -95,11 +99,13 @@ of the whole procedure on the same data. Repeats are indexed by `run_id`.
 `params['axis_keys']` name the columns that index `dataframe`.
 
 `dataframe` always has `config_id`, the grid and axis keys, `mi_mean`, `mi_std`,
-`n_runs` and `n_zero`, followed by the columns of the mode (listed per mode in
-[Choosing the analysis](#choosing-the-analysis)). For a difference quantity or a
-rigorous fit, `mi_mean` and `mi_std` use every repeat's measured value,
-negative ones included, `mi_mean` is reported as 0 when it is negative, and
-`mi_raw_mean` keeps the measured mean. For a single network they use the
+`n_runs`, `n_zero` and `n_failed`, followed by the columns of the mode (listed
+per mode in [Choosing the analysis](#choosing-the-analysis)). For a difference
+quantity or a rigorous fit, `mi_mean` and `mi_std` use every repeat's measured
+value, negative ones included, `mi_mean` is reported as 0 when it is negative,
+and `mi_raw_mean` keeps the measured mean. A repeat with no value (NaN), such as
+one in which a term of a difference failed, is counted in `n_failed` and left
+out ([THEORY.md](THEORY.md#the-reported-number)). For a single network they use the
 repeats that produced a value, and a repeat reported as 0 produced nothing and
 is counted in `n_zero` ([THEORY.md](THEORY.md#the-spread-over-repeats)). `mi_std`
 is the spread over repeats of the procedure on the same data and is NaN below
@@ -224,14 +230,14 @@ arrays, call one of these modes and return its `Results`.
 ### `estimate`
 
 ```python
-result = nmi.run(x, y, mode='estimate', training=Training(n_epochs=100))
+result = nmi.run(x, y, mode='estimate')
 result.mi_estimate
 result.plot()          # held-out MI against epoch, with the chosen epoch marked
 ```
 
 `dataframe` adds the held-out MI at the chosen epoch as `test_mi_mean`.
-`mode='estimate'` runs one configuration once and ignores a `sweep_grid` with a
-warning. `mode='sweep'` runs the grid.
+`mode='estimate'` runs one configuration once and refuses a `sweep_grid`.
+`mode='sweep'` runs the grid.
 
 ### `sweep`
 
@@ -248,8 +254,12 @@ parameters can be a key of `sweep_grid`. `run_id` adds repeats. In a grid,
 `Split(mode=...)` is `split_mode`, `Split(gap_fraction=...)` is
 `split_gap_fraction`, and `Estimator(name=...)` and `Estimator(params=...)` are
 `estimator_name` and `estimator_params`. Because they would run the same call
-under different labels, the grid refuses a key that no setting reads and a key
-the mode reads only once from its config (such as `history_window`). A sweep
+under different labels, the grid refuses a key that no setting reads, a key the
+mode reads only once from its config (such as `history_window`), a key the mode
+sets itself (`lag` in `mode='lag'`, `embedding_dim` and `run_id` in
+`mode='dimensionality'`) and a setting that nothing in the call reads, such as
+`embedding_dim` under the concat critic. A fixed setting that nothing reads is
+ignored with a warning instead. A sweep
 over the capacity of the network (`embedding_dim`, `hidden_dim`, `n_layers`) and
 over `n_epochs` is the way to find a configuration whose estimate has stopped
 moving before committing to a rigorous run.
@@ -277,16 +287,19 @@ extrapolated to the infinite-data limit at $\gamma = 0$
 half-width `mi_error` and prediction half-width `mi_error_pred`, the `slope`,
 `is_reliable`, the checks behind it (`enough_gamma_points`,
 `linear_region_found`, `leverage_warning`, `saturated_gammas`), the diagnostics
-reported beside it (`fit_quality_warning`, `r_squared`, `max_abs_residual`, and
-`zero_rungs` for the rungs that produced nothing), and the curvature statistics
-the linear region was chosen on. When the fit extrapolates below zero `mi` is 0
-and `mi_raw` holds the fitted value. `details[config_id]['trainings']` holds
-every network of the ladder.
+reported beside it (`fit_quality_warning`, `r_squared`, `max_abs_residual`,
+`zero_rungs` for the rungs that produced nothing and `unresolved_rungs` for
+those whose held-out curves did not resolve, both left out of the fit), and the
+curvature statistics the linear region was chosen on. When the fit extrapolates
+below zero `mi` is 0 and `mi_raw` holds the fitted value.
+`details[config_id]['trainings']` holds every network of the ladder.
 
 `is_reliable` is `False` when the fit used fewer than `min_gamma_points` values
 of $\gamma$, when no linear region was found, when leaving out $\gamma = 1$
 shifts the intercept by more than `leverage_threshold`, and, in
 `mode='rigorous'`, when a $\gamma$ in the fit sits at its estimator's ceiling.
+The rungs left out go first, so a ladder whose deep chunks are too small for
+their networks ends with too few values of $\gamma$ instead of fitting noise.
 An unreliable fit should not be reported even with a caveat. A reliable one
 means the part of the bias that shrinks with more data has been removed and the
 fit is well determined. Bias that is the same at every chunk size passes through
@@ -300,9 +313,13 @@ that point are noise that a straight line can still pass through.
 With repeats, `mi_mean` and `mi_std` are the mean and spread of the repeats'
 extrapolations. `dataframe['n_reliable']` counts the reliable fits.
 `dataframe['mi_error']` is filled for a single repeat only because the intervals
-of repeats that share data cannot be combined. Windowed time-series data are cut
-into the same contiguous chunks for every repeat. Static data are reordered at
-random for each repeat.
+of repeats that share data cannot be combined. Rows in time order are cut into
+the same contiguous chunks for every repeat: the windows a processor cut, the
+rows a named quantity builds and the histories of transfer entropy, for every
+quantity. Other rows are reordered at random for each repeat, since an array
+passed in already built is not known to be in time order.
+`Rigorous(temporal_chunking=True)` says it is. `runs['chunking_mode']` records
+which.
 
 ### `lag`
 
@@ -385,15 +402,22 @@ result.plot()          # the components beside the difference
 $I(X;Y \mid W)$ is computed repeat by repeat as $I(X,W;Y) - I(W;Y)$ from two
 networks. `runs` holds each repeat's value and its components `mi_xw_y` and
 `mi_w_y`. A repeat that comes out negative is reported as 0 and keeps the
-measured difference in `mi_raw`. `dataframe` adds the component means and the
+measured difference in `mi_raw`. A term whose network learned nothing enters
+as 0, with a warning that names it. A repeat in which a term's network read
+negative on its training rows while its held-out value stood clearly above zero
+has no value: it is NaN, `failed_term` names the term, and the same holds for
+every quantity combined from separately trained networks
+([THEORY.md](THEORY.md#the-reported-number)). `dataframe` adds the component means and the
 `amplification_factor` by which the difference magnifies the components'
 relative error. A factor of 10 or more warns because a difference that small
 should be read with its components ([THEORY.md](THEORY.md#amplification)).
 
-`Conditional(align='dual_branch')` passes X and W to the joint term as a pair,
-each at its own window length, for a W whose window length differs from X's.
-The named quantities that need it set `align` themselves
-([the named quantities](#the-named-quantities)).
+The joint term reads X and W as a pair, each part on a branch of its own
+([The encoder of a difference](#the-encoder-of-a-difference)), so X and W need
+not share a channel count, a window length or a modality. A spike X beside a
+continuous W works, and so do rows of W built before the call with a window
+length of their own. A W that a processor windows shares the grid of X and Y,
+with their window and step ([One grid for every stream](#one-grid-for-every-stream)).
 
 ### `interaction`
 
@@ -443,9 +467,10 @@ of history windows built.
 
 The histories are built row by row from `(T, n_channels)` input series. With
 `processing=` every stream is first put on one grid whose rows are one time step
-wide ([one grid](#one-grid-for-every-stream)). `window_size` must then be one
-step: `bin_size` for spikes and one sample for continuous data. Categorical
-streams spend that axis on categories and are refused.
+wide and tile time ([one grid](#one-grid-for-every-stream)). `window_size` must
+then be one step, `bin_size` for spikes and one sample for continuous data, and
+`step_size` is left unset. Categorical streams spend that axis on categories and
+are refused.
 
 ### `pairwise`
 
@@ -563,8 +588,8 @@ estimate, and that spread belongs in its uncertainty.
 
 | mode | repeats | configuration grid | `rigorous` |
 |---|---|---|---|
-| `estimate` | warns and runs once | warns and runs the base configuration | through `mode='rigorous'` |
-| `precision` | warns and runs once | warns and runs once | refused |
+| `estimate` | refused | refused | through `mode='rigorous'` |
+| `precision` | refused | refused | refused |
 | `sweep` | yes | yes | through `mode='rigorous'` with the same grid |
 | `rigorous` | one extrapolation per repeat | yes | built in |
 | `lag` | yes | yes | refused |
@@ -613,8 +638,8 @@ result.get('null_distribution')
 The default `permutation_shuffle='circular'` shifts X by one random offset with
 wrap-around, drawn away from zero by at least 10% of the recording's length so
 that no trial leaves X nearly aligned. `permutation_shuffle='block'` cuts X into
-blocks one window long and reorders them. Both apply to windowed rows, to raw
-series and to spike times. A spike population moves as a whole and keeps the
+blocks as long as one row's span and reorders them, so rows that share samples
+move together. Both apply to windowed rows, to raw series and to spike times. A spike population moves as a whole and keeps the
 structure among its neurons.
 
 The null has one set of trials per row of `dataframe`. A lag scan gets a null at
@@ -630,20 +655,25 @@ n)$.
 The smallest p-value $n$ trials can give is $1/(n+1)$. A test with fewer than
 100 trials warns. Every trial reruns the whole call with every configuration of the grid. The test therefore costs $n$ times the call.
 
-`rigorous`, `precision` and `rigorous=True` refuse a permutation test.
-`dimensionality` warns and computes no null because its curve is no single
-value for a null to sit under. `pairwise` without `y_data` warns and computes no
-null because moving X would move both sides of each pair.
+`rigorous`, `precision` and `rigorous=True` refuse a permutation test before
+any work. So does `dimensionality`, because its curve is no single value for a
+null to sit under, and `pairwise` without `y_data`, because moving X would move
+both sides of each pair.
 
 ### Workers and seeds
 
 `n_workers` runs the independent tasks of a call in parallel: repeats,
 configurations, lags, pairs, chunks of the rigorous ladder, splits, and
-permutation trials. With `seed` set, each task reseeds from the seed and a fixed
-key of its own. A seeded call therefore returns the same numbers at any
-`n_workers`. A call without a seed draws one from NumPy's global state and
-records it in `result.params['random_seed']`, so passing that seed back
-reproduces the call.
+permutation trials. With `seed` set, each network seeds itself from the seed,
+its repeat (`run_id`) and its role in the estimate (the gamma and chunk of a
+rung, the split and width of a dimensionality fit). Its place in a grid plays
+no part. A seeded call therefore returns the same numbers at any `n_workers`. A
+configuration also reads the same number alone or in a grid, in any order, and
+whether a setting is passed in the call or as a grid value. Every configuration
+runs a repeat from the same seeds. A comparison between settings is therefore
+paired. Each repeat draws its own seeds, the shifts of its windows included. A call without a
+seed draws one from NumPy's global state and records it in
+`result.params['random_seed']`, so passing that seed back reproduces the call.
 
 Each worker gets an equal share of the CPU threads, `os.cpu_count() // n_workers`
 and at least one. Workers that each used every core would compete for them, and
@@ -652,9 +682,12 @@ one thread each. Setting `OMP_NUM_THREADS` before the call keeps your own count.
 
 The terms of a difference quantity (conditional MI, transfer entropy,
 interaction information and the named quantities built on them) are separate
-trainings. They split and evaluate the same rows because every term of a repeat
-draws its split and evaluation rows from a generator seeded with the same key,
-with or without a seed passed to the call.
+trainings on the same rows. They read one plan of every stream the quantity
+reads ([One grid for every stream](#one-grid-for-every-stream)), and every term
+of a repeat draws its split, its evaluation rows and its shifts from generators
+seeded alike, with or without a seed passed to the call. Each task
+reports which rows it read, and a repeat whose terms read different rows would
+be refused.
 
 A script that runs with `n_workers` above 1 needs a `__main__` guard. The
 workers start by re-importing the module that launched them. A top-level
@@ -743,10 +776,11 @@ window_size`.
 
 ### One grid for every stream
 
-All the streams of a call are windowed on one grid. The grid starts at the
-latest start among the streams, a window is kept only where every stream has
-data, and a window means the same interval in X, Y and W. Each stream keeps its
-own processor, parameters and clock:
+All the streams of a call are windowed on one grid, the call's row plan. The
+grid starts at the latest start among the streams and ends at the earliest end,
+a window is kept only where every stream has data, and a window means the same
+interval in X, Y and W. Each stream keeps its own processor, parameters and
+clock:
 
 ```python
 processing = Processing(x='spike', x_params={'window_size': 1.0, 'bin_size': 0.1},
@@ -756,12 +790,33 @@ result = nmi.run(spikes, position, mode='conditional',
                  conditional=Conditional(w_data=direction), processing=processing)
 ```
 
-Y and W read with X's processor when they name none. A stream that falls back to
-X's parameters keeps only the keys its own processor takes. The call reports any
-stream that asks for a `window_size` other than the one all streams share.
+Y and W read with X's processor when they name none, and with X's parameters
+when they are given none. A stream that falls back to X's parameters keeps only
+the keys its own processor takes, and parameters a stream is given are its own,
+not merged with X's. Every setting is resolved once, for the whole call, from
+these rules and the defaults (`defaults.stream_processing`). A stream passed as
+rows built already, a 3-D array, has no raw series to read and inherits
+nothing. Rows built already cannot share a call with a windowed stream, since
+they have no time axis to align windows against, so every stream is either
+read by a processor or passed built already. `create_dataset` builds the rows
+of every stream on one grid when some of them need building. Rows built
+already must also come one per row of every other stream, and streams whose
+counts differ are refused rather than cut to the shorter. The grid
+has one window and one step, X's, and a stream that asks for another window, or
+for a step of another length, is refused. `nmi.offset_quantity` places a stream
+at offsets of its own, before X's window or across it
+([Quantities without a named function](#quantities-without-a-named-function)).
 
-A continuous or categorical window survives only when at least
-`min_coverage_fraction` of it holds samples. `details` and `runs` report the
+Every term of a quantity reads the plan's rows and only selects its streams:
+the conditioning term of conditional MI reads W and Y on the same rows as the
+joint term reads X, W and Y. The fits to the data are made per stream and so
+come out the same in every term: a categorical stream's categories, a spike
+stream's bursty neurons (`exclude_bursty_neurons`) and its spike slots.
+
+A continuous or categorical window lies within its stream's samples, from the
+first sample to the end of the last one's sample period, on every route, so a
+window that would run past either end is never cut. Inside that stretch a window
+survives only when at least `min_coverage_fraction` of it holds samples. `details` and `runs` report the
 fraction of windows kept (`window_retention`) and the counts behind it
 (`n_windows_built`, `n_windows_retained`). Because validity combines across
 streams, three streams at 62% each keep about 24% of windows jointly. Retention
@@ -769,8 +824,11 @@ below 50% warns and names the stream responsible.
 
 ### Silent spike windows
 
-The default drops spike windows without spikes and estimates the MI in bits per
-active window over the windows where the population fired.
+`drop_empty_windows=True` is the one default that changes the data. It drops
+spike windows without spikes and estimates the MI in bits per active window
+over the windows where the population fired. It is the default because in spike
+times silence looks the same as no recording. A row is kept only where every
+spike stream of the call fired, in every term.
 `x_params={'drop_empty_windows': False}` keeps silent windows and estimates the
 MI in bits per window. Because whether the population is active can itself carry
 information, neither quantity is a rescaled version of the other
@@ -783,43 +841,92 @@ continuous stream with its own clock in the pairing also covers it because its
 coverage check masks unobserved stretches.
 
 Dropping silent windows also breaks the time axis by leaving consecutive
-windows more than one step apart. Any analysis that indexes windows by offset
-needs them kept. A per-bin series for offsets sets `window_size` equal to `bin_size`
-and keeps silent windows.
+windows more than one step apart. The quantities defined by time offsets keep
+every window for that reason, and setting `drop_empty_windows=True` there warns
+that it has no effect. A per-bin series for offsets sets `window_size` equal to
+`bin_size`.
 
 A window sweep on spike data changes the estimand as it goes because wider
 windows are more likely to hold a spike. On a 3 Hz population, retention rose
 from 0.155 at 20 ms to 1.0 at 1 s. `drop_empty_windows=False` holds retention at
 1.0 across the sweep.
 
+### Preprocessing the streams
+
+Nothing changes the data unless asked. `Preprocessing` transforms each
+continuous stream before rows are built from it, fitted on X, Y and W apart,
+and `result.params['preprocessing']` records what it applied:
+
+```python
+from neural_mi import Preprocessing
+from neural_mi.preprocessing import PCA
+
+nmi.run(x, y, preprocessing=Preprocessing(channel='zscore'))
+nmi.mi_rate(x, y, h=10, half_width=5, preprocessing=Preprocessing(time='ar', channel='zscore'))
+nmi.run(x, y, preprocessing=Preprocessing(channel=PCA(n_components=8)))
+```
+
+The channel transforms (`'zscore'`, `'zca'`, `'pca'`, `'copula'`) are
+invertible, so every quantity keeps its value, and they remove the dependence of
+the estimate on units: a pair reads close to its true value at unit scale and
+close to 0 at a thousand times it or a thousandth of it. `PCA(n_components=k)` with `k`
+below the channel count is the exception. It keeps the directions of largest
+variance and warns, since the information need not lie in them.
+
+`time='ar'` filters each channel by its own autoregressive fit, its order chosen
+by AIC, and keeps the series' length. It leaves the rate quantities unchanged in
+the limit of long windows and shrinks their conditioning term
+([THEORY.md](THEORY.md#getting-a-rate)). On smooth, finely sampled signals that
+term is several nats and the rate a small residual of it, which the networks
+read poorly. On a shared oscillation under larger private ones, `mi_rate` came
+close to the exact rate after whitening, and read 0 or failed before. Every other quantity changes under it, and warns.
+
+Spike-time and categorical streams take neither transform: their processors set
+their rows, and `Model(input_scaling='standard')` scales what an encoder
+receives. Arrays passed in as rows take the channel transform only. A transform
+of your own subclasses `nmi.preprocessing.Transform`: it declares its `domain`
+(`'channel'` or `'time'`), learns from a stream in `fit` and applies in
+`transform`, both on `(n, n_channels)` arrays. The library warns that it cannot
+check that it keeps the information.
+
+Every call also checks its streams before rows are built, after any
+preprocessing, and changes nothing. It warns about non-finite or constant
+channels and about channels more than ten times from unit scale. Its report,
+logged at the info level (`verbose=True`), gives each stream's channel scales
+and, for a rate quantity, how much of each channel's variance its own past
+predicts, with the option that would help.
+
 ### Window shifting
 
-By default `Training(shift_windows=True)` and `Training(shift_time=True)` make
-training re-tile the windows from a fresh random offset every epoch to show the
-network many sets of window boundaries. `shift_windows` re-slices a regular grid
-and serves continuous and categorical streams. `shift_time` rebuilds windows
-from the raw data and serves spike streams, including a spike stream paired with
-a continuous or categorical one that has a `sample_rate`. Because evaluation
-always reads the unshifted windows, the reported values do not depend on the
-last shift drawn.
+By default `Training(shift_windows=True)` moves the training rows' windows each
+epoch, to show the network many sets of window boundaries. The rows stay the
+same rows. Each epoch draws one offset within one step, and every stream's
+windows start that much later, so X, Y and W move together and every term of a
+difference moves its rows by the same offset at the same epoch. The grid leaves
+one step at its end for the shift. Rows cut by sample number that start one
+sample apart never move, since a shift would only relabel them. On a grid in
+time they move by part of a sample, read between samples. Evaluation always
+reads the unshifted
+rows, so the reported values do not depend on the last shift drawn.
 
-| call | continuous and categorical | spike |
+| call | rows a processor cuts | rows passed in built already |
 |---|---|---|
-| `estimate`, `sweep`, `pairwise`, `dimensionality`, `precision`, `lag` | shifted | shifted |
-| `conditional`, `interaction` | shifted | shifted |
-| `rigorous` | shifted | shifted for spike pairs only |
-| `transfer` | not shifted | not shifted |
-| `block_mi` | shifted | shifted |
-| other named quantities | not shifted | not shifted |
-| already-windowed data | not shifted | not shifted |
+| every mode but `transfer` | shifted | not shifted |
+| `transfer`, the named quantities, `offset_quantity` | shifted at `stride` above 1 | shifted at `stride` above 1 |
+| `block_mi` | shifted | not shifted |
 
-A spike stream paired with a continuous or categorical one is shifted only when
-that stream has a `sample_rate` that makes a shift mean the same time on both
-sides. Because transfer entropy and the named quantities built from offsets use
-every row as a sample one step apart, a shift would only relabel their rows.
-Setting a shift explicitly where it cannot apply warns. A windowed generator
-whose MI is known for its own windows needs both switched off
-([Generators](#generators-with-a-known-answer)).
+On a grid in time (a spike stream, an irregular clock or clocks that start
+apart), a row whose moved window fails a stream's rule keeps its unmoved
+windows in every stream for that epoch: a spike window that falls silent under
+`drop_empty_windows`, or a continuous window that moves onto a gap. Training
+then never sees a row the estimate leaves out. Transfer entropy and the
+quantities built from offsets keep every step as a row at the default
+`stride=1`. At a larger `stride` they are built at every step, and each epoch
+keeps one row in every `stride` from a phase drawn afresh, the offset
+counterpart of a window shift. A shifting row reaches up to one step further,
+and the split's leak check counts that. Setting `shift_windows=True` explicitly
+where it cannot apply warns. A windowed generator whose MI is known for its own
+windows needs it switched off ([Generators](#generators-with-a-known-answer)).
 
 ### `create_dataset`
 
@@ -885,7 +992,7 @@ analysis has to use the same `window_size` and no shifting:
 x, y, exact = generators.generate_spike_pair(coding='timing', window_size=1.0)
 nmi.run(x, y, mode='estimate',
         processing=Processing(x='spike', y='spike', x_params={'window_size': 1.0}),
-        training=Training(shift_time=False, shift_windows=False))
+        training=Training(shift_windows=False))
 ```
 
 With shifting on, a window spans two independent draws and can carry more than
@@ -962,9 +1069,9 @@ defines each quantity and the identities between them.
 | `transfer_entropy(x, y, history_window)` | $I(Y_0; X_{past} \mid Y_{past})$ | `transfer` |
 | `conditional_transfer_entropy(x, y, w, history_window)` | $I(Y_0; X_{past} \mid Y_{past}, W_{past})$ | `transfer` |
 | `interaction_information(x, y, w)` | $I(X,W;Y) - I(X;Y) - I(W;Y)$ | `interaction` |
-| `mi_rate(x, y, h, half_width=20)` | $I(X_{all}(L); Y_0 \mid Y_{past}(h))$ | `conditional` with `align='dual_branch'` |
-| `instantaneous_exchange(x, y, k)` | $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$ | `conditional` with `align='dual_branch'` |
-| `directed_information_rate(x, y, k)` | $I(X_{past}(k), X_0; Y_0 \mid Y_{past}(k))$ | `conditional` with `align='dual_branch'` |
+| `mi_rate(x, y, h, half_width)` | $I(X_{all}(L); Y_0 \mid Y_{past}(h))$ | `conditional` |
+| `instantaneous_exchange(x, y, k)` | $I(X_0; Y_0 \mid X_{past}(k), Y_{past}(k))$ | `conditional` |
+| `directed_information_rate(x, y, k)` | $I(X_{past}(k), X_0; Y_0 \mid Y_{past}(k))$ | `conditional` |
 
 $X_{all}(L)$ is a window of $2L+1$ steps centred on $Y_0$ whose $L$ is set by
 `half_width`.
@@ -973,15 +1080,24 @@ $X_{all}(L)$ is a window of $2L+1$ steps centred on $Y_0$ whose $L$ is set by
 
 Inputs passed on their own are `(T, n_channels)` series sampled on a regular
 grid whose rows the offsets count. With `processing=` the offsets count the
-windows of one shared grid onto which each processor first puts its stream. This
-is the route for spike times and for streams on different clocks:
+rows of one shared grid onto which each processor first puts its stream, one
+time step per row: `window_size` is one step (`bin_size` for spikes, one sample
+for continuous data) and `step_size` is left unset, so the rows tile time. This
+is the route for spike times and for streams on different clocks, and the same
+one for every quantity defined by time offsets, transfer entropy included:
 
 ```python
 r = nmi.active_information_storage(
     spike_times, k=3,
-    processing=Processing(x='spike', x_params={'window_size': 0.5, 'bin_size': 0.1,
+    processing=Processing(x='spike', x_params={'window_size': 0.1, 'bin_size': 0.1,
                                                 'drop_empty_windows': False}))
 ```
+
+A grid whose rows are wider than one step, or overlap, is refused: an offset of
+one row would skip the steps inside a row, or reach back into the row before.
+`instantaneous_mi` builds its rows the same way as the `k=0` forms of
+`instantaneous_exchange` and `directed_information_rate`. Rows built in any other
+way go to `nmi.run()`.
 
 Window validation is off on this route and keeps every window because dropping
 one would put two distant windows next to each other and change what an offset
@@ -993,22 +1109,28 @@ means. Gaps stay visible through the coverage warnings. Keep
 data when given none.
 
 `mi_rate`, `instantaneous_exchange` and `directed_information_rate` condition
-on a group with a window length of its own, which reaches the joint term beside
-the other group as a pair ([the encoder of a difference](#the-encoder-of-a-difference)).
+on a group with a window length of its own. Their joint term reads the two
+groups as a pair, as every joint term does
+([the encoder of a difference](#the-encoder-of-a-difference)).
 
 ```python
-from neural_mi import Model, Training
-
-model = Model(embedding_model='gru', embedding_dim=16)
-r = nmi.mi_rate(x, y, h=[0, 5, 10, 20], half_width=20, model=model,
-                training=Training(n_epochs=100), n_workers=4)
+r = nmi.mi_rate(x, y, h=[0, 5, 10, 20], half_width=20, n_workers=4)
 ```
 
 Too narrow a window on X (`half_width`) leaves signal out and reads low. Too
 little history on Y (`h`) can read high or low: high when Y's memory comes from
 what it shares with X, low when Y has private memory that its own past would
 cancel ([THEORY.md](THEORY.md#temporal-information-quantities)). Sweep one, fix
-it past its knee, then sweep the other. An iterable for both raises.
+it past its knee, then sweep the other. An iterable for both raises, and
+`half_width` has no default, since the answer depends on it as much as on `h`.
+
+Every window parameter (`k`, `future_k`, `h`, `half_width`, `history_window`)
+is a whole number of steps, checked as `stride` is. The conditioning histories
+`h` of `mi_rate` and `k` of `instantaneous_exchange` and
+`directed_information_rate` may be 0, where there is nothing to condition on:
+the call then computes `instantaneous_mi` (for `mi_rate`, MI between Y's present
+and X's whole window) with one network and warns. In the sweep above, the
+`h=0` point is that baseline.
 
 ### Sweeps, repeats and rigour
 
@@ -1041,34 +1163,36 @@ every `n` steps:
 r = nmi.active_information_storage(x, k=5, stride=4)
 ```
 
-Neighbouring rows that nearly duplicate each other inflate a random split and
-overstate the $\log K$ ceiling because $K$ counts rows without knowing how many
-are near copies. `stride` counts whole rows and refuses a fraction. It is kept
+Neighbouring rows that nearly duplicate each other can inflate a random split,
+read by an encoder that takes them for copies (a recurrent one, or a CNN that
+averages over positions). They also overstate the $\log K$ ceiling because $K$
+counts rows without knowing how many are near copies. `stride` counts whole rows and refuses a fraction. It is kept
 apart from `step_size` because the fractional reading of `step_size` refers to a
 single window length these quantities do not have.
 
 ### Quantities without a named function
 
 Every quantity above is $I(A;B \mid C)$ for some choice of processes and
-offsets in each group. `build_offset_arrays` builds the three groups from a
-spec, for a quantity with no function of its own:
+offsets in each group, and builds its rows from that spec. `offset_quantity`
+runs a spec for a quantity with no function of its own, the way the named ones
+run:
 
 ```python
-from neural_mi.utils import build_offset_arrays
-
 spec = {'A': [('x', s) for s in range(-10, 0)],     # X's past
         'B': [('y', 0)],                            # Y now
         'C': [('y', s) for s in range(-10, 0)]}     # given Y's past
-a, b, c, n_valid = build_offset_arrays({'x': x, 'y': y}, spec, stride=1)
-
-r = nmi.run(a, b, mode='conditional',
-            conditional=Conditional(w_data=c, align='dual_branch'))
+r = nmi.offset_quantity({'x': x, 'y': y}, spec, stride=1)
 ```
 
 Offsets count rows with negative offsets in the past and zero at the present.
-Every group is cut to the range over which all its offsets exist. Each array has
-shape `(n_valid, n_channels, n_offsets)`. Without a `C` group, the pair goes to
-`mode='estimate'`.
+Every group is cut to the range over which all its offsets exist. A spec with a
+`C` group runs `mode='conditional'`, whose joint term reads the pair (A, C),
+and one without is one MI estimate. `result.params['spec']` records the spec. The rows carry
+their geometry, so the split's leak checks, the rigorous chunks and the
+permutation blocks treat them as the rows of a named quantity.
+`neural_mi.utils.build_offset_arrays(data, spec, stride=...)` returns the arrays
+themselves, each of shape `(n_valid, n_channels, n_offsets)`. Passed to
+`nmi.run()` by hand they are not known to be in time order.
 
 ---
 
@@ -1102,8 +1226,8 @@ and places no cap on the reported value. An estimate near its ceiling calls for
 a larger `max_eval_samples` or for SMILE.
 
 SMILE is the less numerically robust of the two. Called through `nmi.run()` it
-produced no NaN over eight data draws. A `Trainer` assembled by hand produced
-NaN on six of six draws at one input geometry and four of four at another.
+produced no NaN on any data draw tried. A `Trainer` assembled by hand produced
+NaN on every draw tried at two input geometries.
 InfoNCE trained on every one of those draws. InfoNCE's read-out is bounded by
 construction where SMILE's clipped density ratio is bounded in variance only.
 `Estimator(name='smile', params={'clip': 5.0})` sets the clip. A lower clip
@@ -1124,9 +1248,15 @@ autocorrelation time of the rows. `runs` reports the value as `train_mi`.
 Repeats on the same rows return the same value, and `mode='rigorous'` gives the
 spread and corrects the bias. The neighbour search uses a k-d tree up to 20
 dimensions and compares every pair of rows beyond that, at a cost that grows
-with the square of the rows: 5000 rows of 1000 dimensions took about 15 s on a
-laptop CPU. `neural_mi.estimators.ksg_mi(x, y)` and `ksg_cmi(x, y, z)` take
+with the square of the rows: thousands of rows of a thousand dimensions take
+seconds on a laptop CPU. `neural_mi.estimators.ksg_mi(x, y)` and `ksg_cmi(x, y, z)` take
 arrays directly and return nats.
+
+KSG assumes continuous values. Spike windows, whose padded slots and counts tie,
+are not: each variable's ties are broken by noise of its own, so a variable and
+an exact copy of it stop looking alike, and a conditional estimate given that
+copy reads away from zero where the truth is 0. Use the trained estimators on
+spike data. KSG warns when most values of a column tie.
 
 ### Encoders
 
@@ -1161,9 +1291,9 @@ model = Model(embedding_model='deepsets', embedding_model_y='mlp',
 
 A separable critic scores a pair by the dot product of the two embeddings and
 needs one `embedding_dim`. Only the hybrid critic accepts a different
-`embedding_dim_y`. The concat critic has no separate encoders and refuses every
-Y-side setting. `shared_encoder=True` uses one encoder for both sides and
-refuses any asymmetry.
+`embedding_dim_y`. The concat critic builds no encoder, so every encoder setting,
+Y's own and `shared_encoder` included, is ignored with a warning.
+`shared_encoder=True` uses one encoder for both sides and refuses any asymmetry.
 
 `bias=False` builds the encoders without bias terms so that an all-zero input
 embeds to exactly zero. The MLP uses an RMS normalisation without learned
@@ -1185,10 +1315,14 @@ The conditioning set then takes the same path, branch then head, in every term
 that sees it, so the terms learn what they share the same way and their errors
 on it cancel in the difference
 ([THEORY.md](THEORY.md#the-encoder-of-a-difference)). Each term keeps its own
-weights, training and epoch. A joint X joined along the channels is split where
-the quantity put the conditioning set, and a pair (`align='dual_branch'`)
-arrives split. `shared_encoder=True` is refused for these terms, since X's
-encoder is branched and Y's is not.
+weights, training and epoch. The joint term's X is the pair (rest of X,
+conditioning set), so its two parts may differ in channels, window length and
+modality. Every stage that reads X takes the pair: the decoder reconstructs
+each part, the augmentations and the corruptions act on each part, a
+permutation null moves X's part of the pair, and the `'concat'` critic joins
+the flattened parts. KSG estimates the joint term as the conditioning set's MI with
+Y plus the conditional MI of the rest given it. `shared_encoder=True` is refused
+for these terms, since X's encoder is branched and Y's is not.
 
 ### Critics
 
@@ -1202,7 +1336,12 @@ The separable critic scores a whole batch with one matrix product. The hybrid
 and concat critics put every pairing through a network. Each side passes through
 that network's first layer once and the pairs are scored in large blocks. The
 hybrid critic then trains in about the time the separable critic takes and the
-concat critic in a few times that. The concat critic has no `embedding_dim`.
+concat critic in a few times that. The concat critic has no `embedding_dim` and
+gives no embedding of either side. A request that reads the embeddings
+(`use_decoder`, `return_embeddings`, `track_embeddings`,
+`track_spectral_history`) is refused before it trains, and its results carry no
+participation ratios. Each critic declares whether it embeds each side
+(`embeds_each_side`), and every check asks it.
 `mode='dimensionality'` uses the hybrid critic.
 
 `Model(norm_layer='layer')` helps the hybrid critic train on wide data. It also
@@ -1245,8 +1384,52 @@ result = nmi.run(x, y, model=Model(custom_embedding_cls=MyEmbedding, embedding_d
 
 A class receives `bias` only when its `__init__` accepts it directly or through
 `**kwargs`. An explicit `bias=False` that cannot reach it warns.
-`Model(custom_critic=...)` takes a whole critic module. Any architecture setting
-passed beside it is ignored with a warning.
+`Model(custom_critic=...)` takes a class or function that builds the whole
+critic, in the way `custom_embedding_cls` takes an encoder class. Every task
+calls it under its own seed with the parameters it names among the input sizes
+(`input_dim_x`, `input_dim_y`, `n_channels_x`, `n_channels_y`, `window_size_x`,
+`window_size_y`) and the architecture settings (`embedding_dim`, `hidden_dim`,
+`n_layers` and the network settings), so every repeat and every term of a
+difference trains a critic of its own, sized for its X. In the joint term of a
+difference X is the pair (rest of X, conditioning set): the critic receives a
+tuple of two tensors, and each size of X it names is a pair of the two parts'
+sizes. An architecture setting it does not name is ignored with a warning, and
+`input_scaling` reaches it only when it names it. `use_variational` and `beta`
+apply as to any critic: the loss is the KL term its `forward` returns minus
+`beta` times the MI term. A recipe gives the embedding of each side, which a
+decoder rebuilds that side from, by defining `get_training_embeddings(x, y)`
+returning `(z_x, z_y)`, and the library reads the same embeddings wherever it
+reads a critic's (decoders, returned embeddings, `extract_embeddings`). An object is refused, since one
+object would be trained in place and shared by every repeat. With
+`n_workers` above 1 the class or function must be defined at module level so
+the workers can import it.
+
+```python
+class MyCritic(nmi.models.BaseCritic):
+    def __init__(self, input_dim_x, input_dim_y, embedding_dim):
+        super().__init__()
+        self.fx = torch.nn.Linear(input_dim_x, embedding_dim)
+        self.fy = torch.nn.Linear(input_dim_y, embedding_dim)
+
+    def forward(self, x, y):
+        zx = self.fx(x.reshape(len(x), -1))
+        zy = self.fy(y.reshape(len(y), -1))
+        return zx @ zy.T, torch.tensor(0.0)
+
+result = nmi.run(x, y, model=Model(custom_critic=MyCritic, embedding_dim=16))
+```
+
+### The scale of the rows
+
+The networks read their rows at the scale they arrive in, and an estimate
+depends on it: a pair carrying 2 nats reads close to 2 at unit scale and 0 at
+×1e3 or ×1e-3. `Model(input_scaling='standard')` centres and scales each
+encoder's input channel by channel, by the mean and standard deviation of the
+training rows, which removes the dependence on units. The statistics are part
+of the network, saved with it and applied by `extract_embeddings`. It is off by
+default, like every change to the data. Binned spikes enter as counts unless
+`normalize_bins=True` turns them into rates, which in 1 ms bins makes one spike
+1,000.
 
 ### Regularised objectives
 
@@ -1255,7 +1438,11 @@ weighted against the MI term by `beta`. Under the concat critic the variational
 layer acts on each pair's score because there are no separate encoders.
 
 `Model(use_decoder=True)` adds a decoder that reconstructs each input from its
-embedding. Its reconstruction loss, weighted by `decoder_lambda` (or
+embedding, built at the size of the embedding the critic gives. It needs a
+critic that gives an embedding of each side: the separable and hybrid critics
+do, a custom critic does through `get_training_embeddings`, and
+`critic_type='concat'`, which scores the pair without embedding either side,
+refuses it. Its reconstruction loss, weighted by `decoder_lambda` (or
 `decoder_lambda_x` and `decoder_lambda_y`), keeps the embedding from collapsing.
 The decoder mirrors the encoder: an MLP, CNN, CNN2D, GRU, LSTM, LRU, TCN or
 transformer decoder for the matching encoder, and an MLP decoder with a warning
@@ -1378,7 +1565,8 @@ quantity combined from several networks share the class `nmi.CombinationWarning`
 so that `warnings.filterwarnings` can silence them as a group.
 
 Within one call each kind of warning or log message is shown the first time it
-comes up. Later ones that differ only in their numbers are counted. The call ends
+comes up. Later ones whose first sentence differs only in its numbers are
+counted, exact repeats included. The call ends
 with one line per kind giving how often it was raised. In IPython and Jupyter the
 count runs over every NeuralMI call of a cell. The line then comes when the cell
 ends. A loop of calls in one cell therefore shows each warning once. In a script,

@@ -63,11 +63,15 @@ def test_shared_encoder_half_parameters():
 # Guard: shared_encoder=True + critic_type='concat'
 # ---------------------------------------------------------------------------
 
-def test_shared_encoder_concat_raises():
-    """shared_encoder=True with critic_type='concat' must raise ValueError."""
-    params = {**_BUILD, 'shared_encoder': True}
-    with pytest.raises(ValueError, match="incompatible with critic_type='concat'"):
-        build_critic('concat', params)
+def test_shared_encoder_under_the_concat_critic_is_ignored_with_a_warning():
+    """The concat critic builds no encoder to share, so shared_encoder=True has no effect: the
+    settings warning says so before any work, and the critic builds as without it."""
+    from neural_mi import Model
+    from neural_mi.models.critics import ConcatCritic
+    from neural_mi.run import _warn_ineffective_settings
+    with pytest.warns(UserWarning, match="shared_encoder.*builds no encoder"):
+        _warn_ineffective_settings('estimate', Model(critic_type='concat', shared_encoder=True), None)
+    assert isinstance(build_critic('concat', {**_BUILD, 'shared_encoder': True}), ConcatCritic)
 
 
 def test_shared_encoder_hybrid_does_not_raise():

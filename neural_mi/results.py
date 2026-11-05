@@ -15,23 +15,24 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional, Any, Dict, List
 import numpy as np
+from types import SimpleNamespace
+
 import pandas as pd
 import matplotlib.pyplot as plt
+from neural_mi.defaults import setting
 from neural_mi.logger import logger
 
-# How summary() names the value of a quantity that is not a plain MI.
-_QUANTITY_LABELS = {'conditional': 'I(X;Y|W)', 'interaction': 'II', 'transfer': 'TE(X→Y)'}
-# The axes whose values are separate networks. Precision's tau is one network
-# evaluated many times.
-_NETWORK_AXES = {'lag': ('lag',), 'pairwise': ('ch_x', 'ch_y'),
-                 'dimensionality': ('split_id', 'embedding_dim')}
 
-# Per-component columns of the difference quantities, in the order they are
-# drawn, with their display labels.
-_COMPONENTS = {
-    'conditional': [('mi_xw_y', 'I(X,W;Y)'), ('mi_w_y', 'I(W;Y)')],
-    'interaction': [('mi_xw_y', 'I(X,W;Y)'), ('mi_x_y', 'I(X;Y)'), ('mi_w_y', 'I(W;Y)')],
-}
+
+def _repeats_used(row) -> int:
+    """How many of a row's repeats its mean and spread use: all but those that failed (``n_failed``) and,
+    unless every other repeat is one, those that produced nothing (``n_zero``)."""
+    def count(key, default):
+        value = row.get(key, default)
+        return default if value is None or pd.isna(value) else int(value)
+    n_runs, n_failed, n_zero = count('n_runs', 1), count('n_failed', 0), count('n_zero', 0)
+    left = n_runs - n_failed
+    return left - n_zero if n_zero < left else left
 
 
 def _scalar(value: Any) -> Any:
@@ -71,7 +72,11 @@ def _unreliable_reasons(fit: Dict[str, Any]) -> List[str]:
     """
     reasons = []
     if fit.get('enough_gamma_points') is False:
-        reasons.append("too few gamma points (enough_gamma_points=False)")
+        left_out = [f"{int(n)} {what}" for n, what in ((fit.get('zero_rungs'), 'produced nothing'),
+                                                       (fit.get('unresolved_rungs'), 'did not resolve'))
+                    if _finite(n) and n]
+        reasons.append("too few gamma points (enough_gamma_points=False"
+                       + (f"; rungs left out: {', '.join(left_out)}" if left_out else "") + ")")
     if fit.get('linear_region_found') is False:
         reasons.append("no linear region found (linear_region_found=False)")
     if fit.get('leverage_warning'):
@@ -88,6 +93,333 @@ def _rigorous_unreliable_reason(fit: Dict[str, Any]) -> str:
     """Compact ' (reason)' suffix for an is_reliable=False annotation."""
     reasons = [r.split(' (')[0] for r in _unreliable_reasons(fit)]
     return f" ({'; '.join(reasons)})" if reasons else ""
+
+
+# ---------------------------------------------------------------------------
+# Each mode's figure, summary lines and overlay, which its declaration names
+# (neural_mi/analysis/modes.py, MODES). ``view`` holds one configuration's
+# rows, its repeats, its details, the colours, the units, ``show`` and the
+# caller's keyword arguments. A figure returns the axes and whether it showed
+# them itself.
+# ---------------------------------------------------------------------------
+
+def _draw_training(result: 'Results', ax, view):
+    """The held-out curve of each repeat, with the epoch read marked."""
+    runs, colours, units, kwargs = view.runs, view.colours, view.units, view.kwargs
+    if runs is None or runs.empty or 'test_mi_history' not in runs.columns:
+        raise ValueError(
+            "This result holds no training history to draw. Each repeat records "
+            "'test_mi_history' in result.runs during training."
+        )
+    index_col = 'run_id' if 'run_id' in runs.columns else None
+    for i, (_, rep) in enumerate(runs.iterrows()):
+        history = list(rep['test_mi_history'])
+        colour = colours[i % len(colours)]
+        label = 'Test MI' if len(runs) == 1 else f"run {rep[index_col]}"
+        ax.plot(range(len(history)), history, color=colour, linewidth=1.5, label=label)
+        if len(runs) == 1:
+            train_history = rep.get('train_mi_history')
+            if isinstance(train_history, (list, np.ndarray)) and len(train_history):
+                ax.plot(range(len(train_history)), list(train_history), color='darkorange',
+                        linewidth=1.5, linestyle='--', alpha=0.8, label='Train MI')
+        best = rep.get('best_epoch')
+        if best is not None and not pd.isna(best) and 0 <= int(best) < len(history):
+            best = int(best)
+            ax.axvline(best, color=colour if len(runs) > 1 else 'tomato',
+                       linestyle='--', linewidth=1.2,
+                       label=f'Best epoch ({best})' if len(runs) == 1 else None)
+            peak = rep.get('peak_epoch')
+            if len(runs) == 1 and peak is not None and not pd.isna(peak) and int(peak) != best:
+                ax.axvline(int(peak), color='grey', linestyle=':', linewidth=1.2,
+                           label=f'Peak of the smoothed curve ({int(peak)})')
+        conservative = rep.get('conservative_epoch')
+        if (len(runs) == 1 and conservative is not None and not pd.isna(conservative)
+                and 0 <= int(conservative) < len(history)):
+            conservative = int(conservative)
+            ax.axvline(conservative, color='mediumseagreen', linestyle=':', linewidth=1.5,
+                       label=f'Conservative epoch ({conservative}), used for estimate')
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel(f'MI ({units})', fontsize=12)
+    ax.set_title(kwargs.pop('title', 'Training curve'), fontsize=13)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    return ax, False
+
+
+def _draw_axis_curve(result: 'Results', ax, view):
+    """The MI along the mode's axis, as a curve over a swept key."""
+    from neural_mi.analysis.modes import MODES
+    from neural_mi.visualize.plot import plot_sweep_curve
+    plot_sweep_curve(result.dataframe[result.dataframe['config_id'] == view.cid],
+                     param_col=MODES[result.mode].axis[0], units=view.units, ax=ax, show=view.show,
+                     **view.kwargs)
+    return ax, True
+
+
+def _draw_extrapolation(result: 'Results', ax, view):
+    """Each repeat's ladder and the fit that extrapolates it."""
+    from neural_mi.visualize.plot import plot_bias_correction_fit
+    runs, entry, colours, units = view.runs, view.entry, view.colours, view.units
+    trainings = entry.get('trainings')
+    if trainings is None or runs is None or runs.empty:
+        raise ValueError("This rigorous result holds no extrapolation to draw.")
+    lines = []
+    for i, (_, rep) in enumerate(runs.iterrows()):
+        rid = rep.get('run_id', 0)
+        ladder = trainings[trainings['run_id'] == rid] if 'run_id' in trainings.columns else trainings
+        if 'component' in ladder.columns:
+            ladder = ladder[ladder['component'] == 'combined']
+        fit = {k: _scalar(rep[k]) for k in rep.index}
+        fit['mi_corrected'] = fit['mi_raw'] if _finite(fit.get('mi_raw')) else fit.get('mi')
+        label = None if len(runs) == 1 else f"run {rid}"
+        plot_bias_correction_fit(ladder, fit, units=units, ax=ax, show=False,
+                                 label=label,
+                                 color=None if len(runs) == 1 else colours[i % len(colours)],
+                                 **view.kwargs)
+        reliable = fit.get('is_reliable')
+        prefix = '' if len(runs) == 1 else f"run {rid}: "
+        if reliable is False:
+            lines.append(f"⚠ {prefix}extrapolation unreliable{_rigorous_unreliable_reason(fit)}")
+        elif reliable is True:
+            lines.append(f"✓ {prefix}extrapolation reliable")
+    if lines:
+        ax.text(0.02, 0.98, '\n'.join(lines), transform=ax.transAxes, va='top',
+                ha='left', fontsize=9,
+                bbox=dict(facecolor='white', edgecolor='gray', alpha=0.85,
+                          boxstyle='round,pad=0.3'))
+    if len(runs) > 1:
+        ax.legend(fontsize=9)
+    return ax, False
+
+
+def _bars(ax, labels, values, colours, units, title):
+    bars = ax.bar(labels, values, color=colours[:len(values)], width=0.5, edgecolor='white')
+    ax.axhline(0, color='black', linewidth=0.8)
+    ax.set_ylabel(f'MI ({units})', fontsize=12)
+    ax.set_title(title, fontsize=13)
+    ax.grid(True, axis='y', alpha=0.3)
+    span = max(abs(v) for v in values) or 1.0
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + span * 0.02 * (1 if val >= 0 else -1),
+                f'{val:.3f}', ha='center', va='bottom' if val >= 0 else 'top', fontsize=9)
+
+
+def _draw_components(result: 'Results', ax, view):
+    """A difference quantity's terms and the quantity itself, as bars."""
+    from neural_mi.analysis.modes import MODES
+    spec = MODES[result.mode]
+    r = view.row.iloc[0]
+    labels = [label for _, label in spec.components] + [spec.symbol]
+    values = [r[f'{col}_mean'] for col, _ in spec.components] + [r['mi_mean']]
+    _bars(ax, labels, values, view.colours, view.units, view.kwargs.pop('title', spec.title))
+    return ax, False
+
+
+def _draw_directions(result: 'Results', ax, view):
+    """Transfer entropy each way, with the directionality index when both were estimated."""
+    from neural_mi.analysis.modes import MODES
+    spec = MODES[result.mode]
+    row = view.row
+    r = row.iloc[0]
+    labels, values = [spec.symbol], [r['mi_mean']]
+    if 'te_yx_mean' in row.columns:
+        labels.append('TE(Y→X)')
+        values.append(r['te_yx_mean'])
+    title = spec.title
+    if 'directionality_index_mean' in row.columns:
+        di = r['directionality_index_mean']
+        verdict = ('X → Y dominates' if di > 0.1 else
+                   'Y → X dominates' if di < -0.1 else '≈ symmetric')
+        title += f'\nDirectionality index = {di:.3f}  ({verdict})'
+    _bars(ax, labels, values, view.colours, view.units, view.kwargs.pop('title', title))
+    return ax, False
+
+
+def _draw_precision(result: 'Results', ax, view):
+    """The MI against the corruption level, with the threshold and precision τ."""
+    entry, units, kwargs = view.entry, view.units, view.kwargs
+    df = view.row.sort_values('tau')
+    ax.plot(df['tau'], df['mi_mean'], 'o-', color='steelblue', linewidth=2,
+            markersize=5, label='MI vs corruption')
+    if 'mi_std' in df.columns and df['mi_std'].notna().any():
+        ax.fill_between(df['tau'], df['mi_mean'] - df['mi_std'].fillna(0),
+                        df['mi_mean'] + df['mi_std'].fillna(0),
+                        alpha=0.2, color='steelblue')
+    threshold = entry.get('threshold_value')
+    tau_star = entry.get('precision_tau')
+    baseline = entry.get('baseline_mi')
+    if threshold is not None:
+        ax.axhline(threshold, color='tomato', linestyle='--', linewidth=1.5,
+                   label=f'Threshold ({threshold:.3f} {units})')
+    if tau_star is not None:
+        ax.axvline(tau_star, color='darkorange', linestyle='--', linewidth=1.5,
+                   label=f'Precision τ = {tau_star:.4g}')
+    if baseline is not None:
+        ax.annotate(f'Baseline MI = {baseline:.3f} {units}',
+                    xy=(df['tau'].iloc[0], baseline), xytext=(0.05, 0.92),
+                    textcoords='axes fraction', fontsize=9, color='gray',
+                    arrowprops=dict(arrowstyle='->', color='gray', lw=1))
+    ax.set_xlabel('Corruption level (τ)', fontsize=12)
+    ax.set_ylabel(f'MI ({units})', fontsize=12)
+    ax.set_title(kwargs.pop('title', 'MI against timing corruption'), fontsize=13)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    return ax, False
+
+
+def _draw_matrix(result: 'Results', ax, view):
+    """The MI of every pair of channels, as a heatmap."""
+    import seaborn as sns
+    entry, units, kwargs = view.entry, view.units, view.kwargs
+    matrix = entry.get('mi_matrix')
+    if matrix is None:
+        raise ValueError("This pairwise result holds no 'mi_matrix' to draw.")
+    title = kwargs.pop('title', 'Pairwise MI matrix')
+    fmt = kwargs.pop('fmt', '.3f')
+    cmap = kwargs.pop('cmap', 'viridis')
+    figsize = kwargs.pop('figsize', None)
+    n_rows, n_cols = matrix.shape
+    if ax is None:
+        if figsize is None:
+            figsize = (max(4, n_cols * 0.65 + 1.2), max(3, n_rows * 0.65 + 1.0))
+        _, ax = plt.subplots(1, 1, figsize=figsize)
+    symmetric = n_rows == n_cols and np.allclose(matrix, matrix.T, equal_nan=True)
+    mask = np.zeros_like(matrix, dtype=bool)
+    if symmetric:
+        np.fill_diagonal(mask, True)
+    names_x = entry.get('variable_names_x') or [str(i) for i in range(n_cols)]
+    names_y = entry.get('variable_names_y') or [str(i) for i in range(n_rows)]
+    sns.heatmap(matrix, mask=mask, annot=True, fmt=fmt, cmap=cmap,
+                xticklabels=names_x, yticklabels=names_y,
+                cbar_kws={'label': f'MI ({units})'}, ax=ax, **kwargs)
+    ax.set_title(title, fontsize=13)
+    ax.set_xlabel('Channel Y', fontsize=11)
+    ax.set_ylabel('Channel X', fontsize=11)
+    return ax, False
+
+
+def _draw_dimensionality(result: 'Results', ax, view):
+    """The curve over embedding dimensions."""
+    from neural_mi.visualize.plot import plot_dimensionality_curve
+    return plot_dimensionality_curve(view.runs, view.entry, ax=ax, show=view.show, units=view.units,
+                                     **view.kwargs), True
+
+
+def _summary_dimensionality(result: 'Results', units: str, n_cfg: int) -> List[str]:
+    lines = []
+    for cid in result.config_ids:
+        entry = result.details.get(cid, {})
+        spread = entry.get('dimension_at_most_std')
+        spread = f" ± {spread:.1f} over splits" if spread is not None else ""
+        lines.append(f"  At most {entry.get('dimension_at_most')} embedding dimensions carry "
+                     f"{entry.get('saturation_ratio', 0.95):.0%} of the MI{spread}"
+                     + (f"  (configuration {cid})" if n_cfg > 1 else ""))
+        lines.append(f"  Participation ratio at embedding_dim={entry.get('reference_dim')}: "
+                     f"{entry.get('pr_singular', float('nan')):.1f}")
+    return lines
+
+
+def _summary_precision(result: 'Results', units: str, n_cfg: int) -> List[str]:
+    lines = []
+    for key, label in (('baseline_mi', 'Baseline MI'), ('precision_tau', 'Precision τ'),
+                       ('threshold_value', 'Threshold MI')):
+        try:
+            value = result.get(key)
+        except ValueError:
+            value = None
+        if value is not None:
+            lines.append(f"  {label:<12}: {value:.4g}")
+    return lines
+
+
+def _summary_matrix(result: 'Results', units: str, n_cfg: int) -> List[str]:
+    matrix = result.get('mi_matrix') if n_cfg == 1 else None
+    if matrix is None:
+        return []
+    finite = matrix[np.isfinite(matrix)]
+    if not len(finite):
+        return []
+    return [f"  MI matrix   : {matrix.shape[0]} × {matrix.shape[1]}, range "
+            f"{finite.min():.4f} to {finite.max():.4f} {units}"]
+
+
+def _one_repeat_each(results_list, labels, what: str) -> None:
+    for i, (res, label) in enumerate(zip(results_list, labels)):
+        n_repeats = 0 if res.runs is None else len(res.runs)
+        if n_repeats > 1:
+            raise ValueError(
+                f"Result '{label}' (index {i}) holds {n_repeats} repeats. compare() "
+                f"overlays one {what} per result. Call result.plot() to draw every repeat of one result."
+            )
+
+
+def _overlay_training(results_list, labels, ax, colours, units, kwargs) -> None:
+    """One held-out curve per result."""
+    _one_repeat_each(results_list, labels, 'training curve')
+    for i, (res, label) in enumerate(zip(results_list, labels)):
+        view = res._repeat_view()
+        history = view.get('test_mi_history')
+        if history is None:
+            raise ValueError(f"Result '{label}' (index {i}) holds no 'test_mi_history'.")
+        history = list(history)
+        ax.plot(range(len(history)), history, color=colours[i % len(colours)],
+                linewidth=1.5, label=label)
+        best = view.get('best_epoch')
+        if best is not None and not pd.isna(best) and 0 <= int(best) < len(history):
+            ax.axvline(int(best), color=colours[i % len(colours)], linestyle='--',
+                       linewidth=1, alpha=0.6)
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel(f'Test MI ({units})', fontsize=12)
+    ax.set_title('Training curves', fontsize=13)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+
+def _overlay_extrapolations(results_list, labels, ax, colours, units, kwargs) -> None:
+    """One extrapolation per result."""
+    from neural_mi.visualize.plot import plot_bias_correction_fit
+    _one_repeat_each(results_list, labels, 'extrapolation')
+    lines = []
+    for i, (res, label) in enumerate(zip(results_list, labels)):
+        cid = res._one_config(None, f"Result '{label}'")
+        runs = res.runs[res.runs['config_id'] == cid]
+        trainings = res.details.get(cid, {}).get('trainings')
+        if trainings is None or runs.empty:
+            raise ValueError(f"Rigorous result '{label}' (index {i}) holds no extrapolation.")
+        rep = runs.iloc[0]
+        fit = {k: _scalar(rep[k]) for k in rep.index}
+        fit['mi_corrected'] = fit['mi_raw'] if _finite(fit.get('mi_raw')) else fit.get('mi')
+        rid = fit.get('run_id', 0)
+        ladder = trainings[trainings['run_id'] == rid] if 'run_id' in trainings.columns else trainings
+        plot_bias_correction_fit(ladder, fit, units=units, ax=ax, label=label,
+                                 color=colours[i % len(colours)], show=False, **kwargs)
+        if fit.get('is_reliable') is False:
+            lines.append(f"⚠ {label}: unreliable{_rigorous_unreliable_reason(fit)}")
+        elif fit.get('is_reliable') is True:
+            lines.append(f"✓ {label}: reliable")
+    ax.legend(fontsize=9)
+    if lines:
+        ax.text(0.02, 0.98, '\n'.join(lines), transform=ax.transAxes, va='top', ha='left',
+                fontsize=8, bbox=dict(facecolor='white', edgecolor='gray', alpha=0.85,
+                                      boxstyle='round,pad=0.3'))
+
+
+def _overlay_curves(results_list, labels, ax, colours, units, kwargs) -> None:
+    """One curve per result over its one swept key."""
+    from neural_mi.visualize.plot import plot_sweep_curve
+    for i, (res, label) in enumerate(zip(results_list, labels)):
+        keys = res._grouped_keys()
+        if len(keys) != 1:
+            raise ValueError(
+                f"Result '{label}' (index {i}) is indexed by {keys or 'no swept key'}. "
+                f"compare() overlays results over exactly one swept key. Call "
+                f"result.plot() on each result."
+            )
+        plot_sweep_curve(res.dataframe, param_col=keys[0], units=units, ax=ax,
+                         label=label, color=colours[i % len(colours)], **kwargs)
+    ax.legend(fontsize=9)
+
 
 
 @dataclass
@@ -107,10 +439,10 @@ class Results:
         otherwise ``None``. In the units set by ``Output(units=...)``.
     dataframe : pandas.DataFrame
         One row per configuration and axis value: ``config_id``, the grid keys,
-        the axis keys, ``mi_mean``, ``mi_std``, ``n_runs`` and the mode's
-        per-configuration columns. ``mi_std`` is the spread of repeats of the
-        procedure on the same data and is NaN when there was one repeat. It is
-        never an interval on the population value.
+        the axis keys, ``mi_mean``, ``mi_std``, ``n_runs``, ``n_zero``,
+        ``n_failed`` and the mode's per-configuration columns. ``mi_std`` is the
+        spread of repeats of the procedure on the same data and is NaN when
+        there was one repeat. It is never an interval on the population value.
     runs : pandas.DataFrame
         One row per repeat: ``config_id``, the grid and axis keys, the repeat
         index (``run_id``), ``mi`` (the repeat's value of the
@@ -142,10 +474,15 @@ class Results:
             rep += f", runs={len(self.runs)}"
         return rep + ")"
 
+    def _spec(self):
+        """This result's mode as analysis/modes.py declares it, or None for a mode it does not know."""
+        from neural_mi.analysis.modes import MODES
+        return MODES.get(self.mode)
+
     def _is_rigorous(self) -> bool:
-        return self.mode == 'rigorous' or (
-            self.mode in ('conditional', 'interaction', 'transfer')
-            and bool((self.params or {}).get('rigorous')))
+        """Whether the result is an extrapolation: a mode that extrapolates, or a call with rigorous=True."""
+        spec = self._spec()
+        return spec is not None and (spec.extrapolates or bool((self.params or {}).get('rigorous')))
 
     @property
     def config_ids(self) -> List[int]:
@@ -231,7 +568,8 @@ class Results:
         matches more than one network is refused with the keys to pass.
         """
         cid = self._one_config(config_id, what)
-        network_axes = _NETWORK_AXES.get(self.mode, ())
+        spec = self._spec()
+        network_axes = tuple(spec.axis) if spec is not None and spec.axis_is_networks else ()
         unknown = sorted(set(axis) - set(network_axes))
         if unknown:
             raise ValueError(
@@ -285,7 +623,7 @@ class Results:
     def summary(self) -> None:
         """Print a readable summary of the result to stdout."""
         sep = "─" * 56
-        units = self.params.get('output_units', 'bits')
+        units = setting(self.params, 'output_units')
         df = self.dataframe
         print(sep)
         print(f"  NeuralMI Results  |  mode = '{self.mode}'")
@@ -295,18 +633,21 @@ class Results:
         if n_rows == 1:
             row = df.iloc[0]
             n_runs = int(row.get('n_runs', 1))
+            n_used = _repeats_used(row)
             std = row.get('mi_std')
-            spread = (f" ± {std:.4f} (spread over {n_runs} repeats)"
+            over = f"{n_used} repeats" if n_used == n_runs else f"{n_used} of {n_runs} repeats"
+            spread = (f" ± {std:.4f} (spread over {over})"
                       if std is not None and not pd.isna(std) else "")
-            label = _QUANTITY_LABELS.get(self.mode, 'MI estimate')
+            spec = self._spec()
+            label = (spec.symbol if spec is not None else None) or 'MI estimate'
             print(f"  {label:<12}: {self.mi_estimate:.4f} {units}{spread}"
                   if self.mi_estimate is not None else f"  {label:<12}: (none)")
-            for col, label in _COMPONENTS.get(self.mode, []):
+            for col, label in (spec.components if spec is not None else ()):
                 if f'{col}_mean' in df.columns:
                     print(f"  {label:<12}: {row[f'{col}_mean']:.4f} {units}")
             if 'amplification_factor' in df.columns and not pd.isna(row['amplification_factor']):
                 print(f"  Amplification factor : {row['amplification_factor']:.1f}x")
-            if self.mode == 'transfer' and 'te_yx_mean' in df.columns:
+            if 'te_yx_mean' in df.columns:
                 print(f"  TE(Y→X)     : {row['te_yx_mean']:.4f} {units}")
                 if 'directionality_index_mean' in df.columns:
                     print(f"  Directionality index : {row['directionality_index_mean']:.4f}"
@@ -317,35 +658,11 @@ class Results:
                     print(line)
             elif 'n_reliable' in df.columns:
                 print(f"  Reliable fits : {int(row['n_reliable'])} of {n_runs}")
-        elif self.mode == 'dimensionality':
-            for cid in self.config_ids:
-                entry = self.details.get(cid, {})
-                spread = entry.get('dimension_at_most_std')
-                spread = f" ± {spread:.1f} over splits" if spread is not None else ""
-                print(f"  At most {entry.get('dimension_at_most')} embedding dimensions carry "
-                      f"{entry.get('saturation_ratio', 0.95):.0%} of the MI{spread}"
-                      + (f"  (configuration {cid})" if n_cfg > 1 else ""))
-                print(f"  Participation ratio at embedding_dim={entry.get('reference_dim')}: "
-                      f"{entry.get('pr_singular', float('nan')):.1f}")
-            print(f"  The curve over embedding dimensions is in result.dataframe")
         else:
             print(f"  {n_rows} rows over {n_cfg} configuration(s); see result.dataframe")
-        if self.mode == 'precision':
-            for key, label in (('baseline_mi', 'Baseline MI'), ('precision_tau', 'Precision τ'),
-                               ('threshold_value', 'Threshold MI')):
-                try:
-                    value = self.get(key)
-                except ValueError:
-                    value = None
-                if value is not None:
-                    print(f"  {label:<12}: {value:.4g}")
-        if self.mode == 'pairwise' and n_cfg == 1:
-            matrix = self.get('mi_matrix')
-            if matrix is not None:
-                finite = matrix[np.isfinite(matrix)]
-                if len(finite):
-                    print(f"  MI matrix   : {matrix.shape[0]} × {matrix.shape[1]}, range "
-                          f"{finite.min():.4f} to {finite.max():.4f} {units}")
+        spec = self._spec()
+        for line in (spec.summarize(self, units, n_cfg) if spec is not None and spec.summarize else ()):
+            print(line)
         if df is not None:
             print(f"  dataframe   : {df.shape[0]} rows × {df.shape[1]} cols")
         if self.runs is not None:
@@ -358,8 +675,9 @@ class Results:
 
     def _grouped_keys(self) -> List[str]:
         keys = list(self.params.get('config_keys') or [])
-        if self.mode == 'lag':
-            keys = ['lag'] + keys
+        spec = self._spec()
+        if spec is not None and spec.groups_by_axis:
+            keys = list(spec.axis) + keys
         return [k for k in keys if self.dataframe is not None and k in self.dataframe.columns]
 
     def plot(self, ax: Optional[plt.Axes] = None, config_id: Optional[int] = None, **kwargs) -> plt.Axes:
@@ -384,21 +702,20 @@ class Results:
             ``show``, ``units``, ``title``, ``figsize``, ``kind``, and anything
             the underlying plot function accepts.
         """
-        from neural_mi.visualize.plot import (
-            plot_sweep_curve, plot_sweep_heatmap, plot_sweep_bar,
-            plot_bias_correction_fit, plot_dimensionality_curve,
-        )
+        from neural_mi.visualize.plot import plot_sweep_curve, plot_sweep_heatmap, plot_sweep_bar
 
         show = kwargs.pop('show', True)
-        units = kwargs.pop('units', self.params.get('output_units', 'bits'))
+        units = kwargs.pop('units', setting(self.params, 'output_units'))
         n_cfg = len(self.config_ids)
         grouped = self._grouped_keys()
-        per_config_modes = ('pairwise', 'dimensionality', 'precision')
-        draw_grouped = (config_id is None and grouped
-                        and (self.mode in ('sweep', 'lag') or n_cfg > 1)
-                        and self.mode not in per_config_modes)
+        spec = self._spec()
+        # A grid of configurations, or a mode's axis drawn like a swept key, is
+        # a curve over the swept keys, except for a mode whose figure is drawn
+        # per configuration.
+        draw_grouped = (config_id is None and grouped and spec is not None and not spec.draws_per_config
+                        and (spec.needs_grid or spec.groups_by_axis or n_cfg > 1))
 
-        own_figure = self.mode in ('dimensionality', 'pairwise') and not draw_grouped
+        own_figure = spec is not None and spec.own_figure and not draw_grouped
         if ax is None and not own_figure:
             _, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
 
@@ -424,182 +741,18 @@ class Results:
                 raise ValueError(f"Unknown kind='{kind}'. Expected 'line', 'heatmap' or 'bar'.")
             return ax
 
+        if spec is None:
+            raise NotImplementedError(f"Plotting is not implemented for mode='{self.mode}'.")
         cid = self._one_config(config_id, f"Results.plot() for mode='{self.mode}'")
         row = self.dataframe[self.dataframe['config_id'] == cid] if self.dataframe is not None else None
         runs = self.runs[self.runs['config_id'] == cid] if self.runs is not None else None
-        entry = self.details.get(cid, {})
-        colours = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
-
-        if self.mode in ('estimate', 'sweep'):
-            if runs is None or runs.empty or 'test_mi_history' not in runs.columns:
-                raise ValueError(
-                    "This result holds no training history to draw. Each repeat records "
-                    "'test_mi_history' in result.runs during training."
-                )
-            index_col = 'run_id' if 'run_id' in runs.columns else None
-            for i, (_, rep) in enumerate(runs.iterrows()):
-                history = list(rep['test_mi_history'])
-                colour = colours[i % len(colours)]
-                label = 'Test MI' if len(runs) == 1 else f"run {rep[index_col]}"
-                ax.plot(range(len(history)), history, color=colour, linewidth=1.5, label=label)
-                if len(runs) == 1:
-                    train_history = rep.get('train_mi_history')
-                    if isinstance(train_history, (list, np.ndarray)) and len(train_history):
-                        ax.plot(range(len(train_history)), list(train_history), color='darkorange',
-                                linewidth=1.5, linestyle='--', alpha=0.8, label='Train MI')
-                best = rep.get('best_epoch')
-                if best is not None and not pd.isna(best) and 0 <= int(best) < len(history):
-                    best = int(best)
-                    ax.axvline(best, color=colour if len(runs) > 1 else 'tomato',
-                               linestyle='--', linewidth=1.2,
-                               label=f'Best epoch ({best})' if len(runs) == 1 else None)
-                    peak = rep.get('peak_epoch')
-                    if len(runs) == 1 and peak is not None and not pd.isna(peak) and int(peak) != best:
-                        ax.axvline(int(peak), color='grey', linestyle=':', linewidth=1.2,
-                                   label=f'Peak of the smoothed curve ({int(peak)})')
-                conservative = rep.get('conservative_epoch')
-                if (len(runs) == 1 and conservative is not None and not pd.isna(conservative)
-                        and 0 <= int(conservative) < len(history)):
-                    conservative = int(conservative)
-                    ax.axvline(conservative, color='mediumseagreen', linestyle=':', linewidth=1.5,
-                               label=f'Conservative epoch ({conservative}), used for estimate')
-            ax.set_xlabel('Epoch', fontsize=12)
-            ax.set_ylabel(f'MI ({units})', fontsize=12)
-            ax.set_title(kwargs.pop('title', 'Training curve'), fontsize=13)
-            ax.legend(fontsize=9)
-            ax.grid(True, alpha=0.3)
-
-        elif self.mode == 'lag':
-            plot_sweep_curve(self.dataframe[self.dataframe['config_id'] == cid], param_col='lag',
-                             units=units, ax=ax, show=show, **kwargs)
-            return ax
-
-        elif self._is_rigorous():
-            trainings = entry.get('trainings')
-            if trainings is None or runs is None or runs.empty:
-                raise ValueError("This rigorous result holds no extrapolation to draw.")
-            lines = []
-            for i, (_, rep) in enumerate(runs.iterrows()):
-                rid = rep.get('run_id', 0)
-                ladder = trainings[trainings['run_id'] == rid] if 'run_id' in trainings.columns else trainings
-                if 'component' in ladder.columns:
-                    ladder = ladder[ladder['component'] == 'combined']
-                fit = {k: _scalar(rep[k]) for k in rep.index}
-                fit['mi_corrected'] = fit['mi_raw'] if _finite(fit.get('mi_raw')) else fit.get('mi')
-                label = None if len(runs) == 1 else f"run {rid}"
-                plot_bias_correction_fit(ladder, fit, units=units, ax=ax, show=False,
-                                         label=label,
-                                         color=None if len(runs) == 1 else colours[i % len(colours)],
-                                         **kwargs)
-                reliable = fit.get('is_reliable')
-                prefix = '' if len(runs) == 1 else f"run {rid}: "
-                if reliable is False:
-                    lines.append(f"⚠ {prefix}extrapolation unreliable{_rigorous_unreliable_reason(fit)}")
-                elif reliable is True:
-                    lines.append(f"✓ {prefix}extrapolation reliable")
-            if lines:
-                ax.text(0.02, 0.98, '\n'.join(lines), transform=ax.transAxes, va='top',
-                        ha='left', fontsize=9,
-                        bbox=dict(facecolor='white', edgecolor='gray', alpha=0.85,
-                                  boxstyle='round,pad=0.3'))
-            if len(runs) > 1:
-                ax.legend(fontsize=9)
-
-        elif self.mode in ('conditional', 'interaction', 'transfer'):
-            r = row.iloc[0]
-            if self.mode == 'transfer':
-                labels = ['TE(X→Y)']
-                values = [r['mi_mean']]
-                if 'te_yx_mean' in row.columns:
-                    labels.append('TE(Y→X)')
-                    values.append(r['te_yx_mean'])
-                title = 'Transfer entropy'
-                if 'directionality_index_mean' in row.columns:
-                    di = r['directionality_index_mean']
-                    verdict = ('X → Y dominates' if di > 0.1 else
-                               'Y → X dominates' if di < -0.1 else '≈ symmetric')
-                    title += f'\nDirectionality index = {di:.3f}  ({verdict})'
-            else:
-                labels = [label for _, label in _COMPONENTS[self.mode]]
-                values = [r[f'{col}_mean'] for col, _ in _COMPONENTS[self.mode]]
-                labels.append('I(X;Y|W)' if self.mode == 'conditional' else 'II')
-                values.append(r['mi_mean'])
-                title = ('Conditional MI components' if self.mode == 'conditional'
-                         else 'Interaction information components')
-            bars = ax.bar(labels, values, color=colours[:len(values)], width=0.5, edgecolor='white')
-            ax.axhline(0, color='black', linewidth=0.8)
-            ax.set_ylabel(f'MI ({units})', fontsize=12)
-            ax.set_title(kwargs.pop('title', title), fontsize=13)
-            ax.grid(True, axis='y', alpha=0.3)
-            span = max(abs(v) for v in values) or 1.0
-            for bar, val in zip(bars, values):
-                ax.text(bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + span * 0.02 * (1 if val >= 0 else -1),
-                        f'{val:.3f}', ha='center', va='bottom' if val >= 0 else 'top', fontsize=9)
-
-        elif self.mode == 'precision':
-            df = row.sort_values('tau')
-            ax.plot(df['tau'], df['mi_mean'], 'o-', color='steelblue', linewidth=2,
-                    markersize=5, label='MI vs corruption')
-            if 'mi_std' in df.columns and df['mi_std'].notna().any():
-                ax.fill_between(df['tau'], df['mi_mean'] - df['mi_std'].fillna(0),
-                                df['mi_mean'] + df['mi_std'].fillna(0),
-                                alpha=0.2, color='steelblue')
-            threshold = entry.get('threshold_value')
-            tau_star = entry.get('precision_tau')
-            baseline = entry.get('baseline_mi')
-            if threshold is not None:
-                ax.axhline(threshold, color='tomato', linestyle='--', linewidth=1.5,
-                           label=f'Threshold ({threshold:.3f} {units})')
-            if tau_star is not None:
-                ax.axvline(tau_star, color='darkorange', linestyle='--', linewidth=1.5,
-                           label=f'Precision τ = {tau_star:.4g}')
-            if baseline is not None:
-                ax.annotate(f'Baseline MI = {baseline:.3f} {units}',
-                            xy=(df['tau'].iloc[0], baseline), xytext=(0.05, 0.92),
-                            textcoords='axes fraction', fontsize=9, color='gray',
-                            arrowprops=dict(arrowstyle='->', color='gray', lw=1))
-            ax.set_xlabel('Corruption level (τ)', fontsize=12)
-            ax.set_ylabel(f'MI ({units})', fontsize=12)
-            ax.set_title(kwargs.pop('title', 'MI against timing corruption'), fontsize=13)
-            ax.legend(fontsize=9)
-            ax.grid(True, alpha=0.3)
-
-        elif self.mode == 'pairwise':
-            import seaborn as sns
-            matrix = entry.get('mi_matrix')
-            if matrix is None:
-                raise ValueError("This pairwise result holds no 'mi_matrix' to draw.")
-            title = kwargs.pop('title', 'Pairwise MI matrix')
-            fmt = kwargs.pop('fmt', '.3f')
-            cmap = kwargs.pop('cmap', 'viridis')
-            figsize = kwargs.pop('figsize', None)
-            n_rows, n_cols = matrix.shape
-            if ax is None:
-                if figsize is None:
-                    figsize = (max(4, n_cols * 0.65 + 1.2), max(3, n_rows * 0.65 + 1.0))
-                _, ax = plt.subplots(1, 1, figsize=figsize)
-            symmetric = n_rows == n_cols and np.allclose(matrix, matrix.T, equal_nan=True)
-            mask = np.zeros_like(matrix, dtype=bool)
-            if symmetric:
-                np.fill_diagonal(mask, True)
-            names_x = entry.get('variable_names_x') or [str(i) for i in range(n_cols)]
-            names_y = entry.get('variable_names_y') or [str(i) for i in range(n_rows)]
-            sns.heatmap(matrix, mask=mask, annot=True, fmt=fmt, cmap=cmap,
-                        xticklabels=names_x, yticklabels=names_y,
-                        cbar_kws={'label': f'MI ({units})'}, ax=ax, **kwargs)
-            ax.set_title(title, fontsize=13)
-            ax.set_xlabel('Channel Y', fontsize=11)
-            ax.set_ylabel('Channel X', fontsize=11)
-
-        elif self.mode == 'dimensionality':
-            ax = plot_dimensionality_curve(runs, entry, ax=ax, show=show, units=units, **kwargs)
-            return ax
-
-        else:
-            raise NotImplementedError(f"Plotting is not implemented for mode='{self.mode}'.")
-
-        if show:
+        view = SimpleNamespace(cid=cid, row=row, runs=runs, entry=self.details.get(cid, {}),
+                               colours=[p['color'] for p in plt.rcParams['axes.prop_cycle']],
+                               units=units, show=show, kwargs=kwargs)
+        # An extrapolated result draws its extrapolation, whatever its mode.
+        draw = _draw_extrapolation if self._is_rigorous() else spec.draw
+        ax, shown = draw(self, ax, view)
+        if show and not shown:
             plt.tight_layout()
             plt.show()
         return ax
@@ -632,7 +785,6 @@ class Results:
         modes = [r.mode for r in results_list]
         if len(set(modes)) > 1:
             raise ValueError(f"All Results objects must share the same mode. Found: {modes}.")
-        mode = modes[0]
         if labels is None:
             labels = [f"Result {i}" for i in range(len(results_list))]
         if len(labels) != len(results_list):
@@ -640,81 +792,16 @@ class Results:
                 f"labels length ({len(labels)}) must match results_list length ({len(results_list)})."
             )
 
-        from neural_mi.visualize.plot import plot_sweep_curve, plot_bias_correction_fit
-
         show = kwargs.pop('show', True)
         figsize = kwargs.pop('figsize', (10, 6))
-        units = kwargs.pop('units', results_list[0].params.get('output_units', 'bits'))
+        units = kwargs.pop('units', setting(results_list[0].params, 'output_units'))
         if ax is None:
             _, ax = plt.subplots(1, 1, figsize=figsize)
         colours = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
 
-        if mode in ('estimate', 'rigorous'):
-            for i, (res, label) in enumerate(zip(results_list, labels)):
-                n_repeats = 0 if res.runs is None else len(res.runs)
-                if n_repeats > 1:
-                    raise ValueError(
-                        f"Result '{label}' (index {i}) holds {n_repeats} repeats. compare() "
-                        f"overlays one {'training curve' if mode == 'estimate' else 'extrapolation'} "
-                        f"per result. Call result.plot() to draw every repeat of one result."
-                    )
-
-        if mode == 'estimate':
-            for i, (res, label) in enumerate(zip(results_list, labels)):
-                view = res._repeat_view()
-                history = view.get('test_mi_history')
-                if history is None:
-                    raise ValueError(f"Result '{label}' (index {i}) holds no 'test_mi_history'.")
-                history = list(history)
-                ax.plot(range(len(history)), history, color=colours[i % len(colours)],
-                        linewidth=1.5, label=label)
-                best = view.get('best_epoch')
-                if best is not None and not pd.isna(best) and 0 <= int(best) < len(history):
-                    ax.axvline(int(best), color=colours[i % len(colours)], linestyle='--',
-                               linewidth=1, alpha=0.6)
-            ax.set_xlabel('Epoch', fontsize=12)
-            ax.set_ylabel(f'Test MI ({units})', fontsize=12)
-            ax.set_title('Training curves', fontsize=13)
-            ax.legend(fontsize=9)
-            ax.grid(True, alpha=0.3)
-
-        elif mode == 'rigorous':
-            lines = []
-            for i, (res, label) in enumerate(zip(results_list, labels)):
-                cid = res._one_config(None, f"Result '{label}'")
-                runs = res.runs[res.runs['config_id'] == cid]
-                trainings = res.details.get(cid, {}).get('trainings')
-                if trainings is None or runs.empty:
-                    raise ValueError(f"Rigorous result '{label}' (index {i}) holds no extrapolation.")
-                rep = runs.iloc[0]
-                fit = {k: _scalar(rep[k]) for k in rep.index}
-                fit['mi_corrected'] = fit['mi_raw'] if _finite(fit.get('mi_raw')) else fit.get('mi')
-                rid = fit.get('run_id', 0)
-                ladder = trainings[trainings['run_id'] == rid] if 'run_id' in trainings.columns else trainings
-                plot_bias_correction_fit(ladder, fit, units=units, ax=ax, label=label,
-                                         color=colours[i % len(colours)], show=False, **kwargs)
-                if fit.get('is_reliable') is False:
-                    lines.append(f"⚠ {label}: unreliable{_rigorous_unreliable_reason(fit)}")
-                elif fit.get('is_reliable') is True:
-                    lines.append(f"✓ {label}: reliable")
-            ax.legend(fontsize=9)
-            if lines:
-                ax.text(0.02, 0.98, '\n'.join(lines), transform=ax.transAxes, va='top', ha='left',
-                        fontsize=8, bbox=dict(facecolor='white', edgecolor='gray', alpha=0.85,
-                                              boxstyle='round,pad=0.3'))
-
-        else:
-            for i, (res, label) in enumerate(zip(results_list, labels)):
-                keys = res._grouped_keys()
-                if len(keys) != 1:
-                    raise ValueError(
-                        f"Result '{label}' (index {i}) is indexed by {keys or 'no swept key'}. "
-                        f"compare() overlays results over exactly one swept key. Call "
-                        f"result.plot() on each result."
-                    )
-                plot_sweep_curve(res.dataframe, param_col=keys[0], units=units, ax=ax,
-                                 label=label, color=colours[i % len(colours)], **kwargs)
-            ax.legend(fontsize=9)
+        spec = results_list[0]._spec()
+        overlay = spec.overlay if spec is not None and spec.overlay is not None else _overlay_curves
+        overlay(results_list, labels, ax, colours, units, kwargs)
 
         if show:
             plt.tight_layout()

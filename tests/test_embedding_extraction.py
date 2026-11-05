@@ -105,7 +105,8 @@ def test_return_embeddings_uses_frozen_snapshot_not_live_shift_state(tmp_path, m
         n_workers=1, show_progress=False, seed=0,
     )
 
-    n_windows = safe_n_windows(T, window_size, window_size)
+    # Rows that shift leave one step at the end for the shift.
+    n_windows = safe_n_windows(T, window_size, window_size, window_size - 1)
     x_canonical = torch.as_tensor(x).unfold(0, window_size, window_size)[:n_windows].contiguous()
     y_canonical = torch.as_tensor(y).unfold(0, window_size, window_size)[:n_windows].contiguous()
     zx_expected, zy_expected = nmi.extract_embeddings(model_path, x_canonical, y_canonical)

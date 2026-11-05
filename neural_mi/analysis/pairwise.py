@@ -29,6 +29,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 from typing import Dict, Any, Optional, List, Tuple
 
+from neural_mi.defaults import setting
 from neural_mi.analysis.sweep import ParameterSweep
 from neural_mi.logger import CapturedTask, logger, released
 from neural_mi.parallel import worker_pool
@@ -66,11 +67,11 @@ def _run_pair_task(args: tuple) -> Dict[str, Any]:
     sweep = ParameterSweep(x_data=xi, y_data=yj, base_params=base_params.copy())
     # A raw (not already-windowed-3-D) per-channel slice -- a 2-D continuous/
     # categorical array/tensor, or a length-1 list of raw spike times -- means
-    # windowing was deferred to this pair (shift_windows/shift_time
-    # reachability); is_proc_sweep=True routes it through per-pair windowing
-    # instead of treating it as already pre-processed.
+    # each pair windows its own rows, which move under shift_windows;
+    # windows_in_task=True routes it through per-pair windowing instead of
+    # treating it as already pre-processed.
     _is_raw = not (hasattr(xi, 'ndim') and xi.ndim == 3)
-    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, is_proc_sweep=_is_raw)
+    results = sweep.run(sweep_grid=sweep_grid or {}, n_workers=n_workers, windows_in_task=_is_raw)
     def _agg(field):
         """mean/std over this pair's runs, NaN when the field is never present
         and the std NaN when there is only one run."""
@@ -182,10 +183,10 @@ def run_pairwise_mi(
           ``mi_mean``, ``mi_std``.
         - ``'n_channels'`` (int or (int, int)): number of channels.
     """
-    # A list means raw spike data (one spike-time array per neuron), windowing
-    # deferred to this call (shift_time reachability). A 2-D array/tensor means
-    # raw (T, n_channels) continuous/categorical data, windowing deferred the
-    # same way (shift_windows reachability -- run.py's _SHIFT_SAFE_MODES). A
+    # A list means raw spike data (one spike-time array per neuron), windowed
+    # by each pair's task, whose rows move under shift_windows. A 2-D
+    # array/tensor means raw (T, n_channels) continuous/categorical data,
+    # windowed the same way. A
     # 3-D array/tensor means already-windowed (n_samples, n_channels,
     # window_size) data, the ordinary eager-windowing path. Either way each
     # channel pair is windowed/resliced independently by its own worker once
@@ -223,7 +224,7 @@ def run_pairwise_mi(
         )
 
         mi_matrix = np.zeros((n_ch_x, n_ch_y))
-        show_progress = base_params.get('show_progress', True)
+        show_progress = setting(base_params, 'show_progress')
         pair_tasks = [
             (i, j, _ensure_cpu(_slice_channel(x_data, i)), _ensure_cpu(_slice_channel(y_data, j)),
              base_params, sweep_grid)
@@ -258,7 +259,7 @@ def run_pairwise_mi(
         )
 
         mi_matrix = np.zeros((n_channels, n_channels))
-        show_progress = base_params.get('show_progress', True)
+        show_progress = setting(base_params, 'show_progress')
         pair_tasks = [
             (i, j, _ensure_cpu(_slice_channel(x_data, i)), _ensure_cpu(_slice_channel(x_data, j)),
              base_params, sweep_grid)

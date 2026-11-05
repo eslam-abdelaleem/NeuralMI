@@ -18,11 +18,12 @@ import tempfile
 
 from neural_mi.models.embeddings import (
     DeepSets,
-    MLP, VariationalWrapper,
+    MLP, VariationalWrapper, InputScaling,
     CNN1D, CNN2D, GRU, LSTM, TCN, Transformer,
     PretrainedBackboneEmbedding, LRUEmbedding, BranchedEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
+from neural_mi.defaults import default_of, norm_layer_of, processor_setting, setting
 from neural_mi.logger import logger, user_stacklevel
 
 # Every built-in embedding_model string -> class.
@@ -96,6 +97,19 @@ def _is_spike_input(data) -> bool:
     )
 
 
+def float_tensor(data) -> torch.Tensor:
+    """``data`` as a float32 tensor, converting a tensor rather than copying it."""
+    if torch.is_tensor(data):
+        return data.float()
+    return torch.from_numpy(np.asarray(data, dtype=np.float32))
+
+
+def with_window_axis(t: torch.Tensor) -> torch.Tensor:
+    """A 2-D ``(N, C)`` tensor with the trailing window axis of 1 every stream carries inside the library;
+    any other tensor as it is."""
+    return t.unsqueeze(-1) if t.ndim == 2 else t
+
+
 def _as_tensor(data) -> torch.Tensor:
     if isinstance(data, torch.Tensor):
         return data
@@ -103,17 +117,11 @@ def _as_tensor(data) -> torch.Tensor:
         raise TypeError(
             "Raw spike times were passed to a quantity that indexes by integer "
             "time offset. That needs a regularly sampled (n_timepoints, "
-            "n_channels) series. Build one by binning at the window size and "
-            "keeping silent windows to keep the time axis contiguous:\n"
-            "    ds = create_dataset(x_data=spikes, processor_type_x='spike',\n"
-            "            processor_params_x={'bin_size': b, 'window_size': b,\n"
-            "                                'normalize_bins': False,\n"
-            "                                'drop_empty_windows': False})\n"
-            "    series = ds.x_data.squeeze(-1)   # (n_bins, n_neurons)\n"
-            "Dropping silent windows would leave consecutive indices more than "
-            "one bin apart and move the offsets away from the ones you asked for. "
-            "block_mi windows the data itself and takes spike times directly "
-            "through processing=Processing(x='spike', y='spike')."
+            "n_channels) series. processing=Processing(x='spike', "
+            "x_params={'window_size': b, 'bin_size': b}) puts the spikes on a grid "
+            "of one bin per row first, keeping silent bins so that consecutive "
+            "rows stay one bin apart. block_mi windows the data itself and takes "
+            "spike times through processing=Processing(x='spike', y='spike')."
         )
     return torch.as_tensor(np.asarray(data), dtype=torch.float32)
 
@@ -142,6 +150,24 @@ def validate_stride(stride: Any, quantity: str = "this quantity") -> int:
     return int(stride)
 
 
+def validate_window(value: Any, name: str, quantity: str = "this quantity", minimum: int = 1) -> int:
+    """Check a window parameter (``k``, ``h``, ``half_width``, ``history_window``...) and return it as
+    an int, as :func:`validate_stride` checks ``stride``.
+
+    A window counts steps of the series, so it is a whole number, at least
+    ``minimum``: 1 for a window that has to hold something, 0 for one that
+    may be empty, such as a conditioning history.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(
+            f"{name} must be a whole number of steps, got {value!r}. {quantity} counts its "
+            f"windows in steps of the series."
+        )
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum} for {quantity}, got {value}.")
+    return int(value)
+
+
 def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
                         dtype: torch.dtype = torch.float32,
                         stride: int = 1) -> Tuple[Any, Any, Any, int]:
@@ -150,8 +176,10 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
     Every quantity in the temporal taxonomy is ``I(A; B | C)`` under a
     different choice of which processes and time offsets go into each group.
     This turns such a choice into the three arrays :func:`neural_mi.run`
-    consumes, so a quantity that has no named wrapper in
-    :mod:`neural_mi.quantities` can still be estimated directly.
+    consumes. Every named quantity defined by time offsets builds its rows
+    here, and :func:`neural_mi.offset_quantity` runs any other spec the same
+    way, with the rows' geometry, which arrays passed to :func:`neural_mi.run`
+    by hand do not carry.
 
     Offsets are in time bins relative to a common reference: negative is past,
     zero is present, positive is future. All three groups are cut to the same
@@ -186,8 +214,9 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
     ValueError
         If a group mixes processes whose offset counts differ, since the
         result would have no single window length. Give each process in that
-        group the same number of offsets, or estimate it as a dual-branch
-        conditional instead.
+        group the same number of offsets. Groups may differ from one another:
+        the joint term reads A and C as a pair, each part with its own window
+        length.
 
     Examples
     --------
@@ -205,8 +234,8 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
 
     With ``C`` empty the pair goes to ``run(mode='estimate')``. With ``C``
     populated it goes to ``run(mode='conditional', conditional=Conditional(
-    w_data=c, align='dual_branch'))``, the dual branch being needed because A,
-    B and C generally have different window lengths.
+    w_data=c))``, whose joint term reads the pair (A, C): the groups generally
+    have different window lengths, and each part keeps its own.
     """
     if 'A' not in spec or 'B' not in spec:
         raise ValueError(f"spec needs both 'A' and 'B' keys, got {sorted(spec)}.")
@@ -276,9 +305,9 @@ def build_offset_arrays(data: Dict[str, Any], spec: Dict[str, Any],
             counts = {v: len(o) for v, o in by_process.items()}
             raise ValueError(
                 f"Group {group_name!r} gives different offset counts per process "
-                f"({counts}) and has no single window length. Give each process the "
-                f"same number of offsets or split the group across the dual-branch "
-                f"conditional path."
+                f"({counts}) and has no single window length. Give each process in the "
+                f"group the same number of offsets. Groups may differ from one another: "
+                f"the joint term reads A and C as a pair, each part with its own window length."
             )
         out[group_name] = torch.cat(blocks, dim=1)
 
@@ -476,19 +505,129 @@ def mi_report_units(base_params: Optional[Dict[str, Any]] = None,
     >>> f"{0.6931 * scale:.3f} {units}"
     '1.000 bits'
     """
-    units = output_units or (base_params or {}).get('output_units', 'bits')
+    units = output_units or setting(base_params or {}, 'output_units')
     to_bits = units == 'bits'
     return (1.0 / np.log(2) if to_bits else 1.0), ('bits' if to_bits else 'nats')
+
+
+# The Model settings an encoder or a head can read beyond its sizes. Each
+# built-in encoder declares the ones it reads (BaseEmbedding.settings).
+MODEL_SETTINGS = ('use_spectral_norm', 'dropout', 'norm_layer', 'bias', 'kernel_size', 'cnn_pooling',
+                  'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained')
+
+
+# Every setting build_critic reads, and so the list a saved network carries for
+# extract_embeddings to rebuild it as it was trained (embeddings_io.save_network).
+# build_critic sees nothing else, so the two cannot drift apart.
+ARCHITECTURE_KEYS = (
+    'critic_type', 'embedding_model', 'embedding_dim', 'hidden_dim', 'n_layers',
+    'embedding_model_y', 'embedding_dim_y', 'hidden_dim_y', 'n_layers_y',
+    'custom_critic', 'custom_embedding_cls', 'custom_embedding_cls_y', 'hidden_dim_head', 'n_layers_head',
+    'use_variational', 'shared_encoder', 'max_n_batches',
+    'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
+    '_difference_term', 'processor_params_x', 'processor_params_y', 'input_scaling',
+) + MODEL_SETTINGS
+
+
+# What a custom critic recipe can take, by name: the input sizes the task
+# computed, and the architecture settings.
+CRITIC_SIZES = ('input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y', 'window_size_x', 'window_size_y')
+CRITIC_SETTINGS = ('embedding_dim', 'hidden_dim', 'n_layers', 'input_scaling') + MODEL_SETTINGS
+
+
+def check_custom_critic(recipe) -> None:
+    """Refuse a ``custom_critic`` that is not a recipe: an object would be trained in place and shared by every
+    repeat and every term of a difference."""
+    if recipe is None:
+        return
+    if isinstance(recipe, nn.Module) or not callable(recipe):
+        raise TypeError(
+            f"Model(custom_critic=...) takes a class or a function that builds the critic, and got "
+            f"{type(recipe).__name__!r} object. The library calls it in each task, under that task's seed, "
+            f"so every repeat and every term of a difference trains a critic of its own. An object would be "
+            f"trained in place and shared by all of them. Pass the class, Model(custom_critic=MyCritic), or a "
+            f"function, Model(custom_critic=make_critic) with def make_critic(input_dim_x, input_dim_y): "
+            f"return MyCritic(input_dim_x, input_dim_y). It receives the parameters it names among "
+            f"{', '.join(CRITIC_SIZES + CRITIC_SETTINGS)}."
+        )
+
+
+def critic_recipe_takes(recipe) -> Optional[set]:
+    """The names a critic recipe takes among ``CRITIC_SIZES`` and ``CRITIC_SETTINGS``, or None when it takes
+    them all (``**kwargs``)."""
+    try:
+        parameters = inspect.signature(recipe).parameters
+    except (TypeError, ValueError):
+        return set()
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return None
+    return set(parameters) & set(CRITIC_SIZES + CRITIC_SETTINGS)
+
+
+def encoders_scale(input_scaling, custom_critic=None) -> bool:
+    """Whether the encoders scale their own input: ``Model(input_scaling=...)`` is set and reaches them. Every
+    encoder the library builds takes it, and a ``custom_critic`` only when its recipe names it."""
+    if input_scaling is None:
+        return False
+    if custom_critic is None:
+        return True
+    takes = critic_recipe_takes(custom_critic)
+    return takes is None or 'input_scaling' in takes
+
+
+def _custom_critic(recipe, params: Dict[str, Any]) -> nn.Module:
+    """The critic a ``custom_critic`` recipe builds, called with the sizes and settings it names."""
+    check_custom_critic(recipe)
+
+    def window(side):
+        flat, channels = params.get(f'input_dim_{side}'), params.get(f'n_channels_{side}')
+        if flat is None or channels is None:
+            return None
+        return tuple(f // c for f, c in zip(flat, channels)) if isinstance(channels, tuple) else flat // channels
+
+    available = {**{key: params.get(key) for key in CRITIC_SIZES[:4]},
+                 'window_size_x': window('x'), 'window_size_y': window('y'),
+                 **{name: setting(params, name) for name in CRITIC_SETTINGS}}
+    available['norm_layer'] = norm_layer_of(params)
+    takes = critic_recipe_takes(recipe)
+    kwargs = available if takes is None else {name: available[name] for name in takes}
+    required = [name for name, p in inspect.signature(recipe).parameters.items()
+                if p.default is inspect.Parameter.empty and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+                and name not in kwargs]
+    if required:
+        raise TypeError(
+            f"custom_critic {getattr(recipe, '__name__', recipe)!r} requires {required}, which the library "
+            f"does not pass. It can name any of {', '.join(CRITIC_SIZES + CRITIC_SETTINGS)}."
+        )
+    try:
+        critic = recipe(**kwargs)
+    except Exception as error:
+        if isinstance(params.get('n_channels_x'), tuple):
+            error.add_note(
+                "This is the joint term of a difference, whose X is the pair (rest of X, conditioning set): "
+                "the critic receives X as a tuple of two tensors, and input_dim_x, n_channels_x and "
+                "window_size_x are pairs of the two parts' sizes."
+            )
+        raise
+    if not isinstance(critic, nn.Module):
+        raise TypeError(f"custom_critic must build a torch.nn.Module and built a {type(critic).__name__!r}.")
+    return critic
+
+
+def _names(cls, key: str) -> bool:
+    """Whether ``cls.__init__`` names ``key`` as a parameter of its own."""
+    try:
+        return key in inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                  custom_embedding_cls: Optional[type] = None) -> BaseCritic:
     """Builds and returns a critic model based on the provided parameters.
 
-    This function expects `embedding_params` to be fully populated with
-    defaults (e.g., via `ParameterValidator.apply_defaults`). It strictly
-    accesses required parameters and will raise a KeyError if something is missing,
-    preventing silent failures from missing defaults.
+    A setting missing from `embedding_params` takes the schema's default
+    (`defaults.setting`), and only the keys in `ARCHITECTURE_KEYS` are read.
 
     For ``critic_type='hybrid'``, the decision head MLP that scores the
     concatenated embeddings can be configured independently of the embedding
@@ -503,12 +642,54 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     ``'hybrid'``.
     """
     
-    # Access parameters strictly to ensure defaults were applied
-    use_variational = embedding_params['use_variational']
-    max_n_batches = embedding_params['max_n_batches']
+    # Only the architecture keys reach the build, so a network saved with them
+    # rebuilds as it was trained. A setting absent from them takes its schema
+    # default.
+    embedding_params = {k: embedding_params[k] for k in ARCHITECTURE_KEYS if k in embedding_params}
+    if embedding_params.get('custom_critic') is not None:
+        # The caller's recipe builds the whole critic, in each task anew.
+        return _custom_critic(embedding_params['custom_critic'], embedding_params)
+    use_variational = setting(embedding_params, 'use_variational')
+    max_n_batches = setting(embedding_params, 'max_n_batches')
     # The class also travels in embedding_params, so a caller that only has the
     # dict (embeddings_io rebuilding a saved run) still gets it.
     custom_embedding_cls = custom_embedding_cls or embedding_params.get('custom_embedding_cls')
+
+    # The Model settings every network of the critic can read, resolved once.
+    # An explicit bias of None means unset, not off.
+    _bias = setting(embedding_params, 'bias')
+    values = {name: setting(embedding_params, name) for name in MODEL_SETTINGS}
+    values['norm_layer'] = norm_layer_of(embedding_params)
+    values['bias'] = True if _bias is None else bool(_bias)
+    # Every MLP the critic builds around its encoders (the hybrid critic's
+    # head, the concat critic's network, the head of a difference term's
+    # branched encoder) reads the call's MLP settings.
+    head_settings = {name: values[name] for name in MLP.settings}
+    critic_kwargs = {
+        'embedding_dim': setting(embedding_params, 'embedding_dim'),
+        'max_n_batches': max_n_batches,
+        'use_variational': use_variational,
+    }
+    if critic_type == 'concat':
+        # The concat critic scores the flattened pair with one MLP and builds no
+        # encoder, so it reads none of the encoder settings, which the settings
+        # warning names before any work. Its input is the flattened sizes. A
+        # pair X (the joint term of a difference) enters flattened part by part.
+        _flat_x = embedding_params['input_dim_x']
+        concat_input_dim = (sum(_flat_x) if isinstance(_flat_x, tuple) else _flat_x) + embedding_params['input_dim_y']
+        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=setting(embedding_params, 'hidden_dim'),
+                         embedding_dim=1, n_layers=setting(embedding_params, 'n_layers'), **head_settings)
+        if use_variational:
+            # The concat network's one output is the score of a pair, so the
+            # variational layer makes each score a Gaussian draw and its KL term
+            # regularises the scores. There is no per-variable embedding here
+            # for it to compress.
+            concat_net = VariationalWrapper(concat_net, 1, bias=values['bias'])
+        # Each side's channels scaled before the pair is formed, part by part for a pair X.
+        scaling = ((InputScaling(nn.Identity(), embedding_params['n_channels_x']),
+                    InputScaling(nn.Identity(), embedding_params['n_channels_y']))
+                   if setting(embedding_params, 'input_scaling') == 'standard' else None)
+        return ConcatCritic(embedding_net=concat_net, scaling=scaling, **critic_kwargs)
 
     # X sets the architecture and Y follows it unless given its own, the same
     # "unset means same as X" convention processor_type_y already uses. Naming
@@ -517,11 +698,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     _y_model = embedding_params.get('embedding_model_y')
     _y_custom = embedding_params.get('custom_embedding_cls_y')
     spec_x = {
-        'model_type': embedding_params['embedding_model'].lower(),
+        'model_type': setting(embedding_params, 'embedding_model').lower(),
         'custom_cls': custom_embedding_cls,
-        'hidden_dim': embedding_params['hidden_dim'],
-        'n_layers': embedding_params['n_layers'],
-        'embedding_dim': embedding_params['embedding_dim'],
+        'hidden_dim': setting(embedding_params, 'hidden_dim'),
+        'n_layers': setting(embedding_params, 'n_layers'),
+        'embedding_dim': setting(embedding_params, 'embedding_dim'),
     }
     spec_y = {
         'model_type': _y_model.lower() if _y_model else spec_x['model_type'],
@@ -534,15 +715,8 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                'n_layers_y', 'embedding_dim_y')
     _given_y = [k for k in _Y_KEYS if embedding_params.get(k) is not None]
 
-    shared_encoder = embedding_params.get('shared_encoder', False)
+    shared_encoder = setting(embedding_params, 'shared_encoder')
     if _given_y:
-        if critic_type == 'concat':
-            raise ValueError(
-                f"{_given_y[0]} was set with critic_type='concat'. ConcatCritic "
-                f"scores the raw concatenated pair and has no separate embedding "
-                f"networks or Y-side encoder to configure. Switch to "
-                f"critic_type='separable' or 'hybrid'."
-            )
         if shared_encoder:
             raise ValueError(
                 f"{_given_y[0]} was set with shared_encoder=True. One encoder "
@@ -561,7 +735,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         )
 
     def _resolve_side(spec, side):
-        """The class, the ``input_dim`` it expects, and its kwargs, for one side."""
+        """The class, the ``input_dim`` it expects, and its kwargs, for one side.
+
+        A built-in class gets the Model settings it declares (``settings``), a
+        custom class every one its ``__init__`` names, and ``bias`` also
+        through ``**kwargs``.
+        """
         if (spec['n_layers'] == 0 and not spec['custom_cls'] and spec['model_type'] != 'mlp'
                 and not isinstance(spec['hidden_dim'], list)):
             raise ValueError(
@@ -578,12 +757,19 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                 f"{sorted(_EMBEDDING_CLASSES)}. Pass a class via custom_embedding_cls "
                 f"for anything else."
             )
-        model_type = spec['model_type']
         model_kwargs = {
             'hidden_dim': spec['hidden_dim'],
             'embedding_dim': spec['embedding_dim'],
             'n_layers': spec['n_layers'],
         }
+        if spec['custom_cls']:
+            model_kwargs.update({name: values[name] for name in MODEL_SETTINGS
+                                 if _names(EmbeddingModel, name)})
+            if _accepts_kwarg(EmbeddingModel, 'bias'):
+                model_kwargs['bias'] = values['bias']
+        else:
+            model_kwargs.update({keyword: values[name]
+                                 for name, keyword in EmbeddingModel.settings.items()})
         # A class's own `input_style` (see BaseEmbedding) decides the input_dim
         # convention it's built with -- 'channels' (raw channel count, the
         # window/sequence axis handled internally by the class) or 'flattened'
@@ -592,54 +778,13 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         # sets it). Read per side, since the two sides can be different classes.
         if getattr(EmbeddingModel, 'input_style', 'flattened') == 'channels':
             input_dim = embedding_params[f'n_channels_{side}']
-            # Each architecture's own kwargs, resolved from this side's model
-            # type and read from the one value the caller supplied. Two cnns
-            # share a kernel_size; a cnn paired with a gru takes the kernel size
-            # on one side and the bidirectional flag on the other.
-            if model_type in ('cnn', 'tcn', 'cnn2d'):
-                model_kwargs['kernel_size'] = embedding_params.get(
-                    'kernel_size', 7 if model_type == 'cnn' else 3)
-            if model_type == 'cnn':
-                model_kwargs['pooling'] = embedding_params.get('cnn_pooling', 'flatten')
-            if model_type in ('gru', 'lstm'):
-                model_kwargs['bidirectional'] = embedding_params.get('bidirectional', False)
-            if model_type == 'transformer':
-                model_kwargs['nhead'] = embedding_params.get('nhead', 4)
-            if model_type == 'pretrained_backbone':
-                model_kwargs['pytorch_predefined'] = embedding_params.get('pytorch_predefined')
-                model_kwargs['pretrained'] = embedding_params.get('pretrained', False)
-            if model_type == 'lru':
-                model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-        else:  # MLP or a custom class, both take the fully-flattened input_dim
+        else:
             input_dim = embedding_params[f'input_dim_{side}']
-            if not spec['custom_cls']:
-                # These are specific to the built-in MLP. A custom class only receives
-                # the universal (hidden_dim, embedding_dim, n_layers) contract, so it need
-                # not accept regularisation kwargs it may know nothing about.
-                model_kwargs['use_spectral_norm'] = embedding_params.get('use_spectral_norm', True)
-                model_kwargs['dropout'] = embedding_params.get('dropout', 0.0)
-                # 'auto' is resolved to 'layer' by mode='dimensionality' for the
-                # hybrid critic. Everywhere else it means no normalisation.
-                norm = embedding_params.get('norm_layer', 'auto')
-                model_kwargs['norm_layer'] = None if norm in ('auto', 'none') else norm
         return EmbeddingModel, input_dim, model_kwargs
 
     Model_x, input_dim_x, model_kwargs = _resolve_side(spec_x, 'x')
     Model_y, input_dim_y, model_kwargs_y = _resolve_side(spec_y, 'y')
     hidden_dim, n_layers = spec_x['hidden_dim'], spec_x['n_layers']
-    embedding_dim = spec_x['embedding_dim']
-    critic_kwargs = {
-        'embedding_dim': embedding_dim,
-        'max_n_batches': max_n_batches,
-        'use_variational': use_variational,
-    }
-
-    if shared_encoder and critic_type == 'concat':
-        raise ValueError(
-            "shared_encoder=True is incompatible with critic_type='concat'. "
-            "ConcatCritic operates on raw concatenated inputs and has no separate "
-            "embedding networks to share. Switch to critic_type='separable' or 'hybrid'."
-        )
     # A term of a difference quantity: its X encoder reads each part of X on a
     # branch of its own, under one head (BranchedEmbedding).
     difference_term = embedding_params.get('_difference_term', False)
@@ -650,10 +795,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             "and cannot also be Y's encoder. Set shared_encoder=False."
         )
 
-    # Bias terms in the embedding layers. Both encoders get the same value.
-    # An explicit None means unset, not off, so it falls back to the default.
-    _bias = embedding_params.get('bias')
-    bias_x = bias_y = True if _bias is None else bool(_bias)
+    bias_x = bias_y = values['bias']
 
     for Model_, unused in ((Model_x, None), (Model_y, None)):
         if not (bias_x and bias_y) and not getattr(Model_, 'zero_preserving', True):
@@ -666,16 +808,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             )
             break
 
-    # Only classes that accept `bias` are given it. A custom embedding class
-    # following the minimal BaseEmbedding contract
+    # A custom embedding class following the minimal BaseEmbedding contract
     # (input_dim, hidden_dim, embedding_dim, n_layers) must still build, so an
     # explicit bias request that such a class cannot receive is reported rather
     # than forced on it.
-    for Model_, kwargs, value in ((Model_x, model_kwargs, bias_x),
-                                  (Model_y, model_kwargs_y, bias_y)):
-        if _accepts_kwarg(Model_, 'bias'):
-            kwargs['bias'] = value
-        elif not (bias_x and bias_y):
+    for Model_, kwargs in ((Model_x, model_kwargs), (Model_y, model_kwargs_y)):
+        if 'bias' not in kwargs and not (bias_x and bias_y):
             # Only reachable when bias was actually turned off AND the class cannot
             # receive it. Gating this on any other capability would report a bias
             # problem the class does not have.
@@ -689,21 +827,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     # A class that names window_size gets the window length, the flattened size
     # over the channel count (a pair of them for a compound input), so it need
-    # not average over the window to stay independent of its length. A custom
-    # class that names dropout or use_spectral_norm gets those too: the minimal
-    # contract above passes it only its sizes.
-    def _names(cls, key):
-        return key in inspect.signature(cls.__init__).parameters
-
-    for Model_, kwargs, spec, side in ((Model_x, model_kwargs, spec_x, 'x'), (Model_y, model_kwargs_y, spec_y, 'y')):
+    # not average over the window to stay independent of its length.
+    for Model_, kwargs, side in ((Model_x, model_kwargs, 'x'), (Model_y, model_kwargs_y, 'y')):
         n_ch, flat = embedding_params.get(f'n_channels_{side}'), embedding_params.get(f'input_dim_{side}')
         if _names(Model_, 'window_size') and n_ch is not None and flat is not None:
             kwargs['window_size'] = (tuple(f // c for f, c in zip(flat, n_ch)) if isinstance(n_ch, tuple)
                                      else flat // n_ch)
-        if spec['custom_cls']:
-            for key, default in (('dropout', 0.0), ('use_spectral_norm', True)):
-                if _names(Model_, key):
-                    kwargs[key] = embedding_params.get(key, default)
 
     # DeepSets masks padded slots, so it needs the sentinel the processor used.
     # Taken per side, since X and Y can be processed differently.
@@ -711,12 +840,27 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                                 (Model_y, model_kwargs_y, 'processor_params_y')):
         if _accepts_kwarg(Model_, 'no_spike_value'):
             params = embedding_params.get(key) or {}
-            kwargs['no_spike_value'] = params.get('no_spike_value', 0.0)
+            kwargs['no_spike_value'] = processor_setting('spike', params, 'no_spike_value')
 
-    net_x_base = (_branched(Model_x, input_dim_x, model_kwargs, embedding_params['n_channels_x'],
-                            embedding_params.get('_condition'))
+    net_x_base = (BranchedEmbedding(input_dim_x, branch_cls=Model_x, head=head_settings, **model_kwargs)
                   if difference_term else Model_x(input_dim_x, **model_kwargs))
     net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
+
+    # Model(input_scaling='standard'): every encoder reads its input centred and
+    # scaled channel by channel, by statistics the trainer sets from the
+    # training rows (models.critics.fit_input_scaling). They are buffers of the
+    # network, saved and applied with it.
+    input_scaling = setting(embedding_params, 'input_scaling')
+    if input_scaling == 'standard':
+        for Model_ in (Model_x, Model_y):
+            if Model_ is DeepSets:
+                raise ValueError(
+                    "Model(input_scaling='standard') cannot serve embedding_model='deepsets'. DeepSets tells a "
+                    "spike from padding by the padding value, which scaling moves. Use another encoder, or "
+                    "leave input_scaling unset."
+                )
+        net_x_base = InputScaling(net_x_base, embedding_params['n_channels_x'])
+        net_y_base = net_x_base if shared_encoder else InputScaling(net_y_base, embedding_params['n_channels_y'])
 
     # Optionally wrap with VariationalWrapper, works for every encoder type
     if use_variational:
@@ -752,37 +896,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         decision_head_input_dim = spec_x['embedding_dim'] + spec_y['embedding_dim']
         _head_hidden_dim = embedding_params.get('hidden_dim_head') or min(64, _last_hidden)
         _head_n_layers = embedding_params.get('n_layers_head') or max(1, n_layers - 1)
-        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=_head_hidden_dim, embedding_dim=1, n_layers=_head_n_layers)
+        decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=_head_hidden_dim, embedding_dim=1,
+                            n_layers=_head_n_layers, **head_settings)
         return HybridCritic(embedding_net_x=net_x, embedding_net_y=net_y, decision_head=decision_head, **critic_kwargs)
-    elif critic_type == 'concat':
-        concat_input_dim = input_dim_x + input_dim_y
-        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=hidden_dim, embedding_dim=1, n_layers=n_layers)
-        if use_variational:
-            # The concat network's one output is the score of a pair, so the
-            # variational layer makes each score a Gaussian draw and its KL term
-            # regularises the scores. There is no per-variable embedding here
-            # for it to compress.
-            concat_net = VariationalWrapper(concat_net, 1)
-        return ConcatCritic(embedding_net=concat_net, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
-
-
-def _branched(branch_cls, input_dim, kwargs, n_channels, condition) -> BranchedEmbedding:
-    """The X encoder of a term of a difference, with ``branch_cls`` built as the call's X encoder for each part.
-
-    A joint term's X arrives as a pair with its two sizes, or as one tensor
-    split by ``condition = ('first' | 'last', n)``: its first or last ``n``
-    channels are the conditioning set, in a size convention of ``input_dim``
-    per ``n_channels`` channels, at one window length. Any other term's X is
-    one part.
-    """
-    if condition is not None:
-        per_channel, n = input_dim // n_channels, condition[1]
-        input_dim = ((n_channels - n) * per_channel, n * per_channel)
-        if 'window_size' in kwargs:
-            kwargs = {**kwargs, 'window_size': (kwargs['window_size'],) * 2}
-    return BranchedEmbedding(input_dim, branch_cls=branch_cls, condition=condition, **kwargs)
 
 
 _OPTIMIZERS = {
@@ -829,7 +947,7 @@ def build_optimizer_and_scheduler(
     -------
     tuple[torch.optim.Optimizer, scheduler or None]
     """
-    _opt_val = params.get('optimizer', 'adam')
+    _opt_val = setting(params, 'optimizer')
     if isinstance(_opt_val, type):
         OptCls = _opt_val
     else:
@@ -860,15 +978,15 @@ def build_optimizer_and_scheduler(
             {'params': _encoder_params,                        'lr': _base_lr},
             {'params': list(critic.decision_head.parameters()), 'lr': _base_lr * _head_mult},
         ]
-        optimizer = OptCls(_param_groups, **params.get('optimizer_params', {}))
+        optimizer = OptCls(_param_groups, **setting(params, 'optimizer_params'))
     else:
         _all_params = list(critic.parameters()) + _decoder_params
-        optimizer = OptCls(_all_params, lr=_base_lr, **params.get('optimizer_params', {}))
+        optimizer = OptCls(_all_params, lr=_base_lr, **setting(params, 'optimizer_params'))
 
-    _sched_val = params.get('scheduler', None)
+    _sched_val = setting(params, 'scheduler')
     scheduler = None
     if _sched_val is not None:
-        _sched_params = params.get('scheduler_params', {})
+        _sched_params = setting(params, 'scheduler_params')
         n_epochs = params['n_epochs']
         if isinstance(_sched_val, type):
             scheduler = _sched_val(optimizer, **_sched_params)
@@ -895,22 +1013,20 @@ def build_optimizer_and_scheduler(
 
 
 def _whiten(z: np.ndarray, whitening: Optional[str]) -> np.ndarray:
-    """Normalize centred embeddings before their cross-covariance is taken."""
+    """Normalize centred embeddings before their cross-covariance is taken, with the transforms
+    ``Preprocessing`` applies to streams (:mod:`neural_mi.preprocessing`). Dead dimensions keep their
+    (zero) scale instead of being divided by it."""
+    from neural_mi.preprocessing import ZCA, ZScore
     if whitening == 'std':
-        std = z.std(axis=0, keepdims=True)
-        # Dead dimensions keep their (zero) scale instead of dividing by zero.
-        return z / np.where(std > 1e-8, std, 1.0)
+        return ZScore().fit(z).transform(z)
     if whitening == 'zca':
-        cov = (z.T @ z) / (z.shape[0] - 1)
-        u, s, _ = np.linalg.svd(cov)
-        w = u @ np.diag(1.0 / np.sqrt(np.maximum(s, 1e-8))) @ u.T
-        return z @ w.T
+        return ZCA().fit(z).transform(z)
     if whitening is not None:
         raise ValueError(f"Unknown whitening {whitening!r}. Expected 'std', 'zca' or None.")
     return z
 
 
-def cross_covariance_svd(zx, zy, whitening: Optional[str] = 'std') -> Dict[str, np.ndarray]:
+def cross_covariance_svd(zx, zy, whitening: Optional[str] = default_of('whitening')) -> Dict[str, np.ndarray]:
     """The SVD of the cross-covariance of two embeddings.
 
     The one computation behind both the spectrum that participation ratios are
@@ -956,7 +1072,7 @@ def cross_covariance_svd(zx, zy, whitening: Optional[str] = 'std') -> Dict[str, 
             'rotation_x': u, 'rotation_y': vt.T}
 
 
-def compute_cross_covariance_spectrum(zx, zy, whitening: Optional[str] = 'std') -> np.ndarray:
+def compute_cross_covariance_spectrum(zx, zy, whitening: Optional[str] = default_of('whitening')) -> np.ndarray:
     """Singular values of the cross-covariance of two embeddings.
 
     See :func:`cross_covariance_svd` for `whitening`.
@@ -964,7 +1080,7 @@ def compute_cross_covariance_spectrum(zx, zy, whitening: Optional[str] = 'std') 
     return cross_covariance_svd(zx, zy, whitening)['singular_values']
 
 
-def compute_cross_covariance_rotation(zx, zy, whitening: Optional[str] = 'std') -> Dict[str, np.ndarray]:
+def compute_cross_covariance_rotation(zx, zy, whitening: Optional[str] = default_of('whitening')) -> Dict[str, np.ndarray]:
     """Embeddings re-expressed so that dimension 0 carries the most shared variance.
 
     The rotation comes from :func:`cross_covariance_svd`. Whitening sets the
@@ -1018,36 +1134,53 @@ def compute_spectral_metrics(spectrum: np.ndarray, eps: float = 1e-12) -> Dict[s
 
 
 def warn_if_blocked_split_leaks(gap_size: int, block: int, step: float,
-                                 window_size: float, gap_fraction: float,
+                                 span: float, gap_fraction: float,
                                  path_label: str = "") -> bool:
-    """Warn if a blocked train/test split's gap doesn't fully separate windows in time.
+    """Warn if a blocked train/test split's gap doesn't fully separate rows in time.
 
-    ``gap_size`` (a count of *windows* excluded on each side of a test block,
-    already computed by the caller) buys a time-domain buffer of
-    ``gap_size * step``. With overlapping windows (``step < window_size``) that
-    buffer can be shorter than a single window, in which case a train window and
-    a test window can share raw samples even though their *indices* don't
-    overlap, a leakage channel distinct from (and not caught by) the index
-    split itself. Shared with the transfer-entropy path (``step=1``,
-    ``window_size=history_window`` there), which builds windows via ``unfold``
-    and bypasses ``WindowManager`` entirely.
+    ``gap_size`` (a count of *rows* excluded on each side of a test block,
+    already computed by the caller) buys a stretch of time ``gap_size * step``,
+    where ``step`` is the distance between the starts of consecutive rows and
+    ``span`` the stretch one row covers (:mod:`neural_mi.data.rows`). When rows
+    overlap and the buffer is shorter than a row, a training row and a held-out
+    row can share samples although their indices do not.
 
-    Returns True if a leak was detected (and a warning logged), else False.
+    Returns True if a leak was detected (and a warning raised), else False.
     """
-    if step <= 0 or window_size <= 0:
+    if step <= 0 or span <= 0:
         return False
     buffer = gap_size * step
-    if buffer >= window_size:
+    if buffer >= span:
         return False
-    min_gap_fraction = (window_size / (block * step)) if (block > 0 and step > 0) else float('inf')
+    min_gap_fraction = (span / (block * step)) if (block > 0 and step > 0) else float('inf')
     _where = f" ({path_label})" if path_label else ""
     warnings.warn(
-        f"Blocked split may leak raw samples between train and test{_where}. "
-        f"gap_size={gap_size} windows x step={step} gives {buffer:.3g} samples of "
-        f"buffer against a window_size of {window_size}. Train and test windows can "
-        f"share up to {window_size - buffer:.3g} samples. Increase "
-        f"Split(gap_fraction=...) to at least {min_gap_fraction:.4f} "
-        f"(currently {gap_fraction}) to eliminate this.",
+        f"Blocked split may leak raw samples between train and test{_where}. A gap of "
+        f"{gap_size} rows, whose starts are {step:.3g} apart, buys {buffer:.3g} of separation "
+        f"against the {span:.3g} one row covers, so a training row and a held-out row can share "
+        f"up to {span - buffer:.3g} of it. Increase Split(gap_fraction=...) to at least "
+        f"{min_gap_fraction:.4f} (currently {gap_fraction}) to eliminate this.",
         UserWarning, stacklevel=user_stacklevel()
     )
     return True
+
+
+def warn_if_random_split_leaks(rows) -> None:
+    """Warn that a random split of rows that share samples leaves each held-out row among training rows
+    that nearly copy it (``rows`` is a :class:`neural_mi.data.rows.RowGeometry`).
+
+    Whether the copies give the held-out rows away depends on the encoder. On the windows of tutorial 04
+    a recurrent encoder and a CNN that averages over positions read a random split far above the exact
+    value, and the default MLP read it like a blocked one."""
+    warnings.warn(
+        f"Random split of rows that share samples: consecutive rows start {rows.step:.3g} apart and "
+        f"each covers {rows.span:.3g}, so a held-out row shares samples with up to "
+        f"{2 * (rows.rows_per_span - 1)} rows around it, most of them in training. An encoder that "
+        f"reads a pattern wherever it sits in a row, such as a recurrent one or a CNN that averages "
+        f"over positions, takes those rows for copies of the held-out one. Its held-out curve then "
+        f"follows the training rows and keeps rising as the network overfits, so the epoch it "
+        f"chooses comes late and the value read there is high. An encoder that reads each position "
+        f"on its own, such as the default MLP, is less exposed. Split(mode='blocked') holds out "
+        f"contiguous blocks with a gap around each.",
+        UserWarning, stacklevel=user_stacklevel()
+    )

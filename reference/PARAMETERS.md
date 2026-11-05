@@ -12,6 +12,7 @@ setting falls back to the value given for X.
 
 - [`run()`](#run)
 - [`Processing`](#processing) and the [processor parameters](#processor-parameters)
+- [`Preprocessing`](#preprocessing)
 - [`Model`](#model)
 - [`Training`](#training)
 - [`Split`](#split)
@@ -31,7 +32,7 @@ The arguments of `nmi.run()` itself, beside the config objects.
 | `mode` | `'estimate'` | The analysis: `'estimate'`, `'sweep'`, `'rigorous'`, `'lag'`, `'precision'`, `'conditional'`, `'interaction'`, `'transfer'`, `'pairwise'` or `'dimensionality'`. |
 | `sweep_grid` | `None` | A dict of setting names to the values to run. A list, tuple, range or array gives one configuration per value and a single value fixes the setting. Every combination is one configuration and `run_id` in the grid repeats each one. The keys are the settings of `Model`, `Training`, `Split` and `Estimator` and the processor parameters. `Split(mode=...)`, `Split(gap_fraction=...)`, `Estimator(name=...)` and `Estimator(params=...)` are named `split_mode`, `split_gap_fraction`, `estimator_name` and `estimator_params`. |
 | `n_workers` | `1` | Worker processes. Tasks run in parallel across repeats, configurations, chunks, pairs or permutation trials. Each worker gets an equal share of the CPU threads. Results do not depend on the count. |
-| `seed` | `None` | Seed for Python, NumPy and PyTorch. Each task re-seeds from it and a fixed per-task key. A seeded call gives the same result at any `n_workers`. Without one, a seed is drawn from NumPy's global state and recorded in `Results.params['random_seed']`. |
+| `seed` | `None` | Seed for Python, NumPy and PyTorch. Each network re-seeds from it, its repeat (`run_id`) and its role in the estimate. Its place in a grid plays no part. Every configuration runs a repeat from the same seeds. A seeded call gives the same result at any `n_workers`. Without one, a seed is drawn from NumPy's global state and recorded in `Results.params['random_seed']`. |
 | `verbose` | `None` | `True` logs informational messages for the call and `False` only warnings and errors. `None` keeps the level set by `nmi.set_verbosity()`. |
 | `show_progress` | `True` | Show progress bars. |
 | `device` | `None` | Compute device, `'cpu'`, `'cuda'` or `'mps'`. `None` trains on the CPU unless a GPU, timed on the call's first network, is clearly faster ([USING.md](USING.md#speed-memory-and-logging)). |
@@ -56,15 +57,19 @@ clock. With no `Processing`, the data are taken as already windowed:
 | `y` | X's | Y's processor. |
 | `y_params` | X's | Y's processor parameters. When Y falls back to X's, only the keys Y's processor takes are kept. |
 | `w` | X's | The third stream's processor, for `mode='conditional'`, `'interaction'`, `'transfer'` and the named quantities that take one. |
-| `w_params` | X's | The third stream's processor parameters. |
+| `w_params` | X's | The third stream's processor parameters. When W falls back to X's, only the keys W's processor takes are kept. |
 | `x_time`, `y_time`, `w_time` | `None` | A timestamp per sample. With a clock `window_size` and `step_size` are in the clock's units. Without one they are in samples (seconds with `sample_rate`). |
 
 Every stream of a call is windowed on one grid on which a window means the same
-interval in X, Y and W and is kept only where every stream is valid.
+interval in X, Y and W and is kept only where every stream is valid. Every term
+of a quantity reads the rows of that grid ([USING.md](USING.md#one-grid-for-every-stream)).
 
 ### Processor parameters
 
-`window_size` must be set for at least one stream and is shared by every stream.
+`window_size` must be set for at least one stream. The grid's window and step
+are those of the first stream that names a `window_size`, and a stream asking
+for another window, or for a step of another length, is refused.
+`nmi.offset_quantity` places a stream at offsets of its own.
 
 **`'continuous'`** reads a regularly sampled signal of shape `(n_timepoints,
 n_channels)`.
@@ -73,7 +78,7 @@ n_channels)`.
 |--|--|----|
 | `window_size` | required | Window length in samples (seconds with `sample_rate` or a clock). |
 | `step_size` | one window | Distance between window starts. Below 1 it is a fraction of `window_size`. |
-| `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. |
+| `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. A window never runs past the stream's first or last sample, whatever this allows. |
 | `sample_rate` | `None` | Samples per second. Puts windows, steps and lags in seconds. |
 
 **`'spike'`** reads a list with one array of spike times (in seconds) per
@@ -84,11 +89,11 @@ neuron.
 | `window_size` | required | Window length in seconds. |
 | `step_size` | one window | Distance between window starts. Below 1 it is a fraction of `window_size`. |
 | `bin_size` | `None` | Bin each window into counts of this width (seconds). Unset, each window holds the spike times themselves. |
-| `normalize_bins` | `True` | With `bin_size`, divide counts by the bin width to give rates. |
+| `normalize_bins` | `False` | With `bin_size`, divide counts by the bin width to give rates. Off by default, so a count enters as a count: as a rate one spike reads 100 in 10 ms bins and 1,000 in 1 ms bins, a scale the networks read poorly. `Model(input_scaling='standard')` rescales any rows. |
 | `max_spikes_per_window` | `None` | Cap on the spike-time slots per window; spikes beyond it are dropped. |
 | `no_spike_value` | `0.0` | Value of an empty spike-time slot. |
 | `n_seconds` | `None` | Recording length in seconds, when it runs past the last spike. |
-| `drop_empty_windows` | `True` | Drop windows without spikes. `False` keeps silent windows and so changes the quantity estimated (see [USING.md](USING.md)). |
+| `drop_empty_windows` | `True` | Drop windows without spikes. The one default that changes the data: in spike times silence looks the same as no recording. A row is kept only where every spike stream fired, in every term of a quantity. `False` keeps silent windows and so changes the quantity estimated (see [USING.md](USING.md#silent-spike-windows)). No effect on the rows the quantities defined by time offsets build, which keep every window. |
 | `exclude_bursty_neurons` | `False` | Leave out neurons whose peak count exceeds `burst_threshold_multiplier` times the median. |
 | `burst_threshold_multiplier` | `5.0` | The threshold for `exclude_bursty_neurons`. |
 | `sample_rate` | `None` | `mode='lag'` reads it to put lags in seconds. |
@@ -101,8 +106,22 @@ Other values are mapped to consecutive integers with a warning.
 | `window_size` | required | Window length in samples (seconds with `sample_rate` or a clock). |
 | `step_size` | one window | Distance between window starts. Below 1 it is a fraction of `window_size`. |
 | `encoding` | `'majority_vote'` | `'majority_vote'` (the most frequent label, one-hot), `'probability'` (the label frequencies) or `'full_trajectory'` (every sample one-hot). |
-| `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. |
+| `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. A window never runs past the stream's first or last sample, whatever this allows. |
 | `sample_rate` | `None` | Samples per second. Puts windows, steps and lags in seconds. |
+
+## `Preprocessing`
+
+Transforms of each continuous stream before rows are built from it, made only
+when asked and recorded in `result.params['preprocessing']`. Each transform is
+fitted on X, Y and W apart, the time transform first. Spike-time and
+categorical streams take neither, and arrays passed in as rows take the channel
+transform only. The transforms are in `nmi.preprocessing`, and
+[USING.md](USING.md#preprocessing-the-streams) shows them in use.
+
+| Parameter | Default | Meaning |
+|--|--|----|
+| `channel` | `None` | A transform across each stream's channels: `'zscore'` (centre each channel and divide it by its standard deviation), `'zca'` (sphere the channels), `'pca'` (rotate them onto their principal axes) or `'copula'` (map each channel through its ranks to a standard normal). Each leaves every quantity unchanged. `nmi.preprocessing.PCA(n_components=k)` keeps the first `k` components, and warns. A transform of your own also goes here. |
+| `time` | `None` | A transform along each channel's time axis: `'ar'` filters each channel by its own autoregressive fit, whose order AIC chooses up to `10 log10(T)` (`nmi.preprocessing.ARWhitening(order=p)` fixes it). It leaves the rate quantities unchanged in the limit of long windows and changes every other quantity, which warns. |
 
 ## `Model`
 
@@ -125,20 +144,21 @@ The networks that embed X and Y and score their pairing.
 | `cnn_pooling` | `'flatten'` | How the CNN encoder reads its convolutions: at every position of the window (`'flatten'`), which keeps where a pattern occurs, as a lag or a history window needs, or averaged over the window (`'mean'`), which ignores where it occurs. |
 | `bidirectional` | `False` | Bidirectional GRU or LSTM. |
 | `nhead` | `4` | Attention heads of the transformer encoder. |
-| `dropout` | `0.0` | Dropout after each hidden layer (MLP) or inside each block (LRU). |
-| `norm_layer` | `'auto'` | Normalisation in the MLP encoder: `'layer'`, `'batch'` or `'none'`. `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries. |
-| `use_spectral_norm` | `True` | Spectral normalisation of the MLP's hidden layers. |
-| `bias` | `True` | Bias terms in the encoder's layers. |
+| `dropout` | `0.0` | Dropout after each hidden layer of an MLP, inside each block of the LRU, TCN and transformer encoders, and between the stacked layers of a GRU or LSTM. It reaches the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). A setting that no network of the call reads warns. |
+| `norm_layer` | `'auto'` | Normalisation in each hidden block of an MLP: `'layer'`, `'batch'` or `'none'`, in the MLP encoder and the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries. |
+| `input_scaling` | `None` | `'standard'` centres and scales every encoder's input channel by channel, by the mean and standard deviation of the training rows, so that an estimate does not depend on the units of the rows. The statistics are part of the network: saved with it and applied by `extract_embeddings`. Under `critic_type='concat'` each side is scaled before the pair is formed. It cannot serve `embedding_model='deepsets'`, which tells a spike from padding by the padding value. |
+| `use_spectral_norm` | `True` | Spectral normalisation of the hidden layers of an MLP: the MLP encoder and the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). |
+| `bias` | `True` | Bias terms in the layers of every encoder and of the MLPs built around them. |
 | `shared_encoder` | `False` | One encoder for X and Y. `mode='dimensionality'` without `y_data` uses `True` when unset. |
 | `max_n_batches` | `512` | Most samples an encoder embeds at once, to bound memory. A custom decision head or a variational concat critic also scores at most this many pairs at once. |
-| `custom_critic` | `None` | A `torch.nn.Module` used as the whole critic; the architecture settings above are then ignored. |
+| `custom_critic` | `None` | A class or function that builds the whole critic. Every task calls it under its own seed, so each repeat and each term of a difference trains a critic of its own, with the parameters it names among `input_dim_x`, `input_dim_y`, `n_channels_x`, `n_channels_y`, `window_size_x`, `window_size_y`, `embedding_dim`, `hidden_dim`, `n_layers` and the network settings above. In the joint term of a difference X arrives as the pair (rest of X, conditioning set), and each size of X is a pair. An object is refused. Settings it does not name are ignored with a warning. |
 | `custom_embedding_cls` | `None` | An encoder class to use in place of `embedding_model`, as each branch in a difference quantity. |
 | `custom_embedding_cls_y` | X's | Y's encoder class. |
-| `pytorch_predefined` | `None` | A torchvision model name, such as `'resnet18'`, for `embedding_model='pretrained_backbone'`. |
+| `pytorch_predefined` | `None` | A torchvision model name, such as `'resnet18'`, for `embedding_model='pretrained_backbone'`. `None` reads `'resnet18'`. |
 | `pretrained` | `False` | Load that backbone's ImageNet weights. |
 | `use_variational` | `False` | A variational encoder for any `embedding_model`, trained with a KL term (see [THEORY.md](THEORY.md)). Under `critic_type='concat'` it makes each pair's score variational. |
 | `beta` | `1024.0` | Weight of the MI term against the KL term in the variational loss. |
-| `use_decoder` | `False` | Add a decoder that reconstructs each input from its embedding. |
+| `use_decoder` | `False` | Add a decoder that reconstructs each input from its embedding. Needs a critic that gives an embedding of each side (not `critic_type='concat'`). |
 | `decoder_lambda` | `0.001` | Weight of both reconstruction terms, measured against the MI term. |
 | `decoder_lambda_x` | `decoder_lambda` | Weight of X's reconstruction term. |
 | `decoder_lambda_y` | `decoder_lambda` | Weight of Y's reconstruction term. |
@@ -151,18 +171,18 @@ The optimisation loop and what is evaluated after it.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `n_epochs` | `50` | Training epochs. |
+| `n_epochs` | `300` | The most epochs training runs. Training usually ends earlier, once the smoothed held-out curve has not improved for `patience` epochs. |
 | `learning_rate` | `0.0005` | Optimiser learning rate. |
 | `batch_size` | `128` | Training batch size. It sets how many negatives each training step sees and does not cap the reported estimate. |
-| `patience` | `1000` | Epochs without improvement before training stops. The default exceeds `n_epochs` and keeps early stopping off until this is lowered. Stopping decides only when training ends: the network evaluated is always the one at `best_epoch`. |
-| `min_improvement` | `0.001` | Rise in the smoothed test MI that counts as an improvement for `patience`. |
+| `patience` | `30` | Epochs without improvement of the smoothed held-out curve before training stops. With `shift_windows` the curve keeps rising for longer, and training runs as long as it does. Without shifting the curve often tops early and falls, and training ends soon after. A value of `n_epochs` or more turns stopping off. Stopping decides only when training ends: the network evaluated is always the one at `best_epoch`. |
+| `min_improvement` | `0.001` | The rise in the smoothed held-out MI, as a fraction of its best value so far, that counts as an improvement for `patience`. |
 | `median_window` | `5` | Width of the median filter on the test-MI curve before the epoch is read from it. |
 | `smoothing_sigma` | `1.0` | Width of the Gaussian filter applied after the median filter. |
 | `epoch_rule` | `'plateau_start'` | Which epoch of the smoothed held-out curve the reported values are read at (`best_epoch`): the earliest at its top, within half the curve's own noise of the top's level (`'plateau_start'`), or its maximum (`'peak'`). On a clean peak the two agree; on a plateau `'plateau_start'` reads its start, before the network fits its training rows further. `runs` gives the maximum as `peak_epoch` and a diagnosis of the curve as `curve_diagnosis`. |
 | `peak_fraction` | `1.0` | Below 1, report the first epoch whose smoothed test MI reaches this fraction of its maximum, when that is earlier than the epoch `epoch_rule` reads. Meant for a curve that saturates, whose top may be the estimator's ceiling rather than the information; the value is then read before the curve reaches its top. The chosen epoch is `conservative_epoch` in `runs`. |
 | `optimizer` | `'adam'` | `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`, or a `torch.optim.Optimizer` class. |
 | `optimizer_params` | `{}` | Extra arguments for the optimiser, such as `{'weight_decay': 1e-4}`. |
-| `scheduler` | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or a `torch.optim.lr_scheduler` class. |
+| `scheduler` | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or a `torch.optim.lr_scheduler` class. The named schedules are sized on `n_epochs`, the cap, so a run that stops by `patience` ends before they do; `'plateau'` follows the held-out curve instead. |
 | `scheduler_params` | `{}` | Extra arguments for the scheduler. |
 | `lr_head_multiplier` | `None` | Learning-rate multiplier for the hybrid critic's head. |
 | `gradient_clip_val` | `None` | Clip the gradient norm to this value. |
@@ -171,8 +191,7 @@ The optimisation loop and what is evaluated after it.
 | `train_subset_size` | `None` | Size of the fixed training subset the reported estimate is evaluated on: a count, or `'full'` for the whole training set; `None` takes `min(n_train, max_eval_samples)`. Like the held-out subset, it is one contiguous stretch per training segment for a blocked split and random rows for a random split. A subset larger than `max_eval_samples` is evaluated in blocks. Training uses every training sample either way. |
 | `test_subset_size` | `None` | Size of the fixed held-out subset evaluated at every epoch: a count, or `'full'` for the whole held-out set; `None` takes `min(n_test, max_eval_samples)`. Drawn once, right after the split: one contiguous stretch per held-out block for a blocked split, random rows for a random split. A subset larger than `max_eval_samples` is evaluated in blocks at every epoch. |
 | `eval_train` | `False` | Also record the train-side MI every epoch: `True`, a fraction, a sample count, or `'full'`. A set larger than `max_eval_samples` is evaluated in blocks. |
-| `shift_time` | `True` | Temporal data: re-tile the windows from a fresh random time offset every epoch. |
-| `shift_windows` | `True` | The cheaper re-slicing form of `shift_time`, for regularly sampled continuous and categorical data. |
+| `shift_windows` | `True` | Every epoch the training rows' windows start one offset later, drawn within one step and the same for every stream. The rows stay the same rows, the grid leaves one step at its end for the shift, and evaluation reads the rows unshifted. It moves the rows a processor cuts from raw streams in every mode but transfer entropy, and the rows a `stride` above one thins in the quantities built by time offsets. Rows cut by sample number that start one sample apart never move; on a grid in time they move by part of a sample. |
 | `augmentation_params` | `{}` | Augmentations applied to both X and Y during training (listed in [USING.md](USING.md)). |
 | `augmentation_params_x` | `augmentation_params` | X's augmentations; `{}` turns them off for X. |
 | `augmentation_params_y` | `augmentation_params` | Y's augmentations. |
@@ -209,14 +228,13 @@ Units, extra diagnostics, embeddings and display names.
 | Parameter | Default | Meaning |
 |--|--|----|
 | `units` | `'bits'` | `'bits'` or `'nats'`, for every MI value the result holds. |
-| `track_spectral_history` | `False` | Record the participation ratios and spectrum every epoch in `runs` (`spectral_metrics_history`). |
+| `track_spectral_history` | `False` | Record the participation ratios and spectrum every epoch in `runs` (`spectral_metrics_history`). Needs a critic that gives an embedding of each side (not `critic_type='concat'`). |
 | `whitening` | `'std'` | Normalisation of the embeddings before the cross-covariance SVD behind the participation ratios and the rotated embeddings: `'std'`, `'zca'` or `None`. |
-| `return_embeddings` | `False` | Keep each repeat's embeddings of every window, in `details[config_id]['embeddings']`. Available in the modes where a repeat is one network. |
-| `track_embeddings` | `False` | Keep embeddings every epoch for `result.animate()`: `True` (512 samples), a count, a fraction or `'full'`. |
+| `return_embeddings` | `False` | Keep each repeat's embeddings of every window, in `details[config_id]['embeddings']`. Available in the modes where a repeat is one network, with a critic that gives an embedding of each side (not `critic_type='concat'`). |
+| `track_embeddings` | `False` | Keep embeddings every epoch for `result.animate()`: `True` (512 samples), a count, a fraction or `'full'`. Needs a critic that gives an embedding of each side (not `critic_type='concat'`). |
 | `return_rotated_embeddings` | `False` | Also keep the embeddings rotated so that dimension 0 carries the most shared variance. |
 | `rotated_embeddings_per_epoch` | `False` | With tracked embeddings, rotate each epoch on its own, not with the best epoch's rotation. |
 | `return_rotation_matrices` | `False` | Keep the rotation matrices, to project new data into the same basis. |
-| `max_index_reduction` | `0.05` | Largest fraction of windows time shifting may remove before a warning. |
 | `channel_names_x`, `channel_names_y` | `None` | Channel names, for the pairwise heatmap. |
 
 ## Mode configs
@@ -234,7 +252,7 @@ For `mode='rigorous'`. The same fit settings are fields of `Conditional`,
 | `confidence_level` | `0.68` | Confidence level of `mi_error`. |
 | `residual_threshold` | `2.5` | Largest studentised residual before `fit_quality_warning` is set. |
 | `leverage_threshold` | `0.2` | Largest relative shift of the intercept when the $\gamma = 1$ points are left out before `leverage_warning` is set. |
-| `temporal_chunking` | `None` | Cut chunks as contiguous stretches (`True`) or random subsets (`False`); `None` decides from the data. |
+| `temporal_chunking` | `None` | Cut chunks as contiguous stretches (`True`) or random subsets (`False`). `None` cuts contiguous chunks from rows in time order (windows a processor cut, the rows of a named quantity, the histories of transfer entropy) and random subsets from other rows. |
 
 ### `Precision`
 
@@ -278,7 +296,6 @@ For `mode='conditional'`.
 | Parameter | Default | Meaning |
 |--|--|----|
 | `w_data` | required | The conditioning variable $W$ in $I(X;Y \mid W)$. |
-| `align` | `None` | `'dual_branch'` passes X and W to the joint term as a pair, for a W whose window length differs from X's. |
 | `rigorous` | `False` | Extrapolate each repeat to infinite data. |
 | `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
 

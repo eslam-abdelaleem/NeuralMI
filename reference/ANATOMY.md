@@ -212,10 +212,9 @@ known only once training has moved past it. The library keeps copies of the
 network for the epochs that can still turn out to be the peak (a handful at
 any time), takes the peak of the curve smoothed after training as `best_epoch`,
 and reports a fresh evaluation of the training partition with that epoch's
-network. `Training(patience=...)` can
-also stop the run once the smoothed held-out curve has not improved for that
-many epochs. The default patience of 1000 epochs outlasts the default 50-epoch
-run and leaves early stopping off.
+network. Training stops once the smoothed held-out curve has not improved for
+`Training(patience=...)` epochs, and `n_epochs` caps a curve that keeps
+improving.
 
 ### The same data through the library
 
@@ -230,6 +229,8 @@ print(f"library estimate       : {result.mi_estimate:.2f} bits "
       f"at epoch {result.get('best_epoch')}")
 ```
 
-The library draws its own split and initialisation and lands near the same
-value. Everything else it adds (windowing, blocked splits, repeats, ceilings,
-bias correction) wraps this loop.
+The call uses the settings of the loop above rather than the defaults, so that
+the two can be compared. The library draws its own split and initialisation,
+stops once its held-out curve has not improved for `patience` epochs, and lands
+near the same value. Everything else it adds (windowing, blocked splits,
+repeats, ceilings, bias correction) wraps this loop.

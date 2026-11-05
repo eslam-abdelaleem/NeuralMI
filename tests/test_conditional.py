@@ -118,29 +118,27 @@ class TestConditionalMI:
                     model=_MODEL, training=_TRAINING, output=Output(return_embeddings=True),
                     n_workers=1)
 
-    def test_mismatched_x_w_window_sizes_raises_clear_error(self):
-        """X and W with different window sizes must raise a clear ValueError
-        before the concatenation into XW, not a bare torch.cat shape error."""
+    def test_x_and_w_rows_of_different_window_lengths_run_as_a_pair(self):
+        """Rows of X and W with different window lengths reach the joint term as the pair (X, W), each part
+        on a branch of its own, so the parts need share only their rows."""
+        from collections import OrderedDict
         from neural_mi.analysis.conditional import run_conditional_mi
+        from neural_mi.data.plan import RowPlan, Stream
+        from neural_mi.defaults import BASE_PARAMS_SCHEMA
 
-        x = torch.randn(N, 2, 5)   # window size 5
-        y = torch.randn(N, 2, 5)
-        w = torch.randn(N, 2, 3)   # window size 3 -- mismatched by 2, past the trim tolerance
-
-        with pytest.raises(ValueError, match="window size"):
-            run_conditional_mi(x, y, w, base_params=_PARAMS, n_workers=1)
+        plan = RowPlan(OrderedDict(x=Stream(torch.randn(N, 2, 5)), w=Stream(torch.randn(N, 2, 3)),
+                                   y=Stream(torch.randn(N, 2, 5))))
+        params = {**{k: v['default'] for k, v in BASE_PARAMS_SCHEMA.items() if 'default' in v}, **_PARAMS}
+        raw = run_conditional_mi(plan, base_params=params, n_workers=1)
+        assert np.isfinite(raw['cmi_estimate'])
 
 
 class TestConditionalMICategoricalW:
     """w_processor_type='categorical' as the conditioning variable.
 
-    mode='conditional' builds XW by concatenating X and W along the channel
-    axis, which requires a matching window-size axis. The categorical
-    processor's encodings don't produce that layout natively --
-    _reshape_categorical_w_for_conditional (neural_mi/run.py) re-lays them
-    out: 'majority_vote'/'probability' become window-constant channels
-    (broadcast across X's window by run_conditional_mi), 'full_trajectory'
-    keeps its real per-timepoint resolution on the window axis.
+    The joint term reads the pair (X, W), so W's encoding keeps whatever
+    window axis the categorical processor gives it, on a branch of its own,
+    and needs nothing in common with X's beyond the rows.
     """
 
     @staticmethod
@@ -249,9 +247,8 @@ class TestConditionalMICategoricalW:
 
 
 class TestConditionalShiftWindows:
-    """shift_windows reachability: W is raw-concatenated onto X before
-    windowing (rather than after) whenever W is 'continuous' and matches
-    X's processor family."""
+    """shift_windows with a continuous W: one plan of X, W and Y, whose rows
+    every term reads and one offset per epoch moves together."""
 
     def test_engages_silently_for_matching_continuous_pair(self):
         """No warning: shift_windows must actually reach mode='conditional'
@@ -277,13 +274,10 @@ class TestConditionalShiftWindows:
         assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
 
     def test_w_equal_to_x_gives_near_zero_cmi_under_shift(self):
-        """Correctness/desync check: if W is an exact copy of X (same raw
-        array, same window_size/step_size), W carries zero information
-        beyond X, so I(XW;Y) should match I(W;Y) closely and CMI should be
-        near zero -- with shift_windows on. A one-window desync between X's
-        and W's independent reslicing would make the concatenated W look
-        like genuinely new information relative to X, inflating I(XW;Y)
-        well above I(W;Y) and breaking this exact-zero expectation."""
+        """W as an exact copy of X carries no information beyond X, so
+        I(XW;Y) should closely match I(W;Y) and CMI should be near zero with
+        shift_windows on. If X and W moved apart, W would look like new
+        information relative to X and inflate I(XW;Y)."""
         np.random.seed(0)
         torch.manual_seed(0)
         T, window_size = 4000, 20
@@ -304,8 +298,8 @@ class TestConditionalShiftWindows:
         assert np.isfinite(details['mi_xw_y']) and np.isfinite(details['mi_w_y'])
         assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
             f"W=X exactly should make I(XW;Y)={details['mi_xw_y']:.3f} closely match "
-            f"I(W;Y)={details['mi_w_y']:.3f} -- a large gap suggests X and W's independent "
-            f"reslicing desynchronized under shift_windows."
+            f"I(W;Y)={details['mi_w_y']:.3f}; a large gap suggests X and W moved apart "
+            f"under shift_windows."
         )
         assert abs(results.mi_estimate) < 0.3, (
             f"CMI should be near zero when W=X exactly, got {results.mi_estimate:.3f}"
@@ -365,11 +359,19 @@ class TestConditionalShiftWindowsRigorous:
             training=Training(n_epochs=10, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert np.isfinite(results.mi_estimate)
-        assert abs(results.mi_estimate) < 0.5, (
-            f"CMI should be near zero when W=X exactly (rigorous=True path), got "
-            f"{results.mi_estimate:.3f}"
+        # Every rung's combined value is near zero. On data without a dependence
+        # the rungs may resolve too little for a line, and the fit then reports
+        # no value. Where it extrapolates, its value is near zero too.
+        ladder = results.details[0]['trainings']
+        assert len(ladder) and (ladder['train_mi'].abs() < 0.5).all(), (
+            f"CMI should be near zero at every rung when W=X exactly (rigorous=True path), got "
+            f"{ladder['train_mi'].tolist()}"
         )
+        if results.mi_estimate is not None:
+            assert abs(results.mi_estimate) < 0.5, (
+                f"CMI should be near zero when W=X exactly (rigorous=True path), got "
+                f"{results.mi_estimate:.3f}"
+            )
 
 
 class TestConditionalShiftWindowsCategorical:
@@ -433,9 +435,8 @@ class TestConditionalShiftWindowsCategorical:
         )
 
     def test_mismatched_window_size_raises_clear_error(self):
-        """A W whose window_size differs from X's raises: the concatenated
-                array is windowed with X's geometry alone.
-        """
+        """A W whose window_size differs from X's is refused: the streams of
+        one quantity share one grid."""
         np.random.seed(0)
         x = np.random.randint(0, 3, size=(2000, 1)).astype('int64')
         y = np.random.randn(2000, 2).astype('float32')
@@ -453,13 +454,9 @@ class TestConditionalShiftWindowsCategorical:
 
 
 class TestConditionalShiftWindowsMixedTypes:
-    """shift_windows reachability for a *mixed* continuous+categorical
-    conditioning variable (X and W have different processor types, not just
-    a possibly-different category count within the same type) -- exercises
-    shift_windowing.make_multi_categorical_encoder's continuous-passthrough
-    block (n_categories=None) and the broadcast reconciling a categorical
-    block's collapsed window axis against a continuous block's real
-    window_size."""
+    """shift_windows with X and W of different processor types (continuous and
+    categorical): each stream is cut by its own processor on the one grid,
+    and each part of the pair keeps its own window axis."""
 
     def test_engages_silently_continuous_x_categorical_w(self):
         import warnings
@@ -513,9 +510,8 @@ class TestConditionalShiftWindowsMixedTypes:
         'full_trajectory' (no per-window summarization, unlike majority_vote/
         probability) so nothing is discarded at any window boundary under
         any shift. W therefore carries exactly the same information as X,
-        so CMI should be near zero -- a channel-slicing or dtype-handling
-        bug in the mixed-block encoder would desynchronize X and W and
-        inflate it instead."""
+        so CMI should be near zero. If X and W moved apart under the shift,
+        W would look like new information and inflate it."""
         np.random.seed(0)
         torch.manual_seed(0)
         T, window_size, n_categories = 4000, 20, 3
@@ -539,19 +535,16 @@ class TestConditionalShiftWindowsMixedTypes:
         assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
             f"W as a lossless categorical recoding of X should make I(XW;Y)="
             f"{details['mi_xw_y']:.3f} closely match I(W;Y)={details['mi_w_y']:.3f} -- "
-            f"a large gap suggests X and W's mixed-type concatenation desynchronized "
-            f"under shift_windows."
+            f"a large gap suggests X and W moved apart under shift_windows."
         )
         assert abs(results.mi_estimate) < 0.3, (
             f"CMI should be near zero when W is a lossless recoding of X, got {results.mi_estimate:.3f}"
         )
 
 
-class TestConditionalShiftTimeSpike:
-    """shift_time reachability for a spike+spike conditioning variable
-    (X='spike' and W='spike', matching family only) -- mirrors
-    TestConditionalShiftWindows, adapted for shift_time/spike concatenation
-    (Python list concat, not torch.cat)."""
+class TestConditionalShiftingSpikes:
+    """A spike X with a spike conditioning variable: both terms read the rows
+    of one plan of X, W and Y, which move together under shift_windows."""
 
     def test_engages_silently_for_matching_spike_pair(self):
         import warnings
@@ -567,20 +560,18 @@ class TestConditionalShiftTimeSpike:
                 conditional=Conditional(w_data=w_spikes),
                 processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
                 model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-                training=Training(n_epochs=1, patience=1, shift_time=True),
+                training=Training(n_epochs=1, patience=1, shift_windows=True),
                 n_workers=1, show_progress=False, seed=0,
             )
-        msgs = [str(w.message) for w in caught if 'shift_time' in str(w.message)]
-        assert not msgs, f"Did not expect a shift_time warning; got: {msgs}"
+        msgs = [str(w.message) for w in caught if 'shift_windows' in str(w.message)]
+        assert not msgs, f"Did not expect a shift_windows warning; got: {msgs}"
         assert np.isfinite(r.mi_estimate)
 
     def test_w_equal_to_x_gives_near_zero_cmi_under_shift(self):
-        """Correctness/desync check: W as an exact copy of X's spike-neuron
-        population carries zero information beyond X, so CMI should be
-        near zero -- with shift_time on. A desync in the per-population
-        list-concatenation would make the concatenated W look like
-        genuinely new information relative to X, inflating I(XW;Y) above
-        I(W;Y)/I(X;Y) and breaking this expectation."""
+        """W as an exact copy of X's spike population carries no information
+        beyond X, so CMI should be near zero with the rows shifting. If X and
+        W moved apart, W would look like new information relative to X and
+        inflate I(XW;Y)."""
         np.random.seed(0)
         torch.manual_seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
@@ -591,25 +582,23 @@ class TestConditionalShiftTimeSpike:
             conditional=Conditional(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=15, patience=5, batch_size=32, shift_time=True),
+            training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
         details = _components(results)
         assert np.isfinite(details['mi_xw_y']) and np.isfinite(details['mi_w_y'])
         assert abs(details['mi_xw_y'] - details['mi_w_y']) < 0.3, (
             f"W=X exactly should make I(XW;Y)={details['mi_xw_y']:.3f} closely match "
-            f"I(W;Y)={details['mi_w_y']:.3f} -- a large gap suggests X and W's spike-list "
-            f"concatenation desynchronized under shift_time."
+            f"I(W;Y)={details['mi_w_y']:.3f}; a large gap suggests X and W moved apart "
+            f"under shifting."
         )
         assert abs(results.mi_estimate) < 0.3, (
             f"CMI should be near zero when W=X exactly, got {results.mi_estimate:.3f}"
         )
 
-    def test_rigorous_shift_time_spike_no_crash_and_finite(self):
-        """rigorous=True sub-path: mirrors
-        TestRigorousShiftTimeSpikeEndToEnd, for conditional's spike-W case
-        -- exercises run_rigorous_scalar_analysis's new _is_spike_deferred
-        chunk-to-raw-time-range translation."""
+    def test_rigorous_shifting_spikes_no_crash_and_finite(self):
+        """rigorous=True: every chunk is the plan of a stretch of the rows, and every rung comes out
+        finite. One epoch resolves nothing, so the fit itself leaves every rung out."""
         np.random.seed(0)
         torch.manual_seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
@@ -622,17 +611,14 @@ class TestConditionalShiftTimeSpike:
                                    rigorous=True, gamma_range=range(1, 4)),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=1, patience=1, shift_time=True),
+            training=Training(n_epochs=1, patience=1, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert results.mi_estimate is not None
-        assert np.isfinite(results.mi_estimate)
+        ladder = results.details[0]['trainings']
+        assert len(ladder) == sum(range(1, 4)) and np.isfinite(ladder['train_mi']).all()
 
-    def test_no_crash_with_shift_time_false(self):
-        """A spike X and spike W are merged before windowing whether or not
-                shift_time is active, so X's and W's windows are valid on the same
-                rule and the call succeeds with shift_time=False.
-        """
+    def test_no_crash_without_shifting(self):
+        """The plan of X, W and Y cuts their rows whether or not they move."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=800, window_size=0.05, seed=0)
@@ -643,16 +629,15 @@ class TestConditionalShiftTimeSpike:
             conditional=Conditional(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=2, patience=1, shift_time=False),
+            training=Training(n_epochs=2, patience=1, shift_windows=False),
             n_workers=1, show_progress=False, seed=0,
         )
         assert np.isfinite(results.mi_estimate)
 
-    def test_rigorous_no_crash_with_shift_time_false(self):
-        """The rigorous path cuts a spike+spike pair as time ranges whether or
-                not shift_time is active, and returns a finite estimate with
-                shift_time=False.
-        """
+    def test_rigorous_no_crash_without_shifting(self):
+        """A rigorous chunk is the plan of a stretch of the rows, whether or not
+        they move, and every rung comes out finite. Two epochs resolve nothing,
+        so the fit itself leaves every rung out."""
         np.random.seed(0)
         x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
             n_neurons=5, n_windows=400, window_size=0.05, seed=0)
@@ -664,11 +649,46 @@ class TestConditionalShiftTimeSpike:
                                    rigorous=True, gamma_range=range(1, 4), min_gamma_points=2),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
-            training=Training(n_epochs=2, patience=1, shift_time=False, batch_size=16),
+            training=Training(n_epochs=2, patience=1, shift_windows=False, batch_size=16),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert results.mi_estimate is not None
-        assert np.isfinite(results.mi_estimate)
+        ladder = results.details[0]['trainings']
+        assert len(ladder) == sum(range(1, 4)) and np.isfinite(ladder['train_mi']).all()
+
+
+class TestSpikePairWithARegularW:
+    """Spike X and Y with a continuous W: every stream on one grid in time,
+    whose rows move together. A spike window holds spike slots and a
+    continuous one samples, so X and W reach the joint term as a pair."""
+
+    @staticmethod
+    def _streams():
+        rng = np.random.default_rng(0)
+        x = [np.sort(rng.uniform(0, 60, 300)) for _ in range(3)]
+        y = [np.sort(rng.uniform(0, 60, 300)) for _ in range(3)]
+        w = rng.standard_normal((6000, 2)).astype('float32')
+        processing = nmi.Processing(x='spike', x_params={'window_size': 0.5},
+                                    y='spike', y_params={'window_size': 0.5},
+                                    w='continuous', w_params={'sample_rate': 100.0},
+                                    w_time=np.arange(6000) / 100.0)
+        return x, y, w, processing
+
+    @pytest.mark.parametrize('shift', [True, False])
+    def test_the_terms_read_one_grid(self, shift):
+        x, y, w, processing = self._streams()
+        result = nmi.run(x, y, mode='conditional', processing=processing,
+                         conditional=Conditional(w_data=w),
+                         model=Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                         training=Training(n_epochs=1, batch_size=32, shift_windows=shift),
+                         show_progress=False, seed=0)
+        assert np.isfinite(result.mi_estimate)
+
+    def test_ksg_reads_the_pair(self):
+        """KSG reads each part of the pair as it is, so spike slots and samples need no common layout."""
+        x, y, w, processing = self._streams()
+        result = nmi.run(x, y, mode='conditional', processing=processing, conditional=Conditional(w_data=w),
+                         estimator='ksg', show_progress=False)
+        assert np.isfinite(result.mi_estimate)
 
 
 def _gappy_timeline(duty_on=8.0, period=40.0, span=400.0, dt=0.02):

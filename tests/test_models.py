@@ -630,15 +630,20 @@ class TestPerSideEncoders:
                            hidden_dim=16, n_layers=1, critic_type='hybrid'))
         assert np.isfinite(r.mi_estimate)
 
-    @pytest.mark.parametrize("kwargs,match", [
-        (dict(critic_type='concat'), "no separate embedding"),
-        (dict(shared_encoder=True), "cannot also be a second"),
-    ])
-    def test_the_combinations_that_cannot_work_are_refused(self, kwargs, match):
+    def test_one_encoder_cannot_also_be_a_second_one(self):
         from neural_mi import Model
         base = dict(embedding_model='mlp', embedding_model_y='cnn', embedding_dim=8, hidden_dim=16, n_layers=1)
-        with pytest.raises(ValueError, match=match):
-            self._go(Model(**base, **kwargs))
+        with pytest.raises(ValueError, match="cannot also be a second"):
+            self._go(Model(**base, shared_encoder=True))
+
+    def test_a_y_encoder_under_the_concat_critic_is_ignored_with_a_warning(self):
+        """The concat critic builds no encoder, so Y's own encoder settings have no effect, which the
+        settings warning says as it says it of X's. The call runs."""
+        from neural_mi import Model
+        base = dict(embedding_model='mlp', embedding_model_y='cnn', embedding_dim=8, hidden_dim=16, n_layers=1)
+        with pytest.warns(UserWarning, match="embedding_model_y.*builds no encoder"):
+            r = self._go(Model(**base, critic_type='concat'))
+        assert np.isfinite(r.mi_estimate)
 
     def test_a_sequential_encoder_on_a_static_y_is_caught(self):
         from neural_mi import Model, Training
@@ -690,7 +695,7 @@ class TestWindowPositions:
         torch.manual_seed(0)
         a, b = self._pair()
         flat = CNN1D(1, 8, 4, 1, kernel_size=3, window_size=24).eval()
-        mean = CNN1D(1, 8, 4, 1, kernel_size=3, pooling='mean').eval()
+        mean = CNN1D(1, 8, 4, 1, kernel_size=3, cnn_pooling='mean').eval()
         assert not torch.allclose(flat(a), flat(b))
         assert torch.allclose(mean(a), mean(b), atol=1e-6)
 
@@ -698,7 +703,7 @@ class TestWindowPositions:
         with pytest.raises(ValueError, match='needs window_size'):
             CNN1D(1, 8, 4, 1)
         with pytest.raises(ValueError, match='not a recognised value'):
-            CNN1D(1, 8, 4, 1, window_size=10, pooling='max')
+            CNN1D(1, 8, 4, 1, window_size=10, cnn_pooling='max')
 
     def _seen(self, monkeypatch, cls):
         seen = {}
@@ -717,7 +722,7 @@ class TestWindowPositions:
         x = np.random.default_rng(0).standard_normal((200, 2, 12)).astype('float32')
         nmi.run(x, x, model=nmi.Model(embedding_model='cnn', hidden_dim=8, embedding_dim=4, n_layers=1),
                 training=nmi.Training(n_epochs=1), seed=0, show_progress=False, verbose=False)
-        assert seen['kwargs']['window_size'] == 12 and seen['kwargs']['pooling'] == 'flatten'
+        assert seen['kwargs']['window_size'] == 12 and seen['kwargs']['cnn_pooling'] == 'flatten'
 
     def test_custom_class_gets_what_it_names(self):
         seen = {}

@@ -22,6 +22,7 @@ asked is logged at the info level instead and listed at the end, under
 - [Permutation tests](#permutation-tests)
 - [Windowing and coverage](#windowing-and-coverage)
 - [Bias correction](#bias-correction)
+- [Preprocessing and the data check](#preprocessing-and-the-data-check)
 - [Data shape and type](#data-shape-and-type)
 - [Dimensionality](#dimensionality)
 - [Settings that had no effect](#settings-that-had-no-effect)
@@ -104,10 +105,39 @@ A single network's repeat is reported as 0 when it learned nothing that
 generalises or its value came out negative. `mi_mean` and `mi_std` average the
 other repeats, `n_zero` counts the zeros in each row, and a row whose repeats
 all produced nothing reports 0. A repeat of a difference quantity or a rigorous
-fit is a measurement whatever its sign and is never left out: its row averages
-every repeat's measured value. Among clearly positive repeats a zero is most likely a failed
-run. When every repeat is near zero the quantity itself may be near zero. `runs`
-keeps every repeat with its measured value.
+fit is a measurement whatever its sign: its row averages every repeat's measured
+value, and leaves out only a repeat that has no value (the next entry). Among
+clearly positive repeats a zero is most likely a failed run. When every repeat
+is near zero the quantity itself may be near zero. `runs` keeps every repeat
+with its measured value.
+
+**`... of ... repeats are left out of mi_mean and mi_std because a term read negative on its training rows`**
+A quantity combined from separately trained networks (conditional MI, transfer
+entropy and the quantities built from it, interaction information, `mi_rate`)
+takes each term's value repeat by repeat. In the repeats counted, a term's
+network read negative on its training rows while its held-out value stood
+clearly above zero (the entry
+[`The train MI at the reported epoch is negative (...) while the test MI (...) stands more than ... standard errors above zero`](#training)).
+The two readings of one network contradict each other, so the term has no
+value, and neither has its repeat: the result and every term of it are NaN in
+`runs`, `failed_term` names the term, `n_failed` counts the repeat in its row,
+and `mi_mean` and `mi_std` average the other repeats. Reading the term as 0
+instead would report the other terms alone, as though the term were zero. The
+usual causes are too few epochs or samples, and data far from unit scale. Each
+network's values are in `details[config_id]['trainings']`.
+
+**`...: a term learned nothing distinguishable from zero and enters as 0`**
+In the repeats counted, a term's network learned nothing distinguishable from
+zero: its held-out value never rose above zero, or its training-side value came
+out negative while its held-out value stood within noise of zero. The term
+enters the combination as 0. That is the value of a term that is zero, such as
+$I(X;Y)$ in a purely synergistic interaction or the target's own memory in
+transfer entropy to a memoryless target. A term that is not zero but that its
+network missed reads the same, and the result is then off by the term's value:
+high for a term that is subtracted, low for one that is added. Nothing else
+shows it, since a difference with one term at 0 has an amplification factor of
+1. Where the term should not be zero, estimate it on its own with more epochs or
+samples, or with data near unit scale.
 
 **`The extrapolated ... is negative`**
 The rigorous fit extrapolated below zero. The value is reported as 0 and the
@@ -152,18 +182,24 @@ regularisation settings not yet in use.
 **`The held-out MI was still rising when training reached n_epochs=...`**
 Training used every epoch it was allowed, and the smoothed held-out curve rose
 by more than 3 times its own noise over the last 20 epochs. The reported value
-may be under-trained. Raise `n_epochs`, and a `patience` below `n_epochs` then
-ends training once the curve stops improving. A higher `learning_rate` gets
-further in each epoch instead. Raised too far, it brings the top into the first
-few epochs, which the message about a top reached at epoch ... and gone soon
-after reports.
+may be under-trained. Raise `n_epochs`: `patience` still ends training once the
+curve stops improving. A higher `learning_rate` gets further in each epoch
+instead. Raised too far, it brings the top into the first few epochs, which the
+message about a top reached at epoch ... and gone soon after reports. Here and
+in the three entries below, the message ends by naming the count of held-out
+rows when they are fewer than one training batch (the data check's line on the
+rows, `Data check: ... reach the estimator, ...`).
 
-**`The held-out MI curve does not rise clearly above its own epoch-to-epoch noise`**
+**`The held-out MI curve does not rise clearly above its own noise`**
 The top of the smoothed held-out curve stands less than 8 times the curve's
-noise above zero. The noise is measured from the curve itself, from its changes
-between epochs with any smooth trend removed. The data then settle neither the
-epoch the estimate is read at nor the estimate. A curve whose values are all
-non-positive gets the message below instead.
+epoch-to-epoch noise above zero, or less than 3 standard errors of its held-out
+rows ($\sqrt{2I/N}$ for a top of $I$ nats on $N$ rows). The epoch-to-epoch noise
+is measured from the curve itself, from its changes between epochs with any
+smooth trend removed. Every epoch scores the same held-out rows, so their
+sampling error moves the whole curve together and never shows in that noise: a
+network that learned nothing can sit flat a little above zero. The data then
+settle neither the epoch the estimate is read at nor the estimate. A curve whose
+values are all non-positive gets the message below instead.
 
 **`The held-out MI reached its top at epoch ... and fell clearly soon after`**
 The earliest epoch at the top of the smoothed curve lies within the smoothing's
@@ -178,7 +214,8 @@ The smoothed curve climbed its last 3 noise units to the level of its top over
 several epochs, and the training-side value read at the first of them differs
 from the reported one by more than `FUZZY_SE` of the estimate's standard errors (the
 spread of its evaluation blocks over the root of their count, or
-$\sqrt{2I/N}$ for a single block). The estimate then depends on where the top
+$\sqrt{2I/N}$ for a single block). A reported value at or below zero is left
+out, since its warnings come from the entries on negative values. The estimate then depends on where the top
 is taken to start. `runs` keeps the difference as `approach_shift`.
 `result.plot()` shows the curve with the epoch read and the peak.
 
@@ -188,11 +225,23 @@ The training-side value would be pure overfitting and is kept as `raw_train_mi`.
 Either there is no dependence to find or training failed. Check the learning
 rate before the data. In a deliberate null this is the expected outcome.
 
-**`The train MI at the reported epoch is negative`**
-The training-side value at the reported epoch came out negative after the test
-MI had risen above zero. Because MI cannot be negative, the reported value is 0
-and the measured one is kept as `raw_train_mi`. The usual causes are too few
-epochs or too few samples.
+**`The train MI at the reported epoch is negative (...) while the test MI (...) stands more than ... standard errors above zero`**
+The training-side value at the reported epoch came out negative while the
+held-out value of the network stood clearly above zero: by more than 3 of its
+standard errors, $\sqrt{2I/N}$ for a held-out value of $I$ nats on $N$ rows. Because MI cannot be
+negative, the reported value is 0 and the measured one is kept as
+`raw_train_mi`. The two readings of the network contradict each other, so a
+quantity combined from several networks has no value in that repeat (the
+[Amplification](#amplification) entry on repeats left out). The usual causes are
+too few epochs or too few samples, and data far from unit scale.
+
+**`The train MI at the reported epoch is negative (...), and the test MI (...) is within ... standard errors of zero`**
+Both readings of the network lie within noise of zero: the training-side value
+is negative and the held-out value stands less than 3 standard errors above
+zero. The network learned nothing distinguishable from zero, which is what a
+dependence of zero reads, and the reported value is 0 with the measured one
+kept as `raw_train_mi`. In a quantity combined from several networks the term
+enters as 0.
 
 **`NaN MI detected at epoch ... (consecutive NaN streak: .../3)`**
 An epoch whose evaluation produced NaN is skipped for early stopping. Three in a
@@ -226,19 +275,24 @@ needs 100 trials or more. The message also states what the test costs.
 One trial raised an exception or every trial did. Without a null the test is
 inconclusive. The log shows each failure.
 
-**`permutation_test=True has no effect for mode='dimensionality'`**
-The curve and the dimension read from it are no single MI value for a null to
-sit under. Run `mode='estimate'` with `permutation_test=True` to test whether
-the two views share any information.
-
-**`permutation_test=True has no effect for mode='pairwise' without y_data`**
-Because every pair is two channels of X, moving X moves both sides of each pair
-together and no null is computed. Cross-pairwise MI with `y_data` supports the
-test.
-
 ---
 
 ## Windowing and coverage
+
+**`shift_windows=True has no effect here: the rows start one step apart`**
+The rows of a quantity built by time offsets hold every step of the series at
+`stride=1`, so a shift would only relabel them. The rows shift when a stride
+above one thins them: they are then built at every step and each epoch keeps one
+in every `stride` from a new phase.
+
+**`At ...=0, ...() has nothing to condition on and computes ...`**
+A conditional quantity built by time offsets was asked for an empty
+conditioning history, so it has no difference to form and computes another
+quantity with one network. `instantaneous_exchange(k=0)` and
+`directed_information_rate(k=0)` compute `instantaneous_mi`, $I(X_0; Y_0)$.
+`mi_rate(h=0)` computes $I(X_{-L..L}; Y_0)$ for $L$ = `half_width`, which is
+`instantaneous_mi` at `half_width=0`. In a sweep that starts at 0 the first
+point is that quantity, the baseline the conditioned values are read against.
 
 **`step_size=... was read as a fraction of window_size=...`**
 A `step_size` below 1 is always a fraction of the window. `step_size=0.25` is
@@ -257,26 +311,30 @@ silent windows and estimates the unrestricted quantity
 ([USING.md](USING.md#silent-spike-windows)).
 
 **`Blocked split may leak raw samples between train and test`**
-Because the gap around each test block is shorter than a window, windows on
-either side of a boundary share raw samples. Raise `Split(gap_fraction=...)` to
-the value the message gives.
+Because the gap around each test block is shorter than the stretch one row
+covers, rows on either side of a boundary share raw samples. The rows are a
+processor's windows, the rows a named quantity slices by offset or the
+histories of transfer entropy, and each records how far apart its rows start
+and how much one covers. Raise `Split(gap_fraction=...)` to the value the
+message gives.
+
+**`Random split of rows that share samples`**
+`Split(mode='random')` drew the held-out rows one by one from rows that overlap
+in time, so each held-out row sits among training rows that share most of its
+samples. An encoder that reads a pattern wherever it sits in a row, such as a
+recurrent encoder or a CNN that averages over positions, takes those rows for
+copies of the held-out one. Its held-out curve then cannot tell fitting the
+training rows from learning the dependence: it keeps rising as the network
+overfits, the epoch it chooses comes late, and the value read there is high. An
+encoder that reads each position of a row on its own, such as the default MLP,
+takes a row shifted by one step for a different input and is less exposed. Use
+the default `Split(mode='blocked')`, which holds out contiguous blocks with a gap
+around each.
 
 **`Blocked split parameters produced an invalid configuration`**
 Because the requested blocks do not fit the dataset, the split fell back to a
 random split that leaks between neighbouring windows of a time series. Reduce
 `n_test_blocks` or use more data.
-
-**`mode='conditional': x_data and y_data have ... windows and w_data has ...`**, **`mode='interaction': x_data and y_data have ... windows and w_data has ...`**
-The three variables reached the engine with slightly different window counts and
-were all cut to the shorter length. Because `nmi.run()` aligns streams by window
-time before this point, the message means already-windowed arrays were passed to
-the engine directly. The cut is correct only when the extra window is at an
-edge. Pass arrays that agree in length.
-
-**`mode='conditional': x_data window size (...) and w_data window size (...) differ`**, **`mode='interaction': x_data window size (...) and w_data window size (...) differ`**
-The windows of X and W differ in length by a sample or two and were trimmed to
-match. Check that `Processing(x_params=...)` and `Processing(w_params=...)`
-agree on `window_size` and `sample_rate`.
 
 **`ContinuousWindowDataset: .../... interpolated time points (...) are zero-padded due to data gaps`**
 More than a tenth of the interpolated points fall outside the recorded range and
@@ -294,54 +352,51 @@ cap if the dropped spikes matter.
 The unused width costs memory because one neuron's peak count sets the tensor
 width for every neuron. `exclude_bursty_neurons=True` leaves such neurons out.
 
-**`time_shift got offset_x=... != offset_y=...`**
-Only `offset_x` is applied because every stream shares one window grid.
-
-**`Stream ... specifies window_size=.... Every stream shares a single WindowManager`**
-The first stream to name a window size sets it for the one grid every stream
-shares. Give every stream the same value.
-
-**`Stream ... specifies step_size=... against the ... already set by an earlier stream`**
-The same rule for the step.
-
-**`shift_windows is off for this run because stream ... was given a time vector whose sampling is irregular`**
-A clock with a gap has no single sampling period for the reslicing route to use.
-The slower route builds the windows instead by checking every window against the
-timestamps and dropping those that straddle the gap. The run loses the cheap
-per-epoch shift without any effect on the estimate. A `sample_rate` in that
-stream's processor parameters states a period and keeps the reslicing route.
-
-**`shift_windows is off for this run because the streams' time vectors start ... apart`**
-The reslicing route lines streams up by a sample number that matches real time
-only when their clocks start together. The slower route used instead starts the
-grid at the latest start among the streams.
-
 ---
 
 ## Bias correction
 
 **`gamma=...: the smallest data subset has ... samples. Below about ... the held-out partition of a chunk cannot fill one evaluation batch`**
 The values of the deep rungs can be dominated by noise because their chunks are
-too small to evaluate reliably. A straight line through noisy rungs still looks
-straight. Use a smaller `gamma_range` or more data.
+too small to evaluate reliably. The fit leaves out the rungs whose held-out
+curves do not resolve (the entry on rungs that did not resolve below). Those
+that resolve can still be noisy, and a straight line through noisy rungs still
+looks straight. Use a smaller `gamma_range` or more data.
 `Training(min_reliable_samples=...)` moves the point at which this fires.
 
 **`... of ... rungs of the gamma ladder produced nothing`**
-The networks behind those rungs learned nothing that generalises. A rung of a
+The networks behind those rungs learned nothing that generalises (the rung is
+0), or a term of a difference failed on its chunk (the rung is NaN; the
+[Amplification](#amplification) entry on repeats left out). A rung of a
 difference quantity carries its signed measured value otherwise, a negative one
 included. The fit leaves them out like failed chunks and counts them in the
 `zero_rungs` column of `runs`. The message gives the count at each $\gamma$.
 
-**`...half or more of the rungs produced nothing at gamma=...`**
-The chunks at those values of $\gamma$ are likely too small to estimate the
-quantity. A $\gamma$ with no rung left drops
-out of the fit. With fewer than `min_gamma_points` values of $\gamma$ left the
-fit is unreliable. Use a smaller `gamma_range` or more data.
+**`... of ... rungs of the gamma ladder did not resolve`**
+The held-out curves of the networks behind those rungs do not rise clearly above
+their own noise (the curve entry above), so their values say nothing about the
+dependence. They would enter the fit anyway and pass its checks, because noise
+hides curvature. The fit leaves them out and counts them in the
+`unresolved_rungs` column of `runs`. A rung of a difference quantity is left
+out when its joint term does not resolve, the term that holds every variable the
+others hold, since a smaller term can read nothing because it is zero. The
+message gives the count at each $\gamma$.
 
-**`...every rung of the gamma ladder produced nothing`**, **`...only gamma=... has rungs that produced a value`**
-Since a line needs two values of $\gamma$, the fit reports 0 when no rung is
-left and NaN when only one value of $\gamma$ is left. Either way `is_reliable`
-is `False`. Use a smaller `gamma_range`, more data or more training.
+**`...half or more of the rungs at gamma=... are left out, and so are those values of gamma`**
+The rungs there produced nothing or did not resolve. The chunks at those values
+of $\gamma$ are likely too small to estimate the quantity, and the rungs they
+keep are the networks that happened to learn, which would tilt the line. The
+fit leaves those values of $\gamma$ out with all their rungs. With fewer than
+`min_gamma_points` values of $\gamma$ left the fit is unreliable. Use a
+smaller `gamma_range` or more data.
+
+**`...every rung of the gamma ladder produced nothing`**, **`...no value of gamma is left`**, **`...only gamma=... has rungs left`**
+Since a line needs two values of $\gamma$, the fit reports 0 when every rung
+produced nothing, because no network learned anything at any chunk size. It
+reports NaN when no value of $\gamma$ is left otherwise, since nothing then
+says the dependence is 0, and NaN when only one value of $\gamma$ is left. Either way `is_reliable` is `False`. Use a smaller
+`gamma_range`, more data or more training. With no rung left the data may hold
+no dependence at all, which `permutation_test=True` on a single estimate tests.
 
 **`Fit for ... is unreliable (final gamma points < ...)`**
 `is_reliable` is `False` because too few rungs remain to fit. Widen
@@ -370,11 +425,78 @@ without that chunk while at least `min_gamma_points` remain.
 
 ---
 
-## Data shape and type
+## Preprocessing and the data check
 
-**`... have different numbers of samples (...). Truncating ... to ... samples`**, **`X (...) and Y (...) differ in sample count`**
-Both were cut to the shorter length. A large cut means the variables do not
-cover the same interval. Fix the mismatch at its source.
+`Preprocessing(channel=..., time=...)` transforms each continuous stream before
+rows are built from it, and every call checks its streams first
+([USING.md](USING.md#preprocessing-the-streams)). The check changes nothing.
+Its report is logged at the info level (`Data check for ...`, under
+[Informational messages](#informational-messages)), and it warns about what
+needs attention.
+
+**`... has non-finite values (NaN or infinite) in channel(s) ...`**
+Every network that reads a NaN or an infinite value produces NaN, and the call
+fails or reports nothing. A stream read by a continuous or categorical
+processor is refused before this point. This message catches arrays passed in
+already processed. Remove or fill the values before the call.
+
+**`... has constant channel(s) ...`**
+A constant channel carries no information, and the transforms leave it
+unscaled. Drop it before the call, especially before `channel='zca'`, which
+has no direction to sphere along it.
+
+**`The channels of ... have a typical scale of ..., more than a factor of ... from unit scale`**
+The median standard deviation of the stream's channels is below 0.1 or above
+10. The networks start from weights sized for inputs near unit scale, and
+their estimate depends on units: a pair reads close to its true value at unit
+scale and close to 0 at a thousand times it or a thousandth of it.
+`Preprocessing(channel='zscore')` brings every channel to unit scale and leaves
+every quantity unchanged. The check does not fire when a channel transform is
+set.
+
+**`The rows ...'s ... processor builds have a typical scale of ..., more than a factor of ... from unit scale`**
+A spike-time or categorical stream's rows come from its processor, after any
+preprocessing, and the typical standard deviation of those rows is below 0.1 or
+above 10. Spike times within a window are small numbers in seconds. Binned
+counts divided by the bin width (`normalize_bins`) are rates in the hundreds or
+thousands at fine bins, and on the library's spike generator they turned a
+1.15-bit dependence into 0. `normalize_bins=False` keeps counts, and
+`Model(input_scaling='standard')` scales the rows an encoder receives.
+
+**`Preprocessing(time=...) filters each channel by its own past, which changes what ... measures`**
+Filtering each process invertibly by its own past leaves the rate quantities
+unchanged in the limit of long windows (`mi_rate`, `transfer_entropy`,
+`conditional_transfer_entropy`, `directed_information_rate`,
+`instantaneous_exchange`). It changes every other quantity: the information
+between the whitened streams is not the information between the original ones.
+Use it with another quantity only when that is the quantity wanted.
+
+**`Preprocessing leaves ..., a ... stream, as it is`**
+A spike-time or categorical stream has no continuous values to transform. Its
+rows come from its processor, whose own settings set their values (`bin_size`
+and `normalize_bins` for spikes, `encoding` for categories), and
+`Model(input_scaling='standard')` scales the rows an encoder receives.
+
+**`Preprocessing(time=...) leaves ... as it is in time`**
+The stream arrived as rows built already (three or more dimensions), so there
+is no single series to filter. It still takes the channel transform. Pass the
+series, and let a processor or a named quantity build the rows.
+
+**`Preprocessing applies ..., a transform of your own`**
+The library cannot check what a transform of your own does to the information
+in a stream. An invertible transform keeps it, and one that drops, merges or
+clips values does not. The built-in transforms are invertible, apart from
+`PCA` with fewer components than channels.
+
+**`PCA keeps ... of the ... components of ..., those of largest variance`**
+The kept components are the directions of largest variance, and the information
+need not lie in them. A signal shared under larger private ones, as in field
+potentials, is cut first. `n_components=None` keeps every component, a rotation
+that leaves every quantity unchanged.
+
+---
+
+## Data shape and type
 
 **`ContinuousWindowDataset: first inter-sample interval (...) differs from the median`**
 The library uses the median period because the first gap in the time vector is
@@ -396,6 +518,17 @@ image-shaped input.
 
 **`Spatial augmentations ... require 4-D input`**
 The image augmentations are skipped because the batch is not image-shaped.
+
+**`KSG assumes continuous values, and ... of ...'s values... tie with another row's`**
+KSG reads the information from the distances between neighbouring rows, and two
+rows that tie lie at distance zero. It breaks ties with noise drawn for each
+variable apart, so a tied group comes out of the ranks in an order of its own in
+each variable. A variable and an exact copy of it then stop looking alike, and a
+conditional estimate given that copy reads away from zero where the truth is 0.
+The empty slots of spike windows, spike counts and categories tie. Use the
+trained estimators on them. X, Y and Z are the variables of the estimate as KSG
+reads it, Z the conditioning set of a conditional one, and the message names the
+column whose values tie most.
 
 ---
 
@@ -451,11 +584,6 @@ something other than what was asked.
 **`Mode config(s) ... were provided for a call with mode='...'`**
 Only the config of the active mode is used.
 
-**`sweep_grid has no effect for mode='...'`**
-`mode='estimate'` and `mode='precision'` run one configuration once. Use
-`mode='sweep'` to repeat an estimate or sweep a setting. Run `mode='precision'`
-once per setting to compare settings.
-
 **`w_data was provided but mode='...' does not use it`**
 Only `conditional`, `interaction` and `transfer` read a third variable.
 
@@ -467,10 +595,21 @@ Each listed setting applies only with an encoder, critic or switch that this
 call does not use and that the message names. `kernel_size` applies to `'cnn'`,
 `'cnn2d'` and `'tcn'`, `bidirectional` to `'gru'` and `'lstm'`, `nhead` to
 `'transformer'`, and `pytorch_predefined` and `pretrained` to
-`'pretrained_backbone'`. The head
+`'pretrained_backbone'`. `use_spectral_norm`, `dropout`, `norm_layer` and `bias`
+apply to the networks that have the part they name: the MLP encoder, the LRU,
+TCN and transformer encoders for `dropout`, a GRU or LSTM of more than one layer
+for `dropout`, and the MLPs the library builds around the encoders (the hybrid
+critic's head, the concat critic's network, the head of a difference term's
+branched encoder, the pretrained backbone's head), which read all four. Under
+`critic_type='concat'` no encoder is built, so the encoder settings, Y's own
+encoder settings and `shared_encoder` do not apply. The head
 settings apply to `critic_type='hybrid'`, `beta` to `use_variational=True`, and
-the decoder settings to `use_decoder=True`. With `custom_critic` the critic is
-used as given. Every other `Model` setting is ignored. Of the `Output` settings,
+the decoder settings to `use_decoder=True`. With `custom_critic` the recipe builds
+the critic and takes only the architecture settings it names, and the others are
+ignored. `use_variational` and `beta` still apply, since the trainer's loss is
+the KL term the critic returns minus `beta` times the MI term, and
+`use_decoder=True` reads the embeddings the recipe gives through
+`get_training_embeddings`. Of the `Output` settings,
 `return_rotated_embeddings` needs `return_embeddings` or `track_embeddings`,
 `rotated_embeddings_per_epoch` needs both `track_embeddings` and
 `return_rotated_embeddings`, and `return_rotation_matrices` needs
@@ -478,17 +617,20 @@ used as given. Every other `Model` setting is ignored. Of the `Output` settings,
 itself. With `estimator='ksg'` nothing is trained, and every `Model`, `Training`
 and `Split` setting is listed. With `train_indices` and `test_indices` the `Split` settings `mode`,
 `train_fraction`, `n_test_blocks` and `gap_fraction` have no effect. A setting
-spelled out at its default does not count.
+spelled out at its default does not count. A `sweep_grid` over a setting that
+has no effect is refused before any work, since every configuration would train
+the same networks.
 
-**`'lag' in sweep_grid is ignored when using mode='lag'`**
-The mode sets the lag itself.
+**`shift_windows=True has no effect for mode='...' here`**
+The call's rows cannot move: no processor windows the streams (rows passed in
+built already). Shifting moves the rows a processor cuts from raw streams, in every mode
+but transfer entropy ([USING.md](USING.md#window-shifting)).
 
-**`shift_time=True has no effect for mode='...'`**, **`shift_windows=True has no effect for mode='...'`**
-The shift cannot reach this mode with these processors. The message says where
-it can ([USING.md](USING.md#window-shifting)).
-
-**`return_rotated_embeddings=True has no effect for critic_type='concat'`**, **`return_rotated_embeddings=True was requested and this trainer's model exposes no embedding_net_x`**
-The concat critic has no separate encoders whose embeddings could be rotated.
+**`drop_empty_windows=True has no effect on stream ... here`**
+The rows a quantity defined by time offsets builds keep every window: dropping
+one would put two distant windows next to each other and change what an offset
+means. Silent stretches stay as silent rows, and gaps in the recording stay
+visible to the coverage warnings.
 
 **`panels includes 'embeddings' but this repeat holds no 'embedding_history_x'`**
 The animation drops its embedding panel. Set `Output(track_embeddings=...)` before
@@ -520,7 +662,8 @@ the first samples only.
 **`... was raised ... times in this ... and shown once`**
 A rigorous ladder, a parallel grid or a loop of calls can raise the same warning
 or log message many times. The first one was shown when it happened. Later ones
-that differed only in their numbers were counted and not shown. The count covers
+whose first sentence differed only in its numbers were counted and not shown,
+exact repeats included. The count covers
 one call, one notebook cell or one `nmi.grouped_warnings()` block. The message
 quotes the start of the first one.
 The line comes through the channel of the message it counts: a warning of the
@@ -570,6 +713,35 @@ Install ffmpeg to write MP4.
 
 These report what the library did. They are logged at the info level, shown
 with `verbose=True` or `nmi.set_verbose(True)`, and ask for no action.
+
+
+**`Data check: ... reach the estimator, ...`**
+The part of the check that needs the rows, reported where they are counted:
+how many reach the estimator, how many of them are held out (counted as the
+split counts them), and the typical scale of each variable's rows where they
+are built at that point. The held-out rows are what `train_fraction` leaves, or
+the caller's `test_indices`. When they are fewer than one training batch the
+line says so. The held-out curve chooses the epoch the estimate is read at and
+says whether the estimate is resolved. Its rows are each other's negatives, so
+its ceiling is the log of their count, below that of the training batch whose
+objective it follows, and its noise grows as they shrink. That costs the curve
+only where it then cannot be read, and every warning about the curve names the
+count (the curve entries under [Training](#training)). More data or a lower
+`Split(train_fraction=...)` gives the curve more rows. The rigorous ladder draws
+the same line for its chunks and warns. With `estimator='ksg'` nothing is held
+out.
+
+**`Data check for ...`**
+The check every call runs on its streams before rows are built, after any
+`Preprocessing`. It gives each stream's channel count and the range of its
+channel scales and, for a rate quantity on a series, the largest share of a
+channel's variance that the channel's own past predicts linearly, from the
+autoregressive fit `ARWhitening` uses, read from its first 100,000 rows. A
+share above 90% means a large
+conditioning term, of which the rate is a small residual, and the line
+suggests `Preprocessing(time='ar')`, which removes the term and leaves the rate
+unchanged. Spike-time and categorical streams are named only, since their
+processors build their rows.
 
 **`Dimensionality: the grid runs over embedding_dim 1 to ... because the reference fit has a participation ratio of ...`**, **`Dimensionality: the grid runs over ... values of embedding_dim from 1 to ... on a log scale`**
 The default grid reaches twice the participation ratio of the reference fit.
@@ -646,5 +818,5 @@ Because every null trial repeats the full call with every configuration of the
 grid, the test costs `n_permutations` times the call.
 
 **`SubsetView: window count dropped from ... to ...`**
-`shift_time` moved windows outside the valid recording range, so that epoch
-trained on fewer windows. Evaluation reads the unshifted windows.
+The windows of the dataset a `SubsetView` looks at were built again (a new
+window size, for one), and fewer of them fall in the view's time regions.

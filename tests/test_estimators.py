@@ -6,14 +6,6 @@ import neural_mi as nmi
 from neural_mi import Model, Training, Estimator, Processing
 from neural_mi.estimators import infonce_lower_bound, smile_lower_bound
 
-# A minimal set of parameters for running a quick training session
-TRAINER_PARAMS_MINIMAL = {
-    'n_epochs': 10,
-    'batch_size': 64,
-    'learning_rate': 1e-3,
-    'patience': 3
-}
-
 class TestEstimators:
     @pytest.fixture
     def scores(self):
@@ -36,11 +28,11 @@ class TestEstimators:
         NaN on every data draw tried (10 of 10), while InfoNCE tolerates it.
         Through `nmi.run()` SMILE is stable across 8 draws.
 
-        Tolerance measured, not guessed: at this budget InfoNCE lands in
-        1.97-2.04 and SMILE in 1.81-1.88 against a truth of 2.0, so the worst
-        observed error is ~0.19. 0.6 is ~3x that: comfortable against seed
-        noise, and failing an estimator that learned nothing. The previous
-        value of 2.0 admitted anything in (0, 4), including 0.
+        Tolerance measured, not guessed: with the default model and training,
+        InfoNCE lands in 2.08-2.12 and SMILE in 1.85-1.87 over three seeds
+        against a truth of 2.0, so the worst observed error is ~0.15. 0.6 is
+        ~4x that: comfortable against seed noise, and failing an estimator that
+        learned nothing.
         """
         ground_truth_mi = 2.0
         x_raw, y_raw = nmi.generators.generate_correlated_gaussians(
@@ -49,8 +41,6 @@ class TestEstimators:
         result = nmi.run(
             np.asarray(x_raw, dtype='float32'), np.asarray(y_raw, dtype='float32'),
             mode='estimate',
-            model=nmi.Model(hidden_dim=64, embedding_dim=16),
-            training=nmi.Training(**TRAINER_PARAMS_MINIMAL),
             split=nmi.Split(mode='random'),
             estimator=nmi.Estimator(name=estimator_name),
             n_workers=1, show_progress=False, seed=0,

@@ -39,7 +39,7 @@ class SubsetView:
             Channel indices to select from Y data
         max_index_reduction : float, optional
             Maximum tolerated fractional drop in the number of valid windows
-            after a dataset rebuild (e.g. due to shift_time).
+            after a dataset rebuild (e.g. a new window size).
             If the window count drops by more than this fraction, the old and
             new counts are logged at the info level. Default is 0.05 (5%).
         """
@@ -47,7 +47,6 @@ class SubsetView:
         self.channels_x = channels_x
         self.channels_y = channels_y
         self.is_temporal = isinstance(dataset, AlignedStreams)
-        self.time_offset = 0
         self.max_index_reduction = max_index_reduction
         
         import weakref
@@ -170,25 +169,19 @@ class SubsetView:
 
         self.times = np.column_stack([window_times[starts], window_times[ends]])
     
-    def _on_dataset_updated(self, time_shift=None):
+    def _on_dataset_updated(self):
         """
-        Called by the dataset when windows are rebuilt (e.g., after time shift).
+        Called by the dataset when windows are rebuilt (e.g., after a new window size).
         Re-computes indices from stored times.
         If the number of valid windows drops by more than
         `max_index_reduction` (default 5%) after the rebuild, a warning is
         emitted with the old and new counts. This makes silent dataset shrinkage
-        visible when shift_time pushes windows out of valid range.
+        visible when a rebuild moves windows out of the view's time regions.
         """
         if not self.is_temporal or self.times is None:
             return
 
         old_count = len(self.indices) if self.indices is not None else 0
-
-        # If time shift was applied, update our stored times
-        if time_shift is not None:
-            self.times = self.times + time_shift - self.time_offset
-            self.time_offset = time_shift
-
         self._update_indices_from_times()
 
         new_count = len(self.indices) if self.indices is not None else 0
@@ -198,8 +191,8 @@ class SubsetView:
                 logger.info(
                     f"SubsetView: window count dropped from {old_count} to "
                     f"{new_count} ({reduction:.1%} reduction) after dataset "
-                    f"rebuild. shift_time moved windows outside the valid "
-                    f"recording range for this epoch. A smaller shift keeps more of them."
+                    f"rebuild. Fewer of the rebuilt windows fall in this view's time "
+                    f"regions."
                 )
     
     def __len__(self):
@@ -232,11 +225,3 @@ class SubsetView:
     def apply_precision(self, precision_x=0, precision_y=0):
         """Forward precision operations to underlying dataset."""
         self.dataset.apply_precision(precision_x, precision_y)
-    
-    def time_shift(self, offset_x=0.0, offset_y=0.0):
-        """Forward time shift operations to underlying dataset."""
-        if not self.is_temporal:
-            logger.debug("Tried to time-shift a non-windowed dataset, skipping")
-            return
-        self.dataset.time_shift(offset_x, offset_y)
-        # Note: indices will be updated automatically via _on_dataset_updated callback

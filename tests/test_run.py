@@ -190,15 +190,14 @@ class MyCustomCritic(nmi.models.BaseCritic):
 
 def test_run_with_custom_critic(gaussian_data):
     """
-    Tests that the `run` function can accept a pre-initialized custom critic.
+    Tests that the `run` function builds a custom critic from its class.
     """
     x_data, y_data = gaussian_data
-    custom_critic_instance = MyCustomCritic()
 
     result = nmi.run(
         x_data, y_data,
         mode='estimate',
-        model=Model(custom_critic=custom_critic_instance),
+        model=Model(custom_critic=MyCustomCritic),
         training=TRAINING,
         n_workers=1,
         output=NATS  # Use nats for direct comparison with np.log
@@ -282,14 +281,18 @@ def test_run_sweep_mode_processor_param(raw_gaussian_data):
 
 
 def test_rigorous_mode_with_spike_data():
-    """Full end-to-end pipeline: rigorous analysis on synthetic spike data."""
+    """Full end-to-end pipeline: rigorous analysis on synthetic spike data. The fit leaves out the
+    rungs whose held-out curves do not resolve, so the networks train long enough
+    for every rung to resolve."""
     x_spikes, y_spikes, _ = nmi.generators.generate_spike_pair(
-            n_neurons=5, n_windows=200, window_size=0.05, seed=0)
+            n_neurons=5, n_windows=1000, window_size=1.0, seed=0)
     results = nmi.run(
         x_spikes, y_spikes, mode='rigorous',
-        processing=Processing(x='spike', x_params={'window_size': 0.05}),
+        processing=Processing(x='spike', x_params={'window_size': 1.0},
+                              y='spike', y_params={'window_size': 1.0}),
         model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-        training=Training(n_epochs=2, learning_rate=1e-4, batch_size=32, patience=1),
+        training=Training(n_epochs=30, learning_rate=3e-3, batch_size=32, patience=10,
+                          shift_windows=False),
         rigorous=Rigorous(gamma_range=range(1, 3)),
         n_workers=1, seed=42
     )

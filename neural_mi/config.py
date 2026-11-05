@@ -28,7 +28,7 @@ from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 __all__ = [
-    "Model", "Training", "Split", "Estimator", "Output", "Processing",
+    "Model", "Training", "Split", "Estimator", "Output", "Processing", "Preprocessing",
     "Rigorous", "Precision", "Lag", "Transfer", "Dimensionality", "Conditional",
     "Interaction", "Pairwise",
     "as_config",
@@ -105,10 +105,11 @@ class Model:
     dropout: Optional[float] = None
     norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
+    input_scaling: Optional[str] = None            # None | 'standard': each encoder's input centred and scaled
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None
     max_n_batches: Optional[int] = None            # critic chunking
-    custom_critic: Optional[Any] = None            # torch.nn.Module
+    custom_critic: Optional[Any] = None            # class or function that builds the critic
     custom_embedding_cls: Optional[type] = None
     custom_embedding_cls_y: Optional[type] = None
     pytorch_predefined: Optional[str] = None       # torchvision backbone name
@@ -151,7 +152,6 @@ class Training:
     test_subset_size: Optional[Union[int, str]] = None    # count | 'full'
     lr_head_multiplier: Optional[float] = None
     save_best_model_path: Optional[str] = None
-    shift_time: Optional[bool] = None
     shift_windows: Optional[bool] = None
     augmentation_params: Optional[Dict[str, Any]] = None
     augmentation_params_x: Optional[Dict[str, Any]] = None
@@ -194,7 +194,6 @@ class Output:
     """Result units, spectral tracking, embedding returns, and display labels."""
     units: Optional[str] = None                    # 'bits'|'nats'
     track_spectral_history: Optional[bool] = None  # per-epoch pr_eig/pr_singular/spectrum
-    max_index_reduction: Optional[float] = None
     return_embeddings: Optional[bool] = None
     track_embeddings: Optional[Union[bool, float, int, str]] = None
     return_rotated_embeddings: Optional[bool] = None
@@ -227,7 +226,9 @@ class Processing:
     ``w`` is the third stream of ``mode='conditional'``, ``'interaction'`` and
     ``'transfer'`` and of the named quantities that take one. A stream whose
     processor is unset reads with X's, and one whose parameters are unset reads
-    with X's parameters. Every stream of a call is built on one window grid.
+    with X's parameters, kept to the keys its processor takes
+    (``defaults.stream_processing``). Every stream of a call is built on one
+    window grid.
     """
     x: Optional[str] = None                        # processor_type_x
     x_params: Optional[Dict[str, Any]] = None
@@ -245,6 +246,25 @@ class Processing:
             "y": "processor_type_y", "y_params": "processor_params_y",
             "w": "w_processor_type", "w_params": "w_processor_params",
         })
+
+
+@dataclass
+class Preprocessing:
+    """Transforms of each continuous stream before rows are built from it, made only when asked.
+
+    ``channel`` acts across a stream's channels: ``'zscore'``, ``'zca'``,
+    ``'pca'`` or ``'copula'``, each leaving every quantity unchanged. ``time``
+    acts along each channel: ``'ar'`` filters it by its own autoregressive fit,
+    which leaves the rate quantities unchanged in the limit of long windows and
+    changes the others. Either also takes a transform object
+    (:mod:`neural_mi.preprocessing`), such as ``PCA(n_components=8)`` or one of
+    your own. Each is fitted on X, Y and W apart, the time transform first.
+    """
+    channel: Optional[Any] = None
+    time: Optional[Any] = None
+
+    def to_kwargs(self) -> Dict[str, Any]:
+        return _non_none(self)
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +346,9 @@ class Transfer:
         d = _non_none(self)
         for k in self._W_FIELDS:
             d.pop(k, None)
+        # The engine knows it as bidirectional_te, apart from Model(bidirectional) of a recurrent encoder.
+        if 'bidirectional' in d:
+            d['bidirectional_te'] = d.pop('bidirectional')
         return d
 
 
@@ -354,15 +377,10 @@ class Dimensionality:
 class Conditional:
     """Parameters for ``mode='conditional'`` conditional MI (the W variable).
 
-    ``align='dual_branch'`` is for the case where W genuinely differs from
-    X in window length (MI rate, instantaneous exchange, directed
-    information rate, see ``THEORY.md``), beyond the small trim tolerance
-    the default path applies. X and W then reach the joint term as a pair,
-    each at its own window length, instead of joined along the channels.
-    Leave unset (``None``) unless you know you need it.
+    The joint term reads X and W as a pair, each part on a branch of its own
+    and at its own window length.
     """
     w_data: Optional[Any] = None
-    align: Optional[str] = None
     rigorous: Optional[bool] = None
     gamma_range: Optional[Any] = None
     curvature_t_threshold: Optional[float] = None

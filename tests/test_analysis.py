@@ -7,10 +7,10 @@ from neural_mi import Model, Training, Processing, Lag, Split
 import torch
 from unittest.mock import patch
 
-# shift_time disabled to avoid dynamic window sizing issues in tests.
+# Window shifting disabled so the tests see fixed rows.
 MODEL_TEST = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
 TRAINING_TEST = Training(n_epochs=2, learning_rate=1e-4, batch_size=32,
-                         patience=1, shift_time=False)
+                         patience=1, shift_windows=False)
 
 @pytest.mark.parametrize("processor_type", ["continuous", "categorical", "spike"])
 def test_run_lag_mode(processor_type):

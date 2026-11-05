@@ -238,6 +238,20 @@ class TestDimensionalityPlot:
 # plot_bias_correction_fit return value
 # ---------------------------------------------------------------------------
 
+@patch('matplotlib.pyplot.show')
+def test_the_mean_per_gamma_uses_the_rungs_the_fit_used(mock_show, rigorous_df, rigorous_details):
+    """A rung that did not resolve and a gamma the fit dropped show as points but stay out of the mean."""
+    df = rigorous_df.assign(curve_diagnosis='ok')
+    df.loc[df.index[0], ['train_mi', 'curve_diagnosis']] = [9.0, 'not resolved']   # at gamma 1
+    fit = {**rigorous_details, 'gammas_used': [1, 2, 3]}
+    fig, ax = plt.subplots()
+    plot_bias_correction_fit(df, fit, ax=ax)
+    mean_line = next(line for line in ax.lines if line.get_label() == 'Mean MI per Gamma')
+    kept = df[(df['curve_diagnosis'] == 'ok') & df['gamma'].isin([1, 2, 3])]
+    assert np.allclose(mean_line.get_ydata(), kept.groupby('gamma')['train_mi'].mean().to_numpy())
+    plt.close('all')
+
+
 class TestBiasCorrectionFitReturn:
 
     @patch('matplotlib.pyplot.show')
@@ -407,6 +421,13 @@ class TestCompareEstimateMode:
         repeated = rf.make_results('estimate', rows)
         with pytest.raises(ValueError, match="holds 2 repeats"):
             Results.compare([rf.estimate(), repeated], show=False)
+
+    @patch('matplotlib.pyplot.show')
+    def test_compare_overlays_curves_over_one_swept_key(self, mock_show):
+        """Each result's curve carries its own label. plot_sweep_curve once passed the label beside its own
+        and every overlay of curves failed."""
+        ax = Results.compare([rf.sweep(), rf.sweep(means=(0.4, 0.8, 1.0, 1.1))], labels=['a', 'b'], show=False)
+        assert [line.get_label() for line in ax.get_lines()] == ['a', 'b']
 
     @patch('matplotlib.pyplot.show')
     def test_compare_needs_one_swept_key_for_other_modes(self, mock_show):

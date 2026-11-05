@@ -5,7 +5,16 @@ import numpy as np
 import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Transfer, Output
-from neural_mi.analysis.transfer import _build_te_arrays
+from neural_mi.analysis.offsets import build_rows
+from neural_mi.analysis.transfer import te_spec
+
+
+def _build_te_arrays(x, y, history_window, prediction_horizon=1, stride=1):
+    """X's and Y's pasts and Y's future as transfer entropy builds them, through the one builder."""
+    joint, y_future, y_past, _ = build_rows({'x': x, 'y': y}, te_spec(history_window, prediction_horizon),
+                                            stride=stride)
+    n_x = np.shape(x)[1]
+    return joint[:, :n_x], y_past, y_future
 
 # Minimal model/training configs for fast tests
 _MODEL = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
@@ -16,7 +25,7 @@ H = 10   # history_window
 
 
 class TestBuildTeArrays:
-    """Unit tests for the internal _build_te_arrays helper."""
+    """The rows transfer entropy builds from its spec (te_spec)."""
 
     def test_output_shapes(self):
         x = np.random.randn(N, 2)
@@ -203,22 +212,28 @@ class TestConditionalTransferEntropy:
                                   show_progress=False)
         assert r_default.mi_estimate == r_explicit_none.mi_estimate
 
-    def test_build_w_past_matches_x_past_construction(self):
-        from neural_mi.analysis.transfer import _build_te_arrays, _build_w_past
+    def test_w_past_joins_the_conditioning_set_of_the_pair(self):
+        """A is the source's past alone and C the target's past followed by W's, each part on the same
+        window of rows, so the joint term reads the pair (A, C) and the conditioning term C."""
         x = np.random.randn(N, 2)
         y = np.random.randn(N, 3)
         w = np.random.randn(N, 1)
-        x_past, y_past, y_future = _build_te_arrays(x, y, history_window=H)
-        w_past = _build_w_past(w, history_window=H, n_valid=x_past.shape[0])
-        assert w_past.shape == (x_past.shape[0], 1, H)
+        source, _, conditioning, _ = build_rows({'x': x, 'y': y, 'w': w},
+                                                te_spec(H, conditioned_on_w=True))
+        assert source.shape == (N - H, 2, H)
+        assert conditioning.shape == (N - H, 3 + 1, H)
+        row = 7                                           # its past is the samples [row, row + H)
+        as_rows = lambda a: torch.as_tensor(a[row:row + H].T, dtype=torch.float32)
+        assert torch.equal(source[row], as_rows(x))
+        assert torch.equal(conditioning[row], torch.cat([as_rows(y), as_rows(w)]))
 
     def test_w_data_joins_the_conditioning_set(self, monkeypatch):
-        """W's past joins the conditioning set: the joint term splits off Y's and W's channels."""
+        """W's past joins the conditioning set: the joint term's pair is (X's past, Y's and W's past)."""
         from neural_mi.analysis import task as task_module
-        build, conditions = task_module.build_critic, []
+        build, channels = task_module.build_critic, []
 
         def spy(critic_type, params, custom_cls=None):
-            conditions.append(params.get('_condition'))
+            channels.append(params.get('n_channels_x'))
             return build(critic_type, params, custom_cls)
         monkeypatch.setattr(task_module, 'build_critic', spy)
         oracle = _SharedLatentTripleOracle()
@@ -226,8 +241,8 @@ class TestConditionalTransferEntropy:
         for w_data in (None, w):
             nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=5, w_data=w_data),
                     model=_MODEL, training=_TRAINING, n_workers=1, seed=0, show_progress=False)
-        split = sorted({c for c in conditions if c is not None})
-        assert split == [('last', y.shape[1]), ('last', y.shape[1] + w.shape[1])]
+        pairs = sorted({c for c in channels if isinstance(c, tuple)})
+        assert pairs == [(x.shape[1], y.shape[1]), (x.shape[1], y.shape[1] + w.shape[1])]
 
     @pytest.mark.slow
     def test_conditional_te_explains_away_shared_latent(self):
@@ -244,13 +259,10 @@ class TestConditionalTransferEntropy:
         assert cte_exact < te_exact * 0.5  # exact-math sanity check on the oracle itself
 
         x, y, w = oracle.sample(6000, seed=2)
-        training = Training(n_epochs=30, learning_rate=1e-3, batch_size=128, patience=8)
         r_te = nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=k),
-                       model=_MODEL, training=training, n_workers=1, seed=0,
-                       show_progress=False)
+                       n_workers=1, seed=0, show_progress=False)
         r_cte = nmi.run(x, y, mode='transfer', transfer=Transfer(history_window=k, w_data=w),
-                        model=_MODEL, training=training, n_workers=1, seed=0,
-                        show_progress=False)
+                        n_workers=1, seed=0, show_progress=False)
         # Both should be non-negative-ish (small negative noise is expected,
         # per THEORY.md's TE-is-a-difference discussion) and CTE should come
         # in below plain TE, matching the exact-math direction above.

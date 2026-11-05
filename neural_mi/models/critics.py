@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 from typing import Any, Optional, Tuple
 
+from neural_mi.defaults import default_of
+
 
 def _batch_size_of(x) -> int:
     """Batch size of x, whether x is a plain tensor or a tuple/list of
@@ -20,6 +22,14 @@ def _batch_size_of(x) -> int:
 
 def _device_of(x) -> torch.device:
     return (x[0] if isinstance(x, (tuple, list)) else x).device
+
+
+def _flat(x) -> torch.Tensor:
+    """x as one ``(batch, features)`` matrix. A pair X (the joint term of a
+    difference) is flattened part by part and the parts are joined."""
+    if isinstance(x, (tuple, list)):
+        return torch.cat([part.reshape(part.shape[0], -1) for part in x], dim=1)
+    return x.reshape(x.shape[0], -1)
 
 
 # The most values one block of pair activations may hold: rows of the score
@@ -67,6 +77,54 @@ def _slice_batch(x, start: int, end: int):
     if isinstance(x, (tuple, list)):
         return tuple(t[start:end] for t in x)
     return x[start:end]
+
+
+def _gives_own_embeddings(critic: nn.Module) -> bool:
+    """Whether a critic gives its embeddings through a ``get_training_embeddings`` of its own, as a custom
+    critic can, rather than through an encoder per side."""
+    own = getattr(type(critic), 'get_training_embeddings', None)
+    return own is not None and own is not BaseCritic.get_training_embeddings
+
+
+def embeds_each_side(critic) -> bool:
+    """Whether a critic gives an embedding of each side: the one fact that the settings, decoders and
+    embedding outputs needing an encoder per side are checked against.
+
+    ``critic`` is a ``critic_type`` name or a built critic. The library's critics
+    declare it: the separable and hybrid critics embed each side with an encoder
+    of its own, and the concat critic scores the pair without embedding either
+    side. A custom critic gives its embeddings through a
+    ``get_training_embeddings`` of its own, or gives none.
+    """
+    if isinstance(critic, str):
+        declared = CRITICS.get(critic)
+        # An unknown name is refused with the other settings.
+        return True if declared is None else declared.embeds_each_side
+    declared = getattr(type(critic), 'embeds_each_side', None)
+    return declared if declared is not None else _gives_own_embeddings(critic)
+
+
+def side_embedding_sizes(critic: nn.Module, x, y) -> Optional[Tuple[int, int]]:
+    """The size of the embedding of each side a critic gives, which a decoder rebuilds that side from, or
+    None when it gives none.
+
+    The separable and hybrid critics embed each side with an encoder of its own,
+    and a custom critic gives its embeddings through a ``get_training_embeddings``
+    of its own. The concat critic scores the pair without embedding either side.
+    The sizes are read on the rows ``x`` and ``y`` in eval mode, without gradients
+    and on a forked random stream, so that asking changes nothing in the training
+    that follows.
+    """
+    if not embeds_each_side(critic):
+        return None
+    was_training = critic.training
+    critic.eval()
+    try:
+        with torch.no_grad(), torch.random.fork_rng(devices=[]):
+            z_x, z_y = critic.get_training_embeddings(x, y)
+    finally:
+        critic.train(was_training)
+    return int(z_x.shape[-1]), int(z_y.shape[-1])
 
 
 class BaseCritic(nn.Module):
@@ -155,10 +213,16 @@ class BaseCritic(nn.Module):
         """Public API to extract chunked embeddings from a trained critic."""
         if hasattr(self, 'embedding_net_x'):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
+        elif _gives_own_embeddings(self):
+            # A critic that gives its embeddings itself is read the same way
+            # wherever its embeddings are read: decoders, returned embeddings.
+            return self.get_training_embeddings(x, y)
         else:
-            # ConcatCritic: no separate embedding networks, return flat inputs.
-            # This is semantically honest, concat critics have no separable embedding.
-            return x.view(x.shape[0], -1), y.view(y.shape[0], -1)
+            raise ValueError(
+                f"{type(self).__name__} gives no embedding of either side: it scores the pair as a whole. "
+                f"A critic with an encoder per side, or a custom critic with a get_training_embeddings of "
+                f"its own, has embeddings to read."
+            )
             
         max_n = getattr(self, 'max_n_batches', 512)
         use_var = getattr(self, 'use_variational', False)
@@ -187,7 +251,7 @@ class BaseCritic(nn.Module):
             net_x, net_y = self.embedding_net_x, self.embedding_net_y
         else:
             # ConcatCritic has no separate embedding networks
-            return x.reshape(x.shape[0], -1), y.reshape(y.shape[0], -1)
+            return _flat(x), _flat(y)
         max_n = getattr(self, 'max_n_batches', 512)
         use_var = getattr(self, 'use_variational', False)
         zx, zy, _ = self._compute_embeddings_chunked(x, y, net_x, net_y, max_n, use_var)
@@ -198,12 +262,19 @@ class BaseCritic(nn.Module):
 
 class SeparableCritic(BaseCritic):
     """A critic with a separable architecture based on a dot product."""
+    # Whether the critic gives an embedding of each side (an encoder per side); see
+    # embeds_each_side.
+    # Whether it builds an MLP that scores the pair (the hybrid critic's head, the
+    # concat critic's network), which reads the MLP settings.
+    has_mlp_head = False
+    embeds_each_side = True
+
     def __init__(self, 
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
                  embedding_dim: int = None, 
-                 max_n_batches: int = 512, 
-                 use_variational: bool = False,
+                 max_n_batches: int = default_of('max_n_batches'), 
+                 use_variational: bool = default_of('use_variational'),
                  **kwargs):
         super().__init__()
         self.embedding_net_x = embedding_net_x
@@ -226,13 +297,20 @@ class HybridCritic(BaseCritic):
     Combines the computational efficiency of the SeparableCritic's independent 
     embeddings with the expressive interaction of the ConcatCritic.
     """
+    # Whether the critic gives an embedding of each side (an encoder per side); see
+    # embeds_each_side.
+    # Whether it builds an MLP that scores the pair (the hybrid critic's head, the
+    # concat critic's network), which reads the MLP settings.
+    has_mlp_head = True
+    embeds_each_side = True
+
     def __init__(self, 
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
                  decision_head: nn.Module,
                  embedding_dim: int = None, 
-                 max_n_batches: int = 512, 
-                 use_variational: bool = False,
+                 max_n_batches: int = default_of('max_n_batches'), 
+                 use_variational: bool = default_of('use_variational'),
                  **kwargs):
         super().__init__()
         self.embedding_net_x = embedding_net_x
@@ -291,32 +369,44 @@ class ConcatCritic(BaseCritic):
         compress, so it carries no information-bottleneck reading. The separable
         and hybrid critics give that reading.
     """
+    # Whether the critic gives an embedding of each side (one MLP over the flattened pair and no encoder); see
+    # embeds_each_side.
+    # Whether it builds an MLP that scores the pair (the hybrid critic's head, the
+    # concat critic's network), which reads the MLP settings.
+    has_mlp_head = True
+    embeds_each_side = False
+
     def __init__(self,
                  embedding_net: nn.Module,
                  embedding_dim: int = None,
-                 max_n_batches: int = 512,
-                 use_variational: bool = False,
+                 max_n_batches: int = default_of('max_n_batches'),
+                 use_variational: bool = default_of('use_variational'),
+                 scaling: Optional[Tuple[nn.Module, nn.Module]] = None,
                  **kwargs):
         super().__init__()
         self.embedding_net = embedding_net
         self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
+        # Model(input_scaling='standard'): each side's ChannelScaling, applied
+        # before the pair is formed.
+        self.scaling = nn.ModuleList(scaling) if scaling is not None else None
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size = x.size(0)
-        x_flat = x.view(batch_size, -1)
-        y_flat = y.view(batch_size, -1)
+    def forward(self, x, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.scaling is not None:
+            x, y = self.scaling[0](x), self.scaling[1](y)
+        batch_size = _batch_size_of(x)
+        x_flat, y_flat = _flat(x), _flat(y)
         if not self.use_variational and _is_plain_mlp(self.embedding_net):
             return (_score_pairs(self.embedding_net, x_flat, y_flat),
-                    torch.tensor(0.0, device=x.device))
+                    torch.tensor(0.0, device=y.device))
 
         # Row-wise chunking: process chunk_rows rows of x per iteration.
         # Each chunk contains chunk_rows * N pairs, bounding peak memory to
         # max_n_batches pairs, same budget as the original flat-index loop.
         chunk_rows = max(1, self.max_n_batches // batch_size)
-        scores = torch.zeros(batch_size, batch_size, device=x.device)
-        total_kl_acc = torch.tensor(0.0, device=x.device)
+        scores = torch.zeros(batch_size, batch_size, device=y.device)
+        total_kl_acc = torch.tensor(0.0, device=y.device)
         n_pair_chunks = 0
         y_exp = y_flat.unsqueeze(0)  # (1, N, dy), shared view, no copy
 
@@ -345,8 +435,40 @@ class ConcatCritic(BaseCritic):
             scores[start:end] = chunk_scores.squeeze(-1).view(n_rows, batch_size)
 
         if self.use_variational and n_pair_chunks > 0:
-            kl_tensor = total_kl_acc.to(x.device) / (batch_size * batch_size)
+            kl_tensor = total_kl_acc.to(y.device) / (batch_size * batch_size)
         else:
-            kl_tensor = torch.tensor(0.0, device=x.device)
+            kl_tensor = torch.tensor(0.0, device=y.device)
 
         return scores, kl_tensor
+
+# The library's critics by critic_type, for what each declares (embeds_each_side).
+CRITICS = {'separable': SeparableCritic, 'hybrid': HybridCritic, 'concat': ConcatCritic}
+
+
+def fit_input_scaling(critic: nn.Module, x, y) -> None:
+    """Set every input scaling of ``critic`` (``Model(input_scaling='standard')``) from the training rows ``x``
+    and ``y``. A shared encoder takes its statistics from both sides' rows. Nothing happens without one."""
+    from neural_mi.models.embeddings import InputScaling
+    scaling = getattr(critic, 'scaling', None)
+    if scaling is not None:
+        scaling[0].fit(x)
+        scaling[1].fit(y)
+        return
+
+    def find(net):
+        return next((m for m in net.modules() if isinstance(m, InputScaling)), None) if net is not None else None
+
+    sx, sy = find(getattr(critic, 'embedding_net_x', None)), find(getattr(critic, 'embedding_net_y', None))
+    if sx is not None and sx is sy:
+        sx.fit(torch.cat([x, y], dim=0))
+        return
+    if sx is not None:
+        sx.fit(x)
+    if sy is not None:
+        sy.fit(y)
+
+
+def has_input_scaling(critic: nn.Module) -> bool:
+    """Whether ``critic`` scales its inputs (``Model(input_scaling='standard')``)."""
+    from neural_mi.models.embeddings import ChannelScaling
+    return any(isinstance(m, ChannelScaling) for m in critic.modules())

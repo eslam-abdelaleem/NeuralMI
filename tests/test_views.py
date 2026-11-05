@@ -62,15 +62,6 @@ class TestSubsetView:
         # So len should be 2.
         assert len(view) == 2
 
-        # Test time shift
-        temporal_dataset.time_shift(offset_x=10)
-        # _on_dataset_updated is called.
-        # self.times = self.times + 10 - 0 = [10, 30].
-        assert view.times[0, 0] == 10
-        assert view.times[0, 1] == 30
-
-        assert len(view) > 0
-
     def test_subset_view_indices_temporal_convert_to_times(self, temporal_dataset):
         indices = [0, 1] # First two windows: [0, 10), [10, 20)
         view = SubsetView(temporal_dataset, indices=indices)
