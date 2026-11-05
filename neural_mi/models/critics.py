@@ -86,6 +86,24 @@ def _gives_own_embeddings(critic: nn.Module) -> bool:
     return own is not None and own is not BaseCritic.get_training_embeddings
 
 
+def embeds_each_side(critic) -> bool:
+    """Whether a critic gives an embedding of each side: the one fact that the settings, decoders and
+    embedding outputs needing an encoder per side are checked against.
+
+    ``critic`` is a ``critic_type`` name or a built critic. The library's critics
+    declare it: the separable and hybrid critics embed each side with an encoder
+    of its own, and the concat critic scores the pair without embedding either
+    side. A custom critic gives its embeddings through a
+    ``get_training_embeddings`` of its own, or gives none.
+    """
+    if isinstance(critic, str):
+        declared = CRITICS.get(critic)
+        # An unknown name is refused with the other settings.
+        return True if declared is None else declared.embeds_each_side
+    declared = getattr(type(critic), 'embeds_each_side', None)
+    return declared if declared is not None else _gives_own_embeddings(critic)
+
+
 def side_embedding_sizes(critic: nn.Module, x, y) -> Optional[Tuple[int, int]]:
     """The size of the embedding of each side a critic gives, which a decoder rebuilds that side from, or
     None when it gives none.
@@ -97,7 +115,7 @@ def side_embedding_sizes(critic: nn.Module, x, y) -> Optional[Tuple[int, int]]:
     and on a forked random stream, so that asking changes nothing in the training
     that follows.
     """
-    if not hasattr(critic, 'embedding_net_x') and not _gives_own_embeddings(critic):
+    if not embeds_each_side(critic):
         return None
     was_training = critic.training
     critic.eval()
@@ -200,9 +218,11 @@ class BaseCritic(nn.Module):
             # wherever its embeddings are read: decoders, returned embeddings.
             return self.get_training_embeddings(x, y)
         else:
-            # ConcatCritic: no separate embedding networks, return flat inputs.
-            # This is semantically honest, concat critics have no separable embedding.
-            return _flat(x), _flat(y)
+            raise ValueError(
+                f"{type(self).__name__} gives no embedding of either side: it scores the pair as a whole. "
+                f"A critic with an encoder per side, or a custom critic with a get_training_embeddings of "
+                f"its own, has embeddings to read."
+            )
             
         max_n = getattr(self, 'max_n_batches', 512)
         use_var = getattr(self, 'use_variational', False)
@@ -242,6 +262,10 @@ class BaseCritic(nn.Module):
 
 class SeparableCritic(BaseCritic):
     """A critic with a separable architecture based on a dot product."""
+    # Whether the critic gives an embedding of each side (an encoder per side); see
+    # embeds_each_side.
+    embeds_each_side = True
+
     def __init__(self, 
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
@@ -270,6 +294,10 @@ class HybridCritic(BaseCritic):
     Combines the computational efficiency of the SeparableCritic's independent 
     embeddings with the expressive interaction of the ConcatCritic.
     """
+    # Whether the critic gives an embedding of each side (an encoder per side); see
+    # embeds_each_side.
+    embeds_each_side = True
+
     def __init__(self, 
                  embedding_net_x: nn.Module, *, 
                  embedding_net_y: Optional[nn.Module] = None,
@@ -335,6 +363,10 @@ class ConcatCritic(BaseCritic):
         compress, so it carries no information-bottleneck reading. The separable
         and hybrid critics give that reading.
     """
+    # Whether the critic gives an embedding of each side (one MLP over the flattened pair and no encoder); see
+    # embeds_each_side.
+    embeds_each_side = False
+
     def __init__(self,
                  embedding_net: nn.Module,
                  embedding_dim: int = None,
@@ -399,6 +431,10 @@ class ConcatCritic(BaseCritic):
             kl_tensor = torch.tensor(0.0, device=y.device)
 
         return scores, kl_tensor
+
+# The library's critics by critic_type, for what each declares (embeds_each_side).
+CRITICS = {'separable': SeparableCritic, 'hybrid': HybridCritic, 'concat': ConcatCritic}
+
 
 def fit_input_scaling(critic: nn.Module, x, y) -> None:
     """Set every input scaling of ``critic`` (``Model(input_scaling='standard')``) from the training rows ``x``

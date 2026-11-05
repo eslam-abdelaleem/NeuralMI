@@ -66,16 +66,15 @@ REFUSED = {
     ('dimensionality', 'both'): "n_restarts",
     ('transfer', 'processor'): "one time step wide",
 }
-# A mode that ignores the grid with a warning, and runs its base configuration once.
-IGNORES_GRID = {'estimate', 'precision'}
+# A mode that trains one network runs no grid, and refuses one before any work.
+REFUSED.update({(mode, grid): "runs no sweep_grid" for mode in ('estimate', 'precision')
+                for grid in ('repeats', 'configs', 'both', 'processor')})
 AXIS = {'lag': ['lag'], 'precision': ['tau'], 'pairwise': ['ch_x', 'ch_y'],
         'dimensionality': ['split_id', 'embedding_dim']}
 
 
 def _expected_shape(mode, grid_name):
     grid = dict(GRIDS[grid_name] or {})
-    if mode in IGNORES_GRID:
-        grid = {}
     run_ids = grid.pop('run_id', [0])
     configs = list(itertools.product(*grid.values())) or [()]
     # dimensionality: one split at embedding_dim 1, 2 and the reference 4.

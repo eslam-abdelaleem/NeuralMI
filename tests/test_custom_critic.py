@@ -128,7 +128,7 @@ def test_a_decoder_needs_the_embedding_of_each_side():
     and one that gives them trains with decoders at the size of its embeddings, whatever Model's
     embedding_dim says."""
     x, y = _data()
-    with pytest.raises(ValueError, match='needs a critic that gives an embedding of each side'):
+    with pytest.raises(ValueError, match="needs the critic's embedding of each side"):
         _run(x, y, model=nmi.Model(custom_critic=Recipe, use_decoder=True), seed=0)
 
     def six_wide(input_dim_x, input_dim_y):

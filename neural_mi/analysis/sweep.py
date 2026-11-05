@@ -185,15 +185,6 @@ class ParameterSweep:
         tasks = []
         run_id_base = str(uuid.uuid4())
         sweep_grid = sweep_grid or {}
-
-        if self.base_params.get('critic_type') == 'concat' and 'embedding_dim' in sweep_grid:
-            raise ValueError(
-                "'embedding_dim' cannot be swept when critic_type='concat'. "
-                "ConcatCritic has no separate embedding networks and ignores "
-                "embedding_dim. Remove 'embedding_dim' from sweep_grid or switch "
-                "to critic_type='separable' or 'hybrid'."
-            )
-
         param_combinations = _product_dict(**sweep_grid) if sweep_grid else [{}]
 
         # When data has already been pre-processed (processor ran upstream in run()),

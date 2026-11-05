@@ -320,3 +320,12 @@ def default_of(name: str) -> Any:
 def setting(params: Dict[str, Any], name: str) -> Any:
     """Setting ``name`` from ``params``, or its schema default when ``params`` lacks it."""
     return params[name] if name in params else default_of(name)
+
+
+def norm_layer_of(params: Dict[str, Any]) -> Optional[str]:
+    """The normalisation layer the networks build: ``norm_layer``, with 'auto' and 'none' read as none.
+
+    A mode that wants another reading of 'auto' sets norm_layer before anything is built, as
+    mode='dimensionality' does for its hybrid critic."""
+    norm = setting(params, 'norm_layer')
+    return None if norm in ('auto', 'none') else norm

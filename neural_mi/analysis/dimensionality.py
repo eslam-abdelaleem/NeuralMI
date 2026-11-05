@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 from .sweep import ParameterSweep
+from neural_mi.models.critics import embeds_each_side
 from neural_mi.defaults import setting
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.logger import logger, user_stacklevel
@@ -417,11 +418,11 @@ def run_dimensionality_analysis(
     # The hybrid critic is this mode's default. A separable critic works with a
     # warning; a concat critic has no embedding of either side.
     critic_type = params.get('critic_type') if 'critic_type' in user_set else None
-    if critic_type == 'concat':
+    if critic_type is not None and not embeds_each_side(critic_type):
         raise ValueError(
-            "mode='dimensionality' cannot use critic_type='concat'. A concat critic embeds X "
-            "and Y jointly and has no embedding of either side for the curve to vary. Use the "
-            "default 'hybrid' or 'separable'."
+            f"mode='dimensionality' cannot use critic_type='{critic_type}'. That critic scores X "
+            f"and Y jointly and has no embedding of either side for the curve to vary. Use the "
+            f"default 'hybrid' or 'separable'."
         )
     if critic_type == 'separable':
         warnings.warn(

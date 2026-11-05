@@ -160,22 +160,14 @@ def test_single_nan_epoch_does_not_raise():
 # ValueError for ConcatCritic + embedding_dim in sweep
 # ---------------------------------------------------------------------------
 
-def test_concat_critic_embedding_dim_sweep_raises():
-    """Sweeping embedding_dim with concat critic must raise ValueError (not warn)."""
-    x = torch.randn(80, 4, 1)
-    y = torch.randn(80, 4, 1)
-    bp = {
-        **_BASE,
-        'critic_type': 'concat',
-        'input_dim_x': 4, 'input_dim_y': 4,
-        'n_channels_x': 4, 'n_channels_y': 4,
-    }
-    sweep = ParameterSweep(x, y, bp)
-    with pytest.raises(ValueError, match="embedding_dim"):
-        sweep._prepare_tasks(
-            {'embedding_dim': [4, 8]},
-            is_proc_sweep=False,
-        )
+@pytest.mark.parametrize('mode', ['sweep', 'rigorous'])
+def test_concat_critic_embedding_dim_sweep_raises(mode):
+    """The concat critic reads no embedding_dim, so a grid over it would train the same networks in
+    every configuration. run() refuses it before any work, the same way in every mode."""
+    x, y = np.random.randn(80, 4), np.random.randn(80, 4)
+    with pytest.raises(ValueError, match="sweep_grid varies 'embedding_dim', which nothing in this call reads"):
+        nmi.run(x, y, mode=mode, sweep_grid={'embedding_dim': [4, 8]},
+                model=Model(critic_type='concat'), show_progress=False)
 
 
 def test_separable_critic_embedding_dim_sweep_does_not_raise():

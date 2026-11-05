@@ -228,10 +228,10 @@ Units, extra diagnostics, embeddings and display names.
 | Parameter | Default | Meaning |
 |--|--|----|
 | `units` | `'bits'` | `'bits'` or `'nats'`, for every MI value the result holds. |
-| `track_spectral_history` | `False` | Record the participation ratios and spectrum every epoch in `runs` (`spectral_metrics_history`). |
+| `track_spectral_history` | `False` | Record the participation ratios and spectrum every epoch in `runs` (`spectral_metrics_history`). Needs a critic that gives an embedding of each side (not `critic_type='concat'`). |
 | `whitening` | `'std'` | Normalisation of the embeddings before the cross-covariance SVD behind the participation ratios and the rotated embeddings: `'std'`, `'zca'` or `None`. |
-| `return_embeddings` | `False` | Keep each repeat's embeddings of every window, in `details[config_id]['embeddings']`. Available in the modes where a repeat is one network. |
-| `track_embeddings` | `False` | Keep embeddings every epoch for `result.animate()`: `True` (512 samples), a count, a fraction or `'full'`. |
+| `return_embeddings` | `False` | Keep each repeat's embeddings of every window, in `details[config_id]['embeddings']`. Available in the modes where a repeat is one network, with a critic that gives an embedding of each side (not `critic_type='concat'`). |
+| `track_embeddings` | `False` | Keep embeddings every epoch for `result.animate()`: `True` (512 samples), a count, a fraction or `'full'`. Needs a critic that gives an embedding of each side (not `critic_type='concat'`). |
 | `return_rotated_embeddings` | `False` | Also keep the embeddings rotated so that dimension 0 carries the most shared variance. |
 | `rotated_embeddings_per_epoch` | `False` | With tracked embeddings, rotate each epoch on its own, not with the best epoch's rotation. |
 | `return_rotation_matrices` | `False` | Keep the rotation matrices, to project new data into the same basis. |

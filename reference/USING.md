@@ -236,8 +236,8 @@ result.plot()          # held-out MI against epoch, with the chosen epoch marked
 ```
 
 `dataframe` adds the held-out MI at the chosen epoch as `test_mi_mean`.
-`mode='estimate'` runs one configuration once and ignores a `sweep_grid` with a
-warning. `mode='sweep'` runs the grid.
+`mode='estimate'` runs one configuration once and refuses a `sweep_grid`.
+`mode='sweep'` runs the grid.
 
 ### `sweep`
 
@@ -254,8 +254,12 @@ parameters can be a key of `sweep_grid`. `run_id` adds repeats. In a grid,
 `Split(mode=...)` is `split_mode`, `Split(gap_fraction=...)` is
 `split_gap_fraction`, and `Estimator(name=...)` and `Estimator(params=...)` are
 `estimator_name` and `estimator_params`. Because they would run the same call
-under different labels, the grid refuses a key that no setting reads and a key
-the mode reads only once from its config (such as `history_window`). A sweep
+under different labels, the grid refuses a key that no setting reads, a key the
+mode reads only once from its config (such as `history_window`), a key the mode
+sets itself (`lag` in `mode='lag'`, `embedding_dim` and `run_id` in
+`mode='dimensionality'`) and a setting that nothing in the call reads, such as
+`embedding_dim` under the concat critic. A fixed setting that nothing reads is
+ignored with a warning instead. A sweep
 over the capacity of the network (`embedding_dim`, `hidden_dim`, `n_layers`) and
 over `n_epochs` is the way to find a configuration whose estimate has stopped
 moving before committing to a rigorous run.
@@ -584,8 +588,8 @@ estimate, and that spread belongs in its uncertainty.
 
 | mode | repeats | configuration grid | `rigorous` |
 |---|---|---|---|
-| `estimate` | warns and runs once | warns and runs the base configuration | through `mode='rigorous'` |
-| `precision` | warns and runs once | warns and runs once | refused |
+| `estimate` | refused | refused | through `mode='rigorous'` |
+| `precision` | refused | refused | refused |
 | `sweep` | yes | yes | through `mode='rigorous'` with the same grid |
 | `rigorous` | one extrapolation per repeat | yes | built in |
 | `lag` | yes | yes | refused |
@@ -1273,9 +1277,9 @@ model = Model(embedding_model='deepsets', embedding_model_y='mlp',
 
 A separable critic scores a pair by the dot product of the two embeddings and
 needs one `embedding_dim`. Only the hybrid critic accepts a different
-`embedding_dim_y`. The concat critic has no separate encoders and refuses every
-Y-side setting. `shared_encoder=True` uses one encoder for both sides and
-refuses any asymmetry.
+`embedding_dim_y`. The concat critic builds no encoder, so every encoder setting,
+Y's own and `shared_encoder` included, is ignored with a warning.
+`shared_encoder=True` uses one encoder for both sides and refuses any asymmetry.
 
 `bias=False` builds the encoders without bias terms so that an all-zero input
 embeds to exactly zero. The MLP uses an RMS normalisation without learned
@@ -1318,7 +1322,12 @@ The separable critic scores a whole batch with one matrix product. The hybrid
 and concat critics put every pairing through a network. Each side passes through
 that network's first layer once and the pairs are scored in large blocks. The
 hybrid critic then trains in about the time the separable critic takes and the
-concat critic in a few times that. The concat critic has no `embedding_dim`.
+concat critic in a few times that. The concat critic has no `embedding_dim` and
+gives no embedding of either side. A request that reads the embeddings
+(`use_decoder`, `return_embeddings`, `track_embeddings`,
+`track_spectral_history`) is refused before it trains, and its results carry no
+participation ratios. Each critic declares whether it embeds each side
+(`embeds_each_side`), and every check asks it.
 `mode='dimensionality'` uses the hybrid critic.
 
 `Model(norm_layer='layer')` helps the hybrid critic train on wide data. It also

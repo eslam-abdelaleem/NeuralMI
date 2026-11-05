@@ -138,6 +138,10 @@ def _nonparametric(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
     return {'train_mi': value, 'eval_size': len(y), 'train_eval_size': len(y)}
 
 
+# The settings that read the critic's embedding of each side.
+_READ_EMBEDDINGS = ('use_decoder', 'return_embeddings', 'track_embeddings', 'track_spectral_history')
+
+
 def run_training_task(args: tuple) -> Dict[str, Any]:
     """A top-level function that can be pickled for multiprocessing."""
     import random as _random
@@ -293,6 +297,20 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     # A custom critic is the caller's recipe, built here under this task's seed
     # like every other critic (build_critic).
     critic = build_critic(setting(params, 'critic_type'), params, params.get('custom_embedding_cls'))
+    # Decoders, returned and tracked embeddings and the spectrum of the
+    # embeddings read the critic's embedding of each side. A critic without one
+    # (the concat critic, or a custom critic without a get_training_embeddings
+    # of its own) cannot serve them, which is said before it trains.
+    from neural_mi.models.critics import embeds_each_side
+    if not embeds_each_side(critic):
+        _wanted = [f"{name}={setting(params, name)!r}" for name in _READ_EMBEDDINGS if setting(params, name)]
+        if _wanted:
+            raise ValueError(
+                f"{' and '.join(_wanted)} {'needs' if len(_wanted) == 1 else 'need'} the critic's embedding "
+                f"of each side, and this critic gives none. critic_type='concat' scores the pair without "
+                f"embedding either side, and a custom_critic gives embeddings only when it defines "
+                f"get_training_embeddings(x, y) returning (z_x, z_y). Use critic_type='separable' or 'hybrid'."
+            )
 
     # Build decoders if use_decoder is enabled
     decoder_x = None
@@ -306,16 +324,8 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         # size the critic gives, read on two rows.
         _probe = torch.arange(min(2, len(dataset)))
         _on = next(critic.parameters()).device
-        _sizes = side_embedding_sizes(critic, _to_device(dataset.x_dataset[_probe, ...], _on),
-                                      _to_device(dataset.y_dataset[_probe, ...], _on))
-        if _sizes is None:
-            raise ValueError(
-                "use_decoder=True needs a critic that gives an embedding of each side, which a decoder "
-                "rebuilds that side from. The separable and hybrid critics do, and a custom_critic does when "
-                "it defines get_training_embeddings(x, y) returning (z_x, z_y). critic_type='concat' scores "
-                "the pair without embedding either side."
-            )
-        _size_x, _size_y = _sizes
+        _size_x, _size_y = side_embedding_sizes(critic, _to_device(dataset.x_dataset[_probe, ...], _on),
+                                                _to_device(dataset.y_dataset[_probe, ...], _on))
 
         def _decoder(n_channels, input_dim, activation, embedding_dim, height=None, width=None):
             return build_decoder(
@@ -488,25 +498,18 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
             )
 
             if setting(params, 'return_rotated_embeddings'):
-                if setting(params, 'critic_type') == 'concat':
-                    warnings.warn(
-                        "return_rotated_embeddings=True has no effect for critic_type='concat'. "
-                        "That critic has no separate embedding networks to rotate.",
-                        UserWarning, stacklevel=user_stacklevel(),
-                    )
-                else:
-                    _whitening = setting(params, 'whitening')
-                    _rot = compute_cross_covariance_rotation(
-                        results['embeddings_x'], results['embeddings_y'],
-                        whitening=_whitening,
-                    )
-                    results['embeddings_x_rotated'] = _rot['zx_rotated']
-                    results['embeddings_y_rotated'] = _rot['zy_rotated']
-                    results['embeddings_rotation_singular_values'] = _rot['singular_values']
-                    if setting(params, 'return_rotation_matrices'):
-                        results['embeddings_rotation_x'] = _rot['rotation_x']
-                        results['embeddings_rotation_y'] = _rot['rotation_y']
-                    logger.debug("Computed rotated embeddings (whitening=%r).", _whitening)
+                _whitening = setting(params, 'whitening')
+                _rot = compute_cross_covariance_rotation(
+                    results['embeddings_x'], results['embeddings_y'],
+                    whitening=_whitening,
+                )
+                results['embeddings_x_rotated'] = _rot['zx_rotated']
+                results['embeddings_y_rotated'] = _rot['zy_rotated']
+                results['embeddings_rotation_singular_values'] = _rot['singular_values']
+                if setting(params, 'return_rotation_matrices'):
+                    results['embeddings_rotation_x'] = _rot['rotation_x']
+                    results['embeddings_rotation_y'] = _rot['rotation_y']
+                logger.debug("Computed rotated embeddings (whitening=%r).", _whitening)
 
     frozen_x = results.pop('_frozen_eval_x', None)
     frozen_y = results.pop('_frozen_eval_y', None)

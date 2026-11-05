@@ -69,11 +69,8 @@ def run_lag_analysis(
     if sample_rate is None:
         sample_rate = (params_y or {}).get('sample_rate', None)
 
+    # run() refuses a grid over 'lag', which the mode sets itself.
     other_sweep_grid = sweep_grid.copy() if sweep_grid is not None else {}
-    if 'lag' in other_sweep_grid:
-        warnings.warn("'lag' in sweep_grid is ignored when using mode='lag'.",
-                      UserWarning, stacklevel=user_stacklevel())
-        other_sweep_grid.pop('lag')
 
     param_combinations = _product_dict(**other_sweep_grid) if other_sweep_grid else [{}]
 

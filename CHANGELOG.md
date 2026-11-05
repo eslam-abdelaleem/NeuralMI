@@ -701,6 +701,42 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   processor (`create_dataset`, the named quantities, the row plan, a task's grid
   values, the lag scan) calls it.
 
+- Whether a critic gives an embedding of each side was decided by comparing
+  `critic_type` with `'concat'` in ten places, which reacted four ways. Under
+  the concat critic, Y's own encoder settings and `shared_encoder` were
+  refused while X's were ignored with a warning. Its returned embeddings were
+  its flattened inputs, its results carried participation ratios of those
+  inputs, and rotated embeddings warned only once training had ended. Each
+  critic now declares it (`embeds_each_side`), a custom critic is asked
+  whether it has a `get_training_embeddings` of its own, and every check asks
+  `models.critics.embeds_each_side`. A setting the concat critic does not read
+  is named in the one warning about settings that have no effect, before any
+  work. A request that reads the embeddings (`use_decoder`,
+  `return_embeddings`, `track_embeddings`, `track_spectral_history`) is refused
+  before the network trains, and the concat critic's results carry no
+  participation ratios. The trainer tested for `embedding_net_x` and so skipped
+  the rotation of a custom critic's tracked embeddings. It now asks the same
+  question.
+
+- A grid over a setting that nothing in the call reads met three reactions:
+  `mode='sweep'` refused a grid over `embedding_dim` under the concat critic,
+  `mode='rigorous'` dropped that grid from its ladder without a word, and
+  other such grids ran identical configurations under different labels. One
+  function now says which settings nothing reads (`run._unread_settings`). The
+  settings warning asks it about the settings the caller set, and the grid
+  check asks it about each key of the grid in every configuration of the grid.
+  A grid over a setting that no configuration reads is refused before any
+  work, in every mode. `mode='estimate'` and `mode='precision'`, which train
+  one network, refuse a grid instead of running once with a warning. A grid
+  over a key the mode sets itself (`lag` in `mode='lag'`, `embedding_dim` and
+  `run_id` in `mode='dimensionality'`) is refused with one message, where
+  `mode='lag'` used to warn and drop it.
+
+- The rigorous ladder applied a grid point to its tasks' settings by a merge of
+  its own, where every other mode calls `merge_grid_values`, which also puts a
+  processor setting where the processors read it. It now calls the same
+  function.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

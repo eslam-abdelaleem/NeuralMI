@@ -19,18 +19,6 @@ class TestSweepMechanics:
         assert sweep.base_params['input_dim_y'] == 5 * 20
         assert sweep.base_params['n_channels_y'] == 5
 
-    def test_prepare_tasks_concat_critic_warning(self):
-        # Sweeping embedding_dim with a concat critic must raise ValueError:
-        # concat critics don't have a well-defined per-dimension score, so this
-        # sweep configuration is a hard error rather than a silent warning.
-        x = np.random.randn(10, 5)
-        y = np.random.randn(10, 5)
-        base_params = {'critic_type': 'concat'}
-        sweep = ParameterSweep(x, y, base_params)
-
-        with pytest.raises(ValueError, match="embedding_dim"):
-            sweep._prepare_tasks(sweep_grid={'embedding_dim': [4]}, is_proc_sweep=False)
-
     def test_prepare_tasks_proc_sweep(self):
         # Checks that raw data is passed if is_proc_sweep=True
         x = np.random.randn(100, 5)

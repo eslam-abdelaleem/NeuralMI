@@ -11,7 +11,7 @@ import time
 import warnings
 import numpy as np
 import torch
-from typing import Union, Optional, Dict, Any, List
+from typing import Union, Optional, Dict, Any, List, Tuple
 import random
 
 from .analysis.task import _decoder_lambda
@@ -127,15 +127,43 @@ def _normalise_grid(sweep_grid: Optional[dict]) -> Optional[dict]:
     return grid
 
 
-def _check_grid_keys(mode: str, sweep_grid: Optional[dict]) -> None:
-    """Refuse a sweep_grid key that would leave every configuration the same.
+# The grid keys a mode sets itself, and the setting it takes them from.
+_SETS_ITSELF = {'lag': {'lag': "Lag(lag_range=...)"},
+                'dimensionality': {'run_id': "Dimensionality(n_restarts=...)",
+                                   'embedding_dim': "Dimensionality(embedding_dims=...)"}}
+
+
+def _check_grid(mode: str, sweep_grid: Optional[dict], model: Optional[Model] = None,
+                training: Optional[Training] = None, output: Optional[Output] = None,
+                split: Optional[Split] = None, estimator: Optional[Estimator] = None) -> None:
+    """Refuse a sweep_grid that would run configurations that do not differ, before any work.
 
     A grid varies the settings of Model, Training, Split, Estimator and the
-    processors. A mode's own settings are read once from its config, so a grid
-    over one of them, or over a name no setting has, would run identical
-    configurations and label them as different.
+    processors. A mode that trains one network runs no grid. A mode's own
+    settings are read once from its config, so a grid over one of them, or over
+    a name no setting has, would run identical configurations and label them as
+    different. So would a grid over a setting that nothing in the call reads
+    (:func:`_unread_settings`), in every configuration of the grid.
     """
     import dataclasses
+    if not sweep_grid:
+        return
+    if mode in ('estimate', 'precision'):
+        _one_network = ("trains one network" if mode == 'estimate' else
+                        "trains one baseline network and evaluates it at every tau in tau_grid")
+        _instead = ("Use mode='sweep' to repeat the estimate or to sweep a setting."
+                    if mode == 'estimate' else
+                    "To compare settings, run mode='precision' once per setting.")
+        raise ValueError(
+            f"mode='{mode}' {_one_network} and runs no sweep_grid. The grid {sorted(sweep_grid)} would "
+            f"run once with the base configuration. {_instead}"
+        )
+    for key, through in _SETS_ITSELF.get(mode, {}).items():
+        if key in sweep_grid:
+            raise ValueError(
+                f"mode='{mode}' sets '{key}' itself, through {through}. A sweep_grid over it would "
+                f"be overridden in every configuration. Remove '{key}' from sweep_grid."
+            )
     mode_keys = set(MODE_KWARGS_SCHEMA.get(mode, {})) - {'n_workers'}
     if mode in _MODE_CONFIG_CLASSES:
         mode_keys |= {f.name for f in dataclasses.fields(_MODE_CONFIG_CLASSES[mode])}
@@ -165,6 +193,31 @@ def _check_grid_keys(mode: str, sweep_grid: Optional[dict]) -> None:
             f"same call in every configuration.{hint} PARAMETERS.md lists the settings a "
             f"grid can vary."
         )
+    # A setting that nothing reads in any configuration of the grid, asked the
+    # way the settings warning asks about a fixed one.
+    configs = {Model: model or Model(), Training: training or Training(), Output: output or Output()}
+    names = {cls: {f.name for f in fields(cls)} for cls in configs}
+    judged = [key for key in sweep_grid if any(key in owned for owned in names.values())]
+    if not judged:
+        return
+    import itertools
+    read, why = set(), {}
+    for values in itertools.islice(itertools.product(*(sweep_grid[k] for k in judged)), 1024):
+        point = dict(zip(judged, values))
+        at = {cls: dataclasses.replace(cfg, **{k: v for k, v in point.items() if k in names[cls]})
+              for cls, cfg in configs.items()}
+        unread = set()
+        for group, text in _unread_settings(mode, at[Model], at[Training], at[Output], split, estimator,
+                                            chosen=set(judged)):
+            unread |= set(group)
+            why.update({name: text for name in group})
+        read |= set(judged) - unread
+    for key in judged:
+        if key not in read:
+            raise ValueError(
+                f"sweep_grid varies '{key}', which nothing in this call reads: {why[key]}. Every "
+                f"configuration would train the same networks. Remove '{key}' from the grid."
+            )
 
 
 # Settings that only take effect with particular encoders, read the way
@@ -173,11 +226,13 @@ _HEAD_SETTINGS = ('n_layers_head', 'hidden_dim_head')
 # Modes whose X encoder is a difference term's branched encoder, an MLP head
 # over the branches (neural_mi/models/embeddings.py, BranchedEmbedding).
 _BRANCHED_MODES = ('conditional', 'transfer', 'interaction')
-# What the concat critic does not build: it scores the raw pair with one MLP.
-_ENCODER_ONLY = ('embedding_model', 'embedding_dim', 'custom_embedding_cls')
+# What a critic without an encoder per side (the concat critic) does not
+# build: it scores the raw pair with one MLP.
+_ENCODER_ONLY = ('embedding_model', 'embedding_dim', 'custom_embedding_cls', 'embedding_model_y',
+                 'embedding_dim_y', 'hidden_dim_y', 'n_layers_y', 'custom_embedding_cls_y', 'shared_encoder')
 
 
-def _unread_model_settings(mode: str, model: Model, chosen: set) -> List[str]:
+def _unread_model_settings(mode: str, model: Model, chosen: set) -> List[Tuple[List[str], str]]:
     """The Model settings in ``chosen`` that no network this call builds reads, each with where it applies.
 
     Each built-in encoder declares the settings it reads
@@ -187,6 +242,7 @@ def _unread_model_settings(mode: str, model: Model, chosen: set) -> List[str]:
     encoder) read the MLP settings.
     """
     from .utils import _EMBEDDING_CLASSES, MODEL_SETTINGS, _accepts_kwarg, _names
+    from .models.critics import embeds_each_side
     from .models.embeddings import MLP
     critic = model.critic_type or ('hybrid' if mode == 'dimensionality' else 'separable')
     heads = critic in ('hybrid', 'concat') or mode in _BRANCHED_MODES
@@ -199,7 +255,7 @@ def _unread_model_settings(mode: str, model: Model, chosen: set) -> List[str]:
         y_cls = encoder(model.custom_embedding_cls_y, model.embedding_model_y)
     else:
         y_cls = x_cls
-    sides = [] if critic == 'concat' else [
+    sides = [] if not embeds_each_side(critic) else [
         (x_cls, model.n_layers), (y_cls, model.n_layers_y if model.n_layers_y is not None else model.n_layers)]
     n_default = BASE_PARAMS_SCHEMA['n_layers']['default']
 
@@ -224,18 +280,18 @@ def _unread_model_settings(mode: str, model: Model, chosen: set) -> List[str]:
         if name == 'dropout' and any(cls in _EMBEDDING_CLASSES.values() and 'dropout' in cls.settings
                                      for cls, _ in sides):
             text += "; a recurrent encoder applies it between stacked layers, which n_layers=1 lacks"
-        ignored.append(f"{name} (applies to {text.strip()})")
-    if critic == 'concat':
+        ignored.append(([name], f"{name} (applies to {text.strip()})"))
+    if not embeds_each_side(critic):
         unbuilt = [name for name in _ENCODER_ONLY if name in chosen]
         if unbuilt:
-            ignored.append(f"{', '.join(unbuilt)} (critic_type='concat' scores the raw pair with one MLP "
-                           f"and builds no encoder)")
+            ignored.append((unbuilt, f"{', '.join(unbuilt)} (critic_type='{critic}' scores the raw pair with "
+                                     f"one MLP and builds no encoder)"))
     return ignored
 _DECODER_SETTINGS = ('decoder_lambda', 'decoder_lambda_x', 'decoder_lambda_y',
                      'decoder_output_activation_x', 'decoder_output_activation_y')
 
 
-def _rotation_settings_ignored(output: Optional[Output]) -> List[str]:
+def _rotation_settings_ignored(output: Optional[Output], chosen: Optional[set] = None) -> List[Tuple[List[str], str]]:
     """The rotation settings in ``output`` that nothing in this call reads.
 
     The final embeddings are rotated when they are returned, and the per-epoch
@@ -245,15 +301,95 @@ def _rotation_settings_ignored(output: Optional[Output]) -> List[str]:
         return []
     returned, tracked = bool(output.return_embeddings), bool(output.track_embeddings)
     rotated, per_epoch = bool(output.return_rotated_embeddings), bool(output.rotated_embeddings_per_epoch)
+    asked = (lambda name: name in chosen) if chosen is not None else (lambda name: bool(getattr(output, name)))
     ignored = []
-    if rotated and not (returned or tracked):
-        ignored.append("return_rotated_embeddings (needs return_embeddings or track_embeddings)")
-    if per_epoch and not (rotated and tracked):
-        ignored.append("rotated_embeddings_per_epoch (needs track_embeddings and "
-                       "return_rotated_embeddings)")
-    if output.return_rotation_matrices and not rotated:
-        ignored.append("return_rotation_matrices (needs return_rotated_embeddings)")
+    if asked('return_rotated_embeddings') and not (returned or tracked):
+        ignored.append((['return_rotated_embeddings'],
+                        "return_rotated_embeddings (needs return_embeddings or track_embeddings)"))
+    if asked('rotated_embeddings_per_epoch') and not (rotated and tracked):
+        ignored.append((['rotated_embeddings_per_epoch'], "rotated_embeddings_per_epoch (needs track_embeddings "
+                                                          "and return_rotated_embeddings)"))
+    if asked('return_rotation_matrices') and not rotated:
+        ignored.append((['return_rotation_matrices'], "return_rotation_matrices (needs return_rotated_embeddings)"))
     return ignored
+
+
+def _unread_settings(mode: str, model: Optional[Model], training: Optional[Training],
+                     output: Optional[Output] = None, split: Optional[Split] = None,
+                     estimator: Optional[Estimator] = None,
+                     chosen: Optional[set] = None) -> List[Tuple[List[str], str]]:
+    """The Model, Training, Output and Split settings that nothing this call builds or runs reads.
+
+    Each group is the settings' names and the text that says why. ``chosen``
+    names the settings asked about. By default they are the ones the caller set
+    away from their default, so a setting spelled out at its default goes
+    unremarked. The settings warning and the grid check both ask here: a
+    setting nothing reads is ignored with a warning, and a grid over one is
+    refused (:func:`_check_grid`).
+    """
+    from .estimators import NONPARAMETRIC
+
+    def set_away(cfg, name):
+        if cfg is None or not hasattr(cfg, name):
+            return False
+        if chosen is not None:
+            return name in chosen
+        value = getattr(cfg, name)
+        if value is None or not np.isscalar(value):
+            return value is not None
+        return value != BASE_PARAMS_SCHEMA.get(name, {}).get('default')
+
+    groups = []
+    if estimator is not None and estimator.name in NONPARAMETRIC:
+        # Nothing is trained: every Model, Training and Split setting goes unread.
+        unread = sorted(f.name for cfg in (model, training, split) if cfg is not None
+                        for f in fields(cfg) if set_away(cfg, f.name))
+        if unread:
+            groups.append((unread, f"{', '.join(unread)} (estimator='{estimator.name}' trains no network "
+                                   f"and estimates on every row)"))
+        return groups
+
+    model_set = {f.name for f in fields(model) if set_away(model, f.name)} if model is not None else set()
+    if model is not None and model.custom_critic is not None:
+        from .utils import CRITIC_SETTINGS, critic_recipe_takes
+        takes = critic_recipe_takes(model.custom_critic)
+        taken = set(CRITIC_SETTINGS) if takes is None else takes
+        # The trainer reads use_variational and beta whatever builds the critic:
+        # the loss is the KL term the critic returns minus beta times the MI term.
+        others = sorted(model_set - {'custom_critic', 'use_variational', 'beta'} - taken)
+        if others:
+            groups.append((others, f"{', '.join(others)} (custom_critic builds the critic and takes only the "
+                                   f"settings it names)"))
+        if 'beta' in model_set and not (model.use_variational or False):
+            groups.append((['beta'], "beta (use_variational=True only)"))
+    else:
+        if model is not None:
+            groups += _unread_model_settings(mode, model, model_set)
+        critic = (model.critic_type if model is not None else None) or (
+            'hybrid' if mode == 'dimensionality' else 'separable')
+        head = [n for n in _HEAD_SETTINGS if n in model_set]
+        if set_away(training, 'lr_head_multiplier'):
+            head.append('lr_head_multiplier')
+        if head and critic != 'hybrid':
+            groups.append((head, f"{', '.join(head)} (critic_type='hybrid' only)"))
+        if 'beta' in model_set and not (model.use_variational or False):
+            groups.append((['beta'], "beta (use_variational=True only)"))
+        decoder = [n for n in _DECODER_SETTINGS if n in model_set]
+        if decoder and not (model.use_decoder or False):
+            groups.append((decoder, f"{', '.join(decoder)} (use_decoder=True only)"))
+    if mode == 'dimensionality' and 'embedding_dim' in model_set:
+        groups.append((['embedding_dim'], "embedding_dim (mode='dimensionality' sets it from "
+                                          "Dimensionality(embedding_dims=...))"))
+    groups += _rotation_settings_ignored(output, chosen)
+    if split is not None and (split.train_indices is not None or split.test_indices is not None):
+        keys = {'mode': 'split_mode', 'train_fraction': 'train_fraction', 'n_test_blocks': 'n_test_blocks',
+                'gap_fraction': 'split_gap_fraction'}
+        replaced = [name for name, key in keys.items()
+                    if getattr(split, name) not in (None, BASE_PARAMS_SCHEMA[key]['default'])]
+        if replaced:
+            groups.append(([keys[name] for name in replaced],
+                           f"Split {', '.join(replaced)} (train_indices and test_indices replace the split)"))
+    return groups
 
 
 def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Optional[Training],
@@ -264,69 +400,11 @@ def _warn_ineffective_settings(mode: str, model: Optional[Model], training: Opti
     Only values the caller set away from their default count, so a setting
     that is spelled out at its default does not warn.
     """
-    from .estimators import NONPARAMETRIC
-
-    def set_away(cfg, name):
-        value = getattr(cfg, name, None) if cfg is not None else None
-        if value is None or not np.isscalar(value):
-            return value is not None
-        return value != BASE_PARAMS_SCHEMA.get(name, {}).get('default')
-
-    if estimator is not None and estimator.name in NONPARAMETRIC:
-        # Nothing is trained: every Model, Training and Split setting goes unread.
-        unread = sorted(f.name for cfg in (model, training, split) if cfg is not None
-                        for f in fields(cfg) if set_away(cfg, f.name))
-        if unread:
-            warnings.warn(
-                f"These settings have no effect in this call and are ignored: {', '.join(unread)} "
-                f"(estimator='{estimator.name}' trains no network and estimates on every row).",
-                UserWarning, stacklevel=user_stacklevel(),
-            )
-        return
-
-    chosen = {f.name for f in fields(model) if set_away(model, f.name)} if model is not None else set()
-    ignored = []
-    if model is not None and model.custom_critic is not None:
-        from .utils import CRITIC_SETTINGS, critic_recipe_takes
-        takes = critic_recipe_takes(model.custom_critic)
-        taken = set(CRITIC_SETTINGS) if takes is None else takes
-        # The trainer reads use_variational and beta whatever builds the critic:
-        # the loss is the KL term the critic returns minus beta times the MI term.
-        others = sorted(chosen - {'custom_critic', 'use_variational', 'beta'} - taken)
-        if others:
-            ignored.append(f"{', '.join(others)} (custom_critic builds the critic and takes only the "
-                           f"settings it names)")
-        if 'beta' in chosen and not (model.use_variational or False):
-            ignored.append("beta (use_variational=True only)")
-    else:
-        if model is not None:
-            ignored += _unread_model_settings(mode, model, chosen)
-        critic = (model.critic_type if model is not None else None) or (
-            'hybrid' if mode == 'dimensionality' else 'separable')
-        head = [n for n in _HEAD_SETTINGS if n in chosen]
-        if set_away(training, 'lr_head_multiplier'):
-            head.append('lr_head_multiplier')
-        if head and critic != 'hybrid':
-            ignored.append(f"{', '.join(head)} (critic_type='hybrid' only)")
-        if 'beta' in chosen and not (model.use_variational or False):
-            ignored.append("beta (use_variational=True only)")
-        decoder = [n for n in _DECODER_SETTINGS if n in chosen]
-        if decoder and not (model.use_decoder or False):
-            ignored.append(f"{', '.join(decoder)} (use_decoder=True only)")
-    if mode == 'dimensionality' and 'embedding_dim' in chosen:
-        ignored.append("embedding_dim (mode='dimensionality' sets it from "
-                       "Dimensionality(embedding_dims=...))")
-    ignored += _rotation_settings_ignored(output)
-    if split is not None and (split.train_indices is not None or split.test_indices is not None):
-        keys = {'mode': 'split_mode', 'train_fraction': 'train_fraction', 'n_test_blocks': 'n_test_blocks',
-                'gap_fraction': 'split_gap_fraction'}
-        replaced = [name for name, key in keys.items()
-                    if getattr(split, name) not in (None, BASE_PARAMS_SCHEMA[key]['default'])]
-        if replaced:
-            ignored.append(f"Split {', '.join(replaced)} (train_indices and test_indices replace the split)")
-    if ignored:
+    groups = _unread_settings(mode, model, training, output, split, estimator)
+    if groups:
         warnings.warn(
-            f"These settings have no effect in this call and are ignored: {'; '.join(ignored)}.",
+            f"These settings have no effect in this call and are ignored: "
+            f"{'; '.join(text for _, text in groups)}.",
             UserWarning, stacklevel=user_stacklevel(),
         )
 
@@ -661,8 +739,10 @@ def run(
         estimator = Estimator(name=estimator)
     else:
         estimator = as_config(estimator, Estimator)
+    sweep_grid = _normalise_grid(sweep_grid)
     _warn_ineffective_settings(mode, model, training, output, split, estimator)
     _check_estimator_params(estimator)
+    _check_grid(mode, sweep_grid, model, training, output, split, estimator)
     from .estimators import NONPARAMETRIC
     if estimator is not None and estimator.name in NONPARAMETRIC and mode in ('dimensionality', 'precision'):
         raise ValueError(
@@ -919,7 +999,6 @@ def _run_flat(
             torch.backends.cudnn.benchmark = False
 
         if _grid_part is None:
-            _check_grid_keys(mode, sweep_grid)
             _streams = _stream_processors(mode, processor_type_x, processor_type_y,
                                           w_processor_type, w_data)
             _proc_grid = _processor_grid(mode, sweep_grid, _streams)
@@ -1344,29 +1423,6 @@ def _run_flat(
         _to_bits = output_units == 'bits'
         n_workers = analysis_kwargs.get('n_workers', 1)
         grid = dict(sweep_grid or {})
-        if mode in ('estimate', 'precision') and grid:
-            _one_network = ("trains one model" if mode == 'estimate' else
-                            "trains one baseline network and evaluates it at every tau in tau_grid")
-            _instead = ("Use mode='sweep' to repeat the estimate or to sweep a setting."
-                        if mode == 'estimate' else
-                        "To compare settings, run mode='precision' once per setting.")
-            warnings.warn(
-                f"sweep_grid has no effect for mode='{mode}'. That mode {_one_network}. The "
-                f"call ran once with the base configuration and the grid {sorted(grid)} was "
-                f"not used. {_instead}",
-                UserWarning, stacklevel=user_stacklevel(),
-            )
-            grid = {}
-        if mode == 'dimensionality' and 'run_id' in grid:
-            raise ValueError(
-                "mode='dimensionality' repeats every fit through Dimensionality(n_restarts=...). "
-                "Remove 'run_id' from sweep_grid and set n_restarts."
-            )
-        if mode == 'dimensionality' and 'embedding_dim' in grid:
-            raise ValueError(
-                "mode='dimensionality' varies embedding_dim itself. Remove 'embedding_dim' from "
-                "sweep_grid and pass the values as Dimensionality(embedding_dims=...)."
-            )
 
         _embedding_flags = [k for k in ('return_embeddings', 'track_embeddings',
                                         'return_rotated_embeddings', 'return_rotation_matrices')

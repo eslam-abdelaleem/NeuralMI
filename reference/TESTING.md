@@ -103,7 +103,7 @@ Each file covers one functional area. Run
 | `test_cnn2d.py` | the 2-D encoder, its `build_critic` path, 4-D input handling, the image splits of `mode='dimensionality'` |
 | `test_branched_embedding.py` | `BranchedEmbedding`, the X encoder of every term of a difference: its parts, the encoder each term gets, the pair in every stage that reads X (the permutation null, the decoder, the variational wrapper, augmentation and the concat critic), the pair's one grid under `shift_windows`, and the quantities that use it against the oracle |
 | `test_decoders.py` | decoder dispatch and the reconstruction-loss path end to end |
-| `test_shared_encoder.py` | weight identity, parameter count, the concat incompatibility, the dimensionality-mode default |
+| `test_shared_encoder.py` | weight identity, parameter count, the concat critic ignoring it with a warning, the dimensionality-mode default |
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |
 | `test_custom_critic.py` | `Model(custom_critic=...)` as a recipe built in every task: each repeat and each term of a difference trains its own, the joint term's pair reaches it, and an object is refused |
 | `test_input_scaling.py` | `Model(input_scaling='standard')`: every encoder's input scaled by the training rows, the statistics saved with the network and applied on rebuild, and binned spikes kept as counts |
@@ -130,6 +130,8 @@ Each file covers one functional area. Run
 | `test_run.py` | mode routing, the continuous processor pipeline, spike-data rigorous end to end, and that every warning points at the caller's line |
 | `test_repeated_messages.py` | repeated warnings and log lines shown once with a count, exact repeats included, one count line per text, across worker processes and at the caller's line |
 | `test_run_config_api.py` | the config-object call surface of `run()` |
+| `test_one_reaction.py` | one reaction to each thing a call cannot do: a setting nothing reads warns, a request the critic cannot serve and a grid that varies nothing are refused, in every mode, and the critics declare whether they embed each side |
+| `test_stream_inheritance.py` | Y and W read with X's processor and settings when they have none of their own, by one rule on every path: the rows each network reads are the same whether the settings are inherited or spelled out |
 
 ### Named quantities
 
@@ -197,7 +199,7 @@ Each file covers one functional area. Run
 | the epoch an estimate is read at, or a warning about the held-out curve | `test_epoch_rule.py`, `test_best_epoch.py`, `test_held_out.py` |
 | a setting that does not reach the network, or a default | `test_network_settings.py`, `test_settings_are_read.py`, `test_schema_defaults.py` |
 | units, scaling or preprocessing | `test_preprocessing.py`, `test_input_scaling.py` |
-| a `run()` API error | `test_run.py`, `test_validation.py`, `test_config.py` |
+| a `run()` API error | `test_run.py`, `test_validation.py`, `test_config.py`, `test_one_reaction.py` |
 | a named quantity | `test_quantities.py`, `test_quantities_sweep.py` |
 | conditional MI, transfer entropy, interaction information | `test_conditional.py`, `test_transfer.py`, `test_interaction.py` |
 | rigorous mode or bias correction | `test_workflow_internals.py`, `test_rigorous_diagnostics.py`, `test_conditional_transfer_rigorous.py` |

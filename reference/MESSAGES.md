@@ -598,11 +598,6 @@ something other than what was asked.
 **`Mode config(s) ... were provided for a call with mode='...'`**
 Only the config of the active mode is used.
 
-**`sweep_grid has no effect for mode='...'`**
-`mode='estimate'` and `mode='precision'` run one configuration once. Use
-`mode='sweep'` to repeat an estimate or sweep a setting. Run `mode='precision'`
-once per setting to compare settings.
-
 **`w_data was provided but mode='...' does not use it`**
 Only `conditional`, `interaction` and `transfer` read a third variable.
 
@@ -620,8 +615,8 @@ TCN and transformer encoders for `dropout`, a GRU or LSTM of more than one layer
 for `dropout`, and the MLPs the library builds around the encoders (the hybrid
 critic's head, the concat critic's network, the head of a difference term's
 branched encoder, the pretrained backbone's head), which read all four. Under
-`critic_type='concat'` no encoder is built, so the encoder settings do not
-apply. The head
+`critic_type='concat'` no encoder is built, so the encoder settings, Y's own
+encoder settings and `shared_encoder` do not apply. The head
 settings apply to `critic_type='hybrid'`, `beta` to `use_variational=True`, and
 the decoder settings to `use_decoder=True`. With `custom_critic` the recipe builds
 the critic and takes only the architecture settings it names, and the others are
@@ -636,10 +631,9 @@ the KL term the critic returns minus `beta` times the MI term, and
 itself. With `estimator='ksg'` nothing is trained, and every `Model`, `Training`
 and `Split` setting is listed. With `train_indices` and `test_indices` the `Split` settings `mode`,
 `train_fraction`, `n_test_blocks` and `gap_fraction` have no effect. A setting
-spelled out at its default does not count.
-
-**`'lag' in sweep_grid is ignored when using mode='lag'`**
-The mode sets the lag itself.
+spelled out at its default does not count. A `sweep_grid` over a setting that
+has no effect is refused before any work, since every configuration would train
+the same networks.
 
 **`shift_windows=True has no effect for mode='...' here`**
 The call's rows cannot move: no processor windows the streams (rows passed in
@@ -652,9 +646,6 @@ The rows a quantity defined by time offsets builds keep every window: dropping
 one would put two distant windows next to each other and change what an offset
 means. Silent stretches stay as silent rows, and gaps in the recording stay
 visible to the coverage warnings.
-
-**`return_rotated_embeddings=True has no effect for critic_type='concat'`**, **`return_rotated_embeddings=True was requested and this trainer's model exposes no embedding_net_x`**
-The concat critic has no separate encoders whose embeddings could be rotated.
 
 **`panels includes 'embeddings' but this repeat holds no 'embedding_history_x'`**
 The animation drops its embedding panel. Set `Output(track_embeddings=...)` before

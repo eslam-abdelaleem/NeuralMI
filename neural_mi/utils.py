@@ -23,7 +23,7 @@ from neural_mi.models.embeddings import (
     PretrainedBackboneEmbedding, LRUEmbedding, BranchedEmbedding,
 )
 from neural_mi.models.critics import SeparableCritic, ConcatCritic, BaseCritic, HybridCritic
-from neural_mi.defaults import default_of, processor_setting, setting
+from neural_mi.defaults import default_of, norm_layer_of, processor_setting, setting
 from neural_mi.logger import logger, user_stacklevel
 
 # Every built-in embedding_model string -> class.
@@ -585,11 +585,10 @@ def _custom_critic(recipe, params: Dict[str, Any]) -> nn.Module:
             return None
         return tuple(f // c for f, c in zip(flat, channels)) if isinstance(channels, tuple) else flat // channels
 
-    norm = setting(params, 'norm_layer')
     available = {**{key: params.get(key) for key in CRITIC_SIZES[:4]},
                  'window_size_x': window('x'), 'window_size_y': window('y'),
                  **{name: setting(params, name) for name in CRITIC_SETTINGS}}
-    available['norm_layer'] = None if norm in ('auto', 'none') else norm
+    available['norm_layer'] = norm_layer_of(params)
     takes = critic_recipe_takes(recipe)
     kwargs = available if takes is None else {name: available[name] for name in takes}
     required = [name for name, p in inspect.signature(recipe).parameters.items()
@@ -656,6 +655,42 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # dict (embeddings_io rebuilding a saved run) still gets it.
     custom_embedding_cls = custom_embedding_cls or embedding_params.get('custom_embedding_cls')
 
+    # The Model settings every network of the critic can read, resolved once.
+    # An explicit bias of None means unset, not off.
+    _bias = setting(embedding_params, 'bias')
+    values = {name: setting(embedding_params, name) for name in MODEL_SETTINGS}
+    values['norm_layer'] = norm_layer_of(embedding_params)
+    values['bias'] = True if _bias is None else bool(_bias)
+    # Every MLP the critic builds around its encoders (the hybrid critic's
+    # head, the concat critic's network, the head of a difference term's
+    # branched encoder) reads the call's MLP settings.
+    head_settings = {name: values[name] for name in MLP.settings}
+    critic_kwargs = {
+        'embedding_dim': setting(embedding_params, 'embedding_dim'),
+        'max_n_batches': max_n_batches,
+        'use_variational': use_variational,
+    }
+    if critic_type == 'concat':
+        # The concat critic scores the flattened pair with one MLP and builds no
+        # encoder, so it reads none of the encoder settings, which the settings
+        # warning names before any work. Its input is the flattened sizes. A
+        # pair X (the joint term of a difference) enters flattened part by part.
+        _flat_x = embedding_params['input_dim_x']
+        concat_input_dim = (sum(_flat_x) if isinstance(_flat_x, tuple) else _flat_x) + embedding_params['input_dim_y']
+        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=setting(embedding_params, 'hidden_dim'),
+                         embedding_dim=1, n_layers=setting(embedding_params, 'n_layers'), **head_settings)
+        if use_variational:
+            # The concat network's one output is the score of a pair, so the
+            # variational layer makes each score a Gaussian draw and its KL term
+            # regularises the scores. There is no per-variable embedding here
+            # for it to compress.
+            concat_net = VariationalWrapper(concat_net, 1, bias=values['bias'])
+        # Each side's channels scaled before the pair is formed, part by part for a pair X.
+        scaling = ((InputScaling(nn.Identity(), embedding_params['n_channels_x']),
+                    InputScaling(nn.Identity(), embedding_params['n_channels_y']))
+                   if setting(embedding_params, 'input_scaling') == 'standard' else None)
+        return ConcatCritic(embedding_net=concat_net, scaling=scaling, **critic_kwargs)
+
     # X sets the architecture and Y follows it unless given its own, the same
     # "unset means same as X" convention processor_type_y already uses. Naming
     # a built-in for Y drops X's custom class on that side, since the two
@@ -682,13 +717,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     shared_encoder = setting(embedding_params, 'shared_encoder')
     if _given_y:
-        if critic_type == 'concat':
-            raise ValueError(
-                f"{_given_y[0]} was set with critic_type='concat'. ConcatCritic "
-                f"scores the raw concatenated pair and has no separate embedding "
-                f"networks or Y-side encoder to configure. Switch to "
-                f"critic_type='separable' or 'hybrid'."
-            )
         if shared_encoder:
             raise ValueError(
                 f"{_given_y[0]} was set with shared_encoder=True. One encoder "
@@ -705,20 +733,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             f"one width. critic_type='hybrid' concatenates them and accepts "
             f"different widths."
         )
-
-    # The Model settings every network of the critic can read, resolved once.
-    # norm_layer 'auto' is layer normalisation for the hybrid critic in
-    # mode='dimensionality', which resolves it there, and none everywhere else.
-    norm = setting(embedding_params, 'norm_layer')
-    # An explicit bias of None means unset, not off.
-    _bias = setting(embedding_params, 'bias')
-    values = {name: setting(embedding_params, name) for name in MODEL_SETTINGS}
-    values['norm_layer'] = None if norm in ('auto', 'none') else norm
-    values['bias'] = True if _bias is None else bool(_bias)
-    # Every MLP the critic builds around its encoders (the hybrid critic's
-    # head, the concat critic's network, the head of a difference term's
-    # branched encoder) reads the call's MLP settings.
-    head_settings = {name: values[name] for name in MLP.settings}
 
     def _resolve_side(spec, side):
         """The class, the ``input_dim`` it expects, and its kwargs, for one side.
@@ -771,19 +785,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     Model_x, input_dim_x, model_kwargs = _resolve_side(spec_x, 'x')
     Model_y, input_dim_y, model_kwargs_y = _resolve_side(spec_y, 'y')
     hidden_dim, n_layers = spec_x['hidden_dim'], spec_x['n_layers']
-    embedding_dim = spec_x['embedding_dim']
-    critic_kwargs = {
-        'embedding_dim': embedding_dim,
-        'max_n_batches': max_n_batches,
-        'use_variational': use_variational,
-    }
-
-    if shared_encoder and critic_type == 'concat':
-        raise ValueError(
-            "shared_encoder=True is incompatible with critic_type='concat'. "
-            "ConcatCritic operates on raw concatenated inputs and has no separate "
-            "embedding networks to share. Switch to critic_type='separable' or 'hybrid'."
-        )
     # A term of a difference quantity: its X encoder reads each part of X on a
     # branch of its own, under one head (BranchedEmbedding).
     difference_term = embedding_params.get('_difference_term', False)
@@ -852,15 +853,14 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     input_scaling = setting(embedding_params, 'input_scaling')
     if input_scaling == 'standard':
         for Model_ in (Model_x, Model_y):
-            if Model_ is DeepSets and critic_type != 'concat':
+            if Model_ is DeepSets:
                 raise ValueError(
                     "Model(input_scaling='standard') cannot serve embedding_model='deepsets'. DeepSets tells a "
                     "spike from padding by the padding value, which scaling moves. Use another encoder, or "
                     "leave input_scaling unset."
                 )
-        if critic_type != 'concat':
-            net_x_base = InputScaling(net_x_base, embedding_params['n_channels_x'])
-            net_y_base = net_x_base if shared_encoder else InputScaling(net_y_base, embedding_params['n_channels_y'])
+        net_x_base = InputScaling(net_x_base, embedding_params['n_channels_x'])
+        net_y_base = net_x_base if shared_encoder else InputScaling(net_y_base, embedding_params['n_channels_y'])
 
     # Optionally wrap with VariationalWrapper, works for every encoder type
     if use_variational:
@@ -899,25 +899,6 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
         decision_head = MLP(input_dim=decision_head_input_dim, hidden_dim=_head_hidden_dim, embedding_dim=1,
                             n_layers=_head_n_layers, **head_settings)
         return HybridCritic(embedding_net_x=net_x, embedding_net_y=net_y, decision_head=decision_head, **critic_kwargs)
-    elif critic_type == 'concat':
-        # The concat critic scores the flattened pair and builds no encoder, so
-        # its input is the flattened sizes whatever embedding_model names.
-        # A pair X (the joint term of a difference) enters flattened part by part.
-        _flat_x = embedding_params['input_dim_x']
-        concat_input_dim = (sum(_flat_x) if isinstance(_flat_x, tuple) else _flat_x) + embedding_params['input_dim_y']
-        concat_net = MLP(input_dim=concat_input_dim, hidden_dim=hidden_dim, embedding_dim=1, n_layers=n_layers,
-                         **head_settings)
-        if use_variational:
-            # The concat network's one output is the score of a pair, so the
-            # variational layer makes each score a Gaussian draw and its KL term
-            # regularises the scores. There is no per-variable embedding here
-            # for it to compress.
-            concat_net = VariationalWrapper(concat_net, 1, bias=bias_x)
-        # Each side's channels scaled before the pair is formed, part by part for a pair X.
-        scaling = ((InputScaling(nn.Identity(), embedding_params['n_channels_x']),
-                    InputScaling(nn.Identity(), embedding_params['n_channels_y']))
-                   if input_scaling == 'standard' else None)
-        return ConcatCritic(embedding_net=concat_net, scaling=scaling, **critic_kwargs)
     else:
         raise ValueError(f"Unknown critic_type: {critic_type}")
 

@@ -28,7 +28,7 @@ from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks,
                              warn_if_random_split_leaks)
 from neural_mi.augmentations import apply_augmentations
-from neural_mi.models.critics import fit_input_scaling, has_input_scaling
+from neural_mi.models.critics import embeds_each_side, fit_input_scaling, has_input_scaling
 
 # Fraction of the (smoothed) test-MI history that must sit above
 # TEST_TRACE_SATURATION_THRESHOLD * ceiling before peak-epoch selection is
@@ -644,23 +644,13 @@ class Trainer:
         else:
             embed_track_n = 0
 
-        # Rotation is only meaningful for critics with separate embedding networks.
         # The trainer rotates the per-epoch history, so it has work only when
         # embeddings are tracked. The final embeddings are rotated after
         # training (analysis/task.py) whether or not they were tracked, and
-        # run() warns up front about a rotation setting that nothing uses.
-        _has_embed_nets = hasattr(self.model, 'embedding_net_x')
-        _do_rotation = False
-        if return_rotated_embeddings:
-            if not _has_embed_nets:
-                warnings.warn(
-                    "return_rotated_embeddings=True was requested and this trainer's model "
-                    "exposes no embedding_net_x. It has no separate embedding networks to "
-                    "rotate and rotation is skipped.",
-                    UserWarning, stacklevel=user_stacklevel(),
-                )
-            elif _do_embed_tracking:
-                _do_rotation = True
+        # run() warns up front about a rotation setting that nothing uses. A
+        # critic without an embedding of each side has none to track, which
+        # analysis/task.py says before it trains.
+        _do_rotation = bool(return_rotated_embeddings) and _do_embed_tracking
 
         _scaler = self._amp_scaler()
 
@@ -1169,13 +1159,14 @@ class Trainer:
                         self._decoder_loss(_recon_y, _ty, self.decoder_output_activation_y).item())
             results['decoder_recon_loss'] = _recon_loss
 
-        # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) at the best epoch --
-        # always computed, independent of track_spectral_history above.
-        metrics_final = self._extract_spectral_metrics(
-            _index_batch(_eval_x_source, _eval_train_eval_idx),
-            _eval_y_source[_eval_train_eval_idx, ...],
-        )
-        results.update(metrics_final)
+        # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) at the best epoch,
+        # independent of track_spectral_history above, for a critic that embeds
+        # each side. The concat critic has no embeddings to take a spectrum of.
+        if embeds_each_side(self.model):
+            results.update(self._extract_spectral_metrics(
+                _index_batch(_eval_x_source, _eval_train_eval_idx),
+                _eval_y_source[_eval_train_eval_idx, ...],
+            ))
 
         return results
 

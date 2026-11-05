@@ -630,15 +630,20 @@ class TestPerSideEncoders:
                            hidden_dim=16, n_layers=1, critic_type='hybrid'))
         assert np.isfinite(r.mi_estimate)
 
-    @pytest.mark.parametrize("kwargs,match", [
-        (dict(critic_type='concat'), "no separate embedding"),
-        (dict(shared_encoder=True), "cannot also be a second"),
-    ])
-    def test_the_combinations_that_cannot_work_are_refused(self, kwargs, match):
+    def test_one_encoder_cannot_also_be_a_second_one(self):
         from neural_mi import Model
         base = dict(embedding_model='mlp', embedding_model_y='cnn', embedding_dim=8, hidden_dim=16, n_layers=1)
-        with pytest.raises(ValueError, match=match):
-            self._go(Model(**base, **kwargs))
+        with pytest.raises(ValueError, match="cannot also be a second"):
+            self._go(Model(**base, shared_encoder=True))
+
+    def test_a_y_encoder_under_the_concat_critic_is_ignored_with_a_warning(self):
+        """The concat critic builds no encoder, so Y's own encoder settings have no effect, which the
+        settings warning says as it says it of X's. The call runs."""
+        from neural_mi import Model
+        base = dict(embedding_model='mlp', embedding_model_y='cnn', embedding_dim=8, hidden_dim=16, n_layers=1)
+        with pytest.warns(UserWarning, match="embedding_model_y.*builds no encoder"):
+            r = self._go(Model(**base, critic_type='concat'))
+        assert np.isfinite(r.mi_estimate)
 
     def test_a_sequential_encoder_on_a_static_y_is_caught(self):
         from neural_mi import Model, Training

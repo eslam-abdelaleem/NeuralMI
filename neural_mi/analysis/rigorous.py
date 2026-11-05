@@ -21,6 +21,7 @@ from tqdm.auto import tqdm
 from typing import Any, Dict, List, Optional, Tuple
 
 from neural_mi.defaults import setting
+from neural_mi.analysis.sweep import merge_grid_values
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.device import with_device
@@ -817,8 +818,6 @@ class AnalysisWorkflow:
         tasks = []
         run_id_base = str(uuid.uuid4())
         param_grid = param_grid or {}
-        if self.base_params.get('critic_type') == 'concat' and 'embedding_dim' in param_grid:
-            param_grid.pop('embedding_dim')
 
         keys, values = zip(*param_grid.items()) if param_grid else ([], [])
         param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)] if param_grid else [{}]
@@ -831,7 +830,7 @@ class AnalysisWorkflow:
         self.resolved_chunking_mode = chunker.mode
 
         for i_combo, params in enumerate(param_combinations):
-            current_params = {**self.base_params, **params}
+            current_params = merge_grid_values(self.base_params, params)
             chunker.reorder()
             for gamma in gamma_range:
                 current_params['gamma'] = gamma

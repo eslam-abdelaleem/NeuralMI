@@ -86,7 +86,7 @@ def test_a_critic_without_an_embedding_of_each_side_refuses_a_decoder():
     rebuild a side from. It used to fail on mismatched shapes."""
     rng = np.random.default_rng(0)
     x = rng.standard_normal((200, 3)).astype(np.float32)
-    with pytest.raises(ValueError, match='needs a critic that gives an embedding of each side'):
+    with pytest.raises(ValueError, match="needs the critic's embedding of each side"):
         nmi.run(x, x + rng.standard_normal((200, 3)).astype(np.float32),
                 model=Model(critic_type='concat', use_decoder=True, embedding_dim=4, hidden_dim=8),
                 training=Training(n_epochs=1, batch_size=32), show_progress=False, seed=0)
