@@ -208,6 +208,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   channel layout and window broadcast that let a categorical W be joined to X,
   and the refusals of a pair.
 
+- `time_shift()` on the window datasets, the `time_offset` each kept, and the
+  `time_shift` path through `PairedTemporalDataset._build_windows` to the
+  subset views. Training moves windows through the row plan's shifter, and
+  nothing in the library called them. The handler's clamp of a shifted extent
+  went with them. So did `offset_rows(series=)`, which only a test passed, and
+  the two branches of `row_identity` that no task reaches: a shifter of several
+  streams without the plan's identity, and a dataset with a window manager.
+
 ### Fixed
 
 - Nothing scaled or whitened data before the networks, and estimates depended

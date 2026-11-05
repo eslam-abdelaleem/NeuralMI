@@ -53,10 +53,6 @@ class TestGeometry:
     def test_offsets_on_a_raw_series_count_samples(self):
         assert offset_rows(5, 2) == RowGeometry(step=2.0, span=5.0)
 
-    def test_offsets_on_a_grid_build_on_its_windows(self):
-        # Windows of 4 every 2: five of them in a row cover 2 * 4 + 4.
-        assert offset_rows(5, 1, window_rows(4, 2)) == RowGeometry(step=2.0, span=12.0)
-
     def test_rows_per_span_and_overlap(self):
         assert RowGeometry(1, 5).rows_per_span == 5 and RowGeometry(1, 5).overlapping
         assert RowGeometry(4, 4).rows_per_span == 1 and not RowGeometry(4, 4).overlapping
@@ -298,19 +294,6 @@ class TestShiftingRowsAStrideThins:
 class TestRowIdentity:
     """Each task reports which rows it read, so that the terms of a difference, trained in separate
     tasks, can be checked to have read the same ones (sweep.combine_terms)."""
-
-    def test_a_grid_of_spike_times_starts_at_the_latest_first_spike(self):
-        from neural_mi.data.handler import create_dataset
-        rng = np.random.default_rng(0)
-        early = [np.sort(rng.uniform(0.0, 20.0, 100)) for _ in range(2)]
-        late = [np.sort(rng.uniform(5.0, 20.0, 80)) for _ in range(2)]
-        spike = {'window_size': 0.5}
-        dataset = create_dataset(early, late, processor_type_x='spike', processor_params_x=spike,
-                                 processor_type_y='spike', processor_params_y=spike)
-        identity = row_identity(dataset, {})
-        assert identity['origin'] == pytest.approx(min(s[0] for s in late))
-        assert identity['step'] == 0.5 and identity['spans'] == {'x': 0.5, 'y': 0.5}
-        assert identity['count'] == len(dataset) and identity['kept']
 
     def test_rows_of_a_plan_carry_the_plans_identity(self):
         from neural_mi.data.plan import PAIR, RowPlan

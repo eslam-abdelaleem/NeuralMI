@@ -226,82 +226,6 @@ def test_paired_static_dataset():
 
 
 # Time Shift Tests
-def test_continuous_time_shift_zero(continuous_data):
-    """Test that zero time shift leaves data unchanged."""
-    data, time = continuous_data
-    wm = WindowManager(window_size=10, t_start=0, t_end=100)
-    dataset = ContinuousWindowDataset(data, time, window_manager=wm)
-    dataset.move_data_to_windows()
-    
-    # Store original
-    original_data = dataset.data.clone()
-    # Apply zero shift
-    dataset.time_shift(0)
-    dataset.move_data_to_windows()
-
-    assert torch.allclose(dataset.data, original_data)
-
-
-def test_continuous_time_shift_effects(continuous_data):
-    """Test that time shifts have the expected effect on continuous data."""
-    data, time = continuous_data
-    wm = WindowManager(window_size=10, t_start=0, t_end=100)
-    dataset = ContinuousWindowDataset(data, time, window_manager=wm)
-    dataset.move_data_to_windows()
-    
-    # Store original
-    original_data = dataset.data.clone()
-    original_time = dataset.time_vector.copy()
-    # Apply positive shift
-    shift_amount = 5.0
-    dataset.time_shift(shift_amount)
-
-    # Check time vector shifted correctly
-    assert np.allclose(dataset.time_vector, original_time + shift_amount)
-    # Shift back to zero
-    dataset.time_shift(0)
-    assert np.allclose(dataset.time_vector, original_time)
-    assert torch.allclose(dataset.data, original_data)
-
-
-def test_spike_time_shift_zero(spike_data):
-    """Test that zero time shift leaves spike data unchanged."""
-    wm = WindowManager(window_size=1.0, t_start=0, t_end=100)
-    dataset = SpikeWindowDataset(spike_data, window_manager=wm)
-    dataset.move_data_to_windows()
-    
-    # Store original
-    original_data = dataset.data.clone()
-    original_spike_times = [st.copy() for st in dataset.data_orig]
-    # Apply zero shift
-    dataset.time_shift(0)
-    dataset.move_data_to_windows()
-    
-    assert torch.allclose(dataset.data, original_data)
-    for orig, current in zip(original_spike_times, dataset.data_orig):
-        assert np.allclose(orig, current)
-
-
-def test_spike_time_shift_effects(spike_data):
-    """Test that time shifts have the expected effect on spike data."""
-    wm = WindowManager(window_size=1.0, t_start=0, t_end=100)
-    dataset = SpikeWindowDataset(spike_data, window_manager=wm)
-    dataset.move_data_to_windows()
-    
-    # Store original spike times
-    original_spike_times = [st.copy() for st in dataset.data_orig]
-    # Apply positive shift
-    shift_amount = 5.0
-    dataset.time_shift(shift_amount)
-    # Check spike times shifted correctly
-    for orig, shifted in zip(original_spike_times, dataset.data_orig):
-        assert np.allclose(shifted, orig + shift_amount)
-    # Apply negative shift back to original
-    dataset.time_shift(0)
-    for orig, shifted in zip(original_spike_times, dataset.data_orig):
-        assert np.allclose(shifted, orig)
-
-
 def test_a_spike_plan_moves_every_stream_and_keeps_its_rows():
     """The rows of a spike plan that shifts keep their count at every offset, and their content moves:
     each stream windowed again at the rows' starts plus the offset (neural_mi/data/plan.py)."""
@@ -323,23 +247,6 @@ def test_a_spike_plan_moves_every_stream_and_keeps_its_rows():
             assert not torch.equal(moved['x'], base['x'])
 
 
-def test_time_shift_roundtrip(continuous_data):
-    """Test that shifting forward and back returns to original state."""
-    data, time = continuous_data
-    wm = WindowManager(window_size=10, t_start=0, t_end=100)
-    dataset = ContinuousWindowDataset(data, time, window_manager=wm)
-    dataset.move_data_to_windows()
-    
-    # Store original
-    original_time = dataset.time_vector.copy()
-    # Shift forward, then back
-    dataset.time_shift(25.0)
-    dataset.time_shift(0)
-    
-    assert np.allclose(dataset.time_vector, original_time)
-
-
-# Noise Tests
 def test_continuous_noise_application(continuous_data):
     """Test that noise corrupts continuous data."""
     data, time = continuous_data
@@ -482,28 +389,6 @@ def test_multiple_noise_applications(continuous_data):
     assert torch.allclose(dataset.data, original_data)
     # Two different noise applications should produce different results
     assert not torch.allclose(noisy_data_1, noisy_data_2)
-
-
-def test_noise_then_time_shift(continuous_data):
-    """Test that noise and time shift operations are independent."""
-    data, time = continuous_data
-    wm = WindowManager(window_size=10, t_start=0, t_end=100)
-    dataset = ContinuousWindowDataset(data, time, window_manager=wm)
-    dataset.move_data_to_windows()
-    
-    # Store original
-    original_time = dataset.time_vector.copy()
-    # Apply noise
-    dataset.apply_noise(0.5)
-    # Time shift
-    dataset.time_shift(10.0)
-    dataset.move_data_to_windows() # Must update windows after shift
-
-    # Time should have shifted regardless of noise
-    assert np.allclose(dataset.time_vector, original_time + 10.0)
-    # Reset should not affect time shift
-    dataset.reset()
-    assert np.allclose(dataset.time_vector, original_time + 10.0)
 
 
 def test_precision_continuous(continuous_data):

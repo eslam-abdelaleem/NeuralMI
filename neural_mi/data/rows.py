@@ -19,12 +19,9 @@ Each training task also reports which rows it read (:func:`row_identity`), so
 that the terms of a difference, trained in separate tasks, can be checked to
 have read the same rows (:func:`neural_mi.analysis.sweep.combine_terms`).
 """
-import hashlib
 import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
-
-import numpy as np
 
 STEP_KEY = 'row_step'
 SPAN_KEY = 'row_span'
@@ -62,16 +59,10 @@ def window_rows(window_size: float, step: float) -> RowGeometry:
     return RowGeometry(step=float(step), span=float(window_size))
 
 
-def offset_rows(n_steps: int, stride: int = 1, series: Optional[RowGeometry] = None) -> RowGeometry:
-    """The rows sliced by offset from a series: each covers ``n_steps`` consecutive steps of the series,
-    and consecutive rows start ``stride`` steps apart.
-
-    ``series`` is the geometry of the series' own rows when they are the windows of a grid
-    (:func:`neural_mi.analysis.offsets.grid_rows`). Without it each step is one sample, and the
-    geometry is counted in samples.
-    """
-    series = series or RowGeometry(1.0, 1.0)
-    return RowGeometry(step=stride * series.step, span=(n_steps - 1) * series.step + series.span)
+def offset_rows(n_steps: int, stride: int = 1) -> RowGeometry:
+    """The rows sliced by offset from a series: each covers ``n_steps`` consecutive samples of the series,
+    and consecutive rows start ``stride`` samples apart. The geometry is counted in samples."""
+    return RowGeometry(step=float(stride), span=float(n_steps))
 
 
 def record_rows(params: Dict[str, Any], geometry: Optional[RowGeometry]) -> None:
@@ -103,38 +94,20 @@ def kept_rows(n_rows: int, params: Dict[str, Any]) -> int:
 
 def row_identity(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
     """Which rows a task reads, before any shift: the identity a :class:`~neural_mi.data.plan.RowPlan` gave
-    the dataset, or ``count``, and where the dataset knows them ``origin``
-    (the start of the grid the rows are cut from), ``step``, each stream's window (``spans``) and a digest
-    of the kept rows' start times (``kept``), in the unit of the rows' geometry. Rows built before the
-    task, passed in or windowed once by :func:`neural_mi.run`, are known by their count and the recorded
-    geometry, and every task of a call receives the same ones."""
+    the dataset (``count``, ``origin``, ``step``, each stream's window in ``spans`` and a digest of the
+    kept rows' start times in ``kept``), or else ``count`` and the recorded ``step``. Rows built by
+    offset and kept from phase 0 also know their ``origin``. Rows built before the task, passed in or
+    windowed once by :func:`neural_mi.run`, are known by their count and the recorded geometry, and
+    every task of a call receives the same ones."""
     given = getattr(dataset, '_row_identity', None)
     if given is not None:
         return dict(given)
     geometry = row_geometry(params)
     identity = {'count': len(dataset), 'origin': None, 'step': geometry.step if geometry else None,
                 'spans': None, 'kept': None}
-    shifter = getattr(dataset, '_window_shifter', None)
-    manager = getattr(dataset, 'window_manager', None)
-    if shifter is not None and hasattr(shifter, 'shifters'):
-        # Resliced from the raw arrays, each stream from its own first sample.
-        periods, reference = shifter.periods, shifter.shifters[shifter.reference]
-        start = params.get('x_time')
-        identity.update(
-            origin=float(np.asarray(start, dtype=float).ravel()[0]) if start is not None and len(start) else 0.0,
-            step=reference.step_size * periods[shifter.reference],
-            spans={name: one.window_size * periods[name] for name, one in shifter.shifters.items()})
-    elif shifter is not None:
+    if getattr(dataset, '_window_shifter', None) is not None:
         # Rows built by offset, kept from phase 0.
         identity['origin'] = 0.0
-    elif manager is not None and manager.window_times is not None:
-        times = np.asarray(manager.window_times, dtype=float)
-        origin = getattr(dataset, '_base_t_start', times[0] if times.size else None)
-        identity.update(
-            origin=None if origin is None else float(origin),
-            step=float(manager.resolve_step()),
-            spans={name: float(manager.window_size) for name in getattr(dataset, '_streams', {})},
-            kept=hashlib.md5(np.round(times, 9).tobytes()).hexdigest()[:16])
     return identity
 
 

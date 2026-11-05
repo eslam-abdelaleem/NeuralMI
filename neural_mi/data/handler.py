@@ -335,14 +335,6 @@ class AlignedStreams(_NamedStreams, Dataset):
         # The windows start before every stream's own bound: within the samples
         # of a stream on a regular clock (temporal._SampledStream).
         data_end = min(ds.window_starts_end(self.window_manager.window_size) for ds in self._streams.values())
-        # Record the original recording bounds on the first call so they can
-        # be used to clamp the range after time-shifts.
-        if not hasattr(self, 'original_data_start'):
-            self.original_data_start = data_start
-            self.original_data_end = data_end
-        # Clamp the shifted extent so it cannot exceed the original recording.
-        data_start = max(data_start, self.original_data_start)
-        data_end   = min(data_end,   self.original_data_end)
         # Apply user-specified bounds if provided
         final_start = t_start if t_start is not None else data_start
         final_end = t_end if t_end is not None else data_end
@@ -350,24 +342,11 @@ class AlignedStreams(_NamedStreams, Dataset):
             raise ValueError(
                 f"Invalid temporal range: t_start={final_start}, t_end={final_end}"
             )
-        # Record the effective (user-bound-aware) range once, for time_shift's
-        # fixed-grid margin reservation -- distinct from original_data_start/
-        # _end above, which is the natural full extent and can be wider than
-        # this when the caller passed an explicit t_start/t_end.
-        if not hasattr(self, '_base_t_start'):
-            self._base_t_start = final_start
-            self._base_t_end = final_end
 
         self.window_manager.update_parameters(t_start=final_start, t_end=final_end)
 
-    def _build_windows(self, time_shift=None):
-        """Move every stream into windows, then keep the ones all of them share.
-
-        Parameters
-        ----------
-        time_shift : float, optional
-            If windows are being rebuilt due to a time shift, the offset applied.
-        """
+    def _build_windows(self):
+        """Move every stream into windows, then keep the ones all of them share."""
         # Step 1: Move data to ALL windows, for every stream
         for dataset in self._streams.values():
             dataset.move_data_to_windows()
@@ -399,20 +378,13 @@ class AlignedStreams(_NamedStreams, Dataset):
             )
         else:
             self.window_manager.n_windows = len(self.window_manager.window_times)
-        self._notify_subset_views(time_shift=time_shift)
+        self._notify_subset_views()
 
-    def _notify_subset_views(self, time_shift=None):
-        """
-        Notify all registered subset views that windows have been rebuilt.
-
-        Parameters
-        ----------
-        time_shift : offset_x, optional
-            If windows were rebuilt due to time shift, contains the offset applied to x
-        """
+    def _notify_subset_views(self):
+        """Notify all registered subset views that windows have been rebuilt."""
         if hasattr(self, '_subset_views'):
             for view in self._subset_views:
-                view._on_dataset_updated(time_shift=time_shift)
+                view._on_dataset_updated()
 
     def set_window_size(self, window_size):
         """Change window size and rebuild windows."""

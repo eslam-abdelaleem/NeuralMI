@@ -148,7 +148,6 @@ class TemporalWindowDataset(Dataset, ABC):
             self.data_device = torch.device(str(data_device))
         self.data_master = None  # Allocated when moving to windows
         self.data = None         # Allocated when moving to windows
-        self.time_offset = 0     # No offset by default
 
     # ------ Window handling
     def set_window_manager(self, window_manager):
@@ -163,7 +162,7 @@ class TemporalWindowDataset(Dataset, ABC):
         Only recomputes sizing here. Actually moving data to windows is left
         to the caller: PairedTemporalDataset._build_windows() always calls
         move_data_to_windows() itself right after update_parameters() (in
-        __init__, time_shift(), and set_window_size()), and does so in the
+        __init__ and set_window_size()), and does so in the
         correct order relative to window-coverage validation. Calling it here
         too would just redo that work a second time.
         """
@@ -213,11 +212,6 @@ class TemporalWindowDataset(Dataset, ABC):
         return self.get_temporal_extent()[1]
     
     # ------ Modifying data
-    @abstractmethod
-    def time_shift(self, time_offset):
-        """Apply time shift to data."""
-        pass
-
     @abstractmethod
     def apply_noise(self, amplitude):
         """Apply noise to data."""
@@ -557,10 +551,6 @@ class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
     def reset(self):
         self.data = self.data_master.detach().clone()
 
-    def time_shift(self, offset):
-        self.time_vector = self.time_vector + offset - self.time_offset
-        self.time_offset = offset
-
     def apply_noise(self, amplitude):
         """Add uniform jitter of width `amplitude` to every sample that holds a value.
 
@@ -636,7 +626,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
         self.no_spike_value = no_spike_value
         self.exclude_bursty_neurons = exclude_bursty_neurons
         self.burst_threshold_multiplier = burst_threshold_multiplier
-        self.time_offset = 0
         self._excluded_neurons = []
         self._max_spikes_cap = max_spikes_per_window
         self._n_seconds = n_seconds
@@ -805,14 +794,6 @@ class SpikeWindowDataset(TemporalWindowDataset):
     def reset(self):
         self.data = self.data_master.detach().clone()
 
-    def time_shift(self, offset):
-        """Shift spike times by offset."""
-        # Undo previous offset, apply new one
-        self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
-        # Store this time offset to undo later
-        self.time_offset = offset
-        # Moving data to windows will be orchestrated by paired dataset class
-
     def apply_noise(self, amplitude):
         """Jitter every spike time by a uniform draw of width `amplitude`.
 
@@ -867,7 +848,6 @@ class BinnedSpikeDataset(TemporalWindowDataset):
         self.data_orig = [np.array(st) for st in spike_times]
         self.bin_size = bin_size
         self.normalize = normalize
-        self.time_offset = 0
         if window_manager is not None:
             self.set_window_manager(window_manager)
             self.move_data_to_windows()
@@ -960,10 +940,6 @@ class BinnedSpikeDataset(TemporalWindowDataset):
 
     def reset(self):
         self.data = self.data_master.detach().clone()
-
-    def time_shift(self, offset):
-        self.data_orig = [st + offset - self.time_offset for st in self.data_orig]
-        self.time_offset = offset
 
     def apply_noise(self, amplitude):
         """Add uniform noise of width `amplitude` to every bin that holds spikes.
@@ -1225,14 +1201,6 @@ class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
         min_count = max(1, int(np.ceil(self.min_coverage_fraction * max_samples)))
         return self._window_counts >= min_count
     
-    def time_shift(self, offset):
-        """Apply time shift to data."""
-        # Undo previous offset, apply new one
-        self.time_vector = self.time_vector + offset - self.time_offset
-        # Store this time offset to undo later
-        self.time_offset = offset
-        # Moving data to windows on new time shift will be orchestrated by paired dataset
-
     def __getitem__(self, idx):
         """Return one-hot encoded windowed data at index."""
         return self.data[idx]

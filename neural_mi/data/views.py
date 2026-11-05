@@ -47,7 +47,6 @@ class SubsetView:
         self.channels_x = channels_x
         self.channels_y = channels_y
         self.is_temporal = isinstance(dataset, AlignedStreams)
-        self.time_offset = 0
         self.max_index_reduction = max_index_reduction
         
         import weakref
@@ -170,9 +169,9 @@ class SubsetView:
 
         self.times = np.column_stack([window_times[starts], window_times[ends]])
     
-    def _on_dataset_updated(self, time_shift=None):
+    def _on_dataset_updated(self):
         """
-        Called by the dataset when windows are rebuilt (e.g., after time shift).
+        Called by the dataset when windows are rebuilt (e.g., after a new window size).
         Re-computes indices from stored times.
         If the number of valid windows drops by more than
         `max_index_reduction` (default 5%) after the rebuild, a warning is
@@ -183,12 +182,6 @@ class SubsetView:
             return
 
         old_count = len(self.indices) if self.indices is not None else 0
-
-        # If time shift was applied, update our stored times
-        if time_shift is not None:
-            self.times = self.times + time_shift - self.time_offset
-            self.time_offset = time_shift
-
         self._update_indices_from_times()
 
         new_count = len(self.indices) if self.indices is not None else 0
