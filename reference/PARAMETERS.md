@@ -78,7 +78,7 @@ n_channels)`.
 |--|--|----|
 | `window_size` | required | Window length in samples (seconds with `sample_rate` or a clock). |
 | `step_size` | one window | Distance between window starts. Below 1 it is a fraction of `window_size`. |
-| `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. |
+| `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. A window never runs past the stream's first or last sample, whatever this allows. |
 | `sample_rate` | `None` | Samples per second. Puts windows, steps and lags in seconds. |
 
 **`'spike'`** reads a list with one array of spike times (in seconds) per
@@ -106,7 +106,7 @@ Other values are mapped to consecutive integers with a warning.
 | `window_size` | required | Window length in samples (seconds with `sample_rate` or a clock). |
 | `step_size` | one window | Distance between window starts. Below 1 it is a fraction of `window_size`. |
 | `encoding` | `'majority_vote'` | `'majority_vote'` (the most frequent label, one-hot), `'probability'` (the label frequencies) or `'full_trajectory'` (every sample one-hot). |
-| `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. |
+| `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. A window never runs past the stream's first or last sample, whatever this allows. |
 | `sample_rate` | `None` | Samples per second. Puts windows, steps and lags in seconds. |
 
 ## `Preprocessing`

@@ -8,13 +8,11 @@ it, and a processor grid reaches it once per setting, with that setting's rows.
 """
 import importlib
 import warnings
-from collections import OrderedDict
 
 import numpy as np
 import pytest
 
 import neural_mi as nmi
-from neural_mi.analysis.offsets import one_step_series
 
 # The module, not the function neural_mi exports under the same name.
 run_module = importlib.import_module('neural_mi.run')
@@ -66,10 +64,6 @@ def test_transfer_entropy_checks_the_histories_it_trains_on(checked, route):
         _quietly(lambda: nmi.run(X, Y, mode='transfer', transfer=transfer, processing=processing, **QUICK))
     else:
         _quietly(lambda: nmi.run(X, Y, mode='transfer', transfer=transfer, **QUICK))
-    # Three steps of each past and one of Y's future: one history per step of the series but the
-    # first three. processing= puts the streams on a grid of one-step rows and reads that series.
-    steps = len(X)
-    if route == 'processing':
-        stream = dict(time=None, processor_type='continuous', processor_params={'window_size': 1})
-        steps = len(one_step_series(OrderedDict(x=dict(stream, data=X), y=dict(stream, data=Y)), 'test')['x'])
-    assert checked == [(steps - 3, 'samples')]
+    # Three steps of each past and one of Y's future: one history per step but the first three, on
+    # every route. processing= puts the streams on a grid of one-step rows, one per sample.
+    assert checked == [(len(X) - 3, 'samples')]

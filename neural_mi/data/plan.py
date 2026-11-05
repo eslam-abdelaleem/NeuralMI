@@ -269,9 +269,11 @@ class RowPlan:
                     f"The streams share no stretch of time: the latest starts at {origin:.6g} and "
                     f"the earliest ends at {end:.6g}."
                 )
-            # As WindowManager.create_windows, with one step left at the end
+            # As WindowManager.create_windows: every window within each stream's
+            # bound (temporal._SampledStream), with one step left at the end
             # for the shifts.
-            times = np.arange(origin, end - (self.step if self.shift else 0.0), self.step)
+            starts_end = float(min(ds.window_starts_end(self.window) for ds in datasets.values()))
+            times = np.arange(origin, starts_end - (self.step if self.shift else 0.0), self.step)
         _attach(datasets, manager, times)
         retention = None
         if self._times is None:

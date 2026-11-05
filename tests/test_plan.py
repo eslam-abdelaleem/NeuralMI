@@ -176,3 +176,31 @@ def test_drop_empty_windows_has_no_effect_on_rows_built_by_offset():
         except Exception:
             pass
     assert any("drop_empty_windows=True has no effect on stream 'x' here" in str(w.message) for w in caught)
+
+
+@pytest.mark.parametrize('window, step', [(1, None), (5, 5), (7, 3), (7, None), (10, None)])
+def test_every_route_cuts_the_same_windows_from_the_same_samples(window, step):
+    """A window of a stream sampled on a regular clock lies within its samples, on every route: the
+    plan's unfold and grid routes, create_dataset, and the one-step grid of a quantity defined by
+    offsets. A one-sample window on the last sample is cut, and a window that would run past the last
+    sample is not, whatever min_coverage_fraction allows inside the recording."""
+    from neural_mi.analysis.offsets import one_step_series
+    from neural_mi.data.handler import create_dataset
+    x = np.arange(1200, dtype='float32')[:, None]
+    params = {'window_size': window} if step is None else {'window_size': window, 'step_size': step}
+    stride = step or window
+    expected = (1200 - window) // stride + 1
+    unfold = RowPlan(OrderedDict(x=resolve_stream(x, None, 'continuous', params),
+                                 y=resolve_stream(x, None, 'continuous', params)))
+    built = create_dataset(OrderedDict(x=dict(data=x, processor_type='continuous', processor_params=params),
+                                       y=dict(data=x, processor_type='continuous', processor_params=params)))
+    assert unfold.route == 'unfold' and len(unfold) == len(built.stream('x').data) == expected
+    # Y's samples start 0.6 later: the grid route, on the stretch both cover.
+    t = np.arange(1200.0)
+    grid = RowPlan(OrderedDict(x=resolve_stream(x, t, 'continuous', params),
+                               y=resolve_stream(x, t + 0.6, 'continuous', params)))
+    assert grid.route == 'grid' and len(grid) == int((1200 - window - 0.6) // stride) + 1
+    if window == 1:
+        stream = dict(time=None, processor_type='continuous', processor_params={'window_size': 1})
+        series = one_step_series(OrderedDict(x=dict(stream, data=x), y=dict(stream, data=x)), 'test')
+        assert len(series['x']) == 1200

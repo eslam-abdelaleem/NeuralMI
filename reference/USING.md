@@ -808,8 +808,10 @@ joint term reads X, W and Y. The fits to the data are made per stream and so
 come out the same in every term: a categorical stream's categories, a spike
 stream's bursty neurons (`exclude_bursty_neurons`) and its spike slots.
 
-A continuous or categorical window survives only when at least
-`min_coverage_fraction` of it holds samples. `details` and `runs` report the
+A continuous or categorical window lies within its stream's samples, from the
+first sample to the end of the last one's sample period, on every route, so a
+window that would run past either end is never cut. Inside that stretch a window
+survives only when at least `min_coverage_fraction` of it holds samples. `details` and `runs` report the
 fraction of windows kept (`window_retention`) and the counts behind it
 (`n_windows_built`, `n_windows_retained`). Because validity combines across
 streams, three streams at 62% each keep about 24% of windows jointly. Retention

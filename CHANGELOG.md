@@ -791,6 +791,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `defaults.norm_layer_of` now resolves it for all three, and the warning no
   longer suggests layer normalisation where the mode already applies it.
 
+- A continuous or categorical stream reported its extent as ending at its last
+  sample, where that sample's period begins. `create_dataset` and the row
+  plan's grid route lay their windows on that extent, so they never cut a
+  window of one sample on the last sample: `processing=` gave transfer entropy
+  one history fewer than the raw series. They also kept windows that ran past
+  the last sample when `min_coverage_fraction` allowed it, and filled the
+  missing part from the last values, while the row plan's unfold route cut only
+  windows inside the samples. The same samples gave different rows depending on
+  the route. A stream sampled on a regular clock now covers its last sample's
+  period, and its windows lie within its samples on every route
+  (`temporal._SampledStream`). `min_coverage_fraction` judges gaps inside the
+  recording.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

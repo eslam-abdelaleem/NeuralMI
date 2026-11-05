@@ -205,6 +205,12 @@ class TemporalWindowDataset(Dataset, ABC):
     def get_temporal_extent(self):
         """Return (t_start, t_end) of the data."""
         pass
+
+    def window_starts_end(self, window_size: float) -> float:
+        """Before what time this stream's windows start: before the end of its extent. A stream sampled
+        on a regular clock narrows it so that its windows also end within its samples
+        (:class:`_SampledStream`)."""
+        return self.get_temporal_extent()[1]
     
     # ------ Modifying data
     @abstractmethod
@@ -223,7 +229,24 @@ class TemporalWindowDataset(Dataset, ABC):
         pass
 
 
-class ContinuousWindowDataset(TemporalWindowDataset):
+class _SampledStream:
+    """A stream sampled on a regular clock (continuous, categorical): its samples cover a stretch of
+    time, one period each, and a window of it lies within that stretch. The row plan's unfold route
+    (data.shift_windowing.safe_n_windows) cuts the same windows, so every route cuts the same rows from
+    the same samples. min_coverage_fraction then judges gaps inside the stretch."""
+
+    def get_temporal_extent(self):
+        """From the first sample to the end of the last one's period, where a window that starts on the
+        last sample still has it."""
+        return self.time_vector[0], self.time_vector[-1] + self.period
+
+    def window_starts_end(self, window_size: float) -> float:
+        """A window starts no later than one window before the end of the extent. Half a period of slack
+        keeps that last start when the times carry rounding."""
+        return self.get_temporal_extent()[1] - window_size + 0.5 * self.period
+
+
+class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
     """
     Dataset for continuous time series data.
 
@@ -528,9 +551,6 @@ class ContinuousWindowDataset(TemporalWindowDataset):
                     UserWarning, stacklevel=user_stacklevel()
                 )
 
-    def get_temporal_extent(self):
-        return self.time_vector[0], self.time_vector[-1]
-    
     def __getitem__(self, idx):
         return self.data[idx]
     
@@ -960,7 +980,7 @@ class BinnedSpikeDataset(TemporalWindowDataset):
         self.data = corrupt(self.data_master, precision_level, 'rounding').clone()
 
 
-class CategoricalWindowDataset(TemporalWindowDataset):
+class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
     """Dataset for categorical time series data with one-hot encoding."""
     
     def __init__(self, data, time_vector=None, window_manager=None, device=None,
@@ -1213,10 +1233,6 @@ class CategoricalWindowDataset(TemporalWindowDataset):
         self.time_offset = offset
         # Moving data to windows on new time shift will be orchestrated by paired dataset
 
-    def get_temporal_extent(self):
-        """Return temporal extent of the data."""
-        return self.time_vector[0], self.time_vector[-1]
-    
     def __getitem__(self, idx):
         """Return one-hot encoded windowed data at index."""
         return self.data[idx]

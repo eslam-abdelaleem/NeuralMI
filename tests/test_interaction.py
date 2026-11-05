@@ -762,11 +762,10 @@ class TestThreeWayWindowAlignment:
                     n_workers=1, show_progress=False, seed=0)
         assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
 
-    def test_one_window_difference_is_aligned_not_truncated(self):
-        """A one-window difference is resolved by window time, not by
-                truncation, so the run succeeds and the truncation warning never
-                fires.
-        """
+    def test_the_last_window_is_the_same_for_every_stream(self):
+        """Without a gap the pairings keep the same windows. A window lies within each stream's samples
+        whatever its coverage rule, so X's stricter min_coverage_fraction no longer drops an end window
+        that W's keeps, and the run has nothing to align or truncate."""
         from neural_mi import Conditional
         from neural_mi.data.handler import create_dataset
         t, x, y, w = self._series(gap=0.0)
@@ -776,7 +775,7 @@ class TestThreeWayWindowAlignment:
         wy = create_dataset(x_data=w, x_time=t, y_data=y, y_time=t,
                             processor_type_x='categorical', processor_params_x=self.W_PARAMS,
                             processor_type_y='continuous', processor_params_y=self.Y_PARAMS)
-        assert abs(xy.x_data.shape[0] - wy.x_data.shape[0]) == 1, "fixture drifted"
+        assert np.array_equal(xy.window_manager.window_times, wy.window_manager.window_times)
 
         with _capture_warnings() as seen:
             r = nmi.run(x, y, mode='conditional', processing=self._proc(t, w='categorical', w_params=self.W_PARAMS, w_time=t),
@@ -784,8 +783,7 @@ class TestThreeWayWindowAlignment:
                         model=_MODEL, training=self._training(),
                         n_workers=1, show_progress=False, seed=0)
         assert r.mi_estimate is not None and np.isfinite(r.mi_estimate)
-        assert not any('Truncating all three' in m for m in seen), (
-            "the engine trim fired; run() should have aligned by window time first")
+        assert not any('Truncating all three' in m for m in seen)
 
     def test_matching_windows_are_a_no_op(self):
         """When both pairings already agree the alignment must change nothing,

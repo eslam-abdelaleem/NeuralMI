@@ -332,7 +332,9 @@ class AlignedStreams(_NamedStreams, Dataset):
         """Create windows over the range every stream covers."""
         extents = [ds.get_temporal_extent() for ds in self._streams.values()]
         data_start = max(start for start, _ in extents)
-        data_end = min(end for _, end in extents)
+        # The windows start before every stream's own bound: within the samples
+        # of a stream on a regular clock (temporal._SampledStream).
+        data_end = min(ds.window_starts_end(self.window_manager.window_size) for ds in self._streams.values())
         # Record the original recording bounds on the first call so they can
         # be used to clamp the range after time-shifts.
         if not hasattr(self, 'original_data_start'):
