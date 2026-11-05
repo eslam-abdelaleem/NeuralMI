@@ -54,7 +54,6 @@ def test_continuous_window_warns_on_heavily_gap_interpolated_retained_window(cap
     (remove_invalid_windows(), where this is checked, only runs via the full
     PairedTemporalDataset orchestration -- not from a bare
     ContinuousWindowDataset -- so exercise it through that path.)"""
-    import logging
     t = np.concatenate([np.arange(0, 10, 1.0), np.arange(90, 100, 1.0)])
     data = np.random.randn(len(t), 1)
     x_dataset = ContinuousWindowDataset(data, time_vector=t, min_coverage_fraction=0.2)
@@ -66,7 +65,6 @@ def test_continuous_window_warns_on_heavily_gap_interpolated_retained_window(cap
 
 def test_continuous_window_no_gap_warning_for_clean_data(caplog):
     """A dataset with no large internal gaps must not trigger the gap-interpolation warning."""
-    import logging
     t = np.arange(0, 100, 1.0)
     data = np.random.randn(len(t), 1)
     x_dataset = ContinuousWindowDataset(data, time_vector=t)

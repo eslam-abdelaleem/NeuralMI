@@ -8,8 +8,7 @@ a range of specified time lags using the nonlinear cross-correlation method.
 from typing import List, Dict, Any, Optional
 
 from neural_mi.analysis.sweep import ParameterSweep, _product_dict, merge_grid_values
-import warnings
-from neural_mi.logger import logger, user_stacklevel
+from neural_mi.logger import logger
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.utils import _shift_data
 

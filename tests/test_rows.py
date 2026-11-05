@@ -5,7 +5,6 @@ processors their windows, the named quantities the rows they slice by offset,
 transfer entropy its histories. The split's leak checks, the rigorous chunks
 and the block shuffle read that record and nothing else.
 """
-import math
 import warnings
 
 import numpy as np

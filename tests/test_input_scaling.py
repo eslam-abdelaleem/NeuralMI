@@ -11,7 +11,7 @@ import torch
 
 import neural_mi as nmi
 from neural_mi.defaults import BASE_PARAMS_SCHEMA
-from neural_mi.models.embeddings import ChannelScaling, InputScaling
+from neural_mi.models.embeddings import InputScaling
 from neural_mi.utils import build_critic
 
 

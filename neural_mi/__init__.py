@@ -65,6 +65,7 @@ __all__ = [
     'directed_information_rate', 'offset_quantity',
     'data',
     'generators',
+    'preprocessing',
     'estimators',
     'models',
     'results',

@@ -40,8 +40,8 @@ def _signatures():
 
 def _public_interface(where, name):
     """The signatures that keep literal defaults: run() and the named quantities, whose signatures are the
-    interface until ROADMAP design item 1 declares each setting once, _run_flat, which that item replaces,
-    and a generator's own network width, which only shares a setting's name."""
+    interface until each setting is declared once, _run_flat, which that declaration would replace, and a
+    generator's own network width, which only shares a setting's name."""
     return ((where == 'run.py' and name in ('run', '_run_flat'))
             or (where == 'quantities.py' and not name.startswith('_'))
             or (where == 'generators/oracle.py' and name == 'generate_nonlinear_from_latent'))

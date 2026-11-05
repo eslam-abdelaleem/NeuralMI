@@ -25,15 +25,13 @@ and everything derived from them, against a snapshot of the rows taken before
 any shift.
 """
 from collections import OrderedDict
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-import warnings
 from neural_mi.data.rows import PHASES_KEY, kept_rows
-from neural_mi.logger import user_stacklevel
 
 
 def seconds_to_samples(value: float, period: float) -> int:

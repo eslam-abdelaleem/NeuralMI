@@ -283,7 +283,9 @@ def test_every_code_name_the_reference_pages_give_exists():
     modules = ({p.stem for p in PACKAGE_DIR.rglob('*.py')} | {p.name for p in PACKAGE_DIR.rglob('*') if p.is_dir()}
                | {'nmi', 'neural_mi'})
     stale = []
-    for page in sorted(REFERENCE.glob('*.md')) + [ROOT / 'ROADMAP.md']:
+    # The roadmap lives on dev. main carries the library without it.
+    roadmap = [p for p in [ROOT / 'ROADMAP.md'] if p.exists()]
+    for page in sorted(REFERENCE.glob('*.md')) + roadmap:
         for ref in re.findall(r'`([A-Za-z_][\w.]*)(?:\(\))?`', page.read_text()):
             if ref in _NAMED_AS_UNUSED:
                 continue

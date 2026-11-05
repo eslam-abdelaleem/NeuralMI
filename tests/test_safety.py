@@ -2,7 +2,6 @@
 """Tests guarding safety-critical behaviors: leakage checks, ceilings, shift reachability."""
 import inspect
 from collections import OrderedDict
-import logging
 import warnings
 
 import numpy as np
@@ -342,7 +341,7 @@ def test_saturated_test_trace_warns_and_records_fraction():
     n = 20000
     x = np.random.randn(n, 4).astype('float32')
     y = (x + 0.3 * np.random.randn(n, 4).astype('float32')).astype('float32')
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record=True):
         warnings.simplefilter('always')
         result = nmi.run(
             x, y, mode='estimate',

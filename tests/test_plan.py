@@ -15,7 +15,7 @@ import pytest
 import torch
 
 import neural_mi as nmi
-from neural_mi.data.plan import PAIR, Roles, RowPlan, Stream, resolve_stream
+from neural_mi.data.plan import PAIR, Roles, RowPlan, resolve_stream
 
 
 def _spikes(rng, start, end=120.0, rate=5.0, n=3):
