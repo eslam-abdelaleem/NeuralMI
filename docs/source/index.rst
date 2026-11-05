@@ -17,8 +17,8 @@ arrived on.
    :width: 78%
 
 Both sides above are a thousand channels wide and share ten latent dimensions
-carrying exactly four bits. NeuralMI finds the four bits by a thousand samples
-where KSG on the same data is still under two bits at five thousand.
+carrying exactly four bits. NeuralMI reads close to the four bits wherever it
+reports a value. KSG on the same data stays far below them at every sample size.
 
 Every analysis goes through the one function ``nmi.run()`` with a ``mode`` that
 selects the quantity.
