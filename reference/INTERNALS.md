@@ -221,7 +221,12 @@ streams for every mode but transfer entropy, the transfer branch on the series
 its histories come from (after any grid), and `quantities._by_offsets` on a
 named quantity's series, before `offsets.build_rows`. The named quantities take
 `preprocessing` out of what they pass to `run()`, which receives rows and skips
-its own check when `_rows` says a quantity built them.
+its own check when `_rows` says a quantity built them. The part of the check
+that reads the rows (`run._warn_small_sample`) runs on every route, where the
+route counts its rows: once in `_run_flat` for rows cut there or passed in, at
+offset 0 for rows each task cuts, once per setting of a processor grid
+(`_run_processor_grid`), and on the histories of transfer entropy
+(`tests/test_data_check_routes.py`).
 
 ### Rows in time order
 
@@ -339,9 +344,7 @@ To add an analysis mode:
    `neural_mi/__init__.py` and add its settings and defaults to
    `MODE_KWARGS_SCHEMA` in `neural_mi/defaults.py`.
 4. Register it in `neural_mi/run.py`: in `_MODES` and `_MODE_CONFIG_CLASSES`, in
-   `_PERMUTABLE_MODES` if a permutation null means something for it, in
-   `_WINDOWS_IN_TASK` if it windows inside its tasks, and in the
-   `_SHIFT_*_SAFE_MODES` tuples that apply.
+   `_PERMUTABLE_MODES` if a permutation null means something for it.
 5. Decide what it does with repeats, a configuration grid and `rigorous`. Record
    the decision in the capability table in
    [USING.md](USING.md#what-each-mode-accepts) and add the mode to the check in

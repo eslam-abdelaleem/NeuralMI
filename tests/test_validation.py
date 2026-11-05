@@ -39,9 +39,11 @@ def test_param_validator_invalid_values():
     with pytest.raises(ValueError):
         ParameterValidator({"mode": "estimate", "base_params": {"n_epochs": 0}}).validate()
 
-def test_param_validator_sweep_without_grid():
+def test_a_sweep_without_a_grid_is_refused_before_any_work():
+    """With the other grid checks in run(), before anything is prepared."""
+    import neural_mi as nmi
     with pytest.raises(ValueError, match="'sweep_grid' required"):
-        ParameterValidator({"mode": "sweep", "base_params": {}}).validate()
+        nmi.run(np.zeros((50, 2)), np.zeros((50, 2)), mode='sweep', show_progress=False)
 
 def test_data_validator_spike_data_errors():
     with pytest.raises(TypeError, match="must be a non-empty list"):

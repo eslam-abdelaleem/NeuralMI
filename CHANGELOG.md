@@ -752,6 +752,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   on one grid when some of them need building. Transfer entropy refuses rows
   built already on every route, as it did without `processing=`.
 
+- A grid over a processor setting (`window_size`, `step_size`, `bin_size`, ...)
+  ran two ways. `mode='sweep'` and `mode='lag'` windowed inside each task, and
+  a sweep's call then never ran the data check, so it never reported its rows
+  or warned that they were few. Every other mode ran one call per setting,
+  each with the whole check. Every mode now runs a processor grid one call per
+  setting (`run._run_processor_grid`), and each call checks its own rows. A
+  sweep without a grid is refused with the other grid checks, before any work.
+
+- Transfer entropy never ran the part of the data check that reads the rows,
+  on any route: `run(mode='transfer')` on series or with `processing=`, and
+  `nmi.transfer_entropy`. A call on too few rows said nothing about it. The
+  check now counts the histories every term trains on and reads the scale of
+  the series they are cut from.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

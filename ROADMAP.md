@@ -384,9 +384,7 @@ ladder.
 start is stored as 0.0, the default `no_spike_value`, and so reads as an empty
 slot. The grid starts at the latest stream's first spike, so that stream's
 first window always holds one such spike. A `no_spike_value` outside every
-window's range (-1, say) would tell the two apart. `mode='transfer'` never runs the
-small-sample checks or the part of the data check that reads the rows, since
-its branch of `run.py` passes raw series.
+window's range (-1, say) would tell the two apart.
 `Training(min_reliable_samples=...)` moves only the rigorous ladder's line for
 small chunks, not the call's held-out line or the curve warnings' note, whose
 defaults agree with it; one setting could move all three. An MLP encoder with

@@ -186,7 +186,6 @@ class ParameterValidator:
         self._validate_required()
         self._validate_base()
         self._validate_processor()
-        self._validate_sweep()
         self._validate_mode_kwargs()
 
     def _validate_required(self):
@@ -253,10 +252,6 @@ class ParameterValidator:
                         f"step_size in {where} must be a positive number (a fraction of "
                         f"window_size if below 1, absolute time units otherwise), got {ss!r}."
                     )
-
-    def _validate_sweep(self):
-        if self.mode == "sweep" and self.params.get("sweep_grid") is None:
-            raise ValueError(f"'sweep_grid' required for mode='{self.mode}'.")
 
     def _mode_kwarg(self, key: str):
         """Look up a mode kwarg from either the named top-level params (e.g.

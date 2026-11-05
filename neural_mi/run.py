@@ -49,11 +49,6 @@ _MODES = ('estimate', 'sweep', 'rigorous', 'lag', 'precision', 'conditional',
 _RIGOROUS_FIT_KEYS = ('gamma_range', 'residual_threshold', 'leverage_threshold',
                       'temporal_chunking')
 
-# Modes that window inside each training task, so a processor parameter in their
-# grid takes effect there. Every other mode prepares its data once per call and
-# runs a processor grid one setting at a time (_run_processor_grid).
-_WINDOWS_IN_TASK = ('sweep', 'lag')
-
 _PROCESSOR_KEYS = frozenset().union(*PROCESSOR_PARAMS_SCHEMA.values())
 
 
@@ -140,6 +135,8 @@ def _check_grid(mode: str, sweep_grid: Optional[dict], model: Optional[Model] = 
     (:func:`_unread_settings`), in every configuration of the grid.
     """
     import dataclasses
+    if mode == 'sweep' and not sweep_grid:
+        raise ValueError("'sweep_grid' required for mode='sweep'.")
     if not sweep_grid:
         return
     if mode in ('estimate', 'precision'):
@@ -474,8 +471,6 @@ def _processor_grid(mode: str, sweep_grid: Optional[dict], streams: dict) -> dic
                 f"takes '{key}' ({', '.join(repr(n) for n in takers)}) or remove '{key}' "
                 f"from the grid."
             )
-    if mode in _WINDOWS_IN_TASK:
-        return {}
     return {k: sweep_grid[k] for k in keys}
 
 
@@ -1191,7 +1186,7 @@ def _run_flat(
         _embedding = setting(base_params, 'embedding_model')
         # A 3-D array/tensor passed with processor_type=None is already
         # pre-windowed (N, C, W) sequential data, not a StaticDataset -- this
-        # matches the same auto-detection ParameterSweep uses (`is_proc_sweep`)
+        # matches the same auto-detection ParameterSweep uses
         # to allow 'gru'/'lstm' on pre-processed data without re-running a
         # processor.
         _has_time_dim = hasattr(x_data, 'ndim') and x_data.ndim == 3
@@ -1235,10 +1230,6 @@ def _run_flat(
             from .preprocessing import describe as _describe_preprocessing
             run_params['preprocessing'] = _describe_preprocessing(preprocessing)
 
-        # Every processor parameter the schema knows, so a new one defers
-        # windowing in a sweep without further changes.
-        processor_param_keys = set().union(*PROCESSOR_PARAMS_SCHEMA.values())
-        is_proc_sweep = mode == 'sweep' and any(key in (sweep_grid or {}) for key in processor_param_keys)
     
         def _to_tensor(arr):
             """An array as a float32 tensor, 2-D input with its trailing window axis of 1."""
@@ -1270,8 +1261,9 @@ def _run_flat(
         # Every mode but transfer entropy, which builds its histories itself, cuts
         # its rows from one plan of the streams it reads (neural_mi/data/plan.py).
         # Under shift_windows the rows move each epoch, and a call whose rows
-        # move, a processor sweep and mode='lag' leave the cutting to each
-        # training task. Every other call cuts them once, here.
+        # move and mode='lag' leave the cutting to each training task. Every
+        # other call cuts them once, here. A processor grid runs one call per
+        # setting (_run_processor_grid), each with its own data check.
         from .data.plan import RowPlan, Stream, refuse_mixed_streams, resolve_stream, rows_line_up
         # Every stream is read by a processor, its own or X's, or arrives as
         # rows built already, and the two cannot share a call.
@@ -1317,26 +1309,25 @@ def _run_flat(
                                rows=dict(_rows_built['windows']),
                                processors={name: s.processor for name, s in _streams.items()})
             x_run_data, y_run_data = _plan, None
-        elif is_proc_sweep or mode == 'lag' or _shifts:
+        elif mode == 'lag' or _shifts:
             logger.info("Windowing inside each training task.")
             x_run_data, y_run_data = x_data, y_data
-            if not is_proc_sweep:
-                # The windows are built later, in each task. X's extent, window
-                # and step give their count now. Each lag trains on what the
-                # shift leaves, so a lag scan is counted at its largest lag.
-                _lags = (lag_range if lag_range is not None
-                         else analysis_kwargs.get('lag_range')) if mode == 'lag' else None
-                _largest_lag = max((abs(float(v)) for v in _lags), default=0.0) if _lags is not None else 0.0
-                _counted = _deferred_window_count(x_data, base_params, _largest_lag)
-                if _counted is not None:
-                    # The data check reads the rows' scale from the rows at
-                    # offset 0, which the tasks move from. They are built here
-                    # for the check alone and let go after it.
-                    _at_zero = RowPlan(_streams, shift=_shifts).rows()['windows'] if _streams else None
-                    _warn_small_sample(*_counted, base_params=base_params, mode=mode,
-                                       rows=None if _at_zero is None else dict(_at_zero),
-                                       processors={name: s.processor for name, s in _streams.items()})
-                    del _at_zero
+            # The windows are built later, in each task. X's extent, window
+            # and step give their count now. Each lag trains on what the
+            # shift leaves, so a lag scan is counted at its largest lag.
+            _lags = (lag_range if lag_range is not None
+                     else analysis_kwargs.get('lag_range')) if mode == 'lag' else None
+            _largest_lag = max((abs(float(v)) for v in _lags), default=0.0) if _lags is not None else 0.0
+            _counted = _deferred_window_count(x_data, base_params, _largest_lag)
+            if _counted is not None:
+                # The data check reads the rows' scale from the rows at
+                # offset 0, which the tasks move from. They are built here
+                # for the check alone and let go after it.
+                _at_zero = RowPlan(_streams, shift=_shifts).rows()['windows'] if _streams else None
+                _warn_small_sample(*_counted, base_params=base_params, mode=mode,
+                                   rows=None if _at_zero is None else dict(_at_zero),
+                                   processors={name: s.processor for name, s in _streams.items()})
+                del _at_zero
         elif processor_type_x is None and processor_type_y is None:
             # Fast path: data is already pre-processed. Convert to tensors inline and skip
             # the full create_dataset / PairedDataset allocation.
@@ -1425,10 +1416,7 @@ def _run_flat(
         ctx: Dict[str, Any] = {}
         x_run, y_run, w_run = x_run_data, y_run_data, None
 
-        if mode in ('estimate', 'sweep'):
-            ctx = {'is_proc_sweep': is_proc_sweep}
-
-        elif mode == 'lag':
+        if mode == 'lag':
             # `lag_range` reaches here already unpacked from Lag(...) by run(); the
             # analysis_kwargs fallback covers direct _run_flat callers.
             lag_range_val = lag_range if lag_range is not None else analysis_kwargs.get('lag_range')
@@ -1536,7 +1524,16 @@ def _run_flat(
             # reads them: the ladder's chunks, the permutation's blocks.
             from .analysis.offsets import spec_geometry
             from .analysis.transfer import te_spec
-            record_rows(base_params, spec_geometry(te_spec(history_window, prediction_horizon), stride))
+            _histories = spec_geometry(te_spec(history_window, prediction_horizon), stride)
+            record_rows(base_params, _histories)
+            # The data check, as every other route runs it: the histories every
+            # term trains on, counted from the series' length, and the scale of
+            # the series they are cut from.
+            _n_histories = max(0, int((x_run.shape[0] - _histories.span) // stride) + 1)
+            _warn_small_sample(kept_rows(_n_histories, base_params), 'samples', base_params, mode,
+                               rows={name: series for name, series in (('x', x_run), ('y', y_run), ('w', w_run))
+                                     if series is not None},
+                               processors=_processor_of)
             if _use_rigorous:
                 from .analysis.transfer import _te_rigorous_scalar
                 ctx.update(rigorous=True, scalar_fn=_te_rigorous_scalar,

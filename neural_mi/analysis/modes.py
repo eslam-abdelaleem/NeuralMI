@@ -94,14 +94,9 @@ def _repeat_params(params: Dict[str, Any], run_id: Any, has_run_id: bool) -> Dic
 # Modes whose repeat is one network
 # ---------------------------------------------------------------------------
 
-def produce_single_network(mode, x, y, base_params, grid, *, to_bits, n_workers=1,
-                           is_proc_sweep=None):
+def produce_single_network(mode, x, y, base_params, grid, *, to_bits, n_workers=1):
     """estimate and sweep: one network per repeat."""
-    kwargs = {'n_workers': n_workers}
-    if mode == 'sweep':
-        results = ParameterSweep(x, y, base_params).run(grid, is_proc_sweep=is_proc_sweep, **kwargs)
-    else:
-        results = ParameterSweep(x, y, base_params).run(grid, **kwargs)
+    results = ParameterSweep(x, y, base_params).run(grid, n_workers=n_workers)
     rows, details, config_keys = single_network_rows(results, grid, to_bits)
     return _produced(rows, details, config_keys)
 
@@ -479,8 +474,7 @@ def produce(mode, x, y, w, base_params, grid, *, ctx, to_bits, n_workers=1):
     settings, ``history_window``, ...), prepared once by :func:`neural_mi.run`.
     """
     if mode in ('estimate', 'sweep'):
-        return produce_single_network(mode, x, y, base_params, grid, to_bits=to_bits,
-                                      n_workers=n_workers, is_proc_sweep=ctx.get('is_proc_sweep'))
+        return produce_single_network(mode, x, y, base_params, grid, to_bits=to_bits, n_workers=n_workers)
     if mode == 'lag':
         return produce_lag(x, y, base_params, grid, to_bits=to_bits, lag_range=ctx['lag_range'],
                            n_workers=n_workers, equalize_n=ctx.get('equalize_n', False))
