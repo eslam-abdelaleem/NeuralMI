@@ -737,6 +737,21 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   processor setting where the processors read it. It now calls the same
   function.
 
+- A stream given as rows built already met four rules. A 3-D W beside windowed
+  X and Y joined their rows one for one. A 3-D Y inherited X's processor, was
+  windowed as if it were a raw series, and failed in training with a message
+  that named neither Y nor its shape. Rows built already of different counts
+  were cut to the shorter with a warning by `run()` and `create_dataset`, and
+  refused by the row plan and the data check. A stream given as rows built
+  already now inherits no processor (`defaults.stream_processing`), whichever
+  stream it is. It cannot share a call with a windowed stream, since it has no
+  time axis to align windows against (`data.plan.refuse_mixed_streams`, called
+  by `run()`, `create_dataset` and the row plan). Rows built already whose
+  counts differ are refused everywhere with one message
+  (`data.plan.rows_line_up`). `create_dataset` builds the rows of every stream
+  on one grid when some of them need building. Transfer entropy refuses rows
+  built already on every route, as it did without `processing=`.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 

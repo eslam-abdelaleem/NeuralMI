@@ -290,13 +290,18 @@ PROCESSOR_PARAMS_SCHEMA = {processor: list(defaults) for processor, defaults in 
 
 
 def stream_processing(processor: Optional[str], params: Optional[Dict[str, Any]], x_processor: Optional[str],
-                      x_params: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+                      x_params: Optional[Dict[str, Any]], data: Any = None
+                      ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """The processor and processor settings a second stream, Y or W, is read with: one rule for both.
 
     A stream without a processor of its own reads with X's. One without
     settings of its own reads with X's settings, kept to the keys its processor
-    takes. Settings it was given are its own and are not merged with X's.
+    takes. Settings it was given are its own and are not merged with X's. A
+    stream given as rows built already (``data`` with three dimensions) has no
+    raw series for a processor to read and inherits nothing.
     """
+    if processor is None and getattr(data, 'ndim', None) == 3:
+        return None, params
     processor = processor if processor is not None else x_processor
     if params is None and processor is not None:
         accepted = PROCESSOR_DEFAULTS.get(processor)

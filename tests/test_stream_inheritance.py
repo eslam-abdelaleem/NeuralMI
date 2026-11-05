@@ -68,6 +68,12 @@ class TestTheRule:
     def test_without_a_processor_for_x_nothing_is_inherited(self):
         assert stream_processing(None, None, None, None) == (None, None)
 
+    def test_a_stream_given_as_rows_built_already_inherits_nothing(self):
+        """A 3-D stream has no raw series for a processor to read, whichever stream it is."""
+        built = np.zeros((10, 2, 5))
+        assert stream_processing(None, None, 'continuous', {'window_size': 5}, built) == (None, None)
+        assert stream_processing(None, None, 'continuous', {'window_size': 5}, np.zeros((50, 2)))[0] == 'continuous'
+
 
 class TestEveryPathReadsTheSameSettings:
 

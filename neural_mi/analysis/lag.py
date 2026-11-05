@@ -62,7 +62,7 @@ def run_lag_analysis(
     proc_type_x = base_params.get('processor_type_x')
     params_x = base_params.get('processor_params_x') or {}
     proc_type_y, params_y = stream_processing(base_params.get('processor_type_y'),
-                                              base_params.get('processor_params_y'), proc_type_x, params_x)
+                                              base_params.get('processor_params_y'), proc_type_x, params_x, y_data)
 
     # Infer sample_rate from processor_params to resolve unit ambiguity
     sample_rate = params_x.get('sample_rate', None)

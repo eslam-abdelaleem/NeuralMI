@@ -582,32 +582,10 @@ class AlignedStaticStreams(_NamedStreams, Dataset):
         logger.info("Created PairedDataset")
 
     def _align_datasets(self):
-        """Truncate every stream to the shortest one's sample count.
-
-        Truncates via a leading-dimension slice on each ``self.data`` tensor,
-        because ``StaticDataset.__len__`` reads ``self.data.shape[0]`` and the
-        slice is what makes the length change take effect.
-        """
-        lengths = OrderedDict((name, len(ds)) for name, ds in self._streams.items())
-        if len(set(lengths.values())) == 1:
-            return
-        min_len, max_len = min(lengths.values()), max(lengths.values())
-        lost = max_len - min_len
-        pct = 100.0 * lost / max_len
-        names = " and ".join(name.upper() for name in lengths)
-        counts = ", ".join("%s: %d" % (name.upper(), n) for name, n in lengths.items())
-        every = "both" if len(lengths) == 2 else "all"
-        warnings.warn(
-            f"{names} have different numbers of samples ({counts}). "
-            f"Truncating {every} to {min_len} samples "
-            f"({lost} samples discarded, {pct:.1f}% of the larger dataset lost).",
-            UserWarning, stacklevel=user_stacklevel()
-        )
-        for dataset in self._streams.values():
-            dataset.data = _truncate_leading(dataset.data, min_len)
-            # Invalidate lazily-allocated data_master so it is re-cloned from
-            # the truncated data the next time apply_noise/apply_precision runs.
-            dataset.data_master = None
+        """Refuse streams whose rows do not line up one for one (data.plan.rows_line_up), as every call
+        does with rows built already."""
+        from neural_mi.data.plan import rows_line_up
+        rows_line_up(OrderedDict((name, len(ds)) for name, ds in self._streams.items()))
 
 
 class PairedDataset(_PairAccessors, AlignedStaticStreams):
@@ -701,7 +679,7 @@ def _stream_specs_from_pair(x_data, y_data, x_time, y_time,
                       processor_params=processor_params_x)
     if y_data is not None:
         kind_y, params_y = stream_processing(processor_type_y, processor_params_y,
-                                             processor_type_x, processor_params_x)
+                                             processor_type_x, processor_params_x, y_data)
         specs['y'] = dict(data=y_data, time=y_time, processor_type=kind_y, processor_params=params_y)
     return specs
 
@@ -882,15 +860,8 @@ def create_dataset(x_data, y_data=None,
 
     static = [n for n, ds in datasets.items() if isinstance(ds, StaticDataset)]
     windowed = [n for n in datasets if n not in static]
-    if static and windowed:
-        raise ValueError(
-            f"A pre-processed stream (processor_type=None) cannot be paired with a "
-            f"windowed processor_type. {sorted(static)} are pre-processed and "
-            f"{sorted(windowed)} are windowed. A pre-processed stream has no time axis "
-            f"to align windows against and cannot share a grid with a windowed one. "
-            f"Give every stream a real processor_type (for example 'continuous') or "
-            f"pre-process all of them and pass processor_type=None throughout."
-        )
+    from neural_mi.data.plan import refuse_mixed_streams
+    refuse_mixed_streams(static, windowed)
 
     names = list(datasets)
     is_pair_shaped = names[:2] == ['x', 'y'][:len(names)] and len(names) <= 2

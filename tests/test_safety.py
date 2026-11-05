@@ -1,6 +1,7 @@
 # tests/test_safety.py
 """Tests guarding safety-critical behaviors: leakage checks, ceilings, shift reachability."""
 import inspect
+from collections import OrderedDict
 import logging
 import warnings
 
@@ -453,14 +454,31 @@ def test_the_rows_of_every_processor_move():
     assert getattr(RowPlan.of_pair(x, x.copy(), params).build(PAIR), '_window_shifter', None) is None
 
 
-def test_shift_windows_warns_for_a_w_built_already():
+@pytest.mark.parametrize('stream', ['y', 'w'])
+def test_a_stream_built_already_beside_a_windowed_one_is_refused(stream):
+    """Y and W given as rows built already (3-D) inherit no processor and meet one refusal: rows built
+    already have no time axis to align X's windows against. A Y like this used to inherit X's processor
+    and fail in training without saying why."""
     x = np.random.randn(3000, 2).astype('float32')
-    w = np.random.randn(150, 2, 20).astype('float32')
+    built = np.random.randn(150, 2, 20).astype('float32')
     proc = nmi.Processing(x='continuous', x_params={'window_size': 20})
-    msgs = _shift_messages(x_data=x, y_data=x.copy(), mode='conditional', processing=proc,
-                           conditional=nmi.Conditional(w_data=w),
-                           training=Training(n_epochs=1, patience=1, batch_size=16, shift_windows=True))
-    assert msgs and 'W was passed as rows built already' in msgs[0]
+    kwargs = dict(processing=proc, training=Training(n_epochs=1), show_progress=False, n_workers=1)
+    with pytest.raises(ValueError, match=rf"\['{stream}'\] is built already"):
+        if stream == 'y':
+            nmi.run(x, built, **kwargs)
+        else:
+            nmi.run(x, x.copy(), mode='conditional', conditional=nmi.Conditional(w_data=built), **kwargs)
+
+
+def test_rows_built_already_of_different_counts_are_refused():
+    """One rule for rows built already, in run() and create_dataset alike: they come one per row of every
+    other stream, and streams whose counts differ are refused rather than cut to the shorter."""
+    from neural_mi.data.handler import create_dataset
+    x = np.random.randn(100, 2, 5).astype('float32')
+    with pytest.raises(ValueError, match="rows do not line up"):
+        nmi.run(x, x[:99], training=Training(n_epochs=1), show_progress=False, n_workers=1)
+    with pytest.raises(ValueError, match="rows do not line up"):
+        create_dataset(OrderedDict((('a', dict(data=x)), ('b', dict(data=x[:99])), ('c', dict(data=x)))))
 
 
 # ---------------------------------------------------------------------------

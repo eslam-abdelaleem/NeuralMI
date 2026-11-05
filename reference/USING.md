@@ -789,7 +789,14 @@ Y and W read with X's processor when they name none, and with X's parameters
 when they are given none. A stream that falls back to X's parameters keeps only
 the keys its own processor takes, and parameters a stream is given are its own,
 not merged with X's. Every setting is resolved once, for the whole call, from
-these rules and the defaults (`defaults.stream_processing`). The grid
+these rules and the defaults (`defaults.stream_processing`). A stream passed as
+rows built already, a 3-D array, has no raw series to read and inherits
+nothing. Rows built already cannot share a call with a windowed stream, since
+they have no time axis to align windows against, so every stream is either
+read by a processor or passed built already. `create_dataset` builds the rows
+of every stream on one grid when some of them need building. Rows built
+already must also come one per row of every other stream, and streams whose
+counts differ are refused rather than cut to the shorter. The grid
 has one window and one step, X's, and a stream that asks for another window, or
 for a step of another length, is refused. `nmi.offset_quantity` places a stream
 at offsets of its own, before X's window or across it

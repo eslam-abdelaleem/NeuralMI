@@ -508,10 +508,6 @@ that leaves every quantity unchanged.
 
 ## Data shape and type
 
-**`... have different numbers of samples (...). Truncating ... to ... samples`**, **`X (...) and Y (...) differ in sample count`**
-Both were cut to the shorter length. A large cut means the variables do not
-cover the same interval. Fix the mismatch at its source.
-
 **`ContinuousWindowDataset: first inter-sample interval (...) differs from the median`**
 The library uses the median period because the first gap in the time vector is
 unusual. Check the start of the recording.
@@ -637,8 +633,7 @@ the same networks.
 
 **`shift_windows=True has no effect for mode='...' here`**
 The call's rows cannot move: no processor windows the streams (rows passed in
-built already), or W was passed as rows built already and cannot move with X
-and Y. Shifting moves the rows a processor cuts from raw streams, in every mode
+built already). Shifting moves the rows a processor cuts from raw streams, in every mode
 but transfer entropy ([USING.md](USING.md#window-shifting)).
 
 **`drop_empty_windows=True has no effect on stream ... here`**

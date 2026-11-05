@@ -165,11 +165,9 @@ class DataValidator:
             if is_x_list and is_y_list and len(self.x_data) != len(self.y_data):
                 logger.debug(f"x_data has {len(self.x_data)} channels, y_data has {len(self.y_data)}.")
         elif not is_x_list and not is_y_list:
-            if self.x_data.ndim == 3 and self.y_data.ndim == 3 and self.x_data.shape[0] != self.y_data.shape[0]:
-                raise DataShapeError(
-                    f"Pre-processed X and Y must have the same number of samples. They "
-                    f"have {self.x_data.shape[0]} and {self.y_data.shape[0]}."
-                )
+            if self.x_data.ndim == 3 and self.y_data.ndim == 3:
+                from neural_mi.data.plan import rows_line_up
+                rows_line_up({'x': self.x_data.shape[0], 'y': self.y_data.shape[0]})
 
 class ParameterValidator:
     """Validates the hyperparameter dictionary provided to the `run` function."""

@@ -656,7 +656,7 @@ def test_static_x_with_windowed_y_raises_clear_error():
     processor_type_x rather than defaulting to None/static.)"""
     x_data = np.random.randn(1000, 1, 1).astype(np.float32)  # already pre-processed
     y_data = np.random.randn(1000, 1).astype(np.float32)     # raw, needs windowing
-    with pytest.raises(ValueError, match="cannot be paired with a windowed processor_type"):
+    with pytest.raises(ValueError, match="cannot share a call with a windowed one"):
         create_dataset(
             x_data=x_data, y_data=y_data,
             processor_type_x=None,
@@ -844,23 +844,13 @@ class TestPipelineInvariants:
 
     # --- PairedDataset._align_datasets: effective truncation ---
 
-    def test_align_datasets_truncates_len(self):
-        """PairedDataset with mismatched X/Y lengths truncates to the shorter."""
+    def test_align_datasets_refuses_rows_that_do_not_line_up(self):
+        """Rows built already come one per row of the other stream, as in every call: mismatched X/Y
+        lengths are refused rather than cut to the shorter."""
         x_data = np.random.randn(100, 3).astype(np.float32)
         y_data = np.random.randn(80, 3).astype(np.float32)
-        paired = PairedDataset(StaticDataset(x_data), StaticDataset(y_data))
-        assert len(paired) == 80
-        assert paired.x_data.shape[0] == 80
-        assert paired.y_data.shape[0] == 80
-
-    def test_align_datasets_preserves_data_values(self):
-        """After truncation the retained samples are identical to the originals."""
-        x_data = np.random.randn(100, 3).astype(np.float32)
-        y_data = np.random.randn(80, 3).astype(np.float32)
-        paired = PairedDataset(StaticDataset(x_data), StaticDataset(y_data))
-        np.testing.assert_allclose(
-            paired.x_data[:, :, 0].numpy(), x_data[:80], rtol=1e-5
-        )
+        with pytest.raises(ValueError, match="rows do not line up"):
+            PairedDataset(StaticDataset(x_data), StaticDataset(y_data))
 
     def test_align_datasets_no_op_when_equal(self):
         """Equal-length datasets are unchanged by _align_datasets."""

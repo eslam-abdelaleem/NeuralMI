@@ -78,17 +78,11 @@ def _scalar_rigorous_kwargs(analysis_kwargs: dict, curvature_t_threshold: float,
 
 
 def _stream_processors(mode, processor_type_x, processor_type_y, w_processor_type, w_data) -> dict:
-    """Each stream's parameter slot, mapped to the processor that reads it."""
-    streams = {'processor_params_x': processor_type_x,
-               'processor_params_y': (processor_type_y if processor_type_y is not None
-                                      else processor_type_x)}
+    """Each stream's parameter slot, mapped to the processor that reads it, Y's and W's as _run_flat
+    resolved them."""
+    streams = {'processor_params_x': processor_type_x, 'processor_params_y': processor_type_y}
     if mode in ('conditional', 'interaction', 'transfer') and w_data is not None:
-        w_type = w_processor_type
-        if (w_type is None and mode != 'transfer'
-                and getattr(w_data, 'ndim', None) != 3):
-            # A W without a processor of its own is windowed with X's.
-            w_type = processor_type_x
-        streams['w_processor_params'] = w_type
+        streams['w_processor_params'] = w_processor_type
     return streams
 
 
@@ -965,15 +959,15 @@ def _run_flat(
     # Y and W read with X's processor and settings when they have none of their
     # own (defaults.stream_processing), resolved here once for every path below:
     # the rows cut here, the tasks that cut their own, and a processor grid's
-    # parts. A W passed as rows built already (3-D) is read as given.
-    _w_reads_x = (mode in ('conditional', 'interaction', 'transfer') and w_data is not None
-                  and getattr(w_data, 'ndim', None) != 3)
-    _w_takes_xs_processor = _w_reads_x and w_processor_type is None and processor_type_x is not None
+    # parts. A stream passed as rows built already (3-D) inherits nothing.
+    _w_reads_x = mode in ('conditional', 'interaction', 'transfer') and w_data is not None
+    _w_named = w_processor_type
     processor_type_y, processor_params_y = stream_processing(
-        processor_type_y, processor_params_y, processor_type_x, processor_params_x)
+        processor_type_y, processor_params_y, processor_type_x, processor_params_x, y_data)
     if _w_reads_x:
         w_processor_type, w_processor_params = stream_processing(
-            w_processor_type, w_processor_params, processor_type_x, processor_params_x)
+            w_processor_type, w_processor_params, processor_type_x, processor_params_x, w_data)
+    _w_takes_xs_processor = _w_reads_x and _w_named is None and w_processor_type is not None
     _call_args.update(processor_type_y=processor_type_y, processor_params_y=processor_params_y,
                       w_processor_type=w_processor_type, w_processor_params=w_processor_params)
 
@@ -1218,10 +1212,6 @@ def _run_flat(
                            'processor_type_y', y_data))
         for _name, _emb, _proc_key, _side_data in _sides:
             _side_proc = base_params.get(_proc_key, None)
-            if _proc_key == 'processor_type_y' and _side_proc is None:
-                # processor_type_y=None inherits X's, so a static Y is only
-                # static when X is too.
-                _side_proc = _processor
             _side_time_dim = hasattr(_side_data, 'ndim') and _side_data.ndim == 3
             if (_side_proc is None and str(_emb).lower() in ('gru', 'lstm')
                     and not _side_time_dim and not _mode_builds_own_windows):
@@ -1282,16 +1272,21 @@ def _run_flat(
         # Under shift_windows the rows move each epoch, and a call whose rows
         # move, a processor sweep and mode='lag' leave the cutting to each
         # training task. Every other call cuts them once, here.
-        from .data.plan import RowPlan, Stream, resolve_stream
+        from .data.plan import RowPlan, Stream, refuse_mixed_streams, resolve_stream, rows_line_up
+        # Every stream is read by a processor, its own or X's, or arrives as
+        # rows built already, and the two cannot share a call.
+        _reads_w = mode in ('conditional', 'interaction') and w_data is not None
+        _kinds = OrderedDict([('x', processor_type_x)] + ([('w', w_processor_type)] if _reads_w else [])
+                             + ([('y', _effective_processor_type_y)] if y_data is not None else []))
+        if mode != 'transfer':
+            refuse_mixed_streams([n for n, k in _kinds.items() if k is None],
+                                 [n for n, k in _kinds.items() if k is not None])
         _windowed = processor_type_x is not None
-        _w_built = (mode in ('conditional', 'interaction') and w_data is not None
-                    and getattr(w_data, 'ndim', None) == 3)
-        _shifts = (bool(base_params.get('shift_windows')) and _windowed and mode != 'transfer'
-                   and not _w_built)
+        _shifts = bool(base_params.get('shift_windows')) and _windowed and mode != 'transfer'
         _streams = OrderedDict()
         if _windowed and mode != 'transfer':
             _streams['x'] = resolve_stream(x_data, x_time, processor_type_x, processor_params_x)
-            if mode in ('conditional', 'interaction') and w_data is not None and not _w_built:
+            if _reads_w:
                 _streams['w'] = resolve_stream(w_data, w_time, w_processor_type, w_processor_params)
             if y_data is not None:
                 _streams['y'] = resolve_stream(
@@ -1306,18 +1301,8 @@ def _run_flat(
                 raise ValueError(f"`w_data` must be provided for mode='{mode}'.")
             if y_data is None:
                 raise ValueError(f"y_data must be provided for mode '{mode}'.")
-            if _windowed:
-                _plan = RowPlan(_streams, shift=_shifts)
-                if _w_built:
-                    # A W built already joins the rows X and Y are cut into, one
-                    # for one, and the call's rows stay where they are.
-                    _xy = _plan.materialize()
-                    _plan = RowPlan(OrderedDict(x=_xy.streams['x'], w=Stream(w_data), y=_xy.streams['y']),
-                                    identity=_xy.identity())
-            else:
-                _plan = RowPlan(OrderedDict(x=Stream(x_data),
-                                            w=resolve_stream(w_data, w_time, w_processor_type, w_processor_params),
-                                            y=Stream(y_data)))
+            _plan = (RowPlan(_streams, shift=_shifts) if _windowed else
+                     RowPlan(OrderedDict(x=Stream(x_data), w=Stream(w_data), y=Stream(y_data))))
             _n_rows = len(_plan)
             if not _shifts:
                 _plan = _plan.materialize() if _plan.route != 'rows' else _plan
@@ -1357,15 +1342,8 @@ def _run_flat(
             # the full create_dataset / PairedDataset allocation.
             x_run_data = _to_tensor(x_data)
             y_run_data = _to_tensor(y_data) if y_data is not None else None
-            if y_run_data is not None and x_run_data.shape[0] != y_run_data.shape[0]:
-                _min_n = min(x_run_data.shape[0], y_run_data.shape[0])
-                warnings.warn(
-                    f"X ({x_run_data.shape[0]}) and Y ({y_run_data.shape[0]}) differ in sample count. "
-                    f"Both are truncated to {_min_n}.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-                x_run_data = x_run_data[:_min_n]
-                y_run_data = y_run_data[:_min_n]
+            if y_run_data is not None:
+                rows_line_up({'x': x_run_data.shape[0], 'y': y_run_data.shape[0]})
             base_params['processor_type_x'] = None
             base_params['processor_type_y'] = None
             if base_params.get('processor_params_x') is None:
@@ -1411,9 +1389,7 @@ def _run_flat(
                                processors={'x': processor_type_x, 'y': _effective_processor_type_y})
 
         _warn_if_shift_windows_dead(base_params, mode, _shifts or (mode == 'transfer' and stride > 1),
-                                    user_set_keys=_pre_default_keys,
-                                    why=("W was passed as rows built already, which cannot move with X "
-                                         "and Y" if _w_built else None))
+                                    user_set_keys=_pre_default_keys)
 
         if mode not in _MODES:
             raise ValueError(
@@ -1510,6 +1486,15 @@ def _run_flat(
                                                  "mode='transfer'", 1)
             if y_data is None:
                 raise ValueError("y_data must be provided for mode='transfer'.")
+            for _name, _arr in (('x_data', x_data), ('y_data', y_data), ('w_data', w_data)):
+                if getattr(_arr, 'ndim', None) == 3 and _arr.shape[-1] != 1:
+                    raise ValueError(
+                        f"mode='transfer' requires {_name} of shape (n_timepoints, n_channels) "
+                        f"and received a 3-D array of shape {tuple(_arr.shape)}. Transfer "
+                        f"entropy builds its histories from the raw series. Pass it unwindowed "
+                        f"or set Processing(...) with one-step windows to put streams of other "
+                        f"kinds on one grid."
+                    )
             if any(t is not None for t in (processor_type_x, processor_type_y, w_processor_type)):
                 # Every stream on one grid of rows one step wide that tile
                 # time, which the histories index by offset: the one path of
@@ -1530,15 +1515,6 @@ def _run_flat(
                 x_run, y_run = _to_2d(_to_tensor(x_data)), _to_2d(_to_tensor(y_data))
                 if w_data is not None:
                     w_run = _to_2d(_to_tensor(w_data))
-                for _name, _arr in (('x_data', x_run), ('y_data', y_run), ('w_data', w_run)):
-                    if _arr is not None and _arr.ndim == 3:
-                        raise ValueError(
-                            f"mode='transfer' requires {_name} of shape (n_timepoints, n_channels) "
-                            f"and received a 3-D array of shape {tuple(_arr.shape)}. Transfer "
-                            f"entropy builds its histories from the raw series. Pass it unwindowed "
-                            f"or set Processing(...) with one-step windows to put streams of other "
-                            f"kinds on one grid."
-                        )
             # Preprocessing(...) and the data check act on the series the
             # histories are built from, after any grid. Transfer entropy is a
             # rate quantity, which a time transform leaves unchanged.
@@ -1758,7 +1734,7 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
 
 
 def _warn_if_shift_windows_dead(base_params: dict, mode: str, shifts: bool,
-                                user_set_keys: Optional[set] = None, why: Optional[str] = None) -> None:
+                                user_set_keys: Optional[set] = None) -> None:
     """Warn when an explicit shift_windows=True cannot take effect on this call.
 
     Rows a processor cuts from raw streams move in every mode but transfer
@@ -1771,7 +1747,7 @@ def _warn_if_shift_windows_dead(base_params: dict, mode: str, shifts: bool,
         return
     if base_params.get('shift_windows') is not True or shifts or base_params.get(PHASES_KEY):
         return
-    if why is None and (row_geometry(base_params) is not None or mode == 'transfer'):
+    if row_geometry(base_params) is not None or mode == 'transfer':
         # Rows built by offset at every step of their series (stride=1).
         warnings.warn(
             f"shift_windows=True has no effect here: the rows start one step apart, so a shift "
@@ -1781,8 +1757,8 @@ def _warn_if_shift_windows_dead(base_params: dict, mode: str, shifts: bool,
         )
         return
     warnings.warn(
-        f"shift_windows=True has no effect for mode='{mode}' here: "
-        f"{why or 'no processor windows the streams, so there are no windows to move'}. "
+        f"shift_windows=True has no effect for mode='{mode}' here: no processor windows the streams, so "
+        f"there are no windows to move. "
         f"Set Training(shift_windows=False) to silence this warning.",
         UserWarning, stacklevel=user_stacklevel(),
     )

@@ -43,6 +43,31 @@ from neural_mi.defaults import PROCESSOR_DEFAULTS, processor_setting
 REGULAR = ('continuous', 'categorical')
 
 
+def refuse_mixed_streams(built, windowed) -> None:
+    """Refuse streams given as rows built already beside streams a processor windows, the one rule for
+    every stream in run(), create_dataset and the row plan."""
+    if built and windowed:
+        built, windowed = sorted(built), sorted(windowed)
+        raise ValueError(
+            f"A stream given as rows built already (no processor) cannot share a call with a windowed one. "
+            f"{built} {'is' if len(built) == 1 else 'are'} built already and {windowed} "
+            f"{'is' if len(windowed) == 1 else 'are'} windowed. Rows built already have no time axis to align "
+            f"windows against. Give every stream a processor, or build every stream's rows (create_dataset "
+            f"builds them on one grid) and pass them all without one."
+        )
+
+
+def rows_line_up(counts: Dict[str, int]) -> int:
+    """The one count of the rows of streams built already, or a refusal when their counts differ."""
+    if len(set(counts.values())) > 1:
+        from neural_mi.exceptions import DataShapeError
+        raise DataShapeError(
+            f"The streams' rows do not line up: {dict(counts)}. Rows built before the call must come one per row "
+            f"of every other stream. Pass the streams raw, with a processor, to put them on one grid."
+        )
+    return next(iter(counts.values()))
+
+
 @dataclass(frozen=True)
 class Stream:
     """One stream of a plan: its data, its clock and its processor with every setting resolved.
@@ -105,13 +130,7 @@ class RowPlan:
         self._retention = None
         self._rows = None
         windowed = OrderedDict((name, s.params) for name, s in self.streams.items() if s.processor is not None)
-        if windowed and len(windowed) != len(self.streams):
-            raise ValueError(
-                f"A pre-processed stream (processor_type=None) cannot be paired with a windowed "
-                f"processor_type. {sorted(set(self.streams) - set(windowed))} are pre-processed and "
-                f"{sorted(windowed)} are windowed. A pre-processed stream has no time axis to align "
-                f"windows against and cannot share a grid with a windowed one."
-            )
+        refuse_mixed_streams(set(self.streams) - set(windowed), list(windowed))
         self.window = self.step = self.step_size = None
         if windowed:
             self.window, self.step_size = one_grid(windowed)
@@ -128,7 +147,7 @@ class RowPlan:
         kind_x = params.get('processor_type_x')
         params_x = params.get('processor_params_x') or {}
         kind_y, params_y = stream_processing(params.get('processor_type_y'), params.get('processor_params_y'),
-                                             kind_x, params_x)
+                                             kind_x, params_x, y_data)
         streams = OrderedDict(x=resolve_stream(x_data, params.get('x_time'), kind_x, params_x))
         if y_data is not None:
             streams['y'] = resolve_stream(y_data, params.get('y_time'), kind_y, params_y)
@@ -207,14 +226,7 @@ class RowPlan:
         for name, s in self.streams.items():
             data = s.data if isinstance(s.data, tuple) else with_window_axis(float_tensor(s.data))
             windows[name] = data
-        counts = {name: (w[0] if isinstance(w, tuple) else w).shape[0] for name, w in windows.items()}
-        if len(set(counts.values())) > 1:
-            raise ValueError(
-                f"The streams' rows do not line up: {counts}. Rows built before the call must "
-                f"come one per row of every other stream. Pass the streams raw, with a processor, "
-                f"to put them on one grid."
-            )
-        n = next(iter(counts.values()))
+        n = rows_line_up({name: (w[0] if isinstance(w, tuple) else w).shape[0] for name, w in windows.items()})
         return {'windows': windows, 'times': np.arange(n, dtype=float), 'origin': None, 'spans': {},
                 'retention': self._retention, 'shifter': None}
 
