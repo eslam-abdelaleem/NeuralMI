@@ -12,13 +12,14 @@ Classical estimators need samples in proportion to the dimensions they are hande
 arrived on.
 
 .. image:: _static/sample_sweep.png
-   :alt: Estimate against sample count at 1000 channels per side
+   :alt: Estimate against sample count at 5000 channels per side
    :align: center
    :width: 78%
 
-Both sides above are a thousand channels wide and share ten latent dimensions
-carrying exactly four bits. NeuralMI reads close to the four bits wherever it
-reports a value. KSG on the same data stays far below them at every sample size.
+Both sides above are five thousand channels wide and share twenty latent
+dimensions carrying exactly four bits. NeuralMI climbs to the four bits with
+fewer samples than channels. KSG on the same data stays far below them and
+barely moves as the samples grow.
 
 Every analysis goes through the one function ``nmi.run()`` with a ``mode`` that
 selects the quantity.

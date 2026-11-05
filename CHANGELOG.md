@@ -186,6 +186,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   tutorial 05 cap on the evaluation group that shows InfoNCE's ceiling, the
   smaller batches of its smallest samples, the full training curve of tutorial
   02, and ANATOMY's call that repeats the settings of its hand-written loop.
+- The README's sample-size figure showed ten shared dimensions in a thousand
+  channels per side, read by `mode='rigorous'` with a network of its own. KSG
+  climbed steadily with the samples there, as if more data would close the
+  gap. The figure now shows twenty shared dimensions in five thousand channels
+  per side, read by NeuralMI on its defaults without bias correction and
+  repeated on the same data. NeuralMI climbs to the true value with fewer
+  samples than channels, and KSG stays far below it and barely moves. The
+  README and the docs' landing page describe it that way.
 
 ### Removed
 
