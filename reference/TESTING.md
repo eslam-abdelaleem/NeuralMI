@@ -167,6 +167,7 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_reproducibility.py` | seeded reproducibility in estimate, sweep and rigorous modes, and under parallelism |
+| `test_seeds.py` | every seed from the call's seed, the repeat and the role: a configuration reads the same alone, in a grid, in any order and in a processor grid, each repeat draws its own seeds and its terms share them, lag seeds alike with and without `run_id`, the rungs of both ladders draw apart, and the draws outside a task (the ladder's order, channel splits, corruption noise) ignore what drew before them |
 | `test_device.py` | the device a call trains on when it names none: a named device kept, no GPU timed without a GPU, in a worker or for a short call, the GPU chosen only when it beats the CPU workers together by the margin, and the timing path and the recorded `device` end to end |
 | `test_parallel.py` | `dispatch_tasks`: empty and single-task shortcuts, order preservation, and the parallel path matching the sequential one. `worker_pool`: each worker's share of the CPU threads, and a count set through `OMP_NUM_THREADS` kept |
 
@@ -207,7 +208,7 @@ Each file covers one functional area. Run
 | rigorous mode or bias correction | `test_workflow_internals.py`, `test_rigorous_diagnostics.py`, `test_conditional_transfer_rigorous.py` |
 | dimensionality | `test_dimensionality.py` |
 | amplification or a negative difference | `test_amplification_factor.py` |
-| parallel dispatch or a result that moved between runs | `test_parallel.py`, `test_reproducibility.py` |
+| parallel dispatch or a result that moved between runs | `test_parallel.py`, `test_reproducibility.py`, `test_seeds.py` |
 | plotting | `test_visualize.py`, `test_results.py`, `test_animate.py` |
 
 ---

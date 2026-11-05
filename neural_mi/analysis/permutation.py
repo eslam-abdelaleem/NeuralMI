@@ -37,6 +37,7 @@ from neural_mi.analysis.assemble import _hashable, aggregate
 from neural_mi.data.rows import PHASES_KEY, RowGeometry, row_geometry
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.parallel import worker_pool
+from neural_mi.seeds import network_seed
 
 # Offsets closer than this fraction of the recording to zero, in either
 # direction, are excluded from a circular shift.
@@ -258,8 +259,11 @@ def permutation_nulls(mode: str, x, y, w, base_params: Dict[str, Any], grid, *, 
     Returns one entry per trial: its ``{row key: (mi, mi_raw)}``, or ``None``
     when the trial failed.
     """
-    rng = np.random.default_rng(base_params.get('random_seed'))
-    seeds = [int(s) for s in rng.integers(0, 2 ** 31, size=n_permutations)]
+    # Each trial moves X by draws from a seed of its own (neural_mi/seeds.py). Its
+    # networks keep the seeds the observed call's networks had, so a trial
+    # differs from the observed call only in the moved X.
+    seeds = [network_seed(base_params.get('random_seed'), 0, f"permutation{trial}")
+             for trial in range(n_permutations)]
     # A null trial's networks are never saved: they would overwrite the
     # observed networks' files with networks trained on moved data.
     trial_params = {**base_params, 'show_progress': False, 'save_best_model_path': None}

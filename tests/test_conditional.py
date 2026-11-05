@@ -359,11 +359,19 @@ class TestConditionalShiftWindowsRigorous:
             training=Training(n_epochs=10, patience=5, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
-        assert np.isfinite(results.mi_estimate)
-        assert abs(results.mi_estimate) < 0.5, (
-            f"CMI should be near zero when W=X exactly (rigorous=True path), got "
-            f"{results.mi_estimate:.3f}"
+        # Every rung's combined value is near zero. On data without a dependence
+        # the rungs may resolve too little for a line, and the fit then reports
+        # no value. Where it extrapolates, its value is near zero too.
+        ladder = results.details[0]['trainings']
+        assert len(ladder) and (ladder['train_mi'].abs() < 0.5).all(), (
+            f"CMI should be near zero at every rung when W=X exactly (rigorous=True path), got "
+            f"{ladder['train_mi'].tolist()}"
         )
+        if results.mi_estimate is not None:
+            assert abs(results.mi_estimate) < 0.5, (
+                f"CMI should be near zero when W=X exactly (rigorous=True path), got "
+                f"{results.mi_estimate:.3f}"
+            )
 
 
 class TestConditionalShiftWindowsCategorical:

@@ -288,10 +288,10 @@ def test_run_precision_analysis_corruption_sweep_uses_frozen_snapshot_not_live_s
     _captured_tau0 = []
     _real_corrupt = precision_module.corrupt
 
-    def _capture_corruption(data, tau, method, empty_value=0.0):
+    def _capture_corruption(data, tau, method, empty_value=0.0, generator=None):
         if tau == 0.0:
             _captured_tau0.append(data.clone())
-        return _real_corrupt(data, tau, method, empty_value)
+        return _real_corrupt(data, tau, method, empty_value, generator=generator)
     monkeypatch.setattr(precision_module, 'corrupt', _capture_corruption)
 
     base_params = {

@@ -28,6 +28,7 @@ the networks and returns rows that the shared assembly layer turns into a
 | `neural_mi/quantities.py` | the named quantities, on one engine: `_named` expands an iterable parameter into configurations, `_call` runs one configuration through `run()`, `_task` is the unit sent to a worker |
 | `neural_mi/device.py` | `choose_device` and `with_device`: the device a call trains on when it names none, chosen by timing the first network on the CPU and, when the call is long enough, on the GPU |
 | `neural_mi/parallel.py` | `worker_pool`, the one worker pool every parallel loop opens (`spawn` context, the parent's logging level, a share of the CPU threads per worker), and `dispatch_tasks` |
+| `neural_mi/seeds.py` | `repeat_seed`, `network_seed` and `generator`: every seed of a call, from the call's `seed`, the repeat (`run_id`) and the role of a network or a draw in its estimate |
 | `neural_mi/embeddings_io.py` | `extract_embeddings` (reloads a saved critic) |
 | `neural_mi/utils.py` | `build_critic` and `build_optimizer_and_scheduler`, `cross_covariance_svd` (the one whitening and SVD behind the participation ratios and the rotated embeddings), `build_offset_arrays`, `get_device` |
 
@@ -192,9 +193,22 @@ what the library did, at the info or debug level, and errors. `logger.warning`
 is not used, which `test_docs_drift.py` checks.
 
 When an outer loop runs in parallel, any loop inside one of its units runs
-with `n_workers=1` so that a pool never starts inside a pool. Each task seeds itself
-from the call's `seed` and a key fixed by its position in the grid so that the
-result does not depend on which worker ran it or when.
+with `n_workers=1` so that a pool never starts inside a pool.
+
+Every seed comes from three things (`neural_mi/seeds.py`): the call's `seed`,
+the repeat, and the role of a network or a draw in its estimate. The repeat is
+the task's `run_id`. A call without one has the repeat 0. A role is a rung's gamma and
+chunk, a dimensionality fit's channel split and width, or one draw a call makes
+outside its tasks: a channel split, the held-out rows of a dimensionality call,
+the noise of `mode='precision'`, a permutation trial's move of X. A plain
+network and the terms of a difference have no role. The repeat alone seeds the
+shifts of the windows at each epoch and the order the ladder deals its rows
+into chunks. A network's own seed sets its initialisation, batch order and
+dropout, its split and its evaluation rows. Nothing else enters a seed: not a
+configuration's settings, not a task's place in the grid, not the worker that
+runs it, not whether a processor grid runs as one call per setting. Every
+configuration therefore runs a repeat from the same seeds. This is what running
+each setting with the seeds 0 to R-1 does. `tests/test_seeds.py` checks the rule.
 
 ### Tensors are three-dimensional
 
@@ -288,7 +302,7 @@ its grid (`RowPlan.replace`).
 
 The plan holds the rows and not what a task does with them. The split, the
 rows each epoch evaluates and the shifts are drawn in each term's task, from a
-split seed and a shift seed every term of a call shares, so they match across
+split seed and a shift seed every term of a repeat shares, so they match across
 the terms without the plan holding them. `create_dataset` and the offset
 builder (`offsets.build_rows`) still build their rows themselves: the first for
 the offset route under `processing=`, the second for every named quantity.

@@ -16,6 +16,7 @@ judged against. See ``THEORY.md``.
 """
 import math
 import warnings
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -23,6 +24,7 @@ import torch
 
 from .sweep import ParameterSweep
 from neural_mi.defaults import setting
+from neural_mi.seeds import generator as seed_generator, network_seed
 from neural_mi.embeddings_io import with_model_labels
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.utils import _ensure_cpu, mi_report_units
@@ -90,7 +92,8 @@ def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int)
 
     Every value of ``k`` and every restart is then scored on the same held-out
     rows. Explicit ``train_indices``/``test_indices`` are used as given.
-    Otherwise the split comes from the trainer's own splitting code.
+    Otherwise the split comes from the trainer's own splitting code, drawn from
+    the call's seed (neural_mi/seeds.py).
     """
     existing_train = analysis_params.get('train_indices')
     if existing_train is not None:
@@ -102,14 +105,17 @@ def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int)
     split_mode = setting(analysis_params, 'split_mode')
     train_fraction = setting(analysis_params, 'train_fraction')
     rows = row_geometry(analysis_params)
+    # The splitting code draws from its caller's generator (trainer._rng_of).
+    drawer = SimpleNamespace(_rng=np.random.RandomState(
+        network_seed(setting(analysis_params, 'random_seed'), 0, 'held-out rows')))
     if split_mode == 'random':
         if rows is not None and rows.overlapping:
             warn_if_random_split_leaks(rows)
-        return Trainer._create_random_split(None, n_samples, train_fraction)
+        return Trainer._create_random_split(drawer, n_samples, train_fraction)
     n_test_blocks = setting(analysis_params, 'n_test_blocks')
     gap_fraction = setting(analysis_params, 'split_gap_fraction')
     geometry = {'span': rows.span, 'step': rows.step} if rows is not None else {}
-    return Trainer._create_blocked_split(None, n_samples, train_fraction, n_test_blocks, gap_fraction,
+    return Trainer._create_blocked_split(drawer, n_samples, train_fraction, n_test_blocks, gap_fraction,
                                          **geometry)
 
 
@@ -154,8 +160,9 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
             )
         half = n_channels // 2
         out = []
-        for _ in range(n_splits if split_method == 'random' else 1):
-            order = np.random.permutation(n_channels) if split_method == 'random' else np.arange(n_channels)
+        for split in range(n_splits if split_method == 'random' else 1):
+            order = (seed_generator(setting(params, 'random_seed'), 0, f"channels{split}").permutation(n_channels)
+                     if split_method == 'random' else np.arange(n_channels))
             x_a, x_b = x_data[:, order[:half], ...], x_data[:, order[half:], ...]
             out.append((x_a, x_b, unequal(x_a, x_b)))
         return out
@@ -268,10 +275,10 @@ def _fit(views: List[Tuple[int, Any, Any, Dict[str, Any]]], ks: Sequence[int], n
         runner = runner or sweep
         grid = {'embedding_dim': list(ks), 'run_id': list(range(n_restarts))}
         for task_x, task_y, task_params, task_id in sweep._prepare_tasks(grid, windows_in_task=False):
-            task_params = dict(task_params, split_id=split_id)
-            # A seed of its own for every split, k and restart.
-            task_params['_seed_key'] = (f"s{split_id}k{task_params['embedding_dim']}"
-                                        f"r{task_params['run_id']}")
+            # A restart is a repeat (its run_id), and each split and k is a role
+            # of its own, so every fit draws independently (neural_mi/seeds.py).
+            task_params = dict(task_params, split_id=split_id,
+                               _role=f"split{split_id}dim{task_params['embedding_dim']}")
             tasks.append((task_x, task_y, task_params, task_id))
     return runner._run_parallel(tasks, n_workers) if tasks else []
 

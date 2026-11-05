@@ -4,12 +4,15 @@
 One function serves every caller, so rounding and noise mean the same thing
 wherever they are applied.
 """
+from typing import Optional
+
 import torch
 
 METHODS = ('rounding', 'noise')
 
 
-def corrupt(data: torch.Tensor, tau: float, method: str, empty_value: float = 0.0) -> torch.Tensor:
+def corrupt(data: torch.Tensor, tau: float, method: str, empty_value: float = 0.0,
+            generator: Optional[torch.Generator] = None) -> torch.Tensor:
     """Degrade the entries of `data` that hold a value, at resolution `tau`.
 
     ``'rounding'`` moves every held value to the centre of its bin of width
@@ -33,6 +36,9 @@ def corrupt(data: torch.Tensor, tau: float, method: str, empty_value: float = 0.
         How to degrade.
     empty_value : float, optional
         The value of an entry that holds no measurement. Defaults to 0.
+    generator : torch.Generator, optional
+        A CPU generator the noise is drawn from. Without one it comes from
+        PyTorch's global state, which a training task seeds.
 
     Returns
     -------
@@ -46,5 +52,7 @@ def corrupt(data: torch.Tensor, tau: float, method: str, empty_value: float = 0.
     if method == 'rounding':
         degraded = tau * (torch.floor(data / tau) + 0.5)
     else:
-        degraded = data + (torch.rand_like(data) - 0.5) * tau
+        draw = (torch.rand(data.shape, generator=generator).to(device=data.device, dtype=data.dtype)
+                if generator is not None else torch.rand_like(data))
+        degraded = data + (draw - 0.5) * tau
     return torch.where(data != empty_value, degraded, data)

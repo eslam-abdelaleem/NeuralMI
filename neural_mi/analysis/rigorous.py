@@ -32,6 +32,7 @@ from neural_mi.exceptions import CombinationWarning, InsufficientDataError, Trai
 from neural_mi.utils import _ensure_cpu
 from neural_mi.data.plan import PAIR, RowPlan, TermRows
 from neural_mi.data.rows import kept_rows, rows_in_time
+from neural_mi.seeds import generator as seed_generator
 
 
 # ---------------------------------------------------------------------------
@@ -627,11 +628,14 @@ class _Chunker:
             )
         self.contiguous = in_time if temporal_chunking is None else bool(temporal_chunking)
         self.mode = 'contiguous' if self.contiguous else 'permuted'
-        self.reorder()
+        self.seed = setting(params, 'random_seed')
+        self.reorder(params.get('run_id', 0))
 
-    def reorder(self) -> None:
-        """Draw the ordering the chunks are cut from: time order, or a new random permutation."""
-        self.order = np.arange(self.n) if self.contiguous else np.random.permutation(self.n)
+    def reorder(self, run_id: Any = 0) -> None:
+        """The ordering the chunks of one repeat are cut from: time order, or a permutation drawn from
+        the repeat's seed, which every configuration of the repeat shares."""
+        self.order = (np.arange(self.n) if self.contiguous
+                      else seed_generator(self.seed, run_id, 'chunk order').permutation(self.n))
 
     def chunks(self, gamma: int) -> List[np.ndarray]:
         """The row indices of each chunk at ``gamma``."""
@@ -813,7 +817,7 @@ class AnalysisWorkflow:
         :class:`_Chunker` cuts the chunks, as it does for
         :func:`run_rigorous_scalar_analysis`: contiguous for rows in time order,
         permuted otherwise, and ``temporal_chunking`` overrides that. Each
-        configuration draws its own ordering.
+        repeat draws its own ordering, which its configurations share.
         """
         tasks = []
         run_id_base = str(uuid.uuid4())
@@ -831,7 +835,7 @@ class AnalysisWorkflow:
 
         for i_combo, params in enumerate(param_combinations):
             current_params = merge_grid_values(self.base_params, params)
-            chunker.reorder()
+            chunker.reorder(current_params.get('run_id', 0))
             for gamma in gamma_range:
                 current_params['gamma'] = gamma
                 chunks = chunker.chunks(gamma)
@@ -840,13 +844,10 @@ class AnalysisWorkflow:
                     cut = chunker.cut(subset_indices, {'x': self.x_data, 'y': self.y_data})
                     if isinstance(cut['x'], RowPlan):
                         cut = {'x': TermRows(cut['x'], PAIR), 'y': None}
-                    chunk_params = current_params
                     task_run_id = f"{run_id_base}_c{i_combo}_g{gamma}_s{i_subset}"
-                    # Purely deterministic per-task key for run_training_task's seeding
-                    # (see task.py) -- unlike task_run_id above, excludes the random
-                    # run_id_base prefix so a fixed random_seed reproduces the same
-                    # task_seed (and result) on every call.
-                    chunk_params = {**chunk_params, '_seed_key': f"c{i_combo}_g{gamma}_s{i_subset}",
+                    # A rung's network has a role of its own in its repeat, so the
+                    # rungs draw independently (neural_mi/seeds.py).
+                    chunk_params = {**current_params, '_role': f"gamma{gamma}chunk{i_subset}",
                                     'chunk': i_subset}
                     task_params = with_model_labels(chunk_params, **params, gamma=gamma, chunk=i_subset)
                     tasks.append((cut['x'], cut['y'], task_params.copy(), task_run_id))
@@ -1074,7 +1075,9 @@ def run_rigorous_scalar_analysis(
         for chunk, chunk_idx in enumerate(chunks):
             cut = chunker.cut(chunk_idx, {'x': x_data, 'y': y_data, **(extra_data or {})})
             extra_sub = {key: cut[key] for key in (extra_data or {}) if key in cut}
-            tasks.append((scalar_fn, cut['x'], cut['y'], dict(base_params),
+            # Every term of the rung shares its role, so they read the same rows,
+            # and the rungs draw independently (neural_mi/seeds.py).
+            tasks.append((scalar_fn, cut['x'], cut['y'], {**base_params, '_role': f"gamma{gamma}chunk{chunk}"},
                          extra_sub, extra_kwargs, gamma, chunk, len(chunk_idx)))
 
     show_progress = setting(base_params, 'show_progress')

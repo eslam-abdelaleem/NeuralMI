@@ -11,6 +11,7 @@ from neural_mi.estimators import ksg as K
 from neural_mi.exceptions import CombinationWarning
 from neural_mi.estimators import ksg_cmi, ksg_mi
 from neural_mi.generators import LatentGaussian
+from neural_mi.seeds import network_seed
 
 LN2 = np.log(2)
 QUIET = dict(show_progress=False, verbose=False)
@@ -114,7 +115,8 @@ class TestThroughRun:
         s, k = g.sample(3000, seed=1), 2
         r = nmi.transfer_entropy(s['x'], s['y'], history_window=k, estimator='ksg', seed=0, **QUIET)
         past = lambda v: np.stack([v[k - j - 1:len(v) - j - 1, 0] for j in range(k)], 1)
-        direct = ksg_cmi(past(s['x']), s['y'][k:], past(s['y']), seed=r.params['random_seed']) / LN2
+        # KSG breaks its ties from the network's seed (neural_mi/seeds.py).
+        direct = ksg_cmi(past(s['x']), s['y'][k:], past(s['y']), seed=network_seed(r.params['random_seed'])) / LN2
         assert r.mi_estimate == pytest.approx(direct, abs=1e-12)
         exact = g.exact([('x', -j) for j in range(1, k + 1)], [('y', 0)], [('y', -j) for j in range(1, k + 1)])
         assert r.mi_estimate == pytest.approx(exact, abs=0.03)
@@ -129,8 +131,13 @@ class TestThroughRun:
             ii = nmi.run(x, y, mode='interaction', interaction=nmi.Interaction(w_data=w), estimator='ksg', seed=0,
                          **QUIET)
         assert not [m for m in caught if issubclass(m.category, CombinationWarning)]   # the terms err together
-        assert cmi.mi_estimate == pytest.approx(ksg_cmi(x, y, w, seed=0) / LN2, abs=1e-12)
-        assert ii.mi_estimate == pytest.approx((ksg_cmi(w, y, x, seed=0) - ksg_mi(w, y, seed=0)) / LN2, abs=1e-12)
+        # Every term breaks its ties from the same network seed (neural_mi/seeds.py), on the
+        # float32 rows the run hands it. Rounding to float32 ties values the float64 sample did not.
+        seed = network_seed(0)
+        x, y, w = (np.asarray(v, dtype=np.float32) for v in (x, y, w))
+        assert cmi.mi_estimate == pytest.approx(ksg_cmi(x, y, w, seed=seed) / LN2, abs=1e-12)
+        assert ii.mi_estimate == pytest.approx((ksg_cmi(w, y, x, seed=seed) - ksg_mi(w, y, seed=seed)) / LN2,
+                                               abs=1e-12)
 
     def test_a_pair_of_different_lengths(self):
         """The joint term reads the pair (X, C), each part with its own window: the conditional estimate given C."""

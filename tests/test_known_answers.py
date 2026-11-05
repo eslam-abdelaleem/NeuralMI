@@ -81,7 +81,10 @@ def test_an_estimate_does_not_depend_on_the_units_with_channel_preprocessing():
     values = [_quiet(nmi.run, x * scale, y * scale, preprocessing=nmi.Preprocessing(channel='zscore'),
                      split=nmi.Split(mode='random'), seed=0).mi_estimate
               for scale in (1.0, 1e3, 1e-3)]
-    assert max(values) - min(values) < 0.01 and abs(values[0] - 2.0) < 0.3
+    # The three scales reach the network as the same values up to float rounding,
+    # which training grows into a few hundredths of a bit (seeds 0 to 5 drift
+    # 0.004 to 0.029 bits apart), against the two bits the units moved it untransformed.
+    assert max(values) - min(values) < 0.05 and abs(values[0] - 2.0) < 0.3
 
 
 # --------------------------------------------------------------------------

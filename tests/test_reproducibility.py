@@ -7,9 +7,9 @@ and AnalysisWorkflow._prepare_tasks (rigorous.py) built each task's run_id
 with a fresh `str(uuid.uuid4())` prefix on every call. task.py then derived
 the per-task training seed by hashing that run_id -- so the effective seed
 differed on every single run() invocation regardless of an explicit
-random_seed, even with n_workers=1. Fixed by seeding from a separate,
-purely-deterministic '_seed_key' (built from the task's combination/gamma/
-subset indices) instead of the display-only run_id.
+random_seed, even with n_workers=1. Every task now seeds itself from the
+call's seed, its repeat and its role (neural_mi/seeds.py), never from the
+display-only run_id. tests/test_seeds.py checks the rule itself.
 """
 import numpy as np
 import neural_mi as nmi
@@ -75,13 +75,13 @@ class TestSweepModeReproducibility:
         train_mis = result.runs['train_mi'].tolist()
         assert len(set(train_mis)) > 1
 
-    def test_seed_key_does_not_leak_into_dataframe(self):
+    def test_role_does_not_leak_into_dataframe(self):
         x, y = _make_data()
         result = nmi.run(x, y, mode='sweep', sweep_grid={'run_id': list(range(2))},
                          model=_MODEL, training=_TRAINING, split=_SPLIT,
                          seed=7, n_workers=1, show_progress=False)
-        assert '_seed_key' not in result.runs.columns
-        assert '_seed_key' not in result.dataframe.columns
+        assert '_role' not in result.runs.columns
+        assert '_role' not in result.dataframe.columns
 
 
 class TestRigorousModeReproducibility:
@@ -97,19 +97,20 @@ class TestRigorousModeReproducibility:
 
         assert run_once() == run_once()
 
-    def test_seed_key_does_not_leak_into_rigorous_dataframe(self):
+    def test_role_does_not_leak_into_rigorous_dataframe(self):
         x, y = _make_data(n=400)
         result = nmi.run(x, y, mode='rigorous', model=_MODEL, training=_TRAINING,
                          split=_SPLIT, rigorous={'gamma_range': range(1, 4), 'min_gamma_points': 2},
                          seed=11, n_workers=1, show_progress=False)
-        assert '_seed_key' not in result.dataframe.columns
+        assert '_role' not in result.runs.columns
+        assert '_role' not in result.dataframe.columns
 
 
 class TestReproducibilityUnderParallelism:
     """Results do not depend on n_workers.
 
         `run_training_task` re-seeds random/numpy/torch inside each worker from
-        `random_seed` plus a deterministic per-task key, which makes worker count
+        the call's seed, the task's repeat and its role, which makes worker count
         and scheduling order irrelevant. These pin that for the shared task path
         and for the two modes that dispatch differently.
     """

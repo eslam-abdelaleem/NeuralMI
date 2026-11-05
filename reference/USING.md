@@ -664,11 +664,16 @@ both sides of each pair.
 
 `n_workers` runs the independent tasks of a call in parallel: repeats,
 configurations, lags, pairs, chunks of the rigorous ladder, splits, and
-permutation trials. With `seed` set, each task reseeds from the seed and a fixed
-key of its own. A seeded call therefore returns the same numbers at any
-`n_workers`. A call without a seed draws one from NumPy's global state and
-records it in `result.params['random_seed']`, so passing that seed back
-reproduces the call.
+permutation trials. With `seed` set, each network seeds itself from the seed,
+its repeat (`run_id`) and its role in the estimate (the gamma and chunk of a
+rung, the split and width of a dimensionality fit). Its place in a grid plays
+no part. A seeded call therefore returns the same numbers at any `n_workers`. A
+configuration also reads the same number alone or in a grid, in any order, and
+whether a setting is passed in the call or as a grid value. Every configuration
+runs a repeat from the same seeds. A comparison between settings is therefore
+paired. Each repeat draws its own seeds, the shifts of its windows included. A call without a
+seed draws one from NumPy's global state and records it in
+`result.params['random_seed']`, so passing that seed back reproduces the call.
 
 Each worker gets an equal share of the CPU threads, `os.cpu_count() // n_workers`
 and at least one. Workers that each used every core would compete for them, and
@@ -680,7 +685,7 @@ interaction information and the named quantities built on them) are separate
 trainings on the same rows. They read one plan of every stream the quantity
 reads ([One grid for every stream](#one-grid-for-every-stream)), and every term
 of a repeat draws its split, its evaluation rows and its shifts from generators
-seeded with the same key, with or without a seed passed to the call. Each task
+seeded alike, with or without a seed passed to the call. Each task
 reports which rows it read, and a repeat whose terms read different rows would
 be refused.
 

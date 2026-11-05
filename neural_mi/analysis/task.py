@@ -19,6 +19,7 @@ from neural_mi.embeddings_io import _EMBEDDING_BATCH, save_network
 from neural_mi.data.handler import create_dataset
 from neural_mi.data.rows import IDENTITY_KEY, record_rows, row_geometry, row_identity
 from neural_mi.defaults import default_of, setting
+from neural_mi.seeds import network_seed, repeat_seed
 
 # ---------------------------------------------------------------------------
 # Module-level dataset cache
@@ -113,7 +114,13 @@ def _decoder_lambda(params: Dict[str, Any], axis: str) -> float:
 def _reported(params: Dict[str, Any]) -> Dict[str, Any]:
     """The task's settings as its result carries them, without the objects and private keys."""
     return {k: v for k, v in params.items()
-            if k not in ('custom_critic', 'custom_embedding_cls', '_seed_key', '_keep_trained')}
+            if k not in ('custom_critic', 'custom_embedding_cls', '_role', '_keep_trained')}
+
+
+def _seeds(params: Dict[str, Any]):
+    """The seed of the task's network and the seed of its repeat."""
+    seed, run_id = setting(params, 'random_seed'), params.get('run_id', 0)
+    return network_seed(seed, run_id, params.get('_role', '')), repeat_seed(seed, run_id)
 
 
 def _nonparametric(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -128,7 +135,7 @@ def _nonparametric(dataset, params: Dict[str, Any]) -> Dict[str, Any]:
     """
     as_array = lambda t: t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t)
     x, y = dataset.x_data, as_array(dataset.y_data)
-    settings = dict(params.get('estimator_params') or {}, seed=params.get('random_seed'))
+    settings = dict(params.get('estimator_params') or {}, seed=_seeds(params)[0])
     name = params['estimator_name']
     if isinstance(x, tuple):
         rest, z = (as_array(part) for part in x)
@@ -147,21 +154,11 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     import random as _random
     x_data, y_data, params, run_id = args
 
-    # Deterministic per-worker seeding: derive a seed from the base seed and a
-    # per-task key so every task is reproducible but unique. Uses '_seed_key'
-    # (set by the task-preparation code, e.g. sweep.py/rigorous.py's
-    # _prepare_tasks, from purely deterministic indices like the sweep
-    # combination/gamma/subset index) instead of 'run_id' itself, which
-    # callers may prefix with a random UUID (for display/log distinctness
-    # across repeated calls) -- hashing that directly would make the
-    # "task_seed" -- and therefore the whole run -- different on every call
-    # even with an explicit, fixed random_seed and n_workers=1.
-    base_seed = setting(params, 'random_seed')
-    task_seed = None
-    if base_seed is not None:
-        import hashlib
-        seed_key = params.get('_seed_key', run_id)
-        task_seed = (base_seed + int(hashlib.md5(str(seed_key).encode()).hexdigest(), 16)) % (2**31)
+    # The task's seeds come from the call's seed, its repeat and its role
+    # (neural_mi/seeds.py), so which worker runs it, and when, and where it sits
+    # in a grid change nothing. The run_id of the task tuple only labels it.
+    task_seed, shift_seed = _seeds(params)
+    if task_seed is not None:
         _random.seed(task_seed)
         np.random.seed(task_seed)
         torch.manual_seed(task_seed)
@@ -416,7 +413,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         params['batch_size'],
         train_fraction=setting(params, 'train_fraction'),
         n_test_blocks=setting(params, 'n_test_blocks'),
-        shift_seed=base_seed,
+        shift_seed=shift_seed,
         split_seed=task_seed,
         shift_windows=setting(params, 'shift_windows'),
         patience=params['patience'],

@@ -10,7 +10,6 @@ exactly the rows the observed value was built from.
 Producers are module-level functions so a permutation trial can be sent to a
 worker process.
 """
-import hashlib
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -73,23 +72,11 @@ def _produced(rows, details, config_keys, *, mean_cols=('test_mi',), std_cols=()
                 row_scalars=row_scalars or {})
 
 
-def repeat_seed(base_seed: Optional[int], run_id: Any) -> Optional[int]:
-    """A seed of its own for one repeat, derived from the call's seed.
-
-    Used where a repeat is a whole procedure run through a function that seeds
-    its own networks by position, so two repeats would otherwise draw the same
-    initialisations.
-    """
-    if base_seed is None:
-        return None
-    return (int(base_seed) + int(hashlib.md5(f"repeat{run_id}".encode()).hexdigest(), 16)) % (2 ** 31)
-
-
 def _repeat_params(params: Dict[str, Any], run_id: Any, has_run_id: bool) -> Dict[str, Any]:
+    """One repeat's settings. Its run_id gives every network of the repeat its seeds (neural_mi/seeds.py)."""
     out = dict(params)
     if has_run_id:
         out['run_id'] = run_id
-        out['random_seed'] = repeat_seed(params.get('random_seed'), run_id)
     return out
 
 

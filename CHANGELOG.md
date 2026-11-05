@@ -814,6 +814,27 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   'Mean MI' and passed the caller's label to matplotlib beside it. A curve now
   carries the label it is given, and its band takes its colour.
 
+- Seeds followed four rules. A task of a sweep or of a ladder was seeded by its
+  place in the grid. A configuration then read another number when the grid
+  around it changed. A processor grid runs one call per setting, and its
+  settings shared seeds that the other configurations of a sweep did not. A
+  difference and a pairwise call counted their repeats from the first again in
+  every configuration. A difference with `rigorous=True` seeded every rung of a
+  repeat alike. Lag seeded each lag apart without `run_id` and all lags alike
+  with it. The shifts of the windows came from the call's seed. Every repeat
+  then saw the same shifts, and the spread across repeats left out their part
+  of the training noise. KSG broke the ties of every repeat alike, from the
+  call's seed. Draws made outside a task took the next numbers of the call's
+  stream: the ladder's order of rows, a dimensionality call's channel splits
+  and held-out rows, the noise of `mode='precision'`. Every seed now comes from
+  the call's seed, the repeat (`run_id`) and the role of a network or a draw in
+  its estimate (`neural_mi/seeds.py`). A configuration reads the same number
+  alone or in a grid, in any order, and whether a setting is passed in the call
+  or as a grid value. Every configuration runs a repeat from the same seeds.
+  Each repeat draws its own. The terms of a difference share theirs and the
+  rungs of a ladder draw apart. Every number a seeded call reports changes
+  once. `tests/test_seeds.py` checks the rule.
+
 First public release. NeuralMI estimates mutual information from neural
 recordings through a single `nmi.run()` entry point.
 
