@@ -119,6 +119,19 @@ class TestTheChecksAreProcessorSettings:
             assert bool(messages) == warned
         assert 'padded_share=0.1' in str(messages)
 
+    def test_max_encoding_width_through_the_processor(self):
+        """The processor builds the dataset before it knows the window, so the width is checked when the rows
+        are windowed: 4 categories over 10 samples make 40 columns."""
+        data = np.random.default_rng(5).integers(0, 4, size=(200, 1))
+        for width, warned in ((100, False), (20, True)):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                create_dataset(data, data.copy(), processor_type_x='categorical',
+                               processor_params_x={'window_size': 10, 'encoding': 'full_trajectory',
+                                                   'max_encoding_width': width},
+                               processor_type_y='categorical', processor_params_y={'window_size': 10})
+            assert any('max_encoding_width' in str(w.message) for w in caught) == warned
+
     def test_max_encoding_width(self):
         data = np.random.default_rng(3).integers(0, 3, size=(100, 1))
         wm = WindowManager(window_size=10, t_start=0, t_end=100)

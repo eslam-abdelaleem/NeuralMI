@@ -26,7 +26,7 @@ from .results import Results
 from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
 from .embeddings_io import model_file, resolve_model_path, announce_saving_several
-from .defaults import (BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, default_of, norm_layer_of,
+from .defaults import (BASE_PARAMS_SCHEMA, CHECK_SETTINGS, PROCESSOR_PARAMS_SCHEMA, default_of, norm_layer_of,
                        scaled_streams, setting, stream_processing)
 from .analysis.modes import MODES
 import inspect as _inspect
@@ -35,6 +35,10 @@ from .config import (
     Rigorous, Precision, Lag, Transfer, Dimensionality, Conditional,
     Interaction, Pairwise, as_config,
 )
+
+# Settings the data check reads once per call, before any configuration or network: a nonparametric
+# estimate keeps them, and a sweep_grid cannot vary them.
+_CALL_LEVEL_CHECKS = (*CHECK_SETTINGS, 'small_sample')
 
 # Each mode is declared once, in analysis/modes.py (MODES): its config, its
 # producer, what it accepts and the settings it sets itself.
@@ -122,6 +126,11 @@ def _check_grid(mode: str, sweep_grid: Optional[dict], model: Optional[Model] = 
     for key in sweep_grid or {}:
         if key == 'run_id' or key in _PROCESSOR_KEYS:
             continue
+        if key in _CALL_LEVEL_CHECKS:
+            raise ValueError(
+                f"'{key}' sets the data check, which runs once per call before any configuration. A "
+                f"sweep_grid over it would check every configuration the same way. Run one call per value."
+            )
         # A network setting wins over a mode setting of the same name, such as
         # Model(bidirectional=...) for a recurrent encoder in mode='transfer'.
         if key in BASE_PARAMS_SCHEMA and key != 'output_units':
@@ -300,7 +309,7 @@ def _unread_settings(mode: str, model: Optional[Model], training: Optional[Train
     if estimator is not None and estimator.name in NONPARAMETRIC:
         # Nothing is trained: every Model, Training and Split setting goes unread.
         unread = sorted(f.name for cfg in (model, training, split) if cfg is not None
-                        for f in fields(cfg) if set_away(cfg, f.name))
+                        for f in fields(cfg) if set_away(cfg, f.name) and f.name not in _CALL_LEVEL_CHECKS)
         if unread:
             groups.append((unread, f"{', '.join(unread)} (estimator='{estimator.name}' trains no network "
                                    f"and estimates on every row)"))
@@ -681,7 +690,7 @@ def run(
     permutation_min_shift : float, default=0.1
         The share of the recording's length within which a circular shift is
         too close to zero, in either direction, to break the dependence. It
-        must lie between 0 and 0.5.
+        must be at least 0 and below 0.5.
     min_permutations : int, default=100
         The call warns when a permutation test runs fewer trials than this,
         since the smallest p-value that the test can report is
@@ -1104,7 +1113,7 @@ def _run_flat(
             )
         if not 0.0 <= permutation_min_shift < 0.5:
             raise ValueError(
-                f"permutation_min_shift must lie between 0 and 0.5, got {permutation_min_shift!r}: a "
+                f"permutation_min_shift must be at least 0 and below 0.5, got {permutation_min_shift!r}. A "
                 f"circular shift is drawn between that share of the recording and one minus it."
             )
 
@@ -1585,7 +1594,8 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
         tips.append("norm_layer='layer'")
     hidden, embed = setting(base_params, 'hidden_dim'), setting(base_params, 'embedding_dim')
     tips.append(f"a smaller hidden_dim (now {hidden}) and embedding_dim (now {embed})")
-    tips.append("optimizer='adamw' with a weight_decay in optimizer_params")
+    if not (setting(base_params, 'optimizer_params') or {}).get('weight_decay'):
+        tips.append("optimizer='adamw' with a weight_decay in optimizer_params")
     warnings.warn(
         f"Only {n_samples} {unit} reach the estimator, which is fewer than Training(small_sample="
         f"{small_sample}). "

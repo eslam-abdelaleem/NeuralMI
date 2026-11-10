@@ -160,31 +160,39 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
                      approach: Optional[int] = None, shift: Optional[float] = None, se: Optional[float] = None,
                      units: str = 'bits', held_out: Optional[int] = None,
                      fuzzy_se: float = default_of('fuzzy_se'),
-                     values: Optional[Tuple[float, float, float]] = None) -> None:
+                     values: Optional[Tuple[float, float, float]] = None, *,
+                     resolved_noise: float = default_of('resolved_noise'), clear_se: float = default_of('clear_se'),
+                     rising_noise: float = default_of('rising_noise'), rising_epochs: int = default_of('rising_epochs'),
+                     fall_noise: float = default_of('fall_noise'), fast_epochs: int = default_of('fast_epochs')) -> None:
     """Warn when the diagnosis is not 'ok'. The texts differ between networks only in their numbers, so the
     library shows each kind once per call and counts the rest. ``shift`` and ``se`` are in ``units``, and
     ``fuzzy_se`` is the setting the 'fuzzy start' diagnosis used.
     ``held_out`` is the count of held-out rows the curve scores, given when it is smaller than one training
     batch (``trainer.too_few_held_out``), and each message then names it. ``values`` are the reported
     estimate, the measured one and the held-out value of the network read, in ``units``, which the 'not
-    resolved' message states."""
+    resolved' message states. Each message names the settings that decided its diagnosis."""
     note = (f" The curve scores only {held_out} held-out rows, fewer than one training batch, so its noise is "
             f"large and its ceiling of log({held_out}) low. More data, or a lower Split(train_fraction=...), "
             f"gives it more." if held_out else "")
     if diagnosis == 'not resolved':
         warnings.warn(
-            f"The held-out MI curve does not rise clearly above its own noise, either its epoch-to-epoch noise or "
-            f"the sampling error of its held-out rows, so the data do not settle the epoch the estimate is read at, "
-            f"nor the estimate. Check the curve with result.plot(). More data, more epochs or another network may "
-            f"resolve it.{_values_read(values, units)}{note}", UserWarning, stacklevel=user_stacklevel())
+            f"The held-out MI curve does not rise clearly above its own noise. Its top stands less than "
+            f"Training(resolved_noise={resolved_noise:g}) times its epoch-to-epoch noise above zero, or less than "
+            f"Training(clear_se={clear_se:g}) standard errors of its held-out rows, so the data settle neither the "
+            f"epoch the estimate is read at nor the estimate. Check the curve with result.plot(). More data, more "
+            f"epochs or another network may resolve it.{_values_read(values, units)}{note}",
+            UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'still rising':
         warnings.warn(
-            f"The held-out MI was still rising when training reached n_epochs={n_epochs}. The estimate may then "
-            f"be an under-trained lower bound. Raise n_epochs, or learning_rate so that each epoch goes further."
-            f"{note}", UserWarning, stacklevel=user_stacklevel())
+            f"The held-out MI was still rising when training reached n_epochs={n_epochs}. It rose by more than "
+            f"Training(rising_noise={rising_noise:g}) noise units over its last Training(rising_epochs="
+            f"{rising_epochs}) epochs. The estimate may then be an under-trained lower bound. Raise n_epochs, or "
+            f"learning_rate so that each epoch goes further.{note}", UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'too fast':
         warnings.warn(
-            f"The held-out MI reached its top at epoch {peak} and fell clearly soon after. A top this early lies "
+            f"The held-out MI reached its top at epoch {peak} and fell clearly soon after, by more than "
+            f"Training(fall_noise={fall_noise:g}) noise units within Training(fast_epochs={fast_epochs}) epochs. "
+            f"A top this early lies "
             f"within the {reach} epochs over which the curve is smoothed, so the start of the curve placed it. Lower "
             f"learning_rate to spread the rise over more epochs.{note}", UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'fuzzy start':

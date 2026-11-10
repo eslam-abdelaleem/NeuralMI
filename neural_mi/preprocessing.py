@@ -24,6 +24,7 @@ changes nothing.
 """
 import copy
 import math
+import numbers
 import warnings
 from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
@@ -33,7 +34,7 @@ import torch
 from scipy.signal import lfilter
 from scipy.stats import norm
 
-from neural_mi.defaults import CHECK_SETTINGS, setting
+from neural_mi.defaults import BASE_PARAMS_SCHEMA, CHECK_SETTINGS, setting
 from neural_mi.logger import logger, user_stacklevel
 
 # The rate quantities: their value is unchanged when each process is filtered invertibly by its own past.
@@ -45,7 +46,16 @@ def check_settings(preprocessing) -> Dict[str, Any]:
     """The settings of the data check (:data:`neural_mi.defaults.CHECK_SETTINGS`) that ``preprocessing``, a
     ``Preprocessing`` or a dict, sets. :func:`neural_mi.defaults.setting` reads each, or its default."""
     given = preprocessing.to_kwargs() if hasattr(preprocessing, 'to_kwargs') else dict(preprocessing or {})
-    return {name: value for name, value in given.items() if name in CHECK_SETTINGS and value is not None}
+    checks = {name: value for name, value in given.items() if name in CHECK_SETTINGS and value is not None}
+    # Checked here, where every path first reads them, so a named quantity refuses a bad value before its
+    # own data check runs, as run() does.
+    for name, value in checks.items():
+        schema = BASE_PARAMS_SCHEMA[name]
+        kind = numbers.Integral if schema['type'] is int else numbers.Real
+        if isinstance(value, bool) or not isinstance(value, kind) or value < schema['min']:
+            raise ValueError(f"Preprocessing({name}={value!r}) must be {'a whole number' if kind is numbers.Integral else 'a number'} "
+                             f"of at least {schema['min']:g}.")
+    return checks
 
 
 # ---------------------------------------------------------------------------

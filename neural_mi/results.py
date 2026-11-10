@@ -725,6 +725,8 @@ class Results:
             _, ax = plt.subplots(1, 1, figsize=kwargs.pop('figsize', (10, 6)))
 
         if draw_grouped:
+            # The figure of one transfer configuration reads direction_band. A curve over configurations does not.
+            kwargs.pop('direction_band', None)
             kind = kwargs.pop('kind', None)
             if kind is None:
                 kind = 'line' if len(grouped) <= 1 else ('heatmap' if len(grouped) == 2 else 'bar')

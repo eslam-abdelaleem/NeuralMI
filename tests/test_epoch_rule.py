@@ -315,3 +315,17 @@ class TestTheWarningsAboutTheValueRead:
                              training=nmi.Training(n_epochs=4, ceiling_fraction=0.0), show_progress=False, seed=0)
         assert result.runs.iloc[0]['mi'] == 0
         assert not any('near its ceiling' in str(w.message) for w in caught)
+
+
+
+@pytest.mark.parametrize('diagnosis, settings, named', [
+    ('not resolved', dict(resolved_noise=9.0, clear_se=2.5), ('Training(resolved_noise=9)', 'Training(clear_se=2.5)')),
+    ('still rising', dict(rising_noise=4.0, rising_epochs=25),
+     ('Training(rising_noise=4)', 'Training(rising_epochs=25)')),
+    ('too fast', dict(fall_noise=3.5, fast_epochs=7), ('Training(fall_noise=3.5)', 'Training(fast_epochs=7)')),
+])
+def test_each_curve_warning_names_the_settings_that_decided_it(diagnosis, settings, named):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        warn_about_curve(diagnosis, 3, 4, 6, 100, **settings)
+    assert all(text in str(caught[0].message) for text in named)

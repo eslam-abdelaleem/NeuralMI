@@ -1038,24 +1038,11 @@ class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
                 f"Received {len(self.time_vector)} time points and {self.data_orig.shape[0]} data points"
             )
         
-        # Total one-hot encoded dimensions
+        # Total one-hot encoded dimensions. How wide encoding='full_trajectory' makes a window's input is
+        # known once a window manager sets the window, so move_data_to_windows checks it.
         self.encoding = encoding
         self.n_categories = self.data_orig.max() + 1
-        # Warn if full_trajectory would produce a very wide tensor
-        if encoding == 'full_trajectory':
-            max_samples = int(np.ceil(
-                (window_manager.window_size / self.period) if window_manager else 1
-            ))
-            enc_dim = self.n_categories * max_samples
-            if enc_dim > max_encoding_width:
-                warnings.warn(
-                    f"CategoricalWindowDataset: encoding='full_trajectory' will produce "
-                    f"a {enc_dim}-dimensional input per window "
-                    f"({self.n_categories} categories × ~{max_samples} timesteps), which is wider than "
-                    f"max_encoding_width={max_encoding_width}. "
-                    f"Consider encoding='majority_vote' for large windows.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
+        self.max_encoding_width = max_encoding_width
         self.min_coverage_fraction = min_coverage_fraction
 
         # Process data if window manager is available
@@ -1082,7 +1069,19 @@ class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
         
         logger.debug(f"CategoricalWindowDataset: using encoding='{self.encoding}'")
-        
+        if self.encoding == 'full_trajectory':
+            max_samples = int(np.ceil(self.window_manager.window_size / self.period))
+            enc_dim = self.n_categories * max_samples
+            if enc_dim > self.max_encoding_width:
+                warnings.warn(
+                    f"CategoricalWindowDataset: encoding='full_trajectory' will produce "
+                    f"a {enc_dim}-dimensional input per window "
+                    f"({self.n_categories} categories × ~{max_samples} timesteps), which is wider than "
+                    f"max_encoding_width={self.max_encoding_width}. "
+                    f"Consider encoding='majority_vote' for large windows.",
+                    UserWarning, stacklevel=user_stacklevel()
+                )
+
         if self.encoding == 'majority_vote':
             self._move_majority_vote()
         elif self.encoding == 'probability':

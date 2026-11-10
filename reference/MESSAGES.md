@@ -48,6 +48,9 @@ When the split holds more held-out rows than one evaluation scores, raising
 evaluation. Otherwise only more held-out rows raise the ceiling, from more data
 or a lower `Split(train_fraction=...)`. `estimator='smile'` has no $\log n$
 ceiling, but its clip bounds its estimate instead, at the cost of more variance.
+With `peak_fraction` below 1 the warning judges the network at the epoch read,
+the conservative one, while `test_mi` and `test_saturation` describe the network
+at `best_epoch`.
 
 **`The estimate (...) is near its ceiling of log(...)`**
 The estimate is above `Training(ceiling_fraction=...)` of $\log m$, where $m$ is
@@ -195,7 +198,8 @@ section 2). Neither the number $d$ of latent dimensions carrying the shared
 information nor the information $I$ itself is known before estimating.
 `mode='rigorous'` tests whether the estimate still moves with the sample size
 ([THEORY.md](THEORY.md#finite-sampling-bias)). The message also lists the
-regularisation settings not yet in use.
+regularisation that the call does not use yet and suggests smaller networks,
+naming their current sizes.
 
 **`The held-out MI was still rising when training reached n_epochs=...`**
 Training used every epoch it was allowed, and the smoothed held-out curve rose

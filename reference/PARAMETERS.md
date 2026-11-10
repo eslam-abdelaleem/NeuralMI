@@ -39,7 +39,7 @@ The arguments of `nmi.run()` itself, beside the config objects.
 | `permutation_test` | `False` | Test every row of the result against a null built by rerunning the call with X moved in time. Adds a `p_value` column. |
 | `n_permutations` | `10` | Number of null trials. The smallest p-value reachable is `1 / (n_permutations + 1)`. |
 | `permutation_shuffle` | `'circular'` | How X is moved: `'circular'` shifts it by one random offset with wrap-around, excluding offsets within `permutation_min_shift` of the recording's length of zero; `'block'` reorders contiguous blocks one window long. |
-| `permutation_min_shift` | `0.1` | The share of the recording's length within which a circular shift counts as too close to zero, in either direction, to break the dependence. It must lie between 0 and 0.5. |
+| `permutation_min_shift` | `0.1` | The share of the recording's length within which a circular shift counts as too close to zero, in either direction, to break the dependence. It must be at least 0 and below 0.5. |
 | `min_permutations` | `100` | The call warns when a permutation test runs fewer trials than this, since the smallest p-value that the test can report is `1 / (n_permutations + 1)`. |
 
 The mode configs are passed under the mode's own name: `run(..., mode='lag',

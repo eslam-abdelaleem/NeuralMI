@@ -115,6 +115,12 @@ class TestPermutationTest:
 
 class TestNPermutationsDefault:
 
+    def test_the_minimum_shift_must_stay_below_half(self):
+        x, y = _pair()
+        with pytest.raises(ValueError, match='must be at least 0 and below 0.5'):
+            nmi.run(x, y, mode='estimate', model=_MODEL, training=_TRAINING, permutation_test=True,
+                    permutation_min_shift=0.5, show_progress=False)
+
     def test_n_permutations_default_is_10(self):
         assert inspect.signature(nmi.run).parameters['n_permutations'].default == 10
 

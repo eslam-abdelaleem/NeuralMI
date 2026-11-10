@@ -982,6 +982,7 @@ class Trainer:
         # Its network is evaluated afresh, then the best-epoch network is restored.
         _conservative_ep = None
         _conservative_train_mi = None
+        _read_se = None
         if peak_fraction < 1.0:
             _peak = _smoothed_history[peak_ep]
             _conservative_ep = (min(best_ep, int(np.flatnonzero(_smoothed_history >= peak_fraction * _peak)[0]))
@@ -989,7 +990,7 @@ class Trainer:
             if _conservative_ep != best_ep:
                 self.model.load_state_dict(_states[_conservative_ep])
                 with torch.no_grad():
-                    _conservative_train_mi, _ = self._train_side(_train_x, _train_y, max_eval_samples)
+                    _conservative_train_mi, _read_se = self._train_side(_train_x, _train_y, max_eval_samples)
                 self.model.load_state_dict(best_model_state)
             else:
                 _conservative_train_mi = _best_ep_train_mi
@@ -1008,10 +1009,12 @@ class Trainer:
         # or below zero, whose standard error from a single block is 0 and
         # would count any shift.
         _read_ep = best_ep if _conservative_ep is None else _conservative_ep
+        # The standard error of the estimate read: at the conservative epoch when peak_fraction chose one.
+        _read_se = _train_se if _read_se is None else _read_se
         _approach_shift = (_raw_train_mi - _at_approach
                            if _at_approach is not None and approach_ep < _read_ep else None)
         if (curve_diagnosis == 'ok' and _raw_train_mi > 0 and _approach_shift is not None
-                and abs(_approach_shift) > fuzzy_se * _train_se):
+                and abs(_approach_shift) > fuzzy_se * _read_se):
             curve_diagnosis = 'fuzzy start'
         # The held-out value of the network read: the curve at the epoch read, on the rows every epoch scores.
         _held_at_read = final_test_mi if _read_ep == best_ep else history[_read_ep]
@@ -1038,11 +1041,11 @@ class Trainer:
             # noise of zero is what a network that learned nothing reads, and a
             # held-out value clearly above zero contradicts the negative reading
             # (stands_above_zero, the rule that combining terms follows too).
-            if stands_above_zero(final_test_mi, _eval_size, clear_se):
+            if stands_above_zero(_held_at_read, _eval_size, clear_se):
                 warnings.warn(
                     f"The train MI at the reported epoch is negative "
                     f"({final_train_mi * _scale:.4f} {_units}) while the test MI "
-                    f"({final_test_mi * _scale:.4f} {_units}) stands more than Training(clear_se={clear_se:g}) standard "
+                    f"({_held_at_read * _scale:.4f} {_units}) stands more than Training(clear_se={clear_se:g}) standard "
                     f"errors above zero on its {_eval_size} rows. The two readings of the network "
                     f"contradict each other, and MI cannot be negative. Train MI is reported as 0 "
                     f"{_units} and the measured value is kept as raw_train_mi. This usually means "
@@ -1055,7 +1058,7 @@ class Trainer:
                 warnings.warn(
                     f"The train MI at the reported epoch is negative "
                     f"({final_train_mi * _scale:.4f} {_units}), and the test MI "
-                    f"({final_test_mi * _scale:.4f} {_units}) is within Training(clear_se={clear_se:g}) standard errors "
+                    f"({_held_at_read * _scale:.4f} {_units}) is within Training(clear_se={clear_se:g}) standard errors "
                     f"of zero on its {_eval_size} rows. The network learned nothing distinguishable "
                     f"from zero, which is what a dependence of zero reads. Train MI is reported as "
                     f"0 {_units} and the measured value is kept as raw_train_mi. When the data should "
@@ -1071,10 +1074,12 @@ class Trainer:
         if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
             warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,
                              None if _approach_shift is None else _approach_shift * _scale,
-                             _train_se * _scale, _units,
+                             _read_se * _scale, _units,
                              held_out=_eval_size if too_few_held_out(_eval_size or 0, batch_size) else None,
                              fuzzy_se=fuzzy_se,
-                             values=(final_train_mi * _scale, _raw_train_mi * _scale, _held_at_read * _scale))
+                             values=(final_train_mi * _scale, _raw_train_mi * _scale, _held_at_read * _scale),
+                             resolved_noise=resolved_noise, clear_se=clear_se, rising_noise=rising_noise,
+                             rising_epochs=rising_epochs, fall_noise=fall_noise, fast_epochs=fast_epochs)
         _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
         _ceiling_side = None
         if self.estimator_fn is infonce_lower_bound and final_train_mi > 0:
@@ -1082,7 +1087,7 @@ class Trainer:
                 final_train_mi * _scale, _held_at_read * _scale, _train_ceiling_mi, _test_ceiling_mi,
                 _train_block_size, _test_block_size, len(test_idx), _units, ceiling_fraction)
         if (curve_diagnosis != 'not resolved' and _ceiling_side != 'training'
-                and falls_short(final_train_mi, _held_at_read, _train_se, _eval_size, gap_share, clear_se)):
+                and falls_short(final_train_mi, _held_at_read, _read_se, _eval_size, gap_share, clear_se)):
             warn_about_gap(final_train_mi * _scale, _held_at_read * _scale, _units, gap_share, clear_se)
 
         results = {

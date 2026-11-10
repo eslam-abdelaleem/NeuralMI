@@ -384,6 +384,13 @@ class ParameterValidator:
         if spec is not None and spec.check is not None:
             spec.check(self)
 
+        # The minimum a setting declares, for one the mode's own checks leave to it.
+        for key, schema in mode_schema.items():
+            present, val = self._mode_kwarg(key)
+            if (present and 'min' in schema and isinstance(val, (int, float)) and not isinstance(val, bool)
+                    and val < schema['min']):
+                raise ValueError(f"{key}={val!r} (mode='{self.mode}') must be at least {schema['min']}.")
+
     def apply_defaults(self):
         """Populates missing parameters in base_params with defaults."""
         bp = self.params["base_params"]
