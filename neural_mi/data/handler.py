@@ -612,7 +612,11 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
         return ContinuousWindowDataset(data, time, device=device,
                                        min_coverage_fraction=s['min_coverage_fraction'],
                                        data_device=data_device,
-                                       sample_rate=s['sample_rate'])
+                                       sample_rate=s['sample_rate'],
+                                       period_tolerance=s['period_tolerance'],
+                                       padded_share=s['padded_share'],
+                                       gap_multiple=s['gap_multiple'],
+                                       bridged_share=s['bridged_share'])
 
     elif proc_type == 'spike':
         # Silence is only discarded on the spike side. A continuous partner's
@@ -636,7 +640,8 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
                                     min_coverage_fraction=s['min_coverage_fraction'],
                                     encoding=s['encoding'],
                                     data_device=data_device,
-                                    sample_rate=s['sample_rate'])
+                                    sample_rate=s['sample_rate'],
+                                    max_encoding_width=s['max_encoding_width'])
 
 def _stream_specs_from_pair(x_data, y_data, x_time, y_time,
                             processor_type_x, processor_params_x,

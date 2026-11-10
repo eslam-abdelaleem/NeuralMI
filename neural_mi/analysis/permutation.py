@@ -39,10 +39,6 @@ from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
 from neural_mi.parallel import worker_pool
 from neural_mi.seeds import network_seed
 
-# Offsets closer than this fraction of the recording to zero, in either
-# direction, are excluded from a circular shift.
-MIN_SHIFT_FRACTION = 0.1
-
 
 # ---------------------------------------------------------------------------
 # Shuffles
@@ -70,16 +66,17 @@ def _spike_population_extent(spikes: list, base_params: dict, side: str = 'x') -
     return float(t_start), float(t_end)
 
 
-def _circular_offset(length: float, integer: bool) -> float:
-    """A random offset in ``[m, length - m]``, with ``m`` a tenth of `length`."""
-    lo, hi = MIN_SHIFT_FRACTION * length, (1.0 - MIN_SHIFT_FRACTION) * length
+def _circular_offset(length: float, integer: bool, min_shift: float) -> float:
+    """A random offset in ``[m, length - m]``, with ``m`` the share ``min_shift`` of `length`
+    (``run(permutation_min_shift=...)``): offsets closer to zero, in either direction, are excluded."""
+    lo, hi = min_shift * length, (1.0 - min_shift) * length
     if integer:
         lo, hi = max(1, int(math.ceil(lo))), min(int(length) - 1, int(math.floor(hi)))
         return int(np.random.randint(lo, hi + 1)) if hi >= lo else 0
     return float(np.random.uniform(lo, hi))
 
 
-def _circular_shift_spike_population(spikes: list, t_start: float, t_end: float) -> list:
+def _circular_shift_spike_population(spikes: list, t_start: float, t_end: float, min_shift: float) -> list:
     """Shift every neuron's spike train by one shared random offset, wrapping
     at the recording boundary.
 
@@ -89,7 +86,7 @@ def _circular_shift_spike_population(spikes: list, t_start: float, t_end: float)
     duration = t_end - t_start
     if duration <= 0:
         return [np.asarray(st).copy() for st in spikes]
-    delta = _circular_offset(duration, integer=False)
+    delta = _circular_offset(duration, integer=False, min_shift=min_shift)
     shifted = []
     for st in spikes:
         st = np.asarray(st, dtype=float)
@@ -178,7 +175,7 @@ def _reorder_rows(x: Any, order: np.ndarray) -> Any:
 
 
 def shift_x(x_data: Any, base_params: Dict[str, Any], permutation_shuffle: str,
-            ctx: Optional[Dict[str, Any]] = None) -> Any:
+            ctx: Optional[Dict[str, Any]] = None, *, min_shift: float) -> Any:
     """One shifted copy of X, drawn from numpy's global generator.
 
     See the module docstring for the two shuffles. A spike population is moved
@@ -192,14 +189,14 @@ def shift_x(x_data: Any, base_params: Dict[str, Any], permutation_shuffle: str,
         stream = x_data.streams['x']
         side = ({**base_params, 'processor_params_x': stream.params, 'x_time': stream.time}
                 if stream.processor is not None else base_params)
-        return x_data.replace('x', shift_x(stream.data, side, permutation_shuffle, ctx))
+        return x_data.replace('x', shift_x(stream.data, side, permutation_shuffle, ctx, min_shift=min_shift))
     if _is_spike_list(x_data):
         t_start, t_end = _spike_population_extent(x_data, base_params, 'x')
         if permutation_shuffle == 'block':
             block = ((base_params.get('processor_params_x') or {}).get('window_size')
                      or (t_end - t_start) / 10.0)
             return _block_shuffle_spike_population(x_data, t_start, t_end, block)
-        return _circular_shift_spike_population(x_data, t_start, t_end)
+        return _circular_shift_spike_population(x_data, t_start, t_end, min_shift)
     n = x_data.shape[0] if hasattr(x_data, 'shape') else len(x_data)
     if permutation_shuffle == 'block':
         rows = _window_rows(x_data, base_params, ctx)
@@ -207,7 +204,7 @@ def shift_x(x_data: Any, base_params: Dict[str, Any], permutation_shuffle: str,
         order = np.concatenate([np.arange(s, min(s + rows, n))
                                 for s in starts[np.random.permutation(len(starts))]])
         return _reorder_rows(x_data, order)
-    return _roll_rows(x_data, _circular_offset(n, integer=True))
+    return _roll_rows(x_data, _circular_offset(n, integer=True, min_shift=min_shift))
 
 
 # ---------------------------------------------------------------------------
@@ -229,9 +226,9 @@ def row_values(mode: str, produced: Dict[str, Any]) -> Dict[tuple, Tuple[float, 
 def _trial(args) -> Optional[Dict[tuple, Tuple[float, float]]]:
     """One permutation trial. Module-level so it can run in a worker process."""
     from neural_mi.analysis.modes import produce
-    mode, x, y, w, base_params, grid, ctx, to_bits, seed, permutation_shuffle = args
+    mode, x, y, w, base_params, grid, ctx, to_bits, seed, permutation_shuffle, min_shift = args
     np.random.seed(seed)
-    x_null = shift_x(x, base_params, permutation_shuffle, ctx)
+    x_null = shift_x(x, base_params, permutation_shuffle, ctx, min_shift=min_shift)
     try:
         # A trial's networks train on data whose dependence was destroyed on
         # purpose, so the warnings they raise (an estimate near or below zero,
@@ -253,7 +250,8 @@ def _trial(args) -> Optional[Dict[tuple, Tuple[float, float]]]:
 
 def permutation_nulls(mode: str, x, y, w, base_params: Dict[str, Any], grid, *, ctx: Dict[str, Any],
                       to_bits: bool, n_permutations: int, n_workers: int = 1,
-                      permutation_shuffle: str = 'circular') -> List[Optional[Dict[tuple, Tuple[float, float]]]]:
+                      permutation_shuffle: str = 'circular',
+                      permutation_min_shift: float = 0.1) -> List[Optional[Dict[tuple, Tuple[float, float]]]]:
     """Run `n_permutations` trials, in parallel across `n_workers`.
 
     Returns one entry per trial: its ``{row key: (mi, mi_raw)}``, or ``None``
@@ -268,7 +266,7 @@ def permutation_nulls(mode: str, x, y, w, base_params: Dict[str, Any], grid, *, 
     # observed networks' files with networks trained on moved data.
     trial_params = {**base_params, 'show_progress': False, 'save_best_model_path': None}
     trial_params.pop('_model_labels', None)
-    args = [(mode, x, y, w, trial_params, grid, ctx, to_bits, seed, permutation_shuffle)
+    args = [(mode, x, y, w, trial_params, grid, ctx, to_bits, seed, permutation_shuffle, permutation_min_shift)
             for seed in seeds]
     show_progress = setting(base_params, 'show_progress')
     logger.info(f"Permutation test: {n_permutations} trials for mode='{mode}' across "

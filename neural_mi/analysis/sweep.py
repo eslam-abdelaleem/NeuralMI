@@ -237,12 +237,6 @@ class ParameterSweep:
         return results
 
 
-#: Amplification factors at or above this are warned about.  A difference
-#: carrying 10x its components' relative error is fragile enough that the point
-#: estimate should not be read on its own.
-AMPLIFICATION_WARN_THRESHOLD = 10.0
-
-
 def amplification_factor(components: Sequence[float], result: float) -> float:
     """Error-amplification factor for a quantity built by combining MI terms.
 
@@ -331,6 +325,9 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
                 CombinationWarning, stacklevel=user_stacklevel(),
             )
         return
+    # Amplification factors at or above Training(amplification_threshold=...) are warned about: a combination
+    # that carries that many times its terms' relative error should not be read on its own.
+    threshold = setting(base_params, 'amplification_threshold')
     j_label, j_value, _ = joint
     terms = [joint, *marginals]
     keys = ', '.join(f"'{key}'" for _, _, key in terms)
@@ -340,7 +337,7 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
         pair_amp = amplification_factor([j_value, m_value], j_value - m_value)
         order = (f"The joint term I({j_label})={j_value * _scale:.4f} came out below "
                  f"the I({m_label})={m_value * _scale:.4f} it contains.")
-        if pair_amp >= AMPLIFICATION_WARN_THRESHOLD:
+        if pair_amp >= threshold:
             reading = (f"The two are close enough (error-amplification factor {pair_amp:.0f}x) "
                        f"for an error of about {100.0 / pair_amp:.2g}% in either one to flip the "
                        f"order. The true difference between them is most likely near zero. More "
@@ -368,16 +365,16 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
             )
         return
     amp = amplification_factor([value for _, value, _ in terms], result)
-    if amp >= AMPLIFICATION_WARN_THRESHOLD:
+    if amp >= threshold:
         count = {2: 'two', 3: 'three'}.get(len(terms), str(len(terms)))
         listing = ', '.join(f"I({label})={value * _scale:.4f}" for label, value, _ in terms)
         warnings.warn(
-            f"{quantity_name} has an error-amplification factor of {amp:.1f}x. It is a "
+            f"{quantity_name} has an error-amplification factor of {amp:.1f}x, which reaches "
+            f"Training(amplification_threshold={threshold:g}). It is a "
             f"small residual ({result * _scale:.4f} {_units}) of {count} much larger estimates "
             f"({listing}). If their errors were independent, a relative error of eps on each "
-            f"would become roughly {amp:.0f}*eps on the result (about {amp:.0f}% for a 1% "
-            f"component error). The components are trained on the same rows and partly err "
-            f"together, which cancels some of that. Report the components ({keys}) beside the "
+            f"would become roughly {amp:.0f}*eps on the result. The components are trained on "
+            f"the same rows and partly err together, which cancels some of that. Report the components ({keys}) beside the "
             f"point estimate. Look for more data or more training before concluding that the "
             f"true value is small.",
             CombinationWarning, stacklevel=user_stacklevel(),
@@ -466,7 +463,7 @@ def term_values(results: Sequence[Dict[str, Any]]) -> Tuple[List[float], List[st
             values.append(float(value))
             states.append('nothing')
         elif raw is not None and raw < 0:
-            learned = stands_above_zero(result.get('test_mi'), result.get('eval_size'))
+            learned = stands_above_zero(result.get('test_mi'), result.get('eval_size'), setting(result, 'clear_se'))
             values.append(math.nan if learned else float(value))
             states.append('failed' if learned else 'nothing')
         else:

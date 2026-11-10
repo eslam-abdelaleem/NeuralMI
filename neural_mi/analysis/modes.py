@@ -450,7 +450,7 @@ def produce_precision(x, y, base_params, *, to_bits, n_workers=1, precision_kwar
 # three that _run_flat names (curvature_t_threshold, min_gamma_points,
 # confidence_level).
 _RIGOROUS_FIT_KEYS = ('gamma_range', 'residual_threshold', 'leverage_threshold',
-                      'temporal_chunking')
+                      'temporal_chunking', 'left_out_share')
 
 
 def _to_2d(t):
@@ -469,6 +469,7 @@ _FIT = {
     'confidence_level': {'type': float, 'default': 0.68},
     'residual_threshold': {'type': float, 'default': 2.5},
     'leverage_threshold': {'type': float, 'default': 0.20},
+    'left_out_share': {'type': float, 'min': 0.0, 'default': 0.5},
 }
 _DIFFERENCE_SETTINGS = {**_WORKERS, 'rigorous': {'type': bool, 'default': False},
                         'gamma_range': {'type': (range, list, type(None)), 'default': None}, **_FIT}
@@ -484,6 +485,7 @@ def _scalar_rigorous_kwargs(analysis_kwargs: dict, curvature_t_threshold: float,
         'confidence_level': analysis_kwargs.get('confidence_level', confidence_level),
         'residual_threshold': analysis_kwargs.get('residual_threshold', _FIT['residual_threshold']['default']),
         'leverage_threshold': analysis_kwargs.get('leverage_threshold', _FIT['leverage_threshold']['default']),
+        'left_out_share': analysis_kwargs.get('left_out_share', _FIT['left_out_share']['default']),
     }
 
 
@@ -852,6 +854,23 @@ MODES: Dict[str, Mode] = {
                                'channel_indices_x': {'type': (list, type(None)), 'default': None},
                                # Warn when the reference fit's MI is this close to its evaluation ceiling.
                                'ceiling_mi_fraction': {'type': float, 'default': 0.85},
+                               # The default grid reaches grid_reach times the reference fit's
+                               # participation ratio: every value up to grid_small or grid_medium,
+                               # or grid_points values on a log scale beyond.
+                               'grid_reach': {'type': float, 'min': 1.0, 'default': 2.0},
+                               'grid_small': {'type': int, 'min': 1, 'default': 10},
+                               'grid_medium': {'type': int, 'min': 1, 'default': 20},
+                               'grid_points': {'type': int, 'min': 2, 'default': 10},
+                               # The reference is refitted at refit_reach times the ratio when
+                               # grid_reach times it reaches reference_fill of its dimension.
+                               'reference_fill': {'type': float, 'min': 0.0, 'default': 0.75},
+                               'refit_reach': {'type': float, 'min': 1.0, 'default': 4.0},
+                               # The default grid stops after this many consecutive values at the reading.
+                               'confirm_steps': {'type': int, 'min': 1, 'default': 3},
+                               # Warn when restarts below the reading differ by more than this share
+                               # of the plateau, and when the held-out MI lies this share below it.
+                               'restart_spread': {'type': float, 'min': 0.0, 'default': 0.1},
+                               'held_out_gap': {'type': float, 'min': 0.0, 'default': 0.1},
                            },
                            table=('through `n_restarts`', 'one curve per configuration', 'refused'),
                            permutation=("The mode reports a curve over embedding dimensions and the dimension "

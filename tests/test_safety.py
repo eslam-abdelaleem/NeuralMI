@@ -11,6 +11,7 @@ import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Transfer, Processing, Dimensionality, Split
 from neural_mi.analysis.sweep import ParameterSweep
+from neural_mi.defaults import default_of
 from neural_mi.exceptions import TrainingError
 from neural_mi.training.trainer import Trainer
 
@@ -103,11 +104,13 @@ def test_train_subset_size_clamp_emits_warning():
 
 
 # ---------------------------------------------------------------------------
-# TrainingError after 3 consecutive NaN epochs
+# TrainingError after Training(nan_streak=...) consecutive NaN epochs
 # ---------------------------------------------------------------------------
 
-def test_nan_streak_raises_training_error():
-    """Three consecutive NaN epochs must raise TrainingError.
+@pytest.mark.parametrize('streak', [None, 5])
+def test_nan_streak_raises_training_error(streak):
+    """Training(nan_streak=...) consecutive NaN epochs, 3 by default, must raise TrainingError, and each
+    epoch before it warns.
 
     We mock Trainer._safe_eval_mi() to return NaN so that the real PyTorch
     training step can still run (and compute valid gradients) while the
@@ -135,9 +138,16 @@ def test_nan_streak_raises_training_error():
     y_t = torch.randn(200, 2, 1)
     ds = PairedDataset(StaticDataset(x_t), StaticDataset(y_t))
 
-    with patch.object(Trainer, '_safe_eval_mi', return_value=float('nan')):
-        with pytest.raises(TrainingError, match="consecutive NaN"):
-            trainer.train(ds, n_epochs=10, batch_size=32, patience=100, show_progress=False)
+    limit = streak or default_of('nan_streak')
+    settings = {} if streak is None else {'nan_streak': streak}
+    with patch.object(Trainer, '_safe_eval_mi', return_value=float('nan')), \
+            warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        with pytest.raises(TrainingError, match=rf"consecutive NaN.*\(epochs 1 to {limit}\).*"
+                                                rf"Training\(nan_streak={limit}\)"):
+            trainer.train(ds, n_epochs=10, batch_size=32, patience=100, show_progress=False, **settings)
+    streaks = [str(w.message) for w in caught if 'consecutive NaN streak' in str(w.message)]
+    assert len(streaks) == limit - 1 and f'of Training(nan_streak={limit})' in streaks[0]
 
 
 def test_single_nan_epoch_does_not_raise():

@@ -112,3 +112,94 @@ def test_a_flat_curve_a_little_above_zero_is_not_resolved_on_few_rows():
     assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=14)[2] == 'not resolved'
     # 0.001 nats clears 3 standard errors, sqrt(2 * 0.001 / N), once N exceeds 18 / 0.001 rows.
     assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=20000)[2] == 'ok'
+
+
+def _one_draw(curve, sigma=0.01, seed=0):
+    """One noisy draw of a curve and its smoothed version."""
+    history = curve + sigma * np.random.default_rng(seed).standard_normal(len(curve))
+    return history, Trainer._smooth(None, list(history), 1.0, 5)
+
+
+class TestEveryThresholdIsASetting:
+    """Each number the rule reads or judges the curve by is a setting of Training(...), and changing it moves
+    the decision it makes."""
+
+    def test_start_noise_and_level_noise_move_the_epoch_read(self):
+        history, smoothed = _one_draw(1 - np.exp(-(E + 1) / 2))
+        read = choose_epoch(history, smoothed, 'plateau_start', REACH, False)[0]
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, start_noise=50.0)[0] < read
+        # With no band around the maximum, the level is the maximum itself, and the plateau starts later.
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, level_noise=0.0)[0] > read
+
+    def test_resolved_noise_and_clear_se_decide_whether_the_top_is_resolved(self):
+        curve = 0.2 + np.exp(-0.5 * ((E - 15) / 3) ** 2)
+        history, smoothed = _one_draw(curve)
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False)[2] == 'ok'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False,
+                            resolved_noise=1e6)[2] == 'not resolved'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=1000,
+                            clear_se=1e6)[2] == 'not resolved'
+
+    def test_rising_epochs_and_rising_noise_decide_whether_the_curve_still_rises(self):
+        history, smoothed = _one_draw(E / 60)
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, True)[2] == 'still rising'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, True, rising_noise=1e6)[2] != 'still rising'
+
+    def test_fast_epochs_and_fall_noise_decide_whether_the_top_came_too_fast(self):
+        history, smoothed = _one_draw(np.where(E <= 2, 1 - 0.3 * (2 - E), 1 - 0.15 * np.abs(E - 2) ** 1.5))
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False)[2] == 'too fast'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, fall_noise=1e6)[2] != 'too fast'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, fast_epochs=0)[2] != 'too fast'
+
+    def test_approach_noise_moves_the_start_of_the_approach(self):
+        history, smoothed = _one_draw(1 - np.exp(-(E + 1) / 6))
+        approach = choose_epoch(history, smoothed, 'plateau_start', REACH, False)[3]
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, approach_noise=30.0)[3] < approach
+
+    def test_the_fuzzy_start_message_names_its_setting(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            warn_about_curve('fuzzy start', 17, 21, 6, 200, 9, -0.031, 0.01, fuzzy_se=4.5)
+        assert 'Training(fuzzy_se=4.5)' in str(caught[0].message)
+
+
+class TestTheSettingsReachTheTrainer:
+    """Training(...) carries each setting through run() to the trainer, and to the warnings it gives."""
+
+    X = np.random.default_rng(0).standard_normal((300, 2)).astype(np.float32)
+
+    @staticmethod
+    def _run(**training):
+        import neural_mi as nmi
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            result = nmi.run(TestTheSettingsReachTheTrainer.X, TestTheSettingsReachTheTrainer.X,
+                             model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                             training=nmi.Training(n_epochs=3, **training), show_progress=False, seed=0)
+        return result, [str(w.message) for w in caught]
+
+    def test_every_curve_setting_reaches_the_trainer(self, monkeypatch):
+        from neural_mi.defaults import CURVE_SETTINGS
+        values = dict(level_noise=2.5, start_noise=0.6, resolved_noise=7.0, fast_epochs=9, fall_noise=3.5,
+                      approach_noise=2.5, fuzzy_se=2.5, clear_se=2.5, rising_epochs=21, rising_noise=2.5,
+                      ceiling_fraction=0.86, saturation_fraction=0.91, saturated_epoch_fraction=0.6,
+                      nan_streak=4)
+        assert set(values) == set(CURVE_SETTINGS)
+        seen, real = {}, Trainer.train
+
+        def spy(self, *args, **kwargs):
+            seen.update(kwargs)
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Trainer, 'train', spy)
+        self._run(**values)
+        assert {name: seen[name] for name in values} == values
+
+    def test_the_warnings_name_the_settings_they_used(self):
+        _, messages = self._run(ceiling_fraction=0.0, small_sample=10 ** 6)
+        assert any('near its ceiling above Training(ceiling_fraction=0)' in m for m in messages)
+        assert any('fewer than Training(small_sample=1000000)' in m for m in messages)
+
+    def test_a_setting_changes_the_diagnosis(self):
+        result, _ = self._run(resolved_noise=1e6)
+        assert set(result.runs['curve_diagnosis']) == {'not resolved'}

@@ -29,18 +29,10 @@ from neural_mi.embeddings_io import with_model_labels
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.utils import _ensure_cpu, mi_report_units
 
-# The first grid reaches twice the reference fit's participation ratio. The ratio
-# can fall below the true dimension. The factor of two leaves room for that.
-_GRID_SMALL, _GRID_MEDIUM, _LOG_POINTS = 10, 20, 10
-# When twice the reference fit's participation ratio reaches this fraction of its
-# size, the reference may be too small to hold every direction. It is refitted at
-# four times the ratio.
-_REFERENCE_FILL = 0.75
-# Consecutive values of k at the threshold that end the default grid early.
-_CONFIRM = 3
-# Warn when restarts below the reading disagree by more than this fraction of the
-# plateau, and when the held-out plateau sits this far below the training side.
-_RESTART_SPREAD, _HELD_OUT_GAP = 0.10, 0.10
+# How the grid of embedding dimensions is chosen and when its fits warn is set by
+# Dimensionality(...): grid_reach, refit_reach, reference_fill, grid_small,
+# grid_medium, grid_points, confirm_steps, restart_spread and held_out_gap, with
+# their defaults in the mode's settings (analysis/modes.py, MODES).
 
 SPLIT_METHODS = ('random', 'spatial', 'temporal', 'index', 'horizontal', 'vertical',
                  'row_interleaved', 'col_interleaved', 'diagonal', 'antidiagonal')
@@ -234,26 +226,30 @@ def _halves(x_data: torch.Tensor, params: Dict[str, Any], split_method: str,
 # The grid of k
 # ---------------------------------------------------------------------------
 
-def _log_grid(low: int, high: int, n: int = _LOG_POINTS) -> List[int]:
+def _log_grid(low: int, high: int, n: int) -> List[int]:
     """About ``n`` integers from ``low`` to ``high``, evenly spaced on a log scale."""
     if high <= low:
         return [int(low)]
     return sorted({int(round(v)) for v in np.geomspace(low, high, n)})
 
 
-def _default_grid(pr: float) -> List[int]:
-    """The first grid of k, with a message when it goes past 10."""
-    reach = 2 * pr
-    if reach <= _GRID_SMALL:
-        return list(range(1, _GRID_SMALL + 1))
-    if reach <= _GRID_MEDIUM:
+def _default_grid(pr: float, *, grid_reach: float, grid_small: int, grid_medium: int,
+                  grid_points: int) -> List[int]:
+    """The first grid of k, reaching ``grid_reach`` times the reference fit's participation ratio: every k
+    up to ``grid_small`` or ``grid_medium``, or ``grid_points`` values on a log scale beyond that, with a
+    message when it goes past ``grid_small``. The ratio can fall below the true dimension, and the reach
+    leaves room for that."""
+    reach = grid_reach * pr
+    if reach <= grid_small:
+        return list(range(1, grid_small + 1))
+    if reach <= grid_medium:
         logger.info(
-            f"Dimensionality: the grid runs over embedding_dim 1 to {_GRID_MEDIUM} because the "
+            f"Dimensionality: the grid runs over embedding_dim 1 to {grid_medium} because the "
             f"reference fit has a participation ratio of {pr:.1f}. Pass embedding_dims to choose "
             f"the grid.")
-        return list(range(1, _GRID_MEDIUM + 1))
+        return list(range(1, grid_medium + 1))
     top = int(math.ceil(reach))
-    grid = _log_grid(1, top)
+    grid = _log_grid(1, top, grid_points)
     logger.info(
         f"Dimensionality: the grid runs over {len(grid)} values of embedding_dim from 1 to {top} "
         f"on a log scale ({grid}) because the reference fit has a participation ratio of "
@@ -313,24 +309,27 @@ def _reading(best: Dict[int, float], ratio: float) -> Tuple[Optional[int], float
     return next(k for k in sorted(curve) if curve[k] >= ratio * plateau), plateau
 
 
-def _confirmed(best: Dict[int, float], order: Sequence[int], threshold: float) -> Optional[int]:
-    """The first k of ``_CONFIRM`` consecutive grid values at the threshold, if any."""
+def _confirmed(best: Dict[int, float], order: Sequence[int], threshold: float,
+               confirm_steps: int) -> Optional[int]:
+    """The first k of ``confirm_steps`` consecutive grid values at the threshold, if any."""
     run = 0
     for i, k in enumerate(order):
         run = run + 1 if best.get(k, -math.inf) >= threshold else 0
-        if run == _CONFIRM:
-            return order[i - _CONFIRM + 1]
+        if run == confirm_steps:
+            return order[i - confirm_steps + 1]
     return None
 
 
 def _run_grid(views, grid: List[int], n_restarts: int, n_workers: int, ratio: float,
-              fits: List[Dict[str, Any]], early_stop: bool) -> Tuple[List[Dict[str, Any]], List[int]]:
-    """Fit the grid from small k upward, stopping once every split has confirmed its reading."""
+              fits: List[Dict[str, Any]], early_stop: bool,
+              confirm_steps: int) -> Tuple[List[Dict[str, Any]], List[int]]:
+    """Fit the grid from small k upward, stopping once every split has confirmed its reading on
+    ``confirm_steps`` consecutive values."""
     if not early_stop:
         return _fit(views, grid, n_restarts, n_workers), list(grid)
     new, done = [], []
-    for start in range(0, len(grid), _CONFIRM):
-        wave = grid[start:start + _CONFIRM]
+    for start in range(0, len(grid), confirm_steps):
+        wave = grid[start:start + confirm_steps]
         new += _fit(views, wave, n_restarts, n_workers)
         done += wave
         seen = fits + new
@@ -338,10 +337,10 @@ def _run_grid(views, grid: List[int], n_restarts: int, n_workers: int, ratio: fl
         for split_id, *_ in views:
             best = _best(seen, split_id)
             plateau = max(best.values())
-            confirmed.append(_confirmed(best, done, ratio * plateau))
+            confirmed.append(_confirmed(best, done, ratio * plateau, confirm_steps))
         if all(c is not None for c in confirmed) and len(done) < len(grid):
             logger.info(
-                f"Dimensionality: the grid stopped at embedding_dim={done[-1]} once {_CONFIRM} "
+                f"Dimensionality: the grid stopped at embedding_dim={done[-1]} once {confirm_steps} "
                 f"consecutive values reached {ratio:.0%} of the plateau. The rest of the grid "
                 f"({grid[len(done)]} to {grid[-1]}) was not fitted. Pass embedding_dims to fit "
                 f"every value."
@@ -390,6 +389,15 @@ def run_dimensionality_analysis(
     split_method: str = 'random',
     n_splits: Optional[int] = None,
     ceiling_mi_fraction: float = 0.85,
+    grid_reach: float = 2.0,
+    refit_reach: float = 4.0,
+    reference_fill: float = 0.75,
+    grid_small: int = 10,
+    grid_medium: int = 20,
+    grid_points: int = 10,
+    confirm_steps: int = 3,
+    restart_spread: float = 0.1,
+    held_out_gap: float = 0.1,
     n_workers: int = 1,
     user_set_keys: Optional[set] = None,
     **kwargs,
@@ -421,6 +429,22 @@ def run_dimensionality_analysis(
         than one.
     ceiling_mi_fraction : float, default=0.85
         Warn when the reference MI is this close to its evaluation ceiling.
+    grid_reach, grid_small, grid_medium, grid_points : default=2.0, 10, 20, 10
+        The default grid reaches ``grid_reach`` times the reference fit's
+        participation ratio: every value up to ``grid_small`` or ``grid_medium``,
+        or ``grid_points`` values on a log scale beyond that.
+    reference_fill, refit_reach : float, default=0.75, 4.0
+        When ``grid_reach`` times the reference fit's participation ratio reaches
+        ``reference_fill`` of its embedding dimension, the reference is refitted
+        at ``refit_reach`` times the ratio.
+    confirm_steps : int, default=3
+        The default grid stops once every split has reached its reading on this
+        many consecutive values.
+    restart_spread, held_out_gap : float, default=0.1, 0.1
+        Warn when restarts below the reading differ by more than
+        ``restart_spread`` of the plateau, and when the held-out MI of the
+        reference fit falls short of the plateau by more than ``held_out_gap``
+        of it.
     n_workers : int, default=1
         Worker processes for the fits.
     user_set_keys : set, optional
@@ -497,8 +521,8 @@ def run_dimensionality_analysis(
         )
     fits = _fit(views, [reference_dim], n_restarts, n_workers)
     pr = _median([f.get('pr_singular') for f in fits])
-    if not reference_given and np.isfinite(pr) and 2 * pr >= _REFERENCE_FILL * reference_dim:
-        larger = int(math.ceil(4 * pr))
+    if not reference_given and np.isfinite(pr) and grid_reach * pr >= reference_fill * reference_dim:
+        larger = int(math.ceil(refit_reach * pr))
         logger.info(
             f"Dimensionality: the participation ratio of the reference fit ({pr:.1f}) is close to "
             f"its embedding_dim={reference_dim}. The reference is refitted at embedding_dim={larger}."
@@ -513,10 +537,13 @@ def run_dimensionality_analysis(
         grid = sorted({int(k) for k in embedding_dims})
         early_stop = False
     else:
-        grid = [k for k in _default_grid(pr if np.isfinite(pr) else _GRID_SMALL / 2)
+        grid = [k for k in _default_grid(pr if np.isfinite(pr) else grid_small / grid_reach,
+                                         grid_reach=grid_reach, grid_small=grid_small,
+                                         grid_medium=grid_medium, grid_points=grid_points)
                 if k < reference_dim]
         early_stop = True
-    new, fitted = _run_grid(views, grid, n_restarts, n_workers, saturation_ratio, fits, early_stop)
+    new, fitted = _run_grid(views, grid, n_restarts, n_workers, saturation_ratio, fits, early_stop,
+                            confirm_steps)
     fits += new
     stopped_early = early_stop and len(fitted) < len(grid)
 
@@ -524,13 +551,13 @@ def run_dimensionality_analysis(
     unsaturated = [s for s in split_ids
                    if _reading(_best(fits, s), saturation_ratio)[0] == reference_dim]
     if unsaturated and embedding_dims is None and grid and grid[-1] + 1 < reference_dim:
-        extra = [k for k in _log_grid(grid[-1] + 1, reference_dim - 1) if k not in grid]
+        extra = [k for k in _log_grid(grid[-1] + 1, reference_dim - 1, grid_points) if k not in grid]
         logger.info(
             f"Dimensionality: the curve of split(s) {unsaturated} did not reach "
             f"{saturation_ratio:.0%} of its plateau by embedding_dim={grid[-1]}. The grid is "
             f"extended over {extra}."
         )
-        new, more = _run_grid(views, extra, n_restarts, n_workers, saturation_ratio, fits, True)
+        new, more = _run_grid(views, extra, n_restarts, n_workers, saturation_ratio, fits, True, confirm_steps)
         fits += new
         fitted += more
 
@@ -555,7 +582,7 @@ def run_dimensionality_analysis(
             f"the reference or a larger reference_dim.",
             UserWarning, stacklevel=user_stacklevel(),
         )
-    _warn_about_fits(fits, reference_fits, readings, plateaus, params)
+    _warn_about_fits(fits, reference_fits, readings, plateaus, params, restart_spread, held_out_gap)
     _warn_if_near_ceiling(reference_fits, ceiling_mi_fraction, base_params)
 
     info = {
@@ -587,7 +614,8 @@ def _median_reading(readings: List[int]):
     return int(median) if median.is_integer() else median
 
 
-def _warn_about_fits(fits, reference_fits, readings, plateaus, params) -> None:
+def _warn_about_fits(fits, reference_fits, readings, plateaus, params, restart_spread: float,
+                     held_out_gap: float) -> None:
     """The warnings about the fits behind a reading."""
     scale, units = mi_report_units(params)
     # Restarts that disagree below the reading.
@@ -598,13 +626,13 @@ def _warn_about_fits(fits, reference_fits, readings, plateaus, params) -> None:
         for k in sorted({int(f['embedding_dim']) for f in fits if f['split_id'] == s and f['embedding_dim'] < reading}):
             values = [f['train_mi'] for f in fits
                       if f['split_id'] == s and f['embedding_dim'] == k and f.get('train_mi') is not None]
-            if len(values) > 1 and max(values) - min(values) > _RESTART_SPREAD * plateaus[s]:
+            if len(values) > 1 and max(values) - min(values) > restart_spread * plateaus[s]:
                 spread.append(k)
     if spread:
         warnings.warn(
             f"Dimensionality: the restarts at embedding_dim {sorted(set(spread))} below the reading "
-            f"differ by more than {_RESTART_SPREAD:.0%} of the plateau. The curve uses the best "
-            f"restart at each value. Raise n_restarts if the best one may also have settled short "
+            f"differ by more than Dimensionality(restart_spread={restart_spread:g}) of the plateau. The curve "
+            f"uses the best restart at each value. Raise n_restarts if the best one may also have settled short "
             f"of a direction.",
             UserWarning, stacklevel=user_stacklevel(),
         )
@@ -612,10 +640,11 @@ def _warn_about_fits(fits, reference_fits, readings, plateaus, params) -> None:
     # information per dimension, and the reading may overstate the dimension.
     for s, plateau in plateaus.items():
         held_out = _median([f.get('test_mi') for f in reference_fits if f['split_id'] == s])
-        if plateau > 0 and np.isfinite(held_out) and held_out < (1 - _HELD_OUT_GAP) * plateau:
+        if plateau > 0 and np.isfinite(held_out) and held_out < (1 - held_out_gap) * plateau:
             warnings.warn(
                 f"Dimensionality: at the reference fit the held-out MI ({held_out * scale:.3f} {units}) "
-                f"is more than {_HELD_OUT_GAP:.0%} below the plateau ({plateau * scale:.3f} {units}). "
+                f"falls short of the plateau ({plateau * scale:.3f} {units}) by more than "
+                f"Dimensionality(held_out_gap={held_out_gap:g}) of the plateau. "
                 f"The data hold few samples for the information each dimension carries. The reading "
                 f"may then overstate the dimension while still bounding it from above. More data "
                 f"tightens it.",

@@ -60,7 +60,7 @@ from neural_mi.embeddings_io import model_file, resolve_model_path, announce_sav
 # The fit settings a Rigorous config carries into a difference quantity's own
 # config (Transfer, Conditional, Interaction).
 _FIT_FIELDS = ('gamma_range', 'curvature_t_threshold', 'min_gamma_points',
-               'confidence_level', 'residual_threshold', 'leverage_threshold')
+               'confidence_level', 'residual_threshold', 'leverage_threshold', 'left_out_share')
 
 
 def _is_sweep(value: Any) -> bool:
@@ -327,6 +327,12 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
                               encoder_scales=encoders_scale(model.get('input_scaling'), model.get('custom_critic')))
     if preprocessing is not None:
         construction = {**construction, 'preprocessing': describe_preprocessing(preprocessing)}
+        # The data check's settings still reach run(), which reports on the rows it is given.
+        from neural_mi.config import Preprocessing, as_config
+        from neural_mi.preprocessing import check_settings
+        check = check_settings(as_config(preprocessing, Preprocessing))
+        if check:
+            run_kwargs['preprocessing'] = Preprocessing(**check)
     # Rows a stride thins shift under shift_windows: built at every step, of
     # which each task keeps one in every stride, at a phase drawn each epoch.
     phases = stride if stride > 1 and _shifts_windows(run_kwargs) else 1

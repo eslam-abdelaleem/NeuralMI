@@ -484,7 +484,7 @@ def _trains_one_network(mode: str, n_configs: int, n_repeats: int) -> bool:
 
 def _announce_call(mode: str, sweep_grid: Optional[dict], permutation_test: bool,
                    n_permutations: int, analysis_kwargs: dict, has_y: bool = True,
-                   save_path: Optional[str] = None) -> None:
+                   save_path: Optional[str] = None, min_permutations: int = 100) -> None:
     """Messages about the cost of the whole call, given once per call."""
     from .analysis.assemble import split_grid
     configs, run_ids = split_grid(sweep_grid)
@@ -494,11 +494,11 @@ def _announce_call(mode: str, sweep_grid: Optional[dict], permutation_test: bool
                   if n_configs > 1 else "")
         cost = (f"Each permutation reruns the whole call{across}. The test costs "
                 f"{n_permutations} times the call itself.")
-        if n_permutations < 100:
+        if n_permutations < min_permutations:
             warnings.warn(
                 f"With n_permutations={n_permutations} the smallest p-value the permutation "
-                f"test can report is 1/{n_permutations + 1} = {1 / (n_permutations + 1):.2g}. "
-                f"A reliable p-value usually needs 100 or more permutations. {cost}",
+                f"test can report is 1/{n_permutations + 1} = {1 / (n_permutations + 1):.2g}. The call "
+                f"warns when n_permutations is below min_permutations={min_permutations}. {cost}",
                 UserWarning, stacklevel=user_stacklevel(),
             )
         else:
@@ -583,6 +583,8 @@ def run(
     permutation_test: bool = False,
     n_permutations: int = 10,
     permutation_shuffle: str = 'circular',
+    permutation_min_shift: float = 0.1,
+    min_permutations: int = 100,
     _rows: Optional[RowGeometry] = None,
     _row_phases: Optional[int] = None,
     **_removed: Any,
@@ -668,12 +670,21 @@ def run(
     n_permutations : int, default=10
         Number of shifts when ``permutation_test=True``. Each one reruns the
         whole call. The smallest p-value reachable is ``1 / (n_permutations + 1)``,
-        so a reliable p-value usually needs 100 or more.
+        and a call with fewer than ``min_permutations`` warns.
     permutation_shuffle : {'circular', 'block'}, default='circular'
         How X is moved. ``'circular'`` shifts it by one random offset along
-        its time axis, wrapping at the end, with offsets within 10% of the
-        recording's length of zero excluded. ``'block'`` cuts it into
-        contiguous blocks one window long and reorders them.
+        its time axis, wrapping at the end, with offsets within
+        ``permutation_min_shift`` of the recording's length of zero excluded.
+        ``'block'`` cuts it into contiguous blocks one window long and reorders
+        them.
+    permutation_min_shift : float, default=0.1
+        The share of the recording's length within which a circular shift is
+        too close to zero, in either direction, to break the dependence. It
+        must lie between 0 and 0.5.
+    min_permutations : int, default=100
+        The call warns when a permutation test runs fewer trials than this,
+        since the smallest p-value that the test can report is
+        ``1 / (n_permutations + 1)``.
 
     Returns
     -------
@@ -770,6 +781,10 @@ def run(
             flat['estimator_params'] = estimator.params
     if processing is not None:
         _route_analysis(processing.to_kwargs())
+    if preprocessing is not None:
+        # The data check's settings, which every task reads where it checks rows.
+        from .preprocessing import check_settings as _check_settings
+        _route_base(_check_settings(preprocessing))
 
     # Mode-specific config: only the one matching `mode` is consulted.
     _provided = {'rigorous': rigorous, 'precision': precision, 'lag': lag,
@@ -812,6 +827,8 @@ def run(
     flat['permutation_test'] = permutation_test
     flat['n_permutations'] = n_permutations
     flat['permutation_shuffle'] = permutation_shuffle
+    flat['permutation_min_shift'] = permutation_min_shift
+    flat['min_permutations'] = min_permutations
     flat['preprocessing'] = preprocessing
     # Private: the geometry of rows a named quantity built in time order
     # (neural_mi/data/rows.py). Arrays passed in already built carry none.
@@ -890,6 +907,8 @@ def _run_flat(
     permutation_test: bool = False,
     n_permutations: int = 10,
     permutation_shuffle: str = 'circular',
+    permutation_min_shift: float = 0.1,
+    min_permutations: int = 100,
     history_window: Optional[int] = None,
     prediction_horizon: int = 1,
     stride: int = 1,
@@ -939,6 +958,8 @@ def _run_flat(
     which each task keeps one in every ``_row_phases`` so that they can shift.
     """
     sweep_grid = _normalise_grid(sweep_grid)
+    if isinstance(min_permutations, bool) or not isinstance(min_permutations, int) or min_permutations < 1:
+        raise ValueError(f"min_permutations must be a positive integer, got {min_permutations!r}.")
     _call_args = dict(locals())
     # Y and W read with X's processor and settings when they have none of their
     # own (defaults.stream_processing), resolved here once for every path below:
@@ -983,7 +1004,7 @@ def _run_flat(
             _proc_grid = _processor_grid(mode, sweep_grid, _streams)
             _announce_call(mode, sweep_grid, permutation_test, n_permutations,
                            analysis_kwargs, has_y=y_data is not None,
-                           save_path=save_best_model_path)
+                           save_path=save_best_model_path, min_permutations=min_permutations)
             if _proc_grid:
                 return _run_processor_grid(_call_args, _proc_grid, _streams)
         # Results do not depend on n_workers beyond float rounding:
@@ -1075,6 +1096,11 @@ def _run_flat(
         if permutation_shuffle not in ('circular', 'block'):
             raise ValueError(
                 f"permutation_shuffle must be 'circular' or 'block', got {permutation_shuffle!r}."
+            )
+        if not 0.0 <= permutation_min_shift < 0.5:
+            raise ValueError(
+                f"permutation_min_shift must lie between 0 and 0.5, got {permutation_min_shift!r}: a "
+                f"circular shift is drawn between that share of the recording and one minus it."
             )
 
         # Verify conditional-MI / interaction-information / conditional-TE input.
@@ -1404,7 +1430,7 @@ def _run_flat(
             trials = permutation_nulls(
                 mode, x_run, y_run, w_run, base_params, grid, ctx=ctx, to_bits=_to_bits,
                 n_permutations=n_permutations, n_workers=n_workers,
-                permutation_shuffle=permutation_shuffle)
+                permutation_shuffle=permutation_shuffle, permutation_min_shift=permutation_min_shift)
             attach_nulls(result, trials, produced['axis_keys'])
         return result
     finally:
@@ -1423,7 +1449,6 @@ _ENGINE_PARAMS = frozenset(
 ) - {'x_data', 'y_data'}
 
 
-_SMALL_SAMPLE = 200
 
 
 def _deferred_window_count(x_data, base_params: dict, largest_lag: float = 0.0):
@@ -1482,8 +1507,8 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
     and their scale. Rows a spike-time or categorical processor built far from unit scale warn; a continuous
     stream's scale was checked before its rows were built (neural_mi/preprocessing.py)."""
     from .estimators import NONPARAMETRIC
-    from .preprocessing import SCALE_BAND
     from .training.trainer import too_few_held_out
+    scale_band, sample_rows = setting(base_params, 'scale_band'), setting(base_params, 'sample_rows')
     held = ("a nonparametric estimate holds none out"
             if base_params.get('estimator_name') in NONPARAMETRIC else f"{n_held_out} of them held out")
     batch = setting(base_params, 'batch_size')
@@ -1496,11 +1521,11 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
         if not (torch.is_tensor(data) or isinstance(data, np.ndarray)) or len(data) == 0:
             continue
         # The first rows tell the scale; reading every row would copy a large dataset.
-        sample = data[:10000]
+        sample = data[:sample_rows]
         scale = float(np.std(sample.detach().cpu().numpy() if torch.is_tensor(sample) else sample))
         scales.append(f"{name} {scale:.3g}")
         kind = (processors or {}).get(name)
-        if (kind in ('spike', 'categorical') and not 1.0 / SCALE_BAND <= scale <= SCALE_BAND
+        if (kind in ('spike', 'categorical') and not 1.0 / scale_band <= scale <= scale_band
                 and not _encoders_scale(base_params)):
             side = base_params.get(f'processor_params_{name}') or {}
             if kind == 'categorical':
@@ -1512,7 +1537,8 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
                 held_in = "They hold spike times within each window, in the stream's time unit."
             warnings.warn(
                 f"The rows {name}'s {kind} processor builds have a typical scale of {scale:.3g}, more than "
-                f"a factor of {SCALE_BAND:g} from unit scale, where the networks start. {held_in} "
+                f"a factor of Preprocessing(scale_band={scale_band:g}) from unit scale, where the networks start. "
+                f"{held_in} "
                 f"Model(input_scaling='standard') scales the rows an encoder receives.",
                 UserWarning, stacklevel=user_stacklevel(),
             )
@@ -1532,7 +1558,8 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
     names the count (:func:`neural_mi.training.epochs.warn_about_curve`)."""
     n_held_out = _held_out_count(n_samples, base_params)
     _report_rows(n_samples, unit, n_held_out, base_params, rows, processors)
-    if not 0 < n_samples < _SMALL_SAMPLE:
+    small_sample = setting(base_params, 'small_sample')
+    if not 0 < n_samples < small_sample:
         return
     tips = []
     if setting(base_params, 'dropout') == 0.0:
@@ -1546,7 +1573,9 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
         tips.append(f"embedding_dim=32 (current: {embed})")
     tips.append("optimizer='adamw' with optimizer_params={'weight_decay': 1e-3}")
     warnings.warn(
-        f"Only {n_samples} {unit} reach the estimator. The samples an estimate needs grow "
+        f"Only {n_samples} {unit} reach the estimator, which is fewer than Training(small_sample="
+        f"{small_sample}). "
+        f"The samples an estimate needs grow "
         f"roughly as N ~ d^2/I (tutorial 02, section 2). Here d is the number of latent "
         f"dimensions carrying the shared information and I is the information itself. "
         f"Neither is known before estimating. A few latent dimensions carrying several bits can settle "

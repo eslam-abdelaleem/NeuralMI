@@ -17,6 +17,12 @@ import torch
 import neural_mi as nmi
 from neural_mi.analysis import dimensionality as dim
 from neural_mi.analysis.dimensionality import run_dimensionality_analysis
+from neural_mi.analysis.modes import MODES
+
+# The grid settings at their defaults (Dimensionality(...), declared in MODES).
+_SETTINGS = MODES['dimensionality'].settings
+GRID = {k: _SETTINGS[k]['default'] for k in ('grid_reach', 'grid_small', 'grid_medium', 'grid_points')}
+CONFIRM = _SETTINGS['confirm_steps']['default']
 
 BITS = math.log(2)          # one bit in nats
 TOTAL = 4 * BITS            # the fake curves carry 4 bits
@@ -66,22 +72,22 @@ def analyse(monkeypatch, fake, x, y=None, **kwargs):
 class TestGrid:
     def test_a_small_participation_ratio_runs_one_to_ten(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            assert dim._default_grid(3.0) == list(range(1, 11))
+            assert dim._default_grid(3.0, **GRID) == list(range(1, 11))
         assert not caplog.records
 
     def test_a_middle_ratio_runs_one_to_twenty_and_says_so(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            assert dim._default_grid(7.0) == list(range(1, 21))
+            assert dim._default_grid(7.0, **GRID) == list(range(1, 21))
         assert '1 to 20' in caplog.text
 
     def test_a_large_ratio_runs_a_log_grid_to_twice_the_ratio(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            grid = dim._default_grid(15.0)
+            grid = dim._default_grid(15.0, **GRID)
         assert grid[0] == 1 and grid[-1] == 30 and len(grid) <= 10
         assert 'log scale' in caplog.text and 'embedding_dims' in caplog.text
 
     def test_the_log_grid_is_increasing_and_spans_its_range(self):
-        grid = dim._log_grid(11, 63)
+        grid = dim._log_grid(11, 63, GRID['grid_points'])
         assert grid[0] == 11 and grid[-1] == 63 and grid == sorted(set(grid))
 
 
@@ -99,8 +105,8 @@ class TestReading:
 
     def test_three_consecutive_values_confirm(self):
         best = {1: 1.0, 2: 4.0, 3: 4.0, 4: 4.0}
-        assert dim._confirmed(best, [1, 2, 3], 3.8) is None
-        assert dim._confirmed(best, [1, 2, 3, 4], 3.8) == 2
+        assert dim._confirmed(best, [1, 2, 3], 3.8, CONFIRM) is None
+        assert dim._confirmed(best, [1, 2, 3, 4], 3.8, CONFIRM) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +208,51 @@ class TestWarnings:
         with warnings.catch_warnings():
             warnings.simplefilter('error')
             analyse(monkeypatch, FakeFits(saturating_at(3)), *xy, embedding_dims=range(1, 6))
+
+
+class TestEveryThresholdIsASetting:
+    """The grid and the warnings about the fits read settings of Dimensionality(...), and each warning names
+    its setting."""
+
+    def test_the_grid_settings_size_the_grid(self):
+        # A participation ratio of 3 at grid_reach=2 reaches 6.
+        assert dim._default_grid(3.0, **{**GRID, 'grid_small': 4}) == list(range(1, 21))
+        assert dim._default_grid(3.0, **{**GRID, 'grid_small': 4, 'grid_medium': 8}) == list(range(1, 9))
+        grid = dim._default_grid(3.0, **{**GRID, 'grid_reach': 10.0, 'grid_points': 5})
+        assert grid[0] == 1 and grid[-1] == 30 and len(grid) <= 5
+
+    def test_confirm_steps(self):
+        best = {1: 1.0, 2: 4.0, 3: 4.0, 4: 4.0}
+        assert dim._confirmed(best, [1, 2, 3], 3.8, 2) == 2
+        assert dim._confirmed(best, [1, 2, 3], 3.8, 3) is None
+
+    def test_reference_fill_and_refit_reach(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(3))
+        analyse(monkeypatch, fake, *xy, reference_fill=0.05, refit_reach=5.0)
+        # 2 x 3 reaches 0.05 of the reference 64, so the reference is refitted at 5 x 3.
+        assert fake.calls[:2] == [[64], [15]]
+
+    def test_restart_spread(self, monkeypatch, xy):
+        curve = lambda k, s, r: TOTAL * min(k, 3) / 3 * (0.5 if r == 0 and k < 3 else 1.0)
+        with pytest.warns(UserWarning, match=r'Dimensionality\(restart_spread=0.1\)'):
+            analyse(monkeypatch, FakeFits(curve), *xy, embedding_dims=range(1, 6))
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            analyse(monkeypatch, FakeFits(curve), *xy, embedding_dims=range(1, 6), restart_spread=0.5)
+
+    def test_held_out_gap_through_run(self, monkeypatch, xy):
+        monkeypatch.setattr(dim, '_fit', FakeFits(saturating_at(3), test_ratio=0.7))
+        x, y = (t.numpy() for t in xy)
+        for gap, warned in ((None, True), (0.5, False)):
+            settings = {} if gap is None else {'held_out_gap': gap}
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                nmi.run(x, y, mode='dimensionality', show_progress=False,
+                        dimensionality=nmi.Dimensionality(n_restarts=2, embedding_dims=range(1, 6), **settings))
+            messages = [str(w.message) for w in caught if 'overstate the dimension' in str(w.message)]
+            assert bool(messages) == warned
+            if warned:
+                assert 'Dimensionality(held_out_gap=0.1)' in messages[0]
 
 
 class TestSettings:

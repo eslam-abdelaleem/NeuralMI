@@ -18,7 +18,7 @@ from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import _EMBEDDING_BATCH, save_network
 from neural_mi.data.handler import create_dataset
 from neural_mi.data.rows import IDENTITY_KEY, record_rows, row_geometry, row_identity
-from neural_mi.defaults import default_of, setting
+from neural_mi.defaults import CURVE_SETTINGS, default_of, setting
 from neural_mi.seeds import network_seed, repeat_seed
 
 # ---------------------------------------------------------------------------
@@ -435,6 +435,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
         eval_train=setting(params, 'eval_train'),
         peak_fraction=setting(params, 'peak_fraction'),
         epoch_rule=setting(params, 'epoch_rule'),
+        **{name: setting(params, name) for name in CURVE_SETTINGS},
         scheduler=scheduler,
         track_embeddings=setting(params, 'track_embeddings'),
         return_rotated_embeddings=setting(params, 'return_rotated_embeddings'),

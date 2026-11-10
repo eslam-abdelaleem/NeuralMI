@@ -217,9 +217,11 @@ def _draw_components(result: 'Results', ax, view):
 
 
 def _draw_directions(result: 'Results', ax, view):
-    """Transfer entropy each way, with the directionality index when both were estimated."""
+    """Transfer entropy each way, with the directionality index when both were estimated. The title names
+    the direction that dominates when the index lies more than ``direction_band`` from zero."""
     from neural_mi.analysis.modes import MODES
     spec = MODES[result.mode]
+    band = view.kwargs.pop('direction_band', 0.1)
     row = view.row
     r = row.iloc[0]
     labels, values = [spec.symbol], [r['mi_mean']]
@@ -229,8 +231,8 @@ def _draw_directions(result: 'Results', ax, view):
     title = spec.title
     if 'directionality_index_mean' in row.columns:
         di = r['directionality_index_mean']
-        verdict = ('X → Y dominates' if di > 0.1 else
-                   'Y → X dominates' if di < -0.1 else '≈ symmetric')
+        verdict = ('X → Y dominates' if di > band else
+                   'Y → X dominates' if di < -band else '≈ symmetric')
         title += f'\nDirectionality index = {di:.3f}  ({verdict})'
     _bars(ax, labels, values, view.colours, view.units, view.kwargs.pop('title', title))
     return ax, False
@@ -700,7 +702,10 @@ class Results:
             The configuration to draw with its mode's own figure.
         **kwargs
             ``show``, ``units``, ``title``, ``figsize``, ``kind``, and anything
-            the underlying plot function accepts.
+            the underlying plot function accepts. A transfer entropy estimated
+            both ways takes ``direction_band`` (0.1 by default): its title
+            names the direction that dominates when the directionality index
+            lies more than this from zero.
         """
         from neural_mi.visualize.plot import plot_sweep_curve, plot_sweep_heatmap, plot_sweep_bar
 

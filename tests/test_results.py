@@ -278,6 +278,15 @@ class TestResults:
         assert "TE(Y→X)" in captured
         assert "Directionality" in captured
 
+    @pytest.mark.parametrize('band, verdict', [(None, 'X → Y dominates'), (0.7, '≈ symmetric')])
+    @patch('matplotlib.pyplot.show')
+    def test_the_transfer_plot_names_a_direction_beyond_direction_band(self, mock_show, band, verdict):
+        r = rf.difference('transfer', {'i_xypast_yfuture': 0.9, 'i_ypast_yfuture': 0.34,
+                                       'te_yx': 0.12, 'directionality_index': 0.65}, 0.56)
+        ax = r.plot(**({} if band is None else {'direction_band': band}))
+        assert f'({verdict})' in ax.get_title()
+        plt.close('all')
+
 
 class TestToDict:
     """Results.to_dict() and Results.to_json()."""

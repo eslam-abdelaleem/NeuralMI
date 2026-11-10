@@ -66,7 +66,7 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_estimators.py` | the InfoNCE and SMILE bound functions, accuracy on known-MI data, SMILE's `clip` through the full pipeline |
-| `test_ksg.py` | KSG and its conditional form: agreement with scikit-learn, accuracy on Gaussian data, invariance under monotone transforms, the k-d tree and brute-force paths, the time window, and the modes through `run()` |
+| `test_ksg.py` | KSG and its conditional form: agreement with scikit-learn, accuracy on Gaussian data, invariance under monotone transforms, the k-d tree and brute-force paths, the time window, the warning about tied values and its `max_tied_share`, and the modes through `run()` |
 
 ### Known answers
 
@@ -78,14 +78,14 @@ Each file covers one functional area. Run
 
 | file | covers |
 |---|---|
-| `test_data_processors.py` | window construction for continuous, spike and categorical data, time shifting, noise, rounding, every split mode, and mixed-modality alignment |
+| `test_data_processors.py` | window construction for continuous, spike and categorical data, time shifting, noise, rounding, every split mode, mixed-modality alignment, and the processors' checks of the time vector and the settings that set them |
 | `test_shift_windowing.py` | windowing by sample number: step-size resolution, categorical re-encoding parity with `CategoricalWindowDataset`, streams at different sample rates moving by the same time, cross-unit warnings, and which route a row plan takes |
 | `test_plan.py` | one row plan per quantity: one grid over every stream, every term on the same rows, settings resolved once, fits made per stream, one offset per epoch for every stream, one window and one step per grid |
 | `test_augmentations.py` | each augmentation's effect and shape contract, the spatial-on-3-D warning, custom callables, application order, and the boolean shortcuts |
 | `test_empty_windows.py` | `drop_empty_windows`, its independence from the continuous coverage rule, retention reporting, and the mixed-unit warning |
 | `test_rows.py` | how rows lie in time: the geometry each builder records, the split's leak checks, the rigorous chunks and the block shuffle that read it, the phase shifter of strided rows, and the identity of the rows each task reports |
 | `test_views.py` | `SubsetView` by index, channel and time region, and temporal index conversion |
-| `test_preprocessing.py` | `Preprocessing(channel=..., time=...)` on each continuous stream apart: the channel transforms leave every quantity unchanged, whitening leaves the rate quantities unchanged and warns elsewhere, spike-time and categorical streams take neither, and the data check changes nothing |
+| `test_preprocessing.py` | `Preprocessing(channel=..., time=...)` on each continuous stream apart: the channel transforms leave every quantity unchanged, whitening leaves the rate quantities unchanged and warns elsewhere, spike-time and categorical streams take neither, and the data check changes nothing and reads its thresholds from `Preprocessing(...)` |
 
 ### Generators and oracles
 
@@ -114,7 +114,7 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_trainer.py` | the training loop, chunked evaluation, spectral tracking, custom smoothing, and the default stopping rule |
-| `test_epoch_rule.py` | the epoch the estimate is read at and the diagnosis of the held-out curve, on many noisy draws of curves of each shape |
+| `test_epoch_rule.py` | the epoch the estimate is read at and the diagnosis of the held-out curve, on many noisy draws of curves of each shape, and the `Training(...)` settings that set every threshold of both |
 | `test_best_epoch.py` | that the network evaluated is the one at the reported best epoch, for each epoch rule and `peak_fraction` |
 | `test_held_out.py` | the held-out rows counted once, and a held-out set smaller than one training batch named in the data check and in every warning about the curve, without a warning of its own |
 | `test_blocked_evaluation.py` | which rows the trainer evaluates, and an evaluation set larger than `max_eval_samples` scored in blocks |
@@ -124,7 +124,7 @@ Each file covers one functional area. Run
 
 | file | covers |
 |---|---|
-| `test_safety.py` | safety-critical regressions: shape errors, defaults, clamping warnings, the NaN-streak `TrainingError`, sweep guards, and the mode/option combinations that are defined but easy to leave unexercised |
+| `test_safety.py` | safety-critical regressions: shape errors, defaults, clamping warnings, the NaN-streak `TrainingError` and its `nan_streak`, sweep guards, and the mode/option combinations that are defined but easy to leave unexercised |
 | `test_validation.py` | `ParameterValidator` and `DataValidator`, plus integration-level checks through `nmi.run` |
 | `test_config.py` | the typed config objects and how they lower into `base_params` |
 | `test_run.py` | mode routing, the continuous processor pipeline, spike-data rigorous end to end, and that every warning points at the caller's line |
@@ -148,11 +148,11 @@ Each file covers one functional area. Run
 |---|---|
 | `test_dimensionality.py` | the grid chosen from the reference fit, the curve and its reading against curves of known dimension, the early stop and the extension, the median over splits, every warning, the settings and refusals, every split method, and a run through `run()` |
 | `test_interaction.py` | interaction information's plumbing and accuracy, and its shift routes across categorical, mixed and spike pairings |
-| `test_permutation.py` | the permutation null: X moved by a circular shift or reordered blocks for windowed rows, raw series and spike times, one null per row, `p_value`, the default trial count, and the modes that compute no null |
+| `test_permutation.py` | the permutation null: X moved by a circular shift or reordered blocks for windowed rows, raw series and spike times, one null per row, `p_value`, the default trial count and `min_permutations`, and the modes that compute no null |
 | `test_conditional.py` | CMI independence and correlation properties, the component details, categorical conditioning variables, spike and mixed streams on one grid |
 | `test_combining_terms.py` | the one rule for terms trained apart: measured, learned nothing or failed, repeats paired by position, terms that read different rows refused, the repeat rows and the rigorous rungs |
 | `test_paired_terms.py` | the terms of a difference split and evaluate the same rows, with or without a seed |
-| `test_rigorous_diagnostics.py` | fit diagnostics, their presence in corrected results, scalar rigorous analysis, chunk-range translation, and the rungs the fit leaves out: those that produced nothing or did not resolve, a difference's rung judged by its joint term, and every gamma that loses half of its rungs |
+| `test_rigorous_diagnostics.py` | fit diagnostics, their presence in corrected results, scalar rigorous analysis, chunk-range translation, and the rungs the fit leaves out: those that produced nothing or did not resolve, a difference's rung judged by its joint term, and every gamma that loses `left_out_share` of its rungs |
 | `test_sweep.py` | sweep mechanics: dimension inference, subsampling, processor-param sweeps, save-path collisions |
 | `test_transfer.py` | transfer entropy in both directions and the directionality index |
 | `test_conditional_transfer_rigorous.py` | conditional MI and transfer entropy through the rigorous path, including unit conversion |

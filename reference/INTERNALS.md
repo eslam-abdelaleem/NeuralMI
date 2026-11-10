@@ -133,7 +133,7 @@ difference's rigorous ladder is its signed measured value (`sweep.rung`), and
 learned nothing, the NaN rungs, whose term failed, and the rungs whose network,
 or for a difference whose joint term (`sweep.rung`), has a held-out curve that
 did not resolve (`curve_diagnosis == 'not resolved'`), with every $\gamma$ that
-loses half or more of its rungs to them.
+loses `left_out_share` or more of its rungs to them.
 Interaction information is signed and is left as measured.
 
 Every quantity combined from separately trained networks goes through

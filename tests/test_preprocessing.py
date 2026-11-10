@@ -258,19 +258,65 @@ class TestTheRowsPartOfTheCheck:
 
 class TestTheCheckOnLargeStreams:
 
-    def test_it_reads_every_row_one_stretch_at_a_time(self, monkeypatch):
+    def test_it_reads_every_row_one_stretch_at_a_time(self):
         from neural_mi import preprocessing
-        monkeypatch.setattr(preprocessing, 'CHECK_ROWS', 40)
         rng = np.random.default_rng(19)
         x = rng.standard_normal((100, 2))
         x[:40, 1] = 2.0                       # constant over the first stretch only
-        finite, std = preprocessing._channel_moments(x)
+        finite, std = preprocessing._channel_moments(x, 40)
         assert finite.all() and np.allclose(std, x.std(axis=0))
-        _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False)
+        _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False,
+                              preprocessing=nmi.Preprocessing(check_rows=40))
         assert not any('constant channel' in m for m in messages)
         x[90, 0] = np.inf                     # in the last stretch
         _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False)
         assert any('non-finite values (NaN or infinite) in channel(s) [0]' in m for m in messages)
+
+
+class TestTheCheckSettings:
+    """The data check's thresholds are settings of Preprocessing(...), its warnings name them, and they
+    change no stream."""
+
+    def test_scale_band(self):
+        x = np.random.default_rng(21).standard_normal((200, 2)) * 30
+        _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False)
+        assert any('Preprocessing(scale_band=10)' in m for m in messages)
+        _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False,
+                              preprocessing=nmi.Preprocessing(scale_band=100))
+        assert not any('typical scale' in m for m in messages)
+
+    def test_predicted_share(self, caplog):
+        x = _ar2()
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            check_streams({'x': x, 'y': x}, {}, quantity="mode='transfer'", rate=True,
+                          preprocessing=nmi.Preprocessing(predicted_share=1.0))
+        assert 'own past predicts up to' in caplog.text and "Preprocessing(time='ar')" not in caplog.text
+
+    def test_sample_rows(self):
+        from neural_mi.run import _report_rows
+        # The first ten rows are a thousand times smaller than the rest.
+        rows = {'x': torch.cat([torch.rand(10, 3, 5) * 1e-3, torch.rand(990, 3, 5)])}
+        _, every = _caught(_report_rows, 1000, 'windows', 100, {}, rows, {'x': 'spike'})
+        _, first = _caught(_report_rows, 1000, 'windows', 100, {'sample_rows': 10}, rows, {'x': 'spike'})
+        assert not any('typical scale' in m for m in every)
+        assert any('typical scale' in m and 'Preprocessing(scale_band=10)' in m for m in first)
+
+    def test_they_reach_the_check_through_run_and_change_no_stream(self):
+        x = np.random.default_rng(22).standard_normal((300, 2)).astype(np.float32) * 30
+        kwargs = dict(model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                      training=nmi.Training(n_epochs=1), show_progress=False, seed=0)
+        _, plain = _caught(nmi.run, x, x, **kwargs)
+        result, wide = _caught(nmi.run, x, x, preprocessing=nmi.Preprocessing(scale_band=100), **kwargs)
+        assert any('typical scale' in m for m in plain) and not any('typical scale' in m for m in wide)
+        assert not result.params.get('preprocessing')
+
+    def test_a_named_quantity_passes_them_to_both_checks(self):
+        x = (np.random.default_rng(23).standard_normal((400, 1)) * 30).astype(np.float32)
+        kwargs = dict(model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                      training=nmi.Training(n_epochs=1), show_progress=False)
+        _, plain = _caught(nmi.instantaneous_mi, x, x, **kwargs)
+        _, wide = _caught(nmi.instantaneous_mi, x, x, preprocessing=nmi.Preprocessing(scale_band=100), **kwargs)
+        assert any('typical scale' in m for m in plain) and not any('typical scale' in m for m in wide)
 
 
 class TestEncodersThatScaleTheirInputs:

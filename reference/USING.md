@@ -222,7 +222,7 @@ the configuration you want on its own. Permutation trials are never saved.
 | `'interaction'` | $I(X,W;Y) - I(X;Y) - I(W;Y)$ | `mi_estimate` |
 | `'transfer'` | transfer entropy from X to Y | `mi_estimate` |
 | `'pairwise'` | MI between every pair of channels | `get('mi_matrix')` |
-| `'dimensionality'` | the smallest embedding size that carries 95% of the MI | `get('dimension_at_most')` |
+| `'dimensionality'` | the smallest embedding size that carries `saturation_ratio` of the MI | `get('dimension_at_most')` |
 
 The functions of [the named quantities](#the-named-quantities) build their
 arrays, call one of these modes and return its `Results`.
@@ -409,8 +409,8 @@ has no value: it is NaN, `failed_term` names the term, and the same holds for
 every quantity combined from separately trained networks
 ([THEORY.md](THEORY.md#the-reported-number)). `dataframe` adds the component means and the
 `amplification_factor` by which the difference magnifies the components'
-relative error. A factor of 10 or more warns because a difference that small
-should be read with its components ([THEORY.md](THEORY.md#amplification)).
+relative error. A factor of `Training(amplification_threshold=...)` or more
+warns because a difference that small should be read with its components ([THEORY.md](THEORY.md#amplification)).
 
 The joint term reads X and W as a pair, each part on a branch of its own
 ([The encoder of a difference](#the-encoder-of-a-difference)), so X and W need
@@ -1491,7 +1491,10 @@ several configurations (a sweep or a lag scan) is drawn as MI against the swept
 keys: a line for one key, a heatmap for two and bars for more. `kind='line'`,
 `'heatmap'` or `'bar'` overrides the choice. `config_id=` picks the
 configuration whose repeats the per-mode figure draws. `ax=` draws into existing
-axes and `show=False` leaves the figure open.
+axes and `show=False` leaves the figure open. For transfer entropy estimated
+both ways, the title names the direction that dominates when the
+directionality index lies more than `direction_band=` from zero (0.1 by
+default).
 
 `Results.compare([r1, r2], labels=[...])` overlays results of one mode: the
 training curves of `estimate` results, the curves of results over one swept

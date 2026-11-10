@@ -166,6 +166,59 @@ BASE_PARAMS_SCHEMA = {
     # Which epoch of the held-out curve the reported values are read at: the earliest at its top
     # ('plateau_start') or its maximum ('peak'). See neural_mi/training/epochs.py.
     'epoch_rule': {'type': str, 'default': 'plateau_start'},
+    # How the held-out curve is judged (neural_mi/training/epochs.py), in units of the
+    # curve's epoch-to-epoch noise, of standard errors or of epochs.
+    # The level of the top is the median of the smoothed values within level_noise noise
+    # units of the maximum; the plateau starts at the first epoch within start_noise of it.
+    'level_noise': {'type': float, 'min': 0.0, 'default': 2.0},
+    'start_noise': {'type': float, 'min': 0.0, 'default': 0.5},
+    # The top must stand resolved_noise noise units above zero to count as resolved.
+    'resolved_noise': {'type': float, 'min': 0.0, 'default': 8.0},
+    # A top reached within the smoothing's reach of the start that falls by more than
+    # fall_noise noise units within fast_epochs epochs came too fast.
+    'fast_epochs': {'type': int, 'min': 0, 'default': 8},
+    'fall_noise': {'type': float, 'min': 0.0, 'default': 3.0},
+    # The approach to the top starts approach_noise noise units below it.
+    'approach_noise': {'type': float, 'min': 0.0, 'default': 3.0},
+    # The readings at the start of the approach and at the epoch read differ by more
+    # than fuzzy_se standard errors of the estimate: 'fuzzy start'.
+    'fuzzy_se': {'type': float, 'min': 0.0, 'default': 3.0},
+    # A held-out value more than clear_se standard errors above zero shows that the
+    # network learned something.
+    'clear_se': {'type': float, 'min': 0.0, 'default': 3.0},
+    # A curve that rose by rising_noise noise units over its last rising_epochs epochs,
+    # when training ran to its limit, was still rising.
+    'rising_epochs': {'type': int, 'min': 1, 'default': 20},
+    'rising_noise': {'type': float, 'min': 0.0, 'default': 3.0},
+    # A value above ceiling_fraction of its InfoNCE ceiling, log of the rows per
+    # evaluation, is near that ceiling.
+    'ceiling_fraction': {'type': float, 'min': 0.0, 'default': 0.85},
+    # Epoch selection may be unreliable when more than saturated_epoch_fraction of the
+    # smoothed held-out curve lies above saturation_fraction of its ceiling.
+    'saturation_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
+    'saturated_epoch_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
+    # A quantity combined from several terms warns when an error in a term reaches
+    # its value amplified this many times (neural_mi/analysis/sweep.py).
+    'amplification_threshold': {'type': float, 'min': 1.0, 'default': 10.0},
+
+    # The data check (neural_mi/preprocessing.py), read from Preprocessing(...).
+    # A stream's typical channel scale more than scale_band from unit scale warns.
+    'scale_band': {'type': float, 'min': 1.0, 'default': 10.0},
+    # For a rate quantity on a series, a channel whose own past predicts more than
+    # predicted_share of its variance is reported.
+    'predicted_share': {'type': float, 'min': 0.0, 'default': 0.9},
+    # The check reads at most check_rows rows at a time, and fits a channel's own past on
+    # the first check_rows rows.
+    'check_rows': {'type': int, 'min': 1, 'default': 100_000},
+    # The scale of rows a spike-time or categorical processor builds is read from their
+    # first sample_rows rows.
+    'sample_rows': {'type': int, 'min': 1, 'default': 10_000},
+    # A call with fewer than small_sample rows reaching the estimator warns that the
+    # dataset is small (read from Training(...)).
+    'small_sample': {'type': int, 'min': 0, 'default': 200},
+    # Training stops with TrainingError after nan_streak epochs in a row whose held-out
+    # evaluation is NaN.
+    'nan_streak': {'type': int, 'min': 1, 'default': 3},
 
     # Mixed-precision (AMP) training.
     # 'auto', enable on CUDA, no-op on CPU/MPS (safe default).
@@ -181,17 +234,29 @@ BASE_PARAMS_SCHEMA = {
     'dataset_device': {'type': (str, type(None)), 'default': 'cpu'},
 }
 
+# The settings the trainer reads and judges the held-out curve by, and warns by
+# (neural_mi/training/trainer.py, neural_mi/training/epochs.py). Each is a field of
+# Training(...).
+CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs', 'fall_noise', 'approach_noise',
+                  'fuzzy_se', 'clear_se', 'rising_epochs', 'rising_noise', 'ceiling_fraction',
+                  'saturation_fraction', 'saturated_epoch_fraction', 'nan_streak')
+
+# The settings of the data check (neural_mi/preprocessing.py). Each is a field of
+# Preprocessing(...).
+CHECK_SETTINGS = ('scale_band', 'predicted_share', 'check_rows', 'sample_rows')
+
 # The processor settings' defaults, by processor. ``None`` means unset: a
 # window_size has to be given, a step_size of None is one window, and so on.
 PROCESSOR_DEFAULTS = {
     'continuous': {'window_size': None, 'step_size': None, 'min_coverage_fraction': 0.2,
-                   'sample_rate': None},
+                   'sample_rate': None, 'period_tolerance': 0.05, 'padded_share': 0.1, 'gap_multiple': 3.0,
+                   'bridged_share': 0.3},
     'spike': {'window_size': None, 'step_size': None, 'max_spikes_per_window': None, 'n_seconds': None,
               'sample_rate': None, 'no_spike_value': 0.0, 'bin_size': None, 'normalize_bins': False,
               'exclude_bursty_neurons': False, 'burst_threshold_multiplier': 5.0,
               'drop_empty_windows': True},
     'categorical': {'window_size': None, 'step_size': None, 'sample_rate': None,
-                    'min_coverage_fraction': 0.2, 'encoding': 'majority_vote'},
+                    'min_coverage_fraction': 0.2, 'encoding': 'majority_vote', 'max_encoding_width': 500},
 }
 
 

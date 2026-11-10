@@ -19,7 +19,10 @@ import torch
 from neural_mi.analysis.assemble import aggregate
 from neural_mi.analysis.sweep import _joint_marginal_difference, combine_terms, term_values
 from neural_mi.exceptions import CombinationWarning
-from neural_mi.training.epochs import CLEAR_SE, stands_above_zero
+from neural_mi.defaults import default_of
+from neural_mi.training.epochs import stands_above_zero
+
+CLEAR_SE = default_of('clear_se')
 
 
 def _net(raw, test=0.5, eval_size=1000, nothing=False):

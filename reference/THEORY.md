@@ -239,10 +239,10 @@ same rows, so that error moves the whole curve together and never shows from
 epoch to epoch, and a network that learned nothing can sit flat a little above
 zero. A
 slow approach to the top is measured instead: the training-side value is read
-also at the first epoch within three noise units of the top, on the same rows,
-and the start of the top is uncertain when the two readings differ by more than
-`FUZZY_SE` of the estimate's standard errors (`approach_shift` keeps the
-difference). `FUZZY_SE` is set in `neural_mi/training/epochs.py`.
+also at the first epoch within `approach_noise` noise units of the top, on the
+same rows, and the start of the top is uncertain when the two readings differ by
+more than `fuzzy_se` of the estimate's standard errors (`approach_shift` keeps the
+difference). Both are settings of `Training(...)`.
 
 The held-out curve plays the part a bandwidth choice plays in kernel density
 estimation. On the training side the critic can fit ever finer structure. The
@@ -346,8 +346,8 @@ difference is left out when its joint term does not resolve, the term that holds
 every variable the others hold, since a smaller term can read nothing because
 it is zero. A rung of a difference carries its signed measured value, a negative
 one included, since leaving out the negative rungs of a small difference would
-push its fit up. A $\gamma$ that loses half or more of its rungs to either
-cause drops out with the rest of them. Its chunks are too small for the
+push its fit up. A $\gamma$ that loses `left_out_share` or more of its rungs
+to either cause drops out with the rest of them. Its chunks are too small for the
 quantity, and the rungs it keeps are the networks that happened to learn, which
 read high for their chunk size and tilt the line. `min_gamma_points` then
 decides whether enough values of $\gamma$ remain. The fit warns about both
@@ -970,12 +970,16 @@ $$
 
 describe how spread its spectrum is. They count constructed directions along
 with true ones. The mode uses $\mathrm{PR}_{\text{singular}}$ only to size the grid as it's less conservative.
-When twice $\mathrm{PR}_{\text{singular}}$ is at most 10 the grid is 1 to 10. Up to 20 it is 1 to 20.
-Beyond 20 it is 10 values on a log scale from 1 to twice the ratio. A reference is refitted at $4\,\mathrm{PR}_{\text{singular}}$ when
-$2\,\mathrm{PR}_{\text{singular}}$ reaches 75% of its size. The grid is fitted three values at a time and stops once
-three values in a row reach the threshold on every split. A curve that is still
+The grid reaches `grid_reach` times $\mathrm{PR}_{\text{singular}}$. When that
+reach is at most `grid_small`, the grid is every value from 1 to `grid_small`. When the reach is larger
+but at most `grid_medium`, the grid is every value from 1 to `grid_medium`. Beyond `grid_medium`, the grid is
+`grid_points` values on a log scale from 1 to the reach. When the reach is at least `reference_fill` of
+the reference's embedding size, the reference is refitted at `refit_reach` times
+$\mathrm{PR}_{\text{singular}}$. The grid is fitted `confirm_steps` values at a time and stops once that
+many values in a row reach the threshold on every split. A curve that is still
 short of the threshold at the end of the grid gets one extension on a log scale
 up to the reference. `embedding_dims` replaces the grid and fits every value.
+[PARAMETERS.md](PARAMETERS.md#dimensionality) gives the default of each setting.
 
 ### Splits and their spread
 

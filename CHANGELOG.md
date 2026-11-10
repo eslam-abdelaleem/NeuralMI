@@ -50,6 +50,27 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   of the exact value instead of half a bit. Writing them showed that KSG
   misreads values that tie, such as spike windows, and `USING.md` now says to
   use the trained estimators there. KSG also warns when it meets such values.
+- Every number by which the library judges a result or its data is now a
+  setting, with the value it had as its default, so no result changes. A
+  warning that uses one of these numbers names the setting and the value that
+  it used. `Training(...)` takes the thresholds by which the held-out curve is
+  read and diagnosed (`level_noise`, `start_noise`, `resolved_noise`,
+  `clear_se`, `approach_noise`, `fuzzy_se`, `fast_epochs`, `fall_noise`,
+  `rising_epochs` and `rising_noise`). It also takes the thresholds of the
+  ceiling and saturation warnings (`ceiling_fraction`, `saturation_fraction`
+  and `saturated_epoch_fraction`), `amplification_threshold` for a quantity
+  combined from several terms, `small_sample` and `nan_streak`.
+  `Preprocessing(...)` takes the data check's `scale_band`, `predicted_share`,
+  `check_rows` and `sample_rows`, which change no stream. `Dimensionality(...)`
+  takes the grid's `grid_reach`, `grid_small`, `grid_medium`, `grid_points`,
+  `reference_fill`, `refit_reach` and `confirm_steps`, and the warnings'
+  `restart_spread` and `held_out_gap`. The rigorous fit takes `left_out_share`,
+  `run()` takes `permutation_min_shift` and `min_permutations`, and KSG takes
+  `max_tied_share`. The continuous processor takes `period_tolerance`,
+  `padded_share`, `gap_multiple` and `bridged_share`, the categorical processor
+  takes `max_encoding_width`, and the figure of a transfer entropy estimated
+  both ways takes `direction_band`. `PARAMETERS.md` gives each default. The
+  warnings about a scale far from unit scale no longer quote a measured example.
 
 ### Changed
 

@@ -39,15 +39,17 @@ samples they are evaluated on. A value near its ceiling may have been limited by
 the bound and not by the data.
 
 **`InfoNCE estimate is near its ceiling`**
-The reported MI is within 15% of $\log(\mathrm{train\_eval\_size})$ or of the
-held-out ceiling. The true value may be higher. A curve that flattens here has
+The reported MI is above `Training(ceiling_fraction=...)` of
+$\log(\mathrm{train\_eval\_size})$ or of the held-out ceiling. The true value may be higher. A curve that flattens here has
 probably flattened against the bound. Raise `max_eval_samples` (and
 `train_subset_size` if set) or use the less biased `estimator='smile'` at the cost of more variance.
 
 **`Peak-epoch selection may be unreliable`**
-When much of the smoothed held-out MI curve sits near its ceiling, the epoch
-with the largest value and the value reported at it are close to arbitrary, and
-the top may be the ceiling rather than the information. Raise
+More than `Training(saturated_epoch_fraction=...)` of the epochs of the smoothed
+held-out MI curve sit above `Training(saturation_fraction=...)` of its ceiling.
+With so much of the curve near its ceiling, the epoch with the largest value and
+the value reported at it are close to arbitrary, and the top may be the ceiling
+rather than the information. Raise
 `max_eval_samples` so the curve has room to separate, or set `peak_fraction`
 below 1 to read the value at an earlier epoch, before the curve reaches its
 top.
@@ -79,11 +81,11 @@ the terms are not separate estimates
 ([THEORY.md](THEORY.md#the-conditional-form)), and only a negative estimate is
 reported.
 
-**`... has an error-amplification factor of ...x`**
+**`... has an error-amplification factor of ...x, which reaches Training(amplification_threshold=...)`**
 Because the result is a small residual of much larger estimates (two for a
-conditional quantity, three for interaction information), a 1% error on each
-component would become roughly the factor in percent on the result if the
-components' errors were independent. They are trained on the same rows and
+conditional quantity, three for interaction information), a relative error on
+each component would become roughly the factor times that error on the result if
+the components' errors were independent. They are trained on the same rows and
 partly err together, which cancels some of that. Report the components beside
 the point estimate and read the spread over several repeats before drawing a
 conclusion.
@@ -168,9 +170,9 @@ in blocks of at most `max_eval_samples` when there are more.
 The subset is clamped to the held-out set, and every sample of it is evaluated
 at every epoch, in blocks of at most `max_eval_samples` when there are more.
 
-**`Only ... reach the estimator`**
-Whether the fewer than 200 samples or windows that reach the estimator are
-enough depends on the data. The samples an estimate needs grow roughly as $N
+**`Only ... reach the estimator, which is fewer than Training(small_sample=...)`**
+Whether these few samples or windows are enough depends on the data. The
+samples an estimate needs grow roughly as $N
 \sim d^2/I$ ([tutorial
 02](https://eslam-abdelaleem.github.io/NeuralMI/tutorials/02_Your_First_Number.html),
 section 2). Neither the number $d$ of latent dimensions carrying the shared
@@ -181,7 +183,8 @@ regularisation settings not yet in use.
 
 **`The held-out MI was still rising when training reached n_epochs=...`**
 Training used every epoch it was allowed, and the smoothed held-out curve rose
-by more than 3 times its own noise over the last 20 epochs. The reported value
+by more than `Training(rising_noise=...)` times its own noise over the last
+`Training(rising_epochs=...)` epochs. The reported value
 may be under-trained. Raise `n_epochs`: `patience` still ends training once the
 curve stops improving. A higher `learning_rate` gets further in each epoch
 instead. Raised too far, it brings the top into the first few epochs, which the
@@ -191,9 +194,10 @@ rows when they are fewer than one training batch (the data check's line on the
 rows, `Data check: ... reach the estimator, ...`).
 
 **`The held-out MI curve does not rise clearly above its own noise`**
-The top of the smoothed held-out curve stands less than 8 times the curve's
-epoch-to-epoch noise above zero, or less than 3 standard errors of its held-out
-rows ($\sqrt{2I/N}$ for a top of $I$ nats on $N$ rows). The epoch-to-epoch noise
+The top of the smoothed held-out curve stands less than
+`Training(resolved_noise=...)` times the curve's epoch-to-epoch noise above
+zero, or less than `Training(clear_se=...)` standard errors of its held-out rows
+($\sqrt{2I/N}$ for a top of $I$ nats on $N$ rows). The epoch-to-epoch noise
 is measured from the curve itself, from its changes between epochs with any
 smooth trend removed. Every epoch scores the same held-out rows, so their
 sampling error moves the whole curve together and never shows in that noise: a
@@ -203,16 +207,17 @@ values are all non-positive gets the message below instead.
 
 **`The held-out MI reached its top at epoch ... and fell clearly soon after`**
 The earliest epoch at the top of the smoothed curve lies within the smoothing's
-reach of the start (6 epochs at the default `median_window` and
-`smoothing_sigma`), and the curve falls by more than 3 noise units within 8
-epochs after it. The smoothing holds the curve at its first value before it
+reach of the start, and the curve falls by more than `Training(fall_noise=...)`
+noise units within `Training(fast_epochs=...)` epochs after it. The message
+gives the reach in epochs, which `median_window` and `smoothing_sigma` set. The smoothing holds the curve at its first value before it
 begins, so the start of the curve placed that epoch. A lower `learning_rate` spreads the rise over more
 epochs.
 
 **`The held-out MI approached its top slowly, so where the top starts is uncertain`**
-The smoothed curve climbed its last 3 noise units to the level of its top over
-several epochs, and the training-side value read at the first of them differs
-from the reported one by more than `FUZZY_SE` of the estimate's standard errors (the
+The smoothed curve climbed its last `Training(approach_noise=...)` noise units
+to the level of its top over several epochs, and the training-side value read at
+the first of them differs from the reported one by more than
+`Training(fuzzy_se=...)` of the estimate's standard errors (the
 spread of its evaluation blocks over the root of their count, or
 $\sqrt{2I/N}$ for a single block). A reported value at or below zero is left
 out, since its warnings come from the entries on negative values. The estimate then depends on where the top
@@ -227,8 +232,9 @@ rate before the data. In a deliberate null this is the expected outcome.
 
 **`The train MI at the reported epoch is negative (...) while the test MI (...) stands more than ... standard errors above zero`**
 The training-side value at the reported epoch came out negative while the
-held-out value of the network stood clearly above zero: by more than 3 of its
-standard errors, $\sqrt{2I/N}$ for a held-out value of $I$ nats on $N$ rows. Because MI cannot be
+held-out value of the network stood clearly above zero: by more than
+`Training(clear_se=...)` of its standard errors, $\sqrt{2I/N}$ for a held-out
+value of $I$ nats on $N$ rows. Because MI cannot be
 negative, the reported value is 0 and the measured one is kept as
 `raw_train_mi`. The two readings of the network contradict each other, so a
 quantity combined from several networks has no value in that repeat (the
@@ -237,15 +243,15 @@ too few epochs or too few samples, and data far from unit scale.
 
 **`The train MI at the reported epoch is negative (...), and the test MI (...) is within ... standard errors of zero`**
 Both readings of the network lie within noise of zero: the training-side value
-is negative and the held-out value stands less than 3 standard errors above
-zero. The network learned nothing distinguishable from zero, which is what a
+is negative and the held-out value stands less than `Training(clear_se=...)`
+standard errors above zero. The network learned nothing distinguishable from zero, which is what a
 dependence of zero reads, and the reported value is 0 with the measured one
 kept as `raw_train_mi`. In a quantity combined from several networks the term
 enters as 0.
 
-**`NaN MI detected at epoch ... (consecutive NaN streak: .../3)`**
-An epoch whose evaluation produced NaN is skipped for early stopping. Three in a
-row raise `TrainingError`. The usual causes are a learning rate that is too high
+**`NaN MI detected at epoch ... (consecutive NaN streak: ... of Training(nan_streak=...))`**
+An epoch whose evaluation produced NaN is skipped for early stopping.
+`Training(nan_streak=...)` such epochs in a row raise `TrainingError`. The usual causes are a learning rate that is too high
 or a degenerate batch.
 
 **`MI evaluation returned NaN`**, **`Score matrix contains NaN values during evaluation`**
@@ -268,8 +274,8 @@ lambda`.
 ## Permutation tests
 
 **`With n_permutations=... the smallest p-value the permutation test can report is 1/...`**
-With $n$ trials no p-value can fall below $1/(n+1)$. A reliable p-value usually
-needs 100 trials or more. The message also states what the test costs.
+With $n$ trials no p-value can fall below $1/(n+1)$. The call warns when $n$ is
+below `min_permutations`. The message also states what the test costs.
 
 **`Permutation trial failed`**, **`All ... permutation trials for mode='...' failed and left no null distribution`**
 One trial raised an exception or every trial did. Without a null the test is
@@ -337,12 +343,16 @@ random split that leaks between neighbouring windows of a time series. Reduce
 `n_test_blocks` or use more data.
 
 **`ContinuousWindowDataset: .../... interpolated time points (...) are zero-padded due to data gaps`**
-More than a tenth of the interpolated points fall outside the recorded range and
-were filled with zeros. Check the time vector against the data.
+More than the processor's `padded_share` of the interpolated points fall outside
+the recorded range and were filled with zeros. Check the time vector against the
+data.
 
-**`ContinuousWindowDataset: .../... retained window(s) have over 30% of their samples bridged by interpolation`**
-Windows that passed the coverage check and entered the estimate are still mostly
-interpolated across a large gap. Raise `min_coverage_fraction` to drop them.
+**`ContinuousWindowDataset: .../... retained window(s) have more than bridged_share=... of their samples bridged by interpolation`**
+Windows that passed the coverage check and entered the estimate are still
+largely interpolated across a gap. A gap is an interval between samples longer
+than the processor's `gap_multiple` median periods, and the processor's
+`bridged_share` sets how much of a window may lie across gaps before the call
+warns. Raise `min_coverage_fraction` to drop such windows.
 
 **`SpikeWindowDataset: max_spikes_per_window cap applied`**
 Spikes beyond the cap are dropped in each window. Shorten the window or raise the
@@ -382,8 +392,8 @@ out when its joint term does not resolve, the term that holds every variable the
 others hold, since a smaller term can read nothing because it is zero. The
 message gives the count at each $\gamma$.
 
-**`...half or more of the rungs at gamma=... are left out, and so are those values of gamma`**
-The rungs there produced nothing or did not resolve. The chunks at those values
+**`...at gamma=... the rungs left out make up left_out_share=... or more of the rungs, so the fit leaves out those values of gamma as well`**
+The rungs left out there produced nothing or did not resolve. The chunks at those values
 of $\gamma$ are likely too small to estimate the quantity, and the rungs they
 keep are the networks that happened to learn, which would tilt the line. The
 fit leaves those values of $\gamma$ out with all their rungs. With fewer than
@@ -446,21 +456,22 @@ unscaled. Drop it before the call, especially before `channel='zca'`, which
 has no direction to sphere along it.
 
 **`The channels of ... have a typical scale of ..., more than a factor of ... from unit scale`**
-The median standard deviation of the stream's channels is below 0.1 or above
-10. The networks start from weights sized for inputs near unit scale, and
-their estimate depends on units: a pair reads close to its true value at unit
-scale and close to 0 at a thousand times it or a thousandth of it.
+The median standard deviation of the stream's channels lies more than a factor
+of `Preprocessing(scale_band=...)` from 1, either way. The networks start from
+weights sized for inputs near unit scale, so their estimate depends on units.
+The same dependence can read close to its value at unit scale and close to 0
+far from it.
 `Preprocessing(channel='zscore')` brings every channel to unit scale and leaves
 every quantity unchanged. The check does not fire when a channel transform is
 set.
 
 **`The rows ...'s ... processor builds have a typical scale of ..., more than a factor of ... from unit scale`**
 A spike-time or categorical stream's rows come from its processor, after any
-preprocessing, and the typical standard deviation of those rows is below 0.1 or
-above 10. Spike times within a window are small numbers in seconds. Binned
-counts divided by the bin width (`normalize_bins`) are rates in the hundreds or
-thousands at fine bins, and on the library's spike generator they turned a
-1.15-bit dependence into 0. `normalize_bins=False` keeps counts, and
+preprocessing, and the typical standard deviation of those rows lies more than
+a factor of `Preprocessing(scale_band=...)` from 1, either way. Spike times
+within a window are small numbers in seconds. Binned counts divided by the bin
+width (`normalize_bins`) are rates in the hundreds or thousands at fine bins,
+where a clear dependence can read as 0. `normalize_bins=False` keeps counts, and
 `Model(input_scaling='standard')` scales the rows an encoder receives.
 
 **`Preprocessing(time=...) filters each channel by its own past, which changes what ... measures`**
@@ -499,8 +510,9 @@ that leaves every quantity unchanged.
 ## Data shape and type
 
 **`ContinuousWindowDataset: first inter-sample interval (...) differs from the median`**
-The library uses the median period because the first gap in the time vector is
-unusual. Check the start of the recording.
+The first interval of the time vector differs from the median interval by more
+than the processor's `period_tolerance` of the median. The library uses the
+median period. Check the start of the recording.
 
 **`processor_type mixes 'spike' (...) with '...' on stream ...`**
 Because spike times are in seconds and a continuous or categorical stream
@@ -528,7 +540,8 @@ conditional estimate given that copy reads away from zero where the truth is 0.
 The empty slots of spike windows, spike counts and categories tie. Use the
 trained estimators on them. X, Y and Z are the variables of the estimate as KSG
 reads it, Z the conditioning set of a conditional one, and the message names the
-column whose values tie most.
+column whose values tie most. KSG warns when the share of tied rows in that
+column exceeds `Estimator(params={'max_tied_share': ...})`.
 
 ---
 
@@ -558,7 +571,7 @@ low. The curve uses the best restart at each value. When the restarts disagree
 this much below the reading, the best one may also have settled short and the
 reading may be too high. Raise `n_restarts`.
 
-**`Dimensionality: at the reference fit the held-out MI (...) is more than ... below the plateau`**
+**`Dimensionality: at the reference fit the held-out MI (...) falls short of the plateau (...) by more than ...`**
 The plateau is the training-side MI. A held-out value far below it means the
 data hold few samples for the information each dimension carries. The training
 side then keeps rising with the embedding size and pushes the reading up. The
@@ -648,7 +661,9 @@ Freed tensors can linger in an accelerator's cache across many tasks. Use
 `Training(dataset_device='cpu')` for long sweeps.
 
 **`CategoricalWindowDataset: encoding='full_trajectory' will produce a ...-dimensional input`**
-Categories times window length grows quickly. Use `'majority_vote'` or
+The width of a window's input is the number of categories times the samples per
+window, so it grows quickly with the window. The call warns when the width
+exceeds the processor's `max_encoding_width`. Use `'majority_vote'` or
 `'probability'` unless the time course within the window matters.
 
 **`track_embeddings=...: storing embeddings for all ... samples at every epoch`**
@@ -736,9 +751,9 @@ The check every call runs on its streams before rows are built, after any
 `Preprocessing`. It gives each stream's channel count and the range of its
 channel scales and, for a rate quantity on a series, the largest share of a
 channel's variance that the channel's own past predicts linearly, from the
-autoregressive fit `ARWhitening` uses, read from its first 100,000 rows. A
-share above 90% means a large
-conditioning term, of which the rate is a small residual, and the line
+autoregressive fit `ARWhitening` uses, read from its first
+`Preprocessing(check_rows=...)` rows. A share above
+`Preprocessing(predicted_share=...)` means a large conditioning term, of which the rate is a small residual, and the line
 suggests `Preprocessing(time='ar')`, which removes the term and leaves the rate
 unchanged. Spike-time and categorical streams are named only, since their
 processors build their rows.

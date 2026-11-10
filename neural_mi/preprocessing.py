@@ -33,15 +33,19 @@ import torch
 from scipy.signal import lfilter
 from scipy.stats import norm
 
+from neural_mi.defaults import CHECK_SETTINGS, setting
 from neural_mi.logger import logger, user_stacklevel
 
 # The rate quantities: their value is unchanged when each process is filtered invertibly by its own past.
 RATE_QUANTITIES = ('mi_rate', 'transfer_entropy', 'conditional_transfer_entropy',
                    'directed_information_rate', 'instantaneous_exchange')
-# Channels count as being far from unit scale beyond this factor either way.
-SCALE_BAND = 10.0
-# The share of a channel's variance its own past predicts linearly above which a whitening is suggested.
-PREDICTED_SHARE = 0.9
+
+
+def check_settings(preprocessing) -> Dict[str, Any]:
+    """The settings of the data check (:data:`neural_mi.defaults.CHECK_SETTINGS`) that ``preprocessing``, a
+    ``Preprocessing`` or a dict, sets. :func:`neural_mi.defaults.setting` reads each, or its default."""
+    given = preprocessing.to_kwargs() if hasattr(preprocessing, 'to_kwargs') else dict(preprocessing or {})
+    return {name: value for name, value in given.items() if name in CHECK_SETTINGS and value is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -414,11 +418,6 @@ def _fmt(value: float) -> str:
     return f"{value:.3g}"
 
 
-# The check reads at most this many rows at a time, and its statistics from the first this many: it runs on
-# every call and must not copy a large dataset.
-CHECK_ROWS = 100_000
-
-
 def _channel_view(chunk) -> np.ndarray:
     """A stretch of a stream with its channels as columns, without converting its type."""
     array = chunk.detach().cpu().numpy() if torch.is_tensor(chunk) else np.asarray(chunk)
@@ -429,13 +428,13 @@ def _channel_view(chunk) -> np.ndarray:
     return np.moveaxis(array, 1, -1).reshape(-1, array.shape[1])
 
 
-def _channel_moments(data) -> Tuple[np.ndarray, np.ndarray]:
+def _channel_moments(data, rows: int) -> Tuple[np.ndarray, np.ndarray]:
     """Whether every value of each channel is finite, and each channel's standard deviation over every row,
-    read in stretches of :data:`CHECK_ROWS` rows whose moments combine exactly (Chan et al.), so no more
-    than one stretch is copied at a time."""
+    read in stretches of ``rows`` rows whose moments combine exactly (Chan et al.), so no more than one
+    stretch is copied at a time."""
     finite, n, mean, m2 = None, 0, None, None
-    for start in range(0, len(data), CHECK_ROWS):
-        block = _channel_view(data[start:start + CHECK_ROWS]).astype(float)
+    for start in range(0, len(data), rows):
+        block = _channel_view(data[start:start + rows]).astype(float)
         ok = np.isfinite(block).all(axis=0)
         finite = ok if finite is None else finite & ok
         count, block_mean = len(block), block.mean(axis=0)
@@ -461,10 +460,15 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
     ``Preprocessing`` option that addresses each. The report itself is
     logged at the info level. ``encoder_scales`` says the encoders scale their
     own inputs (``Model(input_scaling=...)``), and the scale is then no warning.
-    It reads every row in stretches, so it never copies a large stream, and
-    fits the own past on the first :data:`CHECK_ROWS` rows of each.
+    It reads every row in stretches of ``check_rows`` rows, so it never copies a
+    large stream, and fits the own past on the first ``check_rows`` rows of each.
+    The settings ``scale_band``, ``predicted_share`` and ``check_rows`` come from
+    ``preprocessing`` (:func:`check_settings`).
     """
     asked = describe(preprocessing) or {}
+    checks = check_settings(preprocessing)
+    scale_band, predicted_share = setting(checks, 'scale_band'), setting(checks, 'predicted_share')
+    rows = setting(checks, 'check_rows')
     parts = []
     for name, data in streams.items():
         if data is None:
@@ -473,7 +477,7 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
         if kind in ('spike', 'categorical'):
             parts.append(f"{name}: {kind}, rows built by its processor")
             continue
-        finite, std = _channel_moments(data)
+        finite, std = _channel_moments(data, rows)
         if not finite.all():
             bad = np.flatnonzero(~finite).tolist()
             warnings.warn(
@@ -493,20 +497,21 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
         if live.size:
             typical = float(np.median(live))
             line += f", scale {_fmt(live.min())} to {_fmt(live.max())}"
-            if not (1.0 / SCALE_BAND <= typical <= SCALE_BAND) and 'channel' not in asked and not encoder_scales:
+            if not (1.0 / scale_band <= typical <= scale_band) and 'channel' not in asked and not encoder_scales:
                 warnings.warn(
                     f"The channels of {name} have a typical scale of {_fmt(typical)}, more than a factor "
-                    f"of {SCALE_BAND:g} from unit scale. The networks start from weights sized for inputs "
-                    f"near unit scale, and the estimate depends on the units: a dependence of 2 nats reads "
-                    f"near 0 at a thousandth or a thousand times its scale. Preprocessing(channel='zscore') "
-                    f"brings every channel to unit scale and leaves every quantity unchanged.",
+                    f"of Preprocessing(scale_band={scale_band:g}) from unit scale. The networks start from "
+                    f"weights sized for inputs near unit scale, so the estimate depends on the units. The same "
+                    f"dependence can read close to its value at unit scale and close to 0 far from it. "
+                    f"Preprocessing(channel='zscore') brings every channel to unit scale and leaves every "
+                    f"quantity unchanged.",
                     UserWarning, stacklevel=user_stacklevel())
         if rate and kind == 'series' and live.size and len(data) > 2:
-            columns = _channel_view(data[:CHECK_ROWS]).astype(float)
+            columns = _channel_view(data[:rows]).astype(float)
             ar = ARWhitening().fit(columns[:, [j for j in range(columns.shape[1]) if j not in constant]])
             share = max(ar.predicted_)
             line += f", own past predicts up to {share:.1%} of a channel's variance"
-            if share > PREDICTED_SHARE and 'time' not in asked:
+            if share > predicted_share and 'time' not in asked:
                 line += (" (a large conditioning term, of which the rate is a small residual; "
                          "Preprocessing(time='ar') removes it and leaves the rate unchanged)")
         parts.append(line)

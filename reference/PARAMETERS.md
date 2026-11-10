@@ -38,7 +38,9 @@ The arguments of `nmi.run()` itself, beside the config objects.
 | `device` | `None` | Compute device, `'cpu'`, `'cuda'` or `'mps'`. `None` trains on the CPU unless a GPU, timed on the call's first network, is clearly faster ([USING.md](USING.md#speed-memory-and-logging)). |
 | `permutation_test` | `False` | Test every row of the result against a null built by rerunning the call with X moved in time. Adds a `p_value` column. |
 | `n_permutations` | `10` | Number of null trials. The smallest p-value reachable is `1 / (n_permutations + 1)`. |
-| `permutation_shuffle` | `'circular'` | How X is moved: `'circular'` shifts it by one random offset with wrap-around, excluding offsets within 10% of the recording's length of zero; `'block'` reorders contiguous blocks one window long. |
+| `permutation_shuffle` | `'circular'` | How X is moved: `'circular'` shifts it by one random offset with wrap-around, excluding offsets within `permutation_min_shift` of the recording's length of zero; `'block'` reorders contiguous blocks one window long. |
+| `permutation_min_shift` | `0.1` | The share of the recording's length within which a circular shift counts as too close to zero, in either direction, to break the dependence. It must lie between 0 and 0.5. |
+| `min_permutations` | `100` | The call warns when a permutation test runs fewer trials than this, since the smallest p-value that the test can report is `1 / (n_permutations + 1)`. |
 
 The mode configs are passed under the mode's own name: `run(..., mode='lag',
 lag=Lag(lag_range=range(-10, 11)))`. A config for another mode is ignored with a
@@ -80,6 +82,10 @@ n_channels)`.
 | `step_size` | one window | Distance between window starts. Below 1 it is a fraction of `window_size`. |
 | `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. A window never runs past the stream's first or last sample, whatever this allows. |
 | `sample_rate` | `None` | Samples per second. Puts windows, steps and lags in seconds. |
+| `period_tolerance` | `0.05` | The call warns when the first interval of the time vector differs from the median interval by more than this fraction of the median interval. The median sets the period either way. |
+| `padded_share` | `0.1` | The call warns when more than this share of the time points at which the stream is interpolated for its windows fall outside the recorded range. Those points are filled with zeros. |
+| `gap_multiple` | `3.0` | An interval between samples longer than this many median periods counts as a gap. |
+| `bridged_share` | `0.3` | The call warns when a window that it keeps for the estimate has more than this share of its samples interpolated across a gap. |
 
 **`'spike'`** reads a list with one array of spike times (in seconds) per
 neuron.
@@ -108,6 +114,7 @@ Other values are mapped to consecutive integers with a warning.
 | `encoding` | `'majority_vote'` | `'majority_vote'` (the most frequent label, one-hot), `'probability'` (the label frequencies) or `'full_trajectory'` (every sample one-hot). |
 | `min_coverage_fraction` | `0.2` | Fraction of a window that must hold samples for the window to be kept. A window never runs past the stream's first or last sample, whatever this allows. |
 | `sample_rate` | `None` | Samples per second. Puts windows, steps and lags in seconds. |
+| `max_encoding_width` | `500` | With `encoding='full_trajectory'`, the call warns when a window's input would be wider than this. The width is the number of categories times the samples per window. |
 
 ## `Preprocessing`
 
@@ -116,12 +123,18 @@ when asked and recorded in `result.params['preprocessing']`. Each transform is
 fitted on X, Y and W apart, the time transform first. Spike-time and
 categorical streams take neither, and arrays passed in as rows take the channel
 transform only. The transforms are in `nmi.preprocessing`, and
-[USING.md](USING.md#preprocessing-the-streams) shows them in use.
+[USING.md](USING.md#preprocessing-the-streams) shows them in use. The last four
+settings belong to the data check, which every call runs on its streams whether
+or not it asks for a transform.
 
 | Parameter | Default | Meaning |
 |--|--|----|
 | `channel` | `None` | A transform across each stream's channels: `'zscore'` (centre each channel and divide it by its standard deviation), `'zca'` (sphere the channels), `'pca'` (rotate them onto their principal axes) or `'copula'` (map each channel through its ranks to a standard normal). Each leaves every quantity unchanged. `nmi.preprocessing.PCA(n_components=k)` keeps the first `k` components, and warns. A transform of your own also goes here. |
 | `time` | `None` | A transform along each channel's time axis: `'ar'` filters each channel by its own autoregressive fit, whose order AIC chooses up to `10 log10(T)` (`nmi.preprocessing.ARWhitening(order=p)` fixes it). It leaves the rate quantities unchanged in the limit of long windows and changes every other quantity, which warns. |
+| `scale_band` | `10.0` | The data check warns when the typical channel scale of a stream lies more than this factor from unit scale, in either direction. The same holds for the rows that a spike-time or categorical processor builds. |
+| `predicted_share` | `0.9` | For a rate quantity on a series, the data check notes a channel whose own past predicts more than this share of its variance and suggests `time='ar'`. |
+| `check_rows` | `100000` | The data check reads each stream in stretches of this many rows, so that it never copies a large stream. It fits a channel's own past on the first stretch. |
+| `sample_rows` | `10000` | The data check reads the scale of the rows that a spike-time or categorical processor builds from this many rows at their start. |
 
 ## `Model`
 
@@ -178,8 +191,24 @@ The optimisation loop and what is evaluated after it.
 | `min_improvement` | `0.001` | The rise in the smoothed held-out MI, as a fraction of its best value so far, that counts as an improvement for `patience`. |
 | `median_window` | `5` | Width of the median filter on the test-MI curve before the epoch is read from it. |
 | `smoothing_sigma` | `1.0` | Width of the Gaussian filter applied after the median filter. |
-| `epoch_rule` | `'plateau_start'` | Which epoch of the smoothed held-out curve the reported values are read at (`best_epoch`): the earliest at its top, within half the curve's own noise of the top's level (`'plateau_start'`), or its maximum (`'peak'`). On a clean peak the two agree; on a plateau `'plateau_start'` reads its start, before the network fits its training rows further. `runs` gives the maximum as `peak_epoch` and a diagnosis of the curve as `curve_diagnosis`. |
+| `epoch_rule` | `'plateau_start'` | Which epoch of the smoothed held-out curve the reported values are read at (`best_epoch`): the earliest at its top, within `start_noise` noise units of the top's level (`'plateau_start'`), or its maximum (`'peak'`). On a clean peak the two agree; on a plateau `'plateau_start'` reads its start, before the network fits its training rows further. `runs` gives the maximum as `peak_epoch` and a diagnosis of the curve as `curve_diagnosis`. |
 | `peak_fraction` | `1.0` | Below 1, report the first epoch whose smoothed test MI reaches this fraction of its maximum, when that is earlier than the epoch `epoch_rule` reads. Meant for a curve that saturates, whose top may be the estimator's ceiling rather than the information; the value is then read before the curve reaches its top. The chosen epoch is `conservative_epoch` in `runs`. |
+| `level_noise` | `2.0` | The level of the curve's top is the median of its smoothed values within this many noise units of the maximum. A noise unit is the curve's own epoch-to-epoch noise. |
+| `start_noise` | `0.5` | `epoch_rule='plateau_start'` reads the first epoch within this many noise units of the top's level. |
+| `resolved_noise` | `8.0` | The curve is diagnosed `'not resolved'` unless its top stands this many noise units above zero. |
+| `clear_se` | `3.0` | A held-out value stands above zero when it exceeds this many of its standard errors. A curve whose top does not stand above zero is diagnosed `'not resolved'`. When terms are combined, a term whose held-out value does not stand above zero counts as having learned nothing. |
+| `approach_noise` | `3.0` | The approach to the top starts at the first epoch within this many noise units of the top's level. |
+| `fuzzy_se` | `3.0` | The curve is diagnosed `'fuzzy start'` when the estimate read at the start of the approach differs from the reported one by more than this many of its standard errors. |
+| `fast_epochs` | `8` | The curve is diagnosed `'too fast'` when its top lies within the smoothing's reach of its start and the curve falls by more than `fall_noise` noise units within this many epochs after the top. |
+| `fall_noise` | `3.0` | The fall below the top's level, in noise units, that `fast_epochs` looks for. |
+| `rising_epochs` | `20` | When training runs to `n_epochs`, the curve is diagnosed `'still rising'` if it rose by more than `rising_noise` noise units over its last `rising_epochs` epochs. |
+| `rising_noise` | `3.0` | The rise, in noise units, that `rising_epochs` looks for. |
+| `ceiling_fraction` | `0.85` | The call warns when a held-out or training-side value exceeds this fraction of its InfoNCE ceiling (the log of the rows per evaluation). Rigorous mode also warns about rungs above it. |
+| `saturation_fraction` | `0.9` | The call warns that epoch selection may be unreliable when the smoothed held-out curve lies above this fraction of its ceiling for more than `saturated_epoch_fraction` of its epochs. |
+| `saturated_epoch_fraction` | `0.5` | The share of epochs above `saturation_fraction` of the ceiling at which the call warns. |
+| `amplification_threshold` | `10.0` | The call warns when a quantity combined from several terms has an error-amplification factor of this or more. |
+| `small_sample` | `200` | The call warns that the dataset is small when fewer rows than this reach the estimator. |
+| `nan_streak` | `3` | Training stops with `TrainingError` after this many epochs in a row whose held-out evaluation is NaN. The call warns at each such epoch and skips it for early stopping. |
 | `optimizer` | `'adam'` | `'adam'`, `'adamw'`, `'sgd'`, `'rmsprop'`, `'adagrad'`, or a `torch.optim.Optimizer` class. |
 | `optimizer_params` | `{}` | Extra arguments for the optimiser, such as `{'weight_decay': 1e-4}`. |
 | `scheduler` | `None` | `'cosine'`, `'cosine_warmup'`, `'step'`, `'plateau'`, or a `torch.optim.lr_scheduler` class. The named schedules are sized on `n_epochs`, the cap, so a run that stops by `patience` ends before they do; `'plateau'` follows the held-out curve instead. |
@@ -219,7 +248,7 @@ The bound the critic is trained on, or KSG, which trains no critic. A bare name,
 | Parameter | Default | Meaning |
 |--|--|----|
 | `name` | `'infonce'` | `'infonce'` (low variance, capped at the log of the evaluation sample count), `'smile'` (lower bias, higher variance) or `'ksg'` (nearest neighbours, no training; see [USING.md](USING.md#estimators)). |
-| `params` | `{}` | Extra arguments for the estimator. SMILE takes `clip`, default 5.0. KSG takes `k` (4), `gaussianize` (True) and `exclude` (`'auto'`). |
+| `params` | `{}` | Extra arguments for the estimator. SMILE takes `clip`, default 5.0. KSG takes `k` (4), `gaussianize` (True), `exclude` (`'auto'`) and `max_tied_share` (0.5). KSG warns when more than `max_tied_share` of a column's rows tie with another row. |
 
 ## `Output`
 
@@ -252,6 +281,7 @@ For `mode='rigorous'`. The same fit settings are fields of `Conditional`,
 | `confidence_level` | `0.68` | Confidence level of `mi_error`. |
 | `residual_threshold` | `2.5` | Largest studentised residual before `fit_quality_warning` is set. |
 | `leverage_threshold` | `0.2` | Largest relative shift of the intercept when the $\gamma = 1$ points are left out before `leverage_warning` is set. |
+| `left_out_share` | `0.5` | The fit leaves out a value of $\gamma$, with all its rungs, when the rungs that produced nothing or did not resolve make up this share of its rungs or more. |
 | `temporal_chunking` | `None` | Cut chunks as contiguous stretches (`True`) or random subsets (`False`). `None` cuts contiguous chunks from rows in time order (windows a processor cut, the rows of a named quantity, the histories of transfer entropy) and random subsets from other rows. |
 
 ### `Precision`
@@ -287,7 +317,7 @@ For `mode='transfer'`.
 | `bidirectional` | `False` | Also estimate transfer entropy from Y to X and the directionality index. |
 | `w_data` | `None` | A third process whose history is conditioned on, for conditional transfer entropy. |
 | `rigorous` | `False` | Extrapolate each repeat to infinite data. |
-| `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
+| `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold`, `left_out_share` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
 
 ### `Conditional`
 
@@ -297,7 +327,7 @@ For `mode='conditional'`.
 |--|--|----|
 | `w_data` | required | The conditioning variable $W$ in $I(X;Y \mid W)$. |
 | `rigorous` | `False` | Extrapolate each repeat to infinite data. |
-| `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
+| `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold`, `left_out_share` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
 
 ### `Interaction`
 
@@ -307,7 +337,7 @@ For `mode='interaction'`.
 |--|--|----|
 | `w_data` | required | The third population $W$. |
 | `rigorous` | `False` | Extrapolate each repeat to infinite data. |
-| `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
+| `gamma_range`, `curvature_t_threshold`, `min_gamma_points`, `confidence_level`, `residual_threshold`, `leverage_threshold`, `left_out_share` | as in `Rigorous` | The fit of `rigorous=True` with the meanings and defaults of [`Rigorous`](#rigorous). |
 
 ### `Pairwise`
 
@@ -323,12 +353,21 @@ For `mode='dimensionality'`.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `embedding_dims` | `None` | A list or a range of the values of `embedding_dim` to fit. `None` chooses them from the reference fit and stops once three values in a row reach the threshold. Given values are all fitted. |
+| `embedding_dims` | `None` | A list or a range of the values of `embedding_dim` to fit. `None` chooses them from the reference fit (`grid_reach` and the settings after it) and stops once `confirm_steps` values in a row reach the threshold. Given values are all fitted. |
 | `n_restarts` | `4` | Networks trained at each `embedding_dim` of each split. The best one counts. |
 | `saturation_ratio` | `0.95` | The fraction of the plateau the curve must reach. The reading is the smallest `embedding_dim` that reaches it. |
-| `reference_dim` | `None` | The `embedding_dim` of the large reference fit that runs first. `None` fits 64 and refits at four times the participation ratio when that ratio reaches 24. |
+| `reference_dim` | `None` | The `embedding_dim` of the large reference fit that runs first. `None` fits 64 and refits at `refit_reach` times the participation ratio when `grid_reach` times the ratio reaches `reference_fill` of 64. |
 | `split_method` | `'random'` | Without `y_data`, how X's channels are split in two: `'random'`, `'spatial'` (at the midpoint), `'index'` (by `channel_indices_x`), `'temporal'` (X against X at `lag`), or, for image data, `'horizontal'`, `'vertical'`, `'row_interleaved'`, `'col_interleaved'`, `'diagonal'`, `'antidiagonal'`. |
 | `n_splits` | `None` | The number of random channel splits of X (5 when `None`). Only `split_method='random'` draws more than one. A call with `y_data` refuses it. |
 | `lag` | `1` | The lag of `split_method='temporal'`, in samples. |
 | `channel_indices_x` | `None` | X's channels under `split_method='index'`; Y is the rest. |
 | `ceiling_mi_fraction` | `0.85` | Warn when the reference fits' held-out MI is this close to its ceiling. |
+| `grid_reach` | `2.0` | The default grid reaches this many times the reference fit's participation ratio, which can fall below the true dimension. |
+| `grid_small` | `10` | When the reach is at most this, the default grid holds every `embedding_dim` from 1 to this. |
+| `grid_medium` | `20` | When the reach is above `grid_small` and at most this, the default grid holds every `embedding_dim` from 1 to this. |
+| `grid_points` | `10` | When the reach is above `grid_medium`, the default grid holds this many values on a log scale from 1 to the reach. |
+| `reference_fill` | `0.75` | The reference is refitted when `grid_reach` times its participation ratio reaches this fraction of its `embedding_dim`. |
+| `refit_reach` | `4.0` | The refitted reference has this many times the participation ratio as its `embedding_dim`. |
+| `confirm_steps` | `3` | The default grid stops once every split's curve has reached the threshold on this many values in a row. |
+| `restart_spread` | `0.1` | The call warns when restarts below the reading differ by more than this share of the plateau. |
+| `held_out_gap` | `0.1` | The call warns when the reference fit's held-out MI falls short of the plateau by more than this share of the plateau. |
