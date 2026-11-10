@@ -320,9 +320,10 @@ class TestTheCheckSettings:
         assert any('typical scale' in m for m in plain) and not any('typical scale' in m for m in wide)
 
 
-class TestTheChecksOfTheScalingDefault:
-    """Under the scaling default the data check says which streams are scaled, and warns about the data that
-    channel-by-channel scaling serves badly. Each warning names its setting of Preprocessing(...)."""
+class TestTheChecksOfInputScaling:
+    """The data check says which streams the encoders scale, warns about the data that channel-by-channel
+    scaling serves badly, and warns about scales far from unit scale in a stream that the encoders leave as it
+    is, as they do by default. Each warning names its setting of Preprocessing(...)."""
 
     @staticmethod
     def _messages(x, scaled=True, **settings):
@@ -342,7 +343,7 @@ class TestTheChecksOfTheScalingDefault:
         x = np.random.default_rng(31).standard_normal((300, 2))
         assert not any('typical scale' in m for m in self._messages(x * 1e3))
         messages = self._messages(x * 1e3, scaled=False)
-        assert any('typical scale of' in m and "Model(input_scaling='auto'), the default" in m for m in messages)
+        assert any('typical scale of' in m and "Model(input_scaling='auto') centres and scales" in m for m in messages)
         messages = self._messages(x + 300, scaled=False)
         assert any('typical mean of' in m and 'Preprocessing(scale_band=10)' in m for m in messages)
 
@@ -350,8 +351,10 @@ class TestTheChecksOfTheScalingDefault:
         x = np.random.default_rng(32).standard_normal((300, 3)) * [1.0, 1.0, 30.0]
         scaled = [m for m in self._messages(x) if 'span a factor of' in m]
         assert scaled and 'Preprocessing(spread_band=10)' in scaled[0] and 'same weight' in scaled[0]
+        assert "Model(input_scaling='none'), the default, keeps" in scaled[0]
         kept = [m for m in self._messages(x, scaled=False) if 'span a factor of' in m]
-        assert kept and 'loudest' in kept[0]
+        assert kept and 'loudest' in kept[0] and "Model(input_scaling='auto') scales each channel" in kept[0]
+        assert 'quiet because it carries little' in kept[0]
         assert not any('span a factor of' in m for m in self._messages(x, spread_band=100.0))
 
     def test_a_mean_too_far_from_zero_for_single_precision(self):

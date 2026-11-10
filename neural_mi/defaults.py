@@ -45,11 +45,11 @@ BASE_PARAMS_SCHEMA = {
     'whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},
     # An encoder's input centred and scaled channel by channel by the training rows'
-    # statistics, saved with the network: 'auto' scales the input that comes from a
-    # continuous stream or from a stream with no processor, 'standard' every input,
-    # and 'none' no input (scales_stream). None, which a network saved before 'auto'
-    # records, reads as 'none'.
-    'input_scaling': {'type': (str, type(None)), 'default': 'auto'},
+    # statistics, saved with the network: 'none' scales no input, 'auto' the input that
+    # comes from a continuous stream or from a stream with no processor, and 'standard'
+    # every input (scales_stream). None, which a network saved before 'auto' records,
+    # reads as 'none'.
+    'input_scaling': {'type': (str, type(None)), 'default': 'none'},
     # A first embedding layer with more parameters than this is noted at the info
     # level: it may overfit a small dataset.
     'large_first_layer': {'type': int, 'min': 0, 'default': 500_000},

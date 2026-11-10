@@ -495,31 +495,31 @@ unscaled. Drop it before the call, especially before `channel='zca'`, which
 has no direction to sphere along it.
 
 **`The channels of ... have a typical scale of ..., more than a factor of ... from unit scale`**, **`The channels of ... have a typical mean of ..., more than ... from zero`**
-The encoders leave this stream as it is, under `Model(input_scaling='none')` or
-a custom critic that does not take the setting, and the median standard
-deviation of its channels lies more than a factor of
-`Preprocessing(scale_band=...)` from 1, either way, or their median mean lies
-further than that from zero. The networks start from weights sized for inputs
-near zero and unit scale, so their estimate depends on units. The same
-dependence can read close to its value at unit scale and close to 0 far from
-it. `Model(input_scaling='auto')`, the default, centres and scales each channel
-of a continuous stream inside the network, and `Preprocessing(channel='zscore')`
-does so before the rows are built. Both leave every quantity unchanged. The
-check does not fire when a channel transform is set.
+The encoders leave this stream as it is, as they do by default
+(`Model(input_scaling='none')`) and under a custom critic that does not take the
+setting, and the median standard deviation of its channels lies more than a
+factor of `Preprocessing(scale_band=...)` from 1, either way, or their median
+mean lies further than that from zero. The networks start from weights sized
+for inputs near zero and unit scale, so their estimate depends on units. The
+same dependence can read close to its value at unit scale and close to 0 far
+from it. `Model(input_scaling='auto')` centres and scales each channel of a
+continuous stream inside the network. `Preprocessing(channel='zscore')` does so
+before the rows are built. Both leave every quantity unchanged. The check does
+not fire when a channel transform is set.
 
 **`The standard deviations of the channels of ... span a factor of ..., more than Preprocessing(spread_band=...)`**
-Under the default scaling the encoder brings each channel to unit scale, which
-gives every channel the same weight. That is right when the scales differ only
-by units, as for variables recorded in different units. When a channel is quiet
-because it carries little, as a neuron that rarely fires or an electrode that
-picks up only noise, scaling lifts its noise to the level of the signal, and
-the network needs more rows to learn to ignore it. The two cases look the same
-to the check, so it cannot choose for you. `Model(input_scaling='none')` keeps
-the channels' relative scales, and dividing the stream by one number before the
+By default the encoders leave the channels as they are, so the loudest channels
+dominate what the networks receive and the estimate can miss information that
+the quiet ones carry. `Model(input_scaling='auto')` brings each channel to unit
+scale and so gives every channel the same weight. That is right when the scales
+differ only by units, as for variables recorded in different units. When a
+channel is quiet because it carries little, as a neuron that rarely fires or an
+electrode that picks up only noise, scaling lifts its noise to the level of the
+signal, so the network needs more rows to learn to ignore it. The two cases look
+the same to the check, so the message describes both. When the encoders scale
+the stream, the message names the default, `Model(input_scaling='none')`, to
+keep the channels' relative scales. Dividing the stream by one number before the
 call, such as its overall standard deviation, then brings it near unit scale.
-When the encoders leave the stream as it is, the message says instead that the
-loudest channels dominate what the networks receive, and that the default
-scaling gives each channel the same scale.
 
 **`... of ... sit more than Preprocessing(offset_band=...) of their standard deviations from zero`**
 The networks read their rows in single precision, about seven significant
@@ -532,14 +532,14 @@ are built. Data stored in single precision with such an offset have lost the
 digits already.
 
 **`In ... of ..., more than Preprocessing(tie_share=...) of the values are one repeated value`**
-The encoder scales this stream, and some of its channels are mostly one value,
-as padded or sparse rows are: spike rows built by hand, sparse counts, or the
-padding of a window with few events. Scaling moves the repeated value away from
-0, which an encoder may read as an event, and lifts a channel that is quiet
-because it carries little to the level of the others.
-`Model(input_scaling='none')` leaves the rows as they are. Spike times read by
-a spike processor (`Processing(x='spike')` and its kind) are left as they are
-under the default.
+The encoder scales this stream (`Model(input_scaling='auto')` or `'standard'`),
+and some of its channels are mostly one value, as padded or sparse rows are:
+spike rows built by hand, sparse counts, or the padding of a window with few
+events. Scaling moves the repeated value away from 0, where an encoder may read
+it as an event, and lifts a channel that is quiet because it carries little to
+the level of the others. `Model(input_scaling='none')`, the default, leaves the
+rows as they are. Spike times read by a spike processor (`Processing(x='spike')`
+and its kind) are left as they are under `'auto'` too.
 
 **`... of ... have heavy tails`**
 In these channels the standard deviation exceeds
@@ -843,9 +843,8 @@ autoregressive fit `ARWhitening` uses, read from its first
 suggests `Preprocessing(time='ar')`, which removes the term and leaves the rate
 unchanged. Spike-time and categorical streams are named only, since their
 processors build their rows. A stream whose encoder centres and scales it
-(`Model(input_scaling=...)`, on by default for continuous streams and streams
-with no processor) is marked so, and the line then ends by naming
-`input_scaling='none'`, which turns that off.
+(`Model(input_scaling='auto')` or `'standard'`) is marked so, and the line then
+ends by naming `input_scaling='none'`, the default, to turn that off.
 
 **`Dimensionality: the grid runs over embedding_dim 1 to ... because the reference fit has a participation ratio of ...`**, **`Dimensionality: the grid runs over ... values of embedding_dim from 1 to ... on a log scale`**
 The default grid reaches `Dimensionality(grid_reach=...)` times the

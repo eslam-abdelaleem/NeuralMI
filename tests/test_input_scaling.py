@@ -1,11 +1,11 @@
 """Model(input_scaling=...) scales an encoder's input by the training rows, and binned spikes stay counts.
 
-'auto', the default, scales the input from a continuous stream or from a stream
-with no processor, each stream with statistics of its own, and leaves the rows
-of a spike-time or categorical processor and the input of a DeepSets encoder as
-they are. 'standard' scales every input and 'none' none. The statistics are
-buffers of the network: fitted from the training rows before the first epoch,
-saved with the network and applied by ``extract_embeddings``.
+'none', the default, scales no input. 'auto' scales the input from a continuous
+stream or from a stream with no processor, each stream with statistics of its
+own, and leaves the rows of a spike-time or categorical processor and the input
+of a DeepSets encoder as they are. 'standard' scales every input. The statistics
+are buffers of the network: fitted from the training rows before the first
+epoch, saved with the network and applied by ``extract_embeddings``.
 """
 import warnings
 
@@ -92,7 +92,7 @@ def test_binned_spikes_enter_as_counts():
 
 
 # ---------------------------------------------------------------------------
-# The default
+# The default and 'auto'
 # ---------------------------------------------------------------------------
 
 def _saved(tmp_path, x, y, name, processing=None, **model):
@@ -109,32 +109,33 @@ def _saved(tmp_path, x, y, name, processing=None, **model):
 
 def test_which_streams_each_setting_scales():
     from neural_mi.defaults import scales_stream
-    assert BASE_PARAMS_SCHEMA['input_scaling']['default'] == 'auto'
+    assert BASE_PARAMS_SCHEMA['input_scaling']['default'] == 'none'
     assert scales_stream('auto', None) and scales_stream('auto', 'continuous')
     assert not scales_stream('auto', 'spike') and not scales_stream('auto', 'categorical')
     assert scales_stream('standard', 'spike') and not scales_stream('none', 'continuous')
     assert not scales_stream(None, None)            # what a network saved before 'auto' records
 
 
-def test_the_default_scales_a_continuous_stream_and_none_turns_it_off(tmp_path):
+def test_the_default_scales_nothing_and_auto_scales_a_continuous_stream(tmp_path):
     x, y = _data()
-    state, built = _saved(tmp_path, x, y, 'auto.pt')
+    state, built = _saved(tmp_path, x, y, 'default.pt')
+    assert not any('scalers' in key for key in state) and built['input_scaling'] == 'none'
+    state, built = _saved(tmp_path, x, y, 'auto.pt', input_scaling='auto')
     assert 'embedding_net_x.scalers.0.shift' in state and 'embedding_net_y.scalers.0.shift' in state
     assert built['input_scaling'] == 'auto' and built['input_scaling_x'] == (True,) and built['input_scaling_y']
-    state, _ = _saved(tmp_path, x, y, 'none.pt', input_scaling='none')
-    assert not any('scalers' in key for key in state)
 
 
-def test_by_default_an_estimate_does_not_depend_on_the_units():
+def test_under_auto_an_estimate_does_not_depend_on_the_units():
     """Tiny units and large offsets as well: the variance floor is relative, and the statistics are fitted in
     double precision."""
     x, y = _data()
+    model = nmi.Model(hidden_dim=16, embedding_dim=4, input_scaling='auto')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        unit = nmi.run(x, y, model=nmi.Model(hidden_dim=16, embedding_dim=4), show_progress=False, seed=0,
+        unit = nmi.run(x, y, model=model, show_progress=False, seed=0,
                        training=nmi.Training(n_epochs=4, batch_size=64)).mi_estimate
         for f, offset in ((1e3, 0.0), (1e-12, 0.0), (1.0, 300.0)):
-            moved = nmi.run(x * f + offset, y * f + offset, model=nmi.Model(hidden_dim=16, embedding_dim=4),
+            moved = nmi.run(x * f + offset, y * f + offset, model=model,
                             show_progress=False, seed=0, training=nmi.Training(n_epochs=4, batch_size=64))
             assert moved.mi_estimate == pytest.approx(unit, abs=1e-3), (f, offset)
 
@@ -144,7 +145,7 @@ def test_spike_rows_are_left_as_they_are_unless_standard(tmp_path):
     spikes = [np.sort(rng.uniform(0, 300, 600)) for _ in range(2)]
     p = {'window_size': 1.0}
     processing = nmi.Processing(x='spike', x_params=p, y='spike', y_params=p)
-    state, built = _saved(tmp_path, spikes, spikes, 'spike.pt', processing=processing)
+    state, built = _saved(tmp_path, spikes, spikes, 'spike.pt', processing=processing, input_scaling='auto')
     assert not any('scalers' in key for key in state) and built['input_scaling_x'] == (False,)
     state, _ = _saved(tmp_path, spikes, spikes, 'spike_standard.pt', processing=processing,
                       input_scaling='standard')
@@ -165,7 +166,7 @@ def test_each_stream_decides_for_itself():
     assert isinstance(scalers[0], ChannelScaling) and isinstance(scalers[1], torch.nn.Identity)
 
 
-def test_deepsets_is_left_as_it_is_under_the_default():
+def test_deepsets_is_left_as_it_is_under_auto():
     from neural_mi.models.embeddings import DeepSets
 
     class MyDeepSets(DeepSets):
@@ -178,7 +179,7 @@ def test_deepsets_is_left_as_it_is_under_the_default():
         assert not isinstance(critic.embedding_net_y, InputScaling)
 
 
-def test_a_network_saved_before_the_default_rebuilds_unscaled(tmp_path):
+def test_a_network_saved_before_auto_rebuilds_unscaled(tmp_path):
     """A network saved before 'auto' existed records input_scaling=None and no per-side decision, and
     extract_embeddings rebuilds it without scalers, so its weights load strictly."""
     old = _params(input_scaling=None)
@@ -226,14 +227,18 @@ def test_each_side_of_a_shared_encoder_has_statistics_of_its_own():
 
 
 def test_a_named_quantity_agrees_with_run_about_scaling():
+    """By default its data check warns about rows far from unit scale, and under 'auto' it leaves the scale to
+    the encoders, whose estimate then does not depend on the units, as run() does."""
     x, y = _data()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter('always')
-        large = nmi.instantaneous_mi(x * 1e3, y * 1e3, model=nmi.Model(hidden_dim=16, embedding_dim=4),
-                                     training=nmi.Training(n_epochs=4, batch_size=64), show_progress=False, seed=0)
-    assert not any('typical scale' in str(w.message) for w in caught)
+    for scaling, warns in ((None, True), ('auto', False)):
+        model = nmi.Model(hidden_dim=16, embedding_dim=4, input_scaling=scaling)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            large = nmi.instantaneous_mi(x * 1e3, y * 1e3, model=model, show_progress=False, seed=0,
+                                         training=nmi.Training(n_epochs=4, batch_size=64))
+        assert any('typical scale' in str(w.message) for w in caught) == warns, scaling
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        unit = nmi.instantaneous_mi(x, y, model=nmi.Model(hidden_dim=16, embedding_dim=4),
+        unit = nmi.instantaneous_mi(x, y, model=nmi.Model(hidden_dim=16, embedding_dim=4, input_scaling='auto'),
                                     training=nmi.Training(n_epochs=4, batch_size=64), show_progress=False, seed=0)
     assert large.mi_estimate == pytest.approx(unit.mi_estimate, abs=1e-3)

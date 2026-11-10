@@ -82,26 +82,29 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   confirm the estimate. It is skipped for a curve that does not rise above its
   noise and for an estimate near its training-side ceiling, because their
   messages state both values.
+- `Model(input_scaling='auto')` has each encoder centre and scale the input that
+  it receives from a continuous stream, or from a stream with no processor,
+  channel by channel by the mean and standard deviation of the training rows.
+  An estimate then no longer depends on the units of those streams. Use it for
+  data far from unit scale or far from zero, as the data check suggests. X, Y
+  and W are each scaled by statistics of their own. The rows of a spike-time or
+  categorical processor and the input of a DeepSets encoder are left as they
+  are. The default is the new `input_scaling='none'`. It scales nothing, as an
+  unset `input_scaling` did before. Each network records which inputs it
+  scales, and a network saved before this change loads unscaled, as it was
+  trained.
 
 ### Changed
 
-- Every encoder now centres and scales the input that it receives from a
-  continuous stream, or from a stream with no processor, channel by channel by
-  the mean and standard deviation of the training rows
-  (`Model(input_scaling='auto')`, the new default). An estimate then no longer
-  depends on the units of those streams, so estimates on data far from unit
-  scale or far from zero change. X, Y and W are each scaled by statistics of
-  their own, and so is each side of a shared encoder, whose two sides used to
-  share one set. The rows of a spike-time or categorical processor and the input
-  of a DeepSets encoder are left as they are. `input_scaling='standard'` scales
-  every input as before, and the new `input_scaling='none'` scales nothing. Each
-  network records which inputs it scales, and a network saved before this
-  change loads unscaled, as it was trained. A channel counts as constant
-  relative to the largest spread in its stream, so data in very small units are
-  scaled too, and the statistics are fitted in double precision.
+- Under `Model(input_scaling='standard')` each side of a shared encoder is
+  scaled by statistics of its own. The two sides used to share one set, fitted
+  on their rows stacked together. A channel counts as constant relative to the
+  largest spread in its stream, so data in very small units are scaled too, and
+  the statistics are fitted in double precision.
 - The data check says which streams the encoders scale. Its warning about a
   scale far from unit scale fires only for a stream that the encoders leave as
-  it is, covers a mean far from zero as well, and suggests the default. It also
+  it is, covers a mean far from zero as well, and suggests
+  `input_scaling='auto'`. It also
   warns when the channel scales of a stream spread widely
   (`Preprocessing(spread_band=...)`), when a channel's mean is so far from zero
   that single precision resolves its variation coarsely (`offset_band`), when a

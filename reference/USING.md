@@ -1429,23 +1429,31 @@ result = nmi.run(x, y, model=Model(custom_critic=MyCritic, embedding_dim=16))
 ### The scale of the rows
 
 The networks start from weights sized for inputs near zero and unit scale, so
-an estimate on rows far from that scale depends on their units. By default
-(`Model(input_scaling='auto')`) each encoder centres and scales the input that
-it receives from a continuous stream, or from a stream with no processor,
-channel by channel by the mean and standard deviation of the training rows. The
-estimate then no longer depends on the units of those streams. X, Y and W each
-have statistics of their own, and so does each side of a shared encoder. The
-statistics are part of the network, saved with it and applied by
-`extract_embeddings`. A network saved before this default records no scaling
-and loads as it was trained.
+an estimate on rows far from that scale depends on their units. The data check
+warns about a stream whose channels sit far from unit scale or far from zero
+(`Preprocessing(scale_band=...)`). For such data, `Model(input_scaling='auto')`
+has each encoder centre and scale the input that it receives from a continuous
+stream, or from a stream with no processor, channel by channel by the mean and
+standard deviation of the training rows. The estimate then no longer depends on
+the units of those streams. X, Y and W each have statistics of their own, and so
+does each side of a shared encoder. The statistics are part of the network,
+saved with it and applied by `extract_embeddings`. A network saved before
+`'auto'` existed records no scaling and loads as it was trained.
 
-The rows that a spike-time or categorical processor builds are left as they
-are, because their scale follows their processor's settings, and so is the
-input of a DeepSets encoder, which tells a spike from padding by the padding
-value. `input_scaling='standard'` scales every input, those rows included, and
-refuses DeepSets. `input_scaling='none'` leaves every input as it is. Binned
-spikes enter as counts unless `normalize_bins=True` turns them into rates,
-which in 1 ms bins makes one spike 1,000.
+By default (`input_scaling='none'`) the encoders leave every input as it is,
+because scaling does not suit all data. The channels of
+`generate_nonlinear_from_latent` sit near unit scale, yet on its
+high-dimensional data the scaled networks fit their training rows sooner and
+read lower held-out values than the unscaled ones. A smaller learning rate does
+not bring those values back.
+
+Under `'auto'` the rows that a spike-time or categorical processor builds are
+left as they are, because their scale follows their processor's settings, and
+so is the input of a DeepSets encoder, since DeepSets tells a spike from
+padding by the padding value. `input_scaling='standard'` scales every input,
+those rows included, and refuses DeepSets. Binned spikes enter as counts unless
+`normalize_bins=True` turns them into rates. In 1 ms bins one spike then reads
+1,000.
 
 Scaling gives every channel the same weight. That is right when the channels
 differ only in units, but it lifts the noise of a channel that is quiet because
