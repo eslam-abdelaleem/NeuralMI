@@ -526,6 +526,7 @@ ARCHITECTURE_KEYS = (
     'use_variational', 'shared_encoder', 'max_n_batches',
     'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
     '_difference_term', 'processor_params_x', 'processor_params_y', 'input_scaling',
+    'input_scaling_x', 'input_scaling_y',
 ) + MODEL_SETTINGS
 
 
@@ -564,10 +565,24 @@ def critic_recipe_takes(recipe) -> Optional[set]:
     return set(parameters) & set(CRITIC_SIZES + CRITIC_SETTINGS)
 
 
+def _scaling_flags(embedding_params: Dict[str, Any], n_parts_x: int) -> Tuple[Tuple[bool, ...], bool]:
+    """Whether the critic scales each part of its X input and its Y input: the decisions the task made for
+    the streams behind them (``input_scaling_x``, ``input_scaling_y``,
+    :func:`neural_mi.defaults.side_scaling`). Without them every input is scaled under
+    ``input_scaling='auto'`` or ``'standard'`` and none otherwise, so a network saved before 'auto' existed,
+    whose ``input_scaling`` is None, rebuilds unscaled."""
+    given = embedding_params.get('input_scaling') in ('auto', 'standard')
+    fx = embedding_params.get('input_scaling_x', given)
+    fy = embedding_params.get('input_scaling_y', given)
+    fx = tuple(bool(f) for f in fx) if isinstance(fx, (tuple, list)) else (bool(fx),)
+    # A pair X whose parts were decided as one input (rows a mode built itself) takes that decision for both.
+    return (fx if len(fx) == n_parts_x else fx[:1] * n_parts_x), bool(fy)
+
+
 def encoders_scale(input_scaling, custom_critic=None) -> bool:
     """Whether the encoders scale their own input: ``Model(input_scaling=...)`` is set and reaches them. Every
     encoder the library builds takes it, and a ``custom_critic`` only when its recipe names it."""
-    if input_scaling is None:
+    if input_scaling in (None, 'none'):
         return False
     if custom_critic is None:
         return True
@@ -686,9 +701,10 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             # for it to compress.
             concat_net = VariationalWrapper(concat_net, 1, bias=values['bias'])
         # Each side's channels scaled before the pair is formed, part by part for a pair X.
-        scaling = ((InputScaling(nn.Identity(), embedding_params['n_channels_x']),
-                    InputScaling(nn.Identity(), embedding_params['n_channels_y']))
-                   if setting(embedding_params, 'input_scaling') == 'standard' else None)
+        flags_x, flag_y = _scaling_flags(embedding_params, len(_flat_x) if isinstance(_flat_x, tuple) else 1)
+        scaling = ((InputScaling(nn.Identity(), embedding_params['n_channels_x'], scaled=flags_x),
+                    InputScaling(nn.Identity(), embedding_params['n_channels_y'], scaled=(flag_y,)))
+                   if any(flags_x) or flag_y else None)
         return ConcatCritic(embedding_net=concat_net, scaling=scaling, **critic_kwargs)
 
     # X sets the architecture and Y follows it unless given its own, the same
@@ -846,29 +862,40 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                   if difference_term else Model_x(input_dim_x, **model_kwargs))
     net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
 
-    # Model(input_scaling='standard'): every encoder reads its input centred and
-    # scaled channel by channel, by statistics the trainer sets from the
-    # training rows (models.critics.fit_input_scaling). They are buffers of the
-    # network, saved and applied with it.
-    input_scaling = setting(embedding_params, 'input_scaling')
-    if input_scaling == 'standard':
-        for Model_ in (Model_x, Model_y):
-            if Model_ is DeepSets:
+    # Model(input_scaling=...): an encoder reads its input centred and scaled
+    # channel by channel, by statistics the trainer sets from the training rows
+    # (models.critics.fit_input_scaling), on each input the task decided to scale
+    # (_scaling_flags). They are buffers of the network, saved and applied with
+    # it. DeepSets tells a spike from padding by the padding value, which
+    # scaling moves: 'auto' leaves its input as it is, and 'standard' is
+    # refused. Each side of a shared encoder has scalers of its own around the
+    # one encoder, so the two sides never share statistics.
+    _dim_x = embedding_params['input_dim_x']
+    flags_x, flag_y = _scaling_flags(embedding_params, len(_dim_x) if isinstance(_dim_x, tuple) else 1)
+    flags = {'x': flags_x, 'y': (flag_y,)}
+    for side, Model_ in (('x', Model_x), ('y', Model_y)):
+        if isinstance(Model_, type) and issubclass(Model_, DeepSets) and any(flags[side]):
+            if setting(embedding_params, 'input_scaling') == 'standard':
                 raise ValueError(
                     "Model(input_scaling='standard') cannot serve embedding_model='deepsets'. DeepSets tells a "
                     "spike from padding by the padding value, which scaling moves. Use another encoder, or "
-                    "leave input_scaling unset."
+                    "input_scaling='auto', which leaves the input of a DeepSets encoder as it is."
                 )
-        net_x_base = InputScaling(net_x_base, embedding_params['n_channels_x'])
-        net_y_base = net_x_base if shared_encoder else InputScaling(net_y_base, embedding_params['n_channels_y'])
+            flags[side] = (False,) * len(flags[side])
+    scaled_x = (InputScaling(net_x_base, embedding_params['n_channels_x'], scaled=flags['x'])
+                if any(flags['x']) else net_x_base)
+    scaled_y = (InputScaling(net_y_base, embedding_params['n_channels_y'], scaled=flags['y'])
+                if any(flags['y']) else net_y_base)
 
-    # Optionally wrap with VariationalWrapper, works for every encoder type
+    # Optionally wrap with VariationalWrapper, works for every encoder type. A
+    # shared encoder shares its variational heads as well.
     if use_variational:
-        net_x = VariationalWrapper(net_x_base, spec_x['embedding_dim'], bias=bias_x)
-        net_y = net_x if shared_encoder else VariationalWrapper(
-            net_y_base, spec_y['embedding_dim'], bias=bias_y)
+        net_x = VariationalWrapper(scaled_x, spec_x['embedding_dim'], bias=bias_x)
+        net_y = (net_x if shared_encoder and scaled_y is scaled_x
+                 else VariationalWrapper.sharing(net_x, scaled_y) if shared_encoder
+                 else VariationalWrapper(scaled_y, spec_y['embedding_dim'], bias=bias_y))
     else:
-        net_x, net_y = net_x_base, net_y_base
+        net_x, net_y = scaled_x, scaled_y
 
     # Warn when the first embedding layer is severely overparameterized.
     # Large first layers (input_dim * hidden_dim) are the most common cause of

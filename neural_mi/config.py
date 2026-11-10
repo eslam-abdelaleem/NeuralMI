@@ -105,7 +105,7 @@ class Model:
     dropout: Optional[float] = None
     norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
-    input_scaling: Optional[str] = None            # None | 'standard': each encoder's input centred and scaled
+    input_scaling: Optional[str] = None            # 'auto' (continuous streams) | 'standard' (every stream) | 'none'
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None
     max_n_batches: Optional[int] = None            # critic chunking
@@ -292,6 +292,10 @@ class Preprocessing:
     predicted_share: Optional[float] = None
     check_rows: Optional[int] = None
     sample_rows: Optional[int] = None
+    spread_band: Optional[float] = None
+    offset_band: Optional[float] = None
+    tail_band: Optional[float] = None
+    tie_share: Optional[float] = None
 
     def to_kwargs(self) -> Dict[str, Any]:
         return _non_none(self)

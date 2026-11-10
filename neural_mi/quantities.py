@@ -269,10 +269,11 @@ def _shifts_windows(run_kwargs: Dict[str, Any]) -> bool:
     return bool(BASE_PARAMS_SCHEMA['shift_windows']['default'] if value is None else value)
 
 
-def _prepared_series(series, processing, preprocessing, quantity: str, encoder_scales: bool = False):
+def _prepared_series(series, processing, preprocessing, quantity: str, encoder_scales=False):
     """A quantity's series transformed as ``preprocessing`` asks and checked, before its rows are built.
     A stream read by a spike-time or categorical processor takes no transform. ``encoder_scales`` says
-    the encoders scale their own inputs (``Model(input_scaling=...)``)."""
+    whether the encoders scale their own inputs (``Model(input_scaling=...)``), for every stream or by
+    stream name."""
     from neural_mi.config import Preprocessing, as_config
     from neural_mi.preprocessing import RATE_QUANTITIES, prepare
     processors = ({name: resolved[0] for name, resolved in resolve_stream_processing(processing).items()}
@@ -323,8 +324,23 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     preprocessing = run_kwargs.pop('preprocessing', None)
     model = run_kwargs.get('model')
     model = model if isinstance(model, dict) else vars(model) if model is not None else {}
+    # Whether the encoders scale each stream (Model(input_scaling=...), unset meaning its default), as run()
+    # decides for streams it reads itself: the rows of a group scale unless a stream in it is read by a
+    # spike-time or categorical processor (defaults.scales_stream).
+    from neural_mi.defaults import UNSCALED_KINDS, default_of, scales_stream
+    mode = model.get('input_scaling') or default_of('input_scaling')
+    kinds = ({name: resolved[0] for name, resolved in resolve_stream_processing(processing).items()}
+             if processing is not None else {})
+    reaches = encoders_scale(mode, model.get('custom_critic'))
     series = _prepared_series(series, processing, preprocessing, quantity,
-                              encoder_scales=encoders_scale(model.get('input_scaling'), model.get('custom_critic')))
+                              encoder_scales={name: reaches and scales_stream(mode, kinds.get(name))
+                                              for name in series})
+    first = spec_of(list(value)[0] if _is_sweep(value) else value)
+
+    def group_kind(group):
+        return next((kinds[name] for name, _ in (first.get(group) or []) if kinds.get(name) in UNSCALED_KINDS),
+                    None)
+    run_kwargs['_stream_kinds'] = {'x': group_kind('A'), 'y': group_kind('B'), 'w': group_kind('C')}
     if preprocessing is not None:
         construction = {**construction, 'preprocessing': describe_preprocessing(preprocessing)}
         # The data check's settings still reach run(), which reports on the rows it is given.

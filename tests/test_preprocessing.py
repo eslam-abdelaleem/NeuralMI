@@ -263,8 +263,8 @@ class TestTheCheckOnLargeStreams:
         rng = np.random.default_rng(19)
         x = rng.standard_normal((100, 2))
         x[:40, 1] = 2.0                       # constant over the first stretch only
-        finite, std = preprocessing._channel_moments(x, 40)
-        assert finite.all() and np.allclose(std, x.std(axis=0))
+        finite, mean, std = preprocessing._channel_moments(x, 40)
+        assert finite.all() and np.allclose(mean, x.mean(axis=0)) and np.allclose(std, x.std(axis=0))
         _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False,
                               preprocessing=nmi.Preprocessing(check_rows=40))
         assert not any('constant channel' in m for m in messages)
@@ -302,8 +302,9 @@ class TestTheCheckSettings:
         assert any('typical scale' in m and 'Preprocessing(scale_band=10)' in m for m in first)
 
     def test_they_reach_the_check_through_run_and_change_no_stream(self):
+        """With the encoders' scaling off, the stream's scale warns, and a wider scale_band silences it."""
         x = np.random.default_rng(22).standard_normal((300, 2)).astype(np.float32) * 30
-        kwargs = dict(model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+        kwargs = dict(model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1, input_scaling='none'),
                       training=nmi.Training(n_epochs=1), show_progress=False, seed=0)
         _, plain = _caught(nmi.run, x, x, **kwargs)
         result, wide = _caught(nmi.run, x, x, preprocessing=nmi.Preprocessing(scale_band=100), **kwargs)
@@ -312,11 +313,78 @@ class TestTheCheckSettings:
 
     def test_a_named_quantity_passes_them_to_both_checks(self):
         x = (np.random.default_rng(23).standard_normal((400, 1)) * 30).astype(np.float32)
-        kwargs = dict(model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+        kwargs = dict(model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1, input_scaling='none'),
                       training=nmi.Training(n_epochs=1), show_progress=False)
         _, plain = _caught(nmi.instantaneous_mi, x, x, **kwargs)
         _, wide = _caught(nmi.instantaneous_mi, x, x, preprocessing=nmi.Preprocessing(scale_band=100), **kwargs)
         assert any('typical scale' in m for m in plain) and not any('typical scale' in m for m in wide)
+
+
+class TestTheChecksOfTheScalingDefault:
+    """Under the scaling default the data check says which streams are scaled, and warns about the data that
+    channel-by-channel scaling serves badly. Each warning names its setting of Preprocessing(...)."""
+
+    @staticmethod
+    def _messages(x, scaled=True, **settings):
+        _, messages = _caught(check_streams, {'x': x}, {}, quantity='q', rate=False, encoder_scales={'x': scaled},
+                              preprocessing=nmi.Preprocessing(**settings) if settings else None)
+        return messages
+
+    def test_the_report_marks_a_scaled_stream_and_says_how_to_turn_it_off(self, caplog):
+        x = np.random.default_rng(30).standard_normal((300, 2))
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            check_streams({'x': x, 'y': x}, {}, quantity='q', rate=False, encoder_scales={'x': True, 'y': False})
+        assert 'x: 2 channels, scale' in caplog.text and 'centred and scaled channel by channel' in caplog.text
+        assert caplog.text.count('by its encoder') == 1
+        assert "Model(input_scaling='none') turns the encoders' scaling off." in caplog.text
+
+    def test_far_from_unit_scale_warns_only_when_the_encoder_leaves_the_stream(self):
+        x = np.random.default_rng(31).standard_normal((300, 2))
+        assert not any('typical scale' in m for m in self._messages(x * 1e3))
+        messages = self._messages(x * 1e3, scaled=False)
+        assert any('typical scale of' in m and "Model(input_scaling='auto'), the default" in m for m in messages)
+        messages = self._messages(x + 300, scaled=False)
+        assert any('typical mean of' in m and 'Preprocessing(scale_band=10)' in m for m in messages)
+
+    def test_channel_scales_that_spread_widely(self):
+        x = np.random.default_rng(32).standard_normal((300, 3)) * [1.0, 1.0, 30.0]
+        scaled = [m for m in self._messages(x) if 'span a factor of' in m]
+        assert scaled and 'Preprocessing(spread_band=10)' in scaled[0] and 'same weight' in scaled[0]
+        kept = [m for m in self._messages(x, scaled=False) if 'span a factor of' in m]
+        assert kept and 'loudest' in kept[0]
+        assert not any('span a factor of' in m for m in self._messages(x, spread_band=100.0))
+
+    def test_a_mean_too_far_from_zero_for_single_precision(self):
+        x = np.random.default_rng(33).standard_normal((300, 2))
+        x[:, 1] += 1e7
+        messages = [m for m in self._messages(x) if 'single precision' in m]
+        assert messages and messages[0].startswith('Channel 1 of x') and 'Preprocessing(offset_band=100000)' in messages[0]
+        assert not any('single precision' in m for m in self._messages(x, offset_band=1e8))
+
+    def test_mostly_one_value_warns_when_the_stream_is_scaled(self):
+        x = np.random.default_rng(34).standard_normal((400, 2))
+        x[:380, 0] = 0.0                                     # padded or sparse: 95% zeros
+        messages = [m for m in self._messages(x) if 'one repeated value' in m]
+        assert messages and messages[0].startswith('In channel 0 of x') and 'tie_share=0.9' in messages[0]
+        assert not any('one repeated value' in m for m in self._messages(x, scaled=False))
+        assert not any('one repeated value' in m for m in self._messages(x, tie_share=0.99))
+
+    def test_heavy_tails_suggest_the_copula(self):
+        rng = np.random.default_rng(35)
+        heavy = [m for m in self._messages(np.exp(1.5 * rng.standard_normal((2000, 2)))) if 'heavy tails' in m]
+        assert heavy and "Preprocessing(channel='copula')" in heavy[0] and 'tail_band=1.5' in heavy[0]
+        assert not any('heavy tails' in m for m in self._messages(rng.standard_normal((2000, 2))))
+        assert not any('heavy tails' in m for m in self._messages(np.exp(1.5 * rng.standard_normal((2000, 2))),
+                                                                  tail_band=10.0))
+
+    def test_a_channel_transform_settles_what_it_transforms(self):
+        """The check reads the streams after Preprocessing, so a copula leaves no heavy tail to warn about."""
+        rng = np.random.default_rng(36)
+        x = np.exp(1.5 * rng.standard_normal((2000, 2)))
+        _, messages = _caught(nmi.run, x, x, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                              training=nmi.Training(n_epochs=1), show_progress=False, seed=0,
+                              preprocessing=nmi.Preprocessing(channel='copula'))
+        assert not any('heavy tails' in m for m in messages)
 
 
 class TestEncodersThatScaleTheirInputs:

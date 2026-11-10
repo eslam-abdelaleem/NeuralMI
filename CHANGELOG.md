@@ -82,6 +82,29 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Every encoder now centres and scales the input that it receives from a
+  continuous stream, or from a stream with no processor, channel by channel by
+  the mean and standard deviation of the training rows
+  (`Model(input_scaling='auto')`, the new default). An estimate then no longer
+  depends on the units of those streams, so estimates on data far from unit
+  scale or far from zero change. X, Y and W are each scaled by statistics of
+  their own, and so is each side of a shared encoder, whose two sides used to
+  share one set. The rows of a spike-time or categorical processor and the input
+  of a DeepSets encoder are left as they are. `input_scaling='standard'` scales
+  every input as before, and the new `input_scaling='none'` scales nothing. Each
+  network records which inputs it scales, and a network saved before this
+  change loads unscaled, as it was trained. A channel counts as constant
+  relative to the largest spread in its stream, so data in very small units are
+  scaled too, and the statistics are fitted in double precision.
+- The data check says which streams the encoders scale. Its warning about a
+  scale far from unit scale fires only for a stream that the encoders leave as
+  it is, covers a mean far from zero as well, and suggests the default. It also
+  warns when the channel scales of a stream spread widely
+  (`Preprocessing(spread_band=...)`), when a channel's mean is so far from zero
+  that single precision resolves its variation coarsely (`offset_band`), when a
+  channel has heavy tails, for which it suggests the copula (`tail_band`), and,
+  in a stream that the encoders scale, when a channel is mostly one repeated
+  value, as padded or sparse rows are (`tie_share`).
 - Helpers written twice now have one definition each: the promotion of a 2-D
   array to rows with a window axis (`utils.with_window_axis`, which replaces
   both `_ensure_3d`s), the conversion to a float tensor (`utils.float_tensor`,

@@ -27,7 +27,7 @@ from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
 from .embeddings_io import model_file, resolve_model_path, announce_saving_several
 from .defaults import (BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA, default_of, norm_layer_of,
-                       setting, stream_processing)
+                       scaled_streams, setting, stream_processing)
 from .analysis.modes import MODES
 import inspect as _inspect
 from .config import (
@@ -587,6 +587,7 @@ def run(
     min_permutations: int = 100,
     _rows: Optional[RowGeometry] = None,
     _row_phases: Optional[int] = None,
+    _stream_kinds: Optional[Dict[str, Optional[str]]] = None,
     **_removed: Any,
 ) -> Results:
     """Unified entry point for all NeuralMI analyses (config-based API).
@@ -836,6 +837,9 @@ def run(
     # Private: rows built at every step of their series so that they can shift,
     # of which each task keeps one in every _row_phases (data/rows.py).
     flat['_row_phases'] = _row_phases
+    # Private: the processor behind each stream of rows a named quantity built,
+    # which decides whether its encoder scales it (defaults.scales_stream).
+    flat['_stream_kinds'] = _stream_kinds
     analysis_kwargs['n_workers'] = n_workers
 
     if base_params:
@@ -945,6 +949,7 @@ def _run_flat(
     _grid_part: Optional[Dict[str, Any]] = None,
     _rows: Optional[RowGeometry] = None,
     _row_phases: Optional[int] = None,
+    _stream_kinds: Optional[Dict[str, Optional[str]]] = None,
     **analysis_kwargs
 ) -> Results:
     """Flat-kwarg engine behind :func:`run`; see that function's docstring for
@@ -1241,6 +1246,14 @@ def _run_flat(
         # Y and W were resolved at the top: each reads with X's processor and
         # settings when it has none of its own.
         _effective_processor_type_y = processor_type_y
+        # Which streams the encoders scale (Model(input_scaling=...)), decided
+        # once here from the processor behind each stream, before the paths
+        # below clear the processor types of rows they build themselves
+        # (defaults.scales_stream). Without y_data, Y is half of X's channels.
+        _scaling_kinds = _stream_kinds or {
+            'x': processor_type_x, 'w': w_processor_type,
+            'y': _effective_processor_type_y if y_data is not None else processor_type_x}
+        base_params['_scaled_streams'] = scaled_streams(base_params, _scaling_kinds)
         if _w_takes_xs_processor:
             logger.info(
                 f"mode='{mode}': w_data has no processor of its own and reads with X's "
@@ -1495,10 +1508,14 @@ def _held_out_count(n_rows: int, base_params: dict) -> int:
     return held_out_rows(n_rows, setting(base_params, 'train_fraction'))
 
 
-def _encoders_scale(base_params: dict) -> bool:
-    """Whether the encoders this call builds scale their own input (utils.encoders_scale)."""
+def _encoders_scale(base_params: dict, processors: Optional[dict] = None) -> Dict[str, bool]:
+    """Whether the encoders this call builds scale the input from each stream: the decision run() made for
+    the stream, or else the one its processor in ``processors`` gives, when the setting reaches the encoders
+    (utils.encoders_scale)."""
     from .utils import encoders_scale
-    return encoders_scale(base_params.get('input_scaling'), base_params.get('custom_critic'))
+    reaches = encoders_scale(setting(base_params, 'input_scaling'), base_params.get('custom_critic'))
+    decided = base_params.get('_scaled_streams') or scaled_streams(base_params, processors or {})
+    return {name: reaches and bool(on) for name, on in decided.items()}
 
 
 def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
@@ -1526,7 +1543,7 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
         scales.append(f"{name} {scale:.3g}")
         kind = (processors or {}).get(name)
         if (kind in ('spike', 'categorical') and not 1.0 / scale_band <= scale <= scale_band
-                and not _encoders_scale(base_params)):
+                and not _encoders_scale(base_params, processors).get(name, False)):
             side = base_params.get(f'processor_params_{name}') or {}
             if kind == 'categorical':
                 held_in = "They hold the processor's encoding of the categories."

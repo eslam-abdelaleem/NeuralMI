@@ -446,8 +446,9 @@ CRITICS = {'separable': SeparableCritic, 'hybrid': HybridCritic, 'concat': Conca
 
 
 def fit_input_scaling(critic: nn.Module, x, y) -> None:
-    """Set every input scaling of ``critic`` (``Model(input_scaling='standard')``) from the training rows ``x``
-    and ``y``. A shared encoder takes its statistics from both sides' rows. Nothing happens without one."""
+    """Set every input scaling of ``critic`` (``Model(input_scaling=...)``) from the training rows ``x`` and
+    ``y``, each side from its own rows. The two sides of a shared encoder have scalers of their own, so
+    neither takes the other's statistics. Nothing happens without one."""
     from neural_mi.models.embeddings import InputScaling
     scaling = getattr(critic, 'scaling', None)
     if scaling is not None:
@@ -458,14 +459,10 @@ def fit_input_scaling(critic: nn.Module, x, y) -> None:
     def find(net):
         return next((m for m in net.modules() if isinstance(m, InputScaling)), None) if net is not None else None
 
-    sx, sy = find(getattr(critic, 'embedding_net_x', None)), find(getattr(critic, 'embedding_net_y', None))
-    if sx is not None and sx is sy:
-        sx.fit(torch.cat([x, y], dim=0))
-        return
-    if sx is not None:
-        sx.fit(x)
-    if sy is not None:
-        sy.fit(y)
+    for net, rows in ((getattr(critic, 'embedding_net_x', None), x), (getattr(critic, 'embedding_net_y', None), y)):
+        scaler = find(net)
+        if scaler is not None:
+            scaler.fit(rows)
 
 
 def has_input_scaling(critic: nn.Module) -> bool:

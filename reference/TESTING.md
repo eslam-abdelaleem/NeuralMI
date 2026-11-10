@@ -85,7 +85,7 @@ Each file covers one functional area. Run
 | `test_empty_windows.py` | `drop_empty_windows`, its independence from the continuous coverage rule, retention reporting, and the mixed-unit warning |
 | `test_rows.py` | how rows lie in time: the geometry each builder records, the split's leak checks, the rigorous chunks and the block shuffle that read it, the phase shifter of strided rows, and the identity of the rows each task reports |
 | `test_views.py` | `SubsetView` by index, channel and time region, and temporal index conversion |
-| `test_preprocessing.py` | `Preprocessing(channel=..., time=...)` on each continuous stream apart: the channel transforms leave every quantity unchanged, whitening leaves the rate quantities unchanged and warns elsewhere, spike-time and categorical streams take neither, and the data check changes nothing and reads its thresholds from `Preprocessing(...)` |
+| `test_preprocessing.py` | `Preprocessing(channel=..., time=...)` on each continuous stream apart: the channel transforms leave every quantity unchanged, whitening leaves the rate quantities unchanged and warns elsewhere, spike-time and categorical streams take neither, and the data check changes nothing, reads its thresholds from `Preprocessing(...)`, says which streams the encoders scale and warns about the data that scaling serves badly |
 
 ### Generators and oracles
 
@@ -106,7 +106,7 @@ Each file covers one functional area. Run
 | `test_shared_encoder.py` | weight identity, parameter count, the concat critic ignoring it with a warning, the dimensionality-mode default |
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |
 | `test_custom_critic.py` | `Model(custom_critic=...)` as a recipe built in every task: each repeat and each term of a difference trains its own, the joint term's pair reaches it, and an object is refused |
-| `test_input_scaling.py` | `Model(input_scaling='standard')`: every encoder's input scaled by the training rows, the statistics saved with the network and applied on rebuild, and binned spikes kept as counts |
+| `test_input_scaling.py` | `Model(input_scaling=...)`: the default scaling of continuous streams and streams with no processor, each stream and each side of a shared encoder with statistics of its own, spike-time rows and DeepSets left as they are, the statistics saved with the network and applied on rebuild, older networks rebuilt unscaled, and binned spikes kept as counts |
 | `test_network_settings.py` | every `Model` setting reaching every network that has the part it names, and a warning for a setting no network of the call reads |
 
 ### Training

@@ -1069,9 +1069,11 @@ class ChannelScaling(nn.Module):
 
     The statistics are buffers, so they are saved with the network and applied
     wherever it is used again. They start as the identity and :meth:`fit` sets
-    them. A channel that does not vary keeps a scale of 1. ``Model(input_scaling=
-    'standard')`` puts one in front of every encoder (:class:`InputScaling`), or
-    of each side of the concat critic.
+    them, in double precision. A channel that does not vary keeps a scale of 1,
+    judged against the channel that varies most, as the data check judges it
+    (:func:`neural_mi.preprocessing.constant_channels`), so data in any unit is
+    scaled. ``Model(input_scaling=...)`` puts one in front of an encoder's input
+    (:class:`InputScaling`), or of each side of the concat critic.
     """
 
     def __init__(self, n_channels: int):
@@ -1082,11 +1084,13 @@ class ChannelScaling(nn.Module):
     @torch.no_grad()
     def fit(self, x: torch.Tensor) -> None:
         """Set the statistics from the rows ``x``, shaped ``(n, n_channels, ...)``."""
-        x = x.float()
+        from neural_mi.preprocessing import constant_channels
+        x = x.double()
         dims = [d for d in range(x.ndim) if d != 1]
-        std = x.std(dim=dims) if x.shape[0] > 1 else torch.ones(x.shape[1])
+        std = x.std(dim=dims) if x.shape[0] > 1 else torch.ones(x.shape[1], dtype=x.dtype)
+        constant = torch.as_tensor(constant_channels(std.cpu().numpy()), device=std.device)
         self.shift.copy_(x.mean(dim=dims))
-        self.scale.copy_(torch.where(std > 1e-8, std, torch.ones_like(std)))
+        self.scale.copy_(torch.where(constant, torch.ones_like(std), std))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         view = (1, -1) + (1,) * (x.ndim - 2)
@@ -1094,17 +1098,25 @@ class ChannelScaling(nn.Module):
 
 
 class InputScaling(nn.Module):
-    """An encoder whose input passes through :class:`ChannelScaling` first, one per part of a paired input."""
+    """An encoder whose input passes through :class:`ChannelScaling` first, one per part of a paired input.
 
-    def __init__(self, encoder: nn.Module, n_channels):
+    ``scaled`` says which parts are scaled, one flag per part, every part by default. A part left as it is
+    passes through unchanged, as the input of a spike-time or categorical stream does under
+    ``Model(input_scaling='auto')``.
+    """
+
+    def __init__(self, encoder: nn.Module, n_channels, scaled=None):
         super().__init__()
         self.encoder = encoder
         channels = n_channels if isinstance(n_channels, tuple) else (n_channels,)
-        self.scalers = nn.ModuleList(ChannelScaling(c) for c in channels)
+        scaled = (True,) * len(channels) if scaled is None else tuple(scaled)
+        self.scalers = nn.ModuleList(ChannelScaling(c) if on else nn.Identity()
+                                     for c, on in zip(channels, scaled))
 
     def fit(self, x) -> None:
         for scaler, part in zip(self.scalers, x if isinstance(x, (tuple, list)) else (x,)):
-            scaler.fit(part)
+            if isinstance(scaler, ChannelScaling):
+                scaler.fit(part)
 
     def forward(self, x):
         if isinstance(x, (tuple, list)):
@@ -1165,6 +1177,16 @@ class VariationalWrapper(nn.Module):
             nn.init.xavier_uniform_(head.weight)
             if head.bias is not None:
                 nn.init.zeros_(head.bias)
+
+    @classmethod
+    def sharing(cls, other: 'VariationalWrapper', base_encoder: nn.Module) -> 'VariationalWrapper':
+        """A wrapper of ``base_encoder`` that uses ``other``'s heads: the second side of a shared encoder
+        whose sides scale their inputs apart, around the same encoder."""
+        wrapper = cls.__new__(cls)
+        nn.Module.__init__(wrapper)
+        wrapper.base_encoder = base_encoder
+        wrapper.mu_head, wrapper.log_var_head = other.mu_head, other.log_var_head
+        return wrapper
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode ``x`` through the base encoder and sample from the posterior.

@@ -490,15 +490,62 @@ A constant channel carries no information, and the transforms leave it
 unscaled. Drop it before the call, especially before `channel='zca'`, which
 has no direction to sphere along it.
 
-**`The channels of ... have a typical scale of ..., more than a factor of ... from unit scale`**
-The median standard deviation of the stream's channels lies more than a factor
-of `Preprocessing(scale_band=...)` from 1, either way. The networks start from
-weights sized for inputs near unit scale, so their estimate depends on units.
-The same dependence can read close to its value at unit scale and close to 0
-far from it.
-`Preprocessing(channel='zscore')` brings every channel to unit scale and leaves
-every quantity unchanged. The check does not fire when a channel transform is
-set.
+**`The channels of ... have a typical scale of ..., more than a factor of ... from unit scale`**, **`The channels of ... have a typical mean of ..., more than ... from zero`**
+The encoders leave this stream as it is, under `Model(input_scaling='none')` or
+a custom critic that does not take the setting, and the median standard
+deviation of its channels lies more than a factor of
+`Preprocessing(scale_band=...)` from 1, either way, or their median mean lies
+further than that from zero. The networks start from weights sized for inputs
+near zero and unit scale, so their estimate depends on units. The same
+dependence can read close to its value at unit scale and close to 0 far from
+it. `Model(input_scaling='auto')`, the default, centres and scales each channel
+of a continuous stream inside the network, and `Preprocessing(channel='zscore')`
+does so before the rows are built. Both leave every quantity unchanged. The
+check does not fire when a channel transform is set.
+
+**`The standard deviations of the channels of ... span a factor of ..., more than Preprocessing(spread_band=...)`**
+Under the default scaling the encoder brings each channel to unit scale, which
+gives every channel the same weight. That is right when the scales differ only
+by units, as for variables recorded in different units. When a channel is quiet
+because it carries little, as a neuron that rarely fires or an electrode that
+picks up only noise, scaling lifts its noise to the level of the signal, and
+the network needs more rows to learn to ignore it. The two cases look the same
+to the check, so it cannot choose for you. `Model(input_scaling='none')` keeps
+the channels' relative scales, and dividing the stream by one number before the
+call, such as its overall standard deviation, then brings it near unit scale.
+When the encoders leave the stream as it is, the message says instead that the
+loudest channels dominate what the networks receive, and that the default
+scaling gives each channel the same scale.
+
+**`... of ... sit more than Preprocessing(offset_band=...) of their standard deviations from zero`**
+The networks read their rows in single precision, about seven significant
+digits. A channel whose mean is many standard deviations from zero keeps few of
+those digits for its variation, which is where the information is, and no
+scaling inside a network recovers them. Subtract each channel's mean before the
+call, while the data are in double precision, or set
+`Preprocessing(channel='zscore')`, which centres each channel before the rows
+are built. Data stored in single precision with such an offset have lost the
+digits already.
+
+**`In ... of ..., more than Preprocessing(tie_share=...) of the values are one repeated value`**
+The encoder scales this stream, and some of its channels are mostly one value,
+as padded or sparse rows are: spike rows built by hand, sparse counts, or the
+padding of a window with few events. Scaling moves the repeated value away from
+0, which an encoder may read as an event, and lifts a channel that is quiet
+because it carries little to the level of the others.
+`Model(input_scaling='none')` leaves the rows as they are. Spike times read by
+a spike processor (`Processing(x='spike')` and its kind) are left as they are
+under the default.
+
+**`... of ... have heavy tails`**
+In these channels the standard deviation exceeds
+`Preprocessing(tail_band=...)` interquartile ranges, as it does for lognormal
+values. Scaling divides by the standard deviation, which the extreme values
+set, so most values of such a channel end up close together.
+`Preprocessing(channel='copula')` maps each channel through its ranks to a
+normal distribution before the rows are built, which leaves every quantity
+unchanged. Channels that are mostly one repeated value are left to the entry
+above.
 
 **`The rows ...'s ... processor builds have a typical scale of ..., more than a factor of ... from unit scale`**
 A spike-time or categorical stream's rows come from its processor, after any
@@ -791,7 +838,10 @@ autoregressive fit `ARWhitening` uses, read from its first
 `Preprocessing(predicted_share=...)` means a large conditioning term, of which the rate is a small residual, and the line
 suggests `Preprocessing(time='ar')`, which removes the term and leaves the rate
 unchanged. Spike-time and categorical streams are named only, since their
-processors build their rows.
+processors build their rows. A stream whose encoder centres and scales it
+(`Model(input_scaling=...)`, on by default for continuous streams and streams
+with no processor) is marked so, and the line then ends by naming
+`input_scaling='none'`, which turns that off.
 
 **`Dimensionality: the grid runs over embedding_dim 1 to ... because the reference fit has a participation ratio of ...`**, **`Dimensionality: the grid runs over ... values of embedding_dim from 1 to ... on a log scale`**
 The default grid reaches twice the participation ratio of the reference fit.

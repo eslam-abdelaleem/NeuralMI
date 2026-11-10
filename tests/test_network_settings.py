@@ -18,8 +18,10 @@ from neural_mi.utils import build_critic
 
 def _params(**overrides):
     params = {k: v['default'] for k, v in BASE_PARAMS_SCHEMA.items() if 'default' in v}
+    # These tests read the encoders themselves. The scaling in front of them has tests of its own
+    # (test_input_scaling.py).
     params.update(input_dim_x=6, input_dim_y=6, n_channels_x=2, n_channels_y=2, hidden_dim=8,
-                  embedding_dim=4, n_layers=2)
+                  embedding_dim=4, n_layers=2, input_scaling='none')
     params.update(overrides)
     return params
 

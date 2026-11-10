@@ -123,9 +123,9 @@ when asked and recorded in `result.params['preprocessing']`. Each transform is
 fitted on X, Y and W apart, the time transform first. Spike-time and
 categorical streams take neither, and arrays passed in as rows take the channel
 transform only. The transforms are in `nmi.preprocessing`, and
-[USING.md](USING.md#preprocessing-the-streams) shows them in use. The last four
-settings belong to the data check, which every call runs on its streams whether
-or not it asks for a transform.
+[USING.md](USING.md#preprocessing-the-streams) shows them in use. The settings
+after `time` belong to the data check, which every call runs on its streams,
+after any transform, whether or not it asks for one.
 
 | Parameter | Default | Meaning |
 |--|--|----|
@@ -134,7 +134,11 @@ or not it asks for a transform.
 | `scale_band` | `10.0` | The data check warns when the typical channel scale of a stream lies more than this factor from unit scale, in either direction. The same holds for the rows that a spike-time or categorical processor builds. |
 | `predicted_share` | `0.9` | For a rate quantity on a series, the data check notes a channel whose own past predicts more than this share of its variance and suggests `time='ar'`. |
 | `check_rows` | `100000` | The data check reads each stream in stretches of this many rows, so that it never copies a large stream. It fits a channel's own past on the first stretch. |
-| `sample_rows` | `10000` | The data check reads the scale of the rows that a spike-time or categorical processor builds from this many rows at their start. |
+| `sample_rows` | `10000` | The data check reads the scale of the rows that a spike-time or categorical processor builds, and the quartiles and repeated values of each channel of a continuous stream, from this many rows at their start. |
+| `spread_band` | `10.0` | The data check warns when the standard deviations of a stream's channels span more than this factor. |
+| `offset_band` | `1e5` | The data check warns when a channel's mean lies more than this many of its standard deviations from zero, where single precision resolves its variation coarsely. |
+| `tail_band` | `1.5` | The data check warns that a channel has heavy tails when its standard deviation exceeds this many interquartile ranges. |
+| `tie_share` | `0.9` | When an encoder scales a stream, the data check warns about a channel with more than this share of its values equal to one value, as in padded or sparse rows. |
 
 ## `Model`
 
@@ -159,7 +163,7 @@ The networks that embed X and Y and score their pairing.
 | `nhead` | `4` | Attention heads of the transformer encoder. |
 | `dropout` | `0.0` | Dropout after each hidden layer of an MLP, inside each block of the LRU, TCN and transformer encoders, and between the stacked layers of a GRU or LSTM. It reaches the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). A setting that no network of the call reads warns. |
 | `norm_layer` | `'auto'` | Normalisation in each hidden block of an MLP: `'layer'`, `'batch'` or `'none'`, in the MLP encoder and the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). `'auto'` is layer normalisation for the hybrid critic in `mode='dimensionality'` and none everywhere else. Layer normalisation divides out each sample's overall scale and loses the information that scale carries. |
-| `input_scaling` | `None` | `'standard'` centres and scales every encoder's input channel by channel, by the mean and standard deviation of the training rows, so that an estimate does not depend on the units of the rows. The statistics are part of the network: saved with it and applied by `extract_embeddings`. Under `critic_type='concat'` each side is scaled before the pair is formed. It cannot serve `embedding_model='deepsets'`, which tells a spike from padding by the padding value. |
+| `input_scaling` | `'auto'` | Centres and scales an encoder's input channel by channel, by the mean and standard deviation of the training rows, so that an estimate does not depend on the units of the rows. `'auto'` scales the input from a continuous stream or from a stream with no processor, each of X, Y and W with its own statistics, and leaves as they are the rows of a spike-time or categorical processor and the input of a DeepSets encoder, which tells a spike from padding by the padding value. `'standard'` scales every input and cannot serve DeepSets. `'none'` scales nothing. The statistics are part of the network: saved with it and applied by `extract_embeddings`. Under `critic_type='concat'` each side is scaled before the pair is formed. |
 | `use_spectral_norm` | `True` | Spectral normalisation of the hidden layers of an MLP: the MLP encoder and the MLPs the library builds around the encoders (the hybrid critic's head, the concat critic's network, the head of a difference term's branched encoder, the pretrained backbone's head). |
 | `bias` | `True` | Bias terms in the layers of every encoder and of the MLPs built around them. |
 | `shared_encoder` | `False` | One encoder for X and Y. `mode='dimensionality'` without `y_data` uses `True` when unset. |

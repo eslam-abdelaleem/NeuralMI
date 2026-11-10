@@ -1428,15 +1428,32 @@ result = nmi.run(x, y, model=Model(custom_critic=MyCritic, embedding_dim=16))
 
 ### The scale of the rows
 
-The networks read their rows at the scale they arrive in, and an estimate
-depends on it: a pair carrying 2 nats reads close to 2 at unit scale and 0 at
-×1e3 or ×1e-3. `Model(input_scaling='standard')` centres and scales each
-encoder's input channel by channel, by the mean and standard deviation of the
-training rows, which removes the dependence on units. The statistics are part
-of the network, saved with it and applied by `extract_embeddings`. It is off by
-default, like every change to the data. Binned spikes enter as counts unless
-`normalize_bins=True` turns them into rates, which in 1 ms bins makes one spike
-1,000.
+The networks start from weights sized for inputs near zero and unit scale, so
+an estimate on rows far from that scale depends on their units. By default
+(`Model(input_scaling='auto')`) each encoder centres and scales the input that
+it receives from a continuous stream, or from a stream with no processor,
+channel by channel by the mean and standard deviation of the training rows. The
+estimate then no longer depends on the units of those streams. X, Y and W each
+have statistics of their own, and so does each side of a shared encoder. The
+statistics are part of the network, saved with it and applied by
+`extract_embeddings`. A network saved before this default records no scaling
+and loads as it was trained.
+
+The rows that a spike-time or categorical processor builds are left as they
+are, because their scale follows their processor's settings, and so is the
+input of a DeepSets encoder, which tells a spike from padding by the padding
+value. `input_scaling='standard'` scales every input, those rows included, and
+refuses DeepSets. `input_scaling='none'` leaves every input as it is. Binned
+spikes enter as counts unless `normalize_bins=True` turns them into rates,
+which in 1 ms bins makes one spike 1,000.
+
+Scaling gives every channel the same weight. That is right when the channels
+differ only in units, but it lifts the noise of a channel that is quiet because
+it carries little. The data check says which streams the encoders scale. It
+warns when the channel scales of a stream spread widely, when a channel is
+mostly one repeated value, as in padded or sparse rows, and when a channel has
+heavy tails, for which `Preprocessing(channel='copula')` suits better
+([MESSAGES.md](MESSAGES.md#preprocessing-and-the-data-check)).
 
 ### Regularised objectives
 

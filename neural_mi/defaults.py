@@ -44,9 +44,12 @@ BASE_PARAMS_SCHEMA = {
     # behind both the participation ratios and the rotated embeddings.
     'whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},
-    # Every encoder's input centred and scaled channel by channel by the training
-    # rows' statistics, saved with the network: None (off) or 'standard'.
-    'input_scaling': {'type': (str, type(None)), 'default': None},
+    # An encoder's input centred and scaled channel by channel by the training rows'
+    # statistics, saved with the network: 'auto' scales the input that comes from a
+    # continuous stream or from a stream with no processor, 'standard' every input,
+    # and 'none' no input (scales_stream). None, which a network saved before 'auto'
+    # records, reads as 'none'.
+    'input_scaling': {'type': (str, type(None)), 'default': 'auto'},
     'use_decoder': {'type': bool, 'default': False},
     'decoder_lambda': {'type': float, 'min': 0.0, 'default': 0.001},
     'decoder_lambda_x': {'type': (float, type(None)), 'min': 0.0, 'default': None},
@@ -216,6 +219,18 @@ BASE_PARAMS_SCHEMA = {
     # The scale of rows a spike-time or categorical processor builds is read from their
     # first sample_rows rows.
     'sample_rows': {'type': int, 'min': 1, 'default': 10_000},
+    # Channels of a stream whose standard deviations spread over more than a factor
+    # of spread_band warn: scaling channel by channel gives them equal weight.
+    'spread_band': {'type': float, 'min': 1.0, 'default': 10.0},
+    # A channel whose mean lies more than offset_band of its standard deviations from
+    # zero warns: in single precision its variation is resolved coarsely.
+    'offset_band': {'type': float, 'min': 1.0, 'default': 1e5},
+    # A channel whose standard deviation exceeds tail_band interquartile ranges warns
+    # that its tails are heavy.
+    'tail_band': {'type': float, 'min': 0.0, 'default': 1.5},
+    # A channel with more than tie_share of its values equal to one value warns, as
+    # padded or sparse rows do.
+    'tie_share': {'type': float, 'min': 0.0, 'default': 0.9},
     # A call with fewer than small_sample rows reaching the estimator warns that the
     # dataset is small (read from Training(...)).
     'small_sample': {'type': int, 'min': 0, 'default': 200},
@@ -246,7 +261,12 @@ CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs',
 
 # The settings of the data check (neural_mi/preprocessing.py). Each is a field of
 # Preprocessing(...).
-CHECK_SETTINGS = ('scale_band', 'predicted_share', 'check_rows', 'sample_rows')
+CHECK_SETTINGS = ('scale_band', 'predicted_share', 'check_rows', 'sample_rows', 'spread_band', 'offset_band',
+                  'tail_band', 'tie_share')
+
+# The streams whose rows input_scaling='auto' leaves as they are: those a spike-time or
+# categorical processor builds.
+UNSCALED_KINDS = ('spike', 'categorical')
 
 # The processor settings' defaults, by processor. ``None`` means unset: a
 # window_size has to be given, a step_size of None is one window, and so on.
@@ -303,6 +323,40 @@ def default_of(name: str) -> Any:
 def setting(params: Dict[str, Any], name: str) -> Any:
     """Setting ``name`` from ``params``, or its schema default when ``params`` lacks it."""
     return params[name] if name in params else default_of(name)
+
+
+def scales_stream(input_scaling: Optional[str], kind: Optional[str]) -> bool:
+    """Whether an encoder scales the input that a stream read by processor ``kind`` gives it: under
+    ``input_scaling='auto'`` every stream but those of :data:`UNSCALED_KINDS`, under ``'standard'`` every
+    stream, and under ``'none'``, or the ``None`` of a network saved before ``'auto'``, no stream."""
+    if input_scaling == 'standard':
+        return True
+    return input_scaling == 'auto' and kind not in UNSCALED_KINDS
+
+
+def scaled_streams(params: Dict[str, Any], kinds: Dict[str, Optional[str]]) -> Dict[str, bool]:
+    """Whether the encoders scale each stream of ``kinds``, a stream's name to its processor, under the
+    ``input_scaling`` of ``params`` (:func:`scales_stream`)."""
+    mode = setting(params, 'input_scaling')
+    return {name: scales_stream(mode, kind) for name, kind in kinds.items()}
+
+
+def side_scaling(params: Dict[str, Any], x_streams=('x',), y_stream: str = 'y') -> Tuple[Tuple[bool, ...], bool]:
+    """Whether a network scales each part of its X input, read from the streams ``x_streams``, and its Y
+    input, read from ``y_stream``: the decisions :func:`neural_mi.run.run` made for every stream
+    (``_scaled_streams``), or else those of the processors in ``params``, Y reading with X's when it has
+    none of its own."""
+    decided = params.get('_scaled_streams')
+    if decided is None:
+        kind_x = params.get('processor_type_x')
+        kind_y = params.get('processor_type_y') or kind_x
+        decided = scaled_streams(params, {'x': kind_x, 'w': kind_x, 'y': kind_y})
+
+    def scaled(names) -> bool:
+        # A part built from several streams (a conditioning past of Y and W) is scaled when each of them is.
+        return all(bool(decided.get(name, decided.get('x'))) for name in ((names,) if isinstance(names, str)
+                                                                           else names))
+    return tuple(scaled(names) for names in x_streams), scaled(y_stream)
 
 
 def norm_layer_of(params: Dict[str, Any]) -> Optional[str]:

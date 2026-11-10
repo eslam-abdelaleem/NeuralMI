@@ -12,7 +12,7 @@ import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Conditional
 from neural_mi.analysis import task as task_module
-from neural_mi.models.embeddings import BranchedEmbedding, GRU, MLP
+from neural_mi.models.embeddings import BranchedEmbedding, GRU, InputScaling, MLP
 
 
 def _components(result):
@@ -126,6 +126,7 @@ def encoders(monkeypatch):
     def spy(critic_type, params, custom_cls=None):
         critic = build(critic_type, params, custom_cls)
         net = critic.embedding_net_x
+        net = net.encoder if isinstance(net, InputScaling) else net      # the scaling in front of the encoder
         seen.append((type(net), [type(b) for b in getattr(net, 'branches', [])], params.get('n_channels_x')))
         return critic
     monkeypatch.setattr(task_module, 'build_critic', spy)

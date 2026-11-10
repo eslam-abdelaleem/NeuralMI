@@ -18,7 +18,7 @@ from neural_mi.logger import logger, user_stacklevel
 from neural_mi.embeddings_io import _EMBEDDING_BATCH, save_network
 from neural_mi.data.handler import create_dataset
 from neural_mi.data.rows import IDENTITY_KEY, record_rows, row_geometry, row_identity
-from neural_mi.defaults import CURVE_SETTINGS, default_of, setting
+from neural_mi.defaults import CURVE_SETTINGS, default_of, setting, side_scaling
 from neural_mi.seeds import network_seed, repeat_seed
 
 # ---------------------------------------------------------------------------
@@ -291,6 +291,12 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
     if params.get('estimator_name') in NONPARAMETRIC:
         return {**_reported(params), **_nonparametric(dataset, params), IDENTITY_KEY: _rows}
 
+    # Which inputs the encoders scale (Model(input_scaling=...)): each part of X
+    # and Y as the stream behind it decides, recorded with the network so that
+    # it rebuilds the same way (defaults.side_scaling).
+    _x_streams, _y_stream = ((x_data.roles.x, x_data.roles.y) if isinstance(x_data, TermRows)
+                             else params.get('_term_streams') or (PAIR.x, PAIR.y))
+    params['input_scaling_x'], params['input_scaling_y'] = side_scaling(params, _x_streams, _y_stream)
     # A custom critic is the caller's recipe, built here under this task's seed
     # like every other critic (build_critic).
     critic = build_critic(setting(params, 'critic_type'), params, params.get('custom_embedding_cls'))

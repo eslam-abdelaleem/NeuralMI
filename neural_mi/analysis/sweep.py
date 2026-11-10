@@ -581,9 +581,16 @@ def _joint_marginal_difference(
     joint_key: str, marginal_key: str,
     reported: bool = True,
     raw_key: str = 'mi_raw',
+    joint_streams: Optional[tuple] = None,
+    marginal_streams: Optional[tuple] = None,
 ) -> tuple:
     """Estimate a chain-rule difference I(joint) - I(marginal) via two
     independent ParameterSweep runs.
+
+    ``joint_streams`` and ``marginal_streams``, when given, name the streams
+    behind each term's inputs, ``(x_parts, y)``, for terms whose rows the
+    caller built from several streams (transfer entropy): each part's encoder
+    scales it as its streams decide (:func:`neural_mi.defaults.side_scaling`).
 
     Shared by conditional MI (I(X;Y|W) = I(XW;Y) - I(W;Y)) and transfer
     entropy in both directions (TE(X→Y) = I(xy_past;y_future) -
@@ -630,11 +637,13 @@ def _joint_marginal_difference(
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
                                     base_params={**with_model_labels(base_params, component=marginal_key),
-                                                 '_difference_term': True})
+                                                 '_difference_term': True,
+                                                 **({'_term_streams': marginal_streams} if marginal_streams else {})})
     results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 
     logger.info(f"{quantity_name}: estimating I({joint_label})...")
-    joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True}
+    joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True,
+                    **({'_term_streams': joint_streams} if joint_streams else {})}
     sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
     results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 

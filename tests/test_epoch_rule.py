@@ -278,8 +278,8 @@ class TestTheWarningsAboutTheValueRead:
         y = (x[:, :2] @ rng.standard_normal((2, 20)) + 2.0 * rng.standard_normal((300, 20))).astype(np.float32)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            result = nmi.run(x, y, model=nmi.Model(embedding_dim=16, hidden_dim=128, n_layers=2),
-                             training=nmi.Training(n_epochs=40, patience=40, **training), show_progress=False,
+            result = nmi.run(x, y, model=nmi.Model(embedding_dim=16, hidden_dim=64, n_layers=2),
+                             training=nmi.Training(n_epochs=80, patience=80, **training), show_progress=False,
                              seed=0)
         return result, [str(w.message) for w in caught]
 
