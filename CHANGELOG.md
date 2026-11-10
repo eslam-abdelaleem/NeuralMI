@@ -59,8 +59,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `rising_epochs` and `rising_noise`). It also takes the thresholds of the
   ceiling and saturation warnings (`ceiling_fraction`, `saturation_fraction`
   and `saturated_epoch_fraction`), `amplification_threshold` for a quantity
-  combined from several terms, `small_sample` and `nan_streak`.
-  `Preprocessing(...)` takes the data check's `scale_band`, `predicted_share`,
+  combined from several terms, `small_sample` and `nan_streak`. `Model(...)`
+  takes `large_first_layer`, the size above which a first embedding layer is
+  noted. `Preprocessing(...)` takes the data check's `scale_band`, `predicted_share`,
   `check_rows` and `sample_rows`, which change no stream. `Dimensionality(...)`
   takes the grid's `grid_reach`, `grid_small`, `grid_medium`, `grid_points`,
   `reference_fill`, `refit_reach` and `confirm_steps`, and the warnings'
@@ -70,7 +71,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `padded_share`, `gap_multiple` and `bridged_share`, the categorical processor
   takes `max_encoding_width`, and the figure of a transfer entropy estimated
   both ways takes `direction_band`. `PARAMETERS.md` gives each default. The
-  warnings about a scale far from unit scale no longer quote a measured example.
+  warnings about a scale far from unit scale no longer quote a measured example,
+  and the warning about a small dataset names the regularising settings without
+  suggesting values of its own.
 - A run warns when the held-out value of the network read is below
   `Training(gap_share=...)` of a positive estimate, by more than `clear_se`
   standard errors of their difference. The estimate is read on the training
@@ -296,8 +299,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   estimate and the held-out value of the network read, and comes after the
   estimate is set.
 - Nothing scaled or whitened data before the networks, and estimates depended
-  on units: a pair read close to its true value at unit scale and close to 0
-  at a thousand times it or a thousandth of it. On smooth, finely sampled
+  on units: a pair could read close to its true value at unit scale and close
+  to 0 far from it. On smooth, finely sampled
   signals the conditioning term of `mi_rate` is several nats and the rate a
   small residual of it. `Preprocessing(channel=..., time=...)`, opt-in and
   recorded in `result.params`, transforms each continuous stream before rows

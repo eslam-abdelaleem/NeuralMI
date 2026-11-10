@@ -106,6 +106,7 @@ class Model:
     norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
     input_scaling: Optional[str] = None            # 'auto' (continuous streams) | 'standard' (every stream) | 'none'
+    large_first_layer: Optional[int] = None        # a first layer with more parameters is noted
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None
     max_n_batches: Optional[int] = None            # critic chunking

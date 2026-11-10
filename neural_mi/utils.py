@@ -526,7 +526,7 @@ ARCHITECTURE_KEYS = (
     'use_variational', 'shared_encoder', 'max_n_batches',
     'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
     '_difference_term', 'processor_params_x', 'processor_params_y', 'input_scaling',
-    'input_scaling_x', 'input_scaling_y',
+    'input_scaling_x', 'input_scaling_y', 'large_first_layer',
 ) + MODEL_SETTINGS
 
 
@@ -900,18 +900,19 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # Warn when the first embedding layer is severely overparameterized.
     # Large first layers (input_dim * hidden_dim) are the most common cause of
     # overfitting in neuroscience datasets where windows are high-dimensional but
-    # sample counts are modest. 500k is a practical threshold, not a hard limit.
+    # sample counts are modest. Model(large_first_layer=...) sets the size noted.
     _first_hidden = hidden_dim[0] if isinstance(hidden_dim, list) else hidden_dim
     _last_hidden  = hidden_dim[-1] if isinstance(hidden_dim, list) else hidden_dim
     # A pair of inputs counts with both branches' sizes.
     _input_dim_x_total = sum(input_dim_x) if isinstance(input_dim_x, tuple) else input_dim_x
     first_layer_params = _input_dim_x_total * _first_hidden
-    if first_layer_params > 500_000:
+    large_first_layer = setting(embedding_params, 'large_first_layer')
+    if first_layer_params > large_first_layer:
         logger.info(
             f"Large first embedding layer detected: input_dim_x={input_dim_x} x "
-            f"hidden_dim={hidden_dim} = {first_layer_params:,} parameters. "
-            f"It may overfit small datasets. A smaller window_size or hidden_dim or "
-            f"another embedding model avoids that."
+            f"hidden_dim={hidden_dim} = {first_layer_params:,} parameters, more than "
+            f"Model(large_first_layer={large_first_layer}). It may overfit small datasets. A smaller "
+            f"window_size or hidden_dim or another embedding model avoids that."
         )
 
     # --- Critic Assembly ---

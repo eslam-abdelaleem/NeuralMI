@@ -50,6 +50,9 @@ BASE_PARAMS_SCHEMA = {
     # and 'none' no input (scales_stream). None, which a network saved before 'auto'
     # records, reads as 'none'.
     'input_scaling': {'type': (str, type(None)), 'default': 'auto'},
+    # A first embedding layer with more parameters than this is noted at the info
+    # level: it may overfit a small dataset.
+    'large_first_layer': {'type': int, 'min': 0, 'default': 500_000},
     'use_decoder': {'type': bool, 'default': False},
     'decoder_lambda': {'type': float, 'min': 0.0, 'default': 0.001},
     'decoder_lambda_x': {'type': (float, type(None)), 'min': 0.0, 'default': None},
@@ -172,7 +175,8 @@ BASE_PARAMS_SCHEMA = {
     # How the held-out curve is judged (neural_mi/training/epochs.py), in units of the
     # curve's epoch-to-epoch noise, of standard errors or of epochs.
     # The level of the top is the median of the smoothed values within level_noise noise
-    # units of the maximum; the plateau starts at the first epoch within start_noise of it.
+    # units of the maximum. The plateau starts at the first epoch within start_noise noise
+    # units of that level.
     'level_noise': {'type': float, 'min': 0.0, 'default': 2.0},
     'start_noise': {'type': float, 'min': 0.0, 'default': 0.5},
     # The top must stand resolved_noise noise units above zero to count as resolved.

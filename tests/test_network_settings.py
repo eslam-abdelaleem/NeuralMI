@@ -110,3 +110,19 @@ class TestASettingNoNetworkReadsWarns:
     def test_the_concat_critic_builds_no_encoder(self):
         messages = self._messages(critic_type='concat', embedding_model='cnn', kernel_size=5)
         assert messages and 'kernel_size' in messages[0] and 'embedding_model' in messages[0]
+
+
+class TestTheNoteOnALargeFirstLayer:
+    """A first embedding layer larger than Model(large_first_layer=...) is noted at the info level."""
+
+    def test_the_setting_sets_the_size_noted(self, caplog):
+        import logging
+        params = _params(input_dim_x=1000, input_dim_y=6, n_channels_x=1, hidden_dim=600)
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            build_critic('separable', params)
+        assert 'Large first embedding layer detected' in caplog.text
+        assert 'more than Model(large_first_layer=500000)' in caplog.text
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            build_critic('separable', {**params, 'large_first_layer': 10 ** 6})
+        assert 'Large first embedding layer' not in caplog.text

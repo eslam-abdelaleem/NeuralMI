@@ -1580,15 +1580,12 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
         return
     tips = []
     if setting(base_params, 'dropout') == 0.0:
-        tips.append("dropout=0.2")
+        tips.append("a dropout above 0")
     if norm_layer_of(base_params) is None:
         tips.append("norm_layer='layer'")
     hidden, embed = setting(base_params, 'hidden_dim'), setting(base_params, 'embedding_dim')
-    if isinstance(hidden, int) and hidden > 32:
-        tips.append(f"hidden_dim=32 (current: {hidden})")
-    if embed > 32:
-        tips.append(f"embedding_dim=32 (current: {embed})")
-    tips.append("optimizer='adamw' with optimizer_params={'weight_decay': 1e-3}")
+    tips.append(f"a smaller hidden_dim (now {hidden}) and embedding_dim (now {embed})")
+    tips.append("optimizer='adamw' with a weight_decay in optimizer_params")
     warnings.warn(
         f"Only {n_samples} {unit} reach the estimator, which is fewer than Training(small_sample="
         f"{small_sample}). "

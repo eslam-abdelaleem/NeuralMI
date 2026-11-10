@@ -198,7 +198,9 @@ class TestTheSettingsReachTheTrainer:
     def test_the_warnings_name_the_settings_they_used(self):
         _, messages = self._run(ceiling_fraction=0.0, small_sample=10 ** 6)
         assert any('near its ceiling of log(' in m and 'Training(ceiling_fraction=0)' in m for m in messages)
-        assert any('fewer than Training(small_sample=1000000)' in m for m in messages)
+        small = next(m for m in messages if 'fewer than Training(small_sample=1000000)' in m)
+        # The advice names settings without values of its own.
+        assert 'a smaller hidden_dim (now 8) and embedding_dim (now 4)' in small
 
     def test_a_setting_changes_the_diagnosis(self):
         result, _ = self._run(resolved_noise=1e6)

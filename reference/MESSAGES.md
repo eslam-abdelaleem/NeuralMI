@@ -844,22 +844,24 @@ with no processor) is marked so, and the line then ends by naming
 `input_scaling='none'`, which turns that off.
 
 **`Dimensionality: the grid runs over embedding_dim 1 to ... because the reference fit has a participation ratio of ...`**, **`Dimensionality: the grid runs over ... values of embedding_dim from 1 to ... on a log scale`**
-The default grid reaches twice the participation ratio of the reference fit.
-The ratio can run below the true dimension. The factor of two leaves room for
-that. When twice the ratio is at
-most 10 the grid is 1 to 10 with no message. Up to 20 it is 1 to 20.
-Past 20 it is 10 values on a log scale up to twice the ratio. The reading is
-then one of those values. Pass `embedding_dims` as a list or a range for a
-finer grid.
+The default grid reaches `Dimensionality(grid_reach=...)` times the
+participation ratio of the reference fit, because the ratio can run below the
+true dimension. When that reach is at most `grid_small`, the grid is every value
+from 1 to `grid_small`, with no message. When it is at most `grid_medium`, the
+grid is every value from 1 to `grid_medium`. Beyond that, the grid is
+`grid_points` values on a log scale up to the reach. The reading is then one of
+those values. Pass `embedding_dims` as a list or a range for a finer grid.
 
 **`Dimensionality: the participation ratio of the reference fit (...) is close to its embedding_dim=...`**
-A reference whose participation ratio reaches three eighths of its size may be
-too small to hold every shared direction. It is refitted once at four times the
+A reference may be too small to hold every shared direction when
+`Dimensionality(grid_reach=...)` times its participation ratio reaches
+`reference_fill` of its size. It is refitted once at `refit_reach` times the
 ratio. A `reference_dim` you set is kept as given.
 
 **`Dimensionality: the grid stopped at embedding_dim=... once ... consecutive values reached ...`**
-The default grid is fitted three values at a time. Three values in a row at the
-threshold confirm the reading against the plateau the reference fit sets. The
+The default grid is fitted `Dimensionality(confirm_steps=...)` values at a
+time. That many values in a row at the threshold confirm the reading against the
+plateau that the reference fit sets. The
 values above them are skipped. Pass `embedding_dims` to fit every value.
 
 **`Dimensionality: the curve of split(s) ... did not reach ... of its plateau by embedding_dim=...`**
@@ -894,8 +896,8 @@ InfoNCE ceiling that of one block. Raising `max_eval_samples` evaluates in fewer
 larger blocks, at a memory cost that grows with the square of the block.
 
 **`Large first embedding layer detected`**
-The first layer holds more than 500,000 parameters because the flattened input
-is wide. With long windows and few samples it commonly overfits. Reduce
+The first layer holds more than `Model(large_first_layer=...)` parameters
+because the flattened input is wide. With long windows and few samples it commonly overfits. Reduce
 `window_size` or `hidden_dim`. An encoder that reads the window axis itself
 (`cnn`, `gru`, `tcn`, `lru`) also helps.
 
