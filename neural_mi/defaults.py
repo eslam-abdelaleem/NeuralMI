@@ -197,6 +197,9 @@ BASE_PARAMS_SCHEMA = {
     # smoothed held-out curve lies above saturation_fraction of its ceiling.
     'saturation_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
     'saturated_epoch_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
+    # The held-out value of the network read falls short of a positive estimate when it
+    # is below gap_share of it, by more than clear_se standard errors of their difference.
+    'gap_share': {'type': float, 'min': 0.0, 'default': 0.5},
     # A quantity combined from several terms warns when an error in a term reaches
     # its value amplified this many times (neural_mi/analysis/sweep.py).
     'amplification_threshold': {'type': float, 'min': 1.0, 'default': 10.0},
@@ -239,7 +242,7 @@ BASE_PARAMS_SCHEMA = {
 # Training(...).
 CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs', 'fall_noise', 'approach_noise',
                   'fuzzy_se', 'clear_se', 'rising_epochs', 'rising_noise', 'ceiling_fraction',
-                  'saturation_fraction', 'saturated_epoch_fraction', 'nan_streak')
+                  'saturation_fraction', 'saturated_epoch_fraction', 'gap_share', 'nan_streak')
 
 # The settings of the data check (neural_mi/preprocessing.py). Each is a field of
 # Preprocessing(...).

@@ -575,7 +575,9 @@ epoch where its held-out curve peaks and reported on the training rows. To
 choose between configurations, compare their held-out values (`test_mi` in
 `runs`), not the reported ones. On average the held-out value is a lower bound
 on the information. The training-side value is not, because a network that
-overfits can push it above the truth. For a difference quantity, compare the
+overfits can push it above the truth. A run warns when the held-out value of its
+network falls below `Training(gap_share=...)` of the estimate by more than noise
+([MESSAGES.md](MESSAGES.md#training)). For a difference quantity, compare the
 sum of its terms' held-out values (`details[config_id]['trainings']`, one row
 per term). When several configurations are within the spread of the best one
 over repeats, prefer the one whose training and held-out values agree best in
@@ -1222,8 +1224,13 @@ the memory of one block, and `Training(test_subset_size='full')` does the same
 for the held-out curve at every epoch. `runs` reports each side's
 ceiling and how close the estimate came to it (`train_saturation`,
 `test_saturation`). `batch_size` sets how many negatives each training step sees
-and places no cap on the reported value. An estimate near its ceiling calls for
-a larger `max_eval_samples` or for SMILE.
+and places no cap on the reported value. A held-out value near its ceiling calls
+for more held-out rows in each evaluation or for SMILE. A larger
+`max_eval_samples` gives them when the split holds more held-out rows than one
+evaluation scores, and only more data gives them otherwise. An estimate near its
+training-side ceiling while its held-out value is far below may come from a
+network that memorised its training rows
+([MESSAGES.md](MESSAGES.md#ceiling-and-capacity)).
 
 SMILE is the less numerically robust of the two. Called through `nmi.run()` it
 produced no NaN on any data draw tried. A `Trainer` assembled by hand produced

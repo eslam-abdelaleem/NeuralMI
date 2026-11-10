@@ -183,7 +183,7 @@ class TestTheSettingsReachTheTrainer:
         values = dict(level_noise=2.5, start_noise=0.6, resolved_noise=7.0, fast_epochs=9, fall_noise=3.5,
                       approach_noise=2.5, fuzzy_se=2.5, clear_se=2.5, rising_epochs=21, rising_noise=2.5,
                       ceiling_fraction=0.86, saturation_fraction=0.91, saturated_epoch_fraction=0.6,
-                      nan_streak=4)
+                      gap_share=0.4, nan_streak=4)
         assert set(values) == set(CURVE_SETTINGS)
         seen, real = {}, Trainer.train
 
@@ -197,9 +197,119 @@ class TestTheSettingsReachTheTrainer:
 
     def test_the_warnings_name_the_settings_they_used(self):
         _, messages = self._run(ceiling_fraction=0.0, small_sample=10 ** 6)
-        assert any('near its ceiling above Training(ceiling_fraction=0)' in m for m in messages)
+        assert any('near its ceiling of log(' in m and 'Training(ceiling_fraction=0)' in m for m in messages)
         assert any('fewer than Training(small_sample=1000000)' in m for m in messages)
 
     def test_a_setting_changes_the_diagnosis(self):
         result, _ = self._run(resolved_noise=1e6)
         assert set(result.runs['curve_diagnosis']) == {'not resolved'}
+
+
+class TestTheWarningsAboutTheValueRead:
+    """After the trainer has set the value it reports, it compares that value with the held-out value of the
+    same network and with the ceiling of each side, and the warning about a curve that did not resolve states
+    both values."""
+
+    def test_a_held_out_value_falls_short_below_gap_share_and_beyond_noise(self):
+        from neural_mi.training.epochs import falls_short
+        assert falls_short(1.0, 0.4, 0.01, 1000)
+        assert not falls_short(1.0, 0.6, 0.01, 1000)
+        assert falls_short(1.0, 0.6, 0.01, 1000, gap_share=0.7)
+        # A small estimate on few rows: the difference is within its standard errors.
+        assert not falls_short(0.05, 0.0, 0.02, 50)
+        assert falls_short(0.05, 0.0, 0.02, 50, clear_se=1.0)
+        assert not falls_short(0.0, -0.1, 0.01, 1000) and not falls_short(1.0, None, 0.01, 1000)
+
+    def test_the_gap_warning_states_the_values_and_names_its_settings(self):
+        from neural_mi.training.epochs import warn_about_gap
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            warn_about_gap(2.5, 0.75, 'bits', gap_share=0.5, clear_se=3.0)
+        text = str(caught[0].message)
+        assert text.startswith('At the epoch read, the held-out MI of the network (0.7500 bits) is less than '
+                               'Training(gap_share=0.5) of the estimate (2.5000 bits).')
+        assert 'Training(clear_se=3)' in text
+
+    @pytest.mark.parametrize('held_out_rows, advice', [(5000, 'Raising max_eval_samples'),
+                                                      (100, 'Only more held-out rows raise this ceiling')])
+    def test_a_held_out_value_near_its_ceiling_may_understate(self, held_out_rows, advice):
+        from neural_mi.training.epochs import warn_about_ceiling
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            side = warn_about_ceiling(6.5, 6.4, np.log2(4000), np.log2(100), 4000, 100, held_out_rows)
+        text = str(caught[0].message)
+        assert side == 'held-out' and len(caught) == 1
+        assert text.startswith('The held-out MI (6.4000 bits) is near its ceiling of log(100)')
+        assert 'the true MI may be higher' in text and advice in text
+
+    def test_an_estimate_near_its_ceiling_alone_may_overstate(self):
+        from neural_mi.training.epochs import warn_about_ceiling
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            side = warn_about_ceiling(11.0, 1.9, np.log2(4000), np.log2(1000), 4000, 1000, 1000)
+        text = str(caught[0].message)
+        assert side == 'training'
+        assert text.startswith('The estimate (11.0000 bits) is near its ceiling of log(4000)')
+        assert 'the held-out MI of the same network is 1.9000 bits' in text and 'memorising' in text
+        assert 'may be higher' not in text
+
+    def test_a_value_below_both_ceilings_raises_nothing(self):
+        from neural_mi.training.epochs import warn_about_ceiling
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            assert warn_about_ceiling(2.0, 1.8, np.log2(4000), np.log2(1000), 4000, 1000, 1000) is None
+
+    @pytest.mark.parametrize('values, stated', [
+        ((1.2, 1.2, 0.3), 'the estimate is 1.2000 bits and the held-out MI of the same network is 0.3000 bits'),
+        ((0.0, -0.25, 0.01), 'the estimate is 0.0000 bits (measured as -0.2500 bits)'),
+    ])
+    def test_a_curve_that_did_not_resolve_states_both_values(self, values, stated):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            warn_about_curve('not resolved', 3, 4, 6, 100, values=values)
+        assert stated in str(caught[0].message)
+
+    @staticmethod
+    def _overfit(**training):
+        """Few rows, many channels and a large network: the network fits its training rows."""
+        import neural_mi as nmi
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((300, 20)).astype(np.float32)
+        y = (x[:, :2] @ rng.standard_normal((2, 20)) + 2.0 * rng.standard_normal((300, 20))).astype(np.float32)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            result = nmi.run(x, y, model=nmi.Model(embedding_dim=16, hidden_dim=128, n_layers=2),
+                             training=nmi.Training(n_epochs=40, patience=40, **training), show_progress=False,
+                             seed=0)
+        return result, [str(w.message) for w in caught]
+
+    def test_run_warns_when_the_held_out_rows_do_not_confirm_the_estimate(self):
+        result, messages = self._overfit()
+        row = result.runs.iloc[0]
+        assert row['curve_diagnosis'] != 'not resolved' and row['test_mi'] < 0.5 * row['mi']
+        gap = [m for m in messages if 'Training(gap_share=0.5)' in m]
+        assert len(gap) == 1 and f"({row['mi']:.4f} bits)" in gap[0]
+        _, messages = self._overfit(gap_share=0.3)
+        assert not any('gap_share' in m for m in messages)
+
+    def test_the_values_stated_are_those_of_the_network_read(self):
+        """With peak_fraction below 1 the estimate is read at an earlier epoch than the peak, and the
+        held-out value stated is the curve's at that epoch."""
+        result, messages = self._overfit(resolved_noise=1e6, peak_fraction=0.5)
+        row = result.runs.iloc[0]
+        read = int(row['conservative_epoch'])
+        assert read < row['best_epoch']
+        held = row['test_mi_history'][read]                     # runs reports the curve in bits
+        text = next(m for m in messages if m.startswith('The held-out MI curve does not rise'))
+        assert f"the estimate is {row['mi']:.4f} bits and the held-out MI of the same network is {held:.4f}" in text
+
+    def test_an_estimate_reported_as_zero_raises_no_ceiling_warning(self):
+        import neural_mi as nmi
+        rng = np.random.default_rng(0)
+        x, y = (rng.standard_normal((300, 2)).astype(np.float32) for _ in range(2))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            result = nmi.run(x, y, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                             training=nmi.Training(n_epochs=4, ceiling_fraction=0.0), show_progress=False, seed=0)
+        assert result.runs.iloc[0]['mi'] == 0
+        assert not any('near its ceiling' in str(w.message) for w in caught)

@@ -173,6 +173,7 @@ class Training:
     ceiling_fraction: Optional[float] = None
     saturation_fraction: Optional[float] = None
     saturated_epoch_fraction: Optional[float] = None
+    gap_share: Optional[float] = None
     # When a quantity combined from several terms warns (neural_mi/analysis/sweep.py).
     amplification_threshold: Optional[float] = None
     # A call with fewer rows than this reaching the estimator warns that the dataset is small.

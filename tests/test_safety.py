@@ -306,14 +306,13 @@ def test_blocked_split_leakage_check_skips_on_static_path():
 
 
 # ---------------------------------------------------------------------------
-# The ceiling warning keys on the train-side evaluation size
+# Each side is judged against the ceiling of its own rows
 # ---------------------------------------------------------------------------
 
-def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size():
-    """With train_subset_size set explicitly larger than the (small) test
-    split, train_eval_size and eval_size diverge -- the near-ceiling warning
-    must be evaluated against train_eval_size for the reported (train_mi)
-    quantity, not silently reuse the smaller test-side eval_size."""
+def test_each_side_is_judged_against_the_ceiling_of_its_own_rows():
+    """train_eval_size and eval_size diverge here, and the held-out value is judged against log(eval_size),
+    not against the training side's ceiling. Every held-out row is in one evaluation, so the message says
+    that only more held-out rows raise that ceiling."""
     np.random.seed(0)
     n = 20000
     x = np.random.randn(n, 4).astype('float32')
@@ -333,11 +332,11 @@ def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size
         "The scenario needs train_eval_size larger than eval_size; otherwise "
         "it does not exercise the divergence this test checks."
     )
-    ceiling_msgs = [str(w.message) for w in caught if 'near its ceiling' in str(w.message)]
+    ceiling_msgs = [str(w.message) for w in caught if 'near its ceiling of log(' in str(w.message)]
     assert ceiling_msgs, f"Expected a near-ceiling warning; got: {[str(w.message) for w in caught]}"
-    assert 'train-eval ceiling' in ceiling_msgs[0], (
-        f"Expected the warning to name the train-eval ceiling specifically: {ceiling_msgs[0]}"
-    )
+    assert ceiling_msgs[0].startswith('The held-out MI (')
+    assert f"near its ceiling of log({result.get('eval_size')})" in ceiling_msgs[0]
+    assert 'Only more held-out rows raise this ceiling' in ceiling_msgs[0]
 
 
 # ---------------------------------------------------------------------------

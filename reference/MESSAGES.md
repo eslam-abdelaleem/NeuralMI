@@ -38,11 +38,27 @@ The estimators are lower bounds whose ceiling is the log of the number of
 samples they are evaluated on. A value near its ceiling may have been limited by
 the bound and not by the data.
 
-**`InfoNCE estimate is near its ceiling`**
-The reported MI is above `Training(ceiling_fraction=...)` of
-$\log(\mathrm{train\_eval\_size})$ or of the held-out ceiling. The true value may be higher. A curve that flattens here has
-probably flattened against the bound. Raise `max_eval_samples` (and
-`train_subset_size` if set) or use the less biased `estimator='smile'` at the cost of more variance.
+**`The held-out MI (...) is near its ceiling of log(...)`**
+The held-out value of the network read is above `Training(ceiling_fraction=...)`
+of $\log n$, where $n$ is the number of held-out rows that each evaluation
+scores. InfoNCE cannot read more than this ceiling, so the true value may be
+higher. A curve that flattens here has probably flattened against the bound.
+When the split holds more held-out rows than one evaluation scores, raising
+`max_eval_samples` (and `test_subset_size`, if set) puts more of them in each
+evaluation. Otherwise only more held-out rows raise the ceiling, from more data
+or a lower `Split(train_fraction=...)`. `estimator='smile'` has no $\log n$
+ceiling, but its clip bounds its estimate instead, at the cost of more variance.
+
+**`The estimate (...) is near its ceiling of log(...)`**
+The estimate is above `Training(ceiling_fraction=...)` of $\log m$, where $m$ is
+the number of training rows that each evaluation scores, while the held-out
+value of the same network is not near its own ceiling. A network can read its
+training rows this close to the ceiling by memorising each row as well as by
+learning the information, so the estimate may lie far above the true value. The
+held-out value is a lower bound in expectation. `result.plot()` shows the
+held-out curve, and `Training(eval_train=True)` adds the training-side curve.
+The call then does not also warn that the held-out value falls short of the
+estimate ([Training](#training)), since this message states both values.
 
 **`Peak-epoch selection may be unreliable`**
 More than `Training(saturated_epoch_fraction=...)` of the epochs of the smoothed
@@ -202,8 +218,11 @@ is measured from the curve itself, from its changes between epochs with any
 smooth trend removed. Every epoch scores the same held-out rows, so their
 sampling error moves the whole curve together and never shows in that noise: a
 network that learned nothing can sit flat a little above zero. The data then
-settle neither the epoch the estimate is read at nor the estimate. A curve whose
-values are all non-positive gets the message below instead.
+settle neither the epoch the estimate is read at nor the estimate. The message
+ends with the estimate and the held-out value of the network read. Only the
+held-out value is measured on rows that the network did not train on, and an
+estimate reported as 0 after a negative reading also gives the measured value.
+A curve whose values are all non-positive gets the message below instead.
 
 **`The held-out MI reached its top at epoch ... and fell clearly soon after`**
 The earliest epoch at the top of the smoothed curve lies within the smoothing's
@@ -223,6 +242,22 @@ $\sqrt{2I/N}$ for a single block). A reported value at or below zero is left
 out, since its warnings come from the entries on negative values. The estimate then depends on where the top
 is taken to start. `runs` keeps the difference as `approach_shift`.
 `result.plot()` shows the curve with the epoch read and the peak.
+
+**`At the epoch read, the held-out MI of the network (...) is less than Training(gap_share=...) of the estimate`**
+The estimate is read on the rows that the network trained on, and the held-out
+value of the same network on rows that it did not train on. Their ratio is free
+of units and says how much of the estimate the held-out rows confirm. The call
+warns when the held-out value is below `Training(gap_share=...)` of a positive
+estimate and the difference is more than `Training(clear_se=...)` of its
+standard errors, so that a small estimate on few rows does not warn from noise
+alone. The estimate exceeds the information when the network fits its training
+rows beyond what holds for new rows. The rest of the estimate may also be
+information that the network has not yet learned to generalise, and the run
+cannot show which. The message therefore says that the held-out rows do not
+confirm the estimate rather than that the true value is lower. More rows narrow
+the difference. The check is skipped for a curve that does not rise clearly
+above its noise, whose message states both values, and for an estimate near its
+training-side ceiling, whose message does.
 
 **`All test MI values in the training history are non-positive`**
 Because the network learned nothing that generalises, the reported value is 0.

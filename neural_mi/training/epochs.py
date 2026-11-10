@@ -144,15 +144,30 @@ def _diagnose(s, start, level, noise, reach, ran_to_limit, n_rows, *, resolved_n
     return 'ok'
 
 
+def _values_read(values: Optional[Tuple[float, float, float]], units: str) -> str:
+    """The sentence that gives the estimate and the held-out value of the network read, from ``values``:
+    the reported estimate, the measured one and the held-out value, in ``units``."""
+    if values is None:
+        return ""
+    reported, measured, held = values
+    estimate = (f"{reported:.4f} {units}" if reported == measured
+                else f"{reported:.4f} {units} (measured as {measured:.4f} {units})")
+    return (f" At the epoch read, the estimate is {estimate} and the held-out MI of the same network is "
+            f"{held:.4f} {units}. Only the held-out value is measured on rows that the network did not train on.")
+
+
 def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int], n_epochs: int,
                      approach: Optional[int] = None, shift: Optional[float] = None, se: Optional[float] = None,
                      units: str = 'bits', held_out: Optional[int] = None,
-                     fuzzy_se: float = default_of('fuzzy_se')) -> None:
+                     fuzzy_se: float = default_of('fuzzy_se'),
+                     values: Optional[Tuple[float, float, float]] = None) -> None:
     """Warn when the diagnosis is not 'ok'. The texts differ between networks only in their numbers, so the
     library shows each kind once per call and counts the rest. ``shift`` and ``se`` are in ``units``, and
     ``fuzzy_se`` is the setting the 'fuzzy start' diagnosis used.
     ``held_out`` is the count of held-out rows the curve scores, given when it is smaller than one training
-    batch (``trainer.too_few_held_out``), and each message then names it."""
+    batch (``trainer.too_few_held_out``), and each message then names it. ``values`` are the reported
+    estimate, the measured one and the held-out value of the network read, in ``units``, which the 'not
+    resolved' message states."""
     note = (f" The curve scores only {held_out} held-out rows, fewer than one training batch, so its noise is "
             f"large and its ceiling of log({held_out}) low. More data, or a lower Split(train_fraction=...), "
             f"gives it more." if held_out else "")
@@ -161,7 +176,7 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
             f"The held-out MI curve does not rise clearly above its own noise, either its epoch-to-epoch noise or "
             f"the sampling error of its held-out rows, so the data do not settle the epoch the estimate is read at, "
             f"nor the estimate. Check the curve with result.plot(). More data, more epochs or another network may "
-            f"resolve it.{note}", UserWarning, stacklevel=user_stacklevel())
+            f"resolve it.{_values_read(values, units)}{note}", UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'still rising':
         warnings.warn(
             f"The held-out MI was still rising when training reached n_epochs={n_epochs}. The estimate may then "
@@ -179,3 +194,72 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
             f"{units}. That is more than Training(fuzzy_se={fuzzy_se:g}) times its standard error of {se:.4f} "
             f"{units}. "
             f"Check the curve with result.plot().{note}", UserWarning, stacklevel=user_stacklevel())
+
+
+def falls_short(estimate: float, held: Optional[float], estimate_se: float, n_rows: Optional[int],
+                gap_share: float = default_of('gap_share'), clear_se: float = default_of('clear_se')) -> bool:
+    """Whether the held-out value of the network read, ``held``, falls short of its estimate, both in nats:
+    below ``gap_share`` of a positive estimate, by more than ``clear_se`` standard errors of their difference.
+    The estimate's standard error is ``estimate_se``, and the held-out value's is that of one block of
+    ``n_rows`` rows (:func:`standard_error`). The ratio of the two values is free of scale, and the standard
+    errors keep a small estimate on few rows from counting a gap that noise alone makes."""
+    if held is None or not np.isfinite(held) or not estimate > 0 or held >= gap_share * estimate:
+        return False
+    held_se = standard_error([max(held, 0.0)], int(n_rows)) if n_rows else 0.0
+    return bool(estimate - held > clear_se * float(np.hypot(estimate_se, held_se)))
+
+
+def warn_about_gap(estimate: float, held: float, units: str = 'bits', gap_share: float = default_of('gap_share'),
+                   clear_se: float = default_of('clear_se')) -> None:
+    """The warning for a held-out value that falls short of the estimate (:func:`falls_short`), both in
+    ``units``."""
+    warnings.warn(
+        f"At the epoch read, the held-out MI of the network ({held:.4f} {units}) is less than "
+        f"Training(gap_share={gap_share:g}) of the estimate ({estimate:.4f} {units}). The difference is more than "
+        f"Training(clear_se={clear_se:g}) of its standard errors. The estimate is read on the rows that the "
+        f"network trained on, so it exceeds the information when the network fits those rows beyond what holds "
+        f"for new ones. The held-out value is a lower bound in expectation. The rest of the estimate may be "
+        f"information that the network has not yet learned to generalise, or detail of its training rows that "
+        f"it memorised. This run cannot show which. More rows narrow the difference. Check the curves with "
+        f"result.plot(). Training(eval_train=True) adds the training-side curve.",
+        UserWarning, stacklevel=user_stacklevel())
+
+
+def warn_about_ceiling(estimate: float, held: Optional[float], train_ceiling: Optional[float],
+                       test_ceiling: Optional[float], train_rows: Optional[int], test_rows: Optional[int],
+                       held_out_rows: int, units: str = 'bits',
+                       ceiling_fraction: float = default_of('ceiling_fraction')) -> Optional[str]:
+    """Warn when a value of the network read lies above ``ceiling_fraction`` of the InfoNCE ceiling of its
+    side, the log of the rows that each evaluation of that side scores (``train_rows``, ``test_rows``). The
+    values and the ceilings are in ``units``, and ``held_out_rows`` counts every held-out row of the split.
+    A held-out value near its ceiling means that the true MI may be higher. An estimate near its ceiling while
+    the held-out value is not may lie far above the true MI, because a network reads its training rows that
+    close to the ceiling by memorising each row as well as by learning the information. Returns the side that
+    warned, 'held-out' or 'training', or None."""
+    if test_ceiling is not None and held is not None and held > ceiling_fraction * test_ceiling:
+        if held_out_rows > test_rows:
+            advice = (f"Each evaluation scores {test_rows} of the {held_out_rows} held-out rows. Raising "
+                      f"max_eval_samples (and test_subset_size, if set) scores more of them.")
+        else:
+            advice = "Only more held-out rows raise this ceiling, from more data or a lower Split(train_fraction=...)."
+        warnings.warn(
+            f"The held-out MI ({held:.4f} {units}) is near its ceiling of log({test_rows}) = {test_ceiling:.4f} "
+            f"{units}. InfoNCE can read no more than this when each evaluation scores {test_rows} held-out rows. "
+            f"The value is above Training(ceiling_fraction={ceiling_fraction:g}) of the ceiling, so the true MI may "
+            f"be higher. {advice} estimator='smile' has no log(n) ceiling, but its clip bounds its estimate "
+            f"instead.",
+            UserWarning, stacklevel=user_stacklevel())
+        return 'held-out'
+    if train_ceiling is not None and estimate > ceiling_fraction * train_ceiling:
+        held_text = f", while the held-out MI of the same network is {held:.4f} {units}" if held is not None else ""
+        warnings.warn(
+            f"The estimate ({estimate:.4f} {units}) is near its ceiling of log({train_rows}) = "
+            f"{train_ceiling:.4f} {units}{held_text}. InfoNCE can read no more than this ceiling when each "
+            f"evaluation scores {train_rows} training rows. The estimate is above Training(ceiling_fraction="
+            f"{ceiling_fraction:g}) of it. A network can read its training rows this close to the ceiling by "
+            f"memorising each row as well as by learning the information, so the estimate may lie far above the "
+            f"true MI. The held-out value is a lower bound in expectation. Check the curves with result.plot(). "
+            f"Training(eval_train=True) adds the training-side curve.",
+            UserWarning, stacklevel=user_stacklevel())
+        return 'training'
+    return None

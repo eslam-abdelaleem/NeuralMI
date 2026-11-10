@@ -71,6 +71,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   takes `max_encoding_width`, and the figure of a transfer entropy estimated
   both ways takes `direction_band`. `PARAMETERS.md` gives each default. The
   warnings about a scale far from unit scale no longer quote a measured example.
+- A run warns when the held-out value of the network read is below
+  `Training(gap_share=...)` of a positive estimate, by more than `clear_se`
+  standard errors of their difference. The estimate is read on the training
+  rows, so it can exceed the information when the network fits those rows
+  beyond what holds for new ones. The warning says that the held-out rows do not
+  confirm the estimate. It is skipped for a curve that does not rise above its
+  noise and for an estimate near its training-side ceiling, because their
+  messages state both values.
 
 ### Changed
 
@@ -250,6 +258,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The ceiling warning now judges the value that the run reports, after the
+  trainer sets a negative reading to 0 and at the epoch that `peak_fraction`
+  reads, so it no longer quotes a value that the run does not report. Each side
+  has its own message. A held-out value near its ceiling may understate the
+  information. Its message says how to raise that ceiling, with a larger
+  `max_eval_samples` when the split holds more held-out rows than one evaluation
+  scores and with more held-out rows otherwise. An estimate near the training-side
+  ceiling while the held-out value is not may overstate the information,
+  because a network can read its training rows that close by memorising them.
+  That message no longer says that the true MI may be higher.
+  `train_saturation` is now the reported estimate over its ceiling. The warning
+  about a held-out curve that does not rise above its noise ends with the
+  estimate and the held-out value of the network read, and comes after the
+  estimate is set.
 - Nothing scaled or whitened data before the networks, and estimates depended
   on units: a pair read close to its true value at unit scale and close to 0
   at a thousand times it or a thousandth of it. On smooth, finely sampled

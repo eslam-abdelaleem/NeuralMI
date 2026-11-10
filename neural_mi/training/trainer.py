@@ -22,8 +22,8 @@ from neural_mi.defaults import default_of
 from neural_mi.models.critics import _batch_size_of
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
-from neural_mi.training.epochs import (EPOCH_RULES, choose_epoch, standard_error, stands_above_zero,
-                                     warn_about_curve)
+from neural_mi.training.epochs import (EPOCH_RULES, choose_epoch, falls_short, standard_error, stands_above_zero,
+                                     warn_about_ceiling, warn_about_curve, warn_about_gap)
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks,
                              warn_if_random_split_leaks)
@@ -271,6 +271,7 @@ class Trainer:
               ceiling_fraction: float = default_of('ceiling_fraction'),
               saturation_fraction: float = default_of('saturation_fraction'),
               saturated_epoch_fraction: float = default_of('saturated_epoch_fraction'),
+              gap_share: float = default_of('gap_share'),
               nan_streak: int = default_of('nan_streak'),
               scheduler: Optional[Any] = None,
               track_embeddings: Union[bool, float, int, str] = default_of('track_embeddings'),
@@ -432,6 +433,11 @@ class Trainer:
             so does a smoothed held-out curve that lies above
             ``saturation_fraction`` of its ceiling for more than
             ``saturated_epoch_fraction`` of its epochs.
+        gap_share : float, optional
+            The call warns when the held-out value of the network read is below
+            this share of a positive estimate, by more than ``clear_se`` standard
+            errors of their difference
+            (:func:`neural_mi.training.epochs.falls_short`).
         nan_streak : int, optional
             Training stops with :class:`TrainingError` after this many epochs in
             a row whose held-out evaluation is NaN.
@@ -929,7 +935,6 @@ class Trainer:
         _test_ceiling_mi = (np.log(_test_block_size) * _scale) if _test_block_size and _test_block_size >= 2 else None
         _train_ceiling_mi = (np.log(_train_block_size) * _scale) if _train_block_size and _train_block_size >= 2 else None
         _test_saturation = (final_test_mi * _scale / _test_ceiling_mi) if _test_ceiling_mi else None
-        _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
 
         _rows = max(actual_train_subset_size, epoch_train_n if _do_epoch_train_eval else 0)
         if _rows > max_eval_samples:
@@ -941,24 +946,6 @@ class Trainer:
                 f"and the precision is that of all {_rows} rows. Raise max_eval_samples to evaluate "
                 f"in fewer, larger blocks if memory allows."
             )
-        if self.estimator_fn is infonce_lower_bound:
-            _tripped = []
-            if _test_ceiling_mi is not None and final_test_mi * _scale > ceiling_fraction * _test_ceiling_mi:
-                _tripped.append(f"test MI ({final_test_mi * _scale:.3f} {_units}) against the test ceiling "
-                                f"log(rows per evaluation={_test_block_size})={_test_ceiling_mi:.3f} {_units}")
-            if _train_ceiling_mi is not None and final_train_mi * _scale > ceiling_fraction * _train_ceiling_mi:
-                _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) against the train-eval ceiling "
-                                f"log(rows per evaluation={_train_block_size})={_train_ceiling_mi:.3f} {_units}")
-            if _tripped:
-                warnings.warn(
-                    f"InfoNCE estimate is near its ceiling: {'; '.join(_tripped)}. A value counts as near "
-                    f"its ceiling above Training(ceiling_fraction={ceiling_fraction:g}) of it. "
-                    f"The true MI may be higher. Consider increasing max_eval_samples "
-                    f"(and train_subset_size, if set) or switching to the 'smile' "
-                    f"estimator for high-MI scenarios.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-
         # Does peak-epoch selection distinguish epochs at all? When the
         # smoothed test trace rides near its ceiling for most of training, the
         # argmax is close to a coin flip over flat noise, and the reported
@@ -1026,12 +1013,8 @@ class Trainer:
         if (curve_diagnosis == 'ok' and _raw_train_mi > 0 and _approach_shift is not None
                 and abs(_approach_shift) > fuzzy_se * _train_se):
             curve_diagnosis = 'fuzzy start'
-        if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
-            warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,
-                             None if _approach_shift is None else _approach_shift * _scale,
-                             _train_se * _scale, _units,
-                             held_out=_eval_size if too_few_held_out(_eval_size or 0, batch_size) else None,
-                             fuzzy_se=fuzzy_se)
+        # The held-out value of the network read: the curve at the epoch read, on the rows every epoch scores.
+        _held_at_read = final_test_mi if _read_ep == best_ep else history[_read_ep]
 
         # All-negative warning and zeroing (now that _raw_train_mi is correctly set)
         if _all_mi_negative:
@@ -1081,6 +1064,26 @@ class Trainer:
                     stacklevel=user_stacklevel(),
                 )
             final_train_mi = 0.0
+
+        # The warnings about the value the run reports, now that it is final: the curve's (which states the
+        # values when the curve did not resolve), each side's ceiling, and a held-out value far below the
+        # estimate. A curve that never rose above zero has had its own message.
+        if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
+            warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,
+                             None if _approach_shift is None else _approach_shift * _scale,
+                             _train_se * _scale, _units,
+                             held_out=_eval_size if too_few_held_out(_eval_size or 0, batch_size) else None,
+                             fuzzy_se=fuzzy_se,
+                             values=(final_train_mi * _scale, _raw_train_mi * _scale, _held_at_read * _scale))
+        _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
+        _ceiling_side = None
+        if self.estimator_fn is infonce_lower_bound and final_train_mi > 0:
+            _ceiling_side = warn_about_ceiling(
+                final_train_mi * _scale, _held_at_read * _scale, _train_ceiling_mi, _test_ceiling_mi,
+                _train_block_size, _test_block_size, len(test_idx), _units, ceiling_fraction)
+        if (curve_diagnosis != 'not resolved' and _ceiling_side != 'training'
+                and falls_short(final_train_mi, _held_at_read, _train_se, _eval_size, gap_share, clear_se)):
+            warn_about_gap(final_train_mi * _scale, _held_at_read * _scale, _units, gap_share, clear_se)
 
         results = {
             'train_mi': final_train_mi,

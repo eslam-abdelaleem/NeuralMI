@@ -205,6 +205,7 @@ The optimisation loop and what is evaluated after it.
 | `rising_noise` | `3.0` | The rise, in noise units, that `rising_epochs` looks for. |
 | `ceiling_fraction` | `0.85` | The call warns when a held-out or training-side value exceeds this fraction of its InfoNCE ceiling (the log of the rows per evaluation). Rigorous mode also warns about rungs above it. |
 | `saturation_fraction` | `0.9` | The call warns that epoch selection may be unreliable when the smoothed held-out curve lies above this fraction of its ceiling for more than `saturated_epoch_fraction` of its epochs. |
+| `gap_share` | `0.5` | The call warns when the held-out value of the network read is below this share of a positive estimate and the difference exceeds `clear_se` of its standard errors. The check is skipped for a curve diagnosed `'not resolved'`, whose message states both values. |
 | `saturated_epoch_fraction` | `0.5` | The share of epochs above `saturation_fraction` of the ceiling at which the call warns. |
 | `amplification_threshold` | `10.0` | The call warns when a quantity combined from several terms has an error-amplification factor of this or more. |
 | `small_sample` | `200` | The call warns that the dataset is small when fewer rows than this reach the estimator. |
