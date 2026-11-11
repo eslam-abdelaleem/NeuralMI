@@ -156,6 +156,7 @@ Each file covers one functional area. Run
 | `test_paired_terms.py` | the terms of a difference split and evaluate the same rows, with or without a seed |
 | `test_rigorous_diagnostics.py` | fit diagnostics, their presence in corrected results, scalar rigorous analysis, chunk-range translation, and the rungs the fit leaves out: those that produced nothing or did not resolve, a difference's rung judged by its joint term, and every gamma that loses `left_out_share` of its rungs |
 | `test_sweep.py` | sweep mechanics: dimension inference, subsampling, processor-param sweeps, save-path collisions |
+| `test_sweep_best.py` | `result.best`: the configuration with the highest held-out MI first, then those within `Training(top_se=...)` standard errors of it, the summary that names them, and only a sweep having one |
 | `test_transfer.py` | transfer entropy in both directions and the directionality index |
 | `test_conditional_transfer_rigorous.py` | conditional MI and transfer entropy through the rigorous path, including unit conversion |
 | `test_amplification_factor.py` | the amplification arithmetic and the warnings that report it |

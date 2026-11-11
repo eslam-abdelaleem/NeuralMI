@@ -335,6 +335,25 @@ def _summary_precision(result: 'Results', units: str, n_cfg: int) -> List[str]:
     return lines
 
 
+def _summary_sweep(result: 'Results', units: str, n_cfg: int) -> List[str]:
+    """The best configuration of a sweep by held-out MI, and those within ``top_se`` standard errors of it
+    (:attr:`Results.best`)."""
+    if n_cfg < 2 or result.dataframe is None or 'test_mi_mean' not in result.dataframe.columns:
+        return []
+    best = result.best
+    keys = [k for k in result.params.get('config_keys') or [] if k in best.columns]
+    held = best['test_mi_mean']
+
+    def name(i):
+        # Each value read from its own column keeps that column's type.
+        return ', '.join(f"{k}={best[k].iloc[i]}" for k in keys)
+    lines = [f"  Best by held-out MI : {name(0)} ({held.iloc[0]:.4f} {units} held out)"]
+    if len(best) > 1:
+        lines.append(f"  Within Training(top_se={setting(result.params, 'top_se'):g}) standard errors of it:")
+        lines += [f"    {name(i)} ({held.iloc[i]:.4f} {units} held out)" for i in range(1, len(best))]
+    return lines
+
+
 def _summary_matrix(result: 'Results', units: str, n_cfg: int) -> List[str]:
     matrix = result.get('mi_matrix') if n_cfg == 1 else None
     if matrix is None:
@@ -546,6 +565,41 @@ class Results:
                 f"result.runs['{key}'] instead."
             )
         return default
+
+    @property
+    def best(self) -> pd.DataFrame:
+        """The best configuration of a sweep, and the configurations that its held-out rows cannot tell
+        apart from it.
+
+        The first row is the configuration with the highest held-out MI, averaged over its repeats
+        (``test_mi_mean``). The rows after it are the other configurations whose held-out MI lies within
+        ``Training(top_se=...)`` standard errors of that value, highest first. The standard error is that of
+        the best value on its held-out rows, as for the band at the top of one curve
+        (:func:`neural_mi.training.epochs.band_floor`). Each row gives ``config_id``, the swept settings, the
+        held-out MI and the estimate (``mi_mean``).
+
+        The best value is the highest of several read on the same held-out rows, so it is optimistic. Values
+        for later analyses come from running the chosen configuration again.
+        """
+        spec = self._spec()
+        if spec is None or not spec.ranks:
+            from neural_mi.analysis.modes import MODES
+            ranked = ', '.join(f"mode='{name}'" for name, mode in MODES.items() if mode.ranks)
+            raise ValueError(f"best ranks the configurations of {ranked}, and this result is mode='{self.mode}'.")
+        df = self.dataframe
+        if df is None or 'test_mi_mean' not in df.columns or not df['test_mi_mean'].notna().any():
+            raise ValueError("best ranks the configurations by their held-out MI, and this sweep has none. "
+                             "Its estimator trains no network.")
+        from neural_mi.training.epochs import band_floor
+        df = df[df['test_mi_mean'].notna()]
+        top = df.loc[df['test_mi_mean'].idxmax()]
+        to_nats = math.log(2) if setting(self.params, 'output_units') == 'bits' else 1.0
+        rows = self.runs.loc[self.runs['config_id'] == top['config_id'], 'eval_size'].dropna()
+        floor = band_floor(top['test_mi_mean'] * to_nats, int(rows.mean()) if len(rows) else None,
+                           setting(self.params, 'top_se')) / to_nats
+        keys = [k for k in self.params.get('config_keys') or [] if k in df.columns]
+        near = df[df['test_mi_mean'] >= floor].sort_values('test_mi_mean', ascending=False, kind='stable')
+        return near[['config_id', *keys, 'test_mi_mean', 'mi_mean']].reset_index(drop=True)
 
     def _one_config(self, config_id: Optional[int], what: str) -> int:
         ids = self.config_ids or [0]

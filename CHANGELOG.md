@@ -111,6 +111,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   weak directions and the rows are few. An MLP without hidden layers and the
   MLP heads of the hybrid and concat critics have none, and a call that turns it
   off for an encoder without one is told that the setting has no effect.
+- `result.best` ranks the configurations of a sweep by their held-out MI,
+  averaged over each configuration's repeats. Its first row is the configuration
+  with the highest held-out MI. The rows after it are those within
+  `Training(top_se=...)` standard errors of it, so the held-out rows cannot tell
+  them apart from the best one. `result.summary()` names them. The guidance to
+  prefer, among configurations close to the best, the one whose training and
+  held-out values agree best is gone.
 - `Model(activation='leaky_relu')`, the default, sets the nonlinearity of every
   rectified hidden layer that the library builds: in the MLP, CNN, CNN2D, TCN
   and DeepSets encoders, the feed-forward blocks of the transformer, the MLPs

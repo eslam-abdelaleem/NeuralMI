@@ -35,7 +35,7 @@ from neural_mi.analysis.transfer import _te_rigorous_scalar, run_transfer_entrop
 from neural_mi.results import (_draw_axis_curve, _draw_components, _draw_dimensionality,
                                _draw_directions, _draw_extrapolation, _draw_matrix, _draw_precision,
                                _draw_training, _overlay_extrapolations, _overlay_training,
-                               _summary_dimensionality, _summary_matrix, _summary_precision)
+                               _summary_dimensionality, _summary_matrix, _summary_precision, _summary_sweep)
 from neural_mi.validation import (check_dimensionality_settings, check_lag_settings,
                                   check_precision_settings, check_rigorous_settings)
 
@@ -710,6 +710,8 @@ class Mode:
     rigorous_scalar: Optional[Callable[..., Dict[str, Any]]] = None
     # Its result is an extrapolation.
     extrapolates: bool = False
+    # Its configurations are ranked by their held-out MI (Results.best).
+    ranks: bool = False
     # Its figure of one configuration, the lines summary() adds, and how compare() overlays results
     # (results.py): a figure returns the axes and whether it showed them.
     draw: Optional[Callable] = None
@@ -775,7 +777,8 @@ MODES: Dict[str, Mode] = {
                                   "Use mode='sweep' to repeat the estimate or to sweep a setting."),
                      one_network_per_repeat=True, draw=_draw_training, overlay=_overlay_training),
     'sweep': Mode(_single, table=('yes', 'yes', "through `mode='rigorous'` with the same grid"),
-                  needs_grid=True, one_network_per_repeat=True, draw=_draw_training),
+                  needs_grid=True, one_network_per_repeat=True, ranks=True, draw=_draw_training,
+                  summarize=_summary_sweep),
     'rigorous': Mode(_rigorous, config=Rigorous,
                      settings={**_WORKERS, **_FIT,
                                # None: contiguous chunks for rows recorded in time order

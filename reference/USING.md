@@ -571,21 +571,34 @@ refused. Values given as lists come back as tuples in `runs` and `dataframe`.
 
 ### Choosing between configurations
 
-A configuration grid returns one estimate per configuration, each read at the
-epoch where its held-out curve peaks and reported on the training rows. To
-choose between configurations, compare their held-out values (`test_mi` in
-`runs`), not the reported ones. On average the held-out value is a lower bound
-on the information. The training-side value is not, because a network that
-overfits can push it above the truth. A run warns when the held-out value of its
-network falls below `Training(gap_share=...)` of the estimate by more than noise
+A single estimate is the best that its configuration can do, but another
+configuration may do better. For real work, sweep the configurations, take the
+best by held-out value and keep it for later analyses.
+
+A configuration grid returns one estimate per configuration, each read on the
+training rows at the epoch that its held-out curve chooses. Compare
+configurations by their held-out values (`test_mi` in `runs`) rather than by the
+reported ones. On average the held-out value is a lower bound on the
+information. The training-side value is not, because a network that overfits
+can push it above the truth. A run warns when the held-out value of its network
+falls below `Training(gap_share=...)` of the estimate by more than noise
 ([MESSAGES.md](MESSAGES.md#training)). For a difference quantity, compare the
 sum of its terms' held-out values (`details[config_id]['trainings']`, one row
-per term). When several configurations are within the spread of the best one
-over repeats, prefer the one whose training and held-out values agree best in
-each term. Report the chosen configuration's value, and choose its nulls the
-same way, since the choice is part of the estimate. If configurations that tie
-on held-out data report different values, the held-out data cannot resolve the
-estimate, and that spread belongs in its uncertainty.
+per term).
+
+`result.best` makes this comparison for `mode='sweep'`. Its first row is the
+configuration with the highest held-out MI, averaged over the configuration's
+repeats (`test_mi_mean` in `dataframe`). The rows after it are the
+configurations whose held-out MI lies within `Training(top_se=...)` standard
+errors of that value, so the held-out rows cannot tell them apart from the best
+one. `result.summary()` names them.
+
+The best value is the highest of several read on the same held-out rows, so it
+is optimistic. Report the chosen configuration's value from a run of its own,
+and choose its nulls the same way, since the choice is part of the estimate. If
+configurations that tie on held-out data report different estimates, the
+held-out data cannot resolve the estimate, and that spread belongs in its
+uncertainty.
 
 ### What each mode accepts
 

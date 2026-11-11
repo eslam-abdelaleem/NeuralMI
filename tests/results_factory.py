@@ -40,7 +40,7 @@ def sweep(values=(4, 8, 16, 32), means=(0.5, 0.9, 1.2, 1.25), key='embedding_dim
         for rid in range(n_runs):
             offset = spread * (rid - (n_runs - 1) / 2)
             rows.append({'config_id': cid, key: value, 'run_id': rid, 'mi': mean + offset,
-                         'train_mi': mean + offset, 'test_mi': mean,
+                         'train_mi': mean + offset, 'test_mi': mean, 'eval_size': 100,
                          'test_mi_history': [mean / 2, mean]})
     return make_results('sweep', rows, config_keys=(key,), mean_cols=('test_mi',), units=units,
                         sweep_grid={key: list(values), 'run_id': list(range(n_runs))})
