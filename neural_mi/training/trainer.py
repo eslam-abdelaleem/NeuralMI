@@ -22,8 +22,9 @@ from neural_mi.defaults import default_of
 from neural_mi.models.critics import _batch_size_of
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
-from neural_mi.training.epochs import (EPOCH_RULES, choose_epoch, falls_short, standard_error, stands_above_zero,
-                                     warn_about_ceiling, warn_about_curve, warn_about_gap)
+from neural_mi.training.epochs import (EPOCH_RULES, band_floor, choose_epoch, falls_short, standard_error,
+                                     stands_above_zero, top_band, warn_about_ceiling, warn_about_curve,
+                                     warn_about_gap)
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks,
                              warn_if_random_split_leaks)
@@ -263,8 +264,8 @@ class Trainer:
               resolved_noise: float = default_of('resolved_noise'),
               fast_epochs: int = default_of('fast_epochs'),
               fall_noise: float = default_of('fall_noise'),
-              approach_noise: float = default_of('approach_noise'),
-              fuzzy_se: float = default_of('fuzzy_se'),
+              top_se: float = default_of('top_se'),
+              band_share: float = default_of('band_share'),
               clear_se: float = default_of('clear_se'),
               rising_epochs: int = default_of('rising_epochs'),
               rising_noise: float = default_of('rising_noise'),
@@ -423,11 +424,17 @@ class Trainer:
             results give the maximum as ``peak_epoch`` and a diagnosis of the
             curve as ``curve_diagnosis``, and warn when the curve cannot support
             the choice (``neural_mi/training/epochs.py``).
-        level_noise, start_noise, resolved_noise, fast_epochs, fall_noise, approach_noise, fuzzy_se, clear_se, rising_epochs, rising_noise : optional
+        level_noise, start_noise, resolved_noise, fast_epochs, fall_noise, clear_se, rising_epochs, rising_noise : optional
             The thresholds by which the held-out curve is read and judged, in
             units of its own epoch-to-epoch noise, of standard errors or of
             epochs (:func:`neural_mi.training.epochs.choose_epoch`). ``clear_se``
             also decides whether a held-out value stands above zero.
+        top_se, band_share : float, optional
+            The band is every epoch whose smoothed held-out value lies within
+            ``top_se`` standard errors of the curve's maximum
+            (:func:`neural_mi.training.epochs.top_band`). The estimate is read at
+            its first and last epoch, and a curve whose two readings differ by
+            more than ``band_share`` of the estimate is diagnosed ``'flat top'``.
         ceiling_fraction, saturation_fraction, saturated_epoch_fraction : float, optional
             A value above ``ceiling_fraction`` of its InfoNCE ceiling warns, and
             so does a smoothed held-out curve that lies above
@@ -721,18 +728,22 @@ class Trainer:
         _rotation_singular_values_history: list = []
         _rotation_history_x: list = []
         _rotation_history_y: list = []
-        # Copies of the network at every epoch that can still turn out to be the
-        # one evaluated: the peak of the held-out curve smoothed after training,
-        # or the first epoch to reach a threshold below it (epoch_rule
-        # 'plateau_start', or peak_fraction < 1). An epoch's smoothed value
-        # depends on up to _reach epochs after it. Once it is final, the epoch is
-        # kept only if it beats every earlier final epoch (the first epoch to
-        # reach any threshold always does), and when only the peak is read it
-        # replaces the one it beats. A custom smoothing function has no known
-        # reach, so every epoch is kept.
+        # Copies of the network at every epoch that can still turn out to be one
+        # that is evaluated: the peak of the held-out curve smoothed after
+        # training, the first epoch to reach a threshold below it (epoch_rule
+        # 'plateau_start', peak_fraction < 1, the band's first epoch), and the
+        # band's last epoch (epochs.top_band). An epoch's smoothed value depends on
+        # up to _reach epochs after it. Once it is final, the epoch is kept if it
+        # beats every earlier final epoch (the first epoch to reach any threshold
+        # always does). Otherwise it is kept, in place of the epoch kept before
+        # it on the same grounds, if it lies within top_se standard errors of the
+        # top so far. The band's last epoch comes at or after the top, where the
+        # top no longer moves, so it is the last epoch kept on these grounds. A
+        # new top drops the copy. A custom smoothing function has no known reach,
+        # so every epoch is kept.
         _states: Dict[int, Any] = {}
         _reach = None if self.custom_smoothing_fn else self._smoothing_reach(smoothing_sigma, median_window)
-        _record, _record_ep = -np.inf, None
+        _record, _band_ep = -np.inf, None
         nan_count = 0
         
         display_progress = show_progress if show_progress is not None else verbose
@@ -830,10 +841,14 @@ class Trainer:
             if (_final_ep >= 0 and len(history) >= median_window
                     and not np.isnan(history[max(0, _final_ep - _reach):]).any()):
                 _value = self._smooth(history, smoothing_sigma, median_window)[_final_ep]
-                if _value > _record:
-                    if epoch_rule == 'peak' and peak_fraction >= 1.0 and _record_ep is not None:
-                        del _states[_record_ep]
-                    _record, _record_ep = _value, _final_ep
+                if _value >= band_floor(_record, actual_test_subset_size, top_se):
+                    # A new top, or the latest epoch within top_se standard errors of the top so far.
+                    if _band_ep is not None:
+                        del _states[_band_ep]
+                    if _value > _record:
+                        _record, _band_ep = _value, None
+                    else:
+                        _band_ep = _final_ep
                 else:
                     del _states[_final_ep]
 
@@ -889,21 +904,21 @@ class Trainer:
         )
         if np.isnan(_smoothed_history).all():
             raise TrainingError("Training failed to produce a valid model checkpoint.")
-        best_ep, peak_ep, curve_diagnosis, approach_ep = choose_epoch(
+        best_ep, peak_ep, curve_diagnosis = choose_epoch(
             history, _smoothed_history, epoch_rule, _reach, ran_to_limit=len(history) == n_epochs,
             n_rows=actual_test_subset_size, level_noise=level_noise, start_noise=start_noise,
             resolved_noise=resolved_noise, fast_epochs=fast_epochs, fall_noise=fall_noise,
-            approach_noise=approach_noise, clear_se=clear_se, rising_epochs=rising_epochs,
-            rising_noise=rising_noise)
+            clear_se=clear_se, rising_epochs=rising_epochs, rising_noise=rising_noise)
         _train_x = _index_batch(_eval_x_source, _eval_train_eval_idx)
         _train_y = _eval_y_source[_eval_train_eval_idx, ...]
-        # The network at the start of the curve's approach to its top, read on
-        # the same rows, before the network reported (epochs.py).
-        _at_approach = None
-        if approach_ep < best_ep and approach_ep in _states:
-            self.model.load_state_dict(_states[approach_ep])
+        # The networks at the band's two ends, read on the same rows before the
+        # network reported (epochs.py). The epoch read is evaluated below.
+        band_first, band_last = top_band(_smoothed_history, actual_test_subset_size, top_se)
+        _at_band = {}
+        for _ep in sorted({band_first, band_last} - {best_ep}):
+            self.model.load_state_dict(_states[_ep])
             with torch.no_grad():
-                _at_approach, _ = self._train_side(_train_x, _train_y, max_eval_samples)
+                _at_band[_ep], _ = self._train_side(_train_x, _train_y, max_eval_samples)
         best_model_state = _states[best_ep]
         self.model.load_state_dict(best_model_state)
         if save_best_model_path:
@@ -976,6 +991,8 @@ class Trainer:
 
         # At this point the model is loaded at best_ep; final_train_mi is the fresh eval there.
         _best_ep_train_mi = final_train_mi  # save for train_mi_at_peak reporting
+        _at_band.setdefault(best_ep, final_train_mi)
+        _band = (_at_band[band_first], _at_band[band_last])
 
         # Conservative epoch: the first epoch whose smoothed test MI reaches
         # peak_fraction of the maximum, when that is earlier than the epoch read.
@@ -1003,19 +1020,14 @@ class Trainer:
             _raw_train_mi = _best_ep_train_mi  # peak_fraction == 1.0 path
 
         # What the held-out curve says about the epoch read: its shape, and
-        # whether reading at the start of the approach to its top moves the
-        # estimate by more than fuzzy_se standard errors. A curve that never
-        # rose above zero has its own message below, and so does a reading at
-        # or below zero, whose standard error from a single block is 0 and
-        # would count any shift.
+        # whether the estimate read at the band's two ends differs by more than
+        # band_share of the estimate. A curve that never rose above zero has its
+        # own message below, and so does a reading at or below zero.
         _read_ep = best_ep if _conservative_ep is None else _conservative_ep
         # The standard error of the estimate read: at the conservative epoch when peak_fraction chose one.
         _read_se = _train_se if _read_se is None else _read_se
-        _approach_shift = (_raw_train_mi - _at_approach
-                           if _at_approach is not None and approach_ep < _read_ep else None)
-        if (curve_diagnosis == 'ok' and _raw_train_mi > 0 and _approach_shift is not None
-                and abs(_approach_shift) > fuzzy_se * _read_se):
-            curve_diagnosis = 'fuzzy start'
+        if curve_diagnosis == 'ok' and _raw_train_mi > 0 and abs(_band[1] - _band[0]) > band_share * _raw_train_mi:
+            curve_diagnosis = 'flat top'
         # The held-out value of the network read: the curve at the epoch read, on the rows every epoch scores.
         _held_at_read = final_test_mi if _read_ep == best_ep else history[_read_ep]
 
@@ -1072,14 +1084,13 @@ class Trainer:
         # values when the curve did not resolve), each side's ceiling, and a held-out value far below the
         # estimate. A curve that never rose above zero has had its own message.
         if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
-            warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,
-                             None if _approach_shift is None else _approach_shift * _scale,
-                             _read_se * _scale, _units,
+            warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, _units,
                              held_out=_eval_size if too_few_held_out(_eval_size or 0, batch_size) else None,
-                             fuzzy_se=fuzzy_se,
                              values=(final_train_mi * _scale, _raw_train_mi * _scale, _held_at_read * _scale),
+                             band=(band_first, band_last, _band[0] * _scale, _band[1] * _scale),
                              resolved_noise=resolved_noise, clear_se=clear_se, rising_noise=rising_noise,
-                             rising_epochs=rising_epochs, fall_noise=fall_noise, fast_epochs=fast_epochs)
+                             rising_epochs=rising_epochs, fall_noise=fall_noise, fast_epochs=fast_epochs,
+                             top_se=top_se, band_share=band_share)
         _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
         _ceiling_side = None
         if self.estimator_fn is infonce_lower_bound and final_train_mi > 0:
@@ -1097,7 +1108,10 @@ class Trainer:
             'best_epoch': best_ep,
             'peak_epoch': peak_ep,
             'curve_diagnosis': curve_diagnosis,
-            'approach_shift': _approach_shift,
+            'band_first_epoch': band_first,
+            'band_last_epoch': band_last,
+            'band_low': min(_band),
+            'band_high': max(_band),
             'test_mi_history': history,
             'all_mi_negative': _all_mi_negative,
         }

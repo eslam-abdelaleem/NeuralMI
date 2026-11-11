@@ -236,16 +236,20 @@ gives the reach in epochs, which `median_window` and `smoothing_sigma` set. The 
 begins, so the start of the curve placed that epoch. A lower `learning_rate` spreads the rise over more
 epochs.
 
-**`The held-out MI approached its top slowly, so where the top starts is uncertain`**
-The smoothed curve climbed its last `Training(approach_noise=...)` noise units
-to the level of its top over several epochs, and the training-side value read at
-the first of them differs from the reported one by more than
-`Training(fuzzy_se=...)` of the estimate's standard errors (the
-spread of its evaluation blocks over the root of their count, or
-$\sqrt{2I/N}$ for a single block). A reported value at or below zero is left
-out, since its warnings come from the entries on negative values. The estimate then depends on where the top
-is taken to start. `runs` keeps the difference as `approach_shift`.
-`result.plot()` shows the curve with the epoch read and the peak.
+**`The held-out MI stays within Training(top_se=...) standard errors of its top from epoch ... to epoch ...`**
+The band is every epoch whose smoothed held-out value lies within
+`Training(top_se=...)` standard errors of the curve's maximum ($\sqrt{2I/N}$ for
+$I$ nats on $N$ held-out rows), so the held-out rows cannot tell these epochs
+apart. The trainer reads the estimate at the band's first and last epoch, on the
+rows that the estimate is read on. The message fires when the two readings
+differ by more than `Training(band_share=...)` of the estimate. The estimate read
+at the epoch that the rule chooses is then one of several that the held-out rows
+support equally well. Another configuration may resolve the estimate better, or
+the data may not resolve it more finely. A reported value at or below zero is
+left out, since its warnings come from the entries on negative values. `runs`
+keeps the band's epochs as `band_first_epoch` and `band_last_epoch` and its two
+readings as `band_low` and `band_high`. `result.plot()` shows the curve with the
+epoch read and the peak.
 
 **`At the epoch read, the held-out MI of the network (...) is less than Training(gap_share=...) of the estimate`**
 The estimate is read on the rows that the network trained on, and the held-out

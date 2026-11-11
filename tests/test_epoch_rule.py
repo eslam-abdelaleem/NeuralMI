@@ -5,8 +5,8 @@ choose_epoch reads the earliest epoch at the top of the smoothed curve
 ('plateau_start') or its maximum ('peak'), measuring the curve's noise from the
 curve itself. These tests give it 100 noisy draws of curves of each shape the
 diagnosis names and check how often it reads and diagnoses them as it should.
-Whether the start of a slow approach moves the estimate is measured by the
-trainer (test_best_epoch.py).
+top_band gives the epochs that the held-out rows cannot tell apart from the top.
+The trainer reads the estimate at the band's two ends (test_best_epoch.py).
 """
 import warnings
 
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from neural_mi.logger import _kind
-from neural_mi.training.epochs import choose_epoch, curve_noise, standard_error, warn_about_curve
+from neural_mi.training.epochs import choose_epoch, curve_noise, standard_error, top_band, warn_about_curve
 from neural_mi.training.trainer import Trainer
 
 E = np.arange(60, dtype=float)
@@ -22,12 +22,12 @@ REACH = Trainer._smoothing_reach(1.0, 5)
 
 
 def _reads(curve, sigma=0.03, rule='plateau_start', ran_to_limit=False, draws=100):
-    """(epoch read, peak, diagnosis, start of the approach) for each noisy draw of the curve."""
+    """(epoch read, peak, diagnosis) for each noisy draw of the curve."""
     out = []
     for seed in range(draws):
         history = curve + sigma * np.random.default_rng(seed).standard_normal(len(curve))
         out.append(choose_epoch(history, Trainer._smooth(None, list(history), 1.0, 5), rule, REACH, ran_to_limit))
-    return tuple(np.array([r[i] for r in out]) for i in range(4))
+    return tuple(np.array([r[i] for r in out]) for i in range(3))
 
 
 def test_noise_is_the_spread_from_epoch_to_epoch_and_ignores_a_trend():
@@ -38,20 +38,20 @@ def test_noise_is_the_spread_from_epoch_to_epoch_and_ignores_a_trend():
 
 def test_a_clean_peak_is_read_at_the_peak():
     curve = 0.2 + np.where(E <= 15, np.exp(-0.5 * ((E - 15) / 3) ** 2), np.exp(-0.5 * ((E - 15) / 6) ** 2))
-    epochs, _, diagnoses, _ = _reads(curve)
+    epochs, _, diagnoses = _reads(curve)
     assert np.all(np.abs(epochs - 15) <= 2) and np.all(diagnoses == 'ok')
 
 
 def test_a_plateau_is_read_at_its_start_and_the_peak_rule_at_its_maximum():
     curve = 1 - np.exp(-(E + 1) / 2)                       # reaches 98% of its rise at epoch 7
-    epochs, peaks, diagnoses, _ = _reads(curve)
+    epochs, peaks, diagnoses = _reads(curve)
     assert np.median(np.abs(epochs - 7)) <= 2 and np.mean(np.abs(epochs - 7) <= 4) >= 0.85
     assert np.median(peaks - epochs) >= 10 and np.mean(diagnoses == 'ok') >= 0.85
     assert np.array_equal(_reads(curve, rule='peak')[0], peaks)
 
 
 def test_a_curve_flat_from_the_start_is_read_at_epoch_zero():
-    epochs, _, diagnoses, _ = _reads(np.ones(60))
+    epochs, _, diagnoses = _reads(np.ones(60))
     assert np.median(epochs) == 0 and np.mean(epochs <= 5) >= 0.9 and np.mean(diagnoses == 'ok') >= 0.85
 
 
@@ -80,9 +80,19 @@ def test_a_long_fall_after_the_top_does_not_move_the_epoch_read():
         assert reads[100] == reads[200] == reads[300]
 
 
-def test_a_slow_approach_starts_well_before_the_epoch_read():
-    epochs, _, diagnoses, approaches = _reads(1 - np.exp(-(np.arange(120) + 1) / 12), sigma=0.01)
-    assert np.median(epochs - approaches) >= 8 and np.mean(diagnoses == 'ok') >= 0.85
+def test_a_clean_peak_has_a_narrow_band_and_a_long_flat_top_a_wide_one():
+    """The band is every epoch whose smoothed held-out value lies within top_se standard errors of the
+    maximum. On many held-out rows it stays near a clean peak and spreads over a top that stays flat."""
+    for curve, narrow in ((0.2 + np.exp(-0.5 * ((E - 15) / 3) ** 2), True), (1 - np.exp(-(E + 1) / 2), False)):
+        history, smoothed = _one_draw(curve)
+        first, last = top_band(smoothed, 10_000)
+        assert first <= int(np.nanargmax(smoothed)) <= last
+        assert (last - first <= 6) if narrow else (last - first >= 30)
+
+
+def test_without_a_row_count_the_band_is_the_maximum():
+    history, smoothed = _one_draw(1 - np.exp(-(E + 1) / 2))
+    assert top_band(smoothed, None) == (int(np.nanargmax(smoothed)),) * 2
 
 
 def test_standard_error_of_blocks_and_of_one_block():
@@ -90,13 +100,13 @@ def test_standard_error_of_blocks_and_of_one_block():
     assert standard_error([0.5], 1000) == pytest.approx(np.sqrt(2 * 0.5 / 1000))
 
 
-@pytest.mark.parametrize('diagnosis', ['not resolved', 'still rising', 'too fast', 'fuzzy start'])
+@pytest.mark.parametrize('diagnosis', ['not resolved', 'still rising', 'too fast', 'flat top'])
 def test_each_warning_differs_between_networks_only_in_its_numbers(diagnosis):
     """The library shows a message once per call and counts repeats that differ only in numbers."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        warn_about_curve(diagnosis, 3, 4, 6, 100, 1, 0.02, 0.005)
-        warn_about_curve(diagnosis, 17, 21, 6, 200, 9, -0.031, 0.01)
+        warn_about_curve(diagnosis, 3, 4, 6, 100, values=(1.0, 1.0, 0.8), band=(1, 9, 0.7, 1.2))
+        warn_about_curve(diagnosis, 17, 21, 6, 200, values=(2.5, 2.5, 1.5), band=(9, 40, 1.3, 2.4))
         warn_about_curve('ok', 3, 4, 6, 100)
     first, second = (str(w.message) for w in caught)
     assert _kind('UserWarning', first) == _kind('UserWarning', second)
@@ -151,16 +161,20 @@ class TestEveryThresholdIsASetting:
         assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, fall_noise=1e6)[2] != 'too fast'
         assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, fast_epochs=0)[2] != 'too fast'
 
-    def test_approach_noise_moves_the_start_of_the_approach(self):
+    def test_top_se_widens_the_band(self):
         history, smoothed = _one_draw(1 - np.exp(-(E + 1) / 6))
-        approach = choose_epoch(history, smoothed, 'plateau_start', REACH, False)[3]
-        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, approach_noise=30.0)[3] < approach
+        first, last = top_band(smoothed, 2_000)
+        wide_first, wide_last = top_band(smoothed, 2_000, top_se=5.0)
+        assert wide_first <= first and wide_last >= last and (wide_first, wide_last) != (first, last)
 
-    def test_the_fuzzy_start_message_names_its_setting(self):
+    def test_the_flat_top_message_names_its_settings(self):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            warn_about_curve('fuzzy start', 17, 21, 6, 200, 9, -0.031, 0.01, fuzzy_se=4.5)
-        assert 'Training(fuzzy_se=4.5)' in str(caught[0].message)
+            warn_about_curve('flat top', 17, 21, 6, 200, values=(1.0, 1.0, 0.7), band=(9, 40, 0.8, 1.3),
+                             top_se=1.5, band_share=0.25)
+        text = str(caught[0].message)
+        assert 'Training(top_se=1.5)' in text and 'Training(band_share=0.25)' in text
+        assert 'from epoch 9 to epoch 40' in text
 
 
 class TestTheSettingsReachTheTrainer:
@@ -181,7 +195,7 @@ class TestTheSettingsReachTheTrainer:
     def test_every_curve_setting_reaches_the_trainer(self, monkeypatch):
         from neural_mi.defaults import CURVE_SETTINGS
         values = dict(level_noise=2.5, start_noise=0.6, resolved_noise=7.0, fast_epochs=9, fall_noise=3.5,
-                      approach_noise=2.5, fuzzy_se=2.5, clear_se=2.5, rising_epochs=21, rising_noise=2.5,
+                      top_se=2.5, band_share=0.4, clear_se=2.5, rising_epochs=21, rising_noise=2.5,
                       ceiling_fraction=0.86, saturation_fraction=0.91, saturated_epoch_fraction=0.6,
                       gap_share=0.4, nan_streak=4)
         assert set(values) == set(CURVE_SETTINGS)

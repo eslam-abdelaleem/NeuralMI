@@ -169,8 +169,8 @@ class Training:
     resolved_noise: Optional[float] = None
     fast_epochs: Optional[int] = None
     fall_noise: Optional[float] = None
-    approach_noise: Optional[float] = None
-    fuzzy_se: Optional[float] = None
+    top_se: Optional[float] = None
+    band_share: Optional[float] = None
     clear_se: Optional[float] = None
     rising_epochs: Optional[int] = None
     rising_noise: Optional[float] = None

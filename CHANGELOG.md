@@ -123,6 +123,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `curve_diagnosis='flat top'` replaces `'fuzzy start'`, and
+  `Training(top_se=1.0, band_share=0.3)` replace `approach_noise` and
+  `fuzzy_se`. The band is every epoch whose smoothed held-out value lies within
+  `top_se` standard errors of the curve's maximum, so the held-out rows cannot
+  tell these epochs apart. The trainer reads the estimate at the band's first
+  and last epoch, on the rows that the estimate is read on. It diagnoses a flat
+  top when the two readings differ by more than `band_share` of the estimate.
+  The warning says that another configuration may do better or that the data may
+  not resolve the estimate more finely. `runs` gives `band_first_epoch`,
+  `band_last_epoch`, `band_low` and `band_high` in place of `approach_shift`.
+  The trainer keeps one more copy of the network, at the band's last epoch.
+  `epoch_rule='peak'` keeps the copies at earlier tops as `'plateau_start'`
+  does, since the band's first epoch is one of them.
 - Each side of a shared encoder is scaled by statistics of its own. The two sides used to share one set, fitted
   on their rows stacked together. A channel counts as constant relative to the
   largest spread in its stream, so data in very small units are scaled too, and

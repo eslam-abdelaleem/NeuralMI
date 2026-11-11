@@ -553,7 +553,7 @@ def test_rungs_that_did_not_resolve_are_left_out_and_counted_apart_from_zero_run
     ladder = pd.DataFrame({'gamma': [1, 2, 2, 3, 3, 3, 3, 3],
                            'train_mi': [0.5, 0.4, 0.45, 0.3, 0.9, 0.35, 0.0, 0.32],
                            'curve_diagnosis': ['ok', 'ok', 'not resolved', 'ok', 'not resolved',
-                                               'fuzzy start', 'not resolved', 'ok']})
+                                               'flat top', 'not resolved', 'ok']})
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         kept, n_zero, n_unresolved = _drop_rungs(ladder, "Rigorous fit: ")

@@ -23,11 +23,14 @@ set on simulated curves of known shape: a peak, a fast or slow plateau, a
 plateau that declines or drifts up, an early collapse, a curve still rising when
 training ends, and one that never rises, with and without early stopping.
 
-Where a curve's approach to its top starts is measured, not judged from its
-shape. The approach starts at the first epoch within ``approach_noise`` noise
-units of the top. The trainer reads the training-side value there as well, on
-the same rows, and calls the start uncertain ('fuzzy start') when the two
-readings differ by more than ``fuzzy_se`` of the estimate's standard errors.
+How closely the held-out rows pin the estimate is measured at the top of the
+curve. An epoch whose smoothed held-out value lies within ``top_se`` standard
+errors of the curve's maximum (:func:`standard_error` of the maximum on the
+held-out rows) is one that those rows cannot tell apart from the top. These
+epochs are the band (:func:`top_band`). The trainer reads the training-side
+value at the first and the last epoch of the band, on the rows that the estimate
+is read on. It diagnoses a flat top ('flat top') when the two readings differ by
+more than ``band_share`` of the estimate.
 
 Every threshold here is a setting of ``Training(...)``, with its default in
 :data:`neural_mi.defaults.BASE_PARAMS_SCHEMA`.
@@ -83,12 +86,10 @@ def choose_epoch(history, smoothed, rule: str, reach: Optional[int],
                  resolved_noise: float = default_of('resolved_noise'),
                  fast_epochs: int = default_of('fast_epochs'),
                  fall_noise: float = default_of('fall_noise'),
-                 approach_noise: float = default_of('approach_noise'),
                  clear_se: float = default_of('clear_se'),
                  rising_epochs: int = default_of('rising_epochs'),
-                 rising_noise: float = default_of('rising_noise')) -> Tuple[int, int, str, int]:
-    """The epoch to read, the epoch of the smoothed maximum, the diagnosis of the curve, and the first epoch of
-    its approach to the top.
+                 rising_noise: float = default_of('rising_noise')) -> Tuple[int, int, str]:
+    """The epoch to read, the epoch of the smoothed maximum, and the diagnosis of the curve.
 
     ``history`` is the raw held-out curve and ``smoothed`` the smoothed one, in
     nats. ``reach`` is how many epochs the smoothing looks ahead, None when
@@ -112,8 +113,9 @@ def choose_epoch(history, smoothed, rule: str, reach: Optional[int],
     ``level_noise`` noise units of the maximum, and the plateau starts at the first
     epoch within ``start_noise`` noise units of that level.
 
-    The trainer adds ``'fuzzy start'`` when the value read at the start of the
-    approach moves the estimate (see the module docstring).
+    The trainer adds ``'flat top'`` when the estimate read at the two ends of the
+    band differs by more than ``band_share`` of the estimate (see the module
+    docstring).
     """
     s = np.asarray(smoothed, dtype=float)
     peak = int(np.nanargmax(s))
@@ -121,11 +123,28 @@ def choose_epoch(history, smoothed, rule: str, reach: Optional[int],
     level = float(np.median(s[s >= s[peak] - level_noise * noise]))
     start = int(np.flatnonzero(s >= level - start_noise * noise)[0])
     epoch = start if rule == 'plateau_start' else peak
-    approach = int(np.flatnonzero(s >= level - approach_noise * noise)[0])
     diagnosis = _diagnose(s, start, level, noise, reach, ran_to_limit, n_rows, resolved_noise=resolved_noise,
                           fast_epochs=fast_epochs, fall_noise=fall_noise, clear_se=clear_se,
                           rising_epochs=rising_epochs, rising_noise=rising_noise)
-    return epoch, peak, diagnosis, approach
+    return epoch, peak, diagnosis
+
+
+def band_floor(top: float, n_rows: Optional[int], top_se: float = default_of('top_se')) -> float:
+    """The lowest smoothed held-out value, in nats, that lies within ``top_se`` standard errors of a top of
+    ``top`` on ``n_rows`` held-out rows (:func:`standard_error`). Without a row count it is the top itself."""
+    return top - top_se * (standard_error([top], int(n_rows)) if n_rows else 0.0)
+
+
+def top_band(smoothed, n_rows: Optional[int], top_se: float = default_of('top_se')) -> Tuple[int, int]:
+    """The first and the last epoch of the band: the epochs whose smoothed held-out value, in nats, lies within
+    ``top_se`` standard errors of the curve's maximum. The standard error is that of the maximum on ``n_rows``
+    held-out rows (:func:`band_floor`). Without a row count the band is the maximum alone.
+
+    The first epoch of the band beats every epoch before it, and the last comes at or after the maximum, so
+    the trainer keeps the networks at both (``Trainer.train``)."""
+    s = np.asarray(smoothed, dtype=float)
+    inside = np.flatnonzero(s >= band_floor(float(np.nanmax(s)), n_rows, top_se))
+    return int(inside[0]), int(inside[-1])
 
 
 def _diagnose(s, start, level, noise, reach, ran_to_limit, n_rows, *, resolved_noise, fast_epochs, fall_noise,
@@ -157,20 +176,20 @@ def _values_read(values: Optional[Tuple[float, float, float]], units: str) -> st
 
 
 def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int], n_epochs: int,
-                     approach: Optional[int] = None, shift: Optional[float] = None, se: Optional[float] = None,
                      units: str = 'bits', held_out: Optional[int] = None,
-                     fuzzy_se: float = default_of('fuzzy_se'),
-                     values: Optional[Tuple[float, float, float]] = None, *,
+                     values: Optional[Tuple[float, float, float]] = None,
+                     band: Optional[Tuple[int, int, float, float]] = None, *,
                      resolved_noise: float = default_of('resolved_noise'), clear_se: float = default_of('clear_se'),
                      rising_noise: float = default_of('rising_noise'), rising_epochs: int = default_of('rising_epochs'),
-                     fall_noise: float = default_of('fall_noise'), fast_epochs: int = default_of('fast_epochs')) -> None:
+                     fall_noise: float = default_of('fall_noise'), fast_epochs: int = default_of('fast_epochs'),
+                     top_se: float = default_of('top_se'), band_share: float = default_of('band_share')) -> None:
     """Warn when the diagnosis is not 'ok'. The texts differ between networks only in their numbers, so the
-    library shows each kind once per call and counts the rest. ``shift`` and ``se`` are in ``units``, and
-    ``fuzzy_se`` is the setting the 'fuzzy start' diagnosis used.
+    library shows each kind once per call and counts the rest.
     ``held_out`` is the count of held-out rows the curve scores, given when it is smaller than one training
     batch (``trainer.too_few_held_out``), and each message then names it. ``values`` are the reported
     estimate, the measured one and the held-out value of the network read, in ``units``, which the 'not
-    resolved' message states. Each message names the settings that decided its diagnosis."""
+    resolved' and 'flat top' messages state. ``band`` is the band's first and last epoch and the estimate read
+    at each, in ``units`` (:func:`top_band`). Each message names the settings that decided its diagnosis."""
     note = (f" The curve scores only {held_out} held-out rows, fewer than one training batch, so its noise is "
             f"large and its ceiling of log({held_out}) low. More data, or a lower Split(train_fraction=...), "
             f"gives it more." if held_out else "")
@@ -195,13 +214,16 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
             f"A top this early lies "
             f"within the {reach} epochs over which the curve is smoothed, so the start of the curve placed it. Lower "
             f"learning_rate to spread the rise over more epochs.{note}", UserWarning, stacklevel=user_stacklevel())
-    elif diagnosis == 'fuzzy start':
+    elif diagnosis == 'flat top':
+        first, last, at_first, at_last = band
         warnings.warn(
-            f"The held-out MI approached its top slowly, so where the top starts is uncertain. Read at the start "
-            f"of the approach (epoch {approach}) instead of epoch {epoch}, the estimate moves by {shift:.4f} "
-            f"{units}. That is more than Training(fuzzy_se={fuzzy_se:g}) times its standard error of {se:.4f} "
-            f"{units}. "
-            f"Check the curve with result.plot().{note}", UserWarning, stacklevel=user_stacklevel())
+            f"The held-out MI stays within Training(top_se={top_se:g}) standard errors of its top from epoch "
+            f"{first} to epoch {last}, so the held-out rows cannot tell these epochs apart. The estimate is "
+            f"{at_first:.4f} {units} when read at the first of these epochs and {at_last:.4f} {units} when read at "
+            f"the last. The difference is more than Training(band_share={band_share:g}) of the estimate of "
+            f"{values[1]:.4f} {units}, so the held-out rows cannot pin the estimate down more closely. Another "
+            f"configuration may do better, or the data may not resolve the estimate more finely. Check the curve "
+            f"with result.plot().{note}", UserWarning, stacklevel=user_stacklevel())
 
 
 def falls_short(estimate: float, held: Optional[float], estimate_se: float, n_rows: Optional[int],

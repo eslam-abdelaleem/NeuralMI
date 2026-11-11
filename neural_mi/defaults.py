@@ -194,11 +194,12 @@ BASE_PARAMS_SCHEMA = {
     # fall_noise noise units within fast_epochs epochs came too fast.
     'fast_epochs': {'type': int, 'min': 0, 'default': 8},
     'fall_noise': {'type': float, 'min': 0.0, 'default': 3.0},
-    # The approach to the top starts approach_noise noise units below it.
-    'approach_noise': {'type': float, 'min': 0.0, 'default': 3.0},
-    # The readings at the start of the approach and at the epoch read differ by more
-    # than fuzzy_se standard errors of the estimate: 'fuzzy start'.
-    'fuzzy_se': {'type': float, 'min': 0.0, 'default': 3.0},
+    # The band: the epochs whose smoothed held-out value lies within top_se standard
+    # errors of the curve's top, which the held-out rows cannot tell apart. A band
+    # whose two ends read estimates further apart than band_share of the estimate
+    # is a flat top.
+    'top_se': {'type': float, 'min': 0.0, 'default': 1.0},
+    'band_share': {'type': float, 'min': 0.0, 'default': 0.3},
     # A held-out value more than clear_se standard errors above zero shows that the
     # network learned something.
     'clear_se': {'type': float, 'min': 0.0, 'default': 3.0},
@@ -268,8 +269,8 @@ BASE_PARAMS_SCHEMA = {
 # The settings the trainer reads and judges the held-out curve by, and warns by
 # (neural_mi/training/trainer.py, neural_mi/training/epochs.py). Each is a field of
 # Training(...).
-CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs', 'fall_noise', 'approach_noise',
-                  'fuzzy_se', 'clear_se', 'rising_epochs', 'rising_noise', 'ceiling_fraction',
+CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs', 'fall_noise', 'top_se',
+                  'band_share', 'clear_se', 'rising_epochs', 'rising_noise', 'ceiling_fraction',
                   'saturation_fraction', 'saturated_epoch_fraction', 'gap_share', 'nan_streak')
 
 # The settings of the data check (neural_mi/preprocessing.py). Each is a field of

@@ -237,12 +237,14 @@ noise a top must clear is also the sampling error of the held-out rows, 3
 standard errors ($\sqrt{2I/N}$ for $I$ nats on $N$ rows): every epoch scores the
 same rows, so that error moves the whole curve together and never shows from
 epoch to epoch, and a network that learned nothing can sit flat a little above
-zero. A
-slow approach to the top is measured instead: the training-side value is read
-also at the first epoch within `approach_noise` noise units of the top, on the
-same rows, and the start of the top is uncertain when the two readings differ by
-more than `fuzzy_se` of the estimate's standard errors (`approach_shift` keeps the
-difference). Both are settings of `Training(...)`.
+zero. The
+band is the set of epochs whose smoothed held-out value lies within `top_se`
+standard errors of the maximum, so the held-out rows cannot tell these epochs
+apart. It measures how closely those rows pin the estimate. The training-side
+value is read at the band's first and last epoch on the same rows (`band_low`
+and `band_high` keep the two readings). The curve is diagnosed `'flat top'` when
+they differ by more than `band_share` of the estimate. Both are settings of
+`Training(...)`.
 
 The held-out curve plays the part a bandwidth choice plays in kernel density
 estimation. On the training side the critic can fit ever finer structure. The

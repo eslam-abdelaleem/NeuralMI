@@ -205,8 +205,8 @@ The optimisation loop and what is evaluated after it.
 | `start_noise` | `0.5` | `epoch_rule='plateau_start'` reads the first epoch within this many noise units of the top's level. |
 | `resolved_noise` | `8.0` | The curve is diagnosed `'not resolved'` unless its top stands this many noise units above zero. |
 | `clear_se` | `3.0` | A held-out value stands above zero when it exceeds this many of its standard errors. A curve whose top does not stand above zero is diagnosed `'not resolved'`. When terms are combined, a term whose held-out value does not stand above zero counts as having learned nothing. |
-| `approach_noise` | `3.0` | The approach to the top starts at the first epoch within this many noise units of the top's level. |
-| `fuzzy_se` | `3.0` | The curve is diagnosed `'fuzzy start'` when the estimate read at the start of the approach differs from the reported one by more than this many of its standard errors. |
+| `top_se` | `1.0` | The band is every epoch whose smoothed held-out value lies within this many standard errors of the curve's maximum. The standard error is that of the maximum on the held-out rows, $\sqrt{2I/N}$ for $I$ nats on $N$ rows, so the held-out rows cannot tell the epochs of the band apart. `runs` gives the band's first and last epoch (`band_first_epoch`, `band_last_epoch`) and the lower and the higher of the estimates read at them (`band_low`, `band_high`). |
+| `band_share` | `0.3` | The curve is diagnosed `'flat top'` when the estimates read at the band's first and last epoch differ by more than this share of the estimate. |
 | `fast_epochs` | `8` | The curve is diagnosed `'too fast'` when its top lies within the smoothing's reach of its start and the curve falls by more than `fall_noise` noise units within this many epochs after the top. |
 | `fall_noise` | `3.0` | The fall below the top's level, in noise units, that `fast_epochs` looks for. |
 | `rising_epochs` | `20` | When training runs to `n_epochs`, the curve is diagnosed `'still rising'` if it rose by more than `rising_noise` noise units over its last `rising_epochs` epochs. |
