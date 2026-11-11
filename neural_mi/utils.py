@@ -526,7 +526,7 @@ ARCHITECTURE_KEYS = (
     'use_variational', 'shared_encoder', 'max_n_batches',
     'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
     '_difference_term', 'processor_params_x', 'processor_params_y', 'input_scaling',
-    'input_scaling_x', 'input_scaling_y', 'large_first_layer',
+    'input_scaling_x', 'input_scaling_y', 'large_first_layer', 'zero_start',
 ) + MODEL_SETTINGS
 
 
@@ -674,8 +674,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     These parameters have no effect for ``critic_type`` values other than
     ``'hybrid'``.
+
+    A critic that the library builds then starts with every score at exactly
+    zero (``Model(zero_start=True)``, :meth:`BaseCritic.start_at_zero`). A
+    custom critic is the caller's recipe and starts as it builds itself.
     """
-    
     # Only the architecture keys reach the build, so a network saved with them
     # rebuilds as it was trained. A setting absent from them takes its schema
     # default.
@@ -683,6 +686,16 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     if embedding_params.get('custom_critic') is not None:
         # The caller's recipe builds the whole critic, in each task anew.
         return _custom_critic(embedding_params['custom_critic'], embedding_params)
+    critic = _library_critic(critic_type, embedding_params, custom_embedding_cls)
+    if setting(embedding_params, 'zero_start'):
+        critic.start_at_zero()
+    return critic
+
+
+def _library_critic(critic_type: str, embedding_params: Dict[str, Any],
+                    custom_embedding_cls: Optional[type] = None) -> BaseCritic:
+    """The critic of ``critic_type`` that the library builds from ``embedding_params``, the architecture keys
+    only (:func:`build_critic`)."""
     use_variational = setting(embedding_params, 'use_variational')
     max_n_batches = setting(embedding_params, 'max_n_batches')
     # The class also travels in embedding_params, so a caller that only has the

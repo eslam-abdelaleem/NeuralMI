@@ -96,6 +96,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   on the units of the data. `input_scaling='none'` scales nothing, as an unset
   `input_scaling` did before. Each network records how it scales each input,
   and a network saved before this change loads as it was trained.
+- `Model(zero_start=True)`, the default, starts every score of a critic that the
+  library builds at exactly zero. The separable critic starts half of each
+  side's readout rows at zero, the first half of X's and the second half of Y's.
+  The hybrid and concat critics start the last layer of the network that scores
+  the pair at zero. The start then does not depend on the dimension of the data.
+  Every encoder gives the layer that produces its embedding as `readout`. A
+  shared encoder keeps its start, and a custom critic starts as its recipe
+  builds it.
 
 ### Changed
 

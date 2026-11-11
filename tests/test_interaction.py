@@ -559,7 +559,7 @@ class TestInteractionShiftingSpikes:
             interaction=Interaction(w_data=w_spikes),
             processing=nmi.Processing(x='spike', x_params={'window_size': 0.05}, w='spike', w_params={'window_size': 0.05}),
             model=Model(embedding_dim=8, hidden_dim=16, n_layers=1),
-            training=Training(n_epochs=15, patience=5, batch_size=32, shift_windows=True),
+            training=Training(n_epochs=60, patience=10, batch_size=32, shift_windows=True),
             n_workers=1, show_progress=False, seed=0,
         )
         details = _components(results)

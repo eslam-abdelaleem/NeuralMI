@@ -49,6 +49,10 @@ BASE_PARAMS_SCHEMA = {
     # (stream_scaling), and 'none' leaves every input as it is. None, which a network
     # saved before input scaling existed records, reads as 'none'.
     'input_scaling': {'type': (str, type(None)), 'default': 'auto'},
+    # Every score of a critic the library builds starts at exactly zero
+    # (BaseCritic.start_at_zero), so the start does not depend on the data's
+    # dimension or on the spread of the first scores.
+    'zero_start': {'type': bool, 'default': True},
     # A first embedding layer with more parameters than this is noted at the info
     # level: it may overfit a small dataset.
     'large_first_layer': {'type': int, 'min': 0, 'default': 500_000},

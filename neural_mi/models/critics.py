@@ -127,6 +127,28 @@ def side_embedding_sizes(critic: nn.Module, x, y) -> Optional[Tuple[int, int]]:
     return int(z_x.shape[-1]), int(z_y.shape[-1])
 
 
+def _zero_rows(layer: nn.Module, rows: slice) -> None:
+    """Set ``rows`` of a linear layer's weight and bias to zero, through a spectral norm when it has one."""
+    if hasattr(layer, 'parametrizations') and hasattr(layer.parametrizations, 'weight'):
+        weight = layer.parametrizations.weight.original
+    else:
+        weight = getattr(layer, 'weight_orig', layer.weight)
+    with torch.no_grad():
+        weight[rows] = 0.0
+        if getattr(layer, 'bias', None) is not None:
+            layer.bias[rows] = 0.0
+
+
+def _start_head_at_zero(head: nn.Module) -> bool:
+    """Start a network that scores pairs at zero: its last layer, all of it, which still receives a gradient
+    from the layer below."""
+    readout = getattr(head, 'readout', None)
+    if readout is None:
+        return False
+    _zero_rows(readout, slice(None))
+    return True
+
+
 class BaseCritic(nn.Module):
     """Abstract base class for critic models.
 
@@ -136,6 +158,13 @@ class BaseCritic(nn.Module):
     """
     def __init__(self):
         super().__init__()
+
+    def start_at_zero(self) -> bool:
+        """Start every score at exactly zero (``Model(zero_start=True)``), and return whether this critic
+        did. A score that starts at zero gives the training no spread of first scores to inherit, so the start
+        does not depend on the data's dimension. Each library critic does it in the way its scores allow, and a
+        critic without a way keeps its start."""
+        return False
 
     def _get_embeddings_and_kl(self, x_out: Any, y_out: Any) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Helper to unpack embeddings and KL loss from variational models."""
@@ -291,6 +320,20 @@ class SeparableCritic(BaseCritic):
         scores = torch.matmul(x_embedded, y_embedded.t())
         return scores, total_kl_loss
 
+    def start_at_zero(self) -> bool:
+        """Half of each side's readout rows start at zero, the first half of X's and the second half of Y's.
+        The two embeddings then start in complementary halves, so their dot product is zero for every pair,
+        while each zeroed row receives a gradient from the other side's live half. A shared encoder has one
+        readout, which could start at zero only as a whole and would then never move, so it keeps its start."""
+        rx = getattr(self.embedding_net_x, 'readout', None)
+        ry = getattr(self.embedding_net_y, 'readout', None)
+        if rx is None or ry is None or rx is ry:
+            return False
+        half = rx.out_features // 2
+        _zero_rows(rx, slice(None, half))
+        _zero_rows(ry, slice(half, None))
+        return True
+
 class HybridCritic(BaseCritic):
     """A hybrid critic that embeds inputs independently, then scores their concatenation.
     
@@ -319,6 +362,10 @@ class HybridCritic(BaseCritic):
         self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
+
+    def start_at_zero(self) -> bool:
+        """The last layer of the decision head starts at zero, so every pair scores zero, and it receives a gradient from the head's layer below."""
+        return _start_head_at_zero(self.decision_head)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # x may be a plain tensor or a tuple (BranchedEmbedding's compound
@@ -391,6 +438,10 @@ class ConcatCritic(BaseCritic):
         # Model(input_scaling='auto'): each side's InputScaling, applied before
         # the pair is formed.
         self.scaling = nn.ModuleList(scaling) if scaling is not None else None
+
+    def start_at_zero(self) -> bool:
+        """The last layer of the network that scores the pair starts at zero, so every pair scores zero, and it receives a gradient from the layer below."""
+        return _start_head_at_zero(self.embedding_net)
 
     def forward(self, x, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.scaling is not None:

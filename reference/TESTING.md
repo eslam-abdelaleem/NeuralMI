@@ -107,6 +107,7 @@ Each file covers one functional area. Run
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |
 | `test_custom_critic.py` | `Model(custom_critic=...)` as a recipe built in every task: each repeat and each term of a difference trains its own, the joint term's pair reaches it, and an object is refused |
 | `test_input_scaling.py` | `Model(input_scaling=...)`: `'auto'` by default, each kind of stream scaled as its kind asks (continuous channel by channel, spike counts and spike times by one scale for the stream, categorical left as it is), encoders without biases left uncentred, DeepSets keeping its padding, each stream and each side of a shared encoder with statistics of its own, the statistics saved with the network and applied on rebuild, estimates that do not depend on the units, older networks rebuilt as they were trained, and binned spikes kept as counts |
+| `test_zero_start.py` | `Model(zero_start=True)`: every encoder giving its readout, every library critic starting each score at exactly zero (the separable critic with every encoder, the hybrid and concat critics, scaled and variational encoders), the zeroed rows learning from the first step, and a shared encoder, `zero_start=False` and a custom critic keeping their own start |
 | `test_network_settings.py` | every `Model` setting reaching every network that has the part it names, and a warning for a setting no network of the call reads |
 
 ### Training

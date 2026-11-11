@@ -325,7 +325,7 @@ def test_each_side_is_judged_against_the_ceiling_of_its_own_rows():
                                       y='continuous', y_params={'window_size': 50, 'step_size': None}),
             split=nmi.Split(mode='blocked', train_fraction=0.8),
             model=Model(embedding_dim=32, hidden_dim=128),
-            training=Training(n_epochs=150, patience=30),
+            training=Training(n_epochs=300, patience=30),
             n_workers=1, show_progress=False, seed=0,
         )
     assert result.get('train_eval_size') > result.get('eval_size'), (

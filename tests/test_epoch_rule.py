@@ -281,7 +281,7 @@ class TestTheWarningsAboutTheValueRead:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             result = nmi.run(x, y, model=nmi.Model(embedding_dim=16, hidden_dim=64, n_layers=2),
-                             training=nmi.Training(n_epochs=80, patience=80, **training), show_progress=False,
+                             training=nmi.Training(n_epochs=150, patience=150, **training), show_progress=False,
                              seed=0)
         return result, [str(w.message) for w in caught]
 
@@ -309,9 +309,11 @@ class TestTheWarningsAboutTheValueRead:
         import neural_mi as nmi
         rng = np.random.default_rng(0)
         x, y = (rng.standard_normal((300, 2)).astype(np.float32) for _ in range(2))
+        # A run reported as 0 needs a held-out curve that never rises above zero. Independent data give one
+        # only when the scores start spread out, so this run keeps the networks' own start.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            result = nmi.run(x, y, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+            result = nmi.run(x, y, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1, zero_start=False),
                              training=nmi.Training(n_epochs=4, ceiling_fraction=0.0), show_progress=False, seed=0)
         assert result.runs.iloc[0]['mi'] == 0
         assert not any('near its ceiling' in str(w.message) for w in caught)

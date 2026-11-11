@@ -1356,6 +1356,18 @@ participation ratios. Each critic declares whether it embeds each side
 divides out each sample's overall scale. Where that scale carries information
 the estimate reads lower.
 
+Every score of a critic that the library builds starts at exactly zero
+(`Model(zero_start=True)`). The separable critic starts half of each side's
+readout rows at zero, the first half of X's and the second half of Y's. The two
+embeddings then start in complementary halves, so their dot product is zero for
+every pair, while each zeroed row receives a gradient from the other side's live
+half. The hybrid and concat critics start the last layer of the network that
+scores the pair at zero. Without the zero start, the spread of the first scores
+depends on the dimension of the data and on the size of the network. A shared
+encoder has one readout. It could start at zero only as a whole and would then
+never move, so a shared encoder keeps its start. A custom critic starts as its
+recipe builds it.
+
 ### Custom encoders and critics
 
 A custom encoder subclasses `BaseEmbedding` and declares how its `input_dim`

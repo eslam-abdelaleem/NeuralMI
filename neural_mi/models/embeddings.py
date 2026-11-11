@@ -103,6 +103,13 @@ class BaseEmbedding(nn.Module):
         """Whether a network of this class built with ``n_layers`` layers has the part ``setting`` names."""
         return setting in cls.settings
 
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The layer that gives the embedding, the last of the network. A critic starts half of its rows at
+        zero (``BaseCritic.start_at_zero``). It is ``output_layer`` unless a class says otherwise, and None for a
+        custom class without one, whose start the critic leaves as it is."""
+        return getattr(self, 'output_layer', None)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Computes the embedding for an input tensor.
 
@@ -315,6 +322,11 @@ class CNN1D(BaseEmbedding):
         self.hidden_dim = ch[-1]
         self._initialize_weights()
         self._initialize_final_layers()
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The last of the final layers, which gives the embedding."""
+        return self.final_layers[-1]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.final_layers(self.conv_layers(x))
@@ -532,6 +544,11 @@ class LRUEmbedding(BaseEmbedding):
         self.in_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
         self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout, bias=bias) for _ in range(n_layers)])
         self.out_proj = nn.Linear(hidden_dim, embedding_dim, bias=bias)
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The output projection, which gives the embedding."""
+        return self.out_proj
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.transpose(1, 2)
@@ -757,6 +774,11 @@ class DeepSets(BaseEmbedding):
             nn.Linear(width * input_dim, width, bias=bias), nn.ReLU(),
             nn.Linear(width, embedding_dim, bias=bias))
 
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The last layer of ``rho``, which gives the embedding."""
+        return self.rho[-1]
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (batch, n_neurons, max_slots)
         mask = (x != self.no_spike_value).to(x.dtype).unsqueeze(-1)
@@ -838,6 +860,11 @@ class CNN2D(BaseEmbedding):
         self.hidden_dim = ch[-1]
         self._initialize_weights()
         self._initialize_final_layers()
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The last of the final layers, which gives the embedding."""
+        return self.final_layers[-1]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Passes (N, C, H, W) input through conv blocks then the projection head."""
@@ -1003,6 +1030,11 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
         self.head = MLP(backbone_out_dim, hidden_dim, embedding_dim, n_layers,
                         use_spectral_norm=use_spectral_norm, dropout=dropout, norm_layer=norm_layer, bias=bias)
 
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The readout of the MLP head on the frozen backbone."""
+        return self.head.readout
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Extract frozen backbone features then project via the trainable head.
 
@@ -1147,6 +1179,11 @@ class InputScaling(nn.Module):
             if isinstance(scaler, ChannelScaling):
                 scaler.fit(part)
 
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The readout of the encoder behind the scaling."""
+        return getattr(self.encoder, 'readout', None)
+
     def forward(self, x):
         if isinstance(x, (tuple, list)):
             return self.encoder(tuple(scaler(part) for scaler, part in zip(self.scalers, x)))
@@ -1216,6 +1253,11 @@ class VariationalWrapper(nn.Module):
         wrapper.base_encoder = base_encoder
         wrapper.mu_head, wrapper.log_var_head = other.mu_head, other.log_var_head
         return wrapper
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The head that gives the mean of the embedding."""
+        return self.mu_head
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode ``x`` through the base encoder and sample from the posterior.
@@ -1295,6 +1337,11 @@ class BranchedEmbedding(BaseEmbedding):
                        **(branch_kwargs if window is None else dict(branch_kwargs, window_size=window)))
             for dim, window in zip(dims, windows))
         self.head = MLP(len(dims) * embedding_dim, embedding_dim, embedding_dim, 1, **(head or {}))
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The readout of the head that joins the branches."""
+        return self.head.readout
 
     def forward(self, x) -> torch.Tensor:
         parts = x if isinstance(x, (tuple, list)) else (x,)
