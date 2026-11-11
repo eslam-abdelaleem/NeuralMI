@@ -876,10 +876,12 @@ def _library_critic(critic_type: str, embedding_params: Dict[str, Any],
                                      else flat // n_ch)
 
     # DeepSets masks padded slots, so it needs the sentinel the processor used.
-    # Taken per side, since X and Y can be processed differently.
+    # Only an encoder that names it gets it: one that takes **kwargs ignores
+    # it, and its input is scaled as its stream asks (_scaled_input). Taken per
+    # side, since X and Y can be processed differently.
     for Model_, kwargs, key in ((Model_x, model_kwargs, 'processor_params_x'),
                                 (Model_y, model_kwargs_y, 'processor_params_y')):
-        if _accepts_kwarg(Model_, 'no_spike_value'):
+        if _names(Model_, 'no_spike_value'):
             params = embedding_params.get(key) or {}
             kwargs['no_spike_value'] = processor_setting('spike', params, 'no_spike_value')
 

@@ -168,6 +168,20 @@ def test_deepsets_scales_spike_times_and_keeps_its_padding(custom):
         assert not scaler.centre
 
 
+@pytest.mark.parametrize('model', ['cnn', 'cnn2d', 'gru', 'lstm', 'lru', 'tcn', 'transformer'])
+def test_an_encoder_that_does_not_name_the_padding_value_is_scaled_as_its_stream_asks(model):
+    """Only an encoder that names no_spike_value reads a padding value. An encoder whose constructor takes
+    **kwargs used to count as one, so its continuous input was scaled as spike times, without centring, and an
+    offset or one loud channel broke its estimate."""
+    params = _params(embedding_model=model, input_dim_x=32, input_dim_y=32, n_channels_x=2, n_channels_y=2)
+    if model == 'cnn2d':
+        params.update(input_dim_x=32, input_dim_y=32, input_height_x=4, input_width_x=4, input_height_y=4,
+                      input_width_y=4)
+    critic = build_critic('separable', params)
+    for net in (critic.embedding_net_x, critic.embedding_net_y):
+        assert net.scalers[0].mode == 'channel' and net.scalers[0].centre
+
+
 def test_each_side_of_a_shared_encoder_has_statistics_of_its_own():
     """The two sides share the encoder's weights, and each side's input is scaled by its own rows, even when
     their windows differ in length."""

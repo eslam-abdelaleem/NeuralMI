@@ -5,7 +5,6 @@ embeddings start in complementary halves. The hybrid and concat critics start th
 scores the pair at zero. A shared encoder, whose one readout could start at zero only as a whole, keeps its start,
 and so does a custom critic. Every encoder gives the layer that produces its embedding as ``readout``.
 """
-import numpy as np
 import pytest
 import torch
 
