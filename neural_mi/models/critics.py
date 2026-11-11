@@ -52,7 +52,9 @@ def _score_pairs(mlp: nn.Module, a: torch.Tensor, b: torch.Tensor) -> torch.Tens
     ``[a_i, 0]`` plus the layer applied to ``[0, b_j]`` minus one bias. Both
     sides pass through that layer once and together, which also runs a
     spectral norm's power iteration once per call. The rest of the network runs
-    on the pair sums in blocks of at most ``_PAIR_BLOCK_ELEMENTS`` values.
+    on the pair sums in blocks of at most ``_PAIR_BLOCK_ELEMENTS`` values. A
+    linear path (:class:`~neural_mi.models.embeddings.MLP`) has no bias, so its
+    value on a pair is the sum of its values on the two sides.
     """
     first, rest = mlp.network[0], mlp.network[1:]
     n_a, n_b = a.shape[0], b.shape[0]
@@ -62,12 +64,19 @@ def _score_pairs(mlp: nn.Module, a: torch.Tensor, b: torch.Tensor) -> torch.Tens
     h_a, h_b = hidden[:n_a], hidden[n_a:]
     if first.bias is not None:
         h_b = h_b - first.bias
+    path = getattr(mlp, 'path', None)
+    if path is not None:
+        linear = mlp.path_scale * path(both)
+        l_a, l_b = linear[:n_a], linear[n_a:]
     width = hidden.shape[1]
     rows = max(1, _PAIR_BLOCK_ELEMENTS // max(1, n_b * width))
     blocks = []
     for start in range(0, n_a, rows):
         pre = h_a[start:start + rows].unsqueeze(1) + h_b.unsqueeze(0)
-        blocks.append(mlp.output_layer(rest(pre.reshape(-1, width))).view(-1, n_b))
+        out = mlp.output_layer(rest(pre.reshape(-1, width)))
+        if path is not None:
+            out = out + (l_a[start:start + rows].unsqueeze(1) + l_b.unsqueeze(0)).reshape(out.shape)
+        blocks.append(out.view(-1, n_b))
     return torch.cat(blocks, dim=0)
 
 

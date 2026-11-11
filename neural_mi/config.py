@@ -107,6 +107,7 @@ class Model:
     use_spectral_norm: Optional[bool] = None
     input_scaling: Optional[str] = None            # 'auto' (each stream as its kind asks) | 'none'
     zero_start: Optional[bool] = None              # every score starts at exactly zero; default True
+    linear_path: Optional[bool] = None             # MLP encoders: a linear path from input to embedding; default True
     large_first_layer: Optional[int] = None        # a first layer with more parameters is noted
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None

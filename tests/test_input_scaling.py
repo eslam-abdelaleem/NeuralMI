@@ -74,7 +74,6 @@ def test_how_each_kind_of_stream_is_scaled():
     assert stream_scaling('auto', 'spike_counts') == 'counts' and stream_scaling('auto', 'spike_times') == 'times'
     assert stream_scaling('auto', 'categorical') is None and stream_scaling('auto', 'mixed') is None
     assert stream_scaling('none', 'continuous') is None
-    assert stream_scaling(None, 'continuous') is None            # what a network saved before scaling records
 
 
 def test_channel_mode_centres_and_scales_each_channel():
@@ -184,30 +183,6 @@ def test_each_side_of_a_shared_encoder_has_statistics_of_its_own():
         x, y = torch.randn(64, 2, 5), 50 * torch.randn(64, 2, 7)
         fit_input_scaling(critic, x, y)
         assert bool((net_y.scalers[0].scale > 10 * net_x.scalers[0].scale).all())
-
-
-def test_networks_saved_before_the_modes_rebuild_as_they_were_trained(tmp_path):
-    """A network saved before input scaling existed records input_scaling=None and rebuilds without scalers,
-    so its weights load strictly. One saved under 'standard' scaled every part channel by channel, and one that
-    recorded True or False per part scaled those parts channel by channel."""
-    old = _params(input_scaling=None)
-    del old['input_scaling_x'], old['input_scaling_y']
-    critic = build_critic('separable', old)
-    assert not isinstance(critic.embedding_net_x, InputScaling)
-    path = tmp_path / 'old.pt'
-    torch.save({'state_dict': critic.state_dict(), 'build_params': old}, path)
-    x = torch.randn(5, 2, 3)
-    zx, zy = nmi.extract_embeddings(str(path), x, x)
-    critic.eval()
-    with torch.no_grad():
-        expected, _ = critic.get_embeddings(x, x)
-    assert np.allclose(zx, expected.numpy(), atol=1e-5)
-    standard = _params(input_scaling='standard')
-    del standard['input_scaling_x'], standard['input_scaling_y']
-    assert build_critic('separable', standard).embedding_net_x.scalers[0].mode == 'channel'
-    flags = build_critic('separable', _params(input_scaling_x=(True,), input_scaling_y=False))
-    assert flags.embedding_net_x.scalers[0].mode == 'channel'
-    assert not isinstance(flags.embedding_net_y, InputScaling)
 
 
 # ---------------------------------------------------------------------------

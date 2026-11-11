@@ -379,6 +379,10 @@ def test_critic_gradients(critic_and_data):
         pytest.skip("Invalid critic specified.")
 
     critic.train()
+    # A closed linear path passes no gradient to its map until its gate opens, so the test opens it.
+    for module in critic.modules():
+        if isinstance(module, MLP) and module.path is not None:
+            module.path_scale.data.fill_(1.0)
 
     scores, kl_loss = critic(x, y)
     loss = scores.mean() + kl_loss

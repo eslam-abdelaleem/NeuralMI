@@ -46,13 +46,15 @@ BASE_PARAMS_SCHEMA = {
     'use_spectral_norm': {'type': bool, 'default': True},
     # An encoder's input with its units and offset removed by the training rows'
     # statistics, saved with the network: 'auto' scales each stream as its kind asks
-    # (stream_scaling), and 'none' leaves every input as it is. None, which a network
-    # saved before input scaling existed records, reads as 'none'.
+    # (stream_scaling), and 'none' leaves every input as it is.
     'input_scaling': {'type': (str, type(None)), 'default': 'auto'},
     # Every score of a critic the library builds starts at exactly zero
     # (BaseCritic.start_at_zero), so the start does not depend on the data's
     # dimension or on the spread of the first scores.
     'zero_start': {'type': bool, 'default': True},
+    # An MLP encoder adds a linear map from its input to its embedding, which
+    # starts closed (embeddings.MLP).
+    'linear_path': {'type': bool, 'default': True},
     # A first embedding layer with more parameters than this is noted at the info
     # level: it may overfit a small dataset.
     'large_first_layer': {'type': int, 'min': 0, 'default': 500_000},
@@ -352,8 +354,7 @@ def stream_kind_of(processor: Optional[str], params: Optional[Dict[str, Any]] = 
 
 def stream_scaling(input_scaling: Optional[str], kind: Optional[str]) -> Optional[str]:
     """How an encoder scales the rows of a stream of ``kind`` (:func:`stream_kind_of`): under
-    ``input_scaling='auto'`` as :data:`SCALING_OF_KIND` says, and under ``'none'``, or the ``None`` of a
-    network saved before input scaling existed, not at all."""
+    ``input_scaling='auto'`` as :data:`SCALING_OF_KIND` says, and under ``'none'`` not at all."""
     if input_scaling != 'auto':
         return None
     return SCALING_OF_KIND[kind or 'continuous']

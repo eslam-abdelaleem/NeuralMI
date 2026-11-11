@@ -231,11 +231,11 @@ def _unread_model_settings(mode: str, model: Model, chosen: set) -> List[Tuple[L
     for name in MODEL_SETTINGS:
         if name not in chosen:
             continue
-        if any(reads(cls, name, n) for cls, n in sides) or (heads and name in MLP.settings):
+        if any(reads(cls, name, n) for cls, n in sides) or (heads and name in MLP.head_settings):
             continue
         where = [f"'{key}'" for key, cls in _EMBEDDING_CLASSES.items() if name in cls.settings]
         text = f"embedding_model {', '.join(where)}" if where else ""
-        if name in MLP.settings:
+        if name in MLP.head_settings:
             text += (" and to the MLP heads of critic_type='hybrid' or 'concat' and of a difference "
                      "quantity")
         if name == 'dropout' and any(cls in _EMBEDDING_CLASSES.values() and 'dropout' in cls.settings

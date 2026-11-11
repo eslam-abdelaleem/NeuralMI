@@ -276,8 +276,8 @@ class TestTheWarningsAboutTheValueRead:
         """Few rows, many channels and a large network: the network fits its training rows."""
         import neural_mi as nmi
         rng = np.random.default_rng(0)
-        x = rng.standard_normal((300, 20)).astype(np.float32)
-        y = (x[:, :2] @ rng.standard_normal((2, 20)) + 2.0 * rng.standard_normal((300, 20))).astype(np.float32)
+        x = rng.standard_normal((300, 40)).astype(np.float32)
+        y = (x[:, :2] @ rng.standard_normal((2, 40)) + 2.0 * rng.standard_normal((300, 40))).astype(np.float32)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             result = nmi.run(x, y, model=nmi.Model(embedding_dim=16, hidden_dim=64, n_layers=2),

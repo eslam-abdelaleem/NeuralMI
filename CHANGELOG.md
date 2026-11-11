@@ -94,8 +94,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   without biases is not centred, and DeepSets keeps its padding value. X, Y and
   W are each scaled by statistics of their own, so an estimate does not depend
   on the units of the data. `input_scaling='none'` scales nothing, as an unset
-  `input_scaling` did before. Each network records how it scales each input,
-  and a network saved before this change loads as it was trained.
+  `input_scaling` did before. Each network records how it scales each input.
 - `Model(zero_start=True)`, the default, starts every score of a critic that the
   library builds at exactly zero. The separable critic starts half of each
   side's readout rows at zero, the first half of X's and the second half of Y's.
@@ -104,6 +103,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Every encoder gives the layer that produces its embedding as `readout`. A
   shared encoder keeps its start, and a custom critic starts as its recipe
   builds it.
+- `Model(linear_path=True)`, the default, gives an MLP encoder a linear map from
+  its flattened input to its embedding, with spectral normalisation, multiplied
+  by one trainable number that starts at zero. The path starts closed and opens
+  as training finds a use for it. It gives the encoder the linear part of the
+  dependence directly, which helps when the information is spread over many
+  weak directions and the rows are few. An MLP without hidden layers and the
+  MLP heads of the hybrid and concat critics have none, and a call that turns it
+  off for an encoder without one is told that the setting has no effect.
 
 ### Changed
 

@@ -1311,6 +1311,18 @@ positional encoding and a pretrained backbone's frozen biases add terms that do
 not depend on the input, these two encoders warn that the setting cannot fully
 apply.
 
+An MLP encoder also has a linear path from its input to its embedding
+(`Model(linear_path=True)`). The path is a linear map with spectral
+normalisation, multiplied by one trainable number that starts at zero, so it
+starts closed and opens as training finds a use for it. It gives the encoder the
+linear part of the dependence directly. That helps when the information is
+spread over many weak directions and the rows are few, where the network's
+layers would otherwise fit the training rows before they find every direction.
+The path is defined for the MLP's flattened input only, so the other encoders
+have none, and neither do the MLP heads of the hybrid and concat critics. An MLP
+without hidden layers is linear already and has none either. `linear_path=False`
+builds the MLP without it.
+
 ### The encoder of a difference
 
 Conditional MI, transfer entropy, interaction information and the named
@@ -1464,8 +1476,7 @@ padding by the padding value, and its scaling leaves that value in place. X, Y
 and W each have statistics of their own, and so does each side of a shared
 encoder. The statistics are part of the network, saved with it and applied by
 `extract_embeddings`. `Model(input_scaling='none')` leaves every input as it
-is. A network saved before input scaling existed records no scaling and loads
-as it was trained.
+is.
 
 Scaling channel by channel gives every channel of a continuous stream the same weight. That is right when the channels
 differ only in units, but it lifts the noise of a channel that is quiet because

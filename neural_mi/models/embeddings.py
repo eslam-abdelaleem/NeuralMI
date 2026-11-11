@@ -153,13 +153,17 @@ class MLP(_BaseMLP):
         The final linear layer that maps to the embedding dimension.
     """
     settings = {'use_spectral_norm': 'use_spectral_norm', 'dropout': 'dropout', 'norm_layer': 'norm_layer',
-                'bias': 'bias'}
+                'bias': 'bias', 'linear_path': 'linear_path'}
+    # A head (the hybrid critic's, the concat critic's network, a branched encoder's) scores or joins
+    # embeddings rather than encoding an input, so it reads every setting but the linear path.
+    head_settings = {key: value for key, value in settings.items() if key != 'linear_path'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int,
                  n_layers: int, activation: str = 'relu',
                  use_spectral_norm: bool = default_of('use_spectral_norm'),
                  dropout: float = default_of('dropout'),
-                 norm_layer: Optional[str] = None, bias: bool = default_of('bias')):
+                 norm_layer: Optional[str] = None, bias: bool = default_of('bias'),
+                 linear_path: bool = default_of('linear_path')):
         """
         Parameters
         ----------
@@ -201,6 +205,16 @@ class MLP(_BaseMLP):
               for small datasets where batch statistics are unreliable.
             - ``'batch'``: ``nn.BatchNorm1d``. Effective on large batches but can
               be unstable when batch_size is small (< ~32).
+        linear_path : bool, optional
+            Adds a linear map from the flattened input to the embedding, with
+            spectral normalisation, multiplied by one trainable number that
+            starts at zero. The map starts closed and opens as training finds a
+            use for it. It gives the encoder the linear part of the dependence
+            directly, which helps when the information is spread over many weak
+            directions. Defaults to True. An MLP without hidden layers is
+            linear already and has no path. An MLP that serves as a head rather
+            than an encoder (the hybrid critic's, the concat critic's network, a
+            branched encoder's, a pretrained backbone's) is built with False.
         """
         super().__init__()
         act_fn = _resolve_activation(activation)
@@ -219,13 +233,20 @@ class MLP(_BaseMLP):
         widths = [input_dim, *(hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers)]
         self.network = nn.Sequential(*[m for a, b in zip(widths, widths[1:]) for m in _make_hidden_block(a, b)])
         self.output_layer = nn.Linear(widths[-1], embedding_dim, bias=bias)
+        # The linear path: spectral norm bounds the map, and one number that starts at zero opens it, at a
+        # rate that does not grow with the number of inputs.
+        linear_path = linear_path and len(widths) > 1
+        self.path = _spectral_norm(nn.Linear(input_dim, embedding_dim, bias=False)) if linear_path else None
+        self.path_scale = nn.Parameter(torch.zeros(1)) if linear_path else None
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Flattens the input and passes it through the MLP."""
+        """Flattens the input and passes it through the MLP, adding the linear path when it has one."""
         # Use reshape (not view) so that non-contiguous inputs (e.g. from
         # permute() in transfer-entropy history arrays) are handled correctly.
-        return self.output_layer(self.network(x.reshape(x.shape[0], -1)))
+        flat = x.reshape(x.shape[0], -1)
+        out = self.output_layer(self.network(flat))
+        return out if self.path is None else out + self.path_scale * self.path(flat)
 
 class CNN1D(BaseEmbedding):
     """A 1D CNN embedding network for sequential data.
@@ -1027,7 +1048,7 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
             param.requires_grad = False
 
         # --- Trainable MLP head, built with the call's MLP settings ---
-        self.head = MLP(backbone_out_dim, hidden_dim, embedding_dim, n_layers,
+        self.head = MLP(backbone_out_dim, hidden_dim, embedding_dim, n_layers, linear_path=False,
                         use_spectral_norm=use_spectral_norm, dropout=dropout, norm_layer=norm_layer, bias=bias)
 
     @property

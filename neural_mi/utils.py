@@ -513,7 +513,7 @@ def mi_report_units(base_params: Optional[Dict[str, Any]] = None,
 # The Model settings an encoder or a head can read beyond its sizes. Each
 # built-in encoder declares the ones it reads (BaseEmbedding.settings).
 MODEL_SETTINGS = ('use_spectral_norm', 'dropout', 'norm_layer', 'bias', 'kernel_size', 'cnn_pooling',
-                  'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained')
+                  'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained', 'linear_path')
 
 
 # Every setting build_critic reads, and so the list a saved network carries for
@@ -567,20 +567,13 @@ def critic_recipe_takes(recipe) -> Optional[set]:
 
 def _scaling_modes(embedding_params: Dict[str, Any], n_parts_x: int
                    ) -> Tuple[Tuple[Optional[str], ...], Optional[str]]:
-    """How the critic scales each part of its X input and its Y input: as the task decided for the streams
-    behind them (``input_scaling_x``, ``input_scaling_y``, :func:`neural_mi.defaults.side_scaling`), a
-    mode of :class:`neural_mi.models.embeddings.ChannelScaling` or None. A network saved before the modes
-    rebuilds as it was trained: a part it recorded as scaled, and every part of one saved under
-    ``input_scaling='standard'``, channel by channel, and the rest as they are."""
-    legacy = 'channel' if embedding_params.get('input_scaling') in ('auto', 'standard') else None
-
-    def mode(value):
-        return 'channel' if value is True else None if value is False else value
-    fx = embedding_params.get('input_scaling_x', legacy)
-    fy = embedding_params.get('input_scaling_y', legacy)
-    fx = tuple(mode(f) for f in fx) if isinstance(fx, (tuple, list)) else (mode(fx),)
+    """How the critic scales each part of its X input and its Y input, as the task decided for the streams
+    behind them (``input_scaling_x``, ``input_scaling_y``, :func:`neural_mi.defaults.side_scaling`): a mode
+    of :class:`neural_mi.models.embeddings.ChannelScaling`, or None for an input left as it is."""
+    fx = embedding_params.get('input_scaling_x')
+    fx = tuple(fx) if isinstance(fx, (tuple, list)) else (fx,)
     # A pair X whose parts were decided as one input (rows a mode built itself) takes that decision for both.
-    return (fx if len(fx) == n_parts_x else fx[:1] * n_parts_x), mode(fy)
+    return (fx if len(fx) == n_parts_x else fx[:1] * n_parts_x), embedding_params.get('input_scaling_y')
 
 
 def _scaled_input(net: nn.Module, embedding_params: Dict[str, Any], side: str, modes, centre: bool,
@@ -711,7 +704,7 @@ def _library_critic(critic_type: str, embedding_params: Dict[str, Any],
     # Every MLP the critic builds around its encoders (the hybrid critic's
     # head, the concat critic's network, the head of a difference term's
     # branched encoder) reads the call's MLP settings.
-    head_settings = {name: values[name] for name in MLP.settings}
+    head_settings = {**{name: values[name] for name in MLP.head_settings}, 'linear_path': False}
     critic_kwargs = {
         'embedding_dim': setting(embedding_params, 'embedding_dim'),
         'max_n_batches': max_n_batches,
