@@ -67,9 +67,9 @@ def test_cnn1d_embedding(x_data_cnn, cnn1d_embedding):
 
 
 class TestUnifiedActivationHandling:
-    """MLP, CNN1D and CNN2D share one activation resolver: the same set of
-        names, and a clean ValueError on an unknown name, with no silent
-        substitution.
+    """Every network with rectified layers resolves its activation through one
+        table (``ACTIVATIONS``): the same set of names, and a clean ValueError
+        on an unknown name, with no silent substitution.
     """
 
     SHARED_ACTIVATIONS = ['relu', 'gelu', 'tanh', 'elu', 'leaky_relu', 'sigmoid', 'silu']

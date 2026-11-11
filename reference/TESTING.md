@@ -109,7 +109,7 @@ Each file covers one functional area. Run
 | `test_input_scaling.py` | `Model(input_scaling=...)`: `'auto'` by default, each kind of stream scaled as its kind asks (continuous channel by channel, spike counts and spike times by one scale for the stream, categorical left as it is), encoders without biases left uncentred, DeepSets keeping its padding, each stream and each side of a shared encoder with statistics of its own, the statistics saved with the network and applied on rebuild, estimates that do not depend on the units, and binned spikes kept as counts |
 | `test_linear_path.py` | `Model(linear_path=True)`: MLP encoders taking the path by default and the MLP heads and an MLP without hidden layers never, the path starting closed so that it changes no output at the start, its spectral normalisation, its opening with training, the concat critic's block scoring keeping it, and the report for turning it off on an encoder without one |
 | `test_zero_start.py` | `Model(zero_start=True)`: every encoder giving its readout, every library critic starting each score at exactly zero (the separable critic with every encoder, the hybrid and concat critics, scaled and variational encoders), the zeroed rows learning from the first step, and a shared encoder, `zero_start=False` and a custom critic keeping their own start |
-| `test_network_settings.py` | every `Model` setting reaching every network that has the part it names, and a warning for a setting no network of the call reads |
+| `test_network_settings.py` | every `Model` setting reaching every network that has the part it names, `activation` reaching every rectified layer of the encoders, the MLP heads and the decoders, and a warning for a setting no network of the call reads |
 
 ### Training
 

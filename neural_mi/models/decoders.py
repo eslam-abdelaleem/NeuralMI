@@ -37,6 +37,7 @@ from typing import Optional
 
 from neural_mi.defaults import default_of
 from neural_mi.logger import logger
+from neural_mi.models.embeddings import _resolve_activation
 
 
 def _get_output_activation(name: str, dim: int = 1):
@@ -111,16 +112,18 @@ class MLPDecoder(BaseDecoder):
         window_size: int,
         n_layers: int = default_of('n_layers'),
         output_activation: str = default_of('decoder_output_activation_x'),
+        activation: str = default_of('activation'),
     ):
         super().__init__()
         self.n_channels = n_channels
         self.window_size = window_size
         self._act = _get_output_activation(output_activation)
         output_dim = n_channels * window_size
+        act = _resolve_activation(activation)
 
-        layers = [nn.Linear(embedding_dim, hidden_dim), nn.ReLU()]
+        layers = [nn.Linear(embedding_dim, hidden_dim), act()]
         for _ in range(max(0, n_layers - 1)):
-            layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
+            layers.extend([nn.Linear(hidden_dim, hidden_dim), act()])
         layers.append(nn.Linear(hidden_dim, output_dim))
         self.network = nn.Sequential(*layers)
         self._init_weights()
@@ -147,11 +150,13 @@ class CNN1DDecoder(BaseDecoder):
         n_layers: int = default_of('n_layers'),
         kernel_size: int = default_of('kernel_size'),
         output_activation: str = default_of('decoder_output_activation_x'),
+        activation: str = default_of('activation'),
     ):
         super().__init__()
         self.n_channels = n_channels
         self.window_size = window_size
         self._act = _get_output_activation(output_activation)
+        act = _resolve_activation(activation)
         if kernel_size % 2 == 0:
             kernel_size = kernel_size + 1  # ensure odd for same padding
 
@@ -159,9 +164,9 @@ class CNN1DDecoder(BaseDecoder):
         self._base_len = max(4, window_size // (2 ** max(1, n_layers - 1)))
         self.expand_linear = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
-            nn.ReLU(),
+            act(),
             nn.Linear(hidden_dim, hidden_dim * self._base_len),
-            nn.ReLU(),
+            act(),
         )
 
         pad = kernel_size // 2
@@ -171,7 +176,7 @@ class CNN1DDecoder(BaseDecoder):
             out_ch = hidden_dim if i < n_layers - 1 else n_channels
             conv_blocks.append(nn.Conv1d(in_ch, out_ch, kernel_size, padding=pad))
             if i < n_layers - 1:
-                conv_blocks.append(nn.ReLU())
+                conv_blocks.append(act())
         self.conv_layers = nn.ModuleList(conv_blocks)
         self._init_weights()
 
@@ -315,18 +320,20 @@ class TCNDecoder(BaseDecoder):
         n_layers: int = default_of('n_layers'),
         kernel_size: int = default_of('kernel_size'),
         output_activation: str = default_of('decoder_output_activation_x'),
+        activation: str = default_of('activation'),
     ):
         super().__init__()
         self.n_channels = n_channels
         self.window_size = window_size
         self._act = _get_output_activation(output_activation)
+        act = _resolve_activation(activation)
 
         self._base_len = max(4, window_size // (2 ** max(1, n_layers - 1)))
         self.expand_linear = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
-            nn.ReLU(),
+            act(),
             nn.Linear(hidden_dim, hidden_dim * self._base_len),
-            nn.ReLU(),
+            act(),
         )
 
         # Dilated conv blocks (reverse dilation order for the decoder)
@@ -341,7 +348,7 @@ class TCNDecoder(BaseDecoder):
                 dilation=dilation, padding=padding,
             ))
             if i < n_layers - 1:
-                blocks.append(nn.ReLU())
+                blocks.append(act())
         self.conv_blocks = nn.ModuleList(blocks)
         self._init_weights()
 
@@ -389,6 +396,7 @@ class TransformerDecoder(BaseDecoder):
         nhead: int = default_of('nhead'),
         output_activation: str = default_of('decoder_output_activation_x'),
         dropout: float = default_of('dropout'),
+        activation: str = default_of('activation'),
     ):
         super().__init__()
         self.n_channels = n_channels
@@ -407,7 +415,8 @@ class TransformerDecoder(BaseDecoder):
         # Model(dropout), as the transformer encoder reads it. PyTorch's own
         # default of 0.1 applied whatever the call set.
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=hidden_dim, nhead=nhead, dropout=dropout, batch_first=True
+            d_model=hidden_dim, nhead=nhead, dropout=dropout, activation=_resolve_activation(activation)(),
+            batch_first=True
         )
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=max(1, n_layers))
         self.output_proj = nn.Linear(hidden_dim, n_channels)
@@ -445,12 +454,14 @@ class CNN2DDecoder(BaseDecoder):
         n_layers: int = default_of('n_layers'),
         kernel_size: int = default_of('kernel_size'),
         output_activation: str = default_of('decoder_output_activation_x'),
+        activation: str = default_of('activation'),
     ):
         super().__init__()
         self.n_channels = n_channels
         self.height = height
         self.width = width
         self._act = _get_output_activation(output_activation)
+        act = _resolve_activation(activation)
         if kernel_size % 2 == 0:
             kernel_size = kernel_size + 1  # ensure odd for same padding
 
@@ -459,9 +470,9 @@ class CNN2DDecoder(BaseDecoder):
         self._base_w = max(2, width // (2 ** max(1, n_layers - 1)))
         self.expand_linear = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
-            nn.ReLU(),
+            act(),
             nn.Linear(hidden_dim, hidden_dim * self._base_h * self._base_w),
-            nn.ReLU(),
+            act(),
         )
 
         pad = kernel_size // 2
@@ -471,7 +482,7 @@ class CNN2DDecoder(BaseDecoder):
             out_ch = hidden_dim if i < n_layers - 1 else n_channels
             conv_blocks.append(nn.Conv2d(in_ch, out_ch, kernel_size, padding=pad))
             if i < n_layers - 1:
-                conv_blocks.append(nn.ReLU())
+                conv_blocks.append(act())
         self.conv_layers = nn.ModuleList(conv_blocks)
         self._init_weights()
 
@@ -501,6 +512,7 @@ def build_decoder(
     kernel_size: int,
     nhead: int,
     dropout: float,
+    activation: str,
     height: Optional[int] = None,
     width: Optional[int] = None,
 ) -> BaseDecoder:
@@ -524,11 +536,13 @@ def build_decoder(
         Number of decoder layers.
     output_activation : str
         Final activation: ``'linear'``, ``'sigmoid'``, or ``'softmax'``.
-    kernel_size, nhead, dropout
+    kernel_size, nhead, dropout, activation
         The call's settings, each read by the decoders that have the part it
         names: ``kernel_size`` by the CNN, CNN2D and TCN decoders, ``nhead`` by
-        the transformer's, and ``dropout`` by the LRU and transformer decoders,
-        the only ones with layers that drop out.
+        the transformer's, ``dropout`` by the LRU and transformer decoders,
+        the only ones with layers that drop out, and ``activation`` by the MLP,
+        CNN, CNN2D, TCN and transformer decoders, the ones with rectified
+        layers.
     height, width : int, optional
         The spatial layout for ``'cnn2d'``, square from ``window_size`` when
         unknown.
@@ -547,16 +561,16 @@ def build_decoder(
     )
     name = embedding_model.lower()
     if name == 'mlp':
-        return MLPDecoder(**common, window_size=window_size)
+        return MLPDecoder(**common, window_size=window_size, activation=activation)
     elif name == 'cnn':
-        return CNN1DDecoder(**common, window_size=window_size, kernel_size=kernel_size)
+        return CNN1DDecoder(**common, window_size=window_size, kernel_size=kernel_size, activation=activation)
     elif name == 'cnn2d':
         if height is None or width is None:
             # Caller doesn't know the true (height, width) split -- fall back
             # to a square spatial layout inferred from window_size (= H*W).
             side = max(1, int(round(math.sqrt(window_size))))
             height, width = height or side, width or side
-        return CNN2DDecoder(**common, height=height, width=width, kernel_size=kernel_size)
+        return CNN2DDecoder(**common, height=height, width=width, kernel_size=kernel_size, activation=activation)
     elif name == 'gru':
         return GRUDecoder(**common, window_size=window_size)
     elif name == 'lstm':
@@ -564,9 +578,10 @@ def build_decoder(
     elif name == 'lru':
         return LRUDecoder(**common, window_size=window_size, dropout=dropout)
     elif name == 'tcn':
-        return TCNDecoder(**common, window_size=window_size, kernel_size=kernel_size)
+        return TCNDecoder(**common, window_size=window_size, kernel_size=kernel_size, activation=activation)
     elif name == 'transformer':
-        return TransformerDecoder(**common, window_size=window_size, nhead=nhead, dropout=dropout)
+        return TransformerDecoder(**common, window_size=window_size, nhead=nhead, dropout=dropout,
+                                  activation=activation)
     else:
         # Custom or unknown encoder (e.g. 'pretrained_backbone') has no
         # dedicated decoder -- fall back to MLP and make that visible, so a
@@ -576,4 +591,4 @@ def build_decoder(
             f"No dedicated decoder exists for embedding_model='{embedding_model}'. "
             f"MLPDecoder is used for the reconstruction loss."
         )
-        return MLPDecoder(**common, window_size=window_size)
+        return MLPDecoder(**common, window_size=window_size, activation=activation)

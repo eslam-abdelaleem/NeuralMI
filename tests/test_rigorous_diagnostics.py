@@ -238,7 +238,7 @@ class TestDecoderModels:
         """The settings build_decoder requires, at their schema defaults unless given."""
         from neural_mi.defaults import default_of
         return {'n_layers': default_of('n_layers'), 'kernel_size': default_of('kernel_size'),
-                'nhead': default_of('nhead'), 'dropout': default_of('dropout'),
+                'nhead': default_of('nhead'), 'dropout': default_of('dropout'), 'activation': default_of('activation'),
                 'output_activation': default_of('decoder_output_activation_x'), **given}
 
     @pytest.mark.parametrize("model_name,kwargs", [

@@ -513,7 +513,7 @@ def mi_report_units(base_params: Optional[Dict[str, Any]] = None,
 # The Model settings an encoder or a head can read beyond its sizes. Each
 # built-in encoder declares the ones it reads (BaseEmbedding.settings).
 MODEL_SETTINGS = ('use_spectral_norm', 'dropout', 'norm_layer', 'bias', 'kernel_size', 'cnn_pooling',
-                  'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained', 'linear_path')
+                  'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained', 'linear_path', 'activation')
 
 
 # Every setting build_critic reads, and so the list a saved network carries for

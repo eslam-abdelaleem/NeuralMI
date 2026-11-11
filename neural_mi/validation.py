@@ -13,6 +13,7 @@ from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import DataShapeError
 from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
+from neural_mi.models.embeddings import ACTIVATIONS
 
 def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
     """Raise TypeError unless `value` matches `expected_type`.
@@ -50,6 +51,7 @@ ALLOWED_VALUES = {
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
     'norm_layer': [None, 'auto', 'none', 'batch', 'layer'],
     'input_scaling': [None, 'auto', 'none'],
+    'activation': [None, *ACTIVATIONS],
 }
 
 class DataValidator:

@@ -55,6 +55,10 @@ BASE_PARAMS_SCHEMA = {
     # An MLP encoder adds a linear map from its input to its embedding, which
     # starts closed (embeddings.MLP).
     'linear_path': {'type': bool, 'default': True},
+    # The nonlinearity of every rectified hidden layer the library builds
+    # (embeddings.ACTIVATIONS): in the MLP, CNN, CNN2D, TCN, transformer and
+    # DeepSets encoders, the MLP heads and the decoders that mirror them.
+    'activation': {'type': str, 'default': 'leaky_relu'},
     # A first embedding layer with more parameters than this is noted at the info
     # level: it may overfit a small dataset.
     'large_first_layer': {'type': int, 'min': 0, 'default': 500_000},

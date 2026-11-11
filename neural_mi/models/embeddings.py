@@ -10,11 +10,10 @@ from torch.nn.utils import spectral_norm as _spectral_norm
 from neural_mi.defaults import default_of
 from neural_mi.logger import logger, user_stacklevel
 
-# Shared activation set for every embedding model below (MLP, CNN1D, CNN2D).
-# One consistent set for every model here, so an unknown name raises a clean
-# error naming the valid options instead of silently falling back to ReLU on
-# one model and raising a bare KeyError on another.
-_ACTIVATIONS = {
+# The nonlinearities a network's hidden layers can use, by name
+# (Model(activation=...)). One set for every network the library builds, so an
+# unknown name raises a clean error naming the valid options.
+ACTIVATIONS = {
     'relu': nn.ReLU,
     'gelu': nn.GELU,
     'tanh': nn.Tanh,
@@ -50,10 +49,10 @@ def _resolve_activation(name: str) -> type:
     Raises a clean ``ValueError`` naming the supported options on a
     genuinely unknown name.
     """
-    act_cls = _ACTIVATIONS.get(name)
+    act_cls = ACTIVATIONS.get(name)
     if act_cls is None:
         raise ValueError(
-            f"Unknown activation '{name}'. Supported: {sorted(_ACTIVATIONS)}."
+            f"Unknown activation '{name}'. Supported: {sorted(ACTIVATIONS)}."
         )
     return act_cls
 
@@ -153,13 +152,13 @@ class MLP(_BaseMLP):
         The final linear layer that maps to the embedding dimension.
     """
     settings = {'use_spectral_norm': 'use_spectral_norm', 'dropout': 'dropout', 'norm_layer': 'norm_layer',
-                'bias': 'bias', 'linear_path': 'linear_path'}
+                'bias': 'bias', 'activation': 'activation', 'linear_path': 'linear_path'}
     # A head (the hybrid critic's, the concat critic's network, a branched encoder's) scores or joins
     # embeddings rather than encoding an input, so it reads every setting but the linear path.
     head_settings = {key: value for key, value in settings.items() if key != 'linear_path'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int,
-                 n_layers: int, activation: str = 'relu',
+                 n_layers: int, activation: str = default_of('activation'),
                  use_spectral_norm: bool = default_of('use_spectral_norm'),
                  dropout: float = default_of('dropout'),
                  norm_layer: Optional[str] = None, bias: bool = default_of('bias'),
@@ -185,8 +184,8 @@ class MLP(_BaseMLP):
             encoder, the input mapped straight to the embedding.  Ignored when
             ``hidden_dim`` is a list.
         activation : str, optional
-            The activation function to use. One of 'relu', 'gelu', 'tanh',
-            'elu', 'leaky_relu', 'sigmoid', 'silu'. Defaults to 'relu'.
+            The nonlinearity of each hidden layer, a name in ``ACTIVATIONS``.
+            Defaults to 'leaky_relu'.
         use_spectral_norm : bool, optional
             If True, applies spectral normalisation to the hidden ``nn.Linear``
             layers.  The output layer is left unnormalised to preserve the full
@@ -271,11 +270,12 @@ class CNN1D(BaseEmbedding):
         The number of feature channels after the CNN layers.
     """
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'cnn_pooling': 'cnn_pooling', 'bias': 'bias'}
+    settings = {'kernel_size': 'kernel_size', 'cnn_pooling': 'cnn_pooling', 'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = default_of('kernel_size'), bias: bool = default_of('bias'),
-                 window_size: Optional[int] = None, cnn_pooling: str = default_of('cnn_pooling')):
+                 activation: str = default_of('activation'), kernel_size: int = default_of('kernel_size'),
+                 bias: bool = default_of('bias'), window_size: Optional[int] = None,
+                 cnn_pooling: str = default_of('cnn_pooling')):
         """
         Parameters
         ----------
@@ -291,9 +291,8 @@ class CNN1D(BaseEmbedding):
             The number of convolutional layers.  Ignored when ``hidden_dim`` is
             a list.
         activation : str, optional
-            The activation function to use after convolutional layers. One of
-            'relu', 'gelu', 'tanh', 'elu', 'leaky_relu', 'sigmoid', 'silu'.
-            Defaults to 'relu'.
+            The nonlinearity after each convolutional layer and in the final
+            layers, a name in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
         kernel_size : int, optional
             The size of the convolutional kernel. Must be an odd number.
         window_size : int, optional
@@ -336,7 +335,7 @@ class CNN1D(BaseEmbedding):
         self.final_layers = nn.Sequential(
             *reduce,
             nn.Linear(ch[-1] * (window_size if cnn_pooling == 'flatten' else 1), ch[-1], bias=bias),
-            nn.ReLU(),
+            activation_fn(),
             nn.Linear(ch[-1], embedding_dim, bias=bias)
         )
         self.embedding_dim = embedding_dim
@@ -583,7 +582,7 @@ class LRUEmbedding(BaseEmbedding):
 class TCN(BaseEmbedding):
     """A Temporal Convolutional Network (TCN) for sequential data."""
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'kernel_size': 'kernel_size', 'dropout': 'dropout', 'bias': 'bias', 'activation': 'activation'}
 
     # Inner class for a Chomp layer to remove padding
     class Chomp1d(nn.Module):
@@ -596,30 +595,32 @@ class TCN(BaseEmbedding):
 
     # Inner class for a TCN block
     class TemporalBlock(nn.Module):
-        def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout, bias=default_of('bias')):
+        def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout, activation_fn,
+                     bias=default_of('bias')):
             super().__init__()
             self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp1 = TCN.Chomp1d(padding)
-            self.relu1 = nn.ReLU()
+            self.act1 = activation_fn()
             self.dropout1 = nn.Dropout(dropout)
 
             self.conv2 = nn.Conv1d(n_outputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp2 = TCN.Chomp1d(padding)
-            self.relu2 = nn.ReLU()
+            self.act2 = activation_fn()
             self.dropout2 = nn.Dropout(dropout)
 
-            self.net = nn.Sequential(self.conv1, self.chomp1, self.relu1, self.dropout1,
-                                     self.conv2, self.chomp2, self.relu2, self.dropout2)
+            self.net = nn.Sequential(self.conv1, self.chomp1, self.act1, self.dropout1,
+                                     self.conv2, self.chomp2, self.act2, self.dropout2)
             self.downsample = nn.Conv1d(n_inputs, n_outputs, 1, bias=bias) if n_inputs != n_outputs else None
-            self.relu = nn.ReLU()
+            self.act = activation_fn()
 
         def forward(self, x):
             out = self.net(x)
             res = x if self.downsample is None else self.downsample(x)
-            return self.relu(out + res)
+            return self.act(out + res)
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 kernel_size: int = default_of('kernel_size'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 kernel_size: int = default_of('kernel_size'), dropout: float = default_of('dropout'),
+                 bias: bool = default_of('bias'), activation: str = default_of('activation'), **kwargs):
         """
         Parameters
         ----------
@@ -638,6 +639,9 @@ class TCN(BaseEmbedding):
             The size of the convolutional kernel. Defaults to 3.
         dropout : float, optional
             Dropout after each convolution of every temporal block.
+        activation : str, optional
+            The nonlinearity after each convolution and each residual sum, a
+            name in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
         """
         super().__init__()
         layers = []
@@ -647,7 +651,8 @@ class TCN(BaseEmbedding):
             in_channels = input_dim if i == 0 else num_channels[i-1]
             out_channels = num_channels[i]
             layers.append(TCN.TemporalBlock(in_channels, out_channels, kernel_size, stride=1, dilation=dilation_size,
-                                            padding=(kernel_size-1) * dilation_size, dropout=dropout, bias=bias))
+                                            padding=(kernel_size-1) * dilation_size, dropout=dropout,
+                                            activation_fn=_resolve_activation(activation), bias=bias))
         self.network = nn.Sequential(*layers)
         self.output_layer = nn.Linear(num_channels[-1], embedding_dim, bias=bias)
 
@@ -661,7 +666,7 @@ class Transformer(BaseEmbedding):
     """A Transformer Encoder model for sequential data."""
     zero_preserving = False   # the positional encoding is an additive, input-independent term
     input_style = 'channels'
-    settings = {'nhead': 'nhead', 'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'nhead': 'nhead', 'dropout': 'dropout', 'bias': 'bias', 'activation': 'activation'}
 
     class PositionalEncoding(nn.Module):
         def __init__(self, d_model, max_len=5000):
@@ -683,7 +688,8 @@ class Transformer(BaseEmbedding):
             return x + self.pe[:seq_len]
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 nhead: int = default_of('nhead'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 nhead: int = default_of('nhead'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
+                 activation: str = default_of('activation'), **kwargs):
         """
         Parameters
         ----------
@@ -699,6 +705,9 @@ class Transformer(BaseEmbedding):
             The number of multi-head attention heads. Defaults to 4.
         dropout : float, optional
             Dropout inside each encoder layer, as ``nn.TransformerEncoderLayer`` applies it.
+        activation : str, optional
+            The nonlinearity of each encoder layer's feed-forward block, a name
+            in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
         """
         super().__init__()
         if hidden_dim % nhead != 0:
@@ -708,11 +717,13 @@ class Transformer(BaseEmbedding):
         self.pos_encoder = Transformer.PositionalEncoding(hidden_dim)
         self.input_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
         encoder_layers = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, dropout=dropout,
+                                                    activation=_resolve_activation(activation)(),
                                                     batch_first=True, bias=bias)
-        # nested-tensor fast path requires biased attention; without it torch
-        # warns on every construction, so it is disabled explicitly.
+        # The nested-tensor fast path needs biased attention and a ReLU or GELU
+        # feed-forward block. Without them torch warns on every construction, so
+        # the path is enabled only with both.
         self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layers, num_layers=n_layers, enable_nested_tensor=bias)
+            encoder_layers, num_layers=n_layers, enable_nested_tensor=bias and activation in ('relu', 'gelu'))
         self.output_layer = nn.Linear(hidden_dim, embedding_dim, bias=bias)
         self._initialize_weights()
 
@@ -774,25 +785,29 @@ class DeepSets(BaseEmbedding):
         without a bias it is positively homogeneous in that time and cannot
         localise a value; this encoder depends on the bias more than the
         flattened ones do.
+    activation : str, optional
+        The nonlinearity of each hidden layer of ``phi`` and ``rho``, a name in
+        ``ACTIVATIONS``. Defaults to 'leaky_relu'.
     no_spike_value : float, optional
         The padding sentinel to mask out, matching the value the spike
         processor used. Defaults to 0.0.
     """
     input_style = 'channels'
-    settings = {'bias': 'bias'}
+    settings = {'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int,
                  n_layers: int = default_of('n_layers'), bias: bool = default_of('bias'),
-                 no_spike_value: float = 0.0, **kwargs):
+                 no_spike_value: float = 0.0, activation: str = default_of('activation'), **kwargs):
         super().__init__()
         self.no_spike_value = float(no_spike_value)
         width = hidden_dim if isinstance(hidden_dim, int) else hidden_dim[0]
-        phi = [nn.Linear(1, width, bias=bias), nn.ReLU()]
+        act = _resolve_activation(activation)
+        phi = [nn.Linear(1, width, bias=bias), act()]
         for _ in range(max(0, n_layers - 1)):
-            phi += [nn.Linear(width, width, bias=bias), nn.ReLU()]
+            phi += [nn.Linear(width, width, bias=bias), act()]
         self.phi = nn.Sequential(*phi)
         self.rho = nn.Sequential(
-            nn.Linear(width * input_dim, width, bias=bias), nn.ReLU(),
+            nn.Linear(width * input_dim, width, bias=bias), act(),
             nn.Linear(width, embedding_dim, bias=bias))
 
     @property
@@ -827,10 +842,11 @@ class CNN2D(BaseEmbedding):
     hidden_dim : int
     """
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'bias': 'bias'}
+    settings = {'kernel_size': 'kernel_size', 'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = default_of('kernel_size'), bias: bool = default_of('bias'), **kwargs):
+                 activation: str = default_of('activation'), kernel_size: int = default_of('kernel_size'),
+                 bias: bool = default_of('bias'), **kwargs):
         """
         Parameters
         ----------
@@ -845,8 +861,8 @@ class CNN2D(BaseEmbedding):
         n_layers : int
             Number of Conv2d layers.  Ignored when ``hidden_dim`` is a list.
         activation : str, optional
-            Activation function: one of 'relu' (default), 'gelu', 'tanh',
-            'elu', 'leaky_relu', 'sigmoid', 'silu'.
+            The nonlinearity after each Conv2d layer and in the final layers, a
+            name in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
         kernel_size : int, optional
             Convolutional kernel size; must be odd for symmetric same-padding.
             Defaults to 3.
@@ -874,7 +890,7 @@ class CNN2D(BaseEmbedding):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(ch[-1], ch[-1], bias=bias),
-            nn.ReLU(),
+            activation_fn(),
             nn.Linear(ch[-1], embedding_dim, bias=bias),
         )
         self.embedding_dim = embedding_dim
@@ -960,12 +976,13 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
     input_style = 'channels'
     settings = {'pytorch_predefined': 'pytorch_predefined', 'pretrained': 'pretrained',
                 'use_spectral_norm': 'use_spectral_norm', 'dropout': 'dropout', 'norm_layer': 'norm_layer',
-                'bias': 'bias'}
+                'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
                  pytorch_predefined: Optional[str] = None,
                  pretrained: bool = default_of('pretrained'), use_spectral_norm: bool = default_of('use_spectral_norm'), dropout: float = default_of('dropout'),
-                 norm_layer: Optional[str] = None, bias: bool = default_of('bias'), **kwargs):
+                 norm_layer: Optional[str] = None, bias: bool = default_of('bias'),
+                 activation: str = default_of('activation'), **kwargs):
         super().__init__()
         try:
             import torchvision.models as _tv_models
@@ -1049,7 +1066,8 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
 
         # --- Trainable MLP head, built with the call's MLP settings ---
         self.head = MLP(backbone_out_dim, hidden_dim, embedding_dim, n_layers, linear_path=False,
-                        use_spectral_norm=use_spectral_norm, dropout=dropout, norm_layer=norm_layer, bias=bias)
+                        use_spectral_norm=use_spectral_norm, dropout=dropout, norm_layer=norm_layer, bias=bias,
+                        activation=activation)
 
     @property
     def readout(self) -> Optional[nn.Module]:

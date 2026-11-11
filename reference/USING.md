@@ -1311,6 +1311,17 @@ positional encoding and a pretrained backbone's frozen biases add terms that do
 not depend on the input, these two encoders warn that the setting cannot fully
 apply.
 
+`Model(activation=...)` sets the nonlinearity of every rectified hidden layer
+that the library builds. These are the hidden layers of the MLP, CNN, CNN2D, TCN
+and DeepSets encoders, the feed-forward blocks of the transformer, the MLPs
+around the encoders and the decoders. The default is a leaky ReLU. A ReLU gives
+zero output and zero gradient for a negative input, so a unit whose input is
+negative on every row stops learning. A leaky ReLU keeps a small slope for a
+negative input, so such a unit can still learn. The other options are `'relu'`,
+`'gelu'`, `'elu'`, `'silu'`, `'tanh'` and `'sigmoid'`. The GRU and LSTM cells and
+the LRU block keep their own nonlinearities. A call whose networks have none of
+these layers is told that the setting has no effect.
+
 An MLP encoder also has a linear path from its input to its embedding
 (`Model(linear_path=True)`). The path is a linear map with spectral
 normalisation, multiplied by one trainable number that starts at zero, so it

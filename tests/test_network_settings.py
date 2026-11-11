@@ -82,6 +82,50 @@ class TestTheEncodersReadTheirSettings:
         assert seen == {'norm_layer': 'batch', 'kernel_size': 5}
 
 
+class TestTheActivationReachesEveryRectifiedLayer:
+    """Model(activation=...) sets every rectified hidden layer: in the encoders that have one, the MLP heads
+    and the decoders that mirror the encoders. The GRU and LSTM cells and the LRU block keep their own."""
+
+    ARMS = (('leaky_relu', nn.LeakyReLU), ('relu', nn.ReLU))
+
+    @staticmethod
+    def _rectifiers(net):
+        return {type(m) for m in net.modules() if isinstance(m, (nn.ReLU, nn.LeakyReLU))}
+
+    def test_the_default_is_leaky_relu(self):
+        assert BASE_PARAMS_SCHEMA['activation']['default'] == 'leaky_relu'
+
+    @pytest.mark.parametrize('model', ['mlp', 'cnn', 'tcn', 'transformer', 'deepsets'])
+    def test_every_encoder_with_rectified_layers(self, model):
+        for name, kind in self.ARMS:
+            critic = build_critic('separable', _params(embedding_model=model, activation=name))
+            assert self._rectifiers(critic) == {kind}, (model, name)
+
+    def test_the_cnn2d_encoder(self):
+        from neural_mi.models.embeddings import CNN2D
+        for name, kind in self.ARMS:
+            assert self._rectifiers(CNN2D(1, 8, 4, 2, activation=name)) == {kind}
+
+    @pytest.mark.parametrize('critic', ['hybrid', 'concat'])
+    def test_the_mlp_heads(self, critic):
+        for name, kind in self.ARMS:
+            built = build_critic(critic, _params(embedding_model='gru', activation=name))
+            assert self._rectifiers(built.decision_head if critic == 'hybrid' else built.embedding_net) == {kind}
+
+    def test_the_branched_head(self):
+        for name, kind in self.ARMS:
+            params = _params(embedding_model='gru', _difference_term=True, activation=name)
+            assert self._rectifiers(build_critic('separable', params).embedding_net_x.head) == {kind}
+
+    @pytest.mark.parametrize('model', ['mlp', 'cnn', 'cnn2d', 'tcn', 'transformer'])
+    def test_the_decoders(self, model):
+        from neural_mi.models.decoders import build_decoder
+        for name, kind in self.ARMS:
+            decoder = build_decoder(model, 4, 8, 2, 16, n_layers=2, output_activation='linear', kernel_size=3,
+                                    nhead=4, dropout=0.0, activation=name, height=4, width=4)
+            assert self._rectifiers(decoder) == {kind}, (model, name)
+
+
 class TestASettingNoNetworkReadsWarns:
 
     @staticmethod
@@ -106,6 +150,10 @@ class TestASettingNoNetworkReadsWarns:
         messages = self._messages(embedding_model='gru', dropout=0.2, n_layers=1)
         assert messages and 'n_layers=1' in messages[0]
         assert self._messages(embedding_model='gru', dropout=0.2, n_layers=2) == []
+
+    def test_the_activation_on_a_recurrent_encoder(self):
+        messages = self._messages(embedding_model='lstm', activation='relu')
+        assert messages and 'activation (applies to' in messages[0]
 
     def test_the_concat_critic_builds_no_encoder(self):
         messages = self._messages(critic_type='concat', embedding_model='cnn', kernel_size=5)

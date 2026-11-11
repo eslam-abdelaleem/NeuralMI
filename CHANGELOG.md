@@ -111,6 +111,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   weak directions and the rows are few. An MLP without hidden layers and the
   MLP heads of the hybrid and concat critics have none, and a call that turns it
   off for an encoder without one is told that the setting has no effect.
+- `Model(activation='leaky_relu')`, the default, sets the nonlinearity of every
+  rectified hidden layer that the library builds: in the MLP, CNN, CNN2D, TCN
+  and DeepSets encoders, the feed-forward blocks of the transformer, the MLPs
+  around the encoders and the decoders. These layers were ReLUs. Only the MLP,
+  CNN and CNN2D classes took an activation before, but no call could set it. A
+  leaky ReLU keeps a small slope for a negative input, so a unit whose input is
+  negative on every row can still learn. `'relu'` and the other activations
+  remain options. The GRU and LSTM cells and the LRU block keep their own
+  nonlinearities.
 
 ### Changed
 

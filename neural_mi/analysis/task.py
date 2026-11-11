@@ -344,6 +344,7 @@ def run_training_task(args: tuple) -> Dict[str, Any]:
                 height=height,
                 width=width,
                 dropout=setting(params, 'dropout'),
+                activation=setting(params, 'activation'),
             )
 
         # A pair X (the joint term of a difference) is reconstructed part by
