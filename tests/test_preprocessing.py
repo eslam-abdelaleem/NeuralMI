@@ -107,7 +107,7 @@ class TestApplying:
         out, messages = _caught(apply_preprocessing, {'x': spikes}, {'x': 'spike'},
                                 nmi.Preprocessing(channel='zscore'), quantity='q', rate=False)
         assert out['x'] is spikes
-        assert any("a spike stream, as it is" in m and "input_scaling='standard'" in m for m in messages)
+        assert any("a spike stream, as it is" in m and "input_scaling='auto'), the default" in m for m in messages)
 
     def test_a_time_transform_warns_outside_the_rate_quantities(self):
         x = _ar2()
@@ -214,13 +214,15 @@ class TestTheCheck:
 class TestTheRowsPartOfTheCheck:
 
     @staticmethod
-    def _spike_call(params):
+    def _spike_call(params, input_scaling='none'):
+        """The scale warnings of a run on spike rows, which the encoders leave as they are under
+        input_scaling='none' and divide by one number under the default."""
         rng = np.random.default_rng(17)
         spikes = [np.sort(rng.uniform(0, 20, 400)) for _ in range(3)]
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             nmi.run(spikes, spikes, processing=nmi.Processing(x='spike', x_params=params),
-                    model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                    model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1, input_scaling=input_scaling),
                     training=nmi.Training(n_epochs=1, shift_windows=False), show_progress=False, seed=0)
         return [str(w.message) for w in caught if 'typical scale' in str(w.message)]
 
@@ -237,6 +239,8 @@ class TestTheRowsPartOfTheCheck:
     def test_spike_times_far_from_unit_scale_warn(self):
         messages = self._spike_call({'window_size': 0.01})
         assert messages and 'spike times within each window' in messages[0]
+        assert "Model(input_scaling='auto'), the default, divides them by one number" in messages[0]
+        assert not self._spike_call({'window_size': 0.01}, input_scaling='auto')
 
     def test_rates_from_fine_bins_warn_and_name_the_counts(self):
         messages = self._spike_call({'window_size': 0.1, 'bin_size': 0.001, 'normalize_bins': True})
@@ -250,7 +254,7 @@ class TestTheRowsPartOfTheCheck:
         with warnings.catch_warnings(record=True) as caught, caplog.at_level(logging.INFO, logger='neural_mi'):
             warnings.simplefilter('always')
             nmi.run(spikes, spikes, processing=nmi.Processing(x='spike', x_params={'window_size': 0.01}),
-                    model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                    model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1, input_scaling='none'),
                     training=nmi.Training(n_epochs=1), show_progress=False, seed=0)
         assert any('spike times within each window' in str(w.message) for w in caught)
         assert 'their scale is x ' in caplog.text
@@ -296,8 +300,9 @@ class TestTheCheckSettings:
         from neural_mi.run import _report_rows
         # The first ten rows are a thousand times smaller than the rest.
         rows = {'x': torch.cat([torch.rand(10, 3, 5) * 1e-3, torch.rand(990, 3, 5)])}
-        _, every = _caught(_report_rows, 1000, 'windows', 100, {}, rows, {'x': 'spike'})
-        _, first = _caught(_report_rows, 1000, 'windows', 100, {'sample_rows': 10}, rows, {'x': 'spike'})
+        unscaled = {'input_scaling': 'none'}
+        _, every = _caught(_report_rows, 1000, 'windows', 100, unscaled, rows, {'x': 'spike'})
+        _, first = _caught(_report_rows, 1000, 'windows', 100, {'sample_rows': 10, **unscaled}, rows, {'x': 'spike'})
         assert not any('typical scale' in m for m in every)
         assert any('typical scale' in m and 'Preprocessing(scale_band=10)' in m for m in first)
 
@@ -323,7 +328,7 @@ class TestTheCheckSettings:
 class TestTheChecksOfInputScaling:
     """The data check says which streams the encoders scale, warns about the data that channel-by-channel
     scaling serves badly, and warns about scales far from unit scale in a stream that the encoders leave as it
-    is, as they do by default. Each warning names its setting of Preprocessing(...)."""
+    is, as they do under input_scaling='none'. Each warning names its setting of Preprocessing(...)."""
 
     @staticmethod
     def _messages(x, scaled=True, **settings):
@@ -343,7 +348,8 @@ class TestTheChecksOfInputScaling:
         x = np.random.default_rng(31).standard_normal((300, 2))
         assert not any('typical scale' in m for m in self._messages(x * 1e3))
         messages = self._messages(x * 1e3, scaled=False)
-        assert any('typical scale of' in m and "Model(input_scaling='auto') centres and scales" in m for m in messages)
+        assert any('typical scale of' in m and "Model(input_scaling='auto'), the default, centres and scales" in m
+                   for m in messages)
         messages = self._messages(x + 300, scaled=False)
         assert any('typical mean of' in m and 'Preprocessing(scale_band=10)' in m for m in messages)
 
@@ -351,9 +357,9 @@ class TestTheChecksOfInputScaling:
         x = np.random.default_rng(32).standard_normal((300, 3)) * [1.0, 1.0, 30.0]
         scaled = [m for m in self._messages(x) if 'span a factor of' in m]
         assert scaled and 'Preprocessing(spread_band=10)' in scaled[0] and 'same weight' in scaled[0]
-        assert "Model(input_scaling='none'), the default, keeps" in scaled[0]
+        assert "Model(input_scaling='none') keeps the channels' relative scales" in scaled[0]
         kept = [m for m in self._messages(x, scaled=False) if 'span a factor of' in m]
-        assert kept and 'loudest' in kept[0] and "Model(input_scaling='auto') scales each channel" in kept[0]
+        assert kept and 'loudest' in kept[0] and "Model(input_scaling='auto'), the default, scales each" in kept[0]
         assert 'quiet because it carries little' in kept[0]
         assert not any('span a factor of' in m for m in self._messages(x, spread_band=100.0))
 
@@ -401,8 +407,8 @@ class TestEncodersThatScaleTheirInputs:
     def test_the_rows_check_leaves_the_scale_to_them(self):
         from neural_mi.run import _report_rows
         rows = {'x': torch.rand(100, 3, 5) * 1e-3}
-        _, plain = _caught(_report_rows, 100, 'windows', 10, {}, rows, {'x': 'spike'})
-        _, scaled = _caught(_report_rows, 100, 'windows', 10, {'input_scaling': 'standard'}, rows, {'x': 'spike'})
+        _, plain = _caught(_report_rows, 100, 'windows', 10, {'input_scaling': 'none'}, rows, {'x': 'spike'})
+        _, scaled = _caught(_report_rows, 100, 'windows', 10, {}, rows, {'x': 'spike'})
         assert any('typical scale' in m for m in plain) and not any('typical scale' in m for m in scaled)
 
     def test_a_named_quantity_passes_it_to_its_check(self):

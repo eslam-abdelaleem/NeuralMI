@@ -883,9 +883,10 @@ term is several nats and the rate a small residual of it, which the networks
 read poorly. On a shared oscillation under larger private ones, `mi_rate` came
 close to the exact rate after whitening, and read 0 or failed before. Every other quantity changes under it, and warns.
 
-Spike-time and categorical streams take neither transform: their processors set
-their rows, and `Model(input_scaling='standard')` scales what an encoder
-receives. Arrays passed in as rows take the channel transform only. A transform
+Spike-time and categorical streams take neither transform, because their
+processors set their rows. The encoders then scale what they receive
+([The scale of the rows](#the-scale-of-the-rows)). Arrays passed in as rows take
+the channel transform only. A transform
 of your own subclasses `nmi.preprocessing.Transform`: it declares its `domain`
 (`'channel'` or `'time'`), learns from a stream in `fit` and applies in
 `transform`, both on `(n, n_channels)` arrays. The library warns that it cannot
@@ -1428,34 +1429,33 @@ result = nmi.run(x, y, model=Model(custom_critic=MyCritic, embedding_dim=16))
 
 ### The scale of the rows
 
-The networks start from weights sized for inputs near zero and unit scale, so
-an estimate on rows far from that scale depends on their units. The data check
-warns about a stream whose channels sit far from unit scale or far from zero
-(`Preprocessing(scale_band=...)`). For such data, `Model(input_scaling='auto')`
-has each encoder centre and scale the input that it receives from a continuous
-stream, or from a stream with no processor, channel by channel by the mean and
-standard deviation of the training rows. The estimate then no longer depends on
-the units of those streams. X, Y and W each have statistics of their own, and so
-does each side of a shared encoder. The statistics are part of the network,
-saved with it and applied by `extract_embeddings`. A network saved before
-`'auto'` existed records no scaling and loads as it was trained.
+The networks start from weights sized for inputs near zero and unit scale. By
+default (`Model(input_scaling='auto')`), each encoder therefore removes the units
+and the offset of its input before its first layer. It uses statistics of the
+training rows, so that an estimate does not depend on the units of the data.
+How it does so depends on the kind of stream behind the input:
 
-By default (`input_scaling='none'`) the encoders leave every input as it is,
-because scaling does not suit all data. The channels of
-`generate_nonlinear_from_latent` sit near unit scale, yet on its
-high-dimensional data the scaled networks fit their training rows sooner and
-read lower held-out values than the unscaled ones. A smaller learning rate does
-not bring those values back.
+- A continuous stream, or an array passed in as rows, can hold a different
+  quantity in each channel. Each channel is centred and divided by its own
+  standard deviation.
+- Every neuron of a spike stream shares one unit, so the stream takes one scale
+  and a quiet neuron stays quiet. Spike counts are centred neuron by neuron and
+  divided by the spread of the whole stream. Spike times are divided by their
+  root mean square over the whole stream and are not centred, so the padding of
+  empty slots stays where it is.
+- A categorical stream is one-hot or probabilities, with no unit to remove, and
+  is left as it is.
 
-Under `'auto'` the rows that a spike-time or categorical processor builds are
-left as they are, because their scale follows their processor's settings, and
-so is the input of a DeepSets encoder, since DeepSets tells a spike from
-padding by the padding value. `input_scaling='standard'` scales every input,
-those rows included, and refuses DeepSets. Binned spikes enter as counts unless
-`normalize_bins=True` turns them into rates. In 1 ms bins one spike then reads
-1,000.
+An encoder built without biases (`Model(bias=False)`) cannot add an offset
+back, so its input is scaled without centring. DeepSets tells a spike from
+padding by the padding value, and its scaling leaves that value in place. X, Y
+and W each have statistics of their own, and so does each side of a shared
+encoder. The statistics are part of the network, saved with it and applied by
+`extract_embeddings`. `Model(input_scaling='none')` leaves every input as it
+is. A network saved before input scaling existed records no scaling and loads
+as it was trained.
 
-Scaling gives every channel the same weight. That is right when the channels
+Scaling channel by channel gives every channel of a continuous stream the same weight. That is right when the channels
 differ only in units, but it lifts the noise of a channel that is quiet because
 it carries little. The data check says which streams the encoders scale. It
 warns when the channel scales of a stream spread widely, when a channel is

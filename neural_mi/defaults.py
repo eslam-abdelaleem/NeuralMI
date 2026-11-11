@@ -44,12 +44,11 @@ BASE_PARAMS_SCHEMA = {
     # behind both the participation ratios and the rotated embeddings.
     'whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},
-    # An encoder's input centred and scaled channel by channel by the training rows'
-    # statistics, saved with the network: 'none' scales no input, 'auto' the input that
-    # comes from a continuous stream or from a stream with no processor, and 'standard'
-    # every input (scales_stream). None, which a network saved before 'auto' records,
-    # reads as 'none'.
-    'input_scaling': {'type': (str, type(None)), 'default': 'none'},
+    # An encoder's input with its units and offset removed by the training rows'
+    # statistics, saved with the network: 'auto' scales each stream as its kind asks
+    # (stream_scaling), and 'none' leaves every input as it is. None, which a network
+    # saved before input scaling existed records, reads as 'none'.
+    'input_scaling': {'type': (str, type(None)), 'default': 'auto'},
     # A first embedding layer with more parameters than this is noted at the info
     # level: it may overfit a small dataset.
     'large_first_layer': {'type': int, 'min': 0, 'default': 500_000},
@@ -268,9 +267,16 @@ CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs',
 CHECK_SETTINGS = ('scale_band', 'predicted_share', 'check_rows', 'sample_rows', 'spread_band', 'offset_band',
                   'tail_band', 'tie_share')
 
-# The streams whose rows input_scaling='auto' leaves as they are: those a spike-time or
-# categorical processor builds.
-UNSCALED_KINDS = ('spike', 'categorical')
+# How input_scaling='auto' scales the rows of each kind of stream (stream_scaling), one scale per
+# unit. The channels of a continuous stream, or of rows passed in built already, can each be a
+# different quantity: 'channel' centres and scales each by its own mean and spread. Every channel of
+# a spike stream shares one unit, so it takes one scale for the whole stream and quiet neurons stay
+# quiet: 'counts' centres each channel of spike counts and divides by the spread of the whole
+# stream, and 'times' divides spike times by their root mean square and leaves the padding where it
+# is. A categorical stream's encoding is one-hot or probabilities, with no unit to remove, and rows
+# that mix streams of different kinds are left as they are.
+SCALING_OF_KIND = {'continuous': 'channel', 'spike_counts': 'counts', 'spike_times': 'times', 'categorical': None,
+                   'mixed': None}
 
 # The processor settings' defaults, by processor. ``None`` means unset: a
 # window_size has to be given, a step_size of None is one window, and so on.
@@ -329,38 +335,52 @@ def setting(params: Dict[str, Any], name: str) -> Any:
     return params[name] if name in params else default_of(name)
 
 
-def scales_stream(input_scaling: Optional[str], kind: Optional[str]) -> bool:
-    """Whether an encoder scales the input that a stream read by processor ``kind`` gives it: under
-    ``input_scaling='auto'`` every stream but those of :data:`UNSCALED_KINDS`, under ``'standard'`` every
-    stream, and under ``'none'``, or the ``None`` of a network saved before ``'auto'``, no stream."""
-    if input_scaling == 'standard':
-        return True
-    return input_scaling == 'auto' and kind not in UNSCALED_KINDS
+def stream_kind_of(processor: Optional[str], params: Optional[Dict[str, Any]] = None) -> str:
+    """The kind of rows a stream gives its encoder, as :data:`SCALING_OF_KIND` names them: a spike
+    processor builds counts when it bins (``bin_size``) and spike times otherwise, and a stream with no
+    processor, or a continuous one, gives continuous rows."""
+    if processor == 'spike':
+        return 'spike_counts' if (params or {}).get('bin_size') is not None else 'spike_times'
+    if processor == 'categorical':
+        return 'categorical'
+    return 'continuous'
 
 
-def scaled_streams(params: Dict[str, Any], kinds: Dict[str, Optional[str]]) -> Dict[str, bool]:
-    """Whether the encoders scale each stream of ``kinds``, a stream's name to its processor, under the
-    ``input_scaling`` of ``params`` (:func:`scales_stream`)."""
+def stream_scaling(input_scaling: Optional[str], kind: Optional[str]) -> Optional[str]:
+    """How an encoder scales the rows of a stream of ``kind`` (:func:`stream_kind_of`): under
+    ``input_scaling='auto'`` as :data:`SCALING_OF_KIND` says, and under ``'none'``, or the ``None`` of a
+    network saved before input scaling existed, not at all."""
+    if input_scaling != 'auto':
+        return None
+    return SCALING_OF_KIND[kind or 'continuous']
+
+
+def scaled_streams(params: Dict[str, Any], kinds: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+    """How the encoders scale each stream of ``kinds``, a stream's name to its kind, under the
+    ``input_scaling`` of ``params`` (:func:`stream_scaling`)."""
     mode = setting(params, 'input_scaling')
-    return {name: scales_stream(mode, kind) for name, kind in kinds.items()}
+    return {name: stream_scaling(mode, kind) for name, kind in kinds.items()}
 
 
-def side_scaling(params: Dict[str, Any], x_streams=('x',), y_stream: str = 'y') -> Tuple[Tuple[bool, ...], bool]:
-    """Whether a network scales each part of its X input, read from the streams ``x_streams``, and its Y
-    input, read from ``y_stream``: the decisions :func:`neural_mi.run.run` made for every stream
-    (``_scaled_streams``), or else those of the processors in ``params``, Y reading with X's when it has
+def side_scaling(params: Dict[str, Any], x_streams=('x',), y_stream: str = 'y'
+                 ) -> Tuple[Tuple[Optional[str], ...], Optional[str]]:
+    """How a network scales each part of its X input, read from the streams ``x_streams``, and its Y
+    input, read from ``y_stream``: as :func:`neural_mi.run.run` decided for every stream
+    (``_scaled_streams``), or else as the processors in ``params`` give, Y reading with X's when it has
     none of its own."""
     decided = params.get('_scaled_streams')
     if decided is None:
-        kind_x = params.get('processor_type_x')
-        kind_y = params.get('processor_type_y') or kind_x
+        kind_x = stream_kind_of(params.get('processor_type_x'), params.get('processor_params_x'))
+        kind_y = (stream_kind_of(params.get('processor_type_y'), params.get('processor_params_y'))
+                  if params.get('processor_type_y') else kind_x)
         decided = scaled_streams(params, {'x': kind_x, 'w': kind_x, 'y': kind_y})
 
-    def scaled(names) -> bool:
-        # A part built from several streams (a conditioning past of Y and W) is scaled when each of them is.
-        return all(bool(decided.get(name, decided.get('x'))) for name in ((names,) if isinstance(names, str)
-                                                                           else names))
-    return tuple(scaled(names) for names in x_streams), scaled(y_stream)
+    def scaling(names) -> Optional[str]:
+        # A part built from several streams (a conditioning past of Y and W) is scaled as they are when they
+        # agree, and left as it is when they do not.
+        modes = {decided.get(name, decided.get('x')) for name in ((names,) if isinstance(names, str) else names)}
+        return modes.pop() if len(modes) == 1 else None
+    return tuple(scaling(names) for names in x_streams), scaling(y_stream)
 
 
 def norm_layer_of(params: Dict[str, Any]) -> Optional[str]:

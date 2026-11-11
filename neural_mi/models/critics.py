@@ -388,8 +388,8 @@ class ConcatCritic(BaseCritic):
         self.embedding_dim = embedding_dim
         self.max_n_batches = max_n_batches
         self.use_variational = use_variational
-        # Model(input_scaling='standard'): each side's ChannelScaling, applied
-        # before the pair is formed.
+        # Model(input_scaling='auto'): each side's InputScaling, applied before
+        # the pair is formed.
         self.scaling = nn.ModuleList(scaling) if scaling is not None else None
 
     def forward(self, x, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -466,6 +466,6 @@ def fit_input_scaling(critic: nn.Module, x, y) -> None:
 
 
 def has_input_scaling(critic: nn.Module) -> bool:
-    """Whether ``critic`` scales its inputs (``Model(input_scaling='standard')``)."""
+    """Whether ``critic`` scales its inputs (``Model(input_scaling='auto')``)."""
     from neural_mi.models.embeddings import ChannelScaling
     return any(isinstance(m, ChannelScaling) for m in critic.modules())

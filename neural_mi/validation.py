@@ -49,7 +49,7 @@ ALLOWED_VALUES = {
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
     'norm_layer': [None, 'auto', 'none', 'batch', 'layer'],
-    'input_scaling': [None, 'auto', 'standard', 'none'],
+    'input_scaling': [None, 'auto', 'none'],
 }
 
 class DataValidator:

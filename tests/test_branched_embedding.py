@@ -258,7 +258,7 @@ class TestPairOfDifferentLengths:
     def test_the_concat_critic_takes_the_pair(self):
         a, c, y = self._mismatched_data(N=200)
         r = nmi.run(a, y, mode='conditional', conditional=Conditional(w_data=c),
-                    model=Model(critic_type='concat', hidden_dim=16, n_layers=1, input_scaling='standard'),
+                    model=Model(critic_type='concat', hidden_dim=16, n_layers=1, input_scaling='auto'),
                     training=Training(n_epochs=2, patience=1), show_progress=False, seed=0)
         assert np.isfinite(r.mi_estimate)
 

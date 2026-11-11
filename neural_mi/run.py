@@ -27,7 +27,7 @@ from .validation import ParameterValidator, DataValidator
 from .logger import call_verbosity, collect_repeats, logger, user_stacklevel
 from .embeddings_io import model_file, resolve_model_path, announce_saving_several
 from .defaults import (BASE_PARAMS_SCHEMA, CHECK_SETTINGS, PROCESSOR_PARAMS_SCHEMA, default_of, norm_layer_of,
-                       scaled_streams, setting, stream_processing)
+                       scaled_streams, setting, stream_kind_of, stream_processing)
 from .analysis.modes import MODES
 import inspect as _inspect
 from .config import (
@@ -846,8 +846,8 @@ def run(
     # Private: rows built at every step of their series so that they can shift,
     # of which each task keeps one in every _row_phases (data/rows.py).
     flat['_row_phases'] = _row_phases
-    # Private: the processor behind each stream of rows a named quantity built,
-    # which decides whether its encoder scales it (defaults.scales_stream).
+    # Private: the kind of each stream of rows a named quantity built, which
+    # decides how its encoder scales it (defaults.stream_scaling).
     flat['_stream_kinds'] = _stream_kinds
     analysis_kwargs['n_workers'] = n_workers
 
@@ -1255,13 +1255,15 @@ def _run_flat(
         # Y and W were resolved at the top: each reads with X's processor and
         # settings when it has none of its own.
         _effective_processor_type_y = processor_type_y
-        # Which streams the encoders scale (Model(input_scaling=...)), decided
-        # once here from the processor behind each stream, before the paths
+        # How the encoders scale each stream (Model(input_scaling=...)), decided
+        # once here from the kind of rows each stream gives, before the paths
         # below clear the processor types of rows they build themselves
-        # (defaults.scales_stream). Without y_data, Y is half of X's channels.
+        # (defaults.stream_scaling). Without y_data, Y is half of X's channels.
         _scaling_kinds = _stream_kinds or {
-            'x': processor_type_x, 'w': w_processor_type,
-            'y': _effective_processor_type_y if y_data is not None else processor_type_x}
+            'x': stream_kind_of(processor_type_x, processor_params_x),
+            'w': stream_kind_of(w_processor_type, w_processor_params),
+            'y': (stream_kind_of(_effective_processor_type_y, processor_params_y) if y_data is not None
+                  else stream_kind_of(processor_type_x, processor_params_x))}
         base_params['_scaled_streams'] = scaled_streams(base_params, _scaling_kinds)
         if _w_takes_xs_processor:
             logger.info(
@@ -1518,20 +1520,24 @@ def _held_out_count(n_rows: int, base_params: dict) -> int:
 
 
 def _encoders_scale(base_params: dict, processors: Optional[dict] = None) -> Dict[str, bool]:
-    """Whether the encoders this call builds scale the input from each stream: the decision run() made for
-    the stream, or else the one its processor in ``processors`` gives, when the setting reaches the encoders
-    (utils.encoders_scale)."""
+    """Whether the encoders this call builds scale the input from each stream: as run() decided for the
+    stream, or else as the kind of its processor in ``processors`` gives, when the setting reaches the
+    encoders (utils.encoders_scale)."""
     from .utils import encoders_scale
     reaches = encoders_scale(setting(base_params, 'input_scaling'), base_params.get('custom_critic'))
-    decided = base_params.get('_scaled_streams') or scaled_streams(base_params, processors or {})
-    return {name: reaches and bool(on) for name, on in decided.items()}
+    decided = base_params.get('_scaled_streams') or scaled_streams(
+        base_params, {name: stream_kind_of(kind, base_params.get(f'processor_params_{name}'))
+                      for name, kind in (processors or {}).items()})
+    return {name: reaches and mode is not None for name, mode in decided.items()}
 
 
 def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
                  rows: Optional[dict], processors: Optional[dict]) -> None:
     """The part of the data check that needs the rows: how many reach the estimator, how many are held out,
-    and their scale. Rows a spike-time or categorical processor built far from unit scale warn; a continuous
-    stream's scale was checked before its rows were built (neural_mi/preprocessing.py)."""
+    and their scale. Rows a spike processor built far from unit scale warn when the encoders leave them as
+    they are; a continuous stream's scale was checked before its rows were built
+    (neural_mi/preprocessing.py). A categorical processor's rows are one-hot or probabilities, with no unit
+    to remove."""
     from .estimators import NONPARAMETRIC
     from .training.trainer import too_few_held_out
     scale_band, sample_rows = setting(base_params, 'scale_band'), setting(base_params, 'sample_rows')
@@ -1551,21 +1557,19 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
         scale = float(np.std(sample.detach().cpu().numpy() if torch.is_tensor(sample) else sample))
         scales.append(f"{name} {scale:.3g}")
         kind = (processors or {}).get(name)
-        if (kind in ('spike', 'categorical') and not 1.0 / scale_band <= scale <= scale_band
+        if (kind == 'spike' and not 1.0 / scale_band <= scale <= scale_band
                 and not _encoders_scale(base_params, processors).get(name, False)):
             side = base_params.get(f'processor_params_{name}') or {}
-            if kind == 'categorical':
-                held_in = "They hold the processor's encoding of the categories."
-            elif side.get('bin_size') is not None:
+            if side.get('bin_size') is not None:
                 held_in = ("They hold spike counts per bin, divided by the bin width when normalize_bins is "
                            "set, which makes them rates. normalize_bins=False keeps the counts.")
             else:
                 held_in = "They hold spike times within each window, in the stream's time unit."
             warnings.warn(
-                f"The rows {name}'s {kind} processor builds have a typical scale of {scale:.3g}, more than "
+                f"The rows {name}'s spike processor builds have a typical scale of {scale:.3g}, more than "
                 f"a factor of Preprocessing(scale_band={scale_band:g}) from unit scale, where the networks start. "
-                f"{held_in} "
-                f"Model(input_scaling='standard') scales the rows an encoder receives.",
+                f"{held_in} Model(input_scaling='auto'), the default, divides them by one number for the whole "
+                f"stream. That removes the unit and keeps the neurons' relative scales.",
                 UserWarning, stacklevel=user_stacklevel(),
             )
     logger.info(f"Data check: {n_samples} {unit} reach the estimator, {held}"

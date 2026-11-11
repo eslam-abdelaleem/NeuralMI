@@ -105,7 +105,7 @@ class Model:
     dropout: Optional[float] = None
     norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
-    input_scaling: Optional[str] = None            # 'auto' (continuous streams) | 'standard' (every stream) | 'none'
+    input_scaling: Optional[str] = None            # 'auto' (each stream as its kind asks) | 'none'
     large_first_layer: Optional[int] = None        # a first layer with more parameters is noted
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None

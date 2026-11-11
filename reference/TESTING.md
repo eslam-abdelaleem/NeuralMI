@@ -106,7 +106,7 @@ Each file covers one functional area. Run
 | `test_shared_encoder.py` | weight identity, parameter count, the concat critic ignoring it with a warning, the dimensionality-mode default |
 | `test_pretrained_backbone.py` | the spatial-mismatch warning, and that the backbone stays frozen with BatchNorm in eval through training |
 | `test_custom_critic.py` | `Model(custom_critic=...)` as a recipe built in every task: each repeat and each term of a difference trains its own, the joint term's pair reaches it, and an object is refused |
-| `test_input_scaling.py` | `Model(input_scaling=...)`: no scaling by default, `'auto'` scaling continuous streams and streams with no processor, each stream and each side of a shared encoder with statistics of its own, spike-time rows and DeepSets left as they are, the statistics saved with the network and applied on rebuild, older networks rebuilt unscaled, and binned spikes kept as counts |
+| `test_input_scaling.py` | `Model(input_scaling=...)`: `'auto'` by default, each kind of stream scaled as its kind asks (continuous channel by channel, spike counts and spike times by one scale for the stream, categorical left as it is), encoders without biases left uncentred, DeepSets keeping its padding, each stream and each side of a shared encoder with statistics of its own, the statistics saved with the network and applied on rebuild, estimates that do not depend on the units, older networks rebuilt as they were trained, and binned spikes kept as counts |
 | `test_network_settings.py` | every `Model` setting reaching every network that has the part it names, and a warning for a setting no network of the call reads |
 
 ### Training

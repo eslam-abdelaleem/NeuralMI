@@ -1065,19 +1065,35 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
 
 
 class ChannelScaling(nn.Module):
-    """Centres and scales each channel of its input by the mean and standard deviation of the training rows.
+    """Removes the units and the offset of its input by statistics of the training rows, one scale per unit.
+
+    ``mode`` is how, as the stream behind the input asks (:data:`neural_mi.defaults.SCALING_OF_KIND`):
+
+    - ``'channel'`` centres each channel and divides it by its own standard deviation, for a stream whose
+      channels can each be a different quantity.
+    - ``'counts'`` centres each channel and divides every channel by one spread, that of the whole stream,
+      for spike counts, whose channels share a unit.
+    - ``'times'`` divides every value by one root mean square, that of the whole stream, for spike times.
+
+    ``centre=False`` turns the centring off, for an encoder without biases, which could not add an offset
+    back. ``empty`` is a value that marks an empty slot, such as the padding of spike times. It takes no part
+    in the statistics and comes out where it went in. A centred value could land on it, so an input with one
+    is never centred.
 
     The statistics are buffers, so they are saved with the network and applied
     wherever it is used again. They start as the identity and :meth:`fit` sets
     them, in double precision. A channel that does not vary keeps a scale of 1,
     judged against the channel that varies most, as the data check judges it
     (:func:`neural_mi.preprocessing.constant_channels`), so data in any unit is
-    scaled. ``Model(input_scaling=...)`` puts one in front of an encoder's input
+    scaled. ``Model(input_scaling='auto')`` puts one in front of an encoder's input
     (:class:`InputScaling`), or of each side of the concat critic.
     """
 
-    def __init__(self, n_channels: int):
+    def __init__(self, n_channels: int, mode: str = 'channel', centre: bool = True,
+                 empty: Optional[float] = None):
         super().__init__()
+        self.mode, self.empty = mode, empty
+        self.centre = centre and mode != 'times' and empty is None
         self.register_buffer('shift', torch.zeros(n_channels))
         self.register_buffer('scale', torch.ones(n_channels))
 
@@ -1087,31 +1103,44 @@ class ChannelScaling(nn.Module):
         from neural_mi.preprocessing import constant_channels
         x = x.double()
         dims = [d for d in range(x.ndim) if d != 1]
-        std = x.std(dim=dims) if x.shape[0] > 1 else torch.ones(x.shape[1], dtype=x.dtype)
-        constant = torch.as_tensor(constant_channels(std.cpu().numpy()), device=std.device)
-        self.shift.copy_(x.mean(dim=dims))
-        self.scale.copy_(torch.where(constant, torch.ones_like(std), std))
+        real = (x != self.empty) if self.empty is not None else torch.ones_like(x, dtype=torch.bool)
+        count = real.sum(dim=dims).clamp_min(1)
+        shift = ((x * real).sum(dim=dims) / count if self.centre
+                 else torch.zeros(x.shape[1], dtype=x.dtype, device=x.device))
+        view = (1, -1) + (1,) * (x.ndim - 2)
+        square = ((x - shift.view(view)) ** 2) * real
+        if self.mode == 'channel':
+            spread = (square.sum(dim=dims) / (count - 1).clamp_min(1)).sqrt()
+            constant = torch.as_tensor(constant_channels(spread.cpu().numpy()), device=spread.device)
+            scale = torch.where(constant, torch.ones_like(spread), spread)
+        else:
+            one = float((square.sum() / real.sum().clamp_min(1)).sqrt())
+            scale = torch.full((x.shape[1],), one if one > 0 else 1.0, dtype=x.dtype, device=x.device)
+        self.shift.copy_(shift)
+        self.scale.copy_(scale)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         view = (1, -1) + (1,) * (x.ndim - 2)
-        return (x - self.shift.view(view)) / self.scale.view(view)
+        out = (x - self.shift.view(view)) / self.scale.view(view)
+        return out if self.empty is None else torch.where(x == self.empty, x, out)
 
 
 class InputScaling(nn.Module):
     """An encoder whose input passes through :class:`ChannelScaling` first, one per part of a paired input.
 
-    ``scaled`` says which parts are scaled, one flag per part, every part by default. A part left as it is
-    passes through unchanged, as the input of a spike-time or categorical stream does under
-    ``Model(input_scaling='auto')``.
+    ``modes`` says how each part is scaled (:class:`ChannelScaling`), one mode per part, ``None`` for a part
+    left as it is, as a categorical stream is. ``centre=False`` is for an encoder without biases and applies
+    to every part. ``empty`` is the padding value of spike times and applies to the parts scaled as spike
+    times.
     """
 
-    def __init__(self, encoder: nn.Module, n_channels, scaled=None):
+    def __init__(self, encoder: nn.Module, n_channels, modes, centre: bool = True, empty: Optional[float] = None):
         super().__init__()
         self.encoder = encoder
         channels = n_channels if isinstance(n_channels, tuple) else (n_channels,)
-        scaled = (True,) * len(channels) if scaled is None else tuple(scaled)
-        self.scalers = nn.ModuleList(ChannelScaling(c) if on else nn.Identity()
-                                     for c, on in zip(channels, scaled))
+        self.scalers = nn.ModuleList(
+            ChannelScaling(c, mode, centre=centre, empty=empty if mode == 'times' else None) if mode
+            else nn.Identity() for c, mode in zip(channels, tuple(modes)))
 
     def fit(self, x) -> None:
         for scaler, part in zip(self.scalers, x if isinstance(x, (tuple, list)) else (x,)):

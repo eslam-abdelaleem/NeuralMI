@@ -739,7 +739,7 @@ class Trainer:
         epoch_iterator = tqdm(range(n_epochs), desc="Training", leave=False,
                               disable=not display_progress)
 
-        # Model(input_scaling='standard'): the scaling of every encoder's input
+        # Model(input_scaling='auto'): the scaling of every encoder's input
         # takes its statistics from the training rows, before the first epoch.
         if has_input_scaling(self.model):
             fit_input_scaling(self.model, _index_batch(_eval_x_source, _eval_train_eval_idx),

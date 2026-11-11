@@ -82,34 +82,36 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   confirm the estimate. It is skipped for a curve that does not rise above its
   noise and for an estimate near its training-side ceiling, because their
   messages state both values.
-- `Model(input_scaling='auto')` has each encoder centre and scale the input that
-  it receives from a continuous stream, or from a stream with no processor,
-  channel by channel by the mean and standard deviation of the training rows.
-  An estimate then no longer depends on the units of those streams. Use it for
-  data far from unit scale or far from zero, as the data check suggests. X, Y
-  and W are each scaled by statistics of their own. The rows of a spike-time or
-  categorical processor and the input of a DeepSets encoder are left as they
-  are. The default is the new `input_scaling='none'`. It scales nothing, as an
-  unset `input_scaling` did before. Each network records which inputs it
-  scales, and a network saved before this change loads unscaled, as it was
-  trained.
+- `Model(input_scaling='auto')`, the default, has each encoder remove the units
+  and the offset of its input before its first layer. The statistics come from
+  the training rows, with one scale per unit. Each channel of a continuous
+  stream, or of rows passed in built already, is centred and divided by its own
+  standard deviation. Every neuron of a spike stream shares one unit. Spike
+  counts are therefore centred neuron by neuron and divided by the spread of the
+  whole stream. Spike times are divided by their root mean square over the
+  whole stream and are not centred, so their padding stays in place and a quiet
+  neuron stays quiet. Categorical streams are left as they are. An encoder
+  without biases is not centred, and DeepSets keeps its padding value. X, Y and
+  W are each scaled by statistics of their own, so an estimate does not depend
+  on the units of the data. `input_scaling='none'` scales nothing, as an unset
+  `input_scaling` did before. Each network records how it scales each input,
+  and a network saved before this change loads as it was trained.
 
 ### Changed
 
-- Under `Model(input_scaling='standard')` each side of a shared encoder is
-  scaled by statistics of its own. The two sides used to share one set, fitted
+- Each side of a shared encoder is scaled by statistics of its own. The two sides used to share one set, fitted
   on their rows stacked together. A channel counts as constant relative to the
   largest spread in its stream, so data in very small units are scaled too, and
   the statistics are fitted in double precision.
 - The data check says which streams the encoders scale. Its warning about a
   scale far from unit scale fires only for a stream that the encoders leave as
-  it is, covers a mean far from zero as well, and suggests
-  `input_scaling='auto'`. It also
+  it is, covers a mean far from zero as well, and names `input_scaling='auto'`,
+  the default. It also
   warns when the channel scales of a stream spread widely
   (`Preprocessing(spread_band=...)`), when a channel's mean is so far from zero
   that single precision resolves its variation coarsely (`offset_band`), when a
   channel has heavy tails, for which it suggests the copula (`tail_band`), and,
-  in a stream that the encoders scale, when a channel is mostly one repeated
+  in a stream that the encoders scale channel by channel, when a channel is mostly one repeated
   value, as padded or sparse rows are (`tie_share`).
 - Helpers written twice now have one definition each: the promotion of a 2-D
   array to rows with a window axis (`utils.with_window_axis`, which replaces
@@ -328,12 +330,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   100 in 10 ms bins and 1,000 in 1 ms bins, and on the library's spike
   generator the estimate was 0 at both widths. `normalize_bins` now defaults
   to False, so rates are opt-in like every other change to the data.
-  `Model(input_scaling='standard')` centres and scales every encoder's input
-  channel by channel, with statistics the trainer fits from the training rows
-  before the first epoch. They are saved with the network and applied by
-  `extract_embeddings`. With it a pair reads the same value at unit scale,
-  ×1e3 and ×1e-3, where it read 0 at both ends. DeepSets, which
-  tells a spike from padding by the padding value, refuses it.
+  The encoders' input scaling (`Model(input_scaling='auto')`, the default)
+  removes the units of the rows they receive, with statistics the trainer fits
+  from the training rows before the first epoch. They are saved with the
+  network and applied by `extract_embeddings`. With it a pair reads the same
+  value at unit scale, ×1e3 and ×1e-3, where it read 0 at both ends.
 
 - `Model(custom_critic=obj)` trained the one object it was given in every task:
   with `n_workers=1` each repeat continued the previous one's training, the

@@ -324,22 +324,23 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     preprocessing = run_kwargs.pop('preprocessing', None)
     model = run_kwargs.get('model')
     model = model if isinstance(model, dict) else vars(model) if model is not None else {}
-    # Whether the encoders scale each stream (Model(input_scaling=...), unset meaning its default), as run()
-    # decides for streams it reads itself: the rows of a group scale unless a stream in it is read by a
-    # spike-time or categorical processor (defaults.scales_stream).
-    from neural_mi.defaults import UNSCALED_KINDS, default_of, scales_stream
+    # How the encoders scale each stream (Model(input_scaling=...), unset meaning its default), as run()
+    # decides for streams it reads itself, from the kind of rows each gives (defaults.stream_scaling).
+    from neural_mi.defaults import default_of, stream_kind_of, stream_scaling
     mode = model.get('input_scaling') or default_of('input_scaling')
-    kinds = ({name: resolved[0] for name, resolved in resolve_stream_processing(processing).items()}
+    kinds = ({name: stream_kind_of(resolved[0], resolved[1])
+              for name, resolved in resolve_stream_processing(processing).items()}
              if processing is not None else {})
     reaches = encoders_scale(mode, model.get('custom_critic'))
     series = _prepared_series(series, processing, preprocessing, quantity,
-                              encoder_scales={name: reaches and scales_stream(mode, kinds.get(name))
+                              encoder_scales={name: reaches and stream_scaling(mode, kinds.get(name)) is not None
                                               for name in series})
     first = spec_of(list(value)[0] if _is_sweep(value) else value)
 
     def group_kind(group):
-        return next((kinds[name] for name, _ in (first.get(group) or []) if kinds.get(name) in UNSCALED_KINDS),
-                    None)
+        # The rows of a group scale as its streams do when they are of one kind, and mix otherwise.
+        found = {kinds.get(name, 'continuous') for name, _ in (first.get(group) or [])}
+        return found.pop() if len(found) == 1 else ('mixed' if found else None)
     run_kwargs['_stream_kinds'] = {'x': group_kind('A'), 'y': group_kind('B'), 'w': group_kind('C')}
     if preprocessing is not None:
         construction = {**construction, 'preprocessing': describe_preprocessing(preprocessing)}

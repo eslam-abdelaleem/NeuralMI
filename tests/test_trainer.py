@@ -537,7 +537,7 @@ def test_a_reported_mi_is_never_negative_and_keeps_the_measured_value():
     import neural_mi as nmi
     rng = np.random.default_rng(0)
     partly_negative = 0
-    for seed in range(12):
+    for seed in range(20):
         x = rng.standard_normal((60, 2)).astype(np.float32)
         y = (x + rng.standard_normal((60, 2))).astype(np.float32)
         with warnings.catch_warnings(record=True) as caught:

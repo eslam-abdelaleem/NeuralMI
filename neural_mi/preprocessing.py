@@ -403,8 +403,9 @@ def apply_preprocessing(streams: Dict[str, Any], processors: Dict[str, Optional[
             settings = ("its bin_size and normalize_bins" if kind == 'spike' else "its encoding")
             warnings.warn(
                 f"Preprocessing leaves {name}, a {kind} stream, as it is: its rows come from its "
-                f"processor, whose own settings ({settings}) set their values. Model(input_scaling="
-                f"'standard') scales the rows an encoder receives.",
+                f"processor, whose own settings ({settings}) set their values."
+                + (" Model(input_scaling='auto'), the default, divides the rows of a spike stream by one "
+                   "number for the whole stream inside the network." if kind == 'spike' else ""),
                 UserWarning, stacklevel=user_stacklevel())
             continue
         array = _as_array(data)
@@ -574,9 +575,9 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
                     f"values are one repeated value, as in padded or sparse rows such as spike rows built by "
                     f"hand. The encoder scales each channel to unit scale. That moves the repeated value away from "
                     f"0 and lifts a channel that is quiet because it carries little to the level of the others. "
-                    f"Model(input_scaling='none'), the default, leaves the rows as they are. Spike times read by a "
-                    f"spike processor, such as Processing(x='spike') for X, are left as they are under "
-                    f"input_scaling='auto' as well.",
+                    f"Spike rows read through a spike processor, such as Processing(x='spike') for X, are divided "
+                    f"by one number for the whole stream instead, so the padding stays at 0 and quiet neurons stay "
+                    f"quiet. Model(input_scaling='none') leaves the rows as they are.",
                     UserWarning, stacklevel=user_stacklevel())
             heavy = live_index[(ratio > tail_band) & np.isfinite(ratio) & (tied <= tie_share)].tolist()
             if heavy:
@@ -604,9 +605,9 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
 def _warn_unit_scale(name: str, typical: float, typical_mean: float, scale_band: float) -> None:
     """The warning for a stream that its encoder leaves as it is while its channels sit far from unit scale,
     or far from zero."""
-    remedy = ("Model(input_scaling='auto') centres and scales each channel of a continuous stream inside the "
-              "network. Preprocessing(channel='zscore') does so before the rows are built. Both leave every "
-              "quantity unchanged.")
+    remedy = ("Model(input_scaling='auto'), the default, centres and scales each channel of a continuous stream "
+              "inside the network. Preprocessing(channel='zscore') does so before the rows are built. Both leave "
+              "every quantity unchanged.")
     if not 1.0 / scale_band <= typical <= scale_band:
         warnings.warn(
             f"The channels of {name} have a typical scale of {_fmt(typical)}, more than a factor of "
@@ -635,14 +636,14 @@ def _warn_spread(name: str, spread: float, spread_band: float, scaled: bool) -> 
     the encoder scales each channel or leaves them as they are."""
     if scaled:
         body = ("Its encoder scales each channel to unit scale and so gives every channel the same weight. "
-                f"{_SAME_WEIGHT} Model(input_scaling='none'), the default, keeps the channels' relative scales. "
-                "Dividing the stream by one number before the call, such as its overall standard deviation, then "
-                "brings it near unit scale.")
+                f"{_SAME_WEIGHT} Model(input_scaling='none') keeps the channels' relative scales. Dividing the "
+                "stream by one number before the call, such as its overall standard deviation, then brings it near "
+                "unit scale.")
     else:
         body = ("The encoders leave the channels as they are. The loudest channels then dominate what the "
                 "networks receive, so the estimate can miss information that the quiet ones carry. "
-                "Model(input_scaling='auto') scales each channel to unit scale inside the network and so gives "
-                f"every channel the same weight. {_SAME_WEIGHT}")
+                "Model(input_scaling='auto'), the default, scales each channel to unit scale inside the network "
+                f"and so gives every channel the same weight. {_SAME_WEIGHT}")
     warnings.warn(
         f"The standard deviations of the channels of {name} span a factor of {_fmt(spread)}, more than "
         f"Preprocessing(spread_band={spread_band:g}). {body}", UserWarning, stacklevel=user_stacklevel())
