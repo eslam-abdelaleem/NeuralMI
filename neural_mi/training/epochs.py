@@ -182,24 +182,30 @@ def warn_about_curve(diagnosis: str, epoch: int, peak: int, reach: Optional[int]
                      resolved_noise: float = default_of('resolved_noise'), clear_se: float = default_of('clear_se'),
                      rising_noise: float = default_of('rising_noise'), rising_epochs: int = default_of('rising_epochs'),
                      fall_noise: float = default_of('fall_noise'), fast_epochs: int = default_of('fast_epochs'),
-                     top_se: float = default_of('top_se'), band_share: float = default_of('band_share')) -> None:
+                     top_se: float = default_of('top_se'), band_share: float = default_of('band_share'),
+                     ran_to_limit: bool = True) -> None:
     """Warn when the diagnosis is not 'ok'. The texts differ between networks only in their numbers, so the
     library shows each kind once per call and counts the rest.
     ``held_out`` is the count of held-out rows the curve scores, given when it is smaller than one training
     batch (``trainer.too_few_held_out``), and each message then names it. ``values`` are the reported
     estimate, the measured one and the held-out value of the network read, in ``units``, which the 'not
     resolved' and 'flat top' messages state. ``band`` is the band's first and last epoch and the estimate read
-    at each, in ``units`` (:func:`top_band`). Each message names the settings that decided its diagnosis."""
+    at each, in ``units`` (:func:`top_band`). ``ran_to_limit`` is whether training ran to ``n_epochs``. More
+    epochs are suggested only then, since a run that stopped earlier had stopped improving. Each message names
+    the settings that decided its diagnosis."""
     note = (f" The curve scores only {held_out} held-out rows, fewer than one training batch, so its noise is "
             f"large and its ceiling of log({held_out}) low. More data, or a lower Split(train_fraction=...), "
             f"gives it more." if held_out else "")
     if diagnosis == 'not resolved':
+        remedy = ("More data, more epochs or another network may resolve it." if ran_to_limit else
+                  f"More data or another network may resolve it. Training stopped before n_epochs={n_epochs} "
+                  f"because the curve had stopped improving, so more epochs would not change it.")
         warnings.warn(
             f"The held-out MI curve does not rise clearly above its own noise. Its top stands less than "
             f"Training(resolved_noise={resolved_noise:g}) times its epoch-to-epoch noise above zero, or less than "
             f"Training(clear_se={clear_se:g}) standard errors of its held-out rows, so the data settle neither the "
-            f"epoch the estimate is read at nor the estimate. Check the curve with result.plot(). More data, more "
-            f"epochs or another network may resolve it.{_values_read(values, units)}{note}",
+            f"epoch the estimate is read at nor the estimate. Check the curve with result.plot(). "
+            f"{remedy}{_values_read(values, units)}{note}",
             UserWarning, stacklevel=user_stacklevel())
     elif diagnosis == 'still rising':
         warnings.warn(

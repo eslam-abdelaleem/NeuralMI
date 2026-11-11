@@ -116,7 +116,7 @@ Each file covers one functional area. Run
 | file | covers |
 |---|---|
 | `test_trainer.py` | the training loop, chunked evaluation, spectral tracking, custom smoothing, and the default stopping rule |
-| `test_epoch_rule.py` | the epoch the estimate is read at, the diagnosis of the held-out curve and the band at its top, on many noisy draws of curves of each shape, and the `Training(...)` settings that set every threshold of them |
+| `test_epoch_rule.py` | the epoch the estimate is read at, the diagnosis of the held-out curve and the band at its top, on many noisy draws of curves of each shape, more epochs suggested only when training ran to `n_epochs`, and the `Training(...)` settings that set every threshold of them |
 | `test_best_epoch.py` | that the network evaluated is the one at the reported best epoch, for each epoch rule and `peak_fraction`, and that the estimate at each end of the band is read from the network at that epoch |
 | `test_held_out.py` | the held-out rows counted once, and a held-out set smaller than one training batch named in the data check and in every warning about the curve, without a warning of its own |
 | `test_blocked_evaluation.py` | which rows the trainer evaluates, and an evaluation set larger than `max_eval_samples` scored in blocks |

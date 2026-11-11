@@ -553,8 +553,8 @@ def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
             f"clearly above zero ({_term_counts(failed_keys, labels)}). The two readings of that "
             f"network contradict each other, so its repeat has no value. Those repeats are NaN in "
             f"result.runs, where failed_term names the term, and each network's values are in "
-            f"details[config_id]['trainings']. The usual causes are too few epochs or samples, and "
-            f"data far from unit scale.",
+            f"details[config_id]['trainings']. The usual causes are too few epochs or samples. Data far "
+            f"from unit scale can also cause it when the encoders do not scale their input.",
             CombinationWarning, stacklevel=user_stacklevel(),
         )
     if warn and any(nothing_keys[i] for i in used):

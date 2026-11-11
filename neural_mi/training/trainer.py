@@ -904,8 +904,11 @@ class Trainer:
         )
         if np.isnan(_smoothed_history).all():
             raise TrainingError("Training failed to produce a valid model checkpoint.")
+        # Whether training ran to n_epochs. A run that stopped earlier had stopped improving, so the messages
+        # suggest more epochs only when it did not.
+        _ran_to_limit = len(history) == n_epochs
         best_ep, peak_ep, curve_diagnosis = choose_epoch(
-            history, _smoothed_history, epoch_rule, _reach, ran_to_limit=len(history) == n_epochs,
+            history, _smoothed_history, epoch_rule, _reach, ran_to_limit=_ran_to_limit,
             n_rows=actual_test_subset_size, level_noise=level_noise, start_noise=start_noise,
             resolved_noise=resolved_noise, fast_epochs=fast_epochs, fall_noise=fall_noise,
             clear_se=clear_se, rising_epochs=rising_epochs, rising_noise=rising_noise)
@@ -1037,10 +1040,10 @@ class Trainer:
                 f"All test MI values in the training history are non-positive "
                 f"(max test MI = {max(valid_history) * _scale:.4f} {_units} at epoch {best_ep}). "
                 f"The model learned no representation that generalises. This usually "
-                f"means too few epochs, too high a learning rate or degenerate data. "
+                f"means {'too few epochs, ' if _ran_to_limit else ''}too high a learning rate or degenerate data. "
                 f"Train MI is reported as 0 {_units}. The raw train MI was "
                 f"{_raw_train_mi * _scale:.4f} {_units} and most likely reflects overfitting. "
-                f"Raise n_epochs, lower learning_rate or inspect the data.",
+                f"{'Raise n_epochs, lower' if _ran_to_limit else 'Lower'} learning_rate or inspect the data.",
                 UserWarning,
                 stacklevel=user_stacklevel(),
             )
@@ -1061,8 +1064,9 @@ class Trainer:
                     f"errors above zero on its {_eval_size} rows. The two readings of the network "
                     f"contradict each other, and MI cannot be negative. Train MI is reported as 0 "
                     f"{_units} and the measured value is kept as raw_train_mi. This usually means "
-                    f"too few epochs or too few samples for the network to learn the dependence, "
-                    f"or data far from unit scale.",
+                    f"{'too few epochs or ' if _ran_to_limit else ''}too few samples for the network to learn the "
+                    f"dependence. Data far from unit scale can also cause it when the encoders do not scale "
+                    f"their input.",
                     UserWarning,
                     stacklevel=user_stacklevel(),
                 )
@@ -1074,7 +1078,8 @@ class Trainer:
                     f"of zero on its {_eval_size} rows. The network learned nothing distinguishable "
                     f"from zero, which is what a dependence of zero reads. Train MI is reported as "
                     f"0 {_units} and the measured value is kept as raw_train_mi. When the data should "
-                    f"hold a dependence, more epochs or samples may resolve it.",
+                    f"hold a dependence, {'more epochs or samples' if _ran_to_limit else 'more samples'} may "
+                    f"resolve it.",
                     UserWarning,
                     stacklevel=user_stacklevel(),
                 )
@@ -1090,7 +1095,7 @@ class Trainer:
                              band=(band_first, band_last, _band[0] * _scale, _band[1] * _scale),
                              resolved_noise=resolved_noise, clear_se=clear_se, rising_noise=rising_noise,
                              rising_epochs=rising_epochs, fall_noise=fall_noise, fast_epochs=fast_epochs,
-                             top_se=top_se, band_share=band_share)
+                             top_se=top_se, band_share=band_share, ran_to_limit=_ran_to_limit)
         _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
         _ceiling_side = None
         if self.estimator_fn is infonce_lower_bound and final_train_mi > 0:

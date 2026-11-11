@@ -112,6 +112,17 @@ def test_each_warning_differs_between_networks_only_in_its_numbers(diagnosis):
     assert _kind('UserWarning', first) == _kind('UserWarning', second)
 
 
+def test_more_epochs_are_suggested_only_when_training_ran_to_its_limit():
+    """A run that stopped before n_epochs had stopped improving, so its message suggests no more epochs."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        warn_about_curve('not resolved', 3, 4, 6, 100, ran_to_limit=True)
+        warn_about_curve('not resolved', 3, 4, 6, 100, ran_to_limit=False)
+    limit, early = (str(w.message) for w in caught)
+    assert 'More data, more epochs or another network may resolve it.' in limit
+    assert 'More data or another network may resolve it.' in early and 'more epochs would not change it' in early
+
+
 def test_a_flat_curve_a_little_above_zero_is_not_resolved_on_few_rows():
     """Every epoch scores the same held-out rows, so their sampling error moves the whole curve together:
     a curve that sits flat at a small positive level clears its epoch-to-epoch noise easily, and only the

@@ -709,8 +709,8 @@ def generate_nonlinear_from_latent(
     """Generates two nonlinearly related datasets from a shared latent variable.
 
     A low-dimensional latent variable `z` is first generated. Two observed
-    variables, `x` and `y`, are then created as nonlinear projections of `z`
-    with added noise.
+    variables, `x` and `y`, are then created as nonlinear projections of `z`.
+    No noise is added.
 
     Parameters
     ----------

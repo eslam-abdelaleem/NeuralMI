@@ -130,6 +130,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The messages about a curve that does not resolve and about a negative reading
+  suggest more epochs only when training ran to `n_epochs`. A run that stopped
+  earlier stopped because its curve had stopped improving, so more epochs would
+  not change it. They name data far from unit scale as a cause only for encoders
+  that do not scale their input. The docstring of
+  `generate_nonlinear_from_latent` no longer says that noise is added, since
+  none is.
 - `curve_diagnosis='flat top'` replaces `'fuzzy start'`, and
   `Training(top_se=1.0, band_share=0.3)` replace `approach_noise` and
   `fuzzy_se`. The band is every epoch whose smoothed held-out value lies within

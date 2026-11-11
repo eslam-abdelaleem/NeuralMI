@@ -144,8 +144,9 @@ value, and neither has its repeat: the result and every term of it are NaN in
 `runs`, `failed_term` names the term, `n_failed` counts the repeat in its row,
 and `mi_mean` and `mi_std` average the other repeats. Reading the term as 0
 instead would report the other terms alone, as though the term were zero. The
-usual causes are too few epochs or samples, and data far from unit scale. Each
-network's values are in `details[config_id]['trainings']`.
+usual causes are too few epochs or samples. Data far from unit scale can also
+cause it when the encoders do not scale their input. Each network's values are
+in `details[config_id]['trainings']`.
 
 **`...: a term learned nothing distinguishable from zero and enters as 0`**
 In the repeats counted, a term's network learned nothing distinguishable from
@@ -157,8 +158,8 @@ transfer entropy to a memoryless target. A term that is not zero but that its
 network missed reads the same, and the result is then off by the term's value:
 high for a term that is subtracted, low for one that is added. Nothing else
 shows it, since a difference with one term at 0 has an amplification factor of
-1. Where the term should not be zero, estimate it on its own with more epochs or
-samples, or with data near unit scale.
+1. Where the term should not be zero, estimate it on its own with more samples,
+or with more epochs when its training ran to `n_epochs`.
 
 **`The extrapolated ... is negative`**
 The rigorous fit extrapolated below zero. The value is reported as 0 and the
@@ -226,6 +227,9 @@ settle neither the epoch the estimate is read at nor the estimate. The message
 ends with the estimate and the held-out value of the network read. Only the
 held-out value is measured on rows that the network did not train on, and an
 estimate reported as 0 after a negative reading also gives the measured value.
+The message suggests more epochs only when training ran to `n_epochs`. When
+training stopped earlier because the curve had stopped improving, more epochs
+would not change the curve, since the epochs after its top did not raise it.
 A curve whose values are all non-positive gets the message below instead.
 
 **`The held-out MI reached its top at epoch ... and fell clearly soon after`**
@@ -282,7 +286,9 @@ negative, the reported value is 0 and the measured one is kept as
 `raw_train_mi`. The two readings of the network contradict each other, so a
 quantity combined from several networks has no value in that repeat (the
 [Amplification](#amplification) entry on repeats left out). The usual causes are
-too few epochs or too few samples, and data far from unit scale.
+too few epochs or too few samples. Data far from unit scale can also cause it
+when the encoders do not scale their input. The message names too few epochs
+only when training ran to `n_epochs`.
 
 **`The train MI at the reported epoch is negative (...), and the test MI (...) is within ... standard errors of zero`**
 Both readings of the network lie within noise of zero: the training-side value
