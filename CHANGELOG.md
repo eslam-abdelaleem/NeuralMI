@@ -130,6 +130,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `Model(norm_layer=...)` now applies to every built-in encoder. The MLP and
+  convolutional encoders normalise each hidden layer before its activation, and
+  `'deepsets'` the hidden layer of its rho. The recurrent and attention encoders
+  normalise the features that their output layer maps to the embedding. Before,
+  only the MLP encoder and the MLP heads read it, so with any other encoder only
+  the head of a hybrid critic was normalised. Without `norm_layer`, every encoder
+  builds the same network as before. In `mode='dimensionality'` with the hybrid
+  critic, `'auto'` is layer normalisation, so it now normalises the other
+  encoders too.
+
 - The messages about a curve that does not resolve and about a negative reading
   suggest more epochs only when training ran to `n_epochs`. A run that stopped
   earlier stopped because its curve had stopped improving, so more epochs would

@@ -1002,9 +1002,9 @@ the concatenation of the two embeddings. Without `y_data`, the two views share
 one encoder unless you set `shared_encoder=False`. A separable critic scores the
 pair by the dot product of the two embeddings, so it can need more dimensions
 than the shared structure has. Unless you set `Model(norm_layer=...)`, the
-hybrid critic in this mode applies layer normalisation in the hidden layers of
-its MLPs (the default encoders and the head that scores the pair), because fits
-at small $k$ tend to stall during training. Layer normalisation divides out the
+hybrid critic in this mode applies layer normalisation in its encoders and in
+the head that scores the pair, because fits at small $k$ tend to stall during
+training. Layer normalisation divides out the
 overall scale of each sample's hidden activations, so it can lower the curve
 when that scale carries information. The reported dimension is measured against
 the curve's own plateau, so the precise value of the MI matters less than how

@@ -744,10 +744,11 @@ call does not use, and the message names it. The settings apply as follows:
 - `bidirectional` applies to `'gru'` and `'lstm'`.
 - `nhead` applies to `'transformer'`.
 - `pytorch_predefined` and `pretrained` apply to `'pretrained_backbone'`.
-- `use_spectral_norm`, `dropout`, `norm_layer` and `bias` apply to the MLP
-  encoder and to the MLPs that the library builds around the encoders: the head
-  of the hybrid critic, the network of the concat critic, the head of the
-  branched encoder of a difference term and the head of the pretrained backbone.
+- `use_spectral_norm`, `dropout` and `bias` apply to the MLP encoder and to the
+  MLPs that the library builds around the encoders: the head of the hybrid
+  critic, the network of the concat critic, the head of the branched encoder of a
+  difference term and the head of the pretrained backbone.
+- `norm_layer` applies to every built-in encoder and to the same MLPs.
 - `dropout` also applies to the LRU, TCN and transformer encoders and to a GRU or
   LSTM of more than one layer.
 - Under `critic_type='concat'` no encoder is built, so the encoder settings

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import math
 import numpy as np
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from torch.nn.utils import spectral_norm as _spectral_norm
 
 from neural_mi.defaults import default_of
@@ -41,6 +41,40 @@ def _make_norm(kind: Optional[str], dim: int, bias: bool) -> Optional[nn.Module]
     if not bias:
         return nn.RMSNorm(dim, elementwise_affine=False)
     return nn.BatchNorm1d(dim) if kind == 'batch' else nn.LayerNorm(dim)
+
+
+class _ChannelNorm(nn.Module):
+    """A norm from :func:`_make_norm` over the channel axis of a ``(batch, channels, ...)`` tensor.
+
+    Layer and RMS norms see the channels at each position. Batch norm sees each
+    channel over the batch and the positions.
+    """
+
+    def __init__(self, norm: nn.Module):
+        super().__init__()
+        self.norm = norm
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.norm, nn.BatchNorm1d):
+            return self.norm(x.reshape(x.shape[0], x.shape[1], -1)).reshape(x.shape)
+        return self.norm(x.movedim(1, -1)).movedim(-1, 1)
+
+
+def _make_channel_norm(kind: Optional[str], channels: int, bias: bool) -> Optional[nn.Module]:
+    """:func:`_make_norm` for the channels of a convolution's output, or None."""
+    norm = _make_norm(kind, channels, bias)
+    return None if norm is None else _ChannelNorm(norm)
+
+
+def _normed(layer: nn.Module, norm: Optional[nn.Module], activation: nn.Module) -> List[nn.Module]:
+    """A hidden layer, its norm when there is one, and its activation."""
+    return [layer, activation] if norm is None else [layer, norm, activation]
+
+
+def _norm_or_identity(kind: Optional[str], dim: int, bias: bool) -> nn.Module:
+    """:func:`_make_norm` for the features that a readout maps to the embedding, or an identity."""
+    norm = _make_norm(kind, dim, bias)
+    return nn.Identity() if norm is None else norm
 
 
 def _resolve_activation(name: str) -> type:
@@ -270,12 +304,13 @@ class CNN1D(BaseEmbedding):
         The number of feature channels after the CNN layers.
     """
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'cnn_pooling': 'cnn_pooling', 'bias': 'bias', 'activation': 'activation'}
+    settings = {'kernel_size': 'kernel_size', 'cnn_pooling': 'cnn_pooling', 'norm_layer': 'norm_layer',
+                'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
                  activation: str = default_of('activation'), kernel_size: int = default_of('kernel_size'),
                  bias: bool = default_of('bias'), window_size: Optional[int] = None,
-                 cnn_pooling: str = default_of('cnn_pooling')):
+                 cnn_pooling: str = default_of('cnn_pooling'), norm_layer: Optional[str] = None):
         """
         Parameters
         ----------
@@ -302,6 +337,10 @@ class CNN1D(BaseEmbedding):
             Read the convolutions' output at every position of the window
             (``'flatten'``, the default) or average it over the window
             (``'mean'``).
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation over the channels after each convolution and after
+            the hidden linear layer of the final layers, before the activation.
+            ``None`` (default) adds none.
         """
         super().__init__()
         if cnn_pooling not in ('flatten', 'mean'):
@@ -317,25 +356,19 @@ class CNN1D(BaseEmbedding):
         activation_fn = _resolve_activation(activation)
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
-        first_block = [
-            nn.Conv1d(in_channels=input_dim, out_channels=ch[0], kernel_size=kernel_size, padding='same', bias=bias),
-            activation_fn(),
-        ]
-
-        layers = list(first_block)
-        for i in range(1, len(ch)):
-            layers.extend([
-                nn.Conv1d(in_channels=ch[i - 1], out_channels=ch[i], kernel_size=kernel_size, padding='same', bias=bias),
-                activation_fn()
-            ])
+        layers = []
+        for c_in, c_out in zip([input_dim, *ch[:-1]], ch):
+            layers += _normed(
+                nn.Conv1d(in_channels=c_in, out_channels=c_out, kernel_size=kernel_size, padding='same', bias=bias),
+                _make_channel_norm(norm_layer, c_out, bias), activation_fn())
         self.conv_layers = nn.Sequential(*layers)
         # 'same' padding keeps the window length, so flattening gives ch[-1] * window_size
         # features, one set per position. Averaging collapses any length to ch[-1].
         reduce = [nn.Flatten()] if cnn_pooling == 'flatten' else [nn.AdaptiveAvgPool1d(1), nn.Flatten()]
         self.final_layers = nn.Sequential(
             *reduce,
-            nn.Linear(ch[-1] * (window_size if cnn_pooling == 'flatten' else 1), ch[-1], bias=bias),
-            activation_fn(),
+            *_normed(nn.Linear(ch[-1] * (window_size if cnn_pooling == 'flatten' else 1), ch[-1], bias=bias),
+                     _make_norm(norm_layer, ch[-1], bias), activation_fn()),
             nn.Linear(ch[-1], embedding_dim, bias=bias)
         )
         self.embedding_dim = embedding_dim
@@ -371,11 +404,12 @@ def _recurrent_reads(cls, setting: str, n_layers: Optional[int] = None) -> bool:
 class GRU(BaseEmbedding):
     """A Gated Recurrent Unit (GRU) embedding network for sequential data."""
     input_style = 'channels'
-    settings = {'bidirectional': 'bidirectional', 'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'bidirectional': 'bidirectional', 'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias'}
     reads = classmethod(_recurrent_reads)
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
+                 norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -391,6 +425,9 @@ class GRU(BaseEmbedding):
             If True, becomes a bidirectional GRU. Defaults to False.
         dropout : float, optional
             Dropout between stacked layers, which a single layer does not have.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation of the features that the output layer maps to the
+            embedding. ``None`` (default) adds none.
         """
         super().__init__()
         self.gru = nn.GRU(input_size=input_dim, hidden_size=hidden_dim, num_layers=n_layers, bias=bias,
@@ -398,6 +435,7 @@ class GRU(BaseEmbedding):
                           dropout=dropout if n_layers > 1 else 0.0)
         
         num_directions = 2 if bidirectional else 1
+        self.norm = _norm_or_identity(norm_layer, hidden_dim * num_directions, bias)
         self.output_layer = nn.Linear(hidden_dim * num_directions, embedding_dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -413,16 +451,17 @@ class GRU(BaseEmbedding):
         else:
             last_hidden = h_n[-1,:,:]
             
-        return self.output_layer(last_hidden)
+        return self.output_layer(self.norm(last_hidden))
 
 class LSTM(BaseEmbedding):
     """An LSTM (Long Short-Term Memory) embedding network for sequential data."""
     input_style = 'channels'
-    settings = {'bidirectional': 'bidirectional', 'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'bidirectional': 'bidirectional', 'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias'}
     reads = classmethod(_recurrent_reads)
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
+                 norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -438,6 +477,9 @@ class LSTM(BaseEmbedding):
             If True, becomes a bidirectional LSTM. Defaults to False.
         dropout : float, optional
             Dropout between stacked layers, which a single layer does not have.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation of the features that the output layer maps to the
+            embedding. ``None`` (default) adds none.
         """
         super().__init__()
         self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=n_layers, bias=bias,
@@ -445,6 +487,7 @@ class LSTM(BaseEmbedding):
                             dropout=dropout if n_layers > 1 else 0.0)
         
         num_directions = 2 if bidirectional else 1
+        self.norm = _norm_or_identity(norm_layer, hidden_dim * num_directions, bias)
         self.output_layer = nn.Linear(hidden_dim * num_directions, embedding_dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -456,7 +499,7 @@ class LSTM(BaseEmbedding):
         else:
             last_hidden = h_n[-1,:,:]
             
-        return self.output_layer(last_hidden)
+        return self.output_layer(self.norm(last_hidden))
 
 
 class LockedDropout(nn.Module):
@@ -542,10 +585,11 @@ class LRUEmbedding(BaseEmbedding):
     comparable parameter count.
     """
     input_style = 'channels'
-    settings = {'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias'}
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int = default_of('n_layers'),
-                 dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
+                 norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -559,10 +603,15 @@ class LRUEmbedding(BaseEmbedding):
             The number of stacked LRUBlocks.
         dropout : float, optional
             Locked-dropout probability inside each block.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation of the pooled features that the output projection
+            maps to the embedding. Each block keeps its own layer norm.
+            ``None`` (default) adds none.
         """
         super().__init__()
         self.in_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
         self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout, bias=bias) for _ in range(n_layers)])
+        self.norm = _norm_or_identity(norm_layer, hidden_dim, bias)
         self.out_proj = nn.Linear(hidden_dim, embedding_dim, bias=bias)
 
     @property
@@ -576,13 +625,14 @@ class LRUEmbedding(BaseEmbedding):
         for block in self.blocks:
             x = block(x)
         x = x.mean(dim=1)
-        return self.out_proj(x)
+        return self.out_proj(self.norm(x))
 
 
 class TCN(BaseEmbedding):
     """A Temporal Convolutional Network (TCN) for sequential data."""
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'dropout': 'dropout', 'bias': 'bias', 'activation': 'activation'}
+    settings = {'kernel_size': 'kernel_size', 'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias',
+                'activation': 'activation'}
 
     # Inner class for a Chomp layer to remove padding
     class Chomp1d(nn.Module):
@@ -596,20 +646,23 @@ class TCN(BaseEmbedding):
     # Inner class for a TCN block
     class TemporalBlock(nn.Module):
         def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout, activation_fn,
-                     bias=default_of('bias')):
+                     bias=default_of('bias'), norm_layer=None):
             super().__init__()
             self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp1 = TCN.Chomp1d(padding)
+            self.norm1 = _make_channel_norm(norm_layer, n_outputs, bias)
             self.act1 = activation_fn()
             self.dropout1 = nn.Dropout(dropout)
 
             self.conv2 = nn.Conv1d(n_outputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp2 = TCN.Chomp1d(padding)
+            self.norm2 = _make_channel_norm(norm_layer, n_outputs, bias)
             self.act2 = activation_fn()
             self.dropout2 = nn.Dropout(dropout)
 
-            self.net = nn.Sequential(self.conv1, self.chomp1, self.act1, self.dropout1,
-                                     self.conv2, self.chomp2, self.act2, self.dropout2)
+            self.net = nn.Sequential(*[m for m in (self.conv1, self.chomp1, self.norm1, self.act1, self.dropout1,
+                                                   self.conv2, self.chomp2, self.norm2, self.act2, self.dropout2)
+                                       if m is not None])
             self.downsample = nn.Conv1d(n_inputs, n_outputs, 1, bias=bias) if n_inputs != n_outputs else None
             self.act = activation_fn()
 
@@ -620,7 +673,8 @@ class TCN(BaseEmbedding):
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
                  kernel_size: int = default_of('kernel_size'), dropout: float = default_of('dropout'),
-                 bias: bool = default_of('bias'), activation: str = default_of('activation'), **kwargs):
+                 bias: bool = default_of('bias'), activation: str = default_of('activation'),
+                 norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -642,6 +696,9 @@ class TCN(BaseEmbedding):
         activation : str, optional
             The nonlinearity after each convolution and each residual sum, a
             name in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation over the channels after each convolution, before its
+            activation. ``None`` (default) adds none.
         """
         super().__init__()
         layers = []
@@ -652,7 +709,8 @@ class TCN(BaseEmbedding):
             out_channels = num_channels[i]
             layers.append(TCN.TemporalBlock(in_channels, out_channels, kernel_size, stride=1, dilation=dilation_size,
                                             padding=(kernel_size-1) * dilation_size, dropout=dropout,
-                                            activation_fn=_resolve_activation(activation), bias=bias))
+                                            activation_fn=_resolve_activation(activation), bias=bias,
+                                            norm_layer=norm_layer))
         self.network = nn.Sequential(*layers)
         self.output_layer = nn.Linear(num_channels[-1], embedding_dim, bias=bias)
 
@@ -666,7 +724,8 @@ class Transformer(BaseEmbedding):
     """A Transformer Encoder model for sequential data."""
     zero_preserving = False   # the positional encoding is an additive, input-independent term
     input_style = 'channels'
-    settings = {'nhead': 'nhead', 'dropout': 'dropout', 'bias': 'bias', 'activation': 'activation'}
+    settings = {'nhead': 'nhead', 'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias',
+                'activation': 'activation'}
 
     class PositionalEncoding(nn.Module):
         def __init__(self, d_model, max_len=5000):
@@ -689,7 +748,7 @@ class Transformer(BaseEmbedding):
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
                  nhead: int = default_of('nhead'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
-                 activation: str = default_of('activation'), **kwargs):
+                 activation: str = default_of('activation'), norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -708,6 +767,10 @@ class Transformer(BaseEmbedding):
         activation : str, optional
             The nonlinearity of each encoder layer's feed-forward block, a name
             in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation of the features that the output layer maps to the
+            embedding. Each encoder layer keeps its own layer norms. ``None``
+            (default) adds none.
         """
         super().__init__()
         if hidden_dim % nhead != 0:
@@ -724,6 +787,7 @@ class Transformer(BaseEmbedding):
         # the path is enabled only with both.
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layers, num_layers=n_layers, enable_nested_tensor=bias and activation in ('relu', 'gelu'))
+        self.norm = _norm_or_identity(norm_layer, hidden_dim, bias)
         self.output_layer = nn.Linear(hidden_dim, embedding_dim, bias=bias)
         self._initialize_weights()
 
@@ -733,7 +797,7 @@ class Transformer(BaseEmbedding):
         x = self.pos_encoder(x.permute(1, 0, 2)).permute(1, 0, 2) # Apply positional encoding
         output = self.transformer_encoder(x)
         # Use the output of the first token '[CLS]'-style for the embedding
-        return self.output_layer(output[:, 0, :])
+        return self.output_layer(self.norm(output[:, 0, :]))
 
     def _initialize_weights(self):
         for p in self.parameters():
@@ -788,16 +852,20 @@ class DeepSets(BaseEmbedding):
     activation : str, optional
         The nonlinearity of each hidden layer of ``phi`` and ``rho``, a name in
         ``ACTIVATIONS``. Defaults to 'leaky_relu'.
+    norm_layer : {None, 'batch', 'layer'}, optional
+        Normalisation in the hidden layer of ``rho``, before its activation.
+        ``None`` (default) adds none.
     no_spike_value : float, optional
         The padding sentinel to mask out, matching the value the spike
         processor used. Defaults to 0.0.
     """
     input_style = 'channels'
-    settings = {'bias': 'bias', 'activation': 'activation'}
+    settings = {'norm_layer': 'norm_layer', 'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int,
                  n_layers: int = default_of('n_layers'), bias: bool = default_of('bias'),
-                 no_spike_value: float = 0.0, activation: str = default_of('activation'), **kwargs):
+                 no_spike_value: float = 0.0, activation: str = default_of('activation'),
+                 norm_layer: Optional[str] = None, **kwargs):
         super().__init__()
         self.no_spike_value = float(no_spike_value)
         width = hidden_dim if isinstance(hidden_dim, int) else hidden_dim[0]
@@ -806,8 +874,10 @@ class DeepSets(BaseEmbedding):
         for _ in range(max(0, n_layers - 1)):
             phi += [nn.Linear(width, width, bias=bias), act()]
         self.phi = nn.Sequential(*phi)
+        # A norm reads the hidden layer of rho, the summed set. In phi, batch statistics would include the
+        # empty slots that the mask removes afterwards.
         self.rho = nn.Sequential(
-            nn.Linear(width * input_dim, width, bias=bias), act(),
+            *_normed(nn.Linear(width * input_dim, width, bias=bias), _make_norm(norm_layer, width, bias), act()),
             nn.Linear(width, embedding_dim, bias=bias))
 
     @property
@@ -842,11 +912,11 @@ class CNN2D(BaseEmbedding):
     hidden_dim : int
     """
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'bias': 'bias', 'activation': 'activation'}
+    settings = {'kernel_size': 'kernel_size', 'norm_layer': 'norm_layer', 'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
                  activation: str = default_of('activation'), kernel_size: int = default_of('kernel_size'),
-                 bias: bool = default_of('bias'), **kwargs):
+                 bias: bool = default_of('bias'), norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -866,6 +936,10 @@ class CNN2D(BaseEmbedding):
         kernel_size : int, optional
             Convolutional kernel size; must be odd for symmetric same-padding.
             Defaults to 3.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation over the channels after each convolution and after
+            the hidden linear layer of the final layers, before the activation.
+            ``None`` (default) adds none.
         """
         super().__init__()
         if kernel_size % 2 == 0:
@@ -874,23 +948,17 @@ class CNN2D(BaseEmbedding):
         activation_fn = _resolve_activation(activation)
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
-        layers = [
-            nn.Conv2d(input_dim, ch[0], kernel_size=kernel_size, padding=padding, bias=bias),
-            activation_fn(),
-        ]
-        for i in range(1, len(ch)):
-            layers.extend([
-                nn.Conv2d(ch[i - 1], ch[i], kernel_size=kernel_size, padding=padding, bias=bias),
-                activation_fn(),
-            ])
+        layers = []
+        for c_in, c_out in zip([input_dim, *ch[:-1]], ch):
+            layers += _normed(nn.Conv2d(c_in, c_out, kernel_size=kernel_size, padding=padding, bias=bias),
+                              _make_channel_norm(norm_layer, c_out, bias), activation_fn())
         self.conv_layers = nn.Sequential(*layers)
         # AdaptiveAvgPool2d(1) collapses any (H, W) → (1, 1), giving a fixed-size
         # representation that is fully picklable at construction time.
         self.final_layers = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(ch[-1], ch[-1], bias=bias),
-            activation_fn(),
+            *_normed(nn.Linear(ch[-1], ch[-1], bias=bias), _make_norm(norm_layer, ch[-1], bias), activation_fn()),
             nn.Linear(ch[-1], embedding_dim, bias=bias),
         )
         self.embedding_dim = embedding_dim

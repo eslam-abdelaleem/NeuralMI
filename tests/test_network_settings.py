@@ -66,6 +66,21 @@ class TestTheEncodersReadTheirSettings:
         net = build_critic('separable', _params(embedding_model='gru', dropout=0.25, n_layers=1)).embedding_net_x
         assert net.gru.dropout == 0.0
 
+    @pytest.mark.parametrize('model', ['mlp', 'cnn', 'gru', 'lstm', 'lru', 'tcn', 'transformer', 'deepsets'])
+    def test_norm_layer_reaches_every_encoder(self, model):
+        """The MLP and convolutional encoders normalise each hidden layer, DeepSets the hidden layer of rho,
+        and the recurrent and attention encoders the features that the readout maps to the embedding."""
+        def count(kind, norm):
+            return len(_modules(build_critic('separable', _params(embedding_model=model, norm_layer=norm))
+                                .embedding_net_x, kind))
+        assert count(nn.BatchNorm1d, 'none') == 0 < count(nn.BatchNorm1d, 'batch')
+        assert count(nn.LayerNorm, 'none') < count(nn.LayerNorm, 'layer')
+
+    def test_norm_layer_reaches_the_cnn2d_encoder(self):
+        from neural_mi.models.embeddings import CNN2D
+        assert not _modules(CNN2D(1, 8, 4, 2), nn.LayerNorm)
+        assert len(_modules(CNN2D(1, 8, 4, 2, norm_layer='layer'), nn.LayerNorm)) == 3
+
     def test_a_custom_class_gets_the_settings_it_names(self):
         seen = {}
 
@@ -150,6 +165,9 @@ class TestASettingNoNetworkReadsWarns:
         messages = self._messages(embedding_model='gru', dropout=0.2, n_layers=1)
         assert messages and 'n_layers=1' in messages[0]
         assert self._messages(embedding_model='gru', dropout=0.2, n_layers=2) == []
+
+    def test_norm_layer_on_a_recurrent_separable_critic_is_read(self):
+        assert self._messages(embedding_model='gru', norm_layer='layer') == []
 
     def test_the_activation_on_a_recurrent_encoder(self):
         messages = self._messages(embedding_model='lstm', activation='relu')

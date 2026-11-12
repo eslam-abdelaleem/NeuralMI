@@ -590,8 +590,8 @@ This mode uses the hybrid critic unless `critic_type` is set. It runs a
 separable critic with a warning and refuses the concat critic, because that
 critic has no embedding of either side. Unless you set them, `n_epochs` is 500
 with `patience` 50. Without `y_data`, `shared_encoder` is `True` unless set. Here
-the hybrid critic uses layer normalisation in its MLP layers unless `norm_layer`
-is set. Layer normalisation keeps the fits at an embedding size equal to the
+the hybrid critic uses layer normalisation in its encoders and its head unless
+`norm_layer` is set. Layer normalisation keeps the fits at an embedding size equal to the
 dimension from stalling below the full value. It also divides out the overall
 scale of each sample's hidden activations, so it can lower the whole curve where
 that scale carries information. The reported dimension is measured against the
