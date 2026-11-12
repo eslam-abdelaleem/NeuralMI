@@ -37,7 +37,7 @@ moved in time.
 
 | file | contents |
 |---|---|
-| `modes.py` | one producer per mode, and `MODES`, which declares each mode once: its producer, its config class, the axis it adds, what it accepts (repeats, a grid, `rigorous`, a permutation null, returned embeddings, custom split indices), the streams that it uses and the settings that it sets itself. `produce()` runs a mode's producer. A producer takes the prepared data and the grid and returns the repeat rows, the per-configuration details and the columns to aggregate |
+| `modes.py` | one producer per mode, and `MODES`. `MODES` declares each mode once: its producer, its config class, the axis it adds, what it accepts (repeats, a grid, `rigorous`, a permutation null, returned embeddings, custom split indices), the streams that it uses and the settings that it sets itself. `produce()` runs a mode's producer. A producer takes the prepared data and the grid and returns the repeat rows, the per-configuration details and the columns to aggregate |
 | `assemble.py` | `build_results` and `aggregate` (repeat rows into `runs` and `dataframe`), `merge_results` (the parts of a grid that is prepared once per value into one result), `convert_record` (the one conversion from nats), `NETWORK_KEYS` (what a trained network reports about itself) |
 | `permutation.py` | `shift_x` (moving X for a null trial), `permutation_nulls` (running the trials), `attach_nulls` (the null columns and `p_value`) |
 | `sweep.py` | `ParameterSweep`, the engine that trains one network per grid point and repeat; `amplification_factor` |

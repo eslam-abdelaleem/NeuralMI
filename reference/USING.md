@@ -1303,10 +1303,10 @@ matrix of scores into a bound on the MI
 |---|---|---|
 | `'infonce'` (default) | low variance, biased low near its ceiling | $\log N$ nats, $N$ the number of samples evaluated |
 | `'smile'` | lower bias, higher variance | none |
-| `'ksg'` | no training; reads low at large MI and in many dimensions | none |
+| `'ksg'` | no training; comes out too low at large MI and in many dimensions | none |
 
 InfoNCE cannot report more than the logarithm of the number of samples on which
-it is evaluated. On the held-out side, the library draws `eval_size` rows once
+it is evaluated. For the held-out set, the library draws `eval_size` rows once
 and scores them at every epoch, in `test_eval_blocks` blocks of at most
 `max_eval_samples` rows. For the reported training value, it evaluates
 `train_eval_size` rows in `train_eval_blocks` blocks in the same way. On each
