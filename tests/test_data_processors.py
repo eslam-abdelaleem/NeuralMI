@@ -1020,7 +1020,7 @@ class TestAmbiguousStepSize:
         assert wm.resolve_step() == pytest.approx(0.0625)
 
     def test_warns_when_both_readings_are_plausible(self):
-        with pytest.warns(UserWarning, match="read as a fraction of window_size"):
+        with pytest.warns(UserWarning, match="taken as a fraction of window_size"):
             self._build(0.5, 0.125)
 
     def test_warning_names_the_applied_step_and_the_overlap(self):
@@ -1053,7 +1053,7 @@ class TestAmbiguousStepSize:
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
             WindowManager(window_size=window_size, step_size=step_size)
-        assert not [w for w in record if "read as a fraction" in str(w.message)]
+        assert not [w for w in record if "taken as a fraction" in str(w.message)]
 
     def test_warns_once_per_pair(self):
         reset_retention_warnings()
@@ -1061,12 +1061,12 @@ class TestAmbiguousStepSize:
             warnings.simplefilter("always")
             for _ in range(4):
                 WindowManager(window_size=0.5, step_size=0.25)
-        assert len([w for w in record if "read as a fraction" in str(w.message)]) == 1
+        assert len([w for w in record if "taken as a fraction" in str(w.message)]) == 1
 
     def test_update_parameters_warns_too(self):
         reset_retention_warnings()
         wm = WindowManager(window_size=2.0, step_size=1.0)
-        with pytest.warns(UserWarning, match="read as a fraction of window_size"):
+        with pytest.warns(UserWarning, match="taken as a fraction of window_size"):
             wm.update_parameters(window_size=0.4, step_size=0.2)
 
 
