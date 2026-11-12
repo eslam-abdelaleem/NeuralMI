@@ -1214,18 +1214,18 @@ def warn_if_random_split_leaks(rows) -> None:
     """Warn that a random split of rows that share samples leaves each held-out row among training rows
     that nearly copy it (``rows`` is a :class:`neural_mi.data.rows.RowGeometry`).
 
-    Whether the copies give the held-out rows away depends on the encoder. On the windows of tutorial 04
-    a recurrent encoder and a CNN that averages over positions read a random split far above the exact
-    value, and the default MLP read it like a blocked one."""
+    Whether the copies give the held-out rows away depends on the encoder. On the windows of tutorial 04,
+    a recurrent encoder and a CNN that averages over positions gave estimates far above the exact value
+    under a random split. The default MLP gave about the same estimate as under a blocked split."""
     warnings.warn(
         f"Random split of rows that share samples: consecutive rows start {rows.step:.3g} apart and "
         f"each covers {rows.span:.3g}, so a held-out row shares samples with up to "
         f"{2 * (rows.rows_per_span - 1)} rows around it, most of them in training. An encoder that "
-        f"reads a pattern wherever it sits in a row, such as a recurrent one or a CNN that averages "
-        f"over positions, takes those rows for copies of the held-out one. Its held-out curve then "
-        f"follows the training rows and keeps rising as the network overfits, so the epoch it "
-        f"chooses comes late and the value read there is high. An encoder that reads each position "
-        f"on its own, such as the default MLP, is less exposed. Split(mode='blocked') holds out "
+        f"responds to a pattern wherever it occurs in a row, such as a recurrent one or a CNN that "
+        f"averages over positions, treats those rows as copies of the held-out one. Its held-out curve "
+        f"then follows the training rows and keeps rising as the network overfits, so the library "
+        f"chooses a late epoch with a value that is too high. An encoder that weights each position "
+        f"separately, such as the default MLP, is less exposed. Split(mode='blocked') holds out "
         f"contiguous blocks with a gap around each.",
         UserWarning, stacklevel=user_stacklevel()
     )

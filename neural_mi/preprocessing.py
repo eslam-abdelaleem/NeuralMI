@@ -533,7 +533,7 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
             bad = np.flatnonzero(~finite).tolist()
             warnings.warn(
                 f"{name} has non-finite values (NaN or infinite) in channel(s) {bad}. Every network that "
-                f"reads them produces NaN. Remove or fill them before the call.",
+                f"receives them produces NaN. Remove or fill them before the call.",
                 UserWarning, stacklevel=user_stacklevel())
             parts.append(f"{name}: {len(finite)} channels, {len(bad)} with non-finite values")
             continue
@@ -560,10 +560,10 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
             far = live_index[np.abs(live_mean) > offset_band * live].tolist()
             if far:
                 warnings.warn(
-                    f"{_channels(far).capitalize()} of {name} sit more than Preprocessing(offset_band="
-                    f"{offset_band:g}) of their standard deviations from zero. The networks read the rows in "
-                    f"single precision, which resolves the variation of such a channel coarsely, and no scaling "
-                    f"inside a network recovers what is lost. Subtract each channel's mean before the call, "
+                    f"{_channels(far).capitalize()} of {name} lie more than Preprocessing(offset_band="
+                    f"{offset_band:g}) of their standard deviations from zero. The networks receive the rows in "
+                    f"single precision. Single precision resolves the variation of such a channel only coarsely, "
+                    f"so no scaling inside a network can recover what is lost. Subtract each channel's mean before the call, "
                     f"while the data are in double precision, or set Preprocessing(channel='zscore'), which "
                     f"centres each channel before the rows are built.",
                     UserWarning, stacklevel=user_stacklevel())
@@ -574,8 +574,8 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
                     f"In {_channels(repeated)} of {name}, more than Preprocessing(tie_share={tie_share:g}) of the "
                     f"values are one repeated value, as in padded or sparse rows such as spike rows built by "
                     f"hand. The encoder scales each channel to unit scale. That moves the repeated value away from "
-                    f"0 and lifts a channel that is quiet because it carries little to the level of the others. "
-                    f"Spike rows read through a spike processor, such as Processing(x='spike') for X, are divided "
+                    f"0 and raises a channel that is quiet because it carries little to the level of the others. "
+                    f"Spike rows that a spike processor builds, such as Processing(x='spike') for X, are divided "
                     f"by one number for the whole stream instead, so the padding stays at 0 and quiet neurons stay "
                     f"quiet. Model(input_scaling='none') leaves the rows as they are.",
                     UserWarning, stacklevel=user_stacklevel())
@@ -612,15 +612,15 @@ def _warn_unit_scale(name: str, typical: float, typical_mean: float, scale_band:
         warnings.warn(
             f"The channels of {name} have a typical scale of {_fmt(typical)}, more than a factor of "
             f"Preprocessing(scale_band={scale_band:g}) from unit scale. The networks start from weights sized for "
-            f"inputs near unit scale, so the estimate depends on the units. The same dependence can read close to "
-            f"its value at unit scale and close to 0 far from it. {remedy}",
+            f"inputs near unit scale, so the estimate depends on the units. The same dependence can give an "
+            f"estimate close to its value at unit scale and close to 0 far from it. {remedy}",
             UserWarning, stacklevel=user_stacklevel())
     elif typical_mean > scale_band:
         warnings.warn(
             f"The channels of {name} have a typical mean of {_fmt(typical_mean)}, more than "
             f"Preprocessing(scale_band={scale_band:g}) from zero. The networks start from weights sized for inputs "
-            f"near zero, so an offset this large can hide the variation that carries the information, and the "
-            f"estimate can read far below it. {remedy}",
+            f"near zero, so an offset this large can hide the variation that carries the information. The "
+            f"estimate can then come out far below the information. {remedy}",
             UserWarning, stacklevel=user_stacklevel())
 
 

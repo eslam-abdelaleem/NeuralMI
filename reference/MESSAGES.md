@@ -41,16 +41,17 @@ limited by the bound rather than by the data.
 
 **`The held-out MI (...) is near its ceiling of log(...)`**
 The held-out value of the network at the chosen epoch is above
-`Training(ceiling_fraction=...)` of $\log n$, where $n$ is the number of held-out
-rows that each evaluation scores. InfoNCE cannot give more than this ceiling, so
-the true value may be higher. A curve that flattens here has probably flattened
-against the bound. When the split has more held-out rows than one evaluation
-scores, raising `max_eval_samples` (and `test_subset_size`, if set) puts more of
-them into each evaluation. Otherwise only more held-out rows raise the ceiling,
-either from more data or from a lower `Split(train_fraction=...)`.
-`estimator='smile'` has no $\log n$ ceiling but has a higher variance. With `peak_fraction` below 1, the warning
-judges the network at the chosen epoch (the conservative one), while `test_mi`
-and `test_saturation` describe the network at `best_epoch`.
+`Training(ceiling_fraction=...)` of $\log n$, where $n$ is the number of
+held-out rows that each evaluation scores. InfoNCE cannot give more than this
+ceiling, so the true value may be higher. A curve that flattens here has
+probably flattened against the bound. When the split has more held-out rows than
+one evaluation scores, raising `max_eval_samples` (and `test_subset_size`, if
+set) puts more of them into each evaluation. Otherwise only more held-out rows
+raise the ceiling, either from more data or from a lower
+`Split(train_fraction=...)`. `estimator='smile'` has no $\log n$ ceiling but has
+a higher variance. With `peak_fraction` below 1, the warning judges the network
+at the chosen epoch (the conservative one), while `test_mi` and
+`test_saturation` describe the network at `best_epoch`.
 
 **`The estimate (...) is near its ceiling of log(...)`**
 The estimate is above `Training(ceiling_fraction=...)` of $\log m$, where $m$ is
@@ -63,11 +64,11 @@ held-out curve. `Training(eval_train=True)` adds the training curve. The call th
 does not also warn that the held-out value falls short of the estimate
 ([Training](#training)), because this message already states both values.
 
-**`Peak-epoch selection may be unreliable`**
+**`The chosen epoch may be unreliable`**
 More than `Training(saturated_epoch_fraction=...)` of the epochs of the smoothed
 held-out curve lie above `Training(saturation_fraction=...)` of its ceiling. With
-so much of the curve near its ceiling, the epoch with the largest value and the
-value reported there are close to arbitrary. The top of the curve may then be the
+so much of the curve near its ceiling, the epoch that `Training(epoch_rule=...)`
+chooses and the value reported there are close to arbitrary. The top of the curve may then be the
 ceiling rather than the information. Raise `max_eval_samples` so that the curve
 has room to separate, or set `peak_fraction` below 1 to take the value at an
 earlier epoch, before the curve reaches its top.
@@ -133,7 +134,7 @@ entry). Among clearly positive repeats, a zero is most likely a failed run. When
 every repeat is near zero, the quantity itself may be near zero. `runs` keeps
 every repeat with its measured value.
 
-**`... of ... repeats are left out of mi_mean and mi_std because a term read negative on its training rows`**
+**`... of ... repeats are left out of mi_mean and mi_std because a term came out negative on its training rows`**
 A quantity combined from separately trained networks (conditional MI, transfer
 entropy and the quantities built from it, interaction information, `mi_rate`)
 takes the value of each term repeat by repeat. In the repeats counted, the
@@ -259,7 +260,7 @@ values cover its warnings. `runs` keeps the epochs of the band as
 `band_first_epoch` and `band_last_epoch` and its two values as `band_low` and
 `band_high`. `result.plot()` shows the curve with the chosen epoch and the peak.
 
-**`At the epoch read, the held-out MI of the network (...) is less than Training(gap_share=...) of the estimate`**
+**`At the chosen epoch, the held-out MI of the network (...) is less than Training(gap_share=...) of the estimate`**
 The estimate comes from the rows that the network trained on. The held-out value
 of the same network comes from rows that it did not train on. Their ratio has no
 units and says how much of the estimate the held-out rows confirm. The call warns
@@ -293,7 +294,7 @@ are too few epochs or too few samples. Data far from unit scale can also cause i
 when the encoders do not scale their input. The message names too few epochs only
 when training ran to `n_epochs`.
 
-**`The train MI at the reported epoch is negative (...), and the test MI (...) is within ... standard errors of zero`**
+**`The train MI at the reported epoch is negative (...) while the test MI (...) is within ... standard errors of zero`**
 Both values of the network lie within noise of zero. The training value is
 negative, and the held-out value lies less than `Training(clear_se=...)` standard
 errors above zero. The network learned nothing distinguishable from zero, as it
@@ -352,7 +353,7 @@ $I(X_{-L..L}; Y_0)$ with $L$ = `half_width`. At `half_width=0` this is
 `instantaneous_mi`. In a sweep that starts at 0, the first point is this
 quantity. It is the baseline against which the conditioned values are compared.
 
-**`step_size=... was read as a fraction of window_size=...`**
+**`step_size=... was taken as a fraction of window_size=...`**
 A `step_size` below 1 is always a fraction of the window, so `step_size=0.25` is
 75% overlap at any window size. In seconds, the rule also applies to ordinary
 values. `window_size=0.5, step_size=0.5` then gives a step of 0.25 s. The message
@@ -539,7 +540,7 @@ that keeps the relative scales of the channels. Dividing the stream by one numbe
 before the call (such as its overall standard deviation) then brings it near unit
 scale.
 
-**`... of ... sit more than Preprocessing(offset_band=...) of their standard deviations from zero`**
+**`... of ... lie more than Preprocessing(offset_band=...) of their standard deviations from zero`**
 The networks process their rows in single precision (about seven significant
 digits). For a channel whose mean is many standard deviations from zero, few of
 these digits are left for its variation, although the variation is where the

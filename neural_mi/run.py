@@ -1195,8 +1195,8 @@ def _run_flat(
         # config.py) -- one variable, three possible roles, dispatched by mode.
         if w_data is not None and not _spec.reads_w:
             warnings.warn(
-                f"w_data was provided but mode='{mode}' does not use it. w_data is read only by "
-                f"{', '.join(repr(m) for m, s in MODES.items() if s.reads_w)}.",
+                f"w_data was provided but mode='{mode}' does not use it. Only "
+                f"{', '.join(repr(m) for m, s in MODES.items() if s.reads_w)} use it.",
                 UserWarning, stacklevel=user_stacklevel()
             )
 
@@ -1305,9 +1305,9 @@ def _run_flat(
         base_params['_scaled_streams'] = scaled_streams(base_params, _scaling_kinds)
         if _w_takes_xs_processor:
             logger.info(
-                f"mode='{mode}': w_data has no processor of its own and reads with X's "
-                f"('{processor_type_x}'), on the same grid. Set Processing(w=...) to read "
-                f"it differently."
+                f"mode='{mode}': w_data has no processor of its own, so X's processor "
+                f"('{processor_type_x}') builds its rows on the same grid. Set Processing(w=...) to "
+                f"process it differently."
             )
         # The streams as Preprocessing(...) asks, before any rows are built from
         # them, and the data check, which changes nothing
@@ -1661,9 +1661,9 @@ def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
         f"{small_sample}). "
         f"The samples an estimate needs grow "
         f"roughly as N ~ d^2/I (tutorial 02, section 2). Here d is the number of latent "
-        f"dimensions carrying the shared information and I is the information itself. "
-        f"Neither is known before estimating. A few latent dimensions carrying several bits can settle "
-        f"within a few hundred samples. Many dimensions or little information need far more. "
+        f"dimensions that carry the shared information and I is the information itself. "
+        f"Neither is known before estimating. A few latent dimensions that carry several bits need "
+        f"few samples. Many dimensions or little information need far more. "
         f"mode='rigorous' tests whether the estimate still moves with the sample size. At "
         f"this size regularisation also helps: {'; '.join(tips)}.",
         UserWarning, stacklevel=user_stacklevel(),

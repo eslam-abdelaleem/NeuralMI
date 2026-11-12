@@ -89,8 +89,8 @@ def rows_to_fill_a_batch(batch_size: int, train_fraction: float) -> int:
 def too_few_held_out(n_held_out: int, batch_size: int) -> bool:
     """Whether a held-out set is smaller than one training batch.
 
-    The held-out curve chooses the epoch the estimate is read at and says
-    whether it is resolved. Its rows are each other's negatives, so its ceiling
+    The epoch at which the estimate is taken comes from the held-out curve,
+    and so does the verdict on whether it is resolved. Its rows are each other's negatives, so its ceiling
     is ``log(n_held_out)``, below the ``log(batch_size)`` of the objective it
     follows, and its noise grows as the rows shrink. The rigorous ladder draws
     the same line for its chunks.
@@ -301,7 +301,7 @@ class Trainer:
             Every epoch the training rows' windows start one offset later,
             drawn within one row step, the same for every stream, so training
             does not see one fixed set of window boundaries. The rows stay the
-            same rows: evaluation reads them unshifted. Takes effect when
+            same rows: evaluation uses them unshifted. Takes effect when
             `dataset` carries a `_window_shifter` (the rows of a
             :class:`~neural_mi.data.plan.RowPlan`, or rows a stride thins);
             a no-op otherwise.
@@ -353,8 +353,8 @@ class Trainer:
             A larger set is evaluated in blocks of at most this many rows whose
             values are averaged. Defaults to 5000.
         train_subset_size : int or 'full', optional
-            Size of the fixed subset of training samples the reported,
-            training-side MI is evaluated on, or 'full' for all of them.
+            Size of the fixed subset of training samples on which the reported
+            estimate is evaluated, or 'full' for all of them.
             Training itself uses every training sample. Like the held-out
             subset, a blocked split takes one contiguous stretch per training
             segment, a random split random rows. Defaults to None, which takes
@@ -422,31 +422,34 @@ class Trainer:
               ``'train_mi_at_peak'`` (train MI at the actual peak epoch, for
               comparison).
         epoch_rule : {'plateau_start', 'peak'}, optional
-            Which epoch the reported values are read at (``best_epoch``), from
-            the smoothed held-out curve. ``'plateau_start'`` (default) reads the
-            earliest epoch at its top, within ``start_noise`` noise units of the
-            top's level: the peak of a clean peak, the start of a plateau. ``'peak'`` reads the smoothed maximum. Either way the
+            The epoch at which the reported values are taken (``best_epoch``),
+            chosen from the smoothed held-out curve. ``'plateau_start'`` (default)
+            chooses the earliest epoch at its top, within ``start_noise`` noise
+            units of the top's level: the peak of a clean peak, the start of a
+            plateau. ``'peak'`` chooses the smoothed maximum. Either way the
             results give the maximum as ``peak_epoch`` and a diagnosis of the
             curve as ``curve_diagnosis``, and warn when the curve cannot support
             the choice (``neural_mi/training/epochs.py``).
         level_noise, start_noise, resolved_noise, fast_epochs, fall_noise, clear_se, rising_epochs, rising_noise : optional
-            The thresholds by which the held-out curve is read and judged, in
+            The thresholds by which the library judges the held-out curve, in
             units of its own epoch-to-epoch noise, of standard errors or of
             epochs (:func:`neural_mi.training.epochs.choose_epoch`). ``clear_se``
             also decides whether a held-out value stands above zero.
         top_se, band_share : float, optional
             The band is every epoch whose smoothed held-out value lies within
             ``top_se`` standard errors of the curve's maximum
-            (:func:`neural_mi.training.epochs.top_band`). The estimate is read at
-            its first and last epoch, and a curve whose two readings differ by
-            more than ``band_share`` of the estimate is diagnosed ``'flat top'``.
+            (:func:`neural_mi.training.epochs.top_band`). The trainer evaluates
+            the estimate at the band's first and last epoch. A curve whose two
+            values differ by more than ``band_share`` of the estimate is
+            diagnosed ``'flat top'``.
         ceiling_fraction, saturation_fraction, saturated_epoch_fraction : float, optional
             A value above ``ceiling_fraction`` of its InfoNCE ceiling warns, and
             so does a smoothed held-out curve that lies above
             ``saturation_fraction`` of its ceiling for more than
             ``saturated_epoch_fraction`` of its epochs.
         gap_share : float, optional
-            The call warns when the held-out value of the network read is below
+            The call warns when the held-out value of the network at the chosen
+            epoch is below
             this share of a positive estimate, by more than ``clear_se`` standard
             errors of their difference
             (:func:`neural_mi.training.epochs.falls_short`).
@@ -982,14 +985,14 @@ class Trainer:
                 )
                 if _test_trace_saturated_fraction > saturated_epoch_fraction:
                     warnings.warn(
-                        f"Peak-epoch selection may be unreliable: "
-                        f"{_test_trace_saturated_fraction:.0%} of the smoothed test-MI "
-                        f"history sits above Training(saturation_fraction={saturation_fraction:g}) of the "
-                        f"test ceiling ({_test_ceiling_mi:.3f} {_units}). That share is above "
-                        f"Training(saturated_epoch_fraction={saturated_epoch_fraction:g}). With the trace "
-                        f"riding near its ceiling, the epoch with the (noisy) maximum is "
-                        f"close to arbitrary. Consider increasing max_eval_samples, or a peak_fraction "
-                        f"below 1 to read the value before the curve reaches its ceiling.",
+                        f"The chosen epoch may be unreliable. "
+                        f"{_test_trace_saturated_fraction:.0%} of the epochs of the smoothed held-out "
+                        f"curve lie above Training(saturation_fraction={saturation_fraction:g}) of its "
+                        f"ceiling ({_test_ceiling_mi:.3f} {_units}). That share is above "
+                        f"Training(saturated_epoch_fraction={saturated_epoch_fraction:g}). With so much of "
+                        f"the curve near its ceiling, the epoch that Training(epoch_rule=...) chooses is "
+                        f"close to arbitrary. Raise max_eval_samples, or set peak_fraction below 1 to take "
+                        f"the value at an earlier epoch, before the curve reaches its ceiling.",
                         UserWarning, stacklevel=user_stacklevel()
                     )
 
@@ -1057,16 +1060,16 @@ class Trainer:
             # The training-side value at the reported epoch came out below zero.
             # MI cannot be negative, so it is reported as 0 like the case above,
             # with the measured value kept as raw_train_mi. Whether the network
-            # learned something decides what that means: a held-out value within
-            # noise of zero is what a network that learned nothing reads, and a
-            # held-out value clearly above zero contradicts the negative reading
+            # learned something decides what that means: a network that learned nothing
+            # gives a held-out value within noise of zero, and a held-out value clearly
+            # above zero contradicts the negative training value
             # (stands_above_zero, the rule that combining terms follows too).
             if stands_above_zero(_held_at_read, _eval_size, clear_se):
                 warnings.warn(
                     f"The train MI at the reported epoch is negative "
                     f"({final_train_mi * _scale:.4f} {_units}) while the test MI "
                     f"({_held_at_read * _scale:.4f} {_units}) stands more than Training(clear_se={clear_se:g}) standard "
-                    f"errors above zero on its {_eval_size} rows. The two readings of the network "
+                    f"errors above zero on its {_eval_size} rows. The two values of the network "
                     f"contradict each other, and MI cannot be negative. Train MI is reported as 0 "
                     f"{_units} and the measured value is kept as raw_train_mi. This usually means "
                     f"{'too few epochs or ' if _ran_to_limit else ''}too few samples for the network to learn the "
@@ -1078,10 +1081,10 @@ class Trainer:
             else:
                 warnings.warn(
                     f"The train MI at the reported epoch is negative "
-                    f"({final_train_mi * _scale:.4f} {_units}), and the test MI "
+                    f"({final_train_mi * _scale:.4f} {_units}) while the test MI "
                     f"({_held_at_read * _scale:.4f} {_units}) is within Training(clear_se={clear_se:g}) standard errors "
                     f"of zero on its {_eval_size} rows. The network learned nothing distinguishable "
-                    f"from zero, which is what a dependence of zero reads. Train MI is reported as "
+                    f"from zero. A dependence of zero gives the same result. Train MI is reported as "
                     f"0 {_units} and the measured value is kept as raw_train_mi. When the data should "
                     f"hold a dependence, {'more epochs or samples' if _ran_to_limit else 'more samples'} may "
                     f"resolve it.",

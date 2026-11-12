@@ -178,7 +178,7 @@ BASE_PARAMS_SCHEMA = {
     #                  noisy peak.  When < 1.0, the train MI at the actual peak epoch is also
     #                  returned in details as 'train_mi_at_peak'.
     'peak_fraction': {'type': float, 'min': 0.0, 'default': 1.0},
-    # Which epoch of the held-out curve the reported values are read at: the earliest at its top
+    # The epoch of the held-out curve at which the reported values are taken: the earliest at its top
     # ('plateau_start') or its maximum ('peak'). See neural_mi/training/epochs.py.
     'epoch_rule': {'type': str, 'default': 'plateau_start'},
     # How the held-out curve is judged (neural_mi/training/epochs.py), in units of the
@@ -196,7 +196,7 @@ BASE_PARAMS_SCHEMA = {
     'fall_noise': {'type': float, 'min': 0.0, 'default': 3.0},
     # The band: the epochs whose smoothed held-out value lies within top_se standard
     # errors of the curve's top, which the held-out rows cannot tell apart. A band
-    # whose two ends read estimates further apart than band_share of the estimate
+    # whose two ends give estimates further apart than band_share of the estimate
     # is a flat top.
     'top_se': {'type': float, 'min': 0.0, 'default': 1.0},
     'band_share': {'type': float, 'min': 0.0, 'default': 0.3},
@@ -210,11 +210,11 @@ BASE_PARAMS_SCHEMA = {
     # A value above ceiling_fraction of its InfoNCE ceiling, log of the rows per
     # evaluation, is near that ceiling.
     'ceiling_fraction': {'type': float, 'min': 0.0, 'default': 0.85},
-    # Epoch selection may be unreliable when more than saturated_epoch_fraction of the
+    # The chosen epoch may be unreliable when more than saturated_epoch_fraction of the
     # smoothed held-out curve lies above saturation_fraction of its ceiling.
     'saturation_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
     'saturated_epoch_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
-    # The held-out value of the network read falls short of a positive estimate when it
+    # The held-out value of the network at the chosen epoch falls short of a positive estimate when it
     # is below gap_share of it, by more than clear_se standard errors of their difference.
     'gap_share': {'type': float, 'min': 0.0, 'default': 0.5},
     # A quantity combined from several terms warns when an error in a term reaches
@@ -230,7 +230,7 @@ BASE_PARAMS_SCHEMA = {
     # The check reads at most check_rows rows at a time, and fits a channel's own past on
     # the first check_rows rows.
     'check_rows': {'type': int, 'min': 1, 'default': 100_000},
-    # The scale of rows a spike-time or categorical processor builds is read from their
+    # The scale of rows a spike-time or categorical processor builds is measured on their
     # first sample_rows rows.
     'sample_rows': {'type': int, 'min': 1, 'default': 10_000},
     # Channels of a stream whose standard deviations spread over more than a factor
@@ -266,7 +266,7 @@ BASE_PARAMS_SCHEMA = {
     'dataset_device': {'type': (str, type(None)), 'default': 'cpu'},
 }
 
-# The settings the trainer reads and judges the held-out curve by, and warns by
+# The settings by which the trainer judges the held-out curve and warns
 # (neural_mi/training/trainer.py, neural_mi/training/epochs.py). Each is a field of
 # Training(...).
 CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs', 'fall_noise', 'top_se',

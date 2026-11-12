@@ -209,7 +209,7 @@ def run_precision_analysis(
             f"trained for. The estimator's lower bound is unbounded below there. The "
             f"depth of the fall measures how badly the bound has broken. MI cannot be "
             f"negative. Those values are reported as 0 and the measured ones are kept "
-            f"as mi_raw in result.runs. The threshold crossing is read before that "
+            f"as mi_raw in result.runs. The threshold crossing lies before that "
             f"point and is unaffected.",
             UserWarning, stacklevel=user_stacklevel()
         )

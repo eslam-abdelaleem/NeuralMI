@@ -158,16 +158,16 @@ class WindowManager:
             remedy = "pass step_size=None (the default) for a step of one window"
         else:
             remedy = (f"a {step:g} step cannot be expressed at "
-                      f"window_size={window:g} because every value below 1 is read "
+                      f"window_size={window:g} because every value below 1 is taken "
                       f"as a fraction. Use a larger window_size or rescale your "
                       f"time unit")
         warnings.warn(
-            f"step_size={step:g} was read as a fraction of window_size={window:g}. "
+            f"step_size={step:g} was taken as a fraction of window_size={window:g}. "
             f"That gives a step of {applied:g} time units and {overlap:g}% overlap "
             f"between consecutive windows. Every step_size below 1 is a fraction. "
             f"If you meant {step:g} as an absolute duration, {remedy}. This is "
-            f"reported only when window_size is below 1. A fraction and a duration "
-            f"are then both plausible readings of the same number.",
+            f"reported only when window_size is below 1, because a number below 1 "
+            f"can then mean either a fraction or a duration.",
             UserWarning, stacklevel=user_stacklevel(),
         )
 

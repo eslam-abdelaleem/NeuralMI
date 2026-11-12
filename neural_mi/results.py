@@ -104,7 +104,7 @@ def _rigorous_unreliable_reason(fit: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _draw_training(result: 'Results', ax, view):
-    """The held-out curve of each repeat, with the epoch read marked."""
+    """The held-out curve of each repeat, with the chosen epoch marked."""
     runs, colours, units, kwargs = view.runs, view.colours, view.units, view.kwargs
     if runs is None or runs.empty or 'test_mi_history' not in runs.columns:
         raise ValueError(
@@ -578,7 +578,7 @@ class Results:
         (:func:`neural_mi.training.epochs.band_floor`). Each row gives ``config_id``, the swept settings, the
         held-out MI and the estimate (``mi_mean``).
 
-        The best value is the highest of several read on the same held-out rows, so it is optimistic. Values
+        The best value is the highest of several values measured on the same held-out rows, so it is optimistic. Values
         for later analyses come from running the chosen configuration again.
         """
         spec = self._spec()

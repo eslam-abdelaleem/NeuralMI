@@ -320,8 +320,8 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
                 f"{quantity_name} estimate is negative ({result * _scale:.4f} {_units}). The "
                 f"quantity cannot be negative. It is reported as 0 {_units} and the measured value "
                 f"is kept as {raw_key} in result.runs. With estimator='{name}' it is a single "
-                f"conditional estimate, and a negative one is a value near zero read with the "
-                f"estimator's bias and spread.",
+                f"conditional estimate. A negative estimate is a value near zero that the estimator's "
+                f"bias and spread have moved below zero.",
                 CombinationWarning, stacklevel=user_stacklevel(),
             )
         return
@@ -445,11 +445,11 @@ def term_values(results: Sequence[Dict[str, Any]]) -> Tuple[List[float], List[st
       held-out value never rose above zero, or its training-side value came out
       negative while its held-out value stood within noise of zero
       (:func:`neural_mi.training.epochs.stands_above_zero`). It enters as 0,
-      which is the value of a term that is zero, and a term that is not zero
-      but that its network missed reads the same.
+      which is the value of a term that is zero. A term that is not zero but
+      that its network missed also enters as 0.
     - ``'failed'``: the term has no value. Its training-side value came out
       negative while its held-out value stood clearly above zero, so the two
-      readings of one network contradict each other, or its repeat produced no
+      values of one network contradict each other, or its repeat produced no
       value at all.
     """
     values, states = [], []
@@ -549,8 +549,8 @@ def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
     if warn and len(used) < n:
         warnings.warn(
             f"{quantity_name}: {n - len(used)} of {n} repeats are left out of mi_mean and mi_std "
-            f"because a term read negative on its training rows while its held-out value stood "
-            f"clearly above zero ({_term_counts(failed_keys, labels)}). The two readings of that "
+            f"because a term came out negative on its training rows while its held-out value stood "
+            f"clearly above zero ({_term_counts(failed_keys, labels)}). The two values of that "
             f"network contradict each other, so its repeat has no value. Those repeats are NaN in "
             f"result.runs, where failed_term names the term, and each network's values are in "
             f"details[config_id]['trainings']. The usual causes are too few epochs or samples. Data far "
@@ -561,9 +561,9 @@ def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
         warnings.warn(
             f"{quantity_name}: a term learned nothing distinguishable from zero and enters as 0 "
             f"({_term_counts([nothing_keys[i] for i in used], labels)}). That is the value of a "
-            f"term that is zero, and a term that is not zero but that its network missed reads the "
-            f"same. A missed term that is subtracted makes the result read high by its value, and "
-            f"one that is added makes it read low. Each network's values are in "
+            f"term that is zero. A term that is not zero but that its network missed also enters as 0. "
+            f"A missed term that is subtracted makes the result too high by the value of the term. "
+            f"A missed term that is added makes it too low by that value. Each network's values are in "
             f"details[config_id]['trainings'].",
             CombinationWarning, stacklevel=user_stacklevel(),
         )

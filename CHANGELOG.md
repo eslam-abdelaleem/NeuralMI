@@ -140,6 +140,18 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   critic, `'auto'` is layer normalisation, so it now normalises the other
   encoders too.
 
+- The warnings and the docstrings use the wording of the reference pages. The
+  network at the chosen epoch replaces "the network read", an estimate comes out
+  high or low rather than reading high or low, and the training curve replaces
+  "the training-side curve". Five warnings start differently, so their entries
+  in MESSAGES.md changed with them: `The chosen epoch may be unreliable`,
+  `At the chosen epoch, the held-out MI of the network ...`, `... because a term
+  came out negative on its training rows`, `step_size=... was taken as a
+  fraction of window_size=...` and `... lie more than Preprocessing(offset_band=...)`.
+  The held-out ceiling warning no longer says that SMILE's clip bounds its
+  estimate, and the advice for a small dataset no longer gives a number of
+  samples.
+
 - The messages about a curve that does not resolve and about a negative reading
   suggest more epochs only when training ran to `n_epochs`. A run that stopped
   earlier stopped because its curve had stopped improving, so more epochs would

@@ -236,8 +236,8 @@ def check_dimensionality_settings(validator) -> None:
         warnings.warn(
             f"{_y_side[0]} was set for mode='dimensionality'. The mode's two "
             f"sides are two halves of the same recording. An encoder that differs "
-            f"between the halves makes the curve hard to read. Leave the Y "
-            f"overrides unset unless you mean the halves to be read differently.",
+            f"between the halves makes the curve hard to interpret. Leave the Y "
+            f"overrides unset unless you mean the halves to be encoded differently.",
             UserWarning, stacklevel=user_stacklevel()
         )
 

@@ -253,7 +253,7 @@ class TestTheWarningsAboutTheValueRead:
             warnings.simplefilter('always')
             warn_about_gap(2.5, 0.75, 'bits', gap_share=0.5, clear_se=3.0)
         text = str(caught[0].message)
-        assert text.startswith('At the epoch read, the held-out MI of the network (0.7500 bits) is less than '
+        assert text.startswith('At the chosen epoch, the held-out MI of the network (0.7500 bits) is less than '
                                'Training(gap_share=0.5) of the estimate (2.5000 bits).')
         assert 'Training(clear_se=3)' in text
 

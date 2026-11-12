@@ -70,9 +70,10 @@ def prepare(a, gaussianize: bool, rng: np.random.Generator, name: str = 'a varia
         column = f" in column {int(np.argmax(share))}" if a.shape[1] > 1 else ""
         warnings.warn(
             f"KSG assumes continuous values, and {share.max():.0%} of {name}'s values{column} tie with another "
-            f"row's. That share is above max_tied_share={max_tied_share:g}. KSG breaks ties with noise drawn for each variable apart, so a variable and an exact copy of "
-            f"it stop looking alike, and an estimate conditioned on that copy reads away from zero where the "
-            f"truth is 0. Use the trained estimators on spike windows, counts and other values that tie.",
+            f"row's. That share is above max_tied_share={max_tied_share:g}. KSG breaks ties with noise that it "
+            f"draws separately for each variable, so a variable and an exact copy of it no longer look alike. "
+            f"An estimate conditioned on that copy then comes out different from zero where the true value is "
+            f"0. Use the trained estimators on spike windows, counts and other values that tie.",
             UserWarning, stacklevel=user_stacklevel())
     a = ZScore().fit(a).transform(a) + NOISE * rng.standard_normal(a.shape)
     if gaussianize:
