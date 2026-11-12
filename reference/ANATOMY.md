@@ -7,7 +7,7 @@ where the bound comes from and why finite samples bias it. Notebook 05 shows how
 to choose between the estimators and architectures that the library ships.
 
 The construction follows [Abdelaleem et al.,
-2025](https://arxiv.org/abs/2506.00330) and through it [van den Oord et al.,
+2025](https://arxiv.org/abs/2506.00330), which in turn builds on [van den Oord et al.,
 2018](https://arxiv.org/abs/1807.03748), [Poole et al.,
 2019](https://proceedings.mlr.press/v97/poole19a.html) and [Song and Ermon,
 2020](https://arxiv.org/abs/1910.06222).
