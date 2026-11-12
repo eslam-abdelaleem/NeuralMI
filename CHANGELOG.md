@@ -361,6 +361,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   that a configuration gives the same estimate, epoch and diagnosis in a grid
   as alone.
 
+- `estimator='smile'` is again the estimator of Song and Ermon (2020). Since
+  March 2026 the library had also clipped the scores of the paired samples and
+  had trained the Jensen-Shannon term on the clipped scores. The estimate could
+  then not exceed twice the clip (10 nats at the default clip of 5). It also fell
+  below the true value once many paired scores exceeded the clip. Now the clip
+  applies only to the scores of the unpaired samples in the normalising term,
+  while the Jensen-Shannon term trains on the raw scores.
+  `test_smile_clips_only_the_unpaired_scores` checks both. USING, PARAMETERS,
+  MESSAGES and THEORY describe this form.
+
 - The ceiling warning now judges the value that the run reports, after the
   trainer sets a negative reading to 0 and at the epoch that `peak_fraction`
   reads, so it no longer quotes a value that the run does not report. Each side

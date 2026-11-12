@@ -130,10 +130,14 @@ def js_fgan_lower_bound(scores: torch.Tensor) -> torch.Tensor:
     return first_term - second_term
 
 def smile_lower_bound(scores: torch.Tensor, clip: Optional[float] = 5.0) -> torch.Tensor:
-    """Computes the SMILE lower bound on mutual information.
+    """Computes the SMILE estimate of mutual information.
 
-    SMILE (Smoothed Mutual Information "Lower-bound" Estimator) is designed to
-    reduce the bias of other estimators by applying a clipping transformation.
+    SMILE (Smoothed Mutual Information "Lower-bound" Estimator) trains the
+    critic on the Jensen-Shannon bound and estimates the MI through the
+    Donsker-Varadhan representation. The clip applies only to the scores of the
+    unpaired samples in the normalising term, so that a few large scores cannot
+    dominate it. The paired scores enter as they are, so the estimate has no
+    ceiling.
 
     References
     ----------
@@ -146,20 +150,19 @@ def smile_lower_bound(scores: torch.Tensor, clip: Optional[float] = 5.0) -> torc
         A `(batch_size, batch_size)` tensor of scores, where `scores[i, j]`
         is the critic's output for the pair `(x[i], y[j])`.
     clip : float, optional
-        The value to which the scores will be clipped. If None, no clipping
-        is applied. Defaults to 5.0.
+        The scores of the unpaired samples are clipped to `[-clip, clip]` in
+        the normalising term. If None, no clipping is applied. Defaults to 5.0.
 
     Returns
     -------
     torch.Tensor
-        A scalar tensor representing the estimated MI lower bound.
+        A scalar tensor with the value of the SMILE estimate and the gradient
+        of the Jensen-Shannon bound.
     """
     scores_clipped = torch.clamp(scores, -clip, clip) if clip is not None else scores
     z = logmeanexp_nodiag(scores_clipped, dim=(0, 1))
-    dv = scores_clipped.diag().mean() - z
-    # JS is computed on the clipped scores (not the raw scores) -- a minor,
-    # intentional deviation from the canonical SMILE formulation.
-    js = js_fgan_lower_bound(scores_clipped)
+    dv = scores.diag().mean() - z
+    js = js_fgan_lower_bound(scores)
     with torch.no_grad():
         dv_js = dv - js
     return js + dv_js

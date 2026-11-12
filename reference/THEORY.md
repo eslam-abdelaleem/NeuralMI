@@ -87,28 +87,24 @@ and the fraction of it that the value reached (`train_saturation`,
 SMILE ([Song and Ermon, 2020](https://arxiv.org/abs/1910.06222)) trains the
 critic on the Jensen-Shannon bound and estimates the MI through the
 Donsker-Varadhan representation that MINE ([Belghazi et al.,
-2018](https://proceedings.mlr.press/v80/belghazi18a.html)) uses, with the
-critic's scores clipped to $[-\tau, \tau]$. Song and Ermon clip only the scores
-$f(x, y')$ of the pairs that combine different samples. The library clips every
-score, in training and in the estimate, so its estimate is
+2018](https://proceedings.mlr.press/v80/belghazi18a.html)) uses. In the
+normalising term, the scores $f(x, y')$ of the pairs that combine different
+samples are clipped to $[-\tau, \tau]$, so the estimate is
 
 $$
-\hat{I}_{\text{SMILE}} = \mathbb{E}\left[ \text{clip}(f(x,y), \tau) \right] - \log \mathbb{E}\left[ e^{\text{clip}(f(x,y'), \tau)} \right].
+\hat{I}_{\text{SMILE}} = \mathbb{E}\left[ f(x,y) \right] - \log \mathbb{E}\left[ e^{\text{clip}(f(x,y'), \tau)} \right].
 $$
 
 SMILE has a lower variance than MINE because clipping prevents a few large
 scores from dominating the normalising term. Unlike InfoNCE, SMILE has no
 $\log N$ ceiling, so its bias at large MI is lower, but its variance is higher.
-The library also clips the paired scores, so its estimate cannot exceed
-$2\tau$ (10 nats at the default $\tau = 5$). It also falls below the true MI
-once many paired scores exceed $\tau$. A clip below the default $\tau = 5$
-lowers the variance and the cap $2\tau$ but can raise the bias.
+A clip below the default $\tau = 5$ lowers the variance but can raise the bias.
 
 :::{admonition} Choosing
 :class: tip
 
 InfoNCE is the general-purpose choice. SMILE suits a true MI that may be large
-compared with the log of the evaluation size but stays below its cap of $2\tau$.
+compared with the log of the evaluation size.
 :::
 
 :::{admonition} References

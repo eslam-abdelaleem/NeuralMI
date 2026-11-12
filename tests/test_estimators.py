@@ -19,17 +19,31 @@ class TestEstimators:
         mi = smile_lower_bound(scores)
         assert isinstance(mi, torch.Tensor) and mi.ndim == 0
 
+    def test_smile_clips_only_the_unpaired_scores(self):
+        """Song and Ermon's form: the clip enters the normalising term only. The paired scores count in full,
+        so the estimate can exceed twice the clip, and they keep the gradient of the Jensen-Shannon bound."""
+        scores = torch.zeros(8, 8)
+        scores.fill_diagonal_(20.0)
+        assert torch.isclose(smile_lower_bound(scores, clip=5.0), torch.tensor(20.0))
+        scores = torch.full((8, 8), 9.0)
+        scores.fill_diagonal_(12.0)
+        # The unpaired scores of 9 count as 5 in the normalising term.
+        assert torch.isclose(smile_lower_bound(scores, clip=5.0), torch.tensor(7.0))
+        scores = torch.zeros(8, 8)
+        scores.fill_diagonal_(6.0)
+        scores.requires_grad_(True)
+        smile_lower_bound(scores, clip=5.0).backward()
+        assert (scores.grad.diag() > 0).all()
+
     @pytest.mark.parametrize("estimator_name", ['infonce', 'smile'])
     def test_estimator_accuracy_on_known_data(self, estimator_name):
         """Each estimator recovers a known ground-truth MI through the real API.
 
         This goes through `nmi.run()`, the configuration the library produces.
-        A Trainer assembled by hand with other settings makes SMILE diverge to
-        NaN on every data draw tried (10 of 10), while InfoNCE tolerates it.
-        Through `nmi.run()` SMILE is stable across 8 draws.
+        Through `nmi.run()` SMILE is stable across 8 data draws.
 
         Tolerance measured, not guessed: with the default model and training,
-        InfoNCE lands in 2.08-2.12 and SMILE in 1.85-1.87 over three seeds
+        InfoNCE lands in 2.08-2.12 and SMILE in 1.85-1.89 over three seeds
         against a truth of 2.0, so the worst observed error is ~0.15. 0.6 is
         ~4x that: comfortable against seed noise, and failing an estimator that
         learned nothing.

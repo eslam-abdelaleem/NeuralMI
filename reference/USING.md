@@ -1303,7 +1303,7 @@ matrix of scores into a bound on the MI
 | `Estimator(name=...)` | bias and variance | ceiling |
 |---|---|---|
 | `'infonce'` (default) | low variance, biased low near its ceiling | $\log N$ nats, $N$ the number of samples evaluated |
-| `'smile'` | lower bias at large MI, higher variance | $2\tau$ nats, $\tau$ the clip (default 5) |
+| `'smile'` | lower bias at large MI, higher variance | none |
 | `'ksg'` | no training; comes out too low at large MI and in many dimensions | none |
 
 InfoNCE cannot report more than the logarithm of the number of samples on which
@@ -1326,13 +1326,10 @@ helps. An estimate near the ceiling of the training values while its held-out
 value is far below may come from a network that memorised its training rows
 ([MESSAGES.md](MESSAGES.md#ceiling-and-capacity)).
 
-SMILE is numerically less stable than InfoNCE. In our tests, SMILE called
-through `nmi.run()` produced no NaN on any data draw, while a `Trainer` assembled
-by hand produced NaN on every draw at some input geometries. InfoNCE trained on
-all of these draws. The output of InfoNCE is bounded by $\log N$. SMILE clips
-every score, so its output is bounded by twice the clip.
+The output of InfoNCE is bounded by $\log N$. SMILE clips only the scores of the
+unpaired samples in its normalising term, so its output has no such bound.
 `Estimator(name='smile', params={'clip': 5.0})` sets the clip. A lower clip
-lowers the variance and the bound but can raise the bias.
+lowers the variance but can raise the bias.
 
 `estimator='ksg'` is the Kraskov-Stögbauer-Grassberger estimator
 ([THEORY.md](THEORY.md#estimating-mutual-information-from-neighbours-ksg)). It

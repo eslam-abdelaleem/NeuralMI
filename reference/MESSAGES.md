@@ -48,8 +48,7 @@ against the bound. When the split has more held-out rows than one evaluation
 scores, raising `max_eval_samples` (and `test_subset_size`, if set) puts more of
 them into each evaluation. Otherwise only more held-out rows raise the ceiling,
 either from more data or from a lower `Split(train_fraction=...)`.
-`estimator='smile'` has no $\log n$ ceiling, but its clip bounds its estimate
-instead and costs more variance. With `peak_fraction` below 1, the warning
+`estimator='smile'` has no $\log n$ ceiling but has a higher variance. With `peak_fraction` below 1, the warning
 judges the network at the chosen epoch (the conservative one), while `test_mi`
 and `test_saturation` describe the network at `best_epoch`.
 

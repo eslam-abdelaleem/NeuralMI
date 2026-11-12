@@ -258,7 +258,7 @@ instead of a critic. A bare name such as `estimator='smile'` is also accepted.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `name` | `'infonce'` | `'infonce'` (low variance, capped at the logarithm of the number of samples evaluated), `'smile'` (lower bias, higher variance, capped at twice its clip) or `'ksg'` (nearest neighbours, no training, see [USING.md](USING.md#estimators)). |
+| `name` | `'infonce'` | `'infonce'` (low variance, capped at the logarithm of the number of samples evaluated), `'smile'` (lower bias, higher variance) or `'ksg'` (nearest neighbours, no training, see [USING.md](USING.md#estimators)). |
 | `params` | `{}` | Extra arguments for the estimator. SMILE takes `clip`, default 5.0. KSG takes `k` (4), `gaussianize` (True), `exclude` (`'auto'`) and `max_tied_share` (0.5). KSG warns when more than `max_tied_share` of a column's rows tie with another row. |
 
 ## `Output`
