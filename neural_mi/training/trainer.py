@@ -316,9 +316,11 @@ class Trainer:
         patience : int, optional
             Epochs to wait for improvement before early stopping.
             Early stopping decides when training ends. The network evaluated is
-            the one at the peak of the held-out curve smoothed after training
-            (``best_epoch``), whichever epoch that is: copies of the network are
-            kept for the epochs that can still turn out to be that peak.
+            the one at the epoch that ``epoch_rule`` picks from the held-out
+            curve smoothed after training (``best_epoch``): by default the
+            earliest epoch at its top, or its peak with ``'peak'``. Copies of the
+            network are kept for the epochs that can still turn out to be that
+            epoch.
         smoothing_sigma : float, optional
             Standard deviation for the Gaussian smoothing kernel on validation MI.
             Defaults to 1.0.
@@ -390,8 +392,9 @@ class Trainer:
             yielding a ``'train_mi_history'`` in the returned results.
 
             - ``False`` (default), no per-epoch train evaluation.
-            - ``True``: evaluate on the same locked-in training evaluation subset
-              used for the final ``train_mi`` (size capped by ``max_eval_samples``).
+            - ``True``: evaluate on a fixed subset of up to ``max_eval_samples``
+              training rows, drawn once before training. It is drawn apart from
+              the rows behind the final ``train_mi``.
             - ``'full'`` or ``1.0``: evaluate on the entire training set, not
               capped by ``max_eval_samples``. Use this when the train curve needs
               to be read against the reported estimate: a smaller evaluation
@@ -626,8 +629,8 @@ class Trainer:
             else:
                 raise ValueError(
                     f"eval_train={eval_train!r} is not a recognised value. Use False to "
-                    f"disable, True for the locked-in evaluation subset (capped by "
-                    f"max_eval_samples={max_eval_samples}), 'full' or 1.0 for the entire "
+                    f"disable, True for a fixed subset of up to "
+                    f"max_eval_samples={max_eval_samples} training rows, 'full' or 1.0 for the entire "
                     f"training set, a float in (0, 1) for a fraction of it, or an int >= 1 "
                     f"for that many samples."
                 )
@@ -899,7 +902,7 @@ class Trainer:
                 logger.debug(f"Early stopping at epoch {epoch+1}.")
                 break
         
-        # 4. Finalization: the network at the peak of the smoothed held-out curve
+        # 4. Finalization: the network at the epoch that epoch_rule picks from the smoothed held-out curve
         _smoothed_history = np.asarray(
             self.custom_smoothing_fn(history) if self.custom_smoothing_fn
             else self._smooth(history, smoothing_sigma, median_window)

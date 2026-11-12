@@ -88,8 +88,10 @@ def _n_samples_for_shared_split(x_data, y_data, analysis_params: Dict[str, Any])
 def _get_or_create_shared_split(analysis_params: Dict[str, Any], n_samples: int) -> Tuple[np.ndarray, np.ndarray]:
     """One train/test split shared by every fit of the call.
 
-    Every value of ``k`` and every restart is then scored on the same held-out
-    rows. Explicit ``train_indices``/``test_indices`` are used as given.
+    Every value of ``k`` and every restart then trains on the same training rows
+    and is scored on the same held-out set. A fit scores a subset of up to
+    ``max_eval_samples`` held-out rows of its own when the set is larger.
+    Explicit ``train_indices``/``test_indices`` are used as given.
     Otherwise the split comes from the trainer's own splitting code, drawn from
     the call's seed (neural_mi/seeds.py).
     """
@@ -414,8 +416,6 @@ def mode_defaults(params: Dict[str, Any], user_set: set, has_y: bool) -> Dict[st
     if 'shared_encoder' not in user_set:
         # Two halves of one recording can share an encoder; X and Y need not.
         out['shared_encoder'] = not has_y
-    if 'whitening' not in params:
-        out['whitening'] = 'std'
     return out
 
 

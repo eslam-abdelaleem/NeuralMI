@@ -89,7 +89,7 @@ BASE_PARAMS_SCHEMA = {
     'scheduler_params': {'type': dict, 'default': {}},
     # Per-epoch train MI tracking, yielding 'train_mi_history'.
     #   False, no per-epoch train evaluation.
-    #   True, the locked-in train eval subset (capped by max_eval_samples).
+    #   True, a fixed subset of up to max_eval_samples training rows, drawn apart from train_mi's.
     #   int >= 1, exactly that many training samples.
     #   float (0, 1), that fraction of the training set.
     #   1.0 / 'full', the entire training set, uncapped.
@@ -99,7 +99,7 @@ BASE_PARAMS_SCHEMA = {
     # Per-epoch embedding tracking.
     # Controls whether embeddings are extracted and stored at every epoch.
     # Mirroring eval_train style:
-    #   False, no tracking (global default; dimensionality mode defaults to 512).
+    #   False, no tracking (the default).
     #   True, track first 512 samples.
     #   int >= 1, track exactly that many samples (first N in the dataset).
     #   float (0, 1), track that fraction of the dataset.
