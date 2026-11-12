@@ -561,17 +561,17 @@ spectrum but add nothing to the MI, so the participation ratio counts them while
 the curve does not.
 
 A large reference fit runs first (`reference_dim`, 64 unless set). Its
-participation ratio sets the size of the grid of `embedding_dim`. The grid stops
-once three values in a row reach the threshold.
+participation ratio sets the size of the grid of `embedding_dim`. The grid of
+each split stops once three values in a row reach the threshold.
 `Dimensionality(embedding_dims=range(1, 13))` fits exactly the values given.
 Each value gets `n_restarts` networks (4) and the best one counts. The messages
 say when the grid grows, stops early or is extended
 ([MESSAGES.md](MESSAGES.md#dimensionality)).
 
 Without `y_data`, the mode splits the channels of X into two halves with
-`split_method` and compares the halves. `'random'` draws `n_splits` (5) channel
-assignments and reports the median value with the standard deviation over
-splits. The other split methods give one split. With `y_data`, the two views are
+`split_method` and compares the halves. `'random'` draws `n_splits` (5)
+different channel assignments and reports the median value with the standard
+deviation over splits. The other split methods give one split. With `y_data`, the two views are
 X and Y. The image splits (`'horizontal'`, `'vertical'`, `'row_interleaved'`,
 `'col_interleaved'`, `'diagonal'`, `'antidiagonal'`) need input of shape
 `(N, C, H, W)`. The two diagonal splits cannot be used with a convolutional

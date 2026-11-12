@@ -371,6 +371,35 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `test_smile_clips_only_the_unpaired_scores` checks both. USING, PARAMETERS,
   MESSAGES and THEORY describe this form.
 
+- `mode='dimensionality'` has eight fixes that came from checking its docs
+  against the code. `tests/test_dimensionality.py` and `tests/test_best_epoch.py`
+  check each one.
+  - Each split now stops its grid once its own dimension is confirmed, and only
+    the splits whose curve stayed short of the threshold get the extension.
+    Before, every split kept fitting until the last split had confirmed, and the
+    extension refitted every split. Those fits could raise the plateau of a split
+    that had already confirmed its dimension and move that dimension. The fits of
+    a split are now those of a call with that split alone.
+  - `details['stopped_early']` is now set after the extension. It says whether
+    the grid of any split stopped before its last value.
+  - The call warns when the values that follow a reported dimension do not
+    confirm it. Either the best restart at one of the next `confirm_steps` − 1
+    values falls below the threshold again, or the grid ends first.
+  - The `held_out_gap` check compares the median held-out MI of the reference
+    networks with their median training MI. It compared the median held-out MI
+    with the plateau (a maximum), so it warned too readily.
+  - The ceiling check uses the log of the held-out rows in one evaluation block,
+    as the trainer does. With more held-out rows than `max_eval_samples`, it used
+    the log of all of them and warned too rarely.
+  - `split_method='random'` no longer draws the same division of the channels
+    twice. With few channels, the mode runs each possible division once and says
+    so.
+  - A refit can no longer make the reference smaller. The product of
+    `refit_reach` and `reference_fill` must now exceed `grid_reach`.
+  - With `peak_fraction` below 1, the participation ratios come from the network
+    that gives the reported estimate rather than from the network at
+    `best_epoch`. This holds in every mode.
+
 - The ceiling warning now judges the value that the run reports, after the
   trainer sets a negative reading to 0 and at the epoch that `peak_fraction`
   reads, so it no longer quotes a value that the run does not report. Each side

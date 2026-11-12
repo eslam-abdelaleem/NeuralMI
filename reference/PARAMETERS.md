@@ -364,12 +364,12 @@ For `mode='dimensionality'`.
 
 | Parameter | Default | Meaning |
 |--|--|----|
-| `embedding_dims` | `None` | A list or a range of the values of `embedding_dim` to fit. `None` chooses them from the reference fit (`grid_reach` and the settings after it) and stops once `confirm_steps` values in a row reach the threshold. Given values are all fitted. |
+| `embedding_dims` | `None` | A list or a range of the values of `embedding_dim` to fit. `None` chooses them from the reference fit (`grid_reach` and the settings after it), and each split stops once `confirm_steps` values in a row reach the threshold. Given values are all fitted. |
 | `n_restarts` | `4` | Networks trained at each `embedding_dim` of each split. The best one counts. |
 | `saturation_ratio` | `0.95` | The fraction of the plateau that the curve must reach. The reported dimension is the smallest `embedding_dim` that reaches it. |
 | `reference_dim` | `None` | The `embedding_dim` of the large reference fit that runs first. `None` fits 64 and refits at `refit_reach` times the participation ratio when `grid_reach` times the ratio reaches `reference_fill` of 64. |
 | `split_method` | `'random'` | Without `y_data`, how X's channels are split in two: `'random'`, `'spatial'` (at the midpoint), `'index'` (by `channel_indices_x`), `'temporal'` (X against X at `lag`), or, for image data, `'horizontal'`, `'vertical'`, `'row_interleaved'`, `'col_interleaved'`, `'diagonal'`, `'antidiagonal'`. |
-| `n_splits` | `None` | The number of random channel splits of X (5 when `None`). Only `split_method='random'` draws more than one. A call with `y_data` refuses it. |
+| `n_splits` | `None` | The number of random channel splits of X (5 when `None`). Only `split_method='random'` draws more than one. No two of its splits divide the channels the same way, so a few channels can give fewer splits. A call with `y_data` refuses it. |
 | `lag` | `1` | The lag of `split_method='temporal'`, in samples. |
 | `channel_indices_x` | `None` | The channels of X under `split_method='index'`. Y gets the rest. |
 | `ceiling_mi_fraction` | `0.85` | Warn when the reference fits' held-out MI is this close to its ceiling. |
@@ -378,7 +378,7 @@ For `mode='dimensionality'`.
 | `grid_medium` | `20` | When the reach is above `grid_small` and at most this value, the default grid contains every `embedding_dim` from 1 to this value. |
 | `grid_points` | `10` | When the reach is above `grid_medium`, the default grid contains this many values on a log scale from 1 to the reach. |
 | `reference_fill` | `0.75` | The reference is refitted when `grid_reach` times its participation ratio reaches this fraction of its `embedding_dim`. |
-| `refit_reach` | `4.0` | The refitted reference has this many times the participation ratio as its `embedding_dim`. |
-| `confirm_steps` | `3` | The default grid stops once every split's curve has reached the threshold on this many values in a row. |
+| `refit_reach` | `4.0` | The refitted reference has this many times the participation ratio as its `embedding_dim`. Its product with `reference_fill` must exceed `grid_reach`, so that the refitted reference is larger. |
+| `confirm_steps` | `3` | Each split's default grid stops once its curve has reached the threshold on this many values in a row. The call warns when fewer values confirm a reported dimension. |
 | `restart_spread` | `0.1` | The call warns when restarts below the reported dimension differ by more than this share of the plateau. |
-| `held_out_gap` | `0.1` | The call warns when the reference fit's held-out MI falls short of the plateau by more than this share of the plateau. |
+| `held_out_gap` | `0.1` | The call warns when the held-out MI of the reference networks falls short of their training MI by more than this share of it. |

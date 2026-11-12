@@ -88,6 +88,21 @@ def test_conservative_epoch_evaluates_its_own_network(monkeypatch):
     assert at_epoch[expected] in train_side and at_epoch[results['best_epoch']] in train_side
 
 
+def test_the_spectrum_describes_the_network_of_the_estimate(monkeypatch):
+    """With peak_fraction < 1 the participation ratios come from the conservative network, the one that
+    gives the reported estimate, and the best-epoch network is restored afterwards."""
+    seen, extract = [], Trainer._extract_spectral_metrics
+
+    def spectrum(trainer, x, y):
+        seen.append(_fingerprint(trainer.model))
+        return extract(trainer, x, y)
+
+    monkeypatch.setattr(Trainer, '_extract_spectral_metrics', spectrum)
+    results, at_epoch, _ = _train(monkeypatch, _curve(0), peak_fraction=0.5, epoch_rule='peak')
+    assert results['conservative_epoch'] < results['best_epoch']
+    assert seen == [at_epoch[results['conservative_epoch']]]
+
+
 def test_a_nan_epoch_is_never_chosen(monkeypatch):
     curve = _curve(1, nan_at=12)
     results, at_epoch, train_side = _train(monkeypatch, curve, epoch_rule='peak')

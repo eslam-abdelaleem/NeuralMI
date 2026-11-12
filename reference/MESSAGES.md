@@ -83,7 +83,8 @@ the ceiling as much as the bias. Raise `max_eval_samples`, or narrow
 The fit reports the same condition afterwards and sets `is_reliable` to `False`.
 
 **`Dimensionality: the reference fits' MI (...) is near its evaluation ceiling`**
-When the ceiling caps the plateau, small embeddings reach the threshold early.
+The ceiling is the log of the held-out rows that one evaluation scores. When it
+caps the plateau, small embeddings reach the threshold early.
 The reported dimension can then fall below the dimension that it is meant to
 bound. Raise `max_eval_samples`.
 
@@ -671,18 +672,41 @@ Every fit of the split ended at 0. With a plateau of 0, the split has no dimensi
 to report and is left out of the median. Check that the two views are aligned and
 that training ran long enough to learn anything.
 
-**`Dimensionality: the restarts at embedding_dim ... below the reading differ by more than ...`**
+**`Dimensionality: the restarts at embedding_dim ... below the reported dimension differ by more than ...`**
 A restart can settle with fewer directions than its embedding allows and give a
 value that is too low. The curve uses the best restart at each value. When the
 restarts disagree this much below the reported dimension, the best one may also
 have settled short, so the reported dimension may be too high. Raise
 `n_restarts`.
 
-**`Dimensionality: at the reference fit the held-out MI (...) falls short of the plateau (...) by more than ...`**
-The plateau is the training MI. A held-out value far below it means that the data
-have few samples for the information that each dimension carries. The training
-value then keeps rising with the embedding size and pushes the reported dimension
-up. The reported dimension is still an upper bound. More data make it tighter.
+**`Dimensionality: for split(s) ..., the best restart at the reported dimension reaches ... of the plateau, but at one of the next ... values of embedding_dim the best restart falls below that share again`**
+The curve is the running maximum of the best restarts, so a single restart that
+comes out too high at a small embedding size sets the reported dimension by
+itself. If the dimension is real, the values after it stay at the threshold. When
+one of the next `Dimensionality(confirm_steps=...)` values falls below it, the
+reported dimension may be too low. Raise `n_restarts` and check the curve with
+`result.plot()`.
+
+**`Dimensionality: the reported dimension of split(s) ... is among the last ... values of the grid`**
+The grid ends before `Dimensionality(confirm_steps=...)` values in a row have
+reached the threshold from the reported dimension on. The values beyond it were
+not fitted, so nothing confirms that the curve stays at the threshold. Pass
+`embedding_dims` that reach further beyond the reported dimension.
+
+**`Dimensionality: at the reference fit the held-out MI (...) falls short of the training MI of the same networks (...) by more than ...`**
+The check compares the median held-out value of the reference networks with
+their median training value. A held-out value far below the training value means
+that the data have few samples for the information that each dimension carries.
+The training value then keeps rising with the embedding size and pushes the
+reported dimension up. The reported dimension is still an upper bound. More data
+make it tighter.
+
+**`Dimensionality: ... channels divide into only ... different pairs of halves`**
+With few channels, `split_method='random'` cannot draw `n_splits` different
+divisions of the channels into two halves. The mode runs each possible division
+once, because a repeated division would count one split twice in the median and
+the spread. This is a warning when you set `n_splits` yourself. With the default
+number of splits, the library logs the message at the info level instead.
 
 **`split_method='...' produced unequal halves`**
 The two halves differ in size. `shared_encoder=True` needs equal halves, so it is
@@ -897,15 +921,16 @@ A reference may be too small to hold every shared direction when
 `reference_fill` of its size. It is then refitted once at `refit_reach` times the
 ratio. A `reference_dim` that you set is kept as given.
 
-**`Dimensionality: the grid stopped at embedding_dim=... once ... consecutive values reached ...`**
+**`Dimensionality: the grid stopped at ... once ... consecutive values reached ...`**
 The default grid is fitted `Dimensionality(confirm_steps=...)` values at a time.
 That many values in a row at the threshold confirm the reported dimension against
-the plateau that the reference fit sets, so the values above them are skipped.
-Pass `embedding_dims` to fit every value.
+the plateau that the reference fit sets. Each split stops there and skips the
+values above, so its fits are the ones that a call with that split alone would
+make. Pass `embedding_dims` to fit every value.
 
 **`Dimensionality: the curve of split(s) ... did not reach ... of its plateau by embedding_dim=...`**
-The default grid ended below the threshold. It is extended once with values on a
-log scale up to one below the reference. A curve that is still short of the
+The default grid ended below the threshold. For these splits only, it is extended
+once with values on a log scale up to one below the reference. A curve that is still short of the
 threshold after the extension reports the reference as its dimension and raises
 the warning that the curve reached its plateau only at the reference
 ([Dimensionality](#dimensionality)).

@@ -1033,14 +1033,16 @@ When every restart at the true dimension stalls, $k^\ast$ moves up to the next
 size at which a restart does not stall, so the reported dimension still bounds
 the true one from above. The mode warns when the restarts below $k^\ast$
 disagree by more than `restart_spread` of the plateau, but not when every
-restart stalls at the same value. Where the curve shows a step, check the
+restart stalls at the same value. It also warns when the next `confirm_steps` −
+1 values on the grid do not confirm $k^\ast$. Either one of them falls below the
+threshold, so that a single restart that came out too high may have set
+$k^\ast$, or the grid ends before them. Where the curve shows a step, check the
 training and held-out curves of the fits. The held-out curve of every fit is
 kept in `runs` (`test_mi_history`). The training value of each fit is taken at
-the epoch that the library picks from this curve
-([The reported number](#the-reported-number)).
-`result.animate(split_id=..., embedding_dim=..., run_id=...)` shows the held-out
-curve of one fit, with its training curve when the fit ran with
-`Training(eval_train=True)`.
+the epoch that the library picks from this curve ([The reported
+number](#the-reported-number)). `result.animate(split_id=..., embedding_dim=...,
+run_id=...)` shows the held-out curve of one fit, with its training curve when
+the fit ran with `Training(eval_train=True)`.
 
 ### The reported dimension as an upper bound
 
@@ -1081,36 +1083,39 @@ $\mathrm{PR}_{\text{eig}}$, so the grid reaches further.
 The grid reaches `grid_reach` times $\mathrm{PR}_{\text{singular}}$. When this
 reach is at least `reference_fill` of the reference's embedding size, the
 reference is first refitted once at `refit_reach` times
-$\mathrm{PR}_{\text{singular}}$, unless you set `reference_dim`. The refitted
-reference replaces the first one and its fits. Its ratio then sets the grid.
-When the reach is at most `grid_small`, the grid is every value from 1 to
-`grid_small`. When the reach is larger but at most `grid_medium`, the grid is
-every value from 1 to `grid_medium`. Beyond `grid_medium`, the grid is at most
-`grid_points` values on a log scale from 1 to the reach.
+$\mathrm{PR}_{\text{singular}}$, unless you set `reference_dim`. The product of
+`refit_reach` and `reference_fill` must exceed `grid_reach`, so that the
+refitted reference is larger than the first one. It replaces the first one and
+its fits. Its ratio then sets the grid. When the reach is at most `grid_small`,
+the grid is every value from 1 to `grid_small`. When the reach is larger but at
+most `grid_medium`, the grid is every value from 1 to `grid_medium`. Beyond
+`grid_medium`, the grid is at most `grid_points` values on a log scale from 1 to
+the reach.
 
-The grid is fitted `confirm_steps` values at a time and stops once that many
-values in a row reach the threshold on every split. When the curve of any split
-is still short of the threshold at the end of the grid, the grid of every split
-is extended once, by at most `grid_points` values on a log scale between the
-last grid value and the reference. The extension stops early in the same way.
-With `embedding_dims`, the mode fits every value given instead of the grid. Each
-value must lie below the reference's embedding size. The reference fit still
-runs first. [PARAMETERS.md](PARAMETERS.md#dimensionality) gives the default of
-each setting.
+The grid is fitted `confirm_steps` values at a time. Each split stops once that
+many values in a row reach the threshold, so its fits are the ones that a call
+with that split alone would make. When the curve of a split is still short of
+the threshold at the end of the grid, the grid of that split is extended once,
+by at most `grid_points` values on a log scale between the last grid value and
+the reference. The extension stops early in the same way. With `embedding_dims`,
+the mode fits every value given instead of the grid. Each value must lie below
+the reference's embedding size. The reference fit still runs first.
+[PARAMETERS.md](PARAMETERS.md#dimensionality) gives the default of each setting.
 
 ### Splits and their spread
 
 Without `y_data`, the mode splits X into two views. With the default
 `split_method='random'`, the channels are divided at random into two halves, one
 for each view (Y gets the extra channel when their number is odd). The mode
-draws `n_splits` (5) such assignments. Each gives its own curve, plateau and
-reported dimension. The mode reports the median of these dimensions as
-`dimension_at_most` and their sample standard deviation as
-`dimension_at_most_std`. A split whose curve stays at zero gives no dimension
-and is left out of both. The other split methods give one split. With `y_data`,
-the two views are X and Y, so the restarts are the only repeats. All fits of a
-configuration share one division of the rows into a training set and a held-out
-set.
+draws `n_splits` (5) such assignments and never the same division twice. When
+the channels allow fewer divisions, the mode runs each of them once. Each
+assignment gives its own curve, plateau and reported dimension. The mode reports
+the median of these dimensions as `dimension_at_most` and their sample standard
+deviation as `dimension_at_most_std`. A split whose curve stays at zero gives no
+dimension and is left out of both. The other split methods give one split. With
+`y_data`, the two views are X and Y, so the restarts are the only repeats. All
+fits of a configuration share one division of the rows into a training set and a
+held-out set.
 
 :::{admonition} References
 :class: note

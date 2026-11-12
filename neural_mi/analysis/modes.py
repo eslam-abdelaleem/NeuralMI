@@ -849,7 +849,7 @@ MODES: Dict[str, Mode] = {
                                # 'random', 'spatial', 'temporal', 'index', 'horizontal', 'vertical',
                                # 'row_interleaved', 'col_interleaved', 'diagonal' or 'antidiagonal'.
                                'split_method': {'type': str, 'default': 'random'},
-                               # Random channel splits of X; the other split methods give one split.
+                               # Random channel splits of X, no two alike; the other split methods give one.
                                'n_splits': {'type': (int, type(None)), 'min': 1, 'default': None},
                                # With split_method='temporal'.
                                'lag': {'type': int, 'default': 1},
@@ -865,13 +865,16 @@ MODES: Dict[str, Mode] = {
                                'grid_medium': {'type': int, 'min': 1, 'default': 20},
                                'grid_points': {'type': int, 'min': 2, 'default': 10},
                                # The reference is refitted at refit_reach times the ratio when
-                               # grid_reach times it reaches reference_fill of its dimension.
+                               # grid_reach times it reaches reference_fill of its dimension. The
+                               # product of refit_reach and reference_fill must exceed grid_reach.
                                'reference_fill': {'type': float, 'min': 0.0, 'default': 0.75},
                                'refit_reach': {'type': float, 'min': 1.0, 'default': 4.0},
-                               # The default grid stops after this many consecutive values at the reading.
+                               # Each split's default grid stops after this many consecutive values at
+                               # the threshold, and fewer values that confirm a dimension warn.
                                'confirm_steps': {'type': int, 'min': 1, 'default': 3},
-                               # Warn when restarts below the reading differ by more than this share
-                               # of the plateau, and when the held-out MI lies this share below it.
+                               # Warn when restarts below the reported dimension differ by more than
+                               # this share of the plateau, and when the reference networks' held-out
+                               # MI lies this share below their training MI.
                                'restart_spread': {'type': float, 'min': 0.0, 'default': 0.1},
                                'held_out_gap': {'type': float, 'min': 0.0, 'default': 0.1},
                            },

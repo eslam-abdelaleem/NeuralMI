@@ -381,8 +381,10 @@ class Trainer:
             spectrum (singular values) at every epoch in the returned
             ``spectral_metrics_history``, can be expensive, since it evaluates on
             ``train_eval_view`` each epoch. Defaults to False. Independent of this
-            flag, the same three values are always computed once at the best epoch
-            (see ``pr_eig``, ``pr_singular``, ``spectrum`` in the returned dict).
+            flag, the same three values are always computed once, for the network
+            that gives the reported estimate: at the conservative epoch when
+            ``peak_fraction`` chose one, else at the best epoch (see ``pr_eig``,
+            ``pr_singular``, ``spectrum`` in the returned dict).
         eval_train : bool, float, or int, optional
             Controls whether train-set MI is evaluated at every epoch alongside test-set MI,
             yielding a ``'train_mi_history'`` in the returned results.
@@ -1211,14 +1213,20 @@ class Trainer:
                         self._decoder_loss(_recon_y, _ty, self.decoder_output_activation_y).item())
             results['decoder_recon_loss'] = _recon_loss
 
-        # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) at the best epoch,
-        # independent of track_spectral_history above, for a critic that embeds
-        # each side. The concat critic has no embeddings to take a spectrum of.
+        # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) of the network
+        # that gives the reported estimate: at the conservative epoch when
+        # peak_fraction chose one, else at the best epoch. They are independent of
+        # track_spectral_history above and need a critic that embeds each side.
+        # The concat critic has no embeddings to take a spectrum of.
         if embeds_each_side(self.model):
+            if _read_ep != best_ep:
+                self.model.load_state_dict(_states[_read_ep])
             results.update(self._extract_spectral_metrics(
                 _index_batch(_eval_x_source, _eval_train_eval_idx),
                 _eval_y_source[_eval_train_eval_idx, ...],
             ))
+            if _read_ep != best_ep:
+                self.model.load_state_dict(best_model_state)
 
         return results
 
