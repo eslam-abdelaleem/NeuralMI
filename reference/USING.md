@@ -590,11 +590,12 @@ This mode uses the hybrid critic unless `critic_type` is set. It runs a
 separable critic with a warning and refuses the concat critic, because that
 critic has no embedding of either side. Unless you set them, `n_epochs` is 500
 with `patience` 50. Without `y_data`, `shared_encoder` is `True` unless set. Here
-the encoders of the hybrid critic use layer normalisation unless `norm_layer` is
-set. Layer normalisation keeps the fits at an embedding size equal to the
+the hybrid critic uses layer normalisation in its MLP layers unless `norm_layer`
+is set. Layer normalisation keeps the fits at an embedding size equal to the
 dimension from stalling below the full value. It also divides out the overall
-scale of each sample, so it lowers the whole curve where that scale carries
-information. The reported dimension is measured against the curve's own plateau.
+scale of each sample's hidden activations, so it can lower the whole curve where
+that scale carries information. The reported dimension is measured against the
+curve's own plateau.
 `sweep_grid` refuses `embedding_dim` and `run_id` because the mode sets both.
 
 ---
@@ -1302,7 +1303,7 @@ matrix of scores into a bound on the MI
 | `Estimator(name=...)` | bias and variance | ceiling |
 |---|---|---|
 | `'infonce'` (default) | low variance, biased low near its ceiling | $\log N$ nats, $N$ the number of samples evaluated |
-| `'smile'` | lower bias, higher variance | none |
+| `'smile'` | lower bias at large MI, higher variance | $2\tau$ nats, $\tau$ the clip (default 5) |
 | `'ksg'` | no training; comes out too low at large MI and in many dimensions | none |
 
 InfoNCE cannot report more than the logarithm of the number of samples on which
@@ -1328,10 +1329,10 @@ value is far below may come from a network that memorised its training rows
 SMILE is numerically less stable than InfoNCE. In our tests, SMILE called
 through `nmi.run()` produced no NaN on any data draw, while a `Trainer` assembled
 by hand produced NaN on every draw at some input geometries. InfoNCE trained on
-all of these draws. The output of InfoNCE is bounded by construction, whereas the
-clipped density ratio of SMILE is bounded only in variance.
+all of these draws. The output of InfoNCE is bounded by $\log N$. SMILE clips
+every score, so its output is bounded by twice the clip.
 `Estimator(name='smile', params={'clip': 5.0})` sets the clip. A lower clip
-lowers the variance and raises the bias.
+lowers the variance and the bound but can raise the bias.
 
 `estimator='ksg'` is the Kraskov-Stögbauer-Grassberger estimator
 ([THEORY.md](THEORY.md#estimating-mutual-information-from-neighbours-ksg)). It
@@ -1478,8 +1479,8 @@ declares whether it embeds each side (`embeds_each_side`). Every check uses this
 declaration. `mode='dimensionality'` uses the hybrid critic.
 
 `Model(norm_layer='layer')` helps the hybrid critic train on wide data. It also
-divides out the overall scale of each sample, so the estimate comes out lower
-where that scale carries information.
+divides out the overall scale of each sample's hidden activations, so the
+estimate can come out lower where that scale carries information.
 
 Every score of a critic that the library builds starts at exactly zero
 (`Model(zero_start=True)`). The separable critic starts half of the readout rows

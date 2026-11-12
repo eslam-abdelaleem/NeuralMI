@@ -84,27 +84,31 @@ and the fraction of it that the value reached (`train_saturation`,
 
 ### SMILE
 
-SMILE ([Song and Ermon, 2020](https://arxiv.org/abs/1910.06222)) estimates the
-MI through the Donsker-Varadhan representation used by MINE ([Belghazi et al.,
-2018](https://proceedings.mlr.press/v80/belghazi18a.html)) and clips the scores
-to $[-\tau, \tau]$. Song and Ermon clip only the scores of the unpaired samples.
-The library clips every score, so its estimate is
+SMILE ([Song and Ermon, 2020](https://arxiv.org/abs/1910.06222)) trains the
+critic on the Jensen-Shannon bound and estimates the MI through the
+Donsker-Varadhan representation that MINE ([Belghazi et al.,
+2018](https://proceedings.mlr.press/v80/belghazi18a.html)) uses, with the
+critic's scores clipped to $[-\tau, \tau]$. Song and Ermon clip only the scores
+$f(x, y')$ of the pairs that combine different samples. The library clips every
+score, in training and in the estimate, so its estimate is
 
 $$
 \hat{I}_{\text{SMILE}} = \mathbb{E}\left[ \text{clip}(f(x,y), \tau) \right] - \log \mathbb{E}\left[ e^{\text{clip}(f(x,y'), \tau)} \right].
 $$
 
-Clipping keeps a few large scores from dominating the normalising term. This
-term is the source of the high variance of MINE. SMILE has no $\log N$ ceiling.
-In exchange for its lower bias at large MI, it has a higher variance than
-InfoNCE. A clip below the default $\tau = 5$ lowers the variance and raises the
-bias.
+SMILE has a lower variance than MINE because clipping prevents a few large
+scores from dominating the normalising term. Unlike InfoNCE, SMILE has no
+$\log N$ ceiling, so its bias at large MI is lower, but its variance is higher.
+The library also clips the paired scores, so its estimate cannot exceed
+$2\tau$ (10 nats at the default $\tau = 5$). It also falls below the true MI
+once many paired scores exceed $\tau$. A clip below the default $\tau = 5$
+lowers the variance and the cap $2\tau$ but can raise the bias.
 
 :::{admonition} Choosing
 :class: tip
 
 InfoNCE is the general-purpose choice. SMILE suits a true MI that may be large
-compared with the log of the evaluation size.
+compared with the log of the evaluation size but stays below its cap of $2\tau$.
 :::
 
 :::{admonition} References
@@ -114,11 +118,7 @@ compared with the log of the evaluation size.
 - Ben Poole, Sherjil Ozair, Aaron van den Oord, Alex Alemi and George Tucker. On variational bounds of mutual information. *Proceedings of the 36th International Conference on Machine Learning*, PMLR 97:5171-5180, 2019. [proceedings.mlr.press/v97/poole19a](https://proceedings.mlr.press/v97/poole19a.html)
 - David McAllester and Karl Stratos. Formal limitations on the measurement of mutual information. *Proceedings of the 23rd International Conference on Artificial Intelligence and Statistics*, PMLR 108:875-884, 2020. [proceedings.mlr.press/v108/mcallester20a](https://proceedings.mlr.press/v108/mcallester20a.html)
 - Jiaming Song and Stefano Ermon. Understanding the limitations of variational mutual information estimators. *International Conference on Learning Representations*, 2020. [arxiv.org/abs/1910.06222](https://arxiv.org/abs/1910.06222)
-- Mohamed Ishmael Belghazi, Aristide Baratin, Sai Rajeswar, Sherjil Ozair,
-  Yoshua Bengio, Aaron Courville and R Devon Hjelm. Mutual information neural
-  estimation. *Proceedings of the 35th International Conference on Machine
-  Learning*, PMLR 80:531-540, 2018.
-  [proceedings.mlr.press/v80/belghazi18a](https://proceedings.mlr.press/v80/belghazi18a.html)
+- Mohamed Ishmael Belghazi, Aristide Baratin, Sai Rajeswar, Sherjil Ozair, Yoshua Bengio, Aaron Courville and R Devon Hjelm. Mutual information neural estimation. *Proceedings of the 35th International Conference on Machine Learning*, PMLR 80:531-540, 2018. [proceedings.mlr.press/v80/belghazi18a](https://proceedings.mlr.press/v80/belghazi18a.html)
 - Eslam Abdelaleem, K. Michael Martini and Ilya Nemenman. Accurate estimation of mutual information in high dimensional data. arXiv:2506.00330, 2025. [arxiv.org/abs/2506.00330](https://arxiv.org/abs/2506.00330)
 :::
 
@@ -896,10 +896,7 @@ rate does without.
 - James P. Crutchfield and David P. Feldman. Regularities unseen, randomness observed: levels of entropy convergence. *Chaos* 13, 25-54, 2003. [pubs.aip.org](https://pubs.aip.org/aip/cha/article/13/1/25/510735/Regularities-unseen-randomness-observed-Levels-of)
 - Lionel Barnett, Adam B. Barrett and Anil K. Seth. Granger causality and transfer entropy are equivalent for Gaussian variables. *Physical Review Letters* 103, 238701, 2009. [doi.org/10.1103/PhysRevLett.103.238701](https://doi.org/10.1103/PhysRevLett.103.238701)
 - Ryan G. James, Nix Barnett and James P. Crutchfield. Information flows? A critique of transfer entropies. *Physical Review Letters* 116, 238701, 2016. [doi.org/10.1103/PhysRevLett.116.238701](https://doi.org/10.1103/PhysRevLett.116.238701)
-- I. M. Gelfand and A. M. Yaglom. Calculation of the amount of information about
-  a random function contained in another such function. *American Mathematical
-  Society Translations*, Series 2, 12, 199-246, 1959.
-  [doi.org/10.1090/trans2/012/09](https://doi.org/10.1090/trans2/012/09)
+- I. M. Gelfand and A. M. Yaglom. Calculation of the amount of information about a random function contained in another such function. *American Mathematical Society Translations*, Series 2, 12, 199-246, 1959. [doi.org/10.1090/trans2/012/09](https://doi.org/10.1090/trans2/012/09)
 - Pierre-Olivier Amblard and Olivier J. J. Michel. Relating Granger causality to directed information theory for networks of stochastic processes. arXiv:0911.2873, 2009. [arxiv.org/abs/0911.2873](https://arxiv.org/abs/0911.2873)
 - Pierre-Olivier Amblard and Olivier J. J. Michel. Causal conditioning and instantaneous coupling in causality graphs. *Information Sciences* 264, 279-290, 2014. [arxiv.org/abs/1203.5572](https://arxiv.org/abs/1203.5572)
 - John Geweke. Measurement of linear dependence and feedback between multiple time series. *Journal of the American Statistical Association* 77, 304-313, 1982. [doi.org/10.1080/01621459.1982.10477803](https://doi.org/10.1080/01621459.1982.10477803)
@@ -969,36 +966,59 @@ should therefore give the three components beside it.
 
 ## The dimension that carries the shared information
 
-A nonlinear encoder with more embedding dimensions than the latent factors that
-two views share can build combinations of those factors (products and
-higher-order mixtures) that look like extra factors in its trained spectrum.
-Measures computed from one trained spectrum cannot separate these constructed
-directions from true factors. The participation ratio, the eigengap and the
-singular-value profile all count them.
+`mode='dimensionality'` estimates how many embedding dimensions carry the
+information that two views share. It sweeps the MI over a series of embedding
+sizes $k$ and reports the size at which the curve of MI against $k$ saturates.
+[Gulati et al. (2026)](https://proceedings.mlr.press/v326/gulati26a.html)
+proposed this sweep. They showed analytically and experimentally that a
+separable critic systematically overstates the dimension in this sweep, so the
+mode uses a hybrid critic of their design.
 
-`mode='dimensionality'` obtains the dimension from the information itself. It
-estimates the MI at a series of embedding sizes $k$ (a sweep described by
-[Gulati et al., 2026](https://proceedings.mlr.press/v326/gulati26a.html)) and
-reports the smallest $k$ that carries a set fraction of the MI.
+At a small $k$, a fit can stall below the MI that its embedding can carry and
+leave a step in the curve. Gulati et al. drew a fresh batch of data at every
+training step. In these runs, the estimate at a large $k$ varied less between
+runs and reached the full MI. A fit at a large $k$ gives the MI but not the
+dimension, so Gulati et al. estimate the dimension in one shot from such a fit,
+as the participation ratio of the cross-covariance spectrum of its two
+embeddings.
+
+This ratio usually tracks the true dimension. It can mislead, however, so the
+library does not rely on it. When a nonlinear encoder has more embedding
+dimensions than the latent factors that two views share, it can build
+combinations of those factors (products and higher-order mixtures) that look
+like extra factors in the spectrum of its trained embeddings. Measures that are
+computed from one such spectrum cannot separate these constructed directions
+from true factors. The participation ratio, the eigengap and the singular-value
+profile all count them.
+
+The library therefore takes the dimension from the curve rather than from the
+spectrum. It still trains networks at a large reference size first (64
+dimensions unless you set `reference_dim`). The largest value of any fit
+(including the reference) is the plateau that the curve must approach. The mode
+reports the smallest $k$ at which the curve reaches a set fraction of this
+plateau.
 
 ### The curve and the reported dimension
 
-Unless set otherwise, the critic is the hybrid critic. It embeds X and Y
-separately into $k$ dimensions each and scores the pair with a small network on
-their concatenation. A dot-product critic ties the score to the geometry of the
-embedding and needs more dimensions than the shared structure has to represent a
-nonlinear dependence. Each fit reports the training value at the epoch picked
-from its held-out curve ([The reported number](#the-reported-number)). In this
-mode, the encoders of the hybrid critic use layer normalisation, because the
-optimizer tends to stall during training at small embedding dimensions. Layer
-normalisation divides out each sample's overall scale and lowers the curve where
-that scale carries information. The reported dimension is measured against the
-curve's own plateau, so the precise value of the MI matters less than how the
-curve behaves.
+Unless you set `critic_type`, the critic is the hybrid critic. It embeds each
+view on its own into $k$ dimensions and scores the pair with a small network on
+the concatenation of the two embeddings. Without `y_data`, the two views share
+one encoder unless you set `shared_encoder=False`. A separable critic scores the
+pair by the dot product of the two embeddings, so it can need more dimensions
+than the shared structure has. Unless you set `Model(norm_layer=...)`, the
+hybrid critic in this mode applies layer normalisation in the hidden layers of
+its MLPs (the default encoders and the head that scores the pair), because fits
+at small $k$ tend to stall during training. Layer normalisation divides out the
+overall scale of each sample's hidden activations, so it can lower the curve
+when that scale carries information. The reported dimension is measured against
+the curve's own plateau, so the precise value of the MI matters less than how
+the curve behaves.
 
-A restart can settle with fewer directions than its embedding allows and so give
-a value that is too low. At each $k$, the mode trains `n_restarts` networks (4)
-and keeps the best value $\max_r I_r(k)$. A larger embedding can represent any
+Layer normalisation does not prevent every stall. A stalled fit settles with
+fewer directions than its embedding allows, so a fit at the true dimension can
+end up at the value of a smaller embedding. At each $k$, the mode therefore
+repeats the fit `n_restarts` times (4) and keeps the best value
+$\max_r I_r(k)$ over these restarts. A larger embedding can represent any
 solution of a smaller one, so the curve is the running maximum
 
 $$
@@ -1006,65 +1026,95 @@ $$
 $$
 
 Its plateau $\hat I_\infty$ is the largest value over every fitted $k$,
-including a large reference fit (64 dimensions unless set). With $\rho$ the
-`saturation_ratio` (0.95), the reported dimension is
+including the reference fit. With $\rho$ the `saturation_ratio` (0.95), the
+reported dimension is
 
 $$
 k^\ast = \min \{ k : \hat I(k) \ge \rho \, \hat I_\infty \}.
 $$
 
-### Why the reported dimension bounds the true one from above
+When every restart at the true dimension stalls, $k^\ast$ moves up to the next
+size at which a restart does not stall, so the reported dimension still bounds
+the true one from above. The mode warns when the restarts below $k^\ast$
+disagree by more than `restart_spread` of the plateau, but not when every
+restart stalls at the same value. Where the curve shows a step, check the
+training and held-out curves of the fits. The held-out curve of every fit is
+kept in `runs` (`test_mi_history`). The training value of each fit is taken at
+the epoch that the library picks from this curve
+([The reported number](#the-reported-number)).
+`result.animate(split_id=..., embedding_dim=..., run_id=...)` shows the held-out
+curve of one fit, with its training curve when the fit ran with
+`Training(eval_train=True)`.
+
+### The reported dimension as an upper bound
 
 A direction that the encoder constructs from the true factors is a function of
 them. By the data-processing inequality, it carries no information about the
 other view beyond what the factors carry, so it cannot raise the curve. An
-embedding large enough to hold the true factors already reaches the plateau. The
-reported dimension is therefore an upper bound on the number of dimensions
-needed to carry the fraction $\rho$ of the shared information.
+embedding large enough to represent the true factors already reaches the
+plateau. The reported dimension is therefore an upper bound on the number of
+dimensions that an embedding needs to carry the fraction $\rho$ of the shared
+information.
 
 A factor that carries less than $1 - \rho$ of the information can fall below the
-threshold and go uncounted. The bound also requires converged fits and a plateau
-set by the data. A plateau capped by the ceiling $\log N$ ([InfoNCE](#infonce))
-lets small embeddings reach the threshold early and so can put the reported
-dimension below the true one. An encoder could in principle pack two factors
-into one dimension with a space-filling map. The reported dimension would then
-be lower, but it would still bound the number of dimensions that the network
-needed.
+threshold and go uncounted. The bound also requires that the fits converge and
+that the plateau comes from the data rather than from a ceiling. When the
+ceiling $\log N$ ([InfoNCE](#infonce)) caps the plateau, small embeddings reach
+the threshold early, so the reported dimension can fall below the true one. An
+encoder could in principle pack two factors into one dimension with a
+space-filling map. The reported dimension would then be lower, but it would
+still bound the number of dimensions that the network needed.
 
 ### Choosing the grid
 
-The reference fit runs first. The participation ratios of its cross-covariance
-spectrum,
+The reference runs first. Two participation ratios describe how spread out the
+cross-covariance spectrum of each reference network is:
 
 $$
 \mathrm{PR}_{\text{singular}} = \frac{\left(\sum_i \sigma_i\right)^2}{\sum_i \sigma_i^2}, \qquad \mathrm{PR}_{\text{eig}} = \frac{\left(\sum_i \sigma_i^2\right)^2}{\sum_i \sigma_i^4},
 $$
 
-describe how spread out its spectrum is. They count constructed directions along
-with true ones, so the mode uses them only to size the grid. It uses
-$\mathrm{PR}_{\text{singular}}$ because this ratio is the less conservative of
-the two. The grid reaches `grid_reach` times $\mathrm{PR}_{\text{singular}}$.
-When that reach is at most `grid_small`, the grid is every value from 1 to
+where $\sigma_i$ are the singular values of the cross-covariance matrix of its
+two embeddings. By default (`whitening='std'`), the library first scales each
+embedding dimension to unit variance. The mode reports the median of each ratio
+over the reference networks of every split. Only the median of
+$\mathrm{PR}_{\text{singular}}$ chooses which embedding sizes are fitted,
+because this ratio is the less conservative of the two. It is never smaller than
+$\mathrm{PR}_{\text{eig}}$, so the grid reaches further.
+
+The grid reaches `grid_reach` times $\mathrm{PR}_{\text{singular}}$. When this
+reach is at least `reference_fill` of the reference's embedding size, the
+reference is first refitted once at `refit_reach` times
+$\mathrm{PR}_{\text{singular}}$, unless you set `reference_dim`. The refitted
+reference replaces the first one and its fits. Its ratio then sets the grid.
+When the reach is at most `grid_small`, the grid is every value from 1 to
 `grid_small`. When the reach is larger but at most `grid_medium`, the grid is
-every value from 1 to `grid_medium`. Beyond `grid_medium`, the grid is
-`grid_points` values on a log scale from 1 to the reach. When the reach is at
-least `reference_fill` of the reference's embedding size, the reference is
-refitted at `refit_reach` times $\mathrm{PR}_{\text{singular}}$. The grid is
-fitted `confirm_steps` values at a time and stops once that many values in a row
-reach the threshold on every split. A curve that is still short of the threshold
-at the end of the grid is extended once on a log scale up to the reference.
-`embedding_dims` replaces the grid and fits every value.
-[PARAMETERS.md](PARAMETERS.md#dimensionality) gives the default of each setting.
+every value from 1 to `grid_medium`. Beyond `grid_medium`, the grid is at most
+`grid_points` values on a log scale from 1 to the reach.
+
+The grid is fitted `confirm_steps` values at a time and stops once that many
+values in a row reach the threshold on every split. When the curve of any split
+is still short of the threshold at the end of the grid, the grid of every split
+is extended once, by at most `grid_points` values on a log scale between the
+last grid value and the reference. The extension stops early in the same way.
+With `embedding_dims`, the mode fits every value given instead of the grid. Each
+value must lie below the reference's embedding size. The reference fit still
+runs first. [PARAMETERS.md](PARAMETERS.md#dimensionality) gives the default of
+each setting.
 
 ### Splits and their spread
 
-Without `y_data`, the mode splits the channels of X into two halves that share
-no channel. `split_method='random'` draws `n_splits` (5) channel assignments.
-Each gives its own curve and its own reported dimension. The mode reports the
-median of these dimensions as `dimension_at_most` and their standard deviation
-over splits as its spread. The other split methods give one split. With
-`y_data`, the two views are X and Y, so the restarts are the only repeats. Every
-fit of a call uses the same held-out set.
+Without `y_data`, the mode splits X into two views. With the default
+`split_method='random'`, the channels are divided at random into two halves, one
+for each view (Y gets the extra channel when their number is odd). The mode
+draws `n_splits` (5) such assignments. Each gives its own curve, plateau and
+reported dimension. The mode reports the median of these dimensions as
+`dimension_at_most` and their sample standard deviation as
+`dimension_at_most_std`. A split whose curve stays at zero gives no dimension
+and is left out of both. The other split methods give one split. With `y_data`,
+the two views are X and Y, so the restarts are the only repeats. All fits of a
+configuration share one division of the rows into a training set and a held-out
+set.
 
 :::{admonition} References
 :class: note
