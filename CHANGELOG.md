@@ -1263,6 +1263,15 @@ leave out. Machine paths are gone from every notebook output.
 `paper.md` follows the current JOSS sections: summary, statement of need, state
 of the field, software design, research impact and AI usage.
 
+A second language pass in November rewrote the tutorials, the README, the docs
+pages and the reference documents in plainer terms. Tutorial 02 was rewritten to
+explain how to read the training curves, with one result per figure. Its first
+section explains why the epoch is chosen on the held-out curve while the
+estimate is computed on the training samples. Each role has one colour across
+the five tutorials and the README figures, such as orange for the estimate and
+blue for the held-out value. Every figure has a title and labelled axes. The
+tutorials and the README figures notebook were rerun on the final code.
+
 ### Removed: settings that did nothing useful
 
 `Sweep(max_samples_per_task=...)` trained each configuration of a sweep on its
