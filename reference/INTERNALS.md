@@ -98,10 +98,10 @@ Every setting's default is written once, in `BASE_PARAMS_SCHEMA`
 `defaults.setting(params, name)`. This function falls back to that default.
 Below the public signatures, every signature default of a setting is
 `defaults.default_of(name)`. `run()`, the named quantities and `_run_flat` still
-have literal defaults in their signatures until design item 1 of the roadmap is
-done. `tests/test_schema_defaults.py` checks the signatures of `Trainer` and of
-the encoder, decoder and critic classes against the schema and fails on any
-default written a second time as a literal.
+have literal defaults in their signatures. `tests/test_schema_defaults.py`
+checks the signatures of `Trainer` and of the encoder, decoder and critic
+classes against the schema and fails on any default written a second time as a
+literal.
 
 `build_critic` uses only the settings in `utils.ARCHITECTURE_KEYS`.
 `save_network` saves exactly these settings with a network, so
