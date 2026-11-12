@@ -465,12 +465,14 @@ def _check_custom_split(mode: str, train_indices, test_indices, processed: bool,
         )
 
 
-def _processor_grid(mode: str, sweep_grid: Optional[dict], streams: dict) -> dict:
-    """The processor parameters of `sweep_grid` that need one data preparation each.
+def _preparation_grid(mode: str, sweep_grid: Optional[dict], streams: dict) -> dict:
+    """The keys of `sweep_grid` that need one preparation of the data each: the processor parameters,
+    and the settings that the preparation itself reads (defaults.PREPARATION_SETTINGS).
 
     Raises when the grid varies a processor parameter that no stream's
     processor reads.
     """
+    from .analysis.assemble import split_preparation
     if MODES[mode].one_network is not None or not sweep_grid:
         return {}
     keys = [k for k in sweep_grid if k in _PROCESSOR_KEYS]
@@ -483,7 +485,8 @@ def _processor_grid(mode: str, sweep_grid: Optional[dict], streams: dict) -> dic
                 f"takes '{key}' ({', '.join(repr(n) for n in takers)}) or remove '{key}' "
                 f"from the grid."
             )
-    return {k: sweep_grid[k] for k in keys}
+    keys += list(split_preparation(sweep_grid)[0])
+    return {k: v for k, v in sweep_grid.items() if k in keys}
 
 
 def _trains_one_network(mode: str, n_configs: int, n_repeats: int) -> bool:
@@ -524,20 +527,22 @@ def _announce_call(mode: str, sweep_grid: Optional[dict], permutation_test: bool
         )
 
 
-def _run_processor_grid(call_args: dict, proc_grid: dict, streams: dict) -> Results:
-    """Run a grid that varies processor parameters.
+def _run_preparation_grid(call_args: dict, prep_grid: dict, streams: dict) -> Results:
+    """Run a grid that varies processor parameters or a setting that the preparation reads
+    (:func:`_preparation_grid`).
 
-    The data are prepared once per processor setting, and each preparation runs
-    the rest of the grid. The parts merge into one result whose configurations
-    follow the full grid.
+    The data are prepared once per combination of these values, and each
+    preparation runs the rest of the grid, so that every configuration computes
+    what a separate call with its settings computes. The parts merge into one
+    result whose configurations follow the full grid.
     """
-    from .analysis.assemble import merge_results, split_grid
+    from .analysis.assemble import merge_results, split_grid, split_preparation
     args = dict(call_args)
     analysis_kwargs = args.pop('analysis_kwargs')
     full_grid = dict(args['sweep_grid'])
-    inner = {k: v for k, v in full_grid.items() if k not in proc_grid} or None
+    inner = {k: v for k, v in full_grid.items() if k not in prep_grid} or None
     parts = []
-    for fixed in split_grid(proc_grid)[0]:
+    for fixed in split_grid(prep_grid)[0]:
         part = dict(args, sweep_grid=inner, _grid_part=fixed)
         if args.get('save_best_model_path'):
             part['save_best_model_path'] = model_file(
@@ -550,17 +555,84 @@ def _run_processor_grid(call_args: dict, proc_grid: dict, streams: dict) -> Resu
         for slot in ('processor_params_y', 'w_processor_params'):
             if slot in streams and args.get(slot) is not None:
                 part[slot] = {**args[slot], **_accepted(fixed, streams[slot])}
+        # A setting the preparation reads is the part's own, as in a separate call.
+        prepared = split_preparation(fixed)[0]
+        if prepared:
+            part['base_params'] = {**(args.get('base_params') or {}), **prepared}
         parts.append((fixed, _run_flat(**part, **analysis_kwargs)))
     params = dict(parts[0][1].params)
     for key in ('processor_params_x', 'processor_params_y'):
         params[key] = args.get(key)
-    params['base_params'] = {**params.get('base_params', {}), **proc_grid}
+    params['base_params'] = {**params.get('base_params', {}), **prep_grid}
     return merge_results(parts, full_grid, params)
 
 
 def _accepted(values: dict, processor: Optional[str]) -> dict:
     accepted = PROCESSOR_PARAMS_SCHEMA.get(processor, ())
     return {k: v for k, v in values.items() if k in accepted}
+
+
+def _grid_settings(base_params: dict, sweep_grid: Optional[dict], names) -> List[dict]:
+    """The params of every configuration of `sweep_grid` that differs in the settings ``names``:
+    `base_params` with the grid's values of those settings in place. A check or a message made once per
+    call reads its settings through this, so that it judges every configuration of a grid rather than the
+    base configuration alone."""
+    from .analysis.assemble import split_grid
+    varied = {k: v for k, v in (sweep_grid or {}).items() if k in names}
+    return [{**base_params, **combo} for combo in split_grid(varied)[0]]
+
+
+def _listed(values) -> str:
+    """The distinct values, in order, as a phrase: '64', '16 and 64', '16, 32 and 64'."""
+    distinct = list(dict.fromkeys(str(v) for v in values))
+    return distinct[0] if len(distinct) == 1 else f"{', '.join(distinct[:-1])} and {distinct[-1]}"
+
+
+# The settings that the loss of a network with decoders or a variational encoder reads.
+_LOSS_SETTINGS = ('use_decoder', 'use_variational', 'beta', 'decoder_lambda', 'decoder_lambda_x',
+                  'decoder_lambda_y')
+
+
+def _announce_loss(params: dict) -> None:
+    """Say what beta and the lambdas of one configuration mean whenever the bottleneck terms are in play,
+    and warn about a lambda that outweighs the MI term."""
+    variational = bool(setting(params, 'use_variational'))
+    if setting(params, 'use_decoder'):
+        beta = float(setting(params, 'beta'))
+        lam_x = _decoder_lambda(params, 'x')
+        lam_y = _decoder_lambda(params, 'y')
+        if variational:
+            logger.info(
+                f"With decoders and a variational encoder the loss is "
+                f"KL - beta * (MI - lambda_x * rec_x - lambda_y * rec_y). Each lambda "
+                f"is measured against the MI term. The effective weight on "
+                f"reconstruction is beta * lambda ({beta * float(lam_x):.4g} for X and "
+                f"{beta * float(lam_y):.4g} for Y at beta={beta:g}). Lower the lambdas "
+                f"to hold reconstruction further back."
+            )
+        else:
+            logger.info(
+                f"With decoders the loss is "
+                f"-(MI - lambda_x * rec_x - lambda_y * rec_y). Each lambda is measured "
+                f"against the MI term and carries its full weight here "
+                f"({float(lam_x):.4g} for X and {float(lam_y):.4g} for Y). beta "
+                f"applies only once a variational encoder supplies a KL term."
+            )
+        for name, value in (('decoder_lambda_x', lam_x), ('decoder_lambda_y', lam_y)):
+            if float(value) >= 1.0:
+                warnings.warn(
+                    f"{name}={float(value):g} weighs reconstruction at least as "
+                    f"heavily as the mutual information it is there to regularise. "
+                    f"The lambdas are relative to the MI term. Values well below 1 are "
+                    f"the usual choice.",
+                    UserWarning, stacklevel=user_stacklevel(),
+                )
+    elif variational:
+        logger.info(
+            f"With a variational encoder the loss is KL - beta * MI. "
+            f"beta={float(setting(params, 'beta')):g} sets how far the MI term "
+            f"outweighs the KL penalty on the embedding."
+        )
 
 
 def run(
@@ -964,8 +1036,8 @@ def _run_flat(
     """Flat-kwarg engine behind :func:`run`; see that function's docstring for
     the public API and parameter semantics.
 
-    ``_grid_part`` marks a call that runs one processor setting of a larger
-    grid (see :func:`_run_processor_grid`); it skips the checks and messages
+    ``_grid_part`` marks a call that runs one preparation of a larger grid
+    (see :func:`_run_preparation_grid`); it skips the checks and messages
     that belong to the whole call. ``_rows`` is the geometry of rows the caller
     built in time order itself (the named quantities, :mod:`neural_mi.data.rows`),
     and ``_row_phases`` says those rows hold every step of their series, of
@@ -1015,12 +1087,12 @@ def _run_flat(
         if _grid_part is None:
             _streams = _stream_processors(mode, processor_type_x, processor_type_y,
                                           w_processor_type, w_data)
-            _proc_grid = _processor_grid(mode, sweep_grid, _streams)
+            _prep_grid = _preparation_grid(mode, sweep_grid, _streams)
             _announce_call(mode, sweep_grid, permutation_test, n_permutations,
                            analysis_kwargs, has_y=y_data is not None,
                            save_path=save_best_model_path, min_permutations=min_permutations)
-            if _proc_grid:
-                return _run_processor_grid(_call_args, _proc_grid, _streams)
+            if _prep_grid:
+                return _run_preparation_grid(_call_args, _prep_grid, _streams)
         # Results do not depend on n_workers beyond float rounding:
         # run_training_task seeds random/numpy/torch inside each worker from the
         # call's seed, the task's repeat and its role (neural_mi/seeds.py), so
@@ -1145,11 +1217,12 @@ def _run_flat(
             base_params[PHASES_KEY] = int(_row_phases)
 
         # Warn about n_layers/hidden_dim list mismatch only when the user explicitly
-        # set n_layers (i.e., it was in base_params before defaults were applied).
-        _hd = base_params.get('hidden_dim')
-        if isinstance(_hd, list) and 'n_layers' in _pre_default_keys:
-            _nl = base_params.get('n_layers')
-            if _nl != len(_hd):
+        # set n_layers (before defaults were applied, or in the grid), in every
+        # configuration of the grid.
+        _n_layers_set = 'n_layers' in _pre_default_keys or 'n_layers' in (sweep_grid or {})
+        for _params in _grid_settings(base_params, sweep_grid, ('hidden_dim', 'n_layers')):
+            _hd, _nl = _params.get('hidden_dim'), _params.get('n_layers')
+            if isinstance(_hd, list) and _n_layers_set and _nl != len(_hd):
                 warnings.warn(
                     f"hidden_dim is a list of length {len(_hd)} and sets the number of "
                     f"hidden layers. n_layers={_nl} is ignored.",
@@ -1158,49 +1231,13 @@ def _run_flat(
 
         # Announce what beta and the lambdas mean whenever the bottleneck terms
         # are in play, since the same numbers meant something else under an
-        # absolute-weight reading of the reconstruction terms.
-        _variational = bool(setting(base_params, 'use_variational'))
-        if setting(base_params, 'use_decoder'):
-            _beta = float(setting(base_params, 'beta'))
-            _lam_x = _decoder_lambda(base_params, 'x')
-            _lam_y = _decoder_lambda(base_params, 'y')
-            if _variational:
-                logger.info(
-                    f"With decoders and a variational encoder the loss is "
-                    f"KL - beta * (MI - lambda_x * rec_x - lambda_y * rec_y). Each lambda "
-                    f"is measured against the MI term. The effective weight on "
-                    f"reconstruction is beta * lambda ({_beta * float(_lam_x):.4g} for X and "
-                    f"{_beta * float(_lam_y):.4g} for Y at beta={_beta:g}). Lower the lambdas "
-                    f"to hold reconstruction further back."
-                )
-            else:
-                logger.info(
-                    f"With decoders the loss is "
-                    f"-(MI - lambda_x * rec_x - lambda_y * rec_y). Each lambda is measured "
-                    f"against the MI term and carries its full weight here "
-                    f"({float(_lam_x):.4g} for X and {float(_lam_y):.4g} for Y). beta "
-                    f"applies only once a variational encoder supplies a KL term."
-                )
-            for _name, _value in (('decoder_lambda_x', _lam_x), ('decoder_lambda_y', _lam_y)):
-                if float(_value) >= 1.0:
-                    warnings.warn(
-                        f"{_name}={float(_value):g} weighs reconstruction at least as "
-                        f"heavily as the mutual information it is there to regularise. "
-                        f"The lambdas are relative to the MI term. Values well below 1 are "
-                        f"the usual choice.",
-                        UserWarning, stacklevel=user_stacklevel(),
-                    )
-        elif _variational:
-            logger.info(
-                f"With a variational encoder the loss is KL - beta * MI. "
-                f"beta={float(setting(base_params, 'beta')):g} sets how far the MI term "
-                f"outweighs the KL penalty on the embedding."
-            )
+        # absolute-weight reading of the reconstruction terms. Each configuration
+        # of a grid that differs in them is announced.
+        for _params in _grid_settings(base_params, sweep_grid, _LOSS_SETTINGS):
+            _announce_loss(_params)
 
         DataValidator(x_data, y_data, processor_type_x, processor_type_y).validate()
     
-        _processor = base_params.get('processor_type_x', None)
-        _embedding = setting(base_params, 'embedding_model')
         # A 3-D array/tensor passed with processor_type=None is already
         # pre-windowed (N, C, W) sequential data, not a StaticDataset -- this
         # matches the same auto-detection ParameterSweep uses
@@ -1217,11 +1254,12 @@ def _run_flat(
         _mode_builds_own_windows = _spec.builds_own_rows
         # Checked per side, since the two sides can name different encoders and
         # are read through their own processor. A sequential encoder on Y with a
-        # static Y is the same mistake as on X.
-        _sides = [('embedding_model', _embedding, 'processor_type_x', x_data)]
-        if base_params.get('embedding_model_y') is not None:
-            _sides.append(('embedding_model_y', base_params['embedding_model_y'],
-                           'processor_type_y', y_data))
+        # static Y is the same mistake as on X. Every encoder a grid names is checked.
+        _sides = [('embedding_model', setting(_params, 'embedding_model'), 'processor_type_x', x_data)
+                  for _params in _grid_settings(base_params, sweep_grid, ('embedding_model',))]
+        _sides += [('embedding_model_y', _params['embedding_model_y'], 'processor_type_y', y_data)
+                   for _params in _grid_settings(base_params, sweep_grid, ('embedding_model_y',))
+                   if _params.get('embedding_model_y') is not None]
         for _name, _emb, _proc_key, _side_data in _sides:
             _side_proc = base_params.get(_proc_key, None)
             _side_time_dim = hasattr(_side_data, 'ndim') and _side_data.ndim == 3
@@ -1289,8 +1327,9 @@ def _run_flat(
         # its rows from one plan of the streams it reads (neural_mi/data/plan.py).
         # Under shift_windows the rows move each epoch, and a call whose rows
         # move and mode='lag' leave the cutting to each training task. Every
-        # other call cuts them once, here. A processor grid runs one call per
-        # setting (_run_processor_grid), each with its own data check.
+        # other call cuts them once, here. A grid over a processor parameter or
+        # over shift_windows runs one preparation per value (_run_preparation_grid),
+        # each with its own data check.
         from .data.plan import RowPlan, Stream, refuse_mixed_streams, resolve_stream, rows_line_up
         # Every stream is read by a processor, its own or X's, or arrives as
         # rows built already, and the two cannot share a call.
@@ -1334,7 +1373,8 @@ def _run_flat(
                 record_rows(base_params, _plan.geometry())
             _warn_small_sample(_n_rows, 'windows' if _windowed else 'samples', base_params, mode,
                                rows=dict(_rows_built['windows']),
-                               processors={name: s.processor for name, s in _streams.items()})
+                               processors={name: s.processor for name, s in _streams.items()},
+                               sweep_grid=sweep_grid)
             x_run_data, y_run_data = _plan, None
         elif _spec.windows_in_task or _shifts:
             logger.info("Windowing inside each training task.")
@@ -1352,7 +1392,8 @@ def _run_flat(
                 _at_zero = RowPlan(_streams, shift=_shifts).rows()['windows'] if _streams else None
                 _warn_small_sample(*_counted, base_params=base_params, mode=mode,
                                    rows=None if _at_zero is None else dict(_at_zero),
-                                   processors={name: s.processor for name, s in _streams.items()})
+                                   processors={name: s.processor for name, s in _streams.items()},
+                                   sweep_grid=sweep_grid)
                 del _at_zero
         elif processor_type_x is None and processor_type_y is None:
             # Fast path: data is already pre-processed. Convert to tensors inline and skip
@@ -1370,7 +1411,7 @@ def _run_flat(
             base_params['processor_params_x']['preprocessed'] = True
             base_params['processor_params_y']['preprocessed'] = True
             _warn_small_sample(kept_rows(x_run_data.shape[0], base_params), 'samples', base_params, mode,
-                               rows={'x': x_run_data, 'y': y_run_data})
+                               rows={'x': x_run_data, 'y': y_run_data}, sweep_grid=sweep_grid)
             if _spec.needs_y and y_run_data is None:
                 raise ValueError(f"y_data must be provided for mode '{mode}'.")
         else:
@@ -1403,7 +1444,8 @@ def _run_flat(
                     base_params['_window_retention'] = _rows_built['retention']
             _warn_small_sample(len(_plan), 'windows', base_params, mode,
                                rows={'x': x_run_data, 'y': y_run_data},
-                               processors={'x': processor_type_x, 'y': _effective_processor_type_y})
+                               processors={'x': processor_type_x, 'y': _effective_processor_type_y},
+                               sweep_grid=sweep_grid)
 
         _warn_if_shift_windows_dead(base_params, mode, _shifts or (_spec.builds_own_rows and stride > 1),
                                     user_set_keys=_pre_default_keys, offsets=_spec.builds_own_rows)
@@ -1434,7 +1476,7 @@ def _run_flat(
             min_gamma_points=min_gamma_points, confidence_level=confidence_level,
             history_window=history_window, prediction_horizon=prediction_horizon, stride=stride,
             bidirectional=bidirectional_te, channel_names_x=channel_names_x,
-            channel_names_y=channel_names_y, user_set_keys=_pre_default_keys,
+            channel_names_y=channel_names_y, user_set_keys=_pre_default_keys, sweep_grid=sweep_grid,
             rigorous=bool(analysis_kwargs.get('rigorous', False)))
         ctx = _spec.prepare(call) if _spec.prepare is not None else {}
         x_run, y_run, w_run = call.x_run, call.y_run, call.w_run
@@ -1531,23 +1573,34 @@ def _encoders_scale(base_params: dict, processors: Optional[dict] = None) -> Dic
     return {name: reaches and mode is not None for name, mode in decided.items()}
 
 
-def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
-                 rows: Optional[dict], processors: Optional[dict]) -> None:
+def _report_rows(n_samples: int, unit: str, base_params: dict, rows: Optional[dict],
+                 processors: Optional[dict], sweep_grid: Optional[dict] = None) -> None:
     """The part of the data check that needs the rows: how many reach the estimator, how many are held out,
-    and their scale. Rows a spike processor built far from unit scale warn when the encoders leave them as
-    they are; a continuous stream's scale was checked before its rows were built
-    (neural_mi/preprocessing.py). A categorical processor's rows are one-hot or probabilities, with no unit
-    to remove."""
+    and their scale. The held-out rows are counted for every configuration of `sweep_grid`. Rows a spike
+    processor built far from unit scale warn when the encoders leave them as they are; a continuous
+    stream's scale was checked before its rows were built (neural_mi/preprocessing.py). A categorical
+    processor's rows are one-hot or probabilities, with no unit to remove."""
     from .estimators import NONPARAMETRIC
     from .training.trainer import too_few_held_out
     scale_band, sample_rows = setting(base_params, 'scale_band'), setting(base_params, 'sample_rows')
-    held = ("a nonparametric estimate holds none out"
-            if base_params.get('estimator_name') in NONPARAMETRIC else f"{n_held_out} of them held out")
-    batch = setting(base_params, 'batch_size')
-    if base_params.get('estimator_name') not in NONPARAMETRIC and too_few_held_out(n_held_out, batch):
+    trained = [p for p in _grid_settings(base_params, sweep_grid, ('estimator_name', 'train_fraction',
+                                                                   'batch_size'))
+               if p.get('estimator_name') not in NONPARAMETRIC]
+    counts = sorted({_held_out_count(n_samples, p) for p in trained})
+    if not trained:
+        held = "a nonparametric estimate holds none out"
+    elif len(counts) == 1:
+        held = f"{counts[0]} of them held out"
+    else:
+        held = f"{counts[0]} to {counts[-1]} of them held out, as train_fraction varies"
+    short = sorted((_held_out_count(n_samples, p), setting(p, 'batch_size')) for p in trained
+                   if too_few_held_out(_held_out_count(n_samples, p), setting(p, 'batch_size')))
+    if short:
         # Not a warning: the curve warnings name the count when it matters.
-        held += (f", fewer than one training batch (batch_size={batch}), so the held-out curve's noise is "
-                 f"large and its ceiling of log({n_held_out}) low")
+        n_held_out, batch = short[0]
+        held += (f", fewer than one training batch (batch_size={batch})"
+                 + (" in some configurations of the grid" if len(short) < len(trained) else "")
+                 + f", so the held-out curve's noise is large and its ceiling of log({n_held_out}) low")
     scales = []
     for name, data in (rows or {}).items():
         if not (torch.is_tensor(data) or isinstance(data, np.ndarray)) or len(data) == 0:
@@ -1578,27 +1631,30 @@ def _report_rows(n_samples: int, unit: str, n_held_out: int, base_params: dict,
 
 def _warn_small_sample(n_samples: int, unit: str, base_params: dict,
                        mode: str = 'estimate', rows: Optional[dict] = None,
-                       processors: Optional[dict] = None) -> None:
+                       processors: Optional[dict] = None, sweep_grid: Optional[dict] = None) -> None:
     """The warning for a small dataset, whether the caller passed arrays or the
     library windowed the data (``unit`` is 'samples' or 'windows'): too few rows
     in all. The rows' part of the data check (:func:`_report_rows`) is reported
     here, where their count is known. It says when fewer rows are held out than
     one training batch, which is not a warning of its own: it costs the curve
     only where the curve then cannot be read, and every warning about the curve
-    names the count (:func:`neural_mi.training.epochs.warn_about_curve`)."""
-    n_held_out = _held_out_count(n_samples, base_params)
-    _report_rows(n_samples, unit, n_held_out, base_params, rows, processors)
+    names the count (:func:`neural_mi.training.epochs.warn_about_curve`). The
+    advice reads the settings of every configuration of `sweep_grid`."""
+    _report_rows(n_samples, unit, base_params, rows, processors, sweep_grid)
     small_sample = setting(base_params, 'small_sample')
     if not 0 < n_samples < small_sample:
         return
+    configs = _grid_settings(base_params, sweep_grid, ('dropout', 'norm_layer', 'hidden_dim', 'embedding_dim',
+                                                       'optimizer', 'optimizer_params'))
     tips = []
-    if setting(base_params, 'dropout') == 0.0:
+    if any(setting(p, 'dropout') == 0.0 for p in configs):
         tips.append("a dropout above 0")
-    if norm_layer_of(base_params) is None:
+    if any(norm_layer_of(p) is None for p in configs):
         tips.append("norm_layer='layer'")
-    hidden, embed = setting(base_params, 'hidden_dim'), setting(base_params, 'embedding_dim')
+    hidden = _listed(setting(p, 'hidden_dim') for p in configs)
+    embed = _listed(setting(p, 'embedding_dim') for p in configs)
     tips.append(f"a smaller hidden_dim (now {hidden}) and embedding_dim (now {embed})")
-    if not (setting(base_params, 'optimizer_params') or {}).get('weight_decay'):
+    if any(not (setting(p, 'optimizer_params') or {}).get('weight_decay') for p in configs):
         tips.append("optimizer='adamw' with a weight_decay in optimizer_params")
     warnings.warn(
         f"Only {n_samples} {unit} reach the estimator, which is fewer than Training(small_sample="

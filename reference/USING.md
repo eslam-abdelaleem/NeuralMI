@@ -260,7 +260,10 @@ mode reads only once from its config (such as `history_window`), a key the mode
 sets itself (`lag` in `mode='lag'`, `embedding_dim` and `run_id` in
 `mode='dimensionality'`) and a setting that nothing in the call reads, such as
 `embedding_dim` under the concat critic. A fixed setting that nothing reads is
-ignored with a warning instead. A sweep
+ignored with a warning instead. Each configuration of a grid computes what a
+separate call with its settings computes. Processor parameters, `input_scaling`
+and `shift_windows` change how the call prepares its data, so a grid over one of
+them prepares the data once for each of its values. A sweep
 over the capacity of the network (`embedding_dim`, `hidden_dim`, `n_layers`) and
 over `n_epochs` is the way to find a configuration whose estimate has stopped
 moving before committing to a rigorous run.

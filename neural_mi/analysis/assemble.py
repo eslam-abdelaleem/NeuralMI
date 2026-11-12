@@ -140,6 +140,17 @@ def split_grid(sweep_grid: Optional[Dict[str, Sequence]]) -> Tuple[List[Dict[str
     return configs, run_ids
 
 
+def split_preparation(sweep_grid: Optional[Dict[str, Sequence]]
+                      ) -> Tuple[Dict[str, Sequence], Dict[str, Sequence]]:
+    """The keys of ``sweep_grid`` that a call reads while it prepares its data
+    (:data:`neural_mi.defaults.PREPARATION_SETTINGS`), and the rest of the grid, each in the grid's order.
+    Every value of the first needs a preparation of its own."""
+    from neural_mi.defaults import PREPARATION_SETTINGS
+    grid = dict(sweep_grid or {})
+    prepared = {key: grid.pop(key) for key in list(grid) if key in PREPARATION_SETTINGS}
+    return prepared, grid
+
+
 def expand(sweep_grid: Optional[Dict[str, Sequence]]) -> List[Tuple[int, Dict[str, Any], Any]]:
     """Every ``(config_id, config, run_id)`` a grid asks for, configuration-major."""
     configs, run_ids = split_grid(sweep_grid)

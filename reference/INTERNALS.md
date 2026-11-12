@@ -20,7 +20,7 @@ the networks and returns rows that the shared assembly layer turns into a
 
 | file | holds |
 |---|---|
-| `neural_mi/run.py` | `run()` (lowers the config objects into keyword arguments for `_run_flat()`); `_run_flat()` (validates, applies defaults, builds the call's row plan and cuts its rows once or leaves them to the tasks, and calls the producer); the call-level checks (`_announce_call`, the processor-grid loop `_run_processor_grid`, `_warn_if_shift_windows_dead`) |
+| `neural_mi/run.py` | `run()` (lowers the config objects into keyword arguments for `_run_flat()`); `_run_flat()` (validates, applies defaults, builds the call's row plan and cuts its rows once or leaves them to the tasks, and calls the producer); the call-level checks (`_announce_call`, the loop over preparations `_run_preparation_grid`, `_warn_if_shift_windows_dead`) |
 | `neural_mi/config.py` | the config dataclasses, `Processing` through `Pairwise`, and `as_config` |
 | `neural_mi/defaults.py` | `BASE_PARAMS_SCHEMA` and `PROCESSOR_DEFAULTS` (with `PROCESSOR_PARAMS_SCHEMA`, the names it declares): every setting's type and default. A mode's own settings are part of its declaration in `analysis/modes.py` |
 | `neural_mi/validation.py` | `ParameterValidator`, the allowed values, and the per-stream processor checks |
@@ -37,7 +37,7 @@ the networks and returns rows that the shared assembly layer turns into a
 | file | holds |
 |---|---|
 | `modes.py` | one producer per mode, and `MODES`, which declares each mode once: its producer, its config class, the axis it adds, what it accepts (repeats, a grid, `rigorous`, a permutation null, returned embeddings, custom split indices), the streams it reads and the settings it sets itself. `produce()` runs a mode's producer. A producer takes the prepared data and the grid and returns the repeat rows, the per-configuration details and the columns to aggregate |
-| `assemble.py` | `build_results` and `aggregate` (repeat rows into `runs` and `dataframe`), `merge_results` (the parts of a processor grid into one result), `convert_record` (the one conversion from nats), `NETWORK_KEYS` (what a trained network reports about itself) |
+| `assemble.py` | `build_results` and `aggregate` (repeat rows into `runs` and `dataframe`), `merge_results` (the parts of a grid that is prepared once per value into one result), `convert_record` (the one conversion from nats), `NETWORK_KEYS` (what a trained network reports about itself) |
 | `permutation.py` | `shift_x` (moving X for a null trial), `permutation_nulls` (running the trials), `attach_nulls` (the null columns and `p_value`) |
 | `sweep.py` | `ParameterSweep`, the engine that trains one network per grid point and repeat; `amplification_factor` |
 | `task.py` | `run_training_task` (one training run from parameters to a record) and a small cache of static datasets |
@@ -152,14 +152,31 @@ origin and step, a digest of the kept rows' start times and Y's window wherever
 both tasks know them (`data.rows.same_rows`). A repeat whose terms read
 different rows is refused: the check that every term read its plan's rows.
 
-### Processor parameters in a grid
+### Settings that change the preparation of a call
 
-A grid key that is a processor parameter, such as `window_size`, changes the
-data itself. `sweep` and `lag` window inside each task and take such a key
-directly. Every other mode prepares its data once per processor setting in
-`_run_processor_grid`, runs the rest of the grid on each preparation and merges
-the parts with `merge_results`. Configurations keep the order of the full grid.
-A processor key that no stream's processor reads is refused.
+A call prepares its data once. It builds the rows, or leaves them to each task,
+records their geometry and runs the data check, and every configuration of its
+grid then trains on that preparation. Three kinds of grid key change the
+preparation itself. A processor parameter, such as `window_size`, changes the
+rows. `Model(input_scaling=...)` decides how the encoders scale each stream,
+which `_run_flat` works out once from the kind of rows each stream gives.
+`Training(shift_windows=...)` decides whether the rows are cut once for the
+whole call or by each task, so that they can move. `defaults.PREPARATION_SETTINGS`
+lists these last two. A grid over any of these keys prepares the data once per
+combination of their values in `_run_preparation_grid`, runs the rest of the
+grid on each preparation and merges the parts with `merge_results`.
+Configurations keep the order of the full grid. Each configuration therefore
+computes what a separate call with its settings computes, and
+`tests/test_grid_contract.py` checks this for every setting that a grid
+accepts. The named quantities that build their rows by offset before they call
+`run()` split their grid the same way, in `quantities._by_offsets`. A
+processor key that no stream's processor reads is refused.
+
+A check or a message that runs once per call reads its settings from every
+configuration of the grid (`run._grid_settings`) rather than from the base
+configuration alone. Examples are the count of held-out rows in the data
+check, the advice for a small dataset and the check that a sequential encoder
+has a time axis.
 
 ### The permutation null
 
@@ -206,7 +223,7 @@ shifts of the windows at each epoch and the order the ladder deals its rows
 into chunks. A network's own seed sets its initialisation, batch order and
 dropout, its split and its evaluation rows. Nothing else enters a seed: not a
 configuration's settings, not a task's place in the grid, not the worker that
-runs it, not whether a processor grid runs as one call per setting. Every
+runs it, not whether a grid runs as one preparation per value. Every
 configuration therefore runs a repeat from the same seeds. This is what running
 each setting with the seeds 0 to R-1 does. `tests/test_seeds.py` checks the rule.
 
@@ -238,8 +255,8 @@ named quantity's series, before `offsets.build_rows`. The named quantities take
 its own check when `_rows` says a quantity built them. The part of the check
 that reads the rows (`run._warn_small_sample`) runs on every route, where the
 route counts its rows: once in `_run_flat` for rows cut there or passed in, at
-offset 0 for rows each task cuts, once per setting of a processor grid
-(`_run_processor_grid`), and on the histories of transfer entropy
+offset 0 for rows each task cuts, once per preparation of a grid
+(`_run_preparation_grid`), and on the histories of transfer entropy
 (`tests/test_data_check_routes.py`).
 
 ### Rows in time order

@@ -278,6 +278,13 @@ CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs',
 CHECK_SETTINGS = ('scale_band', 'predicted_share', 'check_rows', 'sample_rows', 'spread_band', 'offset_band',
                   'tail_band', 'tie_share')
 
+# The settings that a call reads while it prepares its data, before the configurations of a grid exist.
+# input_scaling decides how the encoders scale each stream, from the kind of rows the stream gives.
+# shift_windows decides how the rows are built: once for the whole call, or by each task so that they can
+# move. A grid over one of these runs one preparation per value, as a grid over processor parameters does,
+# so that every configuration computes what a separate call with its settings computes (INTERNALS.md).
+PREPARATION_SETTINGS = ('input_scaling', 'shift_windows')
+
 # How input_scaling='auto' scales the rows of each kind of stream (stream_scaling), one scale per
 # unit. The channels of a continuous stream, or of rows passed in built already, can each be a
 # different quantity: 'channel' centres and scales each by its own mean and spread. Every channel of

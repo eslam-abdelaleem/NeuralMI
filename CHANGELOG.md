@@ -340,6 +340,27 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A grid over `Model(input_scaling=...)` or `Training(shift_windows=...)` now
+  runs every configuration as a separate call with its settings would. `run()`
+  worked out how the encoders scale each stream, and whether the rows are cut
+  once or by each task, from the base settings before the grid applied. Every
+  configuration of such a grid therefore used the base value without a warning.
+  In `mode='sweep'`, the conditional modes and `block_mi`, a grid over
+  `input_scaling` gave the result of `'auto'` for `'none'` too, although
+  separate calls differ. A grid over `shift_windows` from a base that does not
+  shift left the rows unshifted, in `run()` and in the named quantities that
+  thin their rows by a stride. Both settings now join the processor parameters
+  as settings that change the preparation of a call
+  (`defaults.PREPARATION_SETTINGS`), so a grid over one of them prepares the
+  data once per value. The checks and messages that run once per call read
+  every configuration of the grid: the count of held-out rows in the data
+  check, the advice for a small dataset, the check that a sequential encoder
+  has a time axis, a `hidden_dim` list that overrides `n_layers`, and the notes
+  on the loss of decoders and variational encoders.
+  `tests/test_grid_contract.py` checks, for every setting that a grid accepts,
+  that a configuration gives the same estimate, epoch and diagnosis in a grid
+  as alone.
+
 - The ceiling warning now judges the value that the run reports, after the
   trainer sets a negative reading to 0 and at the epoch that `peak_fraction`
   reads, so it no longer quotes a value that the run does not report. Each side

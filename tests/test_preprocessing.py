@@ -301,8 +301,8 @@ class TestTheCheckSettings:
         # The first ten rows are a thousand times smaller than the rest.
         rows = {'x': torch.cat([torch.rand(10, 3, 5) * 1e-3, torch.rand(990, 3, 5)])}
         unscaled = {'input_scaling': 'none'}
-        _, every = _caught(_report_rows, 1000, 'windows', 100, unscaled, rows, {'x': 'spike'})
-        _, first = _caught(_report_rows, 1000, 'windows', 100, {'sample_rows': 10, **unscaled}, rows, {'x': 'spike'})
+        _, every = _caught(_report_rows, 1000, 'windows', unscaled, rows, {'x': 'spike'})
+        _, first = _caught(_report_rows, 1000, 'windows', {'sample_rows': 10, **unscaled}, rows, {'x': 'spike'})
         assert not any('typical scale' in m for m in every)
         assert any('typical scale' in m and 'Preprocessing(scale_band=10)' in m for m in first)
 
@@ -407,8 +407,8 @@ class TestEncodersThatScaleTheirInputs:
     def test_the_rows_check_leaves_the_scale_to_them(self):
         from neural_mi.run import _report_rows
         rows = {'x': torch.rand(100, 3, 5) * 1e-3}
-        _, plain = _caught(_report_rows, 100, 'windows', 10, {'input_scaling': 'none'}, rows, {'x': 'spike'})
-        _, scaled = _caught(_report_rows, 100, 'windows', 10, {}, rows, {'x': 'spike'})
+        _, plain = _caught(_report_rows, 100, 'windows', {'input_scaling': 'none'}, rows, {'x': 'spike'})
+        _, scaled = _caught(_report_rows, 100, 'windows', {}, rows, {'x': 'spike'})
         assert any('typical scale' in m for m in plain) and not any('typical scale' in m for m in scaled)
 
     def test_a_named_quantity_passes_it_to_its_check(self):

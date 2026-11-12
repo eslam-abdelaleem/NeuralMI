@@ -614,7 +614,7 @@ def _prepare_transfer(call) -> Dict[str, Any]:
     _warn_small_sample(kept_rows(n_histories, base_params), 'samples', base_params, call.mode,
                        rows={name: s for name, s in (('x', call.x_run), ('y', call.y_run), ('w', call.w_run))
                              if s is not None},
-                       processors=call.processor_of)
+                       processors=call.processor_of, sweep_grid=call.sweep_grid)
     if call.rigorous:
         ctx.update(_rigorous_terms(
             call, extra_data={'w_data': call.w_run} if call.w_run is not None else None,

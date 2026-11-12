@@ -49,7 +49,7 @@ from neural_mi.run import run
 from neural_mi.results import Results
 from neural_mi.logger import call_verbosity, collect_repeats, user_stacklevel
 from neural_mi.parallel import dispatch_tasks
-from neural_mi.analysis.assemble import merge_results
+from neural_mi.analysis.assemble import merge_results, split_grid, split_preparation
 from neural_mi.analysis.offsets import (build_rows, one_step_series, resolve_stream_processing,
                                         spec_geometry)
 from neural_mi.utils import _as_tensor, encoders_scale, validate_stride, validate_window
@@ -260,6 +260,19 @@ def _series(streams: Dict[str, Any], processing, quantity: str) -> 'OrderedDict[
     return series
 
 
+def _with_settings(run_kwargs: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    """``run_kwargs`` with each of ``settings`` set in the config that owns it, ``Model`` or ``Training``."""
+    from dataclasses import fields
+    from neural_mi.config import Model, Training, as_config
+    out = dict(run_kwargs)
+    for slot, cls in (('model', Model), ('training', Training)):
+        names = {f.name for f in fields(cls)}
+        own = {key: v for key, v in settings.items() if key in names}
+        if own:
+            out[slot] = replace(as_config(out.get(slot), cls) or cls(), **own)
+    return out
+
+
 def _shifts_windows(run_kwargs: Dict[str, Any]) -> bool:
     """Whether the call's rows shift each epoch, ``Training(shift_windows=...)`` or its default."""
     from neural_mi.config import Training, as_config
@@ -316,6 +329,20 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     conditional quantity, a difference of two networks, and one without is one
     MI estimate.
     """
+    prepared, rest = split_preparation(run_kwargs.get('sweep_grid'))
+    if prepared:
+        # The rows are built and checked here, before run(), so a grid over a setting that their building
+        # or the data check reads runs one preparation per value, as run() does with the rows it builds
+        # (defaults.PREPARATION_SETTINGS).
+        parts = [(fixed, _by_offsets(quantity, streams, spec_of, param, value, stride=stride, rigorous=rigorous,
+                                     n_workers=n_workers, show_progress=show_progress,
+                                     run_kwargs=_with_settings(dict(run_kwargs, sweep_grid=rest or None), fixed),
+                                     construction=construction, sweep_mode=sweep_mode))
+                 for fixed in split_grid(prepared)[0]]
+        own = {param: list(value)} if param is not None and _is_sweep(value) else {}
+        params = dict(parts[0][1].params)
+        params['base_params'] = {**params.get('base_params', {}), **prepared}
+        return merge_results(parts, {**own, **rest, **prepared}, params, mode=sweep_mode)
     stride = validate_stride(stride, f"{quantity}()")
     processing = run_kwargs.pop('processing', None)
     series = _series(streams, processing, quantity)

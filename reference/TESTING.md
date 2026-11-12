@@ -135,6 +135,7 @@ Each file covers one functional area. Run
 | `test_one_reaction.py` | one reaction to each thing a call cannot do: a setting nothing reads warns, a request the critic cannot serve and a grid that varies nothing are refused, in every mode, and the critics declare whether they embed each side |
 | `test_mode_registry.py` | each mode declared once in `MODES`: USING.md's table of what each mode accepts and `run()`'s signature against it, every field read somewhere, and no module that compares a mode with a mode's name or keeps a table keyed by them |
 | `test_data_check_routes.py` | every route through `run()` reaches the data check: each setting of a processor grid with its own rows, and transfer entropy on every route with its histories |
+| `test_grid_contract.py` | a grid runs every configuration as a separate call with its settings would, for every setting a grid accepts: the same estimate, epoch and diagnosis, including the settings that change the preparation (`input_scaling`, `shift_windows`) in `mode='sweep'`, a conditional mode and the named quantities |
 | `test_stream_inheritance.py` | Y and W read with X's processor and settings when they have none of their own, by one rule on every path: the rows each network reads are the same whether the settings are inherited or spelled out |
 
 ### Named quantities
@@ -206,6 +207,7 @@ Each file covers one functional area. Run
 | a setting that does not reach the network, or a default | `test_network_settings.py`, `test_settings_are_read.py`, `test_schema_defaults.py` |
 | units, scaling or preprocessing | `test_preprocessing.py`, `test_input_scaling.py` |
 | a `run()` API error | `test_run.py`, `test_validation.py`, `test_config.py`, `test_one_reaction.py` |
+| a configuration that reads differently in a grid than alone | `test_grid_contract.py`, `test_seeds.py` |
 | a named quantity | `test_quantities.py`, `test_quantities_sweep.py` |
 | conditional MI, transfer entropy, interaction information | `test_conditional.py`, `test_transfer.py`, `test_interaction.py` |
 | rigorous mode or bias correction | `test_workflow_internals.py`, `test_rigorous_diagnostics.py`, `test_conditional_transfer_rigorous.py` |
