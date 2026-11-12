@@ -171,7 +171,7 @@ for epoch in range(n_epochs):
               f"test {test_history[-1]:.2f} bits")
 ```
 
-### Reading the number off the two curves
+### Taking the number from the two curves
 
 The held-out curve rises to a peak and then falls once the critic starts fitting
 the training sample itself, while the training curve keeps climbing. The

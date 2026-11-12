@@ -87,10 +87,11 @@ and the fraction of it that the value reached (`train_saturation`,
 SMILE ([Song and Ermon, 2020](https://arxiv.org/abs/1910.06222)) estimates the
 MI through the Donsker-Varadhan representation used by MINE ([Belghazi et al.,
 2018](https://proceedings.mlr.press/v80/belghazi18a.html)) and clips the scores
-of the unpaired samples to $[-\tau, \tau]$:
+to $[-\tau, \tau]$. Song and Ermon clip only the scores of the unpaired samples.
+The library clips every score, so its estimate is
 
 $$
-I(X;Y) \ge \mathbb{E}\left[ f(x,y) \right] - \log \mathbb{E}\left[ e^{\text{clip}(f(x,y'), \tau)} \right]
+\hat{I}_{\text{SMILE}} = \mathbb{E}\left[ \text{clip}(f(x,y), \tau) \right] - \log \mathbb{E}\left[ e^{\text{clip}(f(x,y'), \tau)} \right].
 $$
 
 Clipping keeps a few large scores from dominating the normalising term. This
@@ -902,7 +903,7 @@ rate does without.
 - Pierre-Olivier Amblard and Olivier J. J. Michel. Relating Granger causality to directed information theory for networks of stochastic processes. arXiv:0911.2873, 2009. [arxiv.org/abs/0911.2873](https://arxiv.org/abs/0911.2873)
 - Pierre-Olivier Amblard and Olivier J. J. Michel. Causal conditioning and instantaneous coupling in causality graphs. *Information Sciences* 264, 279-290, 2014. [arxiv.org/abs/1203.5572](https://arxiv.org/abs/1203.5572)
 - John Geweke. Measurement of linear dependence and feedback between multiple time series. *Journal of the American Statistical Association* 77, 304-313, 1982. [doi.org/10.1080/01621459.1982.10477803](https://doi.org/10.1080/01621459.1982.10477803)
-- James L. Massey. Causality, feedback and directed information. *Proceedings of the 1990 International Symposium on Information Theory and its Applications*, 303-305, 1990. [isiweb.ee.ethz.ch](https://www.isiweb.ee.ethz.ch/archive/massey_pub/pdf/BI532.pdf)
+- James L. Massey. Causality, feedback and directed information. *Proceedings of the 1990 International Symposium on Information Theory and its Applications*, 1990. [isiweb.ee.ethz.ch](https://www.isiweb.ee.ethz.ch/archive/massey_pub/pdf/BI532.pdf)
 - James L. Massey and Peter C. Massey. Conservation of mutual and directed information. *Proceedings of the 2005 IEEE International Symposium on Information Theory*, 157-158, 2005. [doi.org/10.1109/ISIT.2005.1523313](https://doi.org/10.1109/ISIT.2005.1523313)
 :::
 
@@ -980,7 +981,7 @@ estimates the MI at a series of embedding sizes $k$ (a sweep described by
 [Gulati et al., 2026](https://proceedings.mlr.press/v326/gulati26a.html)) and
 reports the smallest $k$ that carries a set fraction of the MI.
 
-### The curve and the reading
+### The curve and the reported dimension
 
 Unless set otherwise, the critic is the hybrid critic. It embeds X and Y
 separately into $k$ dimensions each and scores the pair with a small network on
@@ -1012,7 +1013,7 @@ $$
 k^\ast = \min \{ k : \hat I(k) \ge \rho \, \hat I_\infty \}.
 $$
 
-### Why the reading bounds the dimension from above
+### Why the reported dimension bounds the true one from above
 
 A direction that the encoder constructs from the true factors is a function of
 them. By the data-processing inequality, it carries no information about the
