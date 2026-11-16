@@ -1272,6 +1272,9 @@ the five tutorials and the README figures, such as orange for the estimate and
 blue for the held-out value. Every figure has a title and labelled axes. The
 tutorials and the README figures notebook were rerun on the final code.
 
+The README, the sidebar of the docs and the favicon use the new logo. On GitHub,
+the README shows a lighter version of the logo to readers who use dark mode.
+
 ### Removed: settings that did nothing useful
 
 `Sweep(max_samples_per_task=...)` trained each configuration of a sweep on its

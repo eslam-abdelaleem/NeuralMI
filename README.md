@@ -1,4 +1,9 @@
-<p align="center"><img src="docs/source/_static/logo/neuralmi_logo_full.png" alt="NeuralMI" width="420"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/source/_static/logo/neuralmi_logo_on_dark.png">
+    <img src="docs/source/_static/logo/neuralmi_logo.png" alt="NeuralMI" width="560">
+  </picture>
+</p>
 
 # NeuralMI: information-theoretic analysis of neural data at scale
 
