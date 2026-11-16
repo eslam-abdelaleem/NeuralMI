@@ -22,7 +22,7 @@ from neural_mi.defaults import default_of
 
 def _build(name, **kwargs):
     """build_decoder with the settings a call fills from the schema, as task.py passes them."""
-    for key in ('n_layers', 'kernel_size', 'nhead', 'dropout'):
+    for key in ('n_layers', 'kernel_size', 'nhead', 'dropout', 'activation'):
         kwargs.setdefault(key, default_of(key))
     kwargs.setdefault('output_activation', default_of('decoder_output_activation_x'))
     return build_decoder(name, **kwargs)

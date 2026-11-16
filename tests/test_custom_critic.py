@@ -142,7 +142,7 @@ def test_input_scaling_the_recipe_does_not_take_leaves_the_scale_check_on():
     """Rows far from unit scale warn unless the encoders scale them. A recipe that does not name
     input_scaling never receives it, so the check still warns."""
     x, y = _data()
-    _, messages = _run(1000 * x, 1000 * y, model=nmi.Model(custom_critic=Recipe, input_scaling='standard'),
+    _, messages = _run(1000 * x, 1000 * y, model=nmi.Model(custom_critic=Recipe, input_scaling='auto'),
                        seed=0)
     assert any('from unit scale' in m for m in messages)
 

@@ -531,18 +531,20 @@ def test_a_reported_mi_is_never_negative_and_keeps_the_measured_value():
     also when the training-side value at the reported epoch came out below zero.
     Either way raw_train_mi keeps the measured value, and the second case warns.
 
-    Small, briefly trained runs produce both cases. The scan requires at least
-    one run of the second kind, so the rule is exercised and not assumed.
+    Small, briefly trained runs produce both cases when their scores start
+    spread out, so these runs keep the networks' own start (zero_start=False).
+    The scan requires at least one run of the second kind, so the rule is
+    exercised and not assumed.
     """
     import neural_mi as nmi
     rng = np.random.default_rng(0)
     partly_negative = 0
-    for seed in range(12):
+    for seed in range(20):
         x = rng.standard_normal((60, 2)).astype(np.float32)
         y = (x + rng.standard_normal((60, 2))).astype(np.float32)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            result = nmi.run(x, y, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+            result = nmi.run(x, y, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1, zero_start=False),
                              training=nmi.Training(n_epochs=2, learning_rate=1e-4, batch_size=8,
                                                    patience=1),
                              split=nmi.Split(mode='random'), seed=seed, show_progress=False)

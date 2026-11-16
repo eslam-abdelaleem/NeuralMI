@@ -67,9 +67,9 @@ def test_cnn1d_embedding(x_data_cnn, cnn1d_embedding):
 
 
 class TestUnifiedActivationHandling:
-    """MLP, CNN1D and CNN2D share one activation resolver: the same set of
-        names, and a clean ValueError on an unknown name, with no silent
-        substitution.
+    """Every network with rectified layers resolves its activation through one
+        table (``ACTIVATIONS``): the same set of names, and a clean ValueError
+        on an unknown name, with no silent substitution.
     """
 
     SHARED_ACTIVATIONS = ['relu', 'gelu', 'tanh', 'elu', 'leaky_relu', 'sigmoid', 'silu']
@@ -379,6 +379,10 @@ def test_critic_gradients(critic_and_data):
         pytest.skip("Invalid critic specified.")
 
     critic.train()
+    # A closed linear path passes no gradient to its map until its gate opens, so the test opens it.
+    for module in critic.modules():
+        if isinstance(module, MLP) and module.path is not None:
+            module.path_scale.data.fill_(1.0)
 
     scores, kl_loss = critic(x, y)
     loss = scores.mean() + kl_loss

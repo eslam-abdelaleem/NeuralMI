@@ -237,12 +237,6 @@ class ParameterSweep:
         return results
 
 
-#: Amplification factors at or above this are warned about.  A difference
-#: carrying 10x its components' relative error is fragile enough that the point
-#: estimate should not be read on its own.
-AMPLIFICATION_WARN_THRESHOLD = 10.0
-
-
 def amplification_factor(components: Sequence[float], result: float) -> float:
     """Error-amplification factor for a quantity built by combining MI terms.
 
@@ -326,11 +320,14 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
                 f"{quantity_name} estimate is negative ({result * _scale:.4f} {_units}). The "
                 f"quantity cannot be negative. It is reported as 0 {_units} and the measured value "
                 f"is kept as {raw_key} in result.runs. With estimator='{name}' it is a single "
-                f"conditional estimate, and a negative one is a value near zero read with the "
-                f"estimator's bias and spread.",
+                f"conditional estimate. A negative estimate is a value near zero that the estimator's "
+                f"bias and spread have moved below zero.",
                 CombinationWarning, stacklevel=user_stacklevel(),
             )
         return
+    # Amplification factors at or above Training(amplification_threshold=...) are warned about: a combination
+    # that carries that many times its terms' relative error should not be read on its own.
+    threshold = setting(base_params, 'amplification_threshold')
     j_label, j_value, _ = joint
     terms = [joint, *marginals]
     keys = ', '.join(f"'{key}'" for _, _, key in terms)
@@ -340,7 +337,7 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
         pair_amp = amplification_factor([j_value, m_value], j_value - m_value)
         order = (f"The joint term I({j_label})={j_value * _scale:.4f} came out below "
                  f"the I({m_label})={m_value * _scale:.4f} it contains.")
-        if pair_amp >= AMPLIFICATION_WARN_THRESHOLD:
+        if pair_amp >= threshold:
             reading = (f"The two are close enough (error-amplification factor {pair_amp:.0f}x) "
                        f"for an error of about {100.0 / pair_amp:.2g}% in either one to flip the "
                        f"order. The true difference between them is most likely near zero. More "
@@ -368,16 +365,16 @@ def warn_combination(quantity_name: str, result: float, joint: tuple, marginals:
             )
         return
     amp = amplification_factor([value for _, value, _ in terms], result)
-    if amp >= AMPLIFICATION_WARN_THRESHOLD:
+    if amp >= threshold:
         count = {2: 'two', 3: 'three'}.get(len(terms), str(len(terms)))
         listing = ', '.join(f"I({label})={value * _scale:.4f}" for label, value, _ in terms)
         warnings.warn(
-            f"{quantity_name} has an error-amplification factor of {amp:.1f}x. It is a "
+            f"{quantity_name} has an error-amplification factor of {amp:.1f}x, which reaches "
+            f"Training(amplification_threshold={threshold:g}). It is a "
             f"small residual ({result * _scale:.4f} {_units}) of {count} much larger estimates "
             f"({listing}). If their errors were independent, a relative error of eps on each "
-            f"would become roughly {amp:.0f}*eps on the result (about {amp:.0f}% for a 1% "
-            f"component error). The components are trained on the same rows and partly err "
-            f"together, which cancels some of that. Report the components ({keys}) beside the "
+            f"would become roughly {amp:.0f}*eps on the result. The components are trained on "
+            f"the same rows and partly err together, which cancels some of that. Report the components ({keys}) beside the "
             f"point estimate. Look for more data or more training before concluding that the "
             f"true value is small.",
             CombinationWarning, stacklevel=user_stacklevel(),
@@ -448,11 +445,11 @@ def term_values(results: Sequence[Dict[str, Any]]) -> Tuple[List[float], List[st
       held-out value never rose above zero, or its training-side value came out
       negative while its held-out value stood within noise of zero
       (:func:`neural_mi.training.epochs.stands_above_zero`). It enters as 0,
-      which is the value of a term that is zero, and a term that is not zero
-      but that its network missed reads the same.
+      which is the value of a term that is zero. A term that is not zero but
+      that its network missed also enters as 0.
     - ``'failed'``: the term has no value. Its training-side value came out
       negative while its held-out value stood clearly above zero, so the two
-      readings of one network contradict each other, or its repeat produced no
+      values of one network contradict each other, or its repeat produced no
       value at all.
     """
     values, states = [], []
@@ -466,7 +463,7 @@ def term_values(results: Sequence[Dict[str, Any]]) -> Tuple[List[float], List[st
             values.append(float(value))
             states.append('nothing')
         elif raw is not None and raw < 0:
-            learned = stands_above_zero(result.get('test_mi'), result.get('eval_size'))
+            learned = stands_above_zero(result.get('test_mi'), result.get('eval_size'), setting(result, 'clear_se'))
             values.append(math.nan if learned else float(value))
             states.append('failed' if learned else 'nothing')
         else:
@@ -552,21 +549,21 @@ def combine_terms(terms: Sequence[tuple], *, quantity_name: str = '',
     if warn and len(used) < n:
         warnings.warn(
             f"{quantity_name}: {n - len(used)} of {n} repeats are left out of mi_mean and mi_std "
-            f"because a term read negative on its training rows while its held-out value stood "
-            f"clearly above zero ({_term_counts(failed_keys, labels)}). The two readings of that "
+            f"because a term came out negative on its training rows while its held-out value stood "
+            f"clearly above zero ({_term_counts(failed_keys, labels)}). The two values of that "
             f"network contradict each other, so its repeat has no value. Those repeats are NaN in "
             f"result.runs, where failed_term names the term, and each network's values are in "
-            f"details[config_id]['trainings']. The usual causes are too few epochs or samples, and "
-            f"data far from unit scale.",
+            f"details[config_id]['trainings']. The usual causes are too few epochs or samples. Data far "
+            f"from unit scale can also cause it when the encoders do not scale their input.",
             CombinationWarning, stacklevel=user_stacklevel(),
         )
     if warn and any(nothing_keys[i] for i in used):
         warnings.warn(
             f"{quantity_name}: a term learned nothing distinguishable from zero and enters as 0 "
             f"({_term_counts([nothing_keys[i] for i in used], labels)}). That is the value of a "
-            f"term that is zero, and a term that is not zero but that its network missed reads the "
-            f"same. A missed term that is subtracted makes the result read high by its value, and "
-            f"one that is added makes it read low. Each network's values are in "
+            f"term that is zero. A term that is not zero but that its network missed also enters as 0. "
+            f"A missed term that is subtracted makes the result too high by the value of the term. "
+            f"A missed term that is added makes it too low by that value. Each network's values are in "
             f"details[config_id]['trainings'].",
             CombinationWarning, stacklevel=user_stacklevel(),
         )
@@ -584,9 +581,16 @@ def _joint_marginal_difference(
     joint_key: str, marginal_key: str,
     reported: bool = True,
     raw_key: str = 'mi_raw',
+    joint_streams: Optional[tuple] = None,
+    marginal_streams: Optional[tuple] = None,
 ) -> tuple:
     """Estimate a chain-rule difference I(joint) - I(marginal) via two
     independent ParameterSweep runs.
+
+    ``joint_streams`` and ``marginal_streams``, when given, name the streams
+    behind each term's inputs, ``(x_parts, y)``, for terms whose rows the
+    caller built from several streams (transfer entropy): each part's encoder
+    scales it as its streams decide (:func:`neural_mi.defaults.side_scaling`).
 
     Shared by conditional MI (I(X;Y|W) = I(XW;Y) - I(W;Y)) and transfer
     entropy in both directions (TE(X→Y) = I(xy_past;y_future) -
@@ -633,11 +637,13 @@ def _joint_marginal_difference(
     logger.info(f"{quantity_name}: estimating I({marginal_label})...")
     sweep_marginal = ParameterSweep(x_data=marginal_x, y_data=marginal_y,
                                     base_params={**with_model_labels(base_params, component=marginal_key),
-                                                 '_difference_term': True})
+                                                 '_difference_term': True,
+                                                 **({'_term_streams': marginal_streams} if marginal_streams else {})})
     results_marginal = sweep_marginal.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 
     logger.info(f"{quantity_name}: estimating I({joint_label})...")
-    joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True}
+    joint_params = {**with_model_labels(base_params, component=joint_key), '_difference_term': True,
+                    **({'_term_streams': joint_streams} if joint_streams else {})}
     sweep_joint = ParameterSweep(x_data=joint_x, y_data=joint_y, base_params=dict(joint_params))
     results_joint = sweep_joint.run(sweep_grid=sweep_grid or {}, n_workers=n_workers)
 

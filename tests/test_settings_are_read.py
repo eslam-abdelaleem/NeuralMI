@@ -135,3 +135,49 @@ def test_every_config_field_reaches_the_engine(cls, field, key):
         f"{cls}.{field} becomes '{key}', and nothing in the engine reads it. Wire it up "
         f"or remove the field and its row in PARAMETERS.md."
     )
+
+
+# ---------------------------------------------------------------------------
+# Settings that a review found accepted but not honoured
+# ---------------------------------------------------------------------------
+
+def _pair(n=300, seed=0):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n, 2)).astype(np.float32)
+    return x, (x + rng.standard_normal((n, 2))).astype(np.float32)
+
+
+def test_a_mode_setting_below_its_minimum_is_refused():
+    x, y = _pair()
+    with pytest.raises(ValueError, match=r"confirm_steps=0 \(mode='dimensionality'\) must be at least 1"):
+        neural_mi.run(x, y, mode='dimensionality', dimensionality=neural_mi.Dimensionality(confirm_steps=0),
+                      show_progress=False)
+
+
+def test_a_grid_over_a_data_check_setting_is_refused():
+    x, y = _pair()
+    for key in ('scale_band', 'small_sample'):
+        with pytest.raises(ValueError, match=f"'{key}' sets the data check"):
+            neural_mi.run(x, y, mode='sweep', sweep_grid={key: [5, 50]}, show_progress=False)
+
+
+def test_a_data_check_setting_is_validated_where_it_is_first_read():
+    x, y = _pair()
+    with pytest.raises(ValueError, match=r"Preprocessing\(scale_band=0.5\) must be a number of at least 1"):
+        neural_mi.instantaneous_mi(x, y, preprocessing=neural_mi.Preprocessing(scale_band=0.5), show_progress=False)
+    with pytest.raises(ValueError, match=r"Preprocessing\(check_rows=2.5\) must be a whole number"):
+        neural_mi.run(x, y, preprocessing=neural_mi.Preprocessing(check_rows=2.5), show_progress=False)
+
+
+def test_ksg_keeps_the_data_check_settings():
+    """With estimator='ksg' nothing is trained, yet the data check still reads small_sample."""
+    import warnings
+    x, y = _pair()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        neural_mi.run(x, y, estimator='ksg', training=neural_mi.Training(small_sample=10 ** 6),
+                      show_progress=False)
+    messages = [str(w.message) for w in caught]
+    assert any('fewer than Training(small_sample=1000000)' in m for m in messages)
+    assert not any("small_sample (estimator='ksg'" in m for m in messages)

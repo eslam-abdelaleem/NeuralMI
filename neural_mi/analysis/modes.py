@@ -35,7 +35,7 @@ from neural_mi.analysis.transfer import _te_rigorous_scalar, run_transfer_entrop
 from neural_mi.results import (_draw_axis_curve, _draw_components, _draw_dimensionality,
                                _draw_directions, _draw_extrapolation, _draw_matrix, _draw_precision,
                                _draw_training, _overlay_extrapolations, _overlay_training,
-                               _summary_dimensionality, _summary_matrix, _summary_precision)
+                               _summary_dimensionality, _summary_matrix, _summary_precision, _summary_sweep)
 from neural_mi.validation import (check_dimensionality_settings, check_lag_settings,
                                   check_precision_settings, check_rigorous_settings)
 
@@ -450,7 +450,7 @@ def produce_precision(x, y, base_params, *, to_bits, n_workers=1, precision_kwar
 # three that _run_flat names (curvature_t_threshold, min_gamma_points,
 # confidence_level).
 _RIGOROUS_FIT_KEYS = ('gamma_range', 'residual_threshold', 'leverage_threshold',
-                      'temporal_chunking')
+                      'temporal_chunking', 'left_out_share')
 
 
 def _to_2d(t):
@@ -469,6 +469,7 @@ _FIT = {
     'confidence_level': {'type': float, 'default': 0.68},
     'residual_threshold': {'type': float, 'default': 2.5},
     'leverage_threshold': {'type': float, 'default': 0.20},
+    'left_out_share': {'type': float, 'min': 0.0, 'default': 0.5},
 }
 _DIFFERENCE_SETTINGS = {**_WORKERS, 'rigorous': {'type': bool, 'default': False},
                         'gamma_range': {'type': (range, list, type(None)), 'default': None}, **_FIT}
@@ -484,6 +485,7 @@ def _scalar_rigorous_kwargs(analysis_kwargs: dict, curvature_t_threshold: float,
         'confidence_level': analysis_kwargs.get('confidence_level', confidence_level),
         'residual_threshold': analysis_kwargs.get('residual_threshold', _FIT['residual_threshold']['default']),
         'leverage_threshold': analysis_kwargs.get('leverage_threshold', _FIT['leverage_threshold']['default']),
+        'left_out_share': analysis_kwargs.get('left_out_share', _FIT['left_out_share']['default']),
     }
 
 
@@ -612,7 +614,7 @@ def _prepare_transfer(call) -> Dict[str, Any]:
     _warn_small_sample(kept_rows(n_histories, base_params), 'samples', base_params, call.mode,
                        rows={name: s for name, s in (('x', call.x_run), ('y', call.y_run), ('w', call.w_run))
                              if s is not None},
-                       processors=call.processor_of)
+                       processors=call.processor_of, sweep_grid=call.sweep_grid)
     if call.rigorous:
         ctx.update(_rigorous_terms(
             call, extra_data={'w_data': call.w_run} if call.w_run is not None else None,
@@ -708,6 +710,8 @@ class Mode:
     rigorous_scalar: Optional[Callable[..., Dict[str, Any]]] = None
     # Its result is an extrapolation.
     extrapolates: bool = False
+    # Its configurations are ranked by their held-out MI (Results.best).
+    ranks: bool = False
     # Its figure of one configuration, the lines summary() adds, and how compare() overlays results
     # (results.py): a figure returns the axes and whether it showed them.
     draw: Optional[Callable] = None
@@ -773,7 +777,8 @@ MODES: Dict[str, Mode] = {
                                   "Use mode='sweep' to repeat the estimate or to sweep a setting."),
                      one_network_per_repeat=True, draw=_draw_training, overlay=_overlay_training),
     'sweep': Mode(_single, table=('yes', 'yes', "through `mode='rigorous'` with the same grid"),
-                  needs_grid=True, one_network_per_repeat=True, draw=_draw_training),
+                  needs_grid=True, one_network_per_repeat=True, ranks=True, draw=_draw_training,
+                  summarize=_summary_sweep),
     'rigorous': Mode(_rigorous, config=Rigorous,
                      settings={**_WORKERS, **_FIT,
                                # None: contiguous chunks for rows recorded in time order
@@ -844,7 +849,7 @@ MODES: Dict[str, Mode] = {
                                # 'random', 'spatial', 'temporal', 'index', 'horizontal', 'vertical',
                                # 'row_interleaved', 'col_interleaved', 'diagonal' or 'antidiagonal'.
                                'split_method': {'type': str, 'default': 'random'},
-                               # Random channel splits of X; the other split methods give one split.
+                               # Random channel splits of X, no two alike; the other split methods give one.
                                'n_splits': {'type': (int, type(None)), 'min': 1, 'default': None},
                                # With split_method='temporal'.
                                'lag': {'type': int, 'default': 1},
@@ -852,6 +857,26 @@ MODES: Dict[str, Mode] = {
                                'channel_indices_x': {'type': (list, type(None)), 'default': None},
                                # Warn when the reference fit's MI is this close to its evaluation ceiling.
                                'ceiling_mi_fraction': {'type': float, 'default': 0.85},
+                               # The default grid reaches grid_reach times the reference fit's
+                               # participation ratio: every value up to grid_small or grid_medium,
+                               # or grid_points values on a log scale beyond.
+                               'grid_reach': {'type': float, 'min': 1.0, 'default': 2.0},
+                               'grid_small': {'type': int, 'min': 1, 'default': 10},
+                               'grid_medium': {'type': int, 'min': 1, 'default': 20},
+                               'grid_points': {'type': int, 'min': 2, 'default': 10},
+                               # The reference is refitted at refit_reach times the ratio when
+                               # grid_reach times it reaches reference_fill of its dimension. The
+                               # product of refit_reach and reference_fill must exceed grid_reach.
+                               'reference_fill': {'type': float, 'min': 0.0, 'default': 0.75},
+                               'refit_reach': {'type': float, 'min': 1.0, 'default': 4.0},
+                               # Each split's default grid stops after this many consecutive values at
+                               # the threshold, and fewer values that confirm a dimension warn.
+                               'confirm_steps': {'type': int, 'min': 1, 'default': 3},
+                               # Warn when restarts below the reported dimension differ by more than
+                               # this share of the plateau, and when the reference networks' held-out
+                               # MI lies this share below their training MI.
+                               'restart_spread': {'type': float, 'min': 0.0, 'default': 0.1},
+                               'held_out_gap': {'type': float, 'min': 0.0, 'default': 0.1},
                            },
                            table=('through `n_restarts`', 'one curve per configuration', 'refused'),
                            permutation=("The mode reports a curve over embedding dimensions and the dimension "

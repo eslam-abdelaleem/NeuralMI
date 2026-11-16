@@ -22,21 +22,14 @@ from neural_mi.defaults import default_of
 from neural_mi.models.critics import _batch_size_of
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import TrainingError
-from neural_mi.training.epochs import (CLEAR_SE, EPOCH_RULES, FUZZY_SE, choose_epoch, standard_error,
-                                     stands_above_zero, warn_about_curve)
+from neural_mi.training.epochs import (EPOCH_RULES, band_floor, choose_epoch, falls_short, standard_error,
+                                     stands_above_zero, top_band, warn_about_ceiling, warn_about_curve,
+                                     warn_about_gap)
 from neural_mi.utils import (compute_cross_covariance_spectrum, compute_spectral_metrics,
                              compute_cross_covariance_rotation, warn_if_blocked_split_leaks,
                              warn_if_random_split_leaks)
 from neural_mi.augmentations import apply_augmentations
 from neural_mi.models.critics import embeds_each_side, fit_input_scaling, has_input_scaling
-
-# Fraction of the (smoothed) test-MI history that must sit above
-# TEST_TRACE_SATURATION_THRESHOLD * ceiling before peak-epoch selection is
-# flagged as unreliable. A judgement call, kept as a module constant so it can
-# be tuned in one place.
-TEST_TRACE_SATURATED_EPOCH_FRACTION_THRESHOLD = 0.5
-TEST_TRACE_SATURATION_THRESHOLD = 0.9
-CEILING_PROXIMITY_WARNING_THRESHOLD = 0.85
 
 def _ranks(sample: np.ndarray) -> List[int]:
     """Return each element's rank (position in sorted order) within `sample`."""
@@ -96,8 +89,8 @@ def rows_to_fill_a_batch(batch_size: int, train_fraction: float) -> int:
 def too_few_held_out(n_held_out: int, batch_size: int) -> bool:
     """Whether a held-out set is smaller than one training batch.
 
-    The held-out curve chooses the epoch the estimate is read at and says
-    whether it is resolved. Its rows are each other's negatives, so its ceiling
+    The epoch at which the estimate is taken comes from the held-out curve,
+    and so does the verdict on whether it is resolved. Its rows are each other's negatives, so its ceiling
     is ``log(n_held_out)``, below the ``log(batch_size)`` of the objective it
     follows, and its noise grows as the rows shrink. The rigorous ladder draws
     the same line for its chunks.
@@ -266,6 +259,21 @@ class Trainer:
               eval_train: Union[bool, float, int] = default_of('eval_train'),
               peak_fraction: float = default_of('peak_fraction'),
               epoch_rule: str = default_of('epoch_rule'),
+              level_noise: float = default_of('level_noise'),
+              start_noise: float = default_of('start_noise'),
+              resolved_noise: float = default_of('resolved_noise'),
+              fast_epochs: int = default_of('fast_epochs'),
+              fall_noise: float = default_of('fall_noise'),
+              top_se: float = default_of('top_se'),
+              band_share: float = default_of('band_share'),
+              clear_se: float = default_of('clear_se'),
+              rising_epochs: int = default_of('rising_epochs'),
+              rising_noise: float = default_of('rising_noise'),
+              ceiling_fraction: float = default_of('ceiling_fraction'),
+              saturation_fraction: float = default_of('saturation_fraction'),
+              saturated_epoch_fraction: float = default_of('saturated_epoch_fraction'),
+              gap_share: float = default_of('gap_share'),
+              nan_streak: int = default_of('nan_streak'),
               scheduler: Optional[Any] = None,
               track_embeddings: Union[bool, float, int, str] = default_of('track_embeddings'),
               return_rotated_embeddings: bool = default_of('return_rotated_embeddings'),
@@ -293,7 +301,7 @@ class Trainer:
             Every epoch the training rows' windows start one offset later,
             drawn within one row step, the same for every stream, so training
             does not see one fixed set of window boundaries. The rows stay the
-            same rows: evaluation reads them unshifted. Takes effect when
+            same rows: evaluation uses them unshifted. Takes effect when
             `dataset` carries a `_window_shifter` (the rows of a
             :class:`~neural_mi.data.plan.RowPlan`, or rows a stride thins);
             a no-op otherwise.
@@ -308,9 +316,11 @@ class Trainer:
         patience : int, optional
             Epochs to wait for improvement before early stopping.
             Early stopping decides when training ends. The network evaluated is
-            the one at the peak of the held-out curve smoothed after training
-            (``best_epoch``), whichever epoch that is: copies of the network are
-            kept for the epochs that can still turn out to be that peak.
+            the one at the epoch that ``epoch_rule`` picks from the held-out
+            curve smoothed after training (``best_epoch``): by default the
+            earliest epoch at its top, or its peak with ``'peak'``. Copies of the
+            network are kept for the epochs that can still turn out to be that
+            epoch.
         smoothing_sigma : float, optional
             Standard deviation for the Gaussian smoothing kernel on validation MI.
             Defaults to 1.0.
@@ -343,8 +353,8 @@ class Trainer:
             A larger set is evaluated in blocks of at most this many rows whose
             values are averaged. Defaults to 5000.
         train_subset_size : int or 'full', optional
-            Size of the fixed subset of training samples the reported,
-            training-side MI is evaluated on, or 'full' for all of them.
+            Size of the fixed subset of training samples on which the reported
+            estimate is evaluated, or 'full' for all of them.
             Training itself uses every training sample. Like the held-out
             subset, a blocked split takes one contiguous stretch per training
             segment, a random split random rows. Defaults to None, which takes
@@ -373,15 +383,18 @@ class Trainer:
             spectrum (singular values) at every epoch in the returned
             ``spectral_metrics_history``, can be expensive, since it evaluates on
             ``train_eval_view`` each epoch. Defaults to False. Independent of this
-            flag, the same three values are always computed once at the best epoch
-            (see ``pr_eig``, ``pr_singular``, ``spectrum`` in the returned dict).
+            flag, the same three values are always computed once, for the network
+            that gives the reported estimate: at the conservative epoch when
+            ``peak_fraction`` chose one, else at the best epoch (see ``pr_eig``,
+            ``pr_singular``, ``spectrum`` in the returned dict).
         eval_train : bool, float, or int, optional
             Controls whether train-set MI is evaluated at every epoch alongside test-set MI,
             yielding a ``'train_mi_history'`` in the returned results.
 
             - ``False`` (default), no per-epoch train evaluation.
-            - ``True``: evaluate on the same locked-in training evaluation subset
-              used for the final ``train_mi`` (size capped by ``max_eval_samples``).
+            - ``True``: evaluate on a fixed subset of up to ``max_eval_samples``
+              training rows, drawn once before training. It is drawn apart from
+              the rows behind the final ``train_mi``.
             - ``'full'`` or ``1.0``: evaluate on the entire training set, not
               capped by ``max_eval_samples``. Use this when the train curve needs
               to be read against the reported estimate: a smaller evaluation
@@ -409,14 +422,40 @@ class Trainer:
               ``'train_mi_at_peak'`` (train MI at the actual peak epoch, for
               comparison).
         epoch_rule : {'plateau_start', 'peak'}, optional
-            Which epoch the reported values are read at (``best_epoch``), from
-            the smoothed held-out curve. ``'plateau_start'`` (default) reads the
-            earliest epoch at its top, within half the curve's own noise of the
-            top's level: the peak of a clean peak, the start of a plateau.
-            ``'peak'`` reads the smoothed maximum. Either way the results give
-            the maximum as ``peak_epoch`` and a diagnosis of the curve as
-            ``curve_diagnosis``, and warn when the curve cannot support the
-            choice (``neural_mi/training/epochs.py``).
+            The epoch at which the reported values are taken (``best_epoch``),
+            chosen from the smoothed held-out curve. ``'plateau_start'`` (default)
+            chooses the earliest epoch at its top, within ``start_noise`` noise
+            units of the top's level: the peak of a clean peak, the start of a
+            plateau. ``'peak'`` chooses the smoothed maximum. Either way the
+            results give the maximum as ``peak_epoch`` and a diagnosis of the
+            curve as ``curve_diagnosis``, and warn when the curve cannot support
+            the choice (``neural_mi/training/epochs.py``).
+        level_noise, start_noise, resolved_noise, fast_epochs, fall_noise, clear_se, rising_epochs, rising_noise : optional
+            The thresholds by which the library judges the held-out curve, in
+            units of its own epoch-to-epoch noise, of standard errors or of
+            epochs (:func:`neural_mi.training.epochs.choose_epoch`). ``clear_se``
+            also decides whether a held-out value stands above zero.
+        top_se, band_share : float, optional
+            The band is every epoch whose smoothed held-out value lies within
+            ``top_se`` standard errors of the curve's maximum
+            (:func:`neural_mi.training.epochs.top_band`). The trainer evaluates
+            the estimate at the band's first and last epoch. A curve whose two
+            values differ by more than ``band_share`` of the estimate is
+            diagnosed ``'flat top'``.
+        ceiling_fraction, saturation_fraction, saturated_epoch_fraction : float, optional
+            A value above ``ceiling_fraction`` of its InfoNCE ceiling warns, and
+            so does a smoothed held-out curve that lies above
+            ``saturation_fraction`` of its ceiling for more than
+            ``saturated_epoch_fraction`` of its epochs.
+        gap_share : float, optional
+            The call warns when the held-out value of the network at the chosen
+            epoch is below
+            this share of a positive estimate, by more than ``clear_se`` standard
+            errors of their difference
+            (:func:`neural_mi.training.epochs.falls_short`).
+        nan_streak : int, optional
+            Training stops with :class:`TrainingError` after this many epochs in
+            a row whose held-out evaluation is NaN.
         scheduler : torch.optim.lr_scheduler instance, optional
             A PyTorch learning-rate scheduler to step at the end of each epoch.
             ``ReduceLROnPlateau`` is stepped with the current test MI as the metric
@@ -593,8 +632,8 @@ class Trainer:
             else:
                 raise ValueError(
                     f"eval_train={eval_train!r} is not a recognised value. Use False to "
-                    f"disable, True for the locked-in evaluation subset (capped by "
-                    f"max_eval_samples={max_eval_samples}), 'full' or 1.0 for the entire "
+                    f"disable, True for a fixed subset of up to "
+                    f"max_eval_samples={max_eval_samples} training rows, 'full' or 1.0 for the entire "
                     f"training set, a float in (0, 1) for a fraction of it, or an int >= 1 "
                     f"for that many samples."
                 )
@@ -697,25 +736,29 @@ class Trainer:
         _rotation_singular_values_history: list = []
         _rotation_history_x: list = []
         _rotation_history_y: list = []
-        # Copies of the network at every epoch that can still turn out to be the
-        # one evaluated: the peak of the held-out curve smoothed after training,
-        # or the first epoch to reach a threshold below it (epoch_rule
-        # 'plateau_start', or peak_fraction < 1). An epoch's smoothed value
-        # depends on up to _reach epochs after it. Once it is final, the epoch is
-        # kept only if it beats every earlier final epoch (the first epoch to
-        # reach any threshold always does), and when only the peak is read it
-        # replaces the one it beats. A custom smoothing function has no known
-        # reach, so every epoch is kept.
+        # Copies of the network at every epoch that can still turn out to be one
+        # that is evaluated: the peak of the held-out curve smoothed after
+        # training, the first epoch to reach a threshold below it (epoch_rule
+        # 'plateau_start', peak_fraction < 1, the band's first epoch), and the
+        # band's last epoch (epochs.top_band). An epoch's smoothed value depends on
+        # up to _reach epochs after it. Once it is final, the epoch is kept if it
+        # beats every earlier final epoch (the first epoch to reach any threshold
+        # always does). Otherwise it is kept, in place of the epoch kept before
+        # it on the same grounds, if it lies within top_se standard errors of the
+        # top so far. The band's last epoch comes at or after the top, where the
+        # top no longer moves, so it is the last epoch kept on these grounds. A
+        # new top drops the copy. A custom smoothing function has no known reach,
+        # so every epoch is kept.
         _states: Dict[int, Any] = {}
         _reach = None if self.custom_smoothing_fn else self._smoothing_reach(smoothing_sigma, median_window)
-        _record, _record_ep = -np.inf, None
-        nan_streak = 0
+        _record, _band_ep = -np.inf, None
+        nan_count = 0
         
         display_progress = show_progress if show_progress is not None else verbose
         epoch_iterator = tqdm(range(n_epochs), desc="Training", leave=False,
                               disable=not display_progress)
 
-        # Model(input_scaling='standard'): the scaling of every encoder's input
+        # Model(input_scaling='auto'): the scaling of every encoder's input
         # takes its statistics from the training rows, before the first epoch.
         if has_input_scaling(self.model):
             fit_input_scaling(self.model, _index_batch(_eval_x_source, _eval_train_eval_idx),
@@ -782,33 +825,38 @@ class Trainer:
                             _rotation_history_y.append(_rot['rotation_y'])
 
             if np.isnan(mi_nats):
-                nan_streak += 1
-                if nan_streak >= 3:
+                nan_count += 1
+                if nan_count >= nan_streak:
                     raise TrainingError(
-                        f"Training aborted: {nan_streak} consecutive NaN MI values "
-                        f"(epochs {epoch + 2 - nan_streak} to {epoch + 1}). "
+                        f"Training aborted: {nan_count} consecutive NaN MI values "
+                        f"(epochs {epoch + 2 - nan_count} to {epoch + 1}) reached the limit of Training("
+                        f"nan_streak={nan_streak}). "
                         f"Check your learning_rate, batch_size and input data for "
                         f"numerical instability (for example exploding gradients or "
                         f"zero-variance channels)."
                     )
                 warnings.warn(
                     f"NaN MI detected at epoch {epoch + 1} (consecutive NaN streak: "
-                    f"{nan_streak}/3). This step will be skipped for early stopping. "
+                    f"{nan_count} of Training(nan_streak={nan_streak})). This step will be skipped for early stopping. "
                     f"If this persists, check your data and hyperparameters.",
                     UserWarning, stacklevel=user_stacklevel()
                 )
             else:
-                nan_streak = 0
+                nan_count = 0
             history.append(mi_nats)
             _states[epoch] = copy.deepcopy(self.model.state_dict())
             _final_ep = epoch - _reach if _reach is not None else -1
             if (_final_ep >= 0 and len(history) >= median_window
                     and not np.isnan(history[max(0, _final_ep - _reach):]).any()):
                 _value = self._smooth(history, smoothing_sigma, median_window)[_final_ep]
-                if _value > _record:
-                    if epoch_rule == 'peak' and peak_fraction >= 1.0 and _record_ep is not None:
-                        del _states[_record_ep]
-                    _record, _record_ep = _value, _final_ep
+                if _value >= band_floor(_record, actual_test_subset_size, top_se):
+                    # A new top, or the latest epoch within top_se standard errors of the top so far.
+                    if _band_ep is not None:
+                        del _states[_band_ep]
+                    if _value > _record:
+                        _record, _band_ep = _value, None
+                    else:
+                        _band_ep = _final_ep
                 else:
                     del _states[_final_ep]
 
@@ -857,25 +905,31 @@ class Trainer:
                 logger.debug(f"Early stopping at epoch {epoch+1}.")
                 break
         
-        # 4. Finalization: the network at the peak of the smoothed held-out curve
+        # 4. Finalization: the network at the epoch that epoch_rule picks from the smoothed held-out curve
         _smoothed_history = np.asarray(
             self.custom_smoothing_fn(history) if self.custom_smoothing_fn
             else self._smooth(history, smoothing_sigma, median_window)
         )
         if np.isnan(_smoothed_history).all():
             raise TrainingError("Training failed to produce a valid model checkpoint.")
-        best_ep, peak_ep, curve_diagnosis, approach_ep = choose_epoch(
-            history, _smoothed_history, epoch_rule, _reach, ran_to_limit=len(history) == n_epochs,
-            n_rows=actual_test_subset_size)
+        # Whether training ran to n_epochs. A run that stopped earlier had stopped improving, so the messages
+        # suggest more epochs only when it did not.
+        _ran_to_limit = len(history) == n_epochs
+        best_ep, peak_ep, curve_diagnosis = choose_epoch(
+            history, _smoothed_history, epoch_rule, _reach, ran_to_limit=_ran_to_limit,
+            n_rows=actual_test_subset_size, level_noise=level_noise, start_noise=start_noise,
+            resolved_noise=resolved_noise, fast_epochs=fast_epochs, fall_noise=fall_noise,
+            clear_se=clear_se, rising_epochs=rising_epochs, rising_noise=rising_noise)
         _train_x = _index_batch(_eval_x_source, _eval_train_eval_idx)
         _train_y = _eval_y_source[_eval_train_eval_idx, ...]
-        # The network at the start of the curve's approach to its top, read on
-        # the same rows, before the network reported (epochs.py).
-        _at_approach = None
-        if approach_ep < best_ep and approach_ep in _states:
-            self.model.load_state_dict(_states[approach_ep])
+        # The networks at the band's two ends, read on the same rows before the
+        # network reported (epochs.py). The epoch read is evaluated below.
+        band_first, band_last = top_band(_smoothed_history, actual_test_subset_size, top_se)
+        _at_band = {}
+        for _ep in sorted({band_first, band_last} - {best_ep}):
+            self.model.load_state_dict(_states[_ep])
             with torch.no_grad():
-                _at_approach, _ = self._train_side(_train_x, _train_y, max_eval_samples)
+                _at_band[_ep], _ = self._train_side(_train_x, _train_y, max_eval_samples)
         best_model_state = _states[best_ep]
         self.model.load_state_dict(best_model_state)
         if save_best_model_path:
@@ -907,7 +961,6 @@ class Trainer:
         _test_ceiling_mi = (np.log(_test_block_size) * _scale) if _test_block_size and _test_block_size >= 2 else None
         _train_ceiling_mi = (np.log(_train_block_size) * _scale) if _train_block_size and _train_block_size >= 2 else None
         _test_saturation = (final_test_mi * _scale / _test_ceiling_mi) if _test_ceiling_mi else None
-        _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
 
         _rows = max(actual_train_subset_size, epoch_train_n if _do_epoch_train_eval else 0)
         if _rows > max_eval_samples:
@@ -919,23 +972,6 @@ class Trainer:
                 f"and the precision is that of all {_rows} rows. Raise max_eval_samples to evaluate "
                 f"in fewer, larger blocks if memory allows."
             )
-        if self.estimator_fn is infonce_lower_bound:
-            _tripped = []
-            if _test_ceiling_mi is not None and final_test_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _test_ceiling_mi:
-                _tripped.append(f"test MI ({final_test_mi * _scale:.3f} {_units}) against the test ceiling "
-                                f"log(rows per evaluation={_test_block_size})={_test_ceiling_mi:.3f} {_units}")
-            if _train_ceiling_mi is not None and final_train_mi * _scale > CEILING_PROXIMITY_WARNING_THRESHOLD * _train_ceiling_mi:
-                _tripped.append(f"reported train MI ({final_train_mi * _scale:.3f} {_units}) against the train-eval ceiling "
-                                f"log(rows per evaluation={_train_block_size})={_train_ceiling_mi:.3f} {_units}")
-            if _tripped:
-                warnings.warn(
-                    f"InfoNCE estimate is near its ceiling: {'; '.join(_tripped)}. "
-                    f"The true MI may be higher. Consider increasing max_eval_samples "
-                    f"(and train_subset_size, if set) or switching to the 'smile' "
-                    f"estimator for high-MI scenarios.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
-
         # Does peak-epoch selection distinguish epochs at all? When the
         # smoothed test trace rides near its ceiling for most of training, the
         # argmax is close to a coin flip over flat noise, and the reported
@@ -945,17 +981,18 @@ class Trainer:
             _valid = _smoothed_history[~np.isnan(_smoothed_history)]
             if _valid.size > 0:
                 _test_trace_saturated_fraction = float(
-                    np.mean((_valid * _scale) > TEST_TRACE_SATURATION_THRESHOLD * _test_ceiling_mi)
+                    np.mean((_valid * _scale) > saturation_fraction * _test_ceiling_mi)
                 )
-                if _test_trace_saturated_fraction > TEST_TRACE_SATURATED_EPOCH_FRACTION_THRESHOLD:
+                if _test_trace_saturated_fraction > saturated_epoch_fraction:
                     warnings.warn(
-                        f"Peak-epoch selection may be unreliable: "
-                        f"{_test_trace_saturated_fraction:.0%} of the smoothed test-MI "
-                        f"history sits above {TEST_TRACE_SATURATION_THRESHOLD:.0%} of the "
-                        f"test ceiling ({_test_ceiling_mi:.3f} {_units}). With the trace "
-                        f"riding near its ceiling, the epoch with the (noisy) maximum is "
-                        f"close to arbitrary. Consider increasing max_eval_samples, or a peak_fraction "
-                        f"below 1 to read the value before the curve reaches its ceiling.",
+                        f"The chosen epoch may be unreliable. "
+                        f"{_test_trace_saturated_fraction:.0%} of the epochs of the smoothed held-out "
+                        f"curve lie above Training(saturation_fraction={saturation_fraction:g}) of its "
+                        f"ceiling ({_test_ceiling_mi:.3f} {_units}). That share is above "
+                        f"Training(saturated_epoch_fraction={saturated_epoch_fraction:g}). With so much of "
+                        f"the curve near its ceiling, the epoch that Training(epoch_rule=...) chooses is "
+                        f"close to arbitrary. Raise max_eval_samples, or set peak_fraction below 1 to take "
+                        f"the value at an earlier epoch, before the curve reaches its ceiling.",
                         UserWarning, stacklevel=user_stacklevel()
                     )
 
@@ -965,12 +1002,15 @@ class Trainer:
 
         # At this point the model is loaded at best_ep; final_train_mi is the fresh eval there.
         _best_ep_train_mi = final_train_mi  # save for train_mi_at_peak reporting
+        _at_band.setdefault(best_ep, final_train_mi)
+        _band = (_at_band[band_first], _at_band[band_last])
 
         # Conservative epoch: the first epoch whose smoothed test MI reaches
         # peak_fraction of the maximum, when that is earlier than the epoch read.
         # Its network is evaluated afresh, then the best-epoch network is restored.
         _conservative_ep = None
         _conservative_train_mi = None
+        _read_se = None
         if peak_fraction < 1.0:
             _peak = _smoothed_history[peak_ep]
             _conservative_ep = (min(best_ep, int(np.flatnonzero(_smoothed_history >= peak_fraction * _peak)[0]))
@@ -978,7 +1018,7 @@ class Trainer:
             if _conservative_ep != best_ep:
                 self.model.load_state_dict(_states[_conservative_ep])
                 with torch.no_grad():
-                    _conservative_train_mi, _ = self._train_side(_train_x, _train_y, max_eval_samples)
+                    _conservative_train_mi, _read_se = self._train_side(_train_x, _train_y, max_eval_samples)
                 self.model.load_state_dict(best_model_state)
             else:
                 _conservative_train_mi = _best_ep_train_mi
@@ -991,22 +1031,16 @@ class Trainer:
             _raw_train_mi = _best_ep_train_mi  # peak_fraction == 1.0 path
 
         # What the held-out curve says about the epoch read: its shape, and
-        # whether reading at the start of the approach to its top moves the
-        # estimate by more than FUZZY_SE standard errors. A curve that never
-        # rose above zero has its own message below, and so does a reading at
-        # or below zero, whose standard error from a single block is 0 and
-        # would count any shift.
+        # whether the estimate read at the band's two ends differs by more than
+        # band_share of the estimate. A curve that never rose above zero has its
+        # own message below, and so does a reading at or below zero.
         _read_ep = best_ep if _conservative_ep is None else _conservative_ep
-        _approach_shift = (_raw_train_mi - _at_approach
-                           if _at_approach is not None and approach_ep < _read_ep else None)
-        if (curve_diagnosis == 'ok' and _raw_train_mi > 0 and _approach_shift is not None
-                and abs(_approach_shift) > FUZZY_SE * _train_se):
-            curve_diagnosis = 'fuzzy start'
-        if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
-            warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, approach_ep,
-                             None if _approach_shift is None else _approach_shift * _scale,
-                             _train_se * _scale, _units,
-                             held_out=_eval_size if too_few_held_out(_eval_size or 0, batch_size) else None)
+        # The standard error of the estimate read: at the conservative epoch when peak_fraction chose one.
+        _read_se = _train_se if _read_se is None else _read_se
+        if curve_diagnosis == 'ok' and _raw_train_mi > 0 and abs(_band[1] - _band[0]) > band_share * _raw_train_mi:
+            curve_diagnosis = 'flat top'
+        # The held-out value of the network read: the curve at the epoch read, on the rows every epoch scores.
+        _held_at_read = final_test_mi if _read_ep == best_ep else history[_read_ep]
 
         # All-negative warning and zeroing (now that _raw_train_mi is correctly set)
         if _all_mi_negative:
@@ -1014,10 +1048,10 @@ class Trainer:
                 f"All test MI values in the training history are non-positive "
                 f"(max test MI = {max(valid_history) * _scale:.4f} {_units} at epoch {best_ep}). "
                 f"The model learned no representation that generalises. This usually "
-                f"means too few epochs, too high a learning rate or degenerate data. "
+                f"means {'too few epochs, ' if _ran_to_limit else ''}too high a learning rate or degenerate data. "
                 f"Train MI is reported as 0 {_units}. The raw train MI was "
                 f"{_raw_train_mi * _scale:.4f} {_units} and most likely reflects overfitting. "
-                f"Raise n_epochs, lower learning_rate or inspect the data.",
+                f"{'Raise n_epochs, lower' if _ran_to_limit else 'Lower'} learning_rate or inspect the data.",
                 UserWarning,
                 stacklevel=user_stacklevel(),
             )
@@ -1026,36 +1060,59 @@ class Trainer:
             # The training-side value at the reported epoch came out below zero.
             # MI cannot be negative, so it is reported as 0 like the case above,
             # with the measured value kept as raw_train_mi. Whether the network
-            # learned something decides what that means: a held-out value within
-            # noise of zero is what a network that learned nothing reads, and a
-            # held-out value clearly above zero contradicts the negative reading
+            # learned something decides what that means: a network that learned nothing
+            # gives a held-out value within noise of zero, and a held-out value clearly
+            # above zero contradicts the negative training value
             # (stands_above_zero, the rule that combining terms follows too).
-            if stands_above_zero(final_test_mi, _eval_size):
+            if stands_above_zero(_held_at_read, _eval_size, clear_se):
                 warnings.warn(
                     f"The train MI at the reported epoch is negative "
                     f"({final_train_mi * _scale:.4f} {_units}) while the test MI "
-                    f"({final_test_mi * _scale:.4f} {_units}) stands more than {CLEAR_SE:g} standard "
-                    f"errors above zero on its {_eval_size} rows. The two readings of the network "
+                    f"({_held_at_read * _scale:.4f} {_units}) stands more than Training(clear_se={clear_se:g}) standard "
+                    f"errors above zero on its {_eval_size} rows. The two values of the network "
                     f"contradict each other, and MI cannot be negative. Train MI is reported as 0 "
                     f"{_units} and the measured value is kept as raw_train_mi. This usually means "
-                    f"too few epochs or too few samples for the network to learn the dependence, "
-                    f"or data far from unit scale.",
+                    f"{'too few epochs or ' if _ran_to_limit else ''}too few samples for the network to learn the "
+                    f"dependence. Data far from unit scale can also cause it when the encoders do not scale "
+                    f"their input.",
                     UserWarning,
                     stacklevel=user_stacklevel(),
                 )
             else:
                 warnings.warn(
                     f"The train MI at the reported epoch is negative "
-                    f"({final_train_mi * _scale:.4f} {_units}), and the test MI "
-                    f"({final_test_mi * _scale:.4f} {_units}) is within {CLEAR_SE:g} standard errors "
+                    f"({final_train_mi * _scale:.4f} {_units}) while the test MI "
+                    f"({_held_at_read * _scale:.4f} {_units}) is within Training(clear_se={clear_se:g}) standard errors "
                     f"of zero on its {_eval_size} rows. The network learned nothing distinguishable "
-                    f"from zero, which is what a dependence of zero reads. Train MI is reported as "
+                    f"from zero. A dependence of zero gives the same result. Train MI is reported as "
                     f"0 {_units} and the measured value is kept as raw_train_mi. When the data should "
-                    f"hold a dependence, more epochs or samples may resolve it.",
+                    f"hold a dependence, {'more epochs or samples' if _ran_to_limit else 'more samples'} may "
+                    f"resolve it.",
                     UserWarning,
                     stacklevel=user_stacklevel(),
                 )
             final_train_mi = 0.0
+
+        # The warnings about the value the run reports, now that it is final: the curve's (which states the
+        # values when the curve did not resolve), each side's ceiling, and a held-out value far below the
+        # estimate. A curve that never rose above zero has had its own message.
+        if not (curve_diagnosis == 'not resolved' and _all_mi_negative):
+            warn_about_curve(curve_diagnosis, _read_ep, peak_ep, _reach, n_epochs, _units,
+                             held_out=_eval_size if too_few_held_out(_eval_size or 0, batch_size) else None,
+                             values=(final_train_mi * _scale, _raw_train_mi * _scale, _held_at_read * _scale),
+                             band=(band_first, band_last, _band[0] * _scale, _band[1] * _scale),
+                             resolved_noise=resolved_noise, clear_se=clear_se, rising_noise=rising_noise,
+                             rising_epochs=rising_epochs, fall_noise=fall_noise, fast_epochs=fast_epochs,
+                             top_se=top_se, band_share=band_share, ran_to_limit=_ran_to_limit)
+        _train_saturation = (final_train_mi * _scale / _train_ceiling_mi) if _train_ceiling_mi else None
+        _ceiling_side = None
+        if self.estimator_fn is infonce_lower_bound and final_train_mi > 0:
+            _ceiling_side = warn_about_ceiling(
+                final_train_mi * _scale, _held_at_read * _scale, _train_ceiling_mi, _test_ceiling_mi,
+                _train_block_size, _test_block_size, len(test_idx), _units, ceiling_fraction)
+        if (curve_diagnosis != 'not resolved' and _ceiling_side != 'training'
+                and falls_short(final_train_mi, _held_at_read, _read_se, _eval_size, gap_share, clear_se)):
+            warn_about_gap(final_train_mi * _scale, _held_at_read * _scale, _units, gap_share, clear_se)
 
         results = {
             'train_mi': final_train_mi,
@@ -1064,7 +1121,10 @@ class Trainer:
             'best_epoch': best_ep,
             'peak_epoch': peak_ep,
             'curve_diagnosis': curve_diagnosis,
-            'approach_shift': _approach_shift,
+            'band_first_epoch': band_first,
+            'band_last_epoch': band_last,
+            'band_low': min(_band),
+            'band_high': max(_band),
             'test_mi_history': history,
             'all_mi_negative': _all_mi_negative,
         }
@@ -1159,14 +1219,20 @@ class Trainer:
                         self._decoder_loss(_recon_y, _ty, self.decoder_output_activation_y).item())
             results['decoder_recon_loss'] = _recon_loss
 
-        # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) at the best epoch,
-        # independent of track_spectral_history above, for a critic that embeds
-        # each side. The concat critic has no embeddings to take a spectrum of.
+        # 5. Final spectral metrics (pr_eig, pr_singular, spectrum) of the network
+        # that gives the reported estimate: at the conservative epoch when
+        # peak_fraction chose one, else at the best epoch. They are independent of
+        # track_spectral_history above and need a critic that embeds each side.
+        # The concat critic has no embeddings to take a spectrum of.
         if embeds_each_side(self.model):
+            if _read_ep != best_ep:
+                self.model.load_state_dict(_states[_read_ep])
             results.update(self._extract_spectral_metrics(
                 _index_batch(_eval_x_source, _eval_train_eval_idx),
                 _eval_y_source[_eval_train_eval_idx, ...],
             ))
+            if _read_ep != best_ep:
+                self.model.load_state_dict(best_model_state)
 
         return results
 

@@ -5,9 +5,10 @@ The best epoch is read from the held-out curve smoothed after training: its
 peak (epoch_rule='peak'), or the earliest epoch at its top ('plateau_start', the
 default). The smoothed value at an epoch depends on the epochs after it, so the
 trainer keeps copies of the network for every epoch that can still turn out to
-be the one read (for peak_fraction < 1, the first epoch to reach that fraction
-of the peak), and evaluates that epoch's network. These tests script the held-out curve, record
-the network at every epoch, and check which network the reported value came from.
+be one that it evaluates (for peak_fraction < 1, the first epoch to reach that
+fraction of the peak, and the two ends of the band), and evaluates that epoch's
+network. These tests script the held-out curve, record the network at every
+epoch, and check which network each reported value came from.
 """
 import numpy as np
 import pytest
@@ -17,7 +18,7 @@ from neural_mi.data import PairedDataset
 from neural_mi.estimators import infonce_lower_bound
 from neural_mi.models.critics import SeparableCritic
 from neural_mi.models.embeddings import MLP
-from neural_mi.training.epochs import choose_epoch
+from neural_mi.training.epochs import choose_epoch, top_band
 from neural_mi.training.trainer import Trainer
 
 N, N_TEST, N_EPOCHS = 400, 40, 40          # a random split holds out 40 of 400 rows
@@ -87,6 +88,21 @@ def test_conservative_epoch_evaluates_its_own_network(monkeypatch):
     assert at_epoch[expected] in train_side and at_epoch[results['best_epoch']] in train_side
 
 
+def test_the_spectrum_describes_the_network_of_the_estimate(monkeypatch):
+    """With peak_fraction < 1 the participation ratios come from the conservative network, the one that
+    gives the reported estimate, and the best-epoch network is restored afterwards."""
+    seen, extract = [], Trainer._extract_spectral_metrics
+
+    def spectrum(trainer, x, y):
+        seen.append(_fingerprint(trainer.model))
+        return extract(trainer, x, y)
+
+    monkeypatch.setattr(Trainer, '_extract_spectral_metrics', spectrum)
+    results, at_epoch, _ = _train(monkeypatch, _curve(0), peak_fraction=0.5, epoch_rule='peak')
+    assert results['conservative_epoch'] < results['best_epoch']
+    assert seen == [at_epoch[results['conservative_epoch']]]
+
+
 def test_a_nan_epoch_is_never_chosen(monkeypatch):
     curve = _curve(1, nan_at=12)
     results, at_epoch, train_side = _train(monkeypatch, curve, epoch_rule='peak')
@@ -108,28 +124,27 @@ def test_plateau_start_reads_and_evaluates_the_start_of_the_top(monkeypatch):
     curve = 0.6 * (1 - np.exp(-(e + 1) / 2)) + 0.005 * np.random.default_rng(4).standard_normal(N_EPOCHS)
     results, at_epoch, train_side = _train(monkeypatch, curve)
     smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
-    expected, peak, diagnosis, _ = choose_epoch(curve, smoothed, 'plateau_start',
+    expected, peak, diagnosis = choose_epoch(curve, smoothed, 'plateau_start',
                                                 Trainer._smoothing_reach(1.0, 5), ran_to_limit=True,
                                                 n_rows=N_TEST)
     assert results['best_epoch'] == expected < results['peak_epoch'] == peak
-    assert results['curve_diagnosis'] in (diagnosis, 'fuzzy start')
+    assert results['curve_diagnosis'] in (diagnosis, 'flat top')
     assert train_side[-1] == at_epoch[expected]
 
 
-@pytest.mark.parametrize('se, diagnosis', [(0.0, 'fuzzy start'), (np.inf, 'ok')])
-def test_a_slow_approach_is_fuzzy_when_its_start_moves_the_estimate(monkeypatch, se, diagnosis):
-    """The network at the start of the approach to the top is read on the same rows before the network
-    reported, and the start is uncertain when the two readings differ by more than FUZZY_SE standard errors."""
-    from neural_mi.training import trainer as trainer_module
-    monkeypatch.setattr(trainer_module, 'standard_error', lambda values, n: se)
+@pytest.mark.parametrize('rule', ['plateau_start', 'peak'])
+@pytest.mark.parametrize('band_share, diagnosis', [(0.0, 'flat top'), (np.inf, 'ok')])
+def test_the_band_reads_the_networks_at_its_first_and_last_epochs(monkeypatch, rule, band_share, diagnosis):
+    """The estimate is read at the first and the last epoch of the band, on the same rows, before the network
+    reported. A band whose two readings differ by more than band_share of the estimate is a flat top."""
     e = np.arange(N_EPOCHS)
     curve = 0.6 * (1 - np.exp(-(e + 1) / 4)) + 0.002 * np.random.default_rng(4).standard_normal(N_EPOCHS)
-    results, at_epoch, train_side = _train(monkeypatch, curve)
-    smoothed = Trainer._smooth(None, list(curve), 1.0, 5)
-    approach = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5), True)[3]
-    assert approach < results['best_epoch']
-    assert train_side[-2:] == [at_epoch[approach], at_epoch[results['best_epoch']]]
-    assert results['approach_shift'] != 0 and results['curve_diagnosis'] == diagnosis
+    results, at_epoch, train_side = _train(monkeypatch, curve, epoch_rule=rule, band_share=band_share)
+    first, last = top_band(Trainer._smooth(None, list(curve), 1.0, 5), N_TEST)
+    assert (results['band_first_epoch'], results['band_last_epoch']) == (first, last) and first < last
+    assert at_epoch[first] in train_side and at_epoch[last] in train_side
+    assert train_side[-1] == at_epoch[results['best_epoch']]
+    assert results['band_low'] < results['band_high'] and results['curve_diagnosis'] == diagnosis
 
 
 def test_a_curve_that_rises_at_once_is_not_read_at_its_first_epoch():
@@ -137,7 +152,7 @@ def test_a_curve_that_rises_at_once_is_not_read_at_its_first_epoch():
     epoch. Mirrored ends gave the first epoch the median of the epochs after it."""
     curve = [0.497, 0.694, 0.716, 0.698, 0.668, 0.671, 0.664, 0.631, 0.578, 0.586, 0.511, 0.443, 0.339, 0.329]
     smoothed = Trainer._smooth(None, curve, 1.0, 5)
-    epoch, peak, _, _ = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5), False)
+    epoch, peak, _ = choose_epoch(curve, smoothed, 'plateau_start', Trainer._smoothing_reach(1.0, 5), False)
     assert 0 < epoch <= peak <= 3
 
 

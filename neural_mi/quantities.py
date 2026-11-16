@@ -49,7 +49,7 @@ from neural_mi.run import run
 from neural_mi.results import Results
 from neural_mi.logger import call_verbosity, collect_repeats, user_stacklevel
 from neural_mi.parallel import dispatch_tasks
-from neural_mi.analysis.assemble import merge_results
+from neural_mi.analysis.assemble import merge_results, split_grid, split_preparation
 from neural_mi.analysis.offsets import (build_rows, one_step_series, resolve_stream_processing,
                                         spec_geometry)
 from neural_mi.utils import _as_tensor, encoders_scale, validate_stride, validate_window
@@ -60,7 +60,7 @@ from neural_mi.embeddings_io import model_file, resolve_model_path, announce_sav
 # The fit settings a Rigorous config carries into a difference quantity's own
 # config (Transfer, Conditional, Interaction).
 _FIT_FIELDS = ('gamma_range', 'curvature_t_threshold', 'min_gamma_points',
-               'confidence_level', 'residual_threshold', 'leverage_threshold')
+               'confidence_level', 'residual_threshold', 'leverage_threshold', 'left_out_share')
 
 
 def _is_sweep(value: Any) -> bool:
@@ -260,6 +260,19 @@ def _series(streams: Dict[str, Any], processing, quantity: str) -> 'OrderedDict[
     return series
 
 
+def _with_settings(run_kwargs: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    """``run_kwargs`` with each of ``settings`` set in the config that owns it, ``Model`` or ``Training``."""
+    from dataclasses import fields
+    from neural_mi.config import Model, Training, as_config
+    out = dict(run_kwargs)
+    for slot, cls in (('model', Model), ('training', Training)):
+        names = {f.name for f in fields(cls)}
+        own = {key: v for key, v in settings.items() if key in names}
+        if own:
+            out[slot] = replace(as_config(out.get(slot), cls) or cls(), **own)
+    return out
+
+
 def _shifts_windows(run_kwargs: Dict[str, Any]) -> bool:
     """Whether the call's rows shift each epoch, ``Training(shift_windows=...)`` or its default."""
     from neural_mi.config import Training, as_config
@@ -269,10 +282,11 @@ def _shifts_windows(run_kwargs: Dict[str, Any]) -> bool:
     return bool(BASE_PARAMS_SCHEMA['shift_windows']['default'] if value is None else value)
 
 
-def _prepared_series(series, processing, preprocessing, quantity: str, encoder_scales: bool = False):
+def _prepared_series(series, processing, preprocessing, quantity: str, encoder_scales=False):
     """A quantity's series transformed as ``preprocessing`` asks and checked, before its rows are built.
     A stream read by a spike-time or categorical processor takes no transform. ``encoder_scales`` says
-    the encoders scale their own inputs (``Model(input_scaling=...)``)."""
+    whether the encoders scale their own inputs (``Model(input_scaling=...)``), for every stream or by
+    stream name."""
     from neural_mi.config import Preprocessing, as_config
     from neural_mi.preprocessing import RATE_QUANTITIES, prepare
     processors = ({name: resolved[0] for name, resolved in resolve_stream_processing(processing).items()}
@@ -315,6 +329,20 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     conditional quantity, a difference of two networks, and one without is one
     MI estimate.
     """
+    prepared, rest = split_preparation(run_kwargs.get('sweep_grid'))
+    if prepared:
+        # The rows are built and checked here, before run(), so a grid over a setting that their building
+        # or the data check reads runs one preparation per value, as run() does with the rows it builds
+        # (defaults.PREPARATION_SETTINGS).
+        parts = [(fixed, _by_offsets(quantity, streams, spec_of, param, value, stride=stride, rigorous=rigorous,
+                                     n_workers=n_workers, show_progress=show_progress,
+                                     run_kwargs=_with_settings(dict(run_kwargs, sweep_grid=rest or None), fixed),
+                                     construction=construction, sweep_mode=sweep_mode))
+                 for fixed in split_grid(prepared)[0]]
+        own = {param: list(value)} if param is not None and _is_sweep(value) else {}
+        params = dict(parts[0][1].params)
+        params['base_params'] = {**params.get('base_params', {}), **prepared}
+        return merge_results(parts, {**own, **rest, **prepared}, params, mode=sweep_mode)
     stride = validate_stride(stride, f"{quantity}()")
     processing = run_kwargs.pop('processing', None)
     series = _series(streams, processing, quantity)
@@ -323,10 +351,32 @@ def _by_offsets(quantity: str, streams: Dict[str, Any], spec_of, param: Optional
     preprocessing = run_kwargs.pop('preprocessing', None)
     model = run_kwargs.get('model')
     model = model if isinstance(model, dict) else vars(model) if model is not None else {}
+    # How the encoders scale each stream (Model(input_scaling=...), unset meaning its default), as run()
+    # decides for streams it reads itself, from the kind of rows each gives (defaults.stream_scaling).
+    from neural_mi.defaults import default_of, stream_kind_of, stream_scaling
+    mode = model.get('input_scaling') or default_of('input_scaling')
+    kinds = ({name: stream_kind_of(resolved[0], resolved[1])
+              for name, resolved in resolve_stream_processing(processing).items()}
+             if processing is not None else {})
+    reaches = encoders_scale(mode, model.get('custom_critic'))
     series = _prepared_series(series, processing, preprocessing, quantity,
-                              encoder_scales=encoders_scale(model.get('input_scaling'), model.get('custom_critic')))
+                              encoder_scales={name: reaches and stream_scaling(mode, kinds.get(name)) is not None
+                                              for name in series})
+    first = spec_of(list(value)[0] if _is_sweep(value) else value)
+
+    def group_kind(group):
+        # The rows of a group scale as its streams do when they are of one kind, and mix otherwise.
+        found = {kinds.get(name, 'continuous') for name, _ in (first.get(group) or [])}
+        return found.pop() if len(found) == 1 else ('mixed' if found else None)
+    run_kwargs['_stream_kinds'] = {'x': group_kind('A'), 'y': group_kind('B'), 'w': group_kind('C')}
     if preprocessing is not None:
         construction = {**construction, 'preprocessing': describe_preprocessing(preprocessing)}
+        # The data check's settings still reach run(), which reports on the rows it is given.
+        from neural_mi.config import Preprocessing, as_config
+        from neural_mi.preprocessing import check_settings
+        check = check_settings(as_config(preprocessing, Preprocessing))
+        if check:
+            run_kwargs['preprocessing'] = Preprocessing(**check)
     # Rows a stride thins shift under shift_windows: built at every step, of
     # which each task keeps one in every stride, at a phase drawn each epoch.
     phases = stride if stride > 1 and _shifts_windows(run_kwargs) else 1

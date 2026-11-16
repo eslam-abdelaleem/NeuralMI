@@ -94,13 +94,15 @@ class TestAWThatStartsLate:
     """W is X's own record from 40 s on. On the rows every term reads, from 40 s, W is X, so
     I(X; Y | W) = 0 however much X says about Y. Each term used to build its rows from its own streams, and
     the joint term read rows from 0 s, where W was silent and X carried what W did not: the default call
-    read 0.25 bits."""
+    read 0.25 bits. One difference carries the training noise of both terms, so the call averages three
+    repeats."""
 
     def test_spike_trains_read_no_conditional_information(self):
         x, y, _ = nmi.generators.generate_spike_pair(n_windows=400, window_size=1.0, coding='count', seed=0)
         w = [s[s >= 40.0] for s in x]
         p = {'window_size': 1.0}
         r = _quiet(nmi.run, x, y, mode='conditional', conditional=nmi.Conditional(w_data=w), seed=0,
+                   sweep_grid={'run_id': range(3)},
                    processing=nmi.Processing(x='spike', x_params=p, y='spike', y_params=p,
                                              w='spike', w_params=p))
         components = r.dataframe.iloc[0]

@@ -24,6 +24,7 @@ changes nothing.
 """
 import copy
 import math
+import numbers
 import warnings
 from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
@@ -33,15 +34,28 @@ import torch
 from scipy.signal import lfilter
 from scipy.stats import norm
 
+from neural_mi.defaults import BASE_PARAMS_SCHEMA, CHECK_SETTINGS, setting
 from neural_mi.logger import logger, user_stacklevel
 
 # The rate quantities: their value is unchanged when each process is filtered invertibly by its own past.
 RATE_QUANTITIES = ('mi_rate', 'transfer_entropy', 'conditional_transfer_entropy',
                    'directed_information_rate', 'instantaneous_exchange')
-# Channels count as being far from unit scale beyond this factor either way.
-SCALE_BAND = 10.0
-# The share of a channel's variance its own past predicts linearly above which a whitening is suggested.
-PREDICTED_SHARE = 0.9
+
+
+def check_settings(preprocessing) -> Dict[str, Any]:
+    """The settings of the data check (:data:`neural_mi.defaults.CHECK_SETTINGS`) that ``preprocessing``, a
+    ``Preprocessing`` or a dict, sets. :func:`neural_mi.defaults.setting` reads each, or its default."""
+    given = preprocessing.to_kwargs() if hasattr(preprocessing, 'to_kwargs') else dict(preprocessing or {})
+    checks = {name: value for name, value in given.items() if name in CHECK_SETTINGS and value is not None}
+    # Checked here, where every path first reads them, so a named quantity refuses a bad value before its
+    # own data check runs, as run() does.
+    for name, value in checks.items():
+        schema = BASE_PARAMS_SCHEMA[name]
+        kind = numbers.Integral if schema['type'] is int else numbers.Real
+        if isinstance(value, bool) or not isinstance(value, kind) or value < schema['min']:
+            raise ValueError(f"Preprocessing({name}={value!r}) must be {'a whole number' if kind is numbers.Integral else 'a number'} "
+                             f"of at least {schema['min']:g}.")
+    return checks
 
 
 # ---------------------------------------------------------------------------
@@ -74,11 +88,23 @@ class Transform:
         return type(self).__name__
 
 
+# A channel counts as constant when its standard deviation is no more than this share of the largest of its
+# stream, a numerical tolerance well below any variation that a recording in any unit carries.
+CONSTANT_SHARE = 1e-8
+
+
+def constant_channels(std: np.ndarray) -> np.ndarray:
+    """Which channels are constant: those whose spread is no more than :data:`CONSTANT_SHARE` of the largest,
+    and every channel when none varies."""
+    std = np.asarray(std, dtype=float)
+    floor = CONSTANT_SHARE * float(std.max()) if std.size and std.max() > 0 else 0.0
+    return std <= floor
+
+
 def _spread(std: np.ndarray) -> np.ndarray:
-    """The standard deviations to divide by: a channel is constant when its spread is no more than 1e-8 of
-    the largest (exactly zero when every channel is), and keeps its scale instead of being divided by it."""
-    floor = 1e-8 * float(std.max()) if std.size and std.max() > 0 else 0.0
-    return np.where(std > floor, std, 1.0)
+    """The standard deviations to divide by: a constant channel (:func:`constant_channels`) keeps its scale
+    instead of being divided by it."""
+    return np.where(constant_channels(std), 1.0, std)
 
 
 class ZScore(Transform):
@@ -377,8 +403,9 @@ def apply_preprocessing(streams: Dict[str, Any], processors: Dict[str, Optional[
             settings = ("its bin_size and normalize_bins" if kind == 'spike' else "its encoding")
             warnings.warn(
                 f"Preprocessing leaves {name}, a {kind} stream, as it is: its rows come from its "
-                f"processor, whose own settings ({settings}) set their values. Model(input_scaling="
-                f"'standard') scales the rows an encoder receives.",
+                f"processor, whose own settings ({settings}) set their values."
+                + (" Model(input_scaling='auto'), the default, divides the rows of a spike stream by one "
+                   "number for the whole stream inside the network." if kind == 'spike' else ""),
                 UserWarning, stacklevel=user_stacklevel())
             continue
         array = _as_array(data)
@@ -414,11 +441,6 @@ def _fmt(value: float) -> str:
     return f"{value:.3g}"
 
 
-# The check reads at most this many rows at a time, and its statistics from the first this many: it runs on
-# every call and must not copy a large dataset.
-CHECK_ROWS = 100_000
-
-
 def _channel_view(chunk) -> np.ndarray:
     """A stretch of a stream with its channels as columns, without converting its type."""
     array = chunk.detach().cpu().numpy() if torch.is_tensor(chunk) else np.asarray(chunk)
@@ -429,13 +451,13 @@ def _channel_view(chunk) -> np.ndarray:
     return np.moveaxis(array, 1, -1).reshape(-1, array.shape[1])
 
 
-def _channel_moments(data) -> Tuple[np.ndarray, np.ndarray]:
-    """Whether every value of each channel is finite, and each channel's standard deviation over every row,
-    read in stretches of :data:`CHECK_ROWS` rows whose moments combine exactly (Chan et al.), so no more
+def _channel_moments(data, rows: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Whether every value of each channel is finite, and each channel's mean and standard deviation over
+    every row, read in stretches of ``rows`` rows whose moments combine exactly (Chan et al.), so no more
     than one stretch is copied at a time."""
     finite, n, mean, m2 = None, 0, None, None
-    for start in range(0, len(data), CHECK_ROWS):
-        block = _channel_view(data[start:start + CHECK_ROWS]).astype(float)
+    for start in range(0, len(data), rows):
+        block = _channel_view(data[start:start + rows]).astype(float)
         ok = np.isfinite(block).all(axis=0)
         finite = ok if finite is None else finite & ok
         count, block_mean = len(block), block.mean(axis=0)
@@ -447,25 +469,57 @@ def _channel_moments(data) -> Tuple[np.ndarray, np.ndarray]:
         mean = mean + delta * count / total
         m2 = m2 + block_m2 + delta ** 2 * n * count / total
         n = total
-    return finite, np.sqrt(m2 / max(n, 1))
+    return finite, mean, np.sqrt(m2 / max(n, 1))
+
+
+def _shapes(columns: np.ndarray, std: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """For each column of ``columns``, the share of its values equal to its most common value, and its
+    standard deviation ``std`` in interquartile ranges (infinite when the quartiles coincide)."""
+    ordered = np.sort(columns, axis=0)
+    tied = np.empty(ordered.shape[1])
+    for j in range(ordered.shape[1]):
+        starts = np.flatnonzero(np.r_[True, ordered[1:, j] != ordered[:-1, j], True])
+        tied[j] = np.diff(starts).max() / len(ordered)
+    q25, q75 = np.quantile(ordered, [0.25, 0.75], axis=0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = np.where(q75 > q25, std / (q75 - q25), np.inf)
+    return tied, ratio
+
+
+def _channels(indices) -> str:
+    return f"channel {indices[0]}" if len(indices) == 1 else f"channels {indices}"
 
 
 def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]], *, quantity: str,
-                  rate: bool, preprocessing=None, encoder_scales: bool = False) -> None:
+                  rate: bool, preprocessing=None, encoder_scales=False) -> None:
     """Report what the streams of a call look like before any network sees them, and change nothing.
 
     For each regularly sampled stream or array of rows: its channels, their
-    scales and, for a rate quantity on a series, how much of each channel's
-    variance its own past predicts linearly. It warns about non-finite and
-    constant channels and about channels far from unit scale, and suggests the
-    ``Preprocessing`` option that addresses each. The report itself is
-    logged at the info level. ``encoder_scales`` says the encoders scale their
-    own inputs (``Model(input_scaling=...)``), and the scale is then no warning.
-    It reads every row in stretches, so it never copies a large stream, and
-    fits the own past on the first :data:`CHECK_ROWS` rows of each.
+    scales, whether its encoder scales it and, for a rate quantity on a series,
+    how much of each channel's variance its own past predicts linearly. The
+    report is logged at the info level. It warns about non-finite and constant
+    channels; about channels far from unit scale or zero when the encoder leaves
+    them as they are; about channel scales that spread widely, means so far
+    from zero that single precision resolves the variation coarsely, and heavy
+    tails; and, when the encoder scales the stream, about channels that are
+    mostly one repeated value, as padded or sparse rows are. Each warning names
+    the option that addresses it.
+
+    ``encoder_scales`` says whether the encoders scale their own inputs
+    (``Model(input_scaling=...)``): one answer for every stream, or a stream's
+    name to its answer. The check reads every row in stretches of
+    ``check_rows`` rows, so it never copies a large stream, fits the own past on
+    the first ``check_rows`` rows, and reads quartiles and repeated values from
+    the first ``sample_rows``. Its thresholds come from ``preprocessing``
+    (:func:`check_settings`).
     """
     asked = describe(preprocessing) or {}
-    parts = []
+    checks = check_settings(preprocessing)
+    scale_band, predicted_share = setting(checks, 'scale_band'), setting(checks, 'predicted_share')
+    rows, sample_rows = setting(checks, 'check_rows'), setting(checks, 'sample_rows')
+    spread_band, offset_band = setting(checks, 'spread_band'), setting(checks, 'offset_band')
+    tail_band, tie_share = setting(checks, 'tail_band'), setting(checks, 'tie_share')
+    parts, any_scaled = [], False
     for name, data in streams.items():
         if data is None:
             continue
@@ -473,52 +527,134 @@ def check_streams(streams: Dict[str, Any], processors: Dict[str, Optional[str]],
         if kind in ('spike', 'categorical'):
             parts.append(f"{name}: {kind}, rows built by its processor")
             continue
-        finite, std = _channel_moments(data)
+        scaled = bool(encoder_scales.get(name, False) if isinstance(encoder_scales, dict) else encoder_scales)
+        finite, mean, std = _channel_moments(data, rows)
         if not finite.all():
             bad = np.flatnonzero(~finite).tolist()
             warnings.warn(
                 f"{name} has non-finite values (NaN or infinite) in channel(s) {bad}. Every network that "
-                f"reads them produces NaN. Remove or fill them before the call.",
+                f"receives them produces NaN. Remove or fill them before the call.",
                 UserWarning, stacklevel=user_stacklevel())
             parts.append(f"{name}: {len(finite)} channels, {len(bad)} with non-finite values")
             continue
-        constant = np.flatnonzero(std <= (1e-8 * std.max() if std.max() > 0 else 0.0)).tolist()
+        constant = np.flatnonzero(constant_channels(std)).tolist()
         if constant:
             warnings.warn(
                 f"{name} has constant channel(s) {constant}. They carry no information and, under "
                 f"Preprocessing(channel='zca'), no direction to sphere. Drop them before the call.",
                 UserWarning, stacklevel=user_stacklevel())
-        live = np.delete(std, constant)
+        live_index = np.setdiff1d(np.arange(len(std)), constant)
+        live, live_mean = std[live_index], mean[live_index]
         line = f"{name}: {len(std)} channels"
         if live.size:
-            typical = float(np.median(live))
+            typical, typical_mean = float(np.median(live)), float(np.median(np.abs(live_mean)))
             line += f", scale {_fmt(live.min())} to {_fmt(live.max())}"
-            if not (1.0 / SCALE_BAND <= typical <= SCALE_BAND) and 'channel' not in asked and not encoder_scales:
+            if scaled:
+                any_scaled = True
+                line += ", centred and scaled channel by channel by its encoder"
+            elif 'channel' not in asked:
+                _warn_unit_scale(name, typical, typical_mean, scale_band)
+            spread = float(live.max() / live.min())
+            if spread > spread_band:
+                _warn_spread(name, spread, spread_band, scaled)
+            far = live_index[np.abs(live_mean) > offset_band * live].tolist()
+            if far:
                 warnings.warn(
-                    f"The channels of {name} have a typical scale of {_fmt(typical)}, more than a factor "
-                    f"of {SCALE_BAND:g} from unit scale. The networks start from weights sized for inputs "
-                    f"near unit scale, and the estimate depends on the units: a dependence of 2 nats reads "
-                    f"near 0 at a thousandth or a thousand times its scale. Preprocessing(channel='zscore') "
-                    f"brings every channel to unit scale and leaves every quantity unchanged.",
+                    f"{_channels(far).capitalize()} of {name} lie more than Preprocessing(offset_band="
+                    f"{offset_band:g}) of their standard deviations from zero. The networks receive the rows in "
+                    f"single precision. Single precision resolves the variation of such a channel only coarsely, "
+                    f"so no scaling inside a network can recover what is lost. Subtract each channel's mean before the call, "
+                    f"while the data are in double precision, or set Preprocessing(channel='zscore'), which "
+                    f"centres each channel before the rows are built.",
+                    UserWarning, stacklevel=user_stacklevel())
+            tied, ratio = _shapes(_channel_view(data[:sample_rows]).astype(float)[:, live_index], live)
+            repeated = live_index[tied > tie_share].tolist()
+            if repeated and scaled:
+                warnings.warn(
+                    f"In {_channels(repeated)} of {name}, more than Preprocessing(tie_share={tie_share:g}) of the "
+                    f"values are one repeated value, as in padded or sparse rows such as spike rows built by "
+                    f"hand. The encoder scales each channel to unit scale. That moves the repeated value away from "
+                    f"0 and raises a channel that is quiet because it carries little to the level of the others. "
+                    f"Spike rows that a spike processor builds, such as Processing(x='spike') for X, are divided "
+                    f"by one number for the whole stream instead, so the padding stays at 0 and quiet neurons stay "
+                    f"quiet. Model(input_scaling='none') leaves the rows as they are.",
+                    UserWarning, stacklevel=user_stacklevel())
+            heavy = live_index[(ratio > tail_band) & np.isfinite(ratio) & (tied <= tie_share)].tolist()
+            if heavy:
+                warnings.warn(
+                    f"{_channels(heavy).capitalize()} of {name} have heavy tails. In each, the standard deviation "
+                    f"exceeds Preprocessing(tail_band={tail_band:g}) interquartile ranges. Scaling divides by the "
+                    f"standard deviation, which the extreme values set, so most values of such a channel end up "
+                    f"close together. Preprocessing(channel='copula') maps each channel through its ranks to a "
+                    f"normal distribution before the rows are built, which leaves every quantity unchanged.",
                     UserWarning, stacklevel=user_stacklevel())
         if rate and kind == 'series' and live.size and len(data) > 2:
-            columns = _channel_view(data[:CHECK_ROWS]).astype(float)
+            columns = _channel_view(data[:rows]).astype(float)
             ar = ARWhitening().fit(columns[:, [j for j in range(columns.shape[1]) if j not in constant]])
             share = max(ar.predicted_)
             line += f", own past predicts up to {share:.1%} of a channel's variance"
-            if share > PREDICTED_SHARE and 'time' not in asked:
+            if share > predicted_share and 'time' not in asked:
                 line += (" (a large conditioning term, of which the rate is a small residual; "
                          "Preprocessing(time='ar') removes it and leaves the rate unchanged)")
         parts.append(line)
     if parts:
-        logger.info(f"Data check for {quantity}: " + "; ".join(parts) + ".")
+        logger.info(f"Data check for {quantity}: " + "; ".join(parts) + "."
+                    + (" Model(input_scaling='none') turns the encoders' scaling off." if any_scaled else ""))
+
+
+def _warn_unit_scale(name: str, typical: float, typical_mean: float, scale_band: float) -> None:
+    """The warning for a stream that its encoder leaves as it is while its channels sit far from unit scale,
+    or far from zero."""
+    remedy = ("Model(input_scaling='auto'), the default, centres and scales each channel of a continuous stream "
+              "inside the network. Preprocessing(channel='zscore') does so before the rows are built. Both leave "
+              "every quantity unchanged.")
+    if not 1.0 / scale_band <= typical <= scale_band:
+        warnings.warn(
+            f"The channels of {name} have a typical scale of {_fmt(typical)}, more than a factor of "
+            f"Preprocessing(scale_band={scale_band:g}) from unit scale. The networks start from weights sized for "
+            f"inputs near unit scale, so the estimate depends on the units. The same dependence can give an "
+            f"estimate close to its value at unit scale and close to 0 far from it. {remedy}",
+            UserWarning, stacklevel=user_stacklevel())
+    elif typical_mean > scale_band:
+        warnings.warn(
+            f"The channels of {name} have a typical mean of {_fmt(typical_mean)}, more than "
+            f"Preprocessing(scale_band={scale_band:g}) from zero. The networks start from weights sized for inputs "
+            f"near zero, so an offset this large can hide the variation that carries the information. The "
+            f"estimate can then come out far below the information. {remedy}",
+            UserWarning, stacklevel=user_stacklevel())
+
+
+# What giving every channel the same weight does. The warning about widely spread channel scales states it
+# whether or not the encoder scales the stream.
+_SAME_WEIGHT = ("That is right when the scales differ only by units. When a channel is quiet because it carries "
+                "little, scaling lifts its noise to the level of the signal, so the network needs more rows to "
+                "learn to ignore it.")
+
+
+def _warn_spread(name: str, spread: float, spread_band: float, scaled: bool) -> None:
+    """The warning for channel scales that spread widely within a stream, which reads differently whether
+    the encoder scales each channel or leaves them as they are."""
+    if scaled:
+        body = ("Its encoder scales each channel to unit scale and so gives every channel the same weight. "
+                f"{_SAME_WEIGHT} Model(input_scaling='none') keeps the channels' relative scales. Dividing the "
+                "stream by one number before the call, such as its overall standard deviation, then brings it near "
+                "unit scale.")
+    else:
+        body = ("The encoders leave the channels as they are. The loudest channels then dominate what the "
+                "networks receive, so the estimate can miss information that the quiet ones carry. "
+                "Model(input_scaling='auto'), the default, scales each channel to unit scale inside the network "
+                f"and so gives every channel the same weight. {_SAME_WEIGHT}")
+    warnings.warn(
+        f"The standard deviations of the channels of {name} span a factor of {_fmt(spread)}, more than "
+        f"Preprocessing(spread_band={spread_band:g}). {body}", UserWarning, stacklevel=user_stacklevel())
 
 
 def prepare(streams: Dict[str, Any], processors: Dict[str, Optional[str]], preprocessing, *, quantity: str,
-            rate: bool, check: bool = True, encoder_scales: bool = False) -> 'OrderedDict[str, Any]':
+            rate: bool, check: bool = True, encoder_scales=False) -> 'OrderedDict[str, Any]':
     """The streams of a call transformed as ``preprocessing`` asks (:func:`apply_preprocessing`), and
-    checked as the networks will receive them (:func:`check_streams`): the one step every path of a call
-    takes before rows are built. ``check=False`` leaves the check to a caller that ran it already."""
+    checked as the networks will receive them (:func:`check_streams`, which reads ``encoder_scales``): the
+    one step every path of a call takes before rows are built. ``check=False`` leaves the check to a caller
+    that ran it already."""
     out = apply_preprocessing(streams, processors, preprocessing, quantity=quantity, rate=rate)
     if check:
         check_streams(out, processors, quantity=quantity, rate=rate, preprocessing=preprocessing,

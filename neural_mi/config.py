@@ -105,7 +105,11 @@ class Model:
     dropout: Optional[float] = None
     norm_layer: Optional[str] = None               # 'auto'|'layer'|'batch'|'none'; 'auto' = layer for hybrid in mode='dimensionality'
     use_spectral_norm: Optional[bool] = None
-    input_scaling: Optional[str] = None            # None | 'standard': each encoder's input centred and scaled
+    input_scaling: Optional[str] = None            # 'auto' (each stream as its kind asks) | 'none'
+    zero_start: Optional[bool] = None              # every score starts at exactly zero; default True
+    linear_path: Optional[bool] = None             # MLP encoders: a linear path from input to embedding; default True
+    activation: Optional[str] = None               # every rectified hidden layer; default 'leaky_relu'
+    large_first_layer: Optional[int] = None        # a first layer with more parameters is noted
     bias: Optional[bool] = None                    # embedding-layer bias terms; default True
     shared_encoder: Optional[bool] = None
     max_n_batches: Optional[int] = None            # critic chunking
@@ -158,6 +162,28 @@ class Training:
     augmentation_params_y: Optional[Dict[str, Any]] = None
     dataset_device: Optional[str] = None
     min_reliable_samples: Optional[int] = None
+    # How the held-out curve is read and judged, and when the trainer warns
+    # (neural_mi/training/epochs.py and trainer.py).
+    level_noise: Optional[float] = None
+    start_noise: Optional[float] = None
+    resolved_noise: Optional[float] = None
+    fast_epochs: Optional[int] = None
+    fall_noise: Optional[float] = None
+    top_se: Optional[float] = None
+    band_share: Optional[float] = None
+    clear_se: Optional[float] = None
+    rising_epochs: Optional[int] = None
+    rising_noise: Optional[float] = None
+    ceiling_fraction: Optional[float] = None
+    saturation_fraction: Optional[float] = None
+    saturated_epoch_fraction: Optional[float] = None
+    gap_share: Optional[float] = None
+    # When a quantity combined from several terms warns (neural_mi/analysis/sweep.py).
+    amplification_threshold: Optional[float] = None
+    # A call with fewer rows than this reaching the estimator warns that the dataset is small.
+    small_sample: Optional[int] = None
+    # Training stops after this many epochs in a row whose held-out evaluation is NaN.
+    nan_streak: Optional[int] = None
 
     def to_base_params(self) -> Dict[str, Any]:
         return _non_none(self)
@@ -259,9 +285,21 @@ class Preprocessing:
     changes the others. Either also takes a transform object
     (:mod:`neural_mi.preprocessing`), such as ``PCA(n_components=8)`` or one of
     your own. Each is fitted on X, Y and W apart, the time transform first.
+
+    ``scale_band``, ``predicted_share``, ``check_rows`` and ``sample_rows`` set the data check that
+    every call runs on its streams, whether or not it asks for a transform.
     """
     channel: Optional[Any] = None
     time: Optional[Any] = None
+    # The data check every call runs on its streams (neural_mi/preprocessing.py).
+    scale_band: Optional[float] = None
+    predicted_share: Optional[float] = None
+    check_rows: Optional[int] = None
+    sample_rows: Optional[int] = None
+    spread_band: Optional[float] = None
+    offset_band: Optional[float] = None
+    tail_band: Optional[float] = None
+    tie_share: Optional[float] = None
 
     def to_kwargs(self) -> Dict[str, Any]:
         return _non_none(self)
@@ -280,6 +318,7 @@ class Rigorous:
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
+    left_out_share: Optional[float] = None
     temporal_chunking: Optional[bool] = None
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
@@ -334,6 +373,7 @@ class Transfer:
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
+    left_out_share: Optional[float] = None
 
     # w_data is a dedicated run argument; the rest are analysis kwargs. How W
     # is read (processor, parameters, clock) belongs to Processing.
@@ -368,6 +408,16 @@ class Dimensionality:
     lag: Optional[int] = None
     channel_indices_x: Optional[List[int]] = None
     ceiling_mi_fraction: Optional[float] = None
+    # How the grid of embedding dimensions is chosen, and when its fits warn.
+    grid_reach: Optional[float] = None
+    grid_small: Optional[int] = None
+    grid_medium: Optional[int] = None
+    grid_points: Optional[int] = None
+    reference_fill: Optional[float] = None
+    refit_reach: Optional[float] = None
+    confirm_steps: Optional[int] = None
+    restart_spread: Optional[float] = None
+    held_out_gap: Optional[float] = None
 
     def to_analysis_kwargs(self) -> Dict[str, Any]:
         return _non_none(self)
@@ -388,6 +438,7 @@ class Conditional:
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
+    left_out_share: Optional[float] = None
 
     # w_data is a dedicated run argument; the rest are analysis kwargs. How W
     # is read (processor, parameters, clock) belongs to Processing.
@@ -420,6 +471,7 @@ class Interaction:
     confidence_level: Optional[float] = None
     residual_threshold: Optional[float] = None
     leverage_threshold: Optional[float] = None
+    left_out_share: Optional[float] = None
 
     # w_data is a dedicated run argument; the rest are analysis kwargs. How W
     # is read (processor, parameters, clock) belongs to Processing.

@@ -158,16 +158,16 @@ class WindowManager:
             remedy = "pass step_size=None (the default) for a step of one window"
         else:
             remedy = (f"a {step:g} step cannot be expressed at "
-                      f"window_size={window:g} because every value below 1 is read "
+                      f"window_size={window:g} because every value below 1 is taken "
                       f"as a fraction. Use a larger window_size or rescale your "
                       f"time unit")
         warnings.warn(
-            f"step_size={step:g} was read as a fraction of window_size={window:g}. "
+            f"step_size={step:g} was taken as a fraction of window_size={window:g}. "
             f"That gives a step of {applied:g} time units and {overlap:g}% overlap "
             f"between consecutive windows. Every step_size below 1 is a fraction. "
             f"If you meant {step:g} as an absolute duration, {remedy}. This is "
-            f"reported only when window_size is below 1. A fraction and a duration "
-            f"are then both plausible readings of the same number.",
+            f"reported only when window_size is below 1, because a number below 1 "
+            f"can then mean either a fraction or a duration.",
             UserWarning, stacklevel=user_stacklevel(),
         )
 
@@ -612,7 +612,11 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
         return ContinuousWindowDataset(data, time, device=device,
                                        min_coverage_fraction=s['min_coverage_fraction'],
                                        data_device=data_device,
-                                       sample_rate=s['sample_rate'])
+                                       sample_rate=s['sample_rate'],
+                                       period_tolerance=s['period_tolerance'],
+                                       padded_share=s['padded_share'],
+                                       gap_multiple=s['gap_multiple'],
+                                       bridged_share=s['bridged_share'])
 
     elif proc_type == 'spike':
         # Silence is only discarded on the spike side. A continuous partner's
@@ -636,7 +640,8 @@ def create_single_dataset(data, time, proc_type, proc_params, device=None, data_
                                     min_coverage_fraction=s['min_coverage_fraction'],
                                     encoding=s['encoding'],
                                     data_device=data_device,
-                                    sample_rate=s['sample_rate'])
+                                    sample_rate=s['sample_rate'],
+                                    max_encoding_width=s['max_encoding_width'])
 
 def _stream_specs_from_pair(x_data, y_data, x_time, y_time,
                             processor_type_x, processor_params_x,

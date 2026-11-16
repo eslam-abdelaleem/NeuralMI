@@ -1,4 +1,9 @@
-<p align="center"><img src="docs/source/_static/logo/neuralmi_logo_full.png" alt="NeuralMI" width="420"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/source/_static/logo/neuralmi_logo_on_dark.png">
+    <img src="docs/source/_static/logo/neuralmi_logo.png" alt="NeuralMI" width="560">
+  </picture>
+</p>
 
 # NeuralMI: information-theoretic analysis of neural data at scale
 
@@ -9,29 +14,28 @@
 **NeuralMI brings information-theoretic analysis to the scale of modern neuroscience using neural-network-based information estimators.**
 
 
-<img src="docs/source/_static/correlation_blind.png" alt="A folded Gaussian: correlation +0.001, information 1.554 bits" style="float: left; max-width: 40%; margin-right: 15px; margin-bottom: 10px;">
+<img src="docs/source/_static/correlation_blind.png" alt="A folded Gaussian: correlation near zero, information 1.554 bits" style="float: left; max-width: 40%; margin-right: 15px; margin-bottom: 10px;">
 
-Correlation is the usual way to ask whether two signals are related or not. However, it is blind to any nonlinear relationship. For example, a Gaussian folded about zero has a perfect relationship between $x$ and $y$ and zero correlation because the two halves of the linear trend cancel exactly.
-
-
-Mutual information sees that relationship because it captures linear and nonlinear dependencies alike. It also answers questions a correlation has no form for: how much a population's past says about its own future, what one area adds about another beyond what that area already predicts of itself, or what a pair of signals carries that neither carries alone.
-
-<img src="docs/source/_static/sample_sweep.png" alt="Estimate against sample count at 5000 channels per side: NeuralMI climbs close to the true 4 bits with fewer samples than channels, KSG stays far below it and barely moves" style="float: right; max-width: 50%; margin-right: 15px; margin-bottom: 10px;">
+Correlation is the usual way to ask whether two signals are related or not. However, it can be blind to a nonlinear relationship. For example, a Gaussian folded about zero has a perfect relationship between $x$ and $y$ and zero correlation because the two halves of the linear trend cancel exactly.
 
 
-The obstacle to applying information-theoretic measures to large, multimodal neuroscience datasets is the curse of dimensionality. Classical estimators need samples in proportion to the dimensions they are handed. Past ~10 dimensions they outrun any recording of realistic size. Information-theoretic analysis has mostly been limited to a handful of channels for that reason.
+Mutual information detects that relationship because it captures linear and nonlinear dependencies alike. With it you can also ask questions that a correlation has no form for: how much a population's past says about its own future, what one area adds about another beyond what that area already predicts of itself, or what a pair of signals carries that neither carries alone.
 
-Neural-network-based estimators overcome this by learning a map into a low-dimensional embedding while estimating the information in it. The samples needed then follow the latent structure of the data and not the channel count it arrived on.
+<img src="docs/source/_static/sample_sweep.png" alt="Estimate against the number of samples at 5000 channels per side: NeuralMI comes close to the exact 4 bits with fewer samples than channels, while KSG stays far below it and barely changes" style="float: right; max-width: 50%; margin-right: 15px; margin-bottom: 10px;">
 
 
-Giving each modality its own encoder also lets spike times, tracked trajectories and trial labels be analysed
-together on one timeline. Each sits in its own subspace processed by an encoder with its own inductive bias.
+The obstacle to applying information-theoretic measures to large, multimodal neuroscience datasets is the curse of dimensionality. Classical estimators need more samples the more dimensions they are given. Past about ten dimensions, they need more samples than any recording of realistic size contains. Information-theoretic analysis has mostly been limited to a handful of channels for that reason.
+
+Neural-network-based estimators overcome this by learning a map into a low-dimensional embedding while estimating the information in it. The number of samples needed then depends on the latent structure of the data rather than on the number of channels.
+
+
+Giving each modality its own encoder also lets spike times, tracked trajectories and trial labels be analysed together on one timeline. Each modality is processed in its own subspace by an encoder with its own inductive bias.
 
 ![Three streams on their own clocks, cut into aligned windows](docs/source/_static/alignment.png)
 
 
 Once estimation is possible at that scale, the whole family of information
-quantities can be estimated from a single primitive. Every quantity here is
+quantities can be estimated from a single primitive. Every quantity in the library is
 the same conditional mutual information $I(A;B \mid C)$ under a different choice
 of inputs and time offsets.
 
@@ -48,7 +52,7 @@ cd NeuralMI
 
 pip install .
 
-# Optional parts, which combine, as in ".[viz,tutorials]":
+# Optional extras (combine them as in ".[viz,tutorials]"):
 #   pip install ".[viz]"        # PCA, t-SNE and UMAP plots of the embeddings
 #   pip install ".[vision]"     # pretrained image networks as encoders
 #   pip install ".[tutorials]"  # JupyterLab, to run the tutorials
@@ -83,7 +87,7 @@ print(f"exact    : 2.000 bits")
 ```
 
 ```
-estimate : 2.092 bits
+estimate : 1.986 bits
 exact    : 2.000 bits
 ```
 <!-- quickstart-end -->
@@ -92,11 +96,11 @@ exact    : 2.000 bits
 
 | notebook | what it covers |
 |---|---|
-| [01 Why information](tutorials/01_Why_Information.ipynb) | What MI sees that correlation does not and where classical estimators stop working |
-| [02 Your first number](tutorials/02_Your_First_Number.ipynb) | What an estimate is and what governs its accuracy |
+| [01 Why information](tutorials/01_Why_Information.ipynb) | What mutual information detects that correlation misses, and where classical estimators stop working |
+| [02 Your first number](tutorials/02_Your_First_Number.ipynb) | What an estimate is and what determines its accuracy |
 | [03 Which quantity](tutorials/03_Which_Quantity.ipynb) | Twelve quantities as one $I(A;B \mid C)$ primitive under different offset patterns |
-| [04 Preparing your data](tutorials/04_Preparing_Your_Data.ipynb) | What the processors do to your data |
-| [05 Choosing the estimator and the architecture](tutorials/05_Estimator_And_Architecture.ipynb) | How to supply an encoder of your own |
+| [04 Preparing your data](tutorials/04_Preparing_Your_Data.ipynb) | How to turn a recording into tensors and split them for training and evaluation |
+| [05 Choosing the estimator and the architecture](tutorials/05_Estimator_And_Architecture.ipynb) | When to change the estimator, the critic or the encoder, and how to supply your own encoder |
 
 ## Further reading
 
@@ -105,14 +109,14 @@ exact    : 2.000 bits
 | [`USING.md`](reference/USING.md) | how to call each analysis and read what comes back |
 | [`PARAMETERS.md`](reference/PARAMETERS.md) | every setting and its default |
 | [`THEORY.md`](reference/THEORY.md) | what the numbers mean and why the estimators behave as they do |
-| [`MESSAGES.md`](reference/MESSAGES.md) | what a warning the library printed means |
+| [`MESSAGES.md`](reference/MESSAGES.md) | what each warning that the library prints means |
 | [`ANATOMY.md`](reference/ANATOMY.md) | what an estimator is, built from scratch in PyTorch |
 | [`INTERNALS.md`](reference/INTERNALS.md) | where the code lives and how to extend it |
 | [`TESTING.md`](reference/TESTING.md) | what the test suite covers |
 
 ## Citing
 
-Please cite the library in addition to the paper behind each part of NeuralMI you used.
+Please cite the library in addition to the paper behind each part of NeuralMI that you used.
 
 | you used | please cite |
 |-|-----|

@@ -16,6 +16,9 @@ from neural_mi import Model, Training, Rigorous, Lag
 _MODEL = Model(embedding_dim=4, hidden_dim=16, n_layers=1)
 _TRAINING = Training(n_epochs=3, learning_rate=1e-3, batch_size=64, patience=2)
 
+# The share of the recording within which a circular shift is too close to zero, at its default.
+MIN_SHIFT = inspect.signature(nmi.run).parameters['permutation_min_shift'].default
+
 N = 500
 
 
@@ -112,6 +115,12 @@ class TestPermutationTest:
 
 class TestNPermutationsDefault:
 
+    def test_the_minimum_shift_must_stay_below_half(self):
+        x, y = _pair()
+        with pytest.raises(ValueError, match='must be at least 0 and below 0.5'):
+            nmi.run(x, y, mode='estimate', model=_MODEL, training=_TRAINING, permutation_test=True,
+                    permutation_min_shift=0.5, show_progress=False)
+
     def test_n_permutations_default_is_10(self):
         assert inspect.signature(nmi.run).parameters['n_permutations'].default == 10
 
@@ -123,19 +132,31 @@ class TestNPermutationsDefault:
         text = ' '.join(str(w.message) for w in caught)
         assert "n_permutations=2" in text
         assert "1/3" in text
-        assert "100 or more" in text
+        assert "min_permutations=100" in text
         assert "2 times the call itself" in text
 
-    def test_no_resolution_warning_at_100_permutations(self):
+    @pytest.mark.parametrize('n_permutations, settings, warned', [
+        (100, {}, False),                          # the default min_permutations
+        (5, {'min_permutations': 5}, False),
+        (5, {'min_permutations': 6}, True),
+    ])
+    def test_the_resolution_warning_follows_min_permutations(self, n_permutations, settings, warned):
         """The message is given before any trial runs, so the trials are skipped here."""
         x, y = _pair()
         with patch('neural_mi.analysis.permutation.permutation_nulls', return_value=[]):
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 nmi.run(x, y, mode='estimate', model=_MODEL, training=_TRAINING,
-                        permutation_test=True, n_permutations=100, n_workers=1,
-                        show_progress=False)
-        assert not [w for w in caught if "reliable p-value" in str(w.message)]
+                        permutation_test=True, n_permutations=n_permutations, n_workers=1,
+                        show_progress=False, **settings)
+        assert bool([w for w in caught if "min_permutations=" in str(w.message)]) == warned
+
+    @pytest.mark.parametrize('value', [0, 2.5, True])
+    def test_min_permutations_must_be_a_positive_integer(self, value):
+        x, y = _pair()
+        with pytest.raises(ValueError, match='min_permutations must be a positive integer'):
+            nmi.run(x, y, mode='estimate', model=_MODEL, training=_TRAINING, permutation_test=True,
+                    min_permutations=value, show_progress=False)
 
     def test_permutation_rigorous_raises(self):
         x, y = _pair()
@@ -267,7 +288,7 @@ class TestSpikePermutationShuffle:
         t_start, t_end = _spike_population_extent(y_data, {})
         for seed in range(30):
             np.random.seed(seed)
-            y_perm = _circular_shift_spike_population(y_data, t_start, t_end)
+            y_perm = _circular_shift_spike_population(y_data, t_start, t_end, MIN_SHIFT)
             for orig, new in zip(y_data, y_perm):
                 assert len(orig) == len(new)
                 assert np.all(new >= t_start - 1e-9) and np.all(new <= t_end + 1e-9)
@@ -279,7 +300,7 @@ class TestSpikePermutationShuffle:
         y_data = self._make_population()
         t_start, t_end = _spike_population_extent(y_data, {})
         np.random.seed(1)
-        y_perm = _circular_shift_spike_population(y_data, t_start, t_end)
+        y_perm = _circular_shift_spike_population(y_data, t_start, t_end, MIN_SHIFT)
         assert any(not np.allclose(orig, new) for orig, new in zip(y_data, y_perm))
 
     def test_block_shuffle_preserves_spike_counts_and_bounds(self):
@@ -403,7 +424,7 @@ class TestTheNullMovesX:
                     'details': {}, 'axis_keys': []}
 
         with patch('neural_mi.analysis.modes.produce', side_effect=fake_produce):
-            permutation._trial(('estimate', x, y, w, {}, None, {}, True, 1, 'circular'))
+            permutation._trial(('estimate', x, y, w, {}, None, {}, True, 1, 'circular', MIN_SHIFT))
         assert not torch.equal(seen['x'], x)
         assert torch.equal(seen['y'], y) and torch.equal(seen['w'], w)
 
@@ -413,17 +434,26 @@ class TestTheNullMovesX:
         x = torch.arange(n, dtype=torch.float32)[:, None, None]
         for seed in range(40):
             np.random.seed(seed)
-            shifted = shift_x(x, {}, 'circular')
+            shifted = shift_x(x, {}, 'circular', min_shift=MIN_SHIFT)
             offset = int(shifted[0, 0, 0].item())       # row 0 now holds row (n - k) % n
             k = (n - offset) % n
-            assert 0.1 * n <= k <= 0.9 * n, (n, k)
+            assert MIN_SHIFT * n <= k <= (1 - MIN_SHIFT) * n, (n, k)
             assert torch.equal(torch.roll(x, k, 0), shifted)
+
+    def test_the_minimum_shift_is_a_setting(self):
+        from neural_mi.analysis.permutation import shift_x
+        n = 100
+        x = torch.arange(n, dtype=torch.float32)[:, None, None]
+        for seed in range(40):
+            np.random.seed(seed)
+            offset = int(shift_x(x, {}, 'circular', min_shift=0.3)[0, 0, 0].item())
+            assert 0.3 * n <= (n - offset) % n <= 0.7 * n
 
     def test_a_raw_series_rolls_its_samples(self):
         from neural_mi.analysis.permutation import shift_x
         x = np.arange(50, dtype=float)[:, None]
         np.random.seed(0)
-        shifted = shift_x(x, {}, 'circular')
+        shifted = shift_x(x, {}, 'circular', min_shift=MIN_SHIFT)
         assert sorted(shifted[:, 0]) == sorted(x[:, 0])
         assert np.all(np.diff(np.concatenate([shifted[:, 0], shifted[:1, 0]])) % 50 == 1)
 
@@ -434,15 +464,15 @@ class TestTheNullMovesX:
         t_start, t_end = _spike_population_extent(spikes, {})
         for seed in range(40):
             np.random.seed(seed)
-            moved = _circular_shift_spike_population(spikes, t_start, t_end)[1][0]
+            moved = _circular_shift_spike_population(spikes, t_start, t_end, MIN_SHIFT)[1][0]
             delta = (moved - 50.0) % 100.0
-            assert 10.0 <= delta <= 90.0
+            assert 100.0 * MIN_SHIFT <= delta <= 100.0 * (1 - MIN_SHIFT)
 
     def test_a_block_shuffle_keeps_whole_windows_of_a_raw_series(self):
         from neural_mi.analysis.permutation import shift_x
         x = np.arange(40, dtype=float)[:, None]
         np.random.seed(3)
-        shuffled = shift_x(x, {'processor_params_x': {'window_size': 5}}, 'block')[:, 0]
+        shuffled = shift_x(x, {'processor_params_x': {'window_size': 5}}, 'block', min_shift=MIN_SHIFT)[:, 0]
         blocks = shuffled.reshape(8, 5)
         assert all(np.all(np.diff(b) == 1) and b[0] % 5 == 0 for b in blocks)
         assert not np.array_equal(shuffled, x[:, 0])
@@ -451,7 +481,7 @@ class TestTheNullMovesX:
         from neural_mi.analysis.permutation import shift_x
         x = torch.arange(30, dtype=torch.float32).reshape(10, 1, 3)
         np.random.seed(1)
-        shuffled = shift_x(x, {}, 'block')
+        shuffled = shift_x(x, {}, 'block', min_shift=MIN_SHIFT)
         assert sorted(shuffled[:, 0, 0].tolist()) == sorted(x[:, 0, 0].tolist())
         assert torch.equal(shuffled[:, 0, 1] - shuffled[:, 0, 0], torch.ones(10))
 
@@ -473,6 +503,6 @@ def test_a_trial_raises_no_warnings_of_its_own():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         with patch('neural_mi.analysis.modes.produce', side_effect=noisy_produce):
-            values = permutation._trial(('estimate', x, x, None, {}, None, {}, True, 1, 'circular'))
+            values = permutation._trial(('estimate', x, x, None, {}, None, {}, True, 1, 'circular', MIN_SHIFT))
     assert caught == []
     assert values == {(0,): (0.0, -0.01)}

@@ -7,6 +7,10 @@ from neural_mi.utils import get_device
 import warnings
 from neural_mi.logger import logger, user_stacklevel
 from neural_mi.data.corruption import corrupt
+from neural_mi.defaults import PROCESSOR_DEFAULTS
+
+_CONTINUOUS = PROCESSOR_DEFAULTS['continuous']
+_CATEGORICAL = PROCESSOR_DEFAULTS['categorical']
 
 
 def relabel_categorical_data(data) -> np.ndarray:
@@ -274,7 +278,9 @@ class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
     """
     
     def __init__(self, data, time_vector=None, window_manager=None, device=None,
-                 min_coverage_fraction=0.2, data_device='cpu', sample_rate=None):
+                 min_coverage_fraction=0.2, data_device='cpu', sample_rate=None,
+                 period_tolerance=_CONTINUOUS['period_tolerance'], padded_share=_CONTINUOUS['padded_share'],
+                 gap_multiple=_CONTINUOUS['gap_multiple'], bridged_share=_CONTINUOUS['bridged_share']):
         """
         Parameters
         ----------
@@ -305,6 +311,18 @@ class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
             inter-sample period inferred from ``time_vector``, useful
             when the time vector has floating-point rounding noise or when no
             time vector is supplied.
+        period_tolerance : float, optional
+            The first interval of ``time_vector`` may differ from the median
+            interval by this fraction of it before the dataset warns.
+        padded_share : float, optional
+            The dataset warns when more than this share of the interpolated
+            time points fall outside the recorded range and are filled with zeros.
+        gap_multiple : float, optional
+            An interval between samples longer than this many median periods
+            counts as a gap.
+        bridged_share : float, optional
+            A retained window with more than this share of its samples
+            interpolated across a gap warns.
         """
         super().__init__(window_manager, device, data_device)
 
@@ -332,13 +350,16 @@ class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
         # Derive the inter-sample period from the time vector.
         diffs = np.diff(self.time_vector)
         self.period = float(np.median(diffs)) if len(diffs) > 0 else 1.0
+        self.period_tolerance, self.padded_share = period_tolerance, padded_share
+        self.gap_multiple, self.bridged_share = gap_multiple, bridged_share
         if len(diffs) > 1:
             first_two = float(self.time_vector[1] - self.time_vector[0])
-            if not np.isclose(first_two, self.period, rtol=0.05):
+            if not np.isclose(first_two, self.period, rtol=period_tolerance):
                 warnings.warn(
                     f"ContinuousWindowDataset: first inter-sample interval "
-                    f"({first_two:.6g}) differs from the median ({self.period:.6g}) by "
-                    f">5%. Using the median. Check your time vector for boundary artifacts.",
+                    f"({first_two:.6g}) differs from the median ({self.period:.6g}) by more "
+                    f"than period_tolerance={period_tolerance:g} of the median. The dataset uses the "
+                    f"median. Check your time vector for boundary artifacts.",
                     UserWarning, stacklevel=user_stacklevel()
                 )
 
@@ -434,8 +455,9 @@ class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
                 self.window_manager.n_windows, self.max_samples_per_window))[0])
             text = (f"ContinuousWindowDataset: {n_oob}/{total} interpolated time points "
                     f"({oob_frac:.1%}) are zero-padded due to data gaps. Affects {len(oob_windows)} window(s).")
-            if oob_frac > 0.1:
-                warnings.warn(text + " Consider checking your time vector for large gaps.",
+            if oob_frac > self.padded_share:
+                warnings.warn(text + f" The zero-padded share is above padded_share={self.padded_share:g}. "
+                              f"Consider checking your time vector for large gaps.",
                               UserWarning, stacklevel=user_stacklevel())
             else:
                 logger.debug(text)
@@ -447,13 +469,12 @@ class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
         # window here; remove_invalid_windows() below warns about *retained*
         # windows once the final valid set is known.
         if len(self.time_vector) >= 2:
-            _LARGE_GAP_MULTIPLE = 3.0
             left_idx = np.clip(
                 np.searchsorted(self.time_vector, target_times_flat, side='right') - 1,
                 0, len(self.time_vector) - 2,
             )
             local_gap = self.time_vector[left_idx + 1] - self.time_vector[left_idx]
-            bridges_large_gap = (~out_of_bounds) & (local_gap > _LARGE_GAP_MULTIPLE * self.period)
+            bridges_large_gap = (~out_of_bounds) & (local_gap > self.gap_multiple * self.period)
             self._interp_gap_fraction = bridges_large_gap.reshape(
                 self.window_manager.n_windows, self.max_samples_per_window
             ).mean(axis=1)
@@ -531,13 +552,14 @@ class ContinuousWindowDataset(_SampledStream, TemporalWindowDataset):
         super().remove_invalid_windows()
         if _gap_frac is not None and _valid_mask is not None and len(_gap_frac) == len(_valid_mask):
             _retained_frac = _gap_frac[_valid_mask]
-            _flagged = _retained_frac > 0.3
+            _flagged = _retained_frac > self.bridged_share
             _n_flagged = int(_flagged.sum())
             if _n_flagged > 0:
                 warnings.warn(
                     f"ContinuousWindowDataset: {_n_flagged}/{len(_retained_frac)} retained "
-                    f"window(s) have over 30% of their samples bridged by interpolation "
-                    f"across a gap more than 3x the typical inter-sample period. These "
+                    f"window(s) have more than bridged_share={self.bridged_share:g} of their samples "
+                    f"bridged by interpolation across a gap longer than gap_multiple="
+                    f"{self.gap_multiple:g} typical inter-sample periods. These "
                     f"windows passed min_coverage_fraction (enough raw timestamps are "
                     f"nearby) but much of their content may be fabricated by np.interp. "
                     f"Consider raising min_coverage_fraction or pre-collapsing large gaps "
@@ -961,7 +983,7 @@ class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
     
     def __init__(self, data, time_vector=None, window_manager=None, device=None,
                  min_coverage_fraction=0.2, encoding: str = 'majority_vote',
-                 data_device='cpu', sample_rate=None):
+                 data_device='cpu', sample_rate=None, max_encoding_width=_CATEGORICAL['max_encoding_width']):
         """
         Parameters
         ----------
@@ -985,6 +1007,9 @@ class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
         sample_rate : float, optional
             Explicit sample rate in Hz.  Overrides the inter-sample period
             inferred from ``time_vector`` when provided.
+        max_encoding_width : int, optional
+            ``encoding='full_trajectory'`` warns when a window's input would be
+            wider than this.
         """
         super().__init__(window_manager, device, data_device)
 
@@ -1013,23 +1038,11 @@ class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
                 f"Received {len(self.time_vector)} time points and {self.data_orig.shape[0]} data points"
             )
         
-        # Total one-hot encoded dimensions
+        # Total one-hot encoded dimensions. How wide encoding='full_trajectory' makes a window's input is
+        # known once a window manager sets the window, so move_data_to_windows checks it.
         self.encoding = encoding
         self.n_categories = self.data_orig.max() + 1
-        # Warn if full_trajectory would produce a very wide tensor
-        if encoding == 'full_trajectory':
-            max_samples = int(np.ceil(
-                (window_manager.window_size / self.period) if window_manager else 1
-            ))
-            enc_dim = self.n_categories * max_samples
-            if enc_dim > 500:
-                warnings.warn(
-                    f"CategoricalWindowDataset: encoding='full_trajectory' will produce "
-                    f"a {enc_dim}-dimensional input per window "
-                    f"({self.n_categories} categories × ~{max_samples} timesteps). "
-                    f"Consider encoding='majority_vote' for large windows.",
-                    UserWarning, stacklevel=user_stacklevel()
-                )
+        self.max_encoding_width = max_encoding_width
         self.min_coverage_fraction = min_coverage_fraction
 
         # Process data if window manager is available
@@ -1056,7 +1069,19 @@ class CategoricalWindowDataset(_SampledStream, TemporalWindowDataset):
             raise RuntimeError("Cannot move data to windows: Window manager not initialized")
         
         logger.debug(f"CategoricalWindowDataset: using encoding='{self.encoding}'")
-        
+        if self.encoding == 'full_trajectory':
+            max_samples = int(np.ceil(self.window_manager.window_size / self.period))
+            enc_dim = self.n_categories * max_samples
+            if enc_dim > self.max_encoding_width:
+                warnings.warn(
+                    f"CategoricalWindowDataset: encoding='full_trajectory' will produce "
+                    f"a {enc_dim}-dimensional input per window "
+                    f"({self.n_categories} categories × ~{max_samples} timesteps), which is wider than "
+                    f"max_encoding_width={self.max_encoding_width}. "
+                    f"Consider encoding='majority_vote' for large windows.",
+                    UserWarning, stacklevel=user_stacklevel()
+                )
+
         if self.encoding == 'majority_vote':
             self._move_majority_vote()
         elif self.encoding == 'probability':

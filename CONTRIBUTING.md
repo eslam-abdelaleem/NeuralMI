@@ -4,8 +4,10 @@ Bug reports, feature requests and pull requests are all welcome.
 
 ## Reporting a problem
 
-Open an issue on the [issue tracker](https://github.com/eslam-abdelaleem/NeuralMI/issues). The bug form asks for the
-mode, the call, the data shapes, and `result.summary()` with `result.runs`.
+Open an issue on the [issue
+tracker](https://github.com/eslam-abdelaleem/NeuralMI/issues). In the bug form,
+give the mode, the call, the data shapes, and `result.summary()` with
+`result.runs`.
 
 ## Development setup
 
@@ -26,14 +28,14 @@ without reinstalling.
 
 Run the whole suite with `pytest`. [`TESTING.md`](https://github.com/eslam-abdelaleem/NeuralMI/blob/main/reference/TESTING.md)
 lists the faster and serial variants, maps every test file to what it covers,
-and says where to look when something breaks.
+and shows where to look when something breaks.
 
 
 ## Code style
 
 Follow PEP 8, use descriptive names, comment the parts that are genuinely
 subtle, and keep functions small enough to test one at a time. Public functions
-carry type hints and NumPy-format docstrings. A warning passes
+have type hints and NumPy-format docstrings. A warning passes
 `stacklevel=user_stacklevel()` from `neural_mi.logger` so that it names the line
 in the caller's code that led to it. `tests/test_run.py` fails on a hardcoded
 level.
@@ -49,16 +51,17 @@ level.
 
 ## Notes
 
-A change to a setting, a default or a warning also changes the reference pages.
+A change to a setting, a default or a warning also needs a change to the
+reference pages.
 [`PARAMETERS.md`](https://github.com/eslam-abdelaleem/NeuralMI/blob/main/reference/PARAMETERS.md)
-lists every setting and
+lists every setting.
 [`MESSAGES.md`](https://github.com/eslam-abdelaleem/NeuralMI/blob/main/reference/MESSAGES.md)
-every warning. `tests/test_docs_drift.py` fails until both match the code.
+lists every warning. `tests/test_docs_drift.py` fails until both match the code.
 [`INTERNALS.md`](https://github.com/eslam-abdelaleem/NeuralMI/blob/main/reference/INTERNALS.md)
 has the codebase map and the steps for adding an estimator, a processor, an
 encoder or an analysis mode.
 
-The docs site keeps no text of its own for the reference pages or the README's
+The docs site has no text of its own for the reference pages or the README's
 install steps and quickstart. Edit the originals that the stubs in
 `docs/source/` include. The figures in the README and on the site come from
 `docs/figures/readme_figures.ipynb`. The notebook also runs the README

@@ -163,12 +163,15 @@ def run_transfer_entropy(
     n_samples = kept_rows(x_past.shape[0], base_params)
     logger.info(f"Transfer Entropy: {n_samples} valid samples.")
 
+    # The streams behind each term's inputs, which decide whether its encoder scales each part.
+    conditioning = ('y', 'w') if with_w else ('y',)
     te, mi_joint, mi_marginal, results_joint, results_marginal, _per_run = _joint_marginal_difference(
         (x_past, y_past_cond), y_future, y_past_cond, y_future,
         base_params, sweep_grid, n_workers,
         quantity_name="TE(X→Y)",
         joint_label="xy_past;y_future", marginal_label="y_past;y_future",
         joint_key="i_xypast_yfuture", marginal_key="i_ypast_yfuture",
+        joint_streams=(('x', conditioning), 'y'), marginal_streams=((conditioning,), 'y'),
     )
 
     result = {
@@ -197,6 +200,8 @@ def run_transfer_entropy(
             quantity_name="TE(Y→X)",
             joint_label="yx_past;x_future", marginal_label="x_past;x_future",
             joint_key="i_yxpast_xfuture", marginal_key="i_xpast_xfuture", raw_key='te_yx_raw',
+            joint_streams=(('y', ('x', 'w') if with_w else ('x',)), 'x'),
+            marginal_streams=((('x', 'w') if with_w else ('x',),), 'x'),
         )
 
         # Directionality index: +1 = pure X→Y, -1 = pure Y→X, 0 = symmetric

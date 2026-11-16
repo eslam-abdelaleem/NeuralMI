@@ -5,8 +5,8 @@ choose_epoch reads the earliest epoch at the top of the smoothed curve
 ('plateau_start') or its maximum ('peak'), measuring the curve's noise from the
 curve itself. These tests give it 100 noisy draws of curves of each shape the
 diagnosis names and check how often it reads and diagnoses them as it should.
-Whether the start of a slow approach moves the estimate is measured by the
-trainer (test_best_epoch.py).
+top_band gives the epochs that the held-out rows cannot tell apart from the top.
+The trainer reads the estimate at the band's two ends (test_best_epoch.py).
 """
 import warnings
 
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from neural_mi.logger import _kind
-from neural_mi.training.epochs import choose_epoch, curve_noise, standard_error, warn_about_curve
+from neural_mi.training.epochs import choose_epoch, curve_noise, standard_error, top_band, warn_about_curve
 from neural_mi.training.trainer import Trainer
 
 E = np.arange(60, dtype=float)
@@ -22,12 +22,12 @@ REACH = Trainer._smoothing_reach(1.0, 5)
 
 
 def _reads(curve, sigma=0.03, rule='plateau_start', ran_to_limit=False, draws=100):
-    """(epoch read, peak, diagnosis, start of the approach) for each noisy draw of the curve."""
+    """(epoch read, peak, diagnosis) for each noisy draw of the curve."""
     out = []
     for seed in range(draws):
         history = curve + sigma * np.random.default_rng(seed).standard_normal(len(curve))
         out.append(choose_epoch(history, Trainer._smooth(None, list(history), 1.0, 5), rule, REACH, ran_to_limit))
-    return tuple(np.array([r[i] for r in out]) for i in range(4))
+    return tuple(np.array([r[i] for r in out]) for i in range(3))
 
 
 def test_noise_is_the_spread_from_epoch_to_epoch_and_ignores_a_trend():
@@ -38,20 +38,20 @@ def test_noise_is_the_spread_from_epoch_to_epoch_and_ignores_a_trend():
 
 def test_a_clean_peak_is_read_at_the_peak():
     curve = 0.2 + np.where(E <= 15, np.exp(-0.5 * ((E - 15) / 3) ** 2), np.exp(-0.5 * ((E - 15) / 6) ** 2))
-    epochs, _, diagnoses, _ = _reads(curve)
+    epochs, _, diagnoses = _reads(curve)
     assert np.all(np.abs(epochs - 15) <= 2) and np.all(diagnoses == 'ok')
 
 
 def test_a_plateau_is_read_at_its_start_and_the_peak_rule_at_its_maximum():
     curve = 1 - np.exp(-(E + 1) / 2)                       # reaches 98% of its rise at epoch 7
-    epochs, peaks, diagnoses, _ = _reads(curve)
+    epochs, peaks, diagnoses = _reads(curve)
     assert np.median(np.abs(epochs - 7)) <= 2 and np.mean(np.abs(epochs - 7) <= 4) >= 0.85
     assert np.median(peaks - epochs) >= 10 and np.mean(diagnoses == 'ok') >= 0.85
     assert np.array_equal(_reads(curve, rule='peak')[0], peaks)
 
 
 def test_a_curve_flat_from_the_start_is_read_at_epoch_zero():
-    epochs, _, diagnoses, _ = _reads(np.ones(60))
+    epochs, _, diagnoses = _reads(np.ones(60))
     assert np.median(epochs) == 0 and np.mean(epochs <= 5) >= 0.9 and np.mean(diagnoses == 'ok') >= 0.85
 
 
@@ -80,9 +80,19 @@ def test_a_long_fall_after_the_top_does_not_move_the_epoch_read():
         assert reads[100] == reads[200] == reads[300]
 
 
-def test_a_slow_approach_starts_well_before_the_epoch_read():
-    epochs, _, diagnoses, approaches = _reads(1 - np.exp(-(np.arange(120) + 1) / 12), sigma=0.01)
-    assert np.median(epochs - approaches) >= 8 and np.mean(diagnoses == 'ok') >= 0.85
+def test_a_clean_peak_has_a_narrow_band_and_a_long_flat_top_a_wide_one():
+    """The band is every epoch whose smoothed held-out value lies within top_se standard errors of the
+    maximum. On many held-out rows it stays near a clean peak and spreads over a top that stays flat."""
+    for curve, narrow in ((0.2 + np.exp(-0.5 * ((E - 15) / 3) ** 2), True), (1 - np.exp(-(E + 1) / 2), False)):
+        history, smoothed = _one_draw(curve)
+        first, last = top_band(smoothed, 10_000)
+        assert first <= int(np.nanargmax(smoothed)) <= last
+        assert (last - first <= 6) if narrow else (last - first >= 30)
+
+
+def test_without_a_row_count_the_band_is_the_maximum():
+    history, smoothed = _one_draw(1 - np.exp(-(E + 1) / 2))
+    assert top_band(smoothed, None) == (int(np.nanargmax(smoothed)),) * 2
 
 
 def test_standard_error_of_blocks_and_of_one_block():
@@ -90,16 +100,27 @@ def test_standard_error_of_blocks_and_of_one_block():
     assert standard_error([0.5], 1000) == pytest.approx(np.sqrt(2 * 0.5 / 1000))
 
 
-@pytest.mark.parametrize('diagnosis', ['not resolved', 'still rising', 'too fast', 'fuzzy start'])
+@pytest.mark.parametrize('diagnosis', ['not resolved', 'still rising', 'too fast', 'flat top'])
 def test_each_warning_differs_between_networks_only_in_its_numbers(diagnosis):
     """The library shows a message once per call and counts repeats that differ only in numbers."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        warn_about_curve(diagnosis, 3, 4, 6, 100, 1, 0.02, 0.005)
-        warn_about_curve(diagnosis, 17, 21, 6, 200, 9, -0.031, 0.01)
+        warn_about_curve(diagnosis, 3, 4, 6, 100, values=(1.0, 1.0, 0.8), band=(1, 9, 0.7, 1.2))
+        warn_about_curve(diagnosis, 17, 21, 6, 200, values=(2.5, 2.5, 1.5), band=(9, 40, 1.3, 2.4))
         warn_about_curve('ok', 3, 4, 6, 100)
     first, second = (str(w.message) for w in caught)
     assert _kind('UserWarning', first) == _kind('UserWarning', second)
+
+
+def test_more_epochs_are_suggested_only_when_training_ran_to_its_limit():
+    """A run that stopped before n_epochs had stopped improving, so its message suggests no more epochs."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        warn_about_curve('not resolved', 3, 4, 6, 100, ran_to_limit=True)
+        warn_about_curve('not resolved', 3, 4, 6, 100, ran_to_limit=False)
+    limit, early = (str(w.message) for w in caught)
+    assert 'More data, more epochs or another network may resolve it.' in limit
+    assert 'More data or another network may resolve it.' in early and 'more epochs would not change it' in early
 
 
 def test_a_flat_curve_a_little_above_zero_is_not_resolved_on_few_rows():
@@ -112,3 +133,226 @@ def test_a_flat_curve_a_little_above_zero_is_not_resolved_on_few_rows():
     assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=14)[2] == 'not resolved'
     # 0.001 nats clears 3 standard errors, sqrt(2 * 0.001 / N), once N exceeds 18 / 0.001 rows.
     assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=20000)[2] == 'ok'
+
+
+def _one_draw(curve, sigma=0.01, seed=0):
+    """One noisy draw of a curve and its smoothed version."""
+    history = curve + sigma * np.random.default_rng(seed).standard_normal(len(curve))
+    return history, Trainer._smooth(None, list(history), 1.0, 5)
+
+
+class TestEveryThresholdIsASetting:
+    """Each number the rule reads or judges the curve by is a setting of Training(...), and changing it moves
+    the decision it makes."""
+
+    def test_start_noise_and_level_noise_move_the_epoch_read(self):
+        history, smoothed = _one_draw(1 - np.exp(-(E + 1) / 2))
+        read = choose_epoch(history, smoothed, 'plateau_start', REACH, False)[0]
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, start_noise=50.0)[0] < read
+        # With no band around the maximum, the level is the maximum itself, and the plateau starts later.
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, level_noise=0.0)[0] > read
+
+    def test_resolved_noise_and_clear_se_decide_whether_the_top_is_resolved(self):
+        curve = 0.2 + np.exp(-0.5 * ((E - 15) / 3) ** 2)
+        history, smoothed = _one_draw(curve)
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False)[2] == 'ok'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False,
+                            resolved_noise=1e6)[2] == 'not resolved'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, n_rows=1000,
+                            clear_se=1e6)[2] == 'not resolved'
+
+    def test_rising_epochs_and_rising_noise_decide_whether_the_curve_still_rises(self):
+        history, smoothed = _one_draw(E / 60)
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, True)[2] == 'still rising'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, True, rising_noise=1e6)[2] != 'still rising'
+
+    def test_fast_epochs_and_fall_noise_decide_whether_the_top_came_too_fast(self):
+        history, smoothed = _one_draw(np.where(E <= 2, 1 - 0.3 * (2 - E), 1 - 0.15 * np.abs(E - 2) ** 1.5))
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False)[2] == 'too fast'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, fall_noise=1e6)[2] != 'too fast'
+        assert choose_epoch(history, smoothed, 'plateau_start', REACH, False, fast_epochs=0)[2] != 'too fast'
+
+    def test_top_se_widens_the_band(self):
+        history, smoothed = _one_draw(1 - np.exp(-(E + 1) / 6))
+        first, last = top_band(smoothed, 2_000)
+        wide_first, wide_last = top_band(smoothed, 2_000, top_se=5.0)
+        assert wide_first <= first and wide_last >= last and (wide_first, wide_last) != (first, last)
+
+    def test_the_flat_top_message_names_its_settings(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            warn_about_curve('flat top', 17, 21, 6, 200, values=(1.0, 1.0, 0.7), band=(9, 40, 0.8, 1.3),
+                             top_se=1.5, band_share=0.25)
+        text = str(caught[0].message)
+        assert 'Training(top_se=1.5)' in text and 'Training(band_share=0.25)' in text
+        assert 'from epoch 9 to epoch 40' in text
+
+
+class TestTheSettingsReachTheTrainer:
+    """Training(...) carries each setting through run() to the trainer, and to the warnings it gives."""
+
+    X = np.random.default_rng(0).standard_normal((300, 2)).astype(np.float32)
+
+    @staticmethod
+    def _run(**training):
+        import neural_mi as nmi
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            result = nmi.run(TestTheSettingsReachTheTrainer.X, TestTheSettingsReachTheTrainer.X,
+                             model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1),
+                             training=nmi.Training(n_epochs=3, **training), show_progress=False, seed=0)
+        return result, [str(w.message) for w in caught]
+
+    def test_every_curve_setting_reaches_the_trainer(self, monkeypatch):
+        from neural_mi.defaults import CURVE_SETTINGS
+        values = dict(level_noise=2.5, start_noise=0.6, resolved_noise=7.0, fast_epochs=9, fall_noise=3.5,
+                      top_se=2.5, band_share=0.4, clear_se=2.5, rising_epochs=21, rising_noise=2.5,
+                      ceiling_fraction=0.86, saturation_fraction=0.91, saturated_epoch_fraction=0.6,
+                      gap_share=0.4, nan_streak=4)
+        assert set(values) == set(CURVE_SETTINGS)
+        seen, real = {}, Trainer.train
+
+        def spy(self, *args, **kwargs):
+            seen.update(kwargs)
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Trainer, 'train', spy)
+        self._run(**values)
+        assert {name: seen[name] for name in values} == values
+
+    def test_the_warnings_name_the_settings_they_used(self):
+        _, messages = self._run(ceiling_fraction=0.0, small_sample=10 ** 6)
+        assert any('near its ceiling of log(' in m and 'Training(ceiling_fraction=0)' in m for m in messages)
+        small = next(m for m in messages if 'fewer than Training(small_sample=1000000)' in m)
+        # The advice names settings without values of its own.
+        assert 'a smaller hidden_dim (now 8) and embedding_dim (now 4)' in small
+
+    def test_a_setting_changes_the_diagnosis(self):
+        result, _ = self._run(resolved_noise=1e6)
+        assert set(result.runs['curve_diagnosis']) == {'not resolved'}
+
+
+class TestTheWarningsAboutTheValueRead:
+    """After the trainer has set the value it reports, it compares that value with the held-out value of the
+    same network and with the ceiling of each side, and the warning about a curve that did not resolve states
+    both values."""
+
+    def test_a_held_out_value_falls_short_below_gap_share_and_beyond_noise(self):
+        from neural_mi.training.epochs import falls_short
+        assert falls_short(1.0, 0.4, 0.01, 1000)
+        assert not falls_short(1.0, 0.6, 0.01, 1000)
+        assert falls_short(1.0, 0.6, 0.01, 1000, gap_share=0.7)
+        # A small estimate on few rows: the difference is within its standard errors.
+        assert not falls_short(0.05, 0.0, 0.02, 50)
+        assert falls_short(0.05, 0.0, 0.02, 50, clear_se=1.0)
+        assert not falls_short(0.0, -0.1, 0.01, 1000) and not falls_short(1.0, None, 0.01, 1000)
+
+    def test_the_gap_warning_states_the_values_and_names_its_settings(self):
+        from neural_mi.training.epochs import warn_about_gap
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            warn_about_gap(2.5, 0.75, 'bits', gap_share=0.5, clear_se=3.0)
+        text = str(caught[0].message)
+        assert text.startswith('At the chosen epoch, the held-out MI of the network (0.7500 bits) is less than '
+                               'Training(gap_share=0.5) of the estimate (2.5000 bits).')
+        assert 'Training(clear_se=3)' in text
+
+    @pytest.mark.parametrize('held_out_rows, advice', [(5000, 'Raising max_eval_samples'),
+                                                      (100, 'Only more held-out rows raise this ceiling')])
+    def test_a_held_out_value_near_its_ceiling_may_understate(self, held_out_rows, advice):
+        from neural_mi.training.epochs import warn_about_ceiling
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            side = warn_about_ceiling(6.5, 6.4, np.log2(4000), np.log2(100), 4000, 100, held_out_rows)
+        text = str(caught[0].message)
+        assert side == 'held-out' and len(caught) == 1
+        assert text.startswith('The held-out MI (6.4000 bits) is near its ceiling of log(100)')
+        assert 'the true MI may be higher' in text and advice in text
+
+    def test_an_estimate_near_its_ceiling_alone_may_overstate(self):
+        from neural_mi.training.epochs import warn_about_ceiling
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            side = warn_about_ceiling(11.0, 1.9, np.log2(4000), np.log2(1000), 4000, 1000, 1000)
+        text = str(caught[0].message)
+        assert side == 'training'
+        assert text.startswith('The estimate (11.0000 bits) is near its ceiling of log(4000)')
+        assert 'the held-out MI of the same network is 1.9000 bits' in text and 'memorising' in text
+        assert 'may be higher' not in text
+
+    def test_a_value_below_both_ceilings_raises_nothing(self):
+        from neural_mi.training.epochs import warn_about_ceiling
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            assert warn_about_ceiling(2.0, 1.8, np.log2(4000), np.log2(1000), 4000, 1000, 1000) is None
+
+    @pytest.mark.parametrize('values, stated', [
+        ((1.2, 1.2, 0.3), 'the estimate is 1.2000 bits and the held-out MI of the same network is 0.3000 bits'),
+        ((0.0, -0.25, 0.01), 'the estimate is 0.0000 bits (measured as -0.2500 bits)'),
+    ])
+    def test_a_curve_that_did_not_resolve_states_both_values(self, values, stated):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            warn_about_curve('not resolved', 3, 4, 6, 100, values=values)
+        assert stated in str(caught[0].message)
+
+    @staticmethod
+    def _overfit(**training):
+        """Few rows, many channels and a large network: the network fits its training rows."""
+        import neural_mi as nmi
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal((300, 40)).astype(np.float32)
+        y = (x[:, :2] @ rng.standard_normal((2, 40)) + 2.0 * rng.standard_normal((300, 40))).astype(np.float32)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            result = nmi.run(x, y, model=nmi.Model(embedding_dim=16, hidden_dim=64, n_layers=2),
+                             training=nmi.Training(n_epochs=150, patience=150, **training), show_progress=False,
+                             seed=0)
+        return result, [str(w.message) for w in caught]
+
+    def test_run_warns_when_the_held_out_rows_do_not_confirm_the_estimate(self):
+        result, messages = self._overfit()
+        row = result.runs.iloc[0]
+        assert row['curve_diagnosis'] != 'not resolved' and row['test_mi'] < 0.5 * row['mi']
+        gap = [m for m in messages if 'Training(gap_share=0.5)' in m]
+        assert len(gap) == 1 and f"({row['mi']:.4f} bits)" in gap[0]
+        _, messages = self._overfit(gap_share=0.3)
+        assert not any('gap_share' in m for m in messages)
+
+    def test_the_values_stated_are_those_of_the_network_read(self):
+        """With peak_fraction below 1 the estimate is read at an earlier epoch than the peak, and the
+        held-out value stated is the curve's at that epoch."""
+        result, messages = self._overfit(resolved_noise=1e6, peak_fraction=0.5)
+        row = result.runs.iloc[0]
+        read = int(row['conservative_epoch'])
+        assert read < row['best_epoch']
+        held = row['test_mi_history'][read]                     # runs reports the curve in bits
+        text = next(m for m in messages if m.startswith('The held-out MI curve does not rise'))
+        assert f"the estimate is {row['mi']:.4f} bits and the held-out MI of the same network is {held:.4f}" in text
+
+    def test_an_estimate_reported_as_zero_raises_no_ceiling_warning(self):
+        import neural_mi as nmi
+        rng = np.random.default_rng(0)
+        x, y = (rng.standard_normal((300, 2)).astype(np.float32) for _ in range(2))
+        # A run reported as 0 needs a held-out curve that never rises above zero. Independent data give one
+        # only when the scores start spread out, so this run keeps the networks' own start.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            result = nmi.run(x, y, model=nmi.Model(embedding_dim=4, hidden_dim=8, n_layers=1, zero_start=False),
+                             training=nmi.Training(n_epochs=4, ceiling_fraction=0.0), show_progress=False, seed=0)
+        assert result.runs.iloc[0]['mi'] == 0
+        assert not any('near its ceiling' in str(w.message) for w in caught)
+
+
+
+@pytest.mark.parametrize('diagnosis, settings, named', [
+    ('not resolved', dict(resolved_noise=9.0, clear_se=2.5), ('Training(resolved_noise=9)', 'Training(clear_se=2.5)')),
+    ('still rising', dict(rising_noise=4.0, rising_epochs=25),
+     ('Training(rising_noise=4)', 'Training(rising_epochs=25)')),
+    ('too fast', dict(fall_noise=3.5, fast_epochs=7), ('Training(fall_noise=3.5)', 'Training(fast_epochs=7)')),
+])
+def test_each_curve_warning_names_the_settings_that_decided_it(diagnosis, settings, named):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        warn_about_curve(diagnosis, 3, 4, 6, 100, **settings)
+    assert all(text in str(caught[0].message) for text in named)

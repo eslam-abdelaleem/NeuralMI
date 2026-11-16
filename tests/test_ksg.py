@@ -1,5 +1,6 @@
 # tests/test_ksg.py
 """The KSG estimator and its conditional form (neural_mi/estimators/ksg.py), alone and through run()."""
+import inspect
 import warnings
 
 import numpy as np
@@ -76,10 +77,27 @@ class TestEstimator:
         counts = rng.poisson(0.3, size=(2000, 3)).astype(float)
         with pytest.warns(UserWarning, match=r"KSG assumes continuous values, and .* of X's values in column"):
             ksg_mi(counts, rng.standard_normal(2000))
-        assert K.tied_share(counts).min() > K.TIED_SHARE
+        assert K.tied_share(counts).min() > inspect.signature(K.ksg_mi).parameters['max_tied_share'].default
         with warnings.catch_warnings():
             warnings.simplefilter('error')
             ksg_mi(*_pair())
+
+    def test_max_tied_share_sets_when_ties_warn(self):
+        rng = np.random.default_rng(0)
+        counts = rng.poisson(0.3, size=(2000, 3)).astype(float)
+        with pytest.warns(UserWarning, match=r"That share is above max_tied_share=0\.5"):
+            ksg_mi(counts, rng.standard_normal(2000))
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            ksg_mi(counts, rng.standard_normal(2000), max_tied_share=1.0)
+            ksg_cmi(counts, rng.standard_normal(2000), rng.standard_normal(2000), max_tied_share=1.0)
+        # Through run(): Estimator(params={'max_tied_share': ...}) reaches the estimator.
+        y = rng.standard_normal((2000, 1))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            nmi.run(counts, y, mode='estimate', estimator=nmi.Estimator(name='ksg', params={'max_tied_share': 1.0}),
+                    show_progress=False)
+        assert not any('max_tied_share' in str(w.message) for w in caught)
 
     def test_autocorrelation_time(self):
         rng = np.random.default_rng(0)

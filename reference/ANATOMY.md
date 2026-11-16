@@ -2,10 +2,12 @@
 
 Here we build a working MI estimator from scratch in a few dozen lines of PyTorch. Read it to see what the library does when you call `run()`.
 
-[USING.md](USING.md) documents the real API, [THEORY.md](THEORY.md) covers where the bound comes from and why finite samples bias it, and notebook 05 shows how to choose between the estimators and architectures the library ships.
+[USING.md](USING.md) documents the real API. [THEORY.md](THEORY.md) explains
+where the bound comes from and why finite samples bias it. Notebook 05 shows how
+to choose between the estimators and architectures that the library ships.
 
 The construction follows [Abdelaleem et al.,
-2025](https://arxiv.org/abs/2506.00330) and through it [van den Oord et al.,
+2025](https://arxiv.org/abs/2506.00330), which in turn builds on [van den Oord et al.,
 2018](https://arxiv.org/abs/1807.03748), [Poole et al.,
 2019](https://proceedings.mlr.press/v97/poole19a.html) and [Song and Ermon,
 2020](https://arxiv.org/abs/1910.06222).
@@ -38,7 +40,7 @@ def create_embedding_net(input_dim, embedding_dim, hidden_dim=256):
 
 **2. The critic $f(x, y)$**
 
-In a `SeparableCritic` the critic is the dot product of the two embeddings and
+In a `SeparableCritic`, the critic is the dot product of the two embeddings. It
 gives a similarity score for every pairing of samples in a batch.
 
 ```python
@@ -51,7 +53,8 @@ def separable_critic(x_embedded, y_embedded):
 
 **3. The estimator**
 
-The estimator turns the critic's score matrix into an MI estimate. The library's default is InfoNCE,
+The estimator turns the critic's score matrix into an MI estimate. The library's
+default is InfoNCE:
 
 $$
 I(X;Y) \ge \mathbb{E}\left[ \frac{1}{N}\sum_{i=1}^N \left( f(x_i,y_i) - \log\left(\sum_{j=1}^N e^{f(x_i,y_j)}\right) \right) \right] + \log(N)
@@ -78,26 +81,27 @@ def infonce_estimator(scores):
     return mi_estimate_nats
 ```
 
-Those three pieces are the estimator.
+Together, these three pieces make up the estimator. The next section trains
+them.
 
 ---
 
 ## The training loop
 
-The components train like standard neural networks by minimising a loss. Here
-the loss is the negative of the MI estimate because maximising MI and minimising
-$-\text{MI}$ are the same problem.
+The components are trained like any neural network, by minimising a loss. Here
+the loss is the negative of the MI estimate, because maximising the MI and
+minimising $-\text{MI}$ are the same problem.
 
 ### Data with a known answer
 
 The data are those of notebooks 01 and 02. A latent pair is drawn jointly
-Gaussian in ten dimensions with each dimension correlated only with its partner.
-The correlation $\rho = \sqrt{1 - 2^{-2I/d}}$ puts exactly $I = 4$ bits between
-the two halves. Each half then goes through its own random network into 500
-observed channels. That map is injective and leaves the MI at 4 bits.
+Gaussian in $d = 10$ dimensions, with each dimension correlated only with its
+partner. The correlation $\rho = \sqrt{1 - 2^{-2I/d}}$ puts exactly $I = 4$ bits
+between the two halves. Each half then passes through its own random network
+into 500 observed channels. This map is injective, so the MI stays at 4 bits.
 
-A run holds out part of the data to judge the training by. The samples here are
-independent draws and a random tenth of them is held out.
+A run holds out part of the data to judge the training. The samples here are
+independent draws, so a random tenth of them is held out.
 
 ```python
 torch.manual_seed(0)
@@ -123,10 +127,10 @@ test_idx, train_idx = order[:n_samples // 10], order[n_samples // 10:]
 
 ### Training while tracing both partitions
 
-Each epoch takes minibatches of the training partition through the three
-components and one optimiser step. After every epoch the MI is evaluated on
-each partition with the whole partition in one score matrix. The two curves are
-`train_mi_history` and `test_mi_history` in a library result.
+Each epoch passes every minibatch of the training partition through the three
+components and takes one optimiser step on it. After every epoch, the MI is
+evaluated on each partition, with the whole partition in one score matrix. In a
+library result, the two curves are `train_mi_history` and `test_mi_history`.
 
 ```python
 embedding_dim, batch_size, n_epochs = 32, 128, 200
@@ -167,15 +171,15 @@ for epoch in range(n_epochs):
               f"test {test_history[-1]:.2f} bits")
 ```
 
-### Reading the number off the two curves
+### Taking the number from the two curves
 
 The held-out curve rises to a peak and then falls once the critic starts fitting
-the training sample itself. The training curve keeps climbing. The max-test
-heuristic reads the training curve at the epoch where the held-out curve peaks.
-[THEORY.md](THEORY.md#the-reported-number) explains why the training side is the
-one to read.
+the training sample itself, while the training curve keeps climbing. The
+max-test heuristic takes the value of the training curve at the epoch where the
+held-out curve peaks. [THEORY.md](THEORY.md#the-reported-number) explains why
+the library reports the training value.
 
-The raw held-out curve is noisy and its highest point can be a fluctuation. The
+The raw held-out curve is noisy, so its highest point can be a fluctuation. The
 library smooths it with a median filter followed by a Gaussian filter (one
 reasonable choice among several) and takes the peak of the smoothed curve.
 
@@ -196,25 +200,26 @@ print(f"exact                  : {true_mi_bits:.2f} bits")
 ```
 
 ![The training and held-out MI over 200 epochs, the smoothed held-out curve and
-the epoch its peak selects](../docs/source/_static/anatomy_curves.png)
+the epoch that its peak selects](../docs/source/_static/anatomy_curves.png)
 
-The training value at the chosen epoch lands close to the exact 4 bits. Reading
-the training curve at the last epoch would report whatever the critic had
+The training value at the chosen epoch comes out close to the exact 4 bits. The
+training value at the last epoch would instead report whatever the critic had
 memorised by then.
 
-The library reads the earliest epoch at the top of the smoothed curve, not its
-maximum. On a curve like this one, which rises and falls, the two agree. On a
-plateau the maximum lands on whichever epoch the noise lifted highest, and the
-earliest epoch at the top is the network that generalises as well with less of
-its training sample memorised ([THEORY.md](THEORY.md#the-reported-number)).
-The smoothed value at an epoch depends on the epochs after it, so the top is
-known only once training has moved past it. The library keeps copies of the
-network for the epochs that can still turn out to be the peak (a handful at
-any time), takes the peak of the curve smoothed after training as `best_epoch`,
-and reports a fresh evaluation of the training partition with that epoch's
-network. Training stops once the smoothed held-out curve has not improved for
-`Training(patience=...)` epochs, and `n_epochs` caps a curve that keeps
-improving.
+The library picks the earliest epoch at the top of the smoothed curve rather
+than its maximum. On a curve that rises and falls, like this one, the two agree.
+On a plateau, the maximum falls on whichever epoch the noise lifted highest. The
+earliest epoch at the top gives a network that generalises as well but has
+memorised less of its training sample
+([THEORY.md](THEORY.md#the-reported-number)). The smoothed value at an epoch
+depends on the epochs after it, so the top is known only once training has moved
+past it. The library therefore keeps copies of the network for the epochs that
+can still turn out to be the one picked (a handful at any time). After training,
+it takes the epoch that the rule picks on the smoothed curve as `best_epoch` and
+reports a fresh evaluation of the training partition with the network of that
+epoch. Training stops once the smoothed held-out curve has not improved for
+`Training(patience=...)` epochs. `n_epochs` caps the training of a curve that
+keeps improving.
 
 ### The same data through the library
 
@@ -230,7 +235,7 @@ print(f"library estimate       : {result.mi_estimate:.2f} bits "
 ```
 
 The call uses the settings of the loop above rather than the defaults, so that
-the two can be compared. The library draws its own split and initialisation,
-stops once its held-out curve has not improved for `patience` epochs, and lands
-near the same value. Everything else it adds (windowing, blocked splits,
-repeats, ceilings, bias correction) wraps this loop.
+the two can be compared. The library draws its own split and initialisation and
+stops once its held-out curve has not improved for `patience` epochs. It ends up
+near the same value. Everything else that it adds (windowing, blocked splits,
+repeats, ceilings, bias correction) is built around this loop.

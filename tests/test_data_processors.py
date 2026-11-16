@@ -74,6 +74,90 @@ def test_continuous_window_no_gap_warning_for_clean_data(caplog):
     assert not any('bridged by interpolation' in str(w.message) for w in caught)
 
 
+class TestTheChecksAreProcessorSettings:
+    """Each threshold the continuous and categorical processors check their streams by is a processor
+    setting, and its message names it."""
+
+    @staticmethod
+    def _gappy(**settings):
+        t = np.concatenate([np.arange(0, 10, 1.0), np.arange(90, 100, 1.0)])
+        x = ContinuousWindowDataset(np.random.default_rng(0).standard_normal((len(t), 1)), time_vector=t,
+                                    min_coverage_fraction=0.2, **settings)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            PairedTemporalDataset(x, window_size=20.0, t_start=0.0, t_end=80.0)
+        return [str(w.message) for w in caught if 'bridged by interpolation' in str(w.message)]
+
+    def test_bridged_share_and_gap_multiple(self):
+        messages = self._gappy()
+        assert messages and 'bridged_share=0.3' in messages[0] and 'gap_multiple=3' in messages[0]
+        assert not self._gappy(bridged_share=0.99)
+        assert not self._gappy(gap_multiple=1000.0)
+
+    def test_period_tolerance(self):
+        t = np.r_[0.0, np.arange(1.04, 100.0, 1.0)]          # the first interval is 4% long
+        data = np.random.default_rng(1).standard_normal((len(t), 1))
+        for tolerance, warned in ((None, False), (0.01, True)):
+            settings = {} if tolerance is None else {'period_tolerance': tolerance}
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                ContinuousWindowDataset(data, time_vector=t, **settings)
+            messages = [str(w.message) for w in caught if 'first inter-sample interval' in str(w.message)]
+            assert bool(messages) == warned
+        assert 'period_tolerance=0.01' in messages[0]
+
+    def test_padded_share(self):
+        data = np.random.default_rng(2).standard_normal((100, 1))
+        for share, warned in ((0.5, False), (None, True)):
+            settings = {} if share is None else {'padded_share': share}
+            # Windows up to time 120 run 20 samples past the last one: a sixth of the points.
+            wm = WindowManager(window_size=10, t_start=0, t_end=120)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                ContinuousWindowDataset(data, np.arange(100), window_manager=wm, **settings)
+            messages = [str(w.message) for w in caught if 'zero-padded' in str(w.message)]
+            assert bool(messages) == warned
+        assert 'padded_share=0.1' in str(messages)
+
+    def test_max_encoding_width_through_the_processor(self):
+        """The processor builds the dataset before it knows the window, so the width is checked when the rows
+        are windowed: 4 categories over 10 samples make 40 columns."""
+        data = np.random.default_rng(5).integers(0, 4, size=(200, 1))
+        for width, warned in ((100, False), (20, True)):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                create_dataset(data, data.copy(), processor_type_x='categorical',
+                               processor_params_x={'window_size': 10, 'encoding': 'full_trajectory',
+                                                   'max_encoding_width': width},
+                               processor_type_y='categorical', processor_params_y={'window_size': 10})
+            assert any('max_encoding_width' in str(w.message) for w in caught) == warned
+
+    def test_max_encoding_width(self):
+        data = np.random.default_rng(3).integers(0, 3, size=(100, 1))
+        wm = WindowManager(window_size=10, t_start=0, t_end=100)
+        for width, warned in ((None, False), (20, True)):
+            settings = {} if width is None else {'max_encoding_width': width}
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                CategoricalWindowDataset(data, np.arange(100), window_manager=wm, encoding='full_trajectory',
+                                         **settings)
+            messages = [str(w.message) for w in caught if 'full_trajectory' in str(w.message)]
+            assert bool(messages) == warned
+        assert 'max_encoding_width=20' in messages[0]
+
+    def test_the_processor_passes_them_on(self):
+        x = np.random.default_rng(4).standard_normal((200, 1))
+        datasets = create_dataset(x, x.copy(), x_time=np.arange(200), y_time=np.arange(200),
+                                  processor_type_x='continuous',
+                                  processor_params_x={'window_size': 10, 'gap_multiple': 7.0,
+                                                      'bridged_share': 0.6, 'period_tolerance': 0.2,
+                                                      'padded_share': 0.4},
+                                  processor_type_y='continuous', processor_params_y={'window_size': 10})
+        x_side = datasets.x_dataset if hasattr(datasets, 'x_dataset') else datasets.datasets[0]
+        assert (x_side.gap_multiple, x_side.bridged_share, x_side.period_tolerance, x_side.padded_share) == \
+            (7.0, 0.6, 0.2, 0.4)
+
+
 def test_continuous_window_with_jumps():
     """Test ContinuousWindowDataset dealing with jumps in time with no data"""
     x = np.hstack((np.linspace(0, 100, 1000), np.linspace(200, 300, 1000)))
@@ -936,7 +1020,7 @@ class TestAmbiguousStepSize:
         assert wm.resolve_step() == pytest.approx(0.0625)
 
     def test_warns_when_both_readings_are_plausible(self):
-        with pytest.warns(UserWarning, match="read as a fraction of window_size"):
+        with pytest.warns(UserWarning, match="taken as a fraction of window_size"):
             self._build(0.5, 0.125)
 
     def test_warning_names_the_applied_step_and_the_overlap(self):
@@ -969,7 +1053,7 @@ class TestAmbiguousStepSize:
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
             WindowManager(window_size=window_size, step_size=step_size)
-        assert not [w for w in record if "read as a fraction" in str(w.message)]
+        assert not [w for w in record if "taken as a fraction" in str(w.message)]
 
     def test_warns_once_per_pair(self):
         reset_retention_warnings()
@@ -977,12 +1061,12 @@ class TestAmbiguousStepSize:
             warnings.simplefilter("always")
             for _ in range(4):
                 WindowManager(window_size=0.5, step_size=0.25)
-        assert len([w for w in record if "read as a fraction" in str(w.message)]) == 1
+        assert len([w for w in record if "taken as a fraction" in str(w.message)]) == 1
 
     def test_update_parameters_warns_too(self):
         reset_retention_warnings()
         wm = WindowManager(window_size=2.0, step_size=1.0)
-        with pytest.warns(UserWarning, match="read as a fraction of window_size"):
+        with pytest.warns(UserWarning, match="taken as a fraction of window_size"):
             wm.update_parameters(window_size=0.4, step_size=0.2)
 
 

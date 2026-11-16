@@ -20,7 +20,7 @@ import statsmodels.api as sm
 from tqdm.auto import tqdm
 from typing import Any, Dict, List, Optional, Tuple
 
-from neural_mi.defaults import setting
+from neural_mi.defaults import default_of, setting
 from neural_mi.analysis.sweep import merge_grid_values
 from neural_mi.analysis.task import run_training_task
 from neural_mi.logger import CapturedTask, logger, released, user_stacklevel
@@ -235,7 +235,8 @@ def rungs_left_out(group: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
     return zero, unresolved
 
 
-def _drop_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int, int]:
+def _drop_rungs(group: pd.DataFrame, where: str, left_out_share: float = 0.5,
+                min_gamma_points: int = 5) -> Tuple[pd.DataFrame, int, int]:
     """The ladder without the rungs the fit cannot use, and how many of them produced nothing and how
     many did not resolve.
 
@@ -249,8 +250,8 @@ def _drop_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int, int
     about the dependence, and it would enter the fit anyway: noisy rungs pass
     the curvature test easily, because noise hides curvature. A rung of a
     difference carries its signed measured value otherwise. The fit leaves both
-    kinds out like failed chunks. A gamma that loses half or more of its rungs
-    this way drops out of the fit with the rest of them: its chunks are too
+    kinds out like failed chunks. A gamma that loses ``left_out_share`` or more
+    of its rungs this way drops out of the fit with the rest of them: its chunks are too
     small for the quantity, and the rungs it keeps are the networks that
     happened to learn, which tilt the line. ``min_gamma_points`` then decides
     whether enough values of gamma remain.
@@ -276,16 +277,18 @@ def _drop_rungs(group: pd.DataFrame, where: str) -> Tuple[pd.DataFrame, int, int
         )
     left_out = zero | unresolved
     per_gamma = left_out.groupby(group['gamma']).agg(['sum', 'count'])
-    half = [int(g) for g, r in per_gamma.iterrows() if r['sum'] > 0 and r['sum'] >= 0.5 * r['count']]
-    if half:
+    dropped = [int(g) for g, r in per_gamma.iterrows()
+               if r['sum'] > 0 and r['sum'] >= left_out_share * r['count']]
+    if dropped:
         warnings.warn(
-            f"{where}half or more of the rungs at gamma={half} are left out, and so are those "
-            f"values of gamma. Their chunks are likely too small to estimate this quantity, and "
-            f"the rungs left there would be the networks that happened to learn. The fit is "
-            f"unreliable with fewer than min_gamma_points values of gamma.",
+            f"{where}at gamma={dropped} the rungs left out make up left_out_share={left_out_share:g} or "
+            f"more of the rungs, so the fit leaves out those values of gamma as well. Their chunks are likely "
+            f"too small to estimate this quantity, and the rungs left there would be the networks that "
+            f"happened to learn. The fit is unreliable with fewer than min_gamma_points="
+            f"{min_gamma_points} values of gamma.",
             UserWarning, stacklevel=user_stacklevel()
         )
-    return group[~left_out & ~group['gamma'].isin(half)], int(zero.sum()), int(unresolved.sum())
+    return group[~left_out & ~group['gamma'].isin(dropped)], int(zero.sum()), int(unresolved.sum())
 
 
 def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
@@ -391,9 +394,6 @@ def _compute_fit_diagnostics(group: pd.DataFrame, gammas_used: List[int],
     }
 
 
-SATURATION_WARNING_THRESHOLD = 0.85  # matches trainer.py's CEILING_PROXIMITY_WARNING_THRESHOLD
-
-
 def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) -> Dict[str, Any]:
     """Per-gamma diagnostics the extrapolation currently has no visibility into.
 
@@ -416,6 +416,9 @@ def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) 
         Warns by name when the gammas actually used in the fit are, on
         average, saturated.
     """
+    # A rung counts as saturated above the ceiling fraction its tasks ran with (Training(ceiling_fraction=...)).
+    column = group['ceiling_fraction'].dropna() if 'ceiling_fraction' in group else []
+    fraction = float(column.iloc[0]) if len(column) else default_of('ceiling_fraction')
     out: Dict[str, Any] = {
         'per_gamma_train_mi_spread': {},
         'per_gamma_ceiling_mi': {},
@@ -434,12 +437,12 @@ def _compute_per_gamma_diagnostics(group: pd.DataFrame, gammas_used: List[int]) 
             mean_sat = float(sat_vals.mean()) if len(sat_vals) else float('nan')
             out['per_gamma_ceiling_mi'][g] = mean_ceil
             out['per_gamma_saturation'][g] = mean_sat
-            if g in gammas_used and mean_sat == mean_sat and mean_sat > SATURATION_WARNING_THRESHOLD:
+            if g in gammas_used and mean_sat == mean_sat and mean_sat > fraction:
                 saturated_gammas.append(g)
     if saturated_gammas:
         warnings.warn(
             f"Rigorous fit uses the saturated gamma={sorted(saturated_gammas)} "
-            f"(mean train_saturation above {SATURATION_WARNING_THRESHOLD:.0%} "
+            f"(mean train_saturation above Training(ceiling_fraction={fraction:g}) "
             f"of their own ceiling). An extrapolation anchored on saturated "
             f"rungs cannot be trusted. The fitted slope reflects the ceiling "
             f"as much as the true bias. Raise max_eval_samples or narrow "
@@ -458,7 +461,8 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
                                residual_threshold: float = 2.5,
                                leverage_threshold: float = 0.20,
                                chunking_mode: str = 'permuted',
-                               n_tasks_created: int = 0) -> List[Dict[str, Any]]:
+                               n_tasks_created: int = 0,
+                               left_out_share: float = 0.5) -> List[Dict[str, Any]]:
     """Groups results and performs bias correction for each group."""
     valid_df = df.dropna(subset=['gamma', 'train_mi'])
     if valid_df.empty:
@@ -485,7 +489,8 @@ def _post_process_and_correct(df: pd.DataFrame, sweep_grid: Dict[str, Any],
         param_values = params if isinstance(params, tuple) else (params,)
         param_dict = dict(zip(group_keys, param_values))
         n_rungs = len(group)
-        group, zero_rungs, unresolved_rungs = _drop_rungs(group, _fit_label(param_dict))
+        group, zero_rungs, unresolved_rungs = _drop_rungs(group, _fit_label(param_dict), left_out_share,
+                                                          min_gamma_points)
         unfittable = _unfittable_ladder(group, _fit_label(param_dict), zero_rungs == n_rungs)
         if unfittable is not None:
             param_dict.update(unfittable, chunking_mode=chunking_mode,
@@ -803,6 +808,7 @@ class AnalysisWorkflow:
             'confidence_level': kwargs.pop('confidence_level', 0.68),
             'residual_threshold': kwargs.pop('residual_threshold', 2.5),
             'leverage_threshold': kwargs.pop('leverage_threshold', 0.20),
+            'left_out_share': kwargs.pop('left_out_share', 0.5),
         }
 
         corrected_results = _post_process_and_correct(
@@ -961,6 +967,7 @@ def run_rigorous_scalar_analysis(
     residual_threshold: float = 2.5,
     leverage_threshold: float = 0.20,
     temporal_chunking: Optional[bool] = None,
+    left_out_share: float = 0.5,
 ) -> Dict[str, Any]:
     """Bias-corrected estimation of a compound scalar quantity via rigorous extrapolation.
 
@@ -1025,6 +1032,9 @@ def run_rigorous_scalar_analysis(
     temporal_chunking : bool, optional
         Contiguous (``True``) or permuted (``False``) chunks, overriding the
         choice :class:`_Chunker` makes from the rows' recorded geometry.
+    left_out_share : float, optional
+        A value of gamma whose rungs left out reach this share of its rungs
+        drops out of the fit (:func:`_drop_rungs`). Defaults to ``0.5``.
     Returns
     -------
     Dict[str, Any]
@@ -1124,7 +1134,8 @@ def run_rigorous_scalar_analysis(
                              if any(key in r for r in rows)])
     # The fit uses the rungs that produced a value and resolved. The ladder
     # reported in raw_results_df keeps every rung.
-    df, zero_rungs, unresolved_rungs = _drop_rungs(ladder, "Rigorous fit (rigorous=True): ")
+    df, zero_rungs, unresolved_rungs = _drop_rungs(ladder, "Rigorous fit (rigorous=True): ", left_out_share,
+                                                   min_gamma_points)
     unfittable = _unfittable_ladder(df, "Rigorous fit (rigorous=True): ", zero_rungs == len(ladder))
     if unfittable is not None:
         return {**unfittable, 'raw_results_df': ladder, 'chunking_mode': resolved_chunking_mode,

@@ -44,9 +44,24 @@ BASE_PARAMS_SCHEMA = {
     # behind both the participation ratios and the rotated embeddings.
     'whitening': {'type': (str, type(None)), 'default': 'std'},
     'use_spectral_norm': {'type': bool, 'default': True},
-    # Every encoder's input centred and scaled channel by channel by the training
-    # rows' statistics, saved with the network: None (off) or 'standard'.
-    'input_scaling': {'type': (str, type(None)), 'default': None},
+    # An encoder's input with its units and offset removed by the training rows'
+    # statistics, saved with the network: 'auto' scales each stream as its kind asks
+    # (stream_scaling), and 'none' leaves every input as it is.
+    'input_scaling': {'type': (str, type(None)), 'default': 'auto'},
+    # Every score of a critic the library builds starts at exactly zero
+    # (BaseCritic.start_at_zero), so the start does not depend on the data's
+    # dimension or on the spread of the first scores.
+    'zero_start': {'type': bool, 'default': True},
+    # An MLP encoder adds a linear map from its input to its embedding, which
+    # starts closed (embeddings.MLP).
+    'linear_path': {'type': bool, 'default': True},
+    # The nonlinearity of every rectified hidden layer the library builds
+    # (embeddings.ACTIVATIONS): in the MLP, CNN, CNN2D, TCN, transformer and
+    # DeepSets encoders, the MLP heads and the decoders that mirror them.
+    'activation': {'type': str, 'default': 'leaky_relu'},
+    # A first embedding layer with more parameters than this is noted at the info
+    # level: it may overfit a small dataset.
+    'large_first_layer': {'type': int, 'min': 0, 'default': 500_000},
     'use_decoder': {'type': bool, 'default': False},
     'decoder_lambda': {'type': float, 'min': 0.0, 'default': 0.001},
     'decoder_lambda_x': {'type': (float, type(None)), 'min': 0.0, 'default': None},
@@ -74,7 +89,7 @@ BASE_PARAMS_SCHEMA = {
     'scheduler_params': {'type': dict, 'default': {}},
     # Per-epoch train MI tracking, yielding 'train_mi_history'.
     #   False, no per-epoch train evaluation.
-    #   True, the locked-in train eval subset (capped by max_eval_samples).
+    #   True, a fixed subset of up to max_eval_samples training rows, drawn apart from train_mi's.
     #   int >= 1, exactly that many training samples.
     #   float (0, 1), that fraction of the training set.
     #   1.0 / 'full', the entire training set, uncapped.
@@ -84,7 +99,7 @@ BASE_PARAMS_SCHEMA = {
     # Per-epoch embedding tracking.
     # Controls whether embeddings are extracted and stored at every epoch.
     # Mirroring eval_train style:
-    #   False, no tracking (global default; dimensionality mode defaults to 512).
+    #   False, no tracking (the default).
     #   True, track first 512 samples.
     #   int >= 1, track exactly that many samples (first N in the dataset).
     #   float (0, 1), track that fraction of the dataset.
@@ -163,9 +178,79 @@ BASE_PARAMS_SCHEMA = {
     #                  noisy peak.  When < 1.0, the train MI at the actual peak epoch is also
     #                  returned in details as 'train_mi_at_peak'.
     'peak_fraction': {'type': float, 'min': 0.0, 'default': 1.0},
-    # Which epoch of the held-out curve the reported values are read at: the earliest at its top
+    # The epoch of the held-out curve at which the reported values are taken: the earliest at its top
     # ('plateau_start') or its maximum ('peak'). See neural_mi/training/epochs.py.
     'epoch_rule': {'type': str, 'default': 'plateau_start'},
+    # How the held-out curve is judged (neural_mi/training/epochs.py), in units of the
+    # curve's epoch-to-epoch noise, of standard errors or of epochs.
+    # The level of the top is the median of the smoothed values within level_noise noise
+    # units of the maximum. The plateau starts at the first epoch within start_noise noise
+    # units of that level.
+    'level_noise': {'type': float, 'min': 0.0, 'default': 2.0},
+    'start_noise': {'type': float, 'min': 0.0, 'default': 0.5},
+    # The top must stand resolved_noise noise units above zero to count as resolved.
+    'resolved_noise': {'type': float, 'min': 0.0, 'default': 8.0},
+    # A top reached within the smoothing's reach of the start that falls by more than
+    # fall_noise noise units within fast_epochs epochs came too fast.
+    'fast_epochs': {'type': int, 'min': 0, 'default': 8},
+    'fall_noise': {'type': float, 'min': 0.0, 'default': 3.0},
+    # The band: the epochs whose smoothed held-out value lies within top_se standard
+    # errors of the curve's top, which the held-out rows cannot tell apart. A band
+    # whose two ends give estimates further apart than band_share of the estimate
+    # is a flat top.
+    'top_se': {'type': float, 'min': 0.0, 'default': 1.0},
+    'band_share': {'type': float, 'min': 0.0, 'default': 0.3},
+    # A held-out value more than clear_se standard errors above zero shows that the
+    # network learned something.
+    'clear_se': {'type': float, 'min': 0.0, 'default': 3.0},
+    # A curve that rose by rising_noise noise units over its last rising_epochs epochs,
+    # when training ran to its limit, was still rising.
+    'rising_epochs': {'type': int, 'min': 1, 'default': 20},
+    'rising_noise': {'type': float, 'min': 0.0, 'default': 3.0},
+    # A value above ceiling_fraction of its InfoNCE ceiling, log of the rows per
+    # evaluation, is near that ceiling.
+    'ceiling_fraction': {'type': float, 'min': 0.0, 'default': 0.85},
+    # The chosen epoch may be unreliable when more than saturated_epoch_fraction of the
+    # smoothed held-out curve lies above saturation_fraction of its ceiling.
+    'saturation_fraction': {'type': float, 'min': 0.0, 'default': 0.9},
+    'saturated_epoch_fraction': {'type': float, 'min': 0.0, 'default': 0.5},
+    # The held-out value of the network at the chosen epoch falls short of a positive estimate when it
+    # is below gap_share of it, by more than clear_se standard errors of their difference.
+    'gap_share': {'type': float, 'min': 0.0, 'default': 0.5},
+    # A quantity combined from several terms warns when an error in a term reaches
+    # its value amplified this many times (neural_mi/analysis/sweep.py).
+    'amplification_threshold': {'type': float, 'min': 1.0, 'default': 10.0},
+
+    # The data check (neural_mi/preprocessing.py), read from Preprocessing(...).
+    # A stream's typical channel scale more than scale_band from unit scale warns.
+    'scale_band': {'type': float, 'min': 1.0, 'default': 10.0},
+    # For a rate quantity on a series, a channel whose own past predicts more than
+    # predicted_share of its variance is reported.
+    'predicted_share': {'type': float, 'min': 0.0, 'default': 0.9},
+    # The check reads at most check_rows rows at a time, and fits a channel's own past on
+    # the first check_rows rows.
+    'check_rows': {'type': int, 'min': 1, 'default': 100_000},
+    # The scale of rows a spike-time or categorical processor builds is measured on their
+    # first sample_rows rows.
+    'sample_rows': {'type': int, 'min': 1, 'default': 10_000},
+    # Channels of a stream whose standard deviations spread over more than a factor
+    # of spread_band warn: scaling channel by channel gives them equal weight.
+    'spread_band': {'type': float, 'min': 1.0, 'default': 10.0},
+    # A channel whose mean lies more than offset_band of its standard deviations from
+    # zero warns: in single precision its variation is resolved coarsely.
+    'offset_band': {'type': float, 'min': 1.0, 'default': 1e5},
+    # A channel whose standard deviation exceeds tail_band interquartile ranges warns
+    # that its tails are heavy.
+    'tail_band': {'type': float, 'min': 0.0, 'default': 1.5},
+    # A channel with more than tie_share of its values equal to one value warns, as
+    # padded or sparse rows do.
+    'tie_share': {'type': float, 'min': 0.0, 'default': 0.9},
+    # A call with fewer than small_sample rows reaching the estimator warns that the
+    # dataset is small (read from Training(...)).
+    'small_sample': {'type': int, 'min': 0, 'default': 200},
+    # Training stops with TrainingError after nan_streak epochs in a row whose held-out
+    # evaluation is NaN.
+    'nan_streak': {'type': int, 'min': 1, 'default': 3},
 
     # Mixed-precision (AMP) training.
     # 'auto', enable on CUDA, no-op on CPU/MPS (safe default).
@@ -181,17 +266,48 @@ BASE_PARAMS_SCHEMA = {
     'dataset_device': {'type': (str, type(None)), 'default': 'cpu'},
 }
 
+# The settings by which the trainer judges the held-out curve and warns
+# (neural_mi/training/trainer.py, neural_mi/training/epochs.py). Each is a field of
+# Training(...).
+CURVE_SETTINGS = ('level_noise', 'start_noise', 'resolved_noise', 'fast_epochs', 'fall_noise', 'top_se',
+                  'band_share', 'clear_se', 'rising_epochs', 'rising_noise', 'ceiling_fraction',
+                  'saturation_fraction', 'saturated_epoch_fraction', 'gap_share', 'nan_streak')
+
+# The settings of the data check (neural_mi/preprocessing.py). Each is a field of
+# Preprocessing(...).
+CHECK_SETTINGS = ('scale_band', 'predicted_share', 'check_rows', 'sample_rows', 'spread_band', 'offset_band',
+                  'tail_band', 'tie_share')
+
+# The settings that a call reads while it prepares its data, before the configurations of a grid exist.
+# input_scaling decides how the encoders scale each stream, from the kind of rows the stream gives.
+# shift_windows decides how the rows are built: once for the whole call, or by each task so that they can
+# move. A grid over one of these runs one preparation per value, as a grid over processor parameters does,
+# so that every configuration computes what a separate call with its settings computes (INTERNALS.md).
+PREPARATION_SETTINGS = ('input_scaling', 'shift_windows')
+
+# How input_scaling='auto' scales the rows of each kind of stream (stream_scaling), one scale per
+# unit. The channels of a continuous stream, or of rows passed in built already, can each be a
+# different quantity: 'channel' centres and scales each by its own mean and spread. Every channel of
+# a spike stream shares one unit, so it takes one scale for the whole stream and quiet neurons stay
+# quiet: 'counts' centres each channel of spike counts and divides by the spread of the whole
+# stream, and 'times' divides spike times by their root mean square and leaves the padding where it
+# is. A categorical stream's encoding is one-hot or probabilities, with no unit to remove, and rows
+# that mix streams of different kinds are left as they are.
+SCALING_OF_KIND = {'continuous': 'channel', 'spike_counts': 'counts', 'spike_times': 'times', 'categorical': None,
+                   'mixed': None}
+
 # The processor settings' defaults, by processor. ``None`` means unset: a
 # window_size has to be given, a step_size of None is one window, and so on.
 PROCESSOR_DEFAULTS = {
     'continuous': {'window_size': None, 'step_size': None, 'min_coverage_fraction': 0.2,
-                   'sample_rate': None},
+                   'sample_rate': None, 'period_tolerance': 0.05, 'padded_share': 0.1, 'gap_multiple': 3.0,
+                   'bridged_share': 0.3},
     'spike': {'window_size': None, 'step_size': None, 'max_spikes_per_window': None, 'n_seconds': None,
               'sample_rate': None, 'no_spike_value': 0.0, 'bin_size': None, 'normalize_bins': False,
               'exclude_bursty_neurons': False, 'burst_threshold_multiplier': 5.0,
               'drop_empty_windows': True},
     'categorical': {'window_size': None, 'step_size': None, 'sample_rate': None,
-                    'min_coverage_fraction': 0.2, 'encoding': 'majority_vote'},
+                    'min_coverage_fraction': 0.2, 'encoding': 'majority_vote', 'max_encoding_width': 500},
 }
 
 
@@ -235,6 +351,53 @@ def default_of(name: str) -> Any:
 def setting(params: Dict[str, Any], name: str) -> Any:
     """Setting ``name`` from ``params``, or its schema default when ``params`` lacks it."""
     return params[name] if name in params else default_of(name)
+
+
+def stream_kind_of(processor: Optional[str], params: Optional[Dict[str, Any]] = None) -> str:
+    """The kind of rows a stream gives its encoder, as :data:`SCALING_OF_KIND` names them: a spike
+    processor builds counts when it bins (``bin_size``) and spike times otherwise, and a stream with no
+    processor, or a continuous one, gives continuous rows."""
+    if processor == 'spike':
+        return 'spike_counts' if (params or {}).get('bin_size') is not None else 'spike_times'
+    if processor == 'categorical':
+        return 'categorical'
+    return 'continuous'
+
+
+def stream_scaling(input_scaling: Optional[str], kind: Optional[str]) -> Optional[str]:
+    """How an encoder scales the rows of a stream of ``kind`` (:func:`stream_kind_of`): under
+    ``input_scaling='auto'`` as :data:`SCALING_OF_KIND` says, and under ``'none'`` not at all."""
+    if input_scaling != 'auto':
+        return None
+    return SCALING_OF_KIND[kind or 'continuous']
+
+
+def scaled_streams(params: Dict[str, Any], kinds: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+    """How the encoders scale each stream of ``kinds``, a stream's name to its kind, under the
+    ``input_scaling`` of ``params`` (:func:`stream_scaling`)."""
+    mode = setting(params, 'input_scaling')
+    return {name: stream_scaling(mode, kind) for name, kind in kinds.items()}
+
+
+def side_scaling(params: Dict[str, Any], x_streams=('x',), y_stream: str = 'y'
+                 ) -> Tuple[Tuple[Optional[str], ...], Optional[str]]:
+    """How a network scales each part of its X input, read from the streams ``x_streams``, and its Y
+    input, read from ``y_stream``: as :func:`neural_mi.run.run` decided for every stream
+    (``_scaled_streams``), or else as the processors in ``params`` give, Y reading with X's when it has
+    none of its own."""
+    decided = params.get('_scaled_streams')
+    if decided is None:
+        kind_x = stream_kind_of(params.get('processor_type_x'), params.get('processor_params_x'))
+        kind_y = (stream_kind_of(params.get('processor_type_y'), params.get('processor_params_y'))
+                  if params.get('processor_type_y') else kind_x)
+        decided = scaled_streams(params, {'x': kind_x, 'w': kind_x, 'y': kind_y})
+
+    def scaling(names) -> Optional[str]:
+        # A part built from several streams (a conditioning past of Y and W) is scaled as they are when they
+        # agree, and left as it is when they do not.
+        modes = {decided.get(name, decided.get('x')) for name in ((names,) if isinstance(names, str) else names)}
+        return modes.pop() if len(modes) == 1 else None
+    return tuple(scaling(names) for names in x_streams), scaling(y_stream)
 
 
 def norm_layer_of(params: Dict[str, Any]) -> Optional[str]:

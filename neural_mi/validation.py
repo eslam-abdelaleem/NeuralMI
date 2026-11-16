@@ -13,6 +13,7 @@ from neural_mi.logger import logger, user_stacklevel
 from neural_mi.exceptions import DataShapeError
 from neural_mi.estimators import ESTIMATORS, NONPARAMETRIC
 from neural_mi.defaults import BASE_PARAMS_SCHEMA, PROCESSOR_PARAMS_SCHEMA
+from neural_mi.models.embeddings import ACTIVATIONS
 
 def _check_type(value: Any, expected_type: Any, key: str, context: str) -> None:
     """Raise TypeError unless `value` matches `expected_type`.
@@ -49,7 +50,8 @@ ALLOWED_VALUES = {
     'optimizer': ['adam', 'adamw', 'sgd', 'rmsprop', 'adagrad'],
     'scheduler': [None, 'cosine', 'step', 'plateau', 'cosine_warmup'],
     'norm_layer': [None, 'auto', 'none', 'batch', 'layer'],
-    'input_scaling': [None, 'standard'],
+    'input_scaling': [None, 'auto', 'none'],
+    'activation': [None, *ACTIVATIONS],
 }
 
 class DataValidator:
@@ -234,8 +236,8 @@ def check_dimensionality_settings(validator) -> None:
         warnings.warn(
             f"{_y_side[0]} was set for mode='dimensionality'. The mode's two "
             f"sides are two halves of the same recording. An encoder that differs "
-            f"between the halves makes the curve hard to read. Leave the Y "
-            f"overrides unset unless you mean the halves to be read differently.",
+            f"between the halves makes the curve hard to interpret. Leave the Y "
+            f"overrides unset unless you mean the halves to be encoded differently.",
             UserWarning, stacklevel=user_stacklevel()
         )
 
@@ -383,6 +385,13 @@ class ParameterValidator:
         # The mode's own checks of its settings, which its declaration names.
         if spec is not None and spec.check is not None:
             spec.check(self)
+
+        # The minimum a setting declares, for one the mode's own checks leave to it.
+        for key, schema in mode_schema.items():
+            present, val = self._mode_kwarg(key)
+            if (present and 'min' in schema and isinstance(val, (int, float)) and not isinstance(val, bool)
+                    and val < schema['min']):
+                raise ValueError(f"{key}={val!r} (mode='{self.mode}') must be at least {schema['min']}.")
 
     def apply_defaults(self):
         """Populates missing parameters in base_params with defaults."""

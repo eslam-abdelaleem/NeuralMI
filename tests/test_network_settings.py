@@ -18,8 +18,10 @@ from neural_mi.utils import build_critic
 
 def _params(**overrides):
     params = {k: v['default'] for k, v in BASE_PARAMS_SCHEMA.items() if 'default' in v}
+    # These tests read the encoders themselves. The scaling in front of them has tests of its own
+    # (test_input_scaling.py).
     params.update(input_dim_x=6, input_dim_y=6, n_channels_x=2, n_channels_y=2, hidden_dim=8,
-                  embedding_dim=4, n_layers=2)
+                  embedding_dim=4, n_layers=2, input_scaling='none')
     params.update(overrides)
     return params
 
@@ -64,6 +66,21 @@ class TestTheEncodersReadTheirSettings:
         net = build_critic('separable', _params(embedding_model='gru', dropout=0.25, n_layers=1)).embedding_net_x
         assert net.gru.dropout == 0.0
 
+    @pytest.mark.parametrize('model', ['mlp', 'cnn', 'gru', 'lstm', 'lru', 'tcn', 'transformer', 'deepsets'])
+    def test_norm_layer_reaches_every_encoder(self, model):
+        """The MLP and convolutional encoders normalise each hidden layer, DeepSets the hidden layer of rho,
+        and the recurrent and attention encoders the features that the readout maps to the embedding."""
+        def count(kind, norm):
+            return len(_modules(build_critic('separable', _params(embedding_model=model, norm_layer=norm))
+                                .embedding_net_x, kind))
+        assert count(nn.BatchNorm1d, 'none') == 0 < count(nn.BatchNorm1d, 'batch')
+        assert count(nn.LayerNorm, 'none') < count(nn.LayerNorm, 'layer')
+
+    def test_norm_layer_reaches_the_cnn2d_encoder(self):
+        from neural_mi.models.embeddings import CNN2D
+        assert not _modules(CNN2D(1, 8, 4, 2), nn.LayerNorm)
+        assert len(_modules(CNN2D(1, 8, 4, 2, norm_layer='layer'), nn.LayerNorm)) == 3
+
     def test_a_custom_class_gets_the_settings_it_names(self):
         seen = {}
 
@@ -78,6 +95,50 @@ class TestTheEncodersReadTheirSettings:
 
         build_critic('separable', _params(custom_embedding_cls=Custom, norm_layer='batch', kernel_size=5))
         assert seen == {'norm_layer': 'batch', 'kernel_size': 5}
+
+
+class TestTheActivationReachesEveryRectifiedLayer:
+    """Model(activation=...) sets every rectified hidden layer: in the encoders that have one, the MLP heads
+    and the decoders that mirror the encoders. The GRU and LSTM cells and the LRU block keep their own."""
+
+    ARMS = (('leaky_relu', nn.LeakyReLU), ('relu', nn.ReLU))
+
+    @staticmethod
+    def _rectifiers(net):
+        return {type(m) for m in net.modules() if isinstance(m, (nn.ReLU, nn.LeakyReLU))}
+
+    def test_the_default_is_leaky_relu(self):
+        assert BASE_PARAMS_SCHEMA['activation']['default'] == 'leaky_relu'
+
+    @pytest.mark.parametrize('model', ['mlp', 'cnn', 'tcn', 'transformer', 'deepsets'])
+    def test_every_encoder_with_rectified_layers(self, model):
+        for name, kind in self.ARMS:
+            critic = build_critic('separable', _params(embedding_model=model, activation=name))
+            assert self._rectifiers(critic) == {kind}, (model, name)
+
+    def test_the_cnn2d_encoder(self):
+        from neural_mi.models.embeddings import CNN2D
+        for name, kind in self.ARMS:
+            assert self._rectifiers(CNN2D(1, 8, 4, 2, activation=name)) == {kind}
+
+    @pytest.mark.parametrize('critic', ['hybrid', 'concat'])
+    def test_the_mlp_heads(self, critic):
+        for name, kind in self.ARMS:
+            built = build_critic(critic, _params(embedding_model='gru', activation=name))
+            assert self._rectifiers(built.decision_head if critic == 'hybrid' else built.embedding_net) == {kind}
+
+    def test_the_branched_head(self):
+        for name, kind in self.ARMS:
+            params = _params(embedding_model='gru', _difference_term=True, activation=name)
+            assert self._rectifiers(build_critic('separable', params).embedding_net_x.head) == {kind}
+
+    @pytest.mark.parametrize('model', ['mlp', 'cnn', 'cnn2d', 'tcn', 'transformer'])
+    def test_the_decoders(self, model):
+        from neural_mi.models.decoders import build_decoder
+        for name, kind in self.ARMS:
+            decoder = build_decoder(model, 4, 8, 2, 16, n_layers=2, output_activation='linear', kernel_size=3,
+                                    nhead=4, dropout=0.0, activation=name, height=4, width=4)
+            assert self._rectifiers(decoder) == {kind}, (model, name)
 
 
 class TestASettingNoNetworkReadsWarns:
@@ -105,6 +166,29 @@ class TestASettingNoNetworkReadsWarns:
         assert messages and 'n_layers=1' in messages[0]
         assert self._messages(embedding_model='gru', dropout=0.2, n_layers=2) == []
 
+    def test_norm_layer_on_a_recurrent_separable_critic_is_read(self):
+        assert self._messages(embedding_model='gru', norm_layer='layer') == []
+
+    def test_the_activation_on_a_recurrent_encoder(self):
+        messages = self._messages(embedding_model='lstm', activation='relu')
+        assert messages and 'activation (applies to' in messages[0]
+
     def test_the_concat_critic_builds_no_encoder(self):
         messages = self._messages(critic_type='concat', embedding_model='cnn', kernel_size=5)
         assert messages and 'kernel_size' in messages[0] and 'embedding_model' in messages[0]
+
+
+class TestTheNoteOnALargeFirstLayer:
+    """A first embedding layer larger than Model(large_first_layer=...) is noted at the info level."""
+
+    def test_the_setting_sets_the_size_noted(self, caplog):
+        import logging
+        params = _params(input_dim_x=1000, input_dim_y=6, n_channels_x=1, hidden_dim=600)
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            build_critic('separable', params)
+        assert 'Large first embedding layer detected' in caplog.text
+        assert 'more than Model(large_first_layer=500000)' in caplog.text
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            build_critic('separable', {**params, 'large_first_layer': 10 ** 6})
+        assert 'Large first embedding layer' not in caplog.text

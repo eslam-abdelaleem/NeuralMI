@@ -17,6 +17,12 @@ import torch
 import neural_mi as nmi
 from neural_mi.analysis import dimensionality as dim
 from neural_mi.analysis.dimensionality import run_dimensionality_analysis
+from neural_mi.analysis.modes import MODES
+
+# The grid settings at their defaults (Dimensionality(...), declared in MODES).
+_SETTINGS = MODES['dimensionality'].settings
+GRID = {k: _SETTINGS[k]['default'] for k in ('grid_reach', 'grid_small', 'grid_medium', 'grid_points')}
+CONFIRM = _SETTINGS['confirm_steps']['default']
 
 BITS = math.log(2)          # one bit in nats
 TOTAL = 4 * BITS            # the fake curves carry 4 bits
@@ -25,12 +31,14 @@ TOTAL = 4 * BITS            # the fake curves carry 4 bits
 class FakeFits:
     """Stands in for ``_fit``: every network reads ``curve(k, split, restart)``."""
 
-    def __init__(self, curve, pr=3.0, test_ratio=0.97, eval_size=1000):
+    def __init__(self, curve, pr=3.0, test_ratio=0.97, eval_size=1000, eval_blocks=1):
         self.curve, self.pr, self.test_ratio, self.eval_size = curve, pr, test_ratio, eval_size
-        self.calls, self.params = [], []
+        self.eval_blocks = eval_blocks
+        self.calls, self.params, self.splits = [], [], []
 
     def __call__(self, views, ks, n_restarts, n_workers):
         self.calls.append(list(ks))
+        self.splits.append([v[0] for v in views])
         out = []
         for split_id, _x, _y, params in views:
             self.params.append(params)
@@ -39,8 +47,8 @@ class FakeFits:
                     mi = self.curve(k, split_id, r)
                     out.append(dict(split_id=split_id, embedding_dim=k, run_id=r, train_mi=mi,
                                     test_mi=self.test_ratio * mi, eval_size=self.eval_size,
-                                    pr_singular=self.pr, pr_eig=self.pr, best_epoch=5,
-                                    test_mi_history=[0.0] * 20))
+                                    test_eval_blocks=self.eval_blocks, pr_singular=self.pr, pr_eig=self.pr,
+                                    best_epoch=5, test_mi_history=[0.0] * 20))
         return out
 
 
@@ -66,22 +74,22 @@ def analyse(monkeypatch, fake, x, y=None, **kwargs):
 class TestGrid:
     def test_a_small_participation_ratio_runs_one_to_ten(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            assert dim._default_grid(3.0) == list(range(1, 11))
+            assert dim._default_grid(3.0, **GRID) == list(range(1, 11))
         assert not caplog.records
 
     def test_a_middle_ratio_runs_one_to_twenty_and_says_so(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            assert dim._default_grid(7.0) == list(range(1, 21))
+            assert dim._default_grid(7.0, **GRID) == list(range(1, 21))
         assert '1 to 20' in caplog.text
 
     def test_a_large_ratio_runs_a_log_grid_to_twice_the_ratio(self, caplog):
         with caplog.at_level(logging.INFO, logger='neural_mi'):
-            grid = dim._default_grid(15.0)
+            grid = dim._default_grid(15.0, **GRID)
         assert grid[0] == 1 and grid[-1] == 30 and len(grid) <= 10
         assert 'log scale' in caplog.text and 'embedding_dims' in caplog.text
 
     def test_the_log_grid_is_increasing_and_spans_its_range(self):
-        grid = dim._log_grid(11, 63)
+        grid = dim._log_grid(11, 63, GRID['grid_points'])
         assert grid[0] == 11 and grid[-1] == 63 and grid == sorted(set(grid))
 
 
@@ -99,8 +107,8 @@ class TestReading:
 
     def test_three_consecutive_values_confirm(self):
         best = {1: 1.0, 2: 4.0, 3: 4.0, 4: 4.0}
-        assert dim._confirmed(best, [1, 2, 3], 3.8) is None
-        assert dim._confirmed(best, [1, 2, 3, 4], 3.8) == 2
+        assert dim._confirmed(best, [1, 2, 3], 3.8, CONFIRM) is None
+        assert dim._confirmed(best, [1, 2, 3, 4], 3.8, CONFIRM) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +157,26 @@ class TestProcedure:
         fake = FakeFits(saturating_at(30), pr=3.0)
         with caplog.at_level(logging.INFO, logger='neural_mi'):
             _, info = analyse(monkeypatch, fake, *xy)
-        assert any('The grid is extended' in r.getMessage() for r in caplog.records)
+        assert any('is extended over' in r.getMessage() for r in caplog.records)
         assert 28 <= info['dimension_at_most'] < 64
+        # The extension stopped before its last value, and stopped_early says so.
+        assert info['stopped_early'] and 63 not in info['embedding_dims']
+
+    def test_each_split_stops_once_its_own_reading_is_confirmed(self, monkeypatch, xy):
+        """A split that has confirmed its dimension fits no more values, so its fits are those of a call
+        with that split alone."""
+        fake = FakeFits(lambda k, s, r: TOTAL * min(k, 2 + 4 * s) / (2 + 4 * s))
+        _, info = analyse(monkeypatch, fake, xy[0], n_splits=2)
+        assert fake.calls[1:] == [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        assert fake.splits[1:] == [[0, 1], [0, 1], [1]]
+        assert info['dimension_at_most_per_split'] == {0: 2, 1: 6} and info['stopped_early']
+
+    def test_only_the_splits_short_of_the_threshold_are_extended(self, monkeypatch, xy):
+        fake = FakeFits(lambda k, s, r: TOTAL * min(k, 2) / 2 if s == 0 else TOTAL * min(k, 30) / 30)
+        _, info = analyse(monkeypatch, fake, xy[0], n_splits=2)
+        extended = [splits for ks, splits in zip(fake.calls[1:], fake.splits[1:]) if ks[0] > 10]
+        assert extended and all(splits == [1] for splits in extended)
+        assert info['dimension_at_most_per_split'][0] == 2
 
     def test_a_curve_saturating_only_at_the_reference_warns(self, monkeypatch, xy):
         fake = FakeFits(lambda k, s, r: TOTAL * k / 64)
@@ -180,18 +206,46 @@ class TestProcedure:
 class TestWarnings:
     def test_restarts_that_disagree_below_the_reading_warn(self, monkeypatch, xy):
         fake = FakeFits(lambda k, s, r: TOTAL * min(k, 3) / 3 * (0.5 if r == 0 and k < 3 else 1.0))
-        with pytest.warns(UserWarning, match='below the reading differ by more than'):
+        with pytest.warns(UserWarning, match='below the reported dimension differ by more than'):
             analyse(monkeypatch, fake, *xy, embedding_dims=range(1, 6))
 
     def test_a_held_out_plateau_far_below_the_training_side_warns(self, monkeypatch, xy):
         fake = FakeFits(saturating_at(3), test_ratio=0.7)
-        with pytest.warns(UserWarning, match='overstate the dimension'):
+        with pytest.warns(UserWarning, match='may then be too high'):
             analyse(monkeypatch, fake, *xy, embedding_dims=range(1, 6))
 
     def test_a_plateau_near_the_ceiling_warns(self, monkeypatch, xy):
         fake = FakeFits(saturating_at(3), eval_size=20)
         with pytest.warns(UserWarning, match='near its evaluation ceiling'):
             analyse(monkeypatch, fake, *xy, embedding_dims=range(1, 6))
+
+    def test_the_ceiling_is_that_of_one_evaluation_block(self, monkeypatch, xy):
+        """40 held-out rows scored in two blocks of 20 have the ceiling log(20), not log(40)."""
+        for blocks, warned in ((1, False), (2, True)):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                analyse(monkeypatch, FakeFits(saturating_at(3), eval_size=40, eval_blocks=blocks), *xy,
+                        embedding_dims=range(1, 6))
+            assert any('near its evaluation ceiling' in str(w.message) for w in caught) == warned
+
+    def test_a_reported_dimension_that_the_next_values_do_not_reach_warns(self, monkeypatch, xy):
+        # One restart at k=2 comes out at the plateau. The best restarts at 3 and 4 stay below it.
+        curve = lambda k, s, r: TOTAL if (k == 2 and r == 0) else TOTAL * min(k, 5) / 5
+        with pytest.warns(UserWarning, match='falls below that share again'):
+            _, info = analyse(monkeypatch, FakeFits(curve), *xy, embedding_dims=range(1, 9))
+        assert info['dimension_at_most'] == 2
+
+    def test_a_reported_dimension_at_the_end_of_the_grid_warns(self, monkeypatch, xy):
+        with pytest.warns(UserWarning, match='among the last 2 values of the grid'):
+            analyse(monkeypatch, FakeFits(saturating_at(3)), *xy, embedding_dims=[1, 2, 3, 4])
+
+    def test_reference_restarts_that_differ_do_not_make_the_held_out_check_warn(self, monkeypatch, xy):
+        """The check compares the held-out and training MI of the same reference networks, so one weaker
+        restart lowers both of its medians."""
+        curve = lambda k, s, r: TOTAL * min(k, 3) / 3 * (0.75 if k == 64 and r == 1 else 1.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            analyse(monkeypatch, FakeFits(curve), *xy, embedding_dims=range(1, 6))
 
     def test_views_that_share_nothing_have_no_reading(self, monkeypatch, xy):
         with pytest.warns(UserWarning, match='share no information'):
@@ -202,6 +256,56 @@ class TestWarnings:
         with warnings.catch_warnings():
             warnings.simplefilter('error')
             analyse(monkeypatch, FakeFits(saturating_at(3)), *xy, embedding_dims=range(1, 6))
+
+
+class TestEveryThresholdIsASetting:
+    """The grid and the warnings about the fits read settings of Dimensionality(...), and each warning names
+    its setting."""
+
+    def test_the_grid_settings_size_the_grid(self):
+        # A participation ratio of 3 at grid_reach=2 reaches 6.
+        assert dim._default_grid(3.0, **{**GRID, 'grid_small': 4}) == list(range(1, 21))
+        assert dim._default_grid(3.0, **{**GRID, 'grid_small': 4, 'grid_medium': 8}) == list(range(1, 9))
+        grid = dim._default_grid(3.0, **{**GRID, 'grid_reach': 10.0, 'grid_points': 5})
+        assert grid[0] == 1 and grid[-1] == 30 and len(grid) <= 5
+
+    def test_confirm_steps(self):
+        best = {1: 1.0, 2: 4.0, 3: 4.0, 4: 4.0}
+        assert dim._confirmed(best, [1, 2, 3], 3.8, 2) == 2
+        assert dim._confirmed(best, [1, 2, 3], 3.8, 3) is None
+
+    def test_reference_fill_and_refit_reach(self, monkeypatch, xy):
+        fake = FakeFits(saturating_at(3))
+        analyse(monkeypatch, fake, *xy, reference_fill=0.05, refit_reach=50.0)
+        # 2 x 3 reaches 0.05 of the reference 64, so the reference is refitted at 50 x 3.
+        assert fake.calls[:2] == [[64], [150]]
+
+    def test_a_refit_that_could_shrink_the_reference_is_refused(self, xy):
+        # 5 x 0.05 is below grid_reach=2: a ratio of 3 would refit the reference of 64 at 15.
+        with pytest.raises(ValueError, match='must exceed grid_reach'):
+            run_dimensionality_analysis(xy[0], {}, y_data=xy[1], reference_fill=0.05, refit_reach=5.0)
+
+    def test_restart_spread(self, monkeypatch, xy):
+        curve = lambda k, s, r: TOTAL * min(k, 3) / 3 * (0.5 if r == 0 and k < 3 else 1.0)
+        with pytest.warns(UserWarning, match=r'Dimensionality\(restart_spread=0.1\)'):
+            analyse(monkeypatch, FakeFits(curve), *xy, embedding_dims=range(1, 6))
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            analyse(monkeypatch, FakeFits(curve), *xy, embedding_dims=range(1, 6), restart_spread=0.5)
+
+    def test_held_out_gap_through_run(self, monkeypatch, xy):
+        monkeypatch.setattr(dim, '_fit', FakeFits(saturating_at(3), test_ratio=0.7))
+        x, y = (t.numpy() for t in xy)
+        for gap, warned in ((None, True), (0.5, False)):
+            settings = {} if gap is None else {'held_out_gap': gap}
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                nmi.run(x, y, mode='dimensionality', show_progress=False,
+                        dimensionality=nmi.Dimensionality(n_restarts=2, embedding_dims=range(1, 6), **settings))
+            messages = [str(w.message) for w in caught if 'may then be too high' in str(w.message)]
+            assert bool(messages) == warned
+            if warned:
+                assert 'Dimensionality(held_out_gap=0.1)' in messages[0]
 
 
 class TestSettings:
@@ -287,6 +391,17 @@ class TestHalves:
     def test_random_draws_one_assignment_per_split(self):
         halves = dim._halves(torch.randn(50, 8), {}, 'random', 4, {})
         assert len(halves) == 4 and all(a.shape == (50, 4) and b.shape == (50, 4) for a, b, _ in halves)
+
+    def test_random_splits_divide_the_channels_differently(self, caplog):
+        """Four channels divide into only three pairs of halves, so five splits become three distinct
+        ones: quietly for the default count, with a warning for a count you chose."""
+        x = torch.arange(4.).repeat(10, 1)
+        with caplog.at_level(logging.INFO, logger='neural_mi'):
+            halves = dim._halves(x, {}, 'random', 5, {})
+        pairs = {frozenset((frozenset(a[0].tolist()), frozenset(b[0].tolist()))) for a, b, _ in halves}
+        assert len(halves) == len(pairs) == 3 and 'only 3 different pairs' in caplog.text
+        with pytest.warns(UserWarning, match='only 3 different pairs'):
+            dim._halves(x, {}, 'random', 5, {}, splits_chosen=True)
 
     def test_spatial_splits_at_the_midpoint_once(self):
         x = torch.arange(24.).reshape(3, 8)

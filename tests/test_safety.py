@@ -11,6 +11,7 @@ import torch
 import neural_mi as nmi
 from neural_mi import Model, Training, Transfer, Processing, Dimensionality, Split
 from neural_mi.analysis.sweep import ParameterSweep
+from neural_mi.defaults import default_of
 from neural_mi.exceptions import TrainingError
 from neural_mi.training.trainer import Trainer
 
@@ -103,11 +104,13 @@ def test_train_subset_size_clamp_emits_warning():
 
 
 # ---------------------------------------------------------------------------
-# TrainingError after 3 consecutive NaN epochs
+# TrainingError after Training(nan_streak=...) consecutive NaN epochs
 # ---------------------------------------------------------------------------
 
-def test_nan_streak_raises_training_error():
-    """Three consecutive NaN epochs must raise TrainingError.
+@pytest.mark.parametrize('streak', [None, 5])
+def test_nan_streak_raises_training_error(streak):
+    """Training(nan_streak=...) consecutive NaN epochs, 3 by default, must raise TrainingError, and each
+    epoch before it warns.
 
     We mock Trainer._safe_eval_mi() to return NaN so that the real PyTorch
     training step can still run (and compute valid gradients) while the
@@ -135,9 +138,16 @@ def test_nan_streak_raises_training_error():
     y_t = torch.randn(200, 2, 1)
     ds = PairedDataset(StaticDataset(x_t), StaticDataset(y_t))
 
-    with patch.object(Trainer, '_safe_eval_mi', return_value=float('nan')):
-        with pytest.raises(TrainingError, match="consecutive NaN"):
-            trainer.train(ds, n_epochs=10, batch_size=32, patience=100, show_progress=False)
+    limit = streak or default_of('nan_streak')
+    settings = {} if streak is None else {'nan_streak': streak}
+    with patch.object(Trainer, '_safe_eval_mi', return_value=float('nan')), \
+            warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        with pytest.raises(TrainingError, match=rf"consecutive NaN.*\(epochs 1 to {limit}\).*"
+                                                rf"Training\(nan_streak={limit}\)"):
+            trainer.train(ds, n_epochs=10, batch_size=32, patience=100, show_progress=False, **settings)
+    streaks = [str(w.message) for w in caught if 'consecutive NaN streak' in str(w.message)]
+    assert len(streaks) == limit - 1 and f'of Training(nan_streak={limit})' in streaks[0]
 
 
 def test_single_nan_epoch_does_not_raise():
@@ -296,14 +306,13 @@ def test_blocked_split_leakage_check_skips_on_static_path():
 
 
 # ---------------------------------------------------------------------------
-# The ceiling warning keys on the train-side evaluation size
+# Each side is judged against the ceiling of its own rows
 # ---------------------------------------------------------------------------
 
-def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size():
-    """With train_subset_size set explicitly larger than the (small) test
-    split, train_eval_size and eval_size diverge -- the near-ceiling warning
-    must be evaluated against train_eval_size for the reported (train_mi)
-    quantity, not silently reuse the smaller test-side eval_size."""
+def test_each_side_is_judged_against_the_ceiling_of_its_own_rows():
+    """train_eval_size and eval_size diverge here, and the held-out value is judged against log(eval_size),
+    not against the training side's ceiling. Every held-out row is in one evaluation, so the message says
+    that only more held-out rows raise that ceiling."""
     np.random.seed(0)
     n = 20000
     x = np.random.randn(n, 4).astype('float32')
@@ -316,18 +325,18 @@ def test_ceiling_warning_keys_on_train_eval_size_when_it_diverges_from_eval_size
                                       y='continuous', y_params={'window_size': 50, 'step_size': None}),
             split=nmi.Split(mode='blocked', train_fraction=0.8),
             model=Model(embedding_dim=32, hidden_dim=128),
-            training=Training(n_epochs=150, patience=30),
+            training=Training(n_epochs=300, patience=30),
             n_workers=1, show_progress=False, seed=0,
         )
     assert result.get('train_eval_size') > result.get('eval_size'), (
         "The scenario needs train_eval_size larger than eval_size; otherwise "
         "it does not exercise the divergence this test checks."
     )
-    ceiling_msgs = [str(w.message) for w in caught if 'near its ceiling' in str(w.message)]
+    ceiling_msgs = [str(w.message) for w in caught if 'near its ceiling of log(' in str(w.message)]
     assert ceiling_msgs, f"Expected a near-ceiling warning; got: {[str(w.message) for w in caught]}"
-    assert 'train-eval ceiling' in ceiling_msgs[0], (
-        f"Expected the warning to name the train-eval ceiling specifically: {ceiling_msgs[0]}"
-    )
+    assert ceiling_msgs[0].startswith('The held-out MI (')
+    assert f"near its ceiling of log({result.get('eval_size')})" in ceiling_msgs[0]
+    assert 'Only more held-out rows raise this ceiling' in ceiling_msgs[0]
 
 
 # ---------------------------------------------------------------------------

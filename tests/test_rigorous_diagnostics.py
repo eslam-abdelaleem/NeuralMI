@@ -238,7 +238,7 @@ class TestDecoderModels:
         """The settings build_decoder requires, at their schema defaults unless given."""
         from neural_mi.defaults import default_of
         return {'n_layers': default_of('n_layers'), 'kernel_size': default_of('kernel_size'),
-                'nhead': default_of('nhead'), 'dropout': default_of('dropout'),
+                'nhead': default_of('nhead'), 'dropout': default_of('dropout'), 'activation': default_of('activation'),
                 'output_activation': default_of('decoder_output_activation_x'), **given}
 
     @pytest.mark.parametrize("model_name,kwargs", [
@@ -515,8 +515,8 @@ def test_a_fractional_step_cuts_each_chunk_with_the_step_the_windows_use():
 
 def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma():
     """A rung at 0 produced nothing. The fit leaves it out and says how many per gamma. A gamma
-    that loses half or more of its rungs drops out with the rest of them, which would be the
-    networks that happened to learn."""
+    that loses left_out_share of its rungs or more, half by default, drops out with the rest of them, which
+    would be the networks that happened to learn."""
     from neural_mi.analysis.rigorous import _drop_rungs
     ladder = _make_df([1, 2, 2, 3, 3, 3, 3], [0.5, 0.4, 0.0, 0.3, 0.0, 0.35, 0.32])
     with warnings.catch_warnings(record=True) as caught:
@@ -526,8 +526,15 @@ def test_zero_rungs_are_left_out_of_the_fit_and_counted_per_gamma():
     messages = [str(w.message) for w in caught]
     assert any(m.startswith("Rigorous fit: 2 of 7 rungs") and "gamma 2: 1 of 2, gamma 3: 1 of 4" in m
                for m in messages)
-    assert any("half or more of the rungs at gamma=[2] are left out, and so are those values of gamma"
-               in m for m in messages)
+    assert any("at gamma=[2] the rungs left out make up left_out_share=0.5 or more of the rungs, so the fit "
+               "leaves out those values of gamma as well" in m and "min_gamma_points=5 values" in m
+               for m in messages)
+    # A larger share keeps gamma 2, whose one rung of two left out no longer reaches it.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        kept, _, _ = _drop_rungs(ladder, "Rigorous fit: ", left_out_share=0.75)
+    assert list(kept['train_mi']) == [0.5, 0.4, 0.3, 0.35, 0.32]
+    assert not any('left_out_share' in str(w.message) for w in caught)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         kept, n, n_unresolved = _drop_rungs(_make_df([1, 2], [0.5, 0.4]), "")
@@ -546,7 +553,7 @@ def test_rungs_that_did_not_resolve_are_left_out_and_counted_apart_from_zero_run
     ladder = pd.DataFrame({'gamma': [1, 2, 2, 3, 3, 3, 3, 3],
                            'train_mi': [0.5, 0.4, 0.45, 0.3, 0.9, 0.35, 0.0, 0.32],
                            'curve_diagnosis': ['ok', 'ok', 'not resolved', 'ok', 'not resolved',
-                                               'fuzzy start', 'not resolved', 'ok']})
+                                               'flat top', 'not resolved', 'ok']})
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         kept, n_zero, n_unresolved = _drop_rungs(ladder, "Rigorous fit: ")
@@ -556,7 +563,7 @@ def test_rungs_that_did_not_resolve_are_left_out_and_counted_apart_from_zero_run
     messages = [str(w.message) for w in caught]
     assert any(m.startswith("Rigorous fit: 2 of 8 rungs of the gamma ladder did not resolve")
                and "gamma 2: 1 of 2, gamma 3: 1 of 5" in m for m in messages)
-    assert any("half or more of the rungs at gamma=[2] are left out" in m for m in messages)
+    assert any("at gamma=[2] the rungs left out make up left_out_share=0.5" in m for m in messages)
 
 
 def _fit(ladder, **kwargs):
@@ -646,3 +653,20 @@ def test_the_scalar_ladder_leaves_out_chunks_whose_joint_term_did_not_resolve():
     ladder = fit['raw_results_df']
     assert len(ladder) == sum(range(1, 9))
     assert (ladder['curve_diagnosis'] == 'not resolved').sum() == 15
+
+
+def test_the_saturation_warning_reads_the_ceiling_fraction_its_rungs_ran_with():
+    """A rung is saturated above Training(ceiling_fraction=...), which every rung's row carries."""
+    from neural_mi.analysis.rigorous import _compute_per_gamma_diagnostics
+    ladder = pd.DataFrame({'gamma': [1, 2, 2], 'train_mi': [1.0, 0.9, 0.95],
+                           'train_ceiling_mi': [2.0, 1.5, 1.5], 'train_saturation': [0.5, 0.6, 0.63]})
+
+    def saturated(frame):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            _compute_per_gamma_diagnostics(frame, [1, 2])
+        return [str(w.message) for w in caught if 'train_saturation above' in str(w.message)]
+
+    assert not saturated(ladder)                               # below the default fraction
+    messages = saturated(ladder.assign(ceiling_fraction=0.55))
+    assert messages and 'gamma=[2]' in messages[0] and 'Training(ceiling_fraction=0.55)' in messages[0]

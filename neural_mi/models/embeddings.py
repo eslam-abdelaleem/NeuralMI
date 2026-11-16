@@ -4,17 +4,16 @@ import torch
 import torch.nn as nn
 import math
 import numpy as np
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from torch.nn.utils import spectral_norm as _spectral_norm
 
 from neural_mi.defaults import default_of
 from neural_mi.logger import logger, user_stacklevel
 
-# Shared activation set for every embedding model below (MLP, CNN1D, CNN2D).
-# One consistent set for every model here, so an unknown name raises a clean
-# error naming the valid options instead of silently falling back to ReLU on
-# one model and raising a bare KeyError on another.
-_ACTIVATIONS = {
+# The nonlinearities a network's hidden layers can use, by name
+# (Model(activation=...)). One set for every network the library builds, so an
+# unknown name raises a clean error naming the valid options.
+ACTIVATIONS = {
     'relu': nn.ReLU,
     'gelu': nn.GELU,
     'tanh': nn.Tanh,
@@ -44,16 +43,50 @@ def _make_norm(kind: Optional[str], dim: int, bias: bool) -> Optional[nn.Module]
     return nn.BatchNorm1d(dim) if kind == 'batch' else nn.LayerNorm(dim)
 
 
+class _ChannelNorm(nn.Module):
+    """A norm from :func:`_make_norm` over the channel axis of a ``(batch, channels, ...)`` tensor.
+
+    Layer and RMS norms see the channels at each position. Batch norm sees each
+    channel over the batch and the positions.
+    """
+
+    def __init__(self, norm: nn.Module):
+        super().__init__()
+        self.norm = norm
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.norm, nn.BatchNorm1d):
+            return self.norm(x.reshape(x.shape[0], x.shape[1], -1)).reshape(x.shape)
+        return self.norm(x.movedim(1, -1)).movedim(-1, 1)
+
+
+def _make_channel_norm(kind: Optional[str], channels: int, bias: bool) -> Optional[nn.Module]:
+    """:func:`_make_norm` for the channels of a convolution's output, or None."""
+    norm = _make_norm(kind, channels, bias)
+    return None if norm is None else _ChannelNorm(norm)
+
+
+def _normed(layer: nn.Module, norm: Optional[nn.Module], activation: nn.Module) -> List[nn.Module]:
+    """A hidden layer, its norm when there is one, and its activation."""
+    return [layer, activation] if norm is None else [layer, norm, activation]
+
+
+def _norm_or_identity(kind: Optional[str], dim: int, bias: bool) -> nn.Module:
+    """:func:`_make_norm` for the features that a readout maps to the embedding, or an identity."""
+    norm = _make_norm(kind, dim, bias)
+    return nn.Identity() if norm is None else norm
+
+
 def _resolve_activation(name: str) -> type:
     """Look up an activation module class by name.
 
     Raises a clean ``ValueError`` naming the supported options on a
     genuinely unknown name.
     """
-    act_cls = _ACTIVATIONS.get(name)
+    act_cls = ACTIVATIONS.get(name)
     if act_cls is None:
         raise ValueError(
-            f"Unknown activation '{name}'. Supported: {sorted(_ACTIVATIONS)}."
+            f"Unknown activation '{name}'. Supported: {sorted(ACTIVATIONS)}."
         )
     return act_cls
 
@@ -103,6 +136,13 @@ class BaseEmbedding(nn.Module):
         """Whether a network of this class built with ``n_layers`` layers has the part ``setting`` names."""
         return setting in cls.settings
 
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The layer that gives the embedding, the last of the network. A critic starts half of its rows at
+        zero (``BaseCritic.start_at_zero``). It is ``output_layer`` unless a class says otherwise, and None for a
+        custom class without one, whose start the critic leaves as it is."""
+        return getattr(self, 'output_layer', None)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Computes the embedding for an input tensor.
 
@@ -146,13 +186,17 @@ class MLP(_BaseMLP):
         The final linear layer that maps to the embedding dimension.
     """
     settings = {'use_spectral_norm': 'use_spectral_norm', 'dropout': 'dropout', 'norm_layer': 'norm_layer',
-                'bias': 'bias'}
+                'bias': 'bias', 'activation': 'activation', 'linear_path': 'linear_path'}
+    # A head (the hybrid critic's, the concat critic's network, a branched encoder's) scores or joins
+    # embeddings rather than encoding an input, so it reads every setting but the linear path.
+    head_settings = {key: value for key, value in settings.items() if key != 'linear_path'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int,
-                 n_layers: int, activation: str = 'relu',
+                 n_layers: int, activation: str = default_of('activation'),
                  use_spectral_norm: bool = default_of('use_spectral_norm'),
                  dropout: float = default_of('dropout'),
-                 norm_layer: Optional[str] = None, bias: bool = default_of('bias')):
+                 norm_layer: Optional[str] = None, bias: bool = default_of('bias'),
+                 linear_path: bool = default_of('linear_path')):
         """
         Parameters
         ----------
@@ -174,8 +218,8 @@ class MLP(_BaseMLP):
             encoder, the input mapped straight to the embedding.  Ignored when
             ``hidden_dim`` is a list.
         activation : str, optional
-            The activation function to use. One of 'relu', 'gelu', 'tanh',
-            'elu', 'leaky_relu', 'sigmoid', 'silu'. Defaults to 'relu'.
+            The nonlinearity of each hidden layer, a name in ``ACTIVATIONS``.
+            Defaults to 'leaky_relu'.
         use_spectral_norm : bool, optional
             If True, applies spectral normalisation to the hidden ``nn.Linear``
             layers.  The output layer is left unnormalised to preserve the full
@@ -194,6 +238,16 @@ class MLP(_BaseMLP):
               for small datasets where batch statistics are unreliable.
             - ``'batch'``: ``nn.BatchNorm1d``. Effective on large batches but can
               be unstable when batch_size is small (< ~32).
+        linear_path : bool, optional
+            Adds a linear map from the flattened input to the embedding, with
+            spectral normalisation, multiplied by one trainable number that
+            starts at zero. The map starts closed and opens as training finds a
+            use for it. It gives the encoder the linear part of the dependence
+            directly, which helps when the information is spread over many weak
+            directions. Defaults to True. An MLP without hidden layers is
+            linear already and has no path. An MLP that serves as a head rather
+            than an encoder (the hybrid critic's, the concat critic's network, a
+            branched encoder's, a pretrained backbone's) is built with False.
         """
         super().__init__()
         act_fn = _resolve_activation(activation)
@@ -212,13 +266,20 @@ class MLP(_BaseMLP):
         widths = [input_dim, *(hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers)]
         self.network = nn.Sequential(*[m for a, b in zip(widths, widths[1:]) for m in _make_hidden_block(a, b)])
         self.output_layer = nn.Linear(widths[-1], embedding_dim, bias=bias)
+        # The linear path: spectral norm bounds the map, and one number that starts at zero opens it, at a
+        # rate that does not grow with the number of inputs.
+        linear_path = linear_path and len(widths) > 1
+        self.path = _spectral_norm(nn.Linear(input_dim, embedding_dim, bias=False)) if linear_path else None
+        self.path_scale = nn.Parameter(torch.zeros(1)) if linear_path else None
         self._initialize_weights()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Flattens the input and passes it through the MLP."""
+        """Flattens the input and passes it through the MLP, adding the linear path when it has one."""
         # Use reshape (not view) so that non-contiguous inputs (e.g. from
         # permute() in transfer-entropy history arrays) are handled correctly.
-        return self.output_layer(self.network(x.reshape(x.shape[0], -1)))
+        flat = x.reshape(x.shape[0], -1)
+        out = self.output_layer(self.network(flat))
+        return out if self.path is None else out + self.path_scale * self.path(flat)
 
 class CNN1D(BaseEmbedding):
     """A 1D CNN embedding network for sequential data.
@@ -243,11 +304,13 @@ class CNN1D(BaseEmbedding):
         The number of feature channels after the CNN layers.
     """
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'cnn_pooling': 'cnn_pooling', 'bias': 'bias'}
+    settings = {'kernel_size': 'kernel_size', 'cnn_pooling': 'cnn_pooling', 'norm_layer': 'norm_layer',
+                'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = default_of('kernel_size'), bias: bool = default_of('bias'),
-                 window_size: Optional[int] = None, cnn_pooling: str = default_of('cnn_pooling')):
+                 activation: str = default_of('activation'), kernel_size: int = default_of('kernel_size'),
+                 bias: bool = default_of('bias'), window_size: Optional[int] = None,
+                 cnn_pooling: str = default_of('cnn_pooling'), norm_layer: Optional[str] = None):
         """
         Parameters
         ----------
@@ -263,9 +326,8 @@ class CNN1D(BaseEmbedding):
             The number of convolutional layers.  Ignored when ``hidden_dim`` is
             a list.
         activation : str, optional
-            The activation function to use after convolutional layers. One of
-            'relu', 'gelu', 'tanh', 'elu', 'leaky_relu', 'sigmoid', 'silu'.
-            Defaults to 'relu'.
+            The nonlinearity after each convolutional layer and in the final
+            layers, a name in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
         kernel_size : int, optional
             The size of the convolutional kernel. Must be an odd number.
         window_size : int, optional
@@ -275,6 +337,10 @@ class CNN1D(BaseEmbedding):
             Read the convolutions' output at every position of the window
             (``'flatten'``, the default) or average it over the window
             (``'mean'``).
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation over the channels after each convolution and after
+            the hidden linear layer of the final layers, before the activation.
+            ``None`` (default) adds none.
         """
         super().__init__()
         if cnn_pooling not in ('flatten', 'mean'):
@@ -290,31 +356,30 @@ class CNN1D(BaseEmbedding):
         activation_fn = _resolve_activation(activation)
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
-        first_block = [
-            nn.Conv1d(in_channels=input_dim, out_channels=ch[0], kernel_size=kernel_size, padding='same', bias=bias),
-            activation_fn(),
-        ]
-
-        layers = list(first_block)
-        for i in range(1, len(ch)):
-            layers.extend([
-                nn.Conv1d(in_channels=ch[i - 1], out_channels=ch[i], kernel_size=kernel_size, padding='same', bias=bias),
-                activation_fn()
-            ])
+        layers = []
+        for c_in, c_out in zip([input_dim, *ch[:-1]], ch):
+            layers += _normed(
+                nn.Conv1d(in_channels=c_in, out_channels=c_out, kernel_size=kernel_size, padding='same', bias=bias),
+                _make_channel_norm(norm_layer, c_out, bias), activation_fn())
         self.conv_layers = nn.Sequential(*layers)
         # 'same' padding keeps the window length, so flattening gives ch[-1] * window_size
         # features, one set per position. Averaging collapses any length to ch[-1].
         reduce = [nn.Flatten()] if cnn_pooling == 'flatten' else [nn.AdaptiveAvgPool1d(1), nn.Flatten()]
         self.final_layers = nn.Sequential(
             *reduce,
-            nn.Linear(ch[-1] * (window_size if cnn_pooling == 'flatten' else 1), ch[-1], bias=bias),
-            nn.ReLU(),
+            *_normed(nn.Linear(ch[-1] * (window_size if cnn_pooling == 'flatten' else 1), ch[-1], bias=bias),
+                     _make_norm(norm_layer, ch[-1], bias), activation_fn()),
             nn.Linear(ch[-1], embedding_dim, bias=bias)
         )
         self.embedding_dim = embedding_dim
         self.hidden_dim = ch[-1]
         self._initialize_weights()
         self._initialize_final_layers()
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The last of the final layers, which gives the embedding."""
+        return self.final_layers[-1]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.final_layers(self.conv_layers(x))
@@ -339,11 +404,12 @@ def _recurrent_reads(cls, setting: str, n_layers: Optional[int] = None) -> bool:
 class GRU(BaseEmbedding):
     """A Gated Recurrent Unit (GRU) embedding network for sequential data."""
     input_style = 'channels'
-    settings = {'bidirectional': 'bidirectional', 'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'bidirectional': 'bidirectional', 'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias'}
     reads = classmethod(_recurrent_reads)
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
+                 norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -359,6 +425,9 @@ class GRU(BaseEmbedding):
             If True, becomes a bidirectional GRU. Defaults to False.
         dropout : float, optional
             Dropout between stacked layers, which a single layer does not have.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation of the features that the output layer maps to the
+            embedding. ``None`` (default) adds none.
         """
         super().__init__()
         self.gru = nn.GRU(input_size=input_dim, hidden_size=hidden_dim, num_layers=n_layers, bias=bias,
@@ -366,6 +435,7 @@ class GRU(BaseEmbedding):
                           dropout=dropout if n_layers > 1 else 0.0)
         
         num_directions = 2 if bidirectional else 1
+        self.norm = _norm_or_identity(norm_layer, hidden_dim * num_directions, bias)
         self.output_layer = nn.Linear(hidden_dim * num_directions, embedding_dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -381,16 +451,17 @@ class GRU(BaseEmbedding):
         else:
             last_hidden = h_n[-1,:,:]
             
-        return self.output_layer(last_hidden)
+        return self.output_layer(self.norm(last_hidden))
 
 class LSTM(BaseEmbedding):
     """An LSTM (Long Short-Term Memory) embedding network for sequential data."""
     input_style = 'channels'
-    settings = {'bidirectional': 'bidirectional', 'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'bidirectional': 'bidirectional', 'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias'}
     reads = classmethod(_recurrent_reads)
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 bidirectional: bool = default_of('bidirectional'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
+                 norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -406,6 +477,9 @@ class LSTM(BaseEmbedding):
             If True, becomes a bidirectional LSTM. Defaults to False.
         dropout : float, optional
             Dropout between stacked layers, which a single layer does not have.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation of the features that the output layer maps to the
+            embedding. ``None`` (default) adds none.
         """
         super().__init__()
         self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=n_layers, bias=bias,
@@ -413,6 +487,7 @@ class LSTM(BaseEmbedding):
                             dropout=dropout if n_layers > 1 else 0.0)
         
         num_directions = 2 if bidirectional else 1
+        self.norm = _norm_or_identity(norm_layer, hidden_dim * num_directions, bias)
         self.output_layer = nn.Linear(hidden_dim * num_directions, embedding_dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -424,7 +499,7 @@ class LSTM(BaseEmbedding):
         else:
             last_hidden = h_n[-1,:,:]
             
-        return self.output_layer(last_hidden)
+        return self.output_layer(self.norm(last_hidden))
 
 
 class LockedDropout(nn.Module):
@@ -510,10 +585,11 @@ class LRUEmbedding(BaseEmbedding):
     comparable parameter count.
     """
     input_style = 'channels'
-    settings = {'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias'}
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int = default_of('n_layers'),
-                 dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
+                 norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -527,11 +603,21 @@ class LRUEmbedding(BaseEmbedding):
             The number of stacked LRUBlocks.
         dropout : float, optional
             Locked-dropout probability inside each block.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation of the pooled features that the output projection
+            maps to the embedding. Each block keeps its own layer norm.
+            ``None`` (default) adds none.
         """
         super().__init__()
         self.in_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
         self.blocks = nn.ModuleList([LRUBlock(hidden_dim, dropout, bias=bias) for _ in range(n_layers)])
+        self.norm = _norm_or_identity(norm_layer, hidden_dim, bias)
         self.out_proj = nn.Linear(hidden_dim, embedding_dim, bias=bias)
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The output projection, which gives the embedding."""
+        return self.out_proj
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.transpose(1, 2)
@@ -539,13 +625,14 @@ class LRUEmbedding(BaseEmbedding):
         for block in self.blocks:
             x = block(x)
         x = x.mean(dim=1)
-        return self.out_proj(x)
+        return self.out_proj(self.norm(x))
 
 
 class TCN(BaseEmbedding):
     """A Temporal Convolutional Network (TCN) for sequential data."""
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'kernel_size': 'kernel_size', 'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias',
+                'activation': 'activation'}
 
     # Inner class for a Chomp layer to remove padding
     class Chomp1d(nn.Module):
@@ -558,30 +645,36 @@ class TCN(BaseEmbedding):
 
     # Inner class for a TCN block
     class TemporalBlock(nn.Module):
-        def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout, bias=default_of('bias')):
+        def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout, activation_fn,
+                     bias=default_of('bias'), norm_layer=None):
             super().__init__()
             self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp1 = TCN.Chomp1d(padding)
-            self.relu1 = nn.ReLU()
+            self.norm1 = _make_channel_norm(norm_layer, n_outputs, bias)
+            self.act1 = activation_fn()
             self.dropout1 = nn.Dropout(dropout)
 
             self.conv2 = nn.Conv1d(n_outputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation, bias=bias)
             self.chomp2 = TCN.Chomp1d(padding)
-            self.relu2 = nn.ReLU()
+            self.norm2 = _make_channel_norm(norm_layer, n_outputs, bias)
+            self.act2 = activation_fn()
             self.dropout2 = nn.Dropout(dropout)
 
-            self.net = nn.Sequential(self.conv1, self.chomp1, self.relu1, self.dropout1,
-                                     self.conv2, self.chomp2, self.relu2, self.dropout2)
+            self.net = nn.Sequential(*[m for m in (self.conv1, self.chomp1, self.norm1, self.act1, self.dropout1,
+                                                   self.conv2, self.chomp2, self.norm2, self.act2, self.dropout2)
+                                       if m is not None])
             self.downsample = nn.Conv1d(n_inputs, n_outputs, 1, bias=bias) if n_inputs != n_outputs else None
-            self.relu = nn.ReLU()
+            self.act = activation_fn()
 
         def forward(self, x):
             out = self.net(x)
             res = x if self.downsample is None else self.downsample(x)
-            return self.relu(out + res)
+            return self.act(out + res)
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 kernel_size: int = default_of('kernel_size'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 kernel_size: int = default_of('kernel_size'), dropout: float = default_of('dropout'),
+                 bias: bool = default_of('bias'), activation: str = default_of('activation'),
+                 norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -600,6 +693,12 @@ class TCN(BaseEmbedding):
             The size of the convolutional kernel. Defaults to 3.
         dropout : float, optional
             Dropout after each convolution of every temporal block.
+        activation : str, optional
+            The nonlinearity after each convolution and each residual sum, a
+            name in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation over the channels after each convolution, before its
+            activation. ``None`` (default) adds none.
         """
         super().__init__()
         layers = []
@@ -609,7 +708,9 @@ class TCN(BaseEmbedding):
             in_channels = input_dim if i == 0 else num_channels[i-1]
             out_channels = num_channels[i]
             layers.append(TCN.TemporalBlock(in_channels, out_channels, kernel_size, stride=1, dilation=dilation_size,
-                                            padding=(kernel_size-1) * dilation_size, dropout=dropout, bias=bias))
+                                            padding=(kernel_size-1) * dilation_size, dropout=dropout,
+                                            activation_fn=_resolve_activation(activation), bias=bias,
+                                            norm_layer=norm_layer))
         self.network = nn.Sequential(*layers)
         self.output_layer = nn.Linear(num_channels[-1], embedding_dim, bias=bias)
 
@@ -623,7 +724,8 @@ class Transformer(BaseEmbedding):
     """A Transformer Encoder model for sequential data."""
     zero_preserving = False   # the positional encoding is an additive, input-independent term
     input_style = 'channels'
-    settings = {'nhead': 'nhead', 'dropout': 'dropout', 'bias': 'bias'}
+    settings = {'nhead': 'nhead', 'dropout': 'dropout', 'norm_layer': 'norm_layer', 'bias': 'bias',
+                'activation': 'activation'}
 
     class PositionalEncoding(nn.Module):
         def __init__(self, d_model, max_len=5000):
@@ -645,7 +747,8 @@ class Transformer(BaseEmbedding):
             return x + self.pe[:seq_len]
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
-                 nhead: int = default_of('nhead'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'), **kwargs):
+                 nhead: int = default_of('nhead'), dropout: float = default_of('dropout'), bias: bool = default_of('bias'),
+                 activation: str = default_of('activation'), norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -661,6 +764,13 @@ class Transformer(BaseEmbedding):
             The number of multi-head attention heads. Defaults to 4.
         dropout : float, optional
             Dropout inside each encoder layer, as ``nn.TransformerEncoderLayer`` applies it.
+        activation : str, optional
+            The nonlinearity of each encoder layer's feed-forward block, a name
+            in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation of the features that the output layer maps to the
+            embedding. Each encoder layer keeps its own layer norms. ``None``
+            (default) adds none.
         """
         super().__init__()
         if hidden_dim % nhead != 0:
@@ -670,11 +780,14 @@ class Transformer(BaseEmbedding):
         self.pos_encoder = Transformer.PositionalEncoding(hidden_dim)
         self.input_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
         encoder_layers = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, dropout=dropout,
+                                                    activation=_resolve_activation(activation)(),
                                                     batch_first=True, bias=bias)
-        # nested-tensor fast path requires biased attention; without it torch
-        # warns on every construction, so it is disabled explicitly.
+        # The nested-tensor fast path needs biased attention and a ReLU or GELU
+        # feed-forward block. Without them torch warns on every construction, so
+        # the path is enabled only with both.
         self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layers, num_layers=n_layers, enable_nested_tensor=bias)
+            encoder_layers, num_layers=n_layers, enable_nested_tensor=bias and activation in ('relu', 'gelu'))
+        self.norm = _norm_or_identity(norm_layer, hidden_dim, bias)
         self.output_layer = nn.Linear(hidden_dim, embedding_dim, bias=bias)
         self._initialize_weights()
 
@@ -684,7 +797,7 @@ class Transformer(BaseEmbedding):
         x = self.pos_encoder(x.permute(1, 0, 2)).permute(1, 0, 2) # Apply positional encoding
         output = self.transformer_encoder(x)
         # Use the output of the first token '[CLS]'-style for the embedding
-        return self.output_layer(output[:, 0, :])
+        return self.output_layer(self.norm(output[:, 0, :]))
 
     def _initialize_weights(self):
         for p in self.parameters():
@@ -736,26 +849,41 @@ class DeepSets(BaseEmbedding):
         without a bias it is positively homogeneous in that time and cannot
         localise a value; this encoder depends on the bias more than the
         flattened ones do.
+    activation : str, optional
+        The nonlinearity of each hidden layer of ``phi`` and ``rho``, a name in
+        ``ACTIVATIONS``. Defaults to 'leaky_relu'.
+    norm_layer : {None, 'batch', 'layer'}, optional
+        Normalisation in the hidden layer of ``rho``, before its activation.
+        ``None`` (default) adds none.
     no_spike_value : float, optional
         The padding sentinel to mask out, matching the value the spike
         processor used. Defaults to 0.0.
     """
     input_style = 'channels'
-    settings = {'bias': 'bias'}
+    settings = {'norm_layer': 'norm_layer', 'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int,
                  n_layers: int = default_of('n_layers'), bias: bool = default_of('bias'),
-                 no_spike_value: float = 0.0, **kwargs):
+                 no_spike_value: float = 0.0, activation: str = default_of('activation'),
+                 norm_layer: Optional[str] = None, **kwargs):
         super().__init__()
         self.no_spike_value = float(no_spike_value)
         width = hidden_dim if isinstance(hidden_dim, int) else hidden_dim[0]
-        phi = [nn.Linear(1, width, bias=bias), nn.ReLU()]
+        act = _resolve_activation(activation)
+        phi = [nn.Linear(1, width, bias=bias), act()]
         for _ in range(max(0, n_layers - 1)):
-            phi += [nn.Linear(width, width, bias=bias), nn.ReLU()]
+            phi += [nn.Linear(width, width, bias=bias), act()]
         self.phi = nn.Sequential(*phi)
+        # A norm reads the hidden layer of rho, the summed set. In phi, batch statistics would include the
+        # empty slots that the mask removes afterwards.
         self.rho = nn.Sequential(
-            nn.Linear(width * input_dim, width, bias=bias), nn.ReLU(),
+            *_normed(nn.Linear(width * input_dim, width, bias=bias), _make_norm(norm_layer, width, bias), act()),
             nn.Linear(width, embedding_dim, bias=bias))
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The last layer of ``rho``, which gives the embedding."""
+        return self.rho[-1]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (batch, n_neurons, max_slots)
@@ -784,10 +912,11 @@ class CNN2D(BaseEmbedding):
     hidden_dim : int
     """
     input_style = 'channels'
-    settings = {'kernel_size': 'kernel_size', 'bias': 'bias'}
+    settings = {'kernel_size': 'kernel_size', 'norm_layer': 'norm_layer', 'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim, embedding_dim: int, n_layers: int,
-                 activation: str = 'relu', kernel_size: int = default_of('kernel_size'), bias: bool = default_of('bias'), **kwargs):
+                 activation: str = default_of('activation'), kernel_size: int = default_of('kernel_size'),
+                 bias: bool = default_of('bias'), norm_layer: Optional[str] = None, **kwargs):
         """
         Parameters
         ----------
@@ -802,11 +931,15 @@ class CNN2D(BaseEmbedding):
         n_layers : int
             Number of Conv2d layers.  Ignored when ``hidden_dim`` is a list.
         activation : str, optional
-            Activation function: one of 'relu' (default), 'gelu', 'tanh',
-            'elu', 'leaky_relu', 'sigmoid', 'silu'.
+            The nonlinearity after each Conv2d layer and in the final layers, a
+            name in ``ACTIVATIONS``. Defaults to 'leaky_relu'.
         kernel_size : int, optional
             Convolutional kernel size; must be odd for symmetric same-padding.
             Defaults to 3.
+        norm_layer : {None, 'batch', 'layer'}, optional
+            Normalisation over the channels after each convolution and after
+            the hidden linear layer of the final layers, before the activation.
+            ``None`` (default) adds none.
         """
         super().__init__()
         if kernel_size % 2 == 0:
@@ -815,29 +948,28 @@ class CNN2D(BaseEmbedding):
         activation_fn = _resolve_activation(activation)
         ch = hidden_dim if isinstance(hidden_dim, list) else [hidden_dim] * n_layers
 
-        layers = [
-            nn.Conv2d(input_dim, ch[0], kernel_size=kernel_size, padding=padding, bias=bias),
-            activation_fn(),
-        ]
-        for i in range(1, len(ch)):
-            layers.extend([
-                nn.Conv2d(ch[i - 1], ch[i], kernel_size=kernel_size, padding=padding, bias=bias),
-                activation_fn(),
-            ])
+        layers = []
+        for c_in, c_out in zip([input_dim, *ch[:-1]], ch):
+            layers += _normed(nn.Conv2d(c_in, c_out, kernel_size=kernel_size, padding=padding, bias=bias),
+                              _make_channel_norm(norm_layer, c_out, bias), activation_fn())
         self.conv_layers = nn.Sequential(*layers)
         # AdaptiveAvgPool2d(1) collapses any (H, W) → (1, 1), giving a fixed-size
         # representation that is fully picklable at construction time.
         self.final_layers = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(ch[-1], ch[-1], bias=bias),
-            nn.ReLU(),
+            *_normed(nn.Linear(ch[-1], ch[-1], bias=bias), _make_norm(norm_layer, ch[-1], bias), activation_fn()),
             nn.Linear(ch[-1], embedding_dim, bias=bias),
         )
         self.embedding_dim = embedding_dim
         self.hidden_dim = ch[-1]
         self._initialize_weights()
         self._initialize_final_layers()
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The last of the final layers, which gives the embedding."""
+        return self.final_layers[-1]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Passes (N, C, H, W) input through conv blocks then the projection head."""
@@ -912,12 +1044,13 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
     input_style = 'channels'
     settings = {'pytorch_predefined': 'pytorch_predefined', 'pretrained': 'pretrained',
                 'use_spectral_norm': 'use_spectral_norm', 'dropout': 'dropout', 'norm_layer': 'norm_layer',
-                'bias': 'bias'}
+                'bias': 'bias', 'activation': 'activation'}
 
     def __init__(self, input_dim: int, hidden_dim: int, embedding_dim: int, n_layers: int,
                  pytorch_predefined: Optional[str] = None,
                  pretrained: bool = default_of('pretrained'), use_spectral_norm: bool = default_of('use_spectral_norm'), dropout: float = default_of('dropout'),
-                 norm_layer: Optional[str] = None, bias: bool = default_of('bias'), **kwargs):
+                 norm_layer: Optional[str] = None, bias: bool = default_of('bias'),
+                 activation: str = default_of('activation'), **kwargs):
         super().__init__()
         try:
             import torchvision.models as _tv_models
@@ -1000,8 +1133,14 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
             param.requires_grad = False
 
         # --- Trainable MLP head, built with the call's MLP settings ---
-        self.head = MLP(backbone_out_dim, hidden_dim, embedding_dim, n_layers,
-                        use_spectral_norm=use_spectral_norm, dropout=dropout, norm_layer=norm_layer, bias=bias)
+        self.head = MLP(backbone_out_dim, hidden_dim, embedding_dim, n_layers, linear_path=False,
+                        use_spectral_norm=use_spectral_norm, dropout=dropout, norm_layer=norm_layer, bias=bias,
+                        activation=activation)
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The readout of the MLP head on the frozen backbone."""
+        return self.head.readout
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Extract frozen backbone features then project via the trainable head.
@@ -1065,46 +1204,92 @@ class PretrainedBackboneEmbedding(BaseEmbedding):
 
 
 class ChannelScaling(nn.Module):
-    """Centres and scales each channel of its input by the mean and standard deviation of the training rows.
+    """Removes the units and the offset of its input by statistics of the training rows, one scale per unit.
+
+    ``mode`` is how, as the stream behind the input asks (:data:`neural_mi.defaults.SCALING_OF_KIND`):
+
+    - ``'channel'`` centres each channel and divides it by its own standard deviation, for a stream whose
+      channels can each be a different quantity.
+    - ``'counts'`` centres each channel and divides every channel by one spread, that of the whole stream,
+      for spike counts, whose channels share a unit.
+    - ``'times'`` divides every value by one root mean square, that of the whole stream, for spike times.
+
+    ``centre=False`` turns the centring off, for an encoder without biases, which could not add an offset
+    back. ``empty`` is a value that marks an empty slot, such as the padding of spike times. It takes no part
+    in the statistics and comes out where it went in. A centred value could land on it, so an input with one
+    is never centred.
 
     The statistics are buffers, so they are saved with the network and applied
     wherever it is used again. They start as the identity and :meth:`fit` sets
-    them. A channel that does not vary keeps a scale of 1. ``Model(input_scaling=
-    'standard')`` puts one in front of every encoder (:class:`InputScaling`), or
-    of each side of the concat critic.
+    them, in double precision. A channel that does not vary keeps a scale of 1,
+    judged against the channel that varies most, as the data check judges it
+    (:func:`neural_mi.preprocessing.constant_channels`), so data in any unit is
+    scaled. ``Model(input_scaling='auto')`` puts one in front of an encoder's input
+    (:class:`InputScaling`), or of each side of the concat critic.
     """
 
-    def __init__(self, n_channels: int):
+    def __init__(self, n_channels: int, mode: str = 'channel', centre: bool = True,
+                 empty: Optional[float] = None):
         super().__init__()
+        self.mode, self.empty = mode, empty
+        self.centre = centre and mode != 'times' and empty is None
         self.register_buffer('shift', torch.zeros(n_channels))
         self.register_buffer('scale', torch.ones(n_channels))
 
     @torch.no_grad()
     def fit(self, x: torch.Tensor) -> None:
         """Set the statistics from the rows ``x``, shaped ``(n, n_channels, ...)``."""
-        x = x.float()
+        from neural_mi.preprocessing import constant_channels
+        x = x.double()
         dims = [d for d in range(x.ndim) if d != 1]
-        std = x.std(dim=dims) if x.shape[0] > 1 else torch.ones(x.shape[1])
-        self.shift.copy_(x.mean(dim=dims))
-        self.scale.copy_(torch.where(std > 1e-8, std, torch.ones_like(std)))
+        real = (x != self.empty) if self.empty is not None else torch.ones_like(x, dtype=torch.bool)
+        count = real.sum(dim=dims).clamp_min(1)
+        shift = ((x * real).sum(dim=dims) / count if self.centre
+                 else torch.zeros(x.shape[1], dtype=x.dtype, device=x.device))
+        view = (1, -1) + (1,) * (x.ndim - 2)
+        square = ((x - shift.view(view)) ** 2) * real
+        if self.mode == 'channel':
+            spread = (square.sum(dim=dims) / (count - 1).clamp_min(1)).sqrt()
+            constant = torch.as_tensor(constant_channels(spread.cpu().numpy()), device=spread.device)
+            scale = torch.where(constant, torch.ones_like(spread), spread)
+        else:
+            one = float((square.sum() / real.sum().clamp_min(1)).sqrt())
+            scale = torch.full((x.shape[1],), one if one > 0 else 1.0, dtype=x.dtype, device=x.device)
+        self.shift.copy_(shift)
+        self.scale.copy_(scale)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         view = (1, -1) + (1,) * (x.ndim - 2)
-        return (x - self.shift.view(view)) / self.scale.view(view)
+        out = (x - self.shift.view(view)) / self.scale.view(view)
+        return out if self.empty is None else torch.where(x == self.empty, x, out)
 
 
 class InputScaling(nn.Module):
-    """An encoder whose input passes through :class:`ChannelScaling` first, one per part of a paired input."""
+    """An encoder whose input passes through :class:`ChannelScaling` first, one per part of a paired input.
 
-    def __init__(self, encoder: nn.Module, n_channels):
+    ``modes`` says how each part is scaled (:class:`ChannelScaling`), one mode per part, ``None`` for a part
+    left as it is, as a categorical stream is. ``centre=False`` is for an encoder without biases and applies
+    to every part. ``empty`` is the padding value of spike times and applies to the parts scaled as spike
+    times.
+    """
+
+    def __init__(self, encoder: nn.Module, n_channels, modes, centre: bool = True, empty: Optional[float] = None):
         super().__init__()
         self.encoder = encoder
         channels = n_channels if isinstance(n_channels, tuple) else (n_channels,)
-        self.scalers = nn.ModuleList(ChannelScaling(c) for c in channels)
+        self.scalers = nn.ModuleList(
+            ChannelScaling(c, mode, centre=centre, empty=empty if mode == 'times' else None) if mode
+            else nn.Identity() for c, mode in zip(channels, tuple(modes)))
 
     def fit(self, x) -> None:
         for scaler, part in zip(self.scalers, x if isinstance(x, (tuple, list)) else (x,)):
-            scaler.fit(part)
+            if isinstance(scaler, ChannelScaling):
+                scaler.fit(part)
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The readout of the encoder behind the scaling."""
+        return getattr(self.encoder, 'readout', None)
 
     def forward(self, x):
         if isinstance(x, (tuple, list)):
@@ -1165,6 +1350,21 @@ class VariationalWrapper(nn.Module):
             nn.init.xavier_uniform_(head.weight)
             if head.bias is not None:
                 nn.init.zeros_(head.bias)
+
+    @classmethod
+    def sharing(cls, other: 'VariationalWrapper', base_encoder: nn.Module) -> 'VariationalWrapper':
+        """A wrapper of ``base_encoder`` that uses ``other``'s heads: the second side of a shared encoder
+        whose sides scale their inputs apart, around the same encoder."""
+        wrapper = cls.__new__(cls)
+        nn.Module.__init__(wrapper)
+        wrapper.base_encoder = base_encoder
+        wrapper.mu_head, wrapper.log_var_head = other.mu_head, other.log_var_head
+        return wrapper
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The head that gives the mean of the embedding."""
+        return self.mu_head
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode ``x`` through the base encoder and sample from the posterior.
@@ -1244,6 +1444,11 @@ class BranchedEmbedding(BaseEmbedding):
                        **(branch_kwargs if window is None else dict(branch_kwargs, window_size=window)))
             for dim, window in zip(dims, windows))
         self.head = MLP(len(dims) * embedding_dim, embedding_dim, embedding_dim, 1, **(head or {}))
+
+    @property
+    def readout(self) -> Optional[nn.Module]:
+        """The readout of the head that joins the branches."""
+        return self.head.readout
 
     def forward(self, x) -> torch.Tensor:
         parts = x if isinstance(x, (tuple, list)) else (x,)

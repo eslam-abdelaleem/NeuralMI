@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 import neural_mi as nmi
-from neural_mi.analysis.sweep import (amplification_factor,
-                                      AMPLIFICATION_WARN_THRESHOLD)
+from neural_mi.analysis.sweep import amplification_factor
+from neural_mi.defaults import default_of
 from neural_mi.generators.oracle import LatentGaussian
 
 
@@ -87,7 +87,7 @@ class TestAmplificationFactorReported:
             warnings.simplefilter('always')
             r = nmi.run(s['x'], s['y'], mode='conditional',
                         conditional=nmi.Conditional(w_data=s['w']), **_RUN)
-        assert r.get('amplification_factor') > AMPLIFICATION_WARN_THRESHOLD
+        assert r.get('amplification_factor') > default_of('amplification_threshold')
         text = ' '.join(str(c.message) for c in caught)
         assert 'amplification' in text, "high amplification must be surfaced to the user"
 
@@ -162,6 +162,13 @@ class TestCombinationWarnings:
         assert len(messages) == 1
         assert "three much larger estimates" in messages[0]
         assert all(k in messages[0] for k in ("'mi_xw_y'", "'mi_x_y'", "'mi_w_y'"))
+        assert "which reaches Training(amplification_threshold=10)" in messages[0]
+
+    def test_amplification_threshold_sets_when_the_factor_warns(self):
+        terms = ("Conditional MI", 0.05, ("XW;Y", 0.55, 'mi_xw_y'), [("W;Y", 0.5, 'mi_w_y')])
+        assert amplification_factor([0.55, 0.5], 0.05) < 30
+        assert self._raised(*terms, self.NATS)
+        assert self._raised(*terms, {**self.NATS, 'amplification_threshold': 30.0}) == []
 
     def test_interaction_warns_about_its_own_value(self, monkeypatch):
         """The two-term piece I(X,W;Y) - I(X;Y) is I(W;Y|X), and a warning

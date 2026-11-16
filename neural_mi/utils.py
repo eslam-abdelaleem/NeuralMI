@@ -513,7 +513,7 @@ def mi_report_units(base_params: Optional[Dict[str, Any]] = None,
 # The Model settings an encoder or a head can read beyond its sizes. Each
 # built-in encoder declares the ones it reads (BaseEmbedding.settings).
 MODEL_SETTINGS = ('use_spectral_norm', 'dropout', 'norm_layer', 'bias', 'kernel_size', 'cnn_pooling',
-                  'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained')
+                  'bidirectional', 'nhead', 'pytorch_predefined', 'pretrained', 'linear_path', 'activation')
 
 
 # Every setting build_critic reads, and so the list a saved network carries for
@@ -526,6 +526,7 @@ ARCHITECTURE_KEYS = (
     'use_variational', 'shared_encoder', 'max_n_batches',
     'input_dim_x', 'input_dim_y', 'n_channels_x', 'n_channels_y',
     '_difference_term', 'processor_params_x', 'processor_params_y', 'input_scaling',
+    'input_scaling_x', 'input_scaling_y', 'large_first_layer', 'zero_start',
 ) + MODEL_SETTINGS
 
 
@@ -564,10 +565,36 @@ def critic_recipe_takes(recipe) -> Optional[set]:
     return set(parameters) & set(CRITIC_SIZES + CRITIC_SETTINGS)
 
 
+def _scaling_modes(embedding_params: Dict[str, Any], n_parts_x: int
+                   ) -> Tuple[Tuple[Optional[str], ...], Optional[str]]:
+    """How the critic scales each part of its X input and its Y input, as the task decided for the streams
+    behind them (``input_scaling_x``, ``input_scaling_y``, :func:`neural_mi.defaults.side_scaling`): a mode
+    of :class:`neural_mi.models.embeddings.ChannelScaling`, or None for an input left as it is."""
+    fx = embedding_params.get('input_scaling_x')
+    fx = tuple(fx) if isinstance(fx, (tuple, list)) else (fx,)
+    # A pair X whose parts were decided as one input (rows a mode built itself) takes that decision for both.
+    return (fx if len(fx) == n_parts_x else fx[:1] * n_parts_x), embedding_params.get('input_scaling_y')
+
+
+def _scaled_input(net: nn.Module, embedding_params: Dict[str, Any], side: str, modes, centre: bool,
+                  reads_padding: Optional[float] = None, always: bool = False) -> nn.Module:
+    """``net`` behind :class:`InputScaling` for the input of ``side`` ('x' or 'y') under ``modes``
+    (:func:`_scaling_modes`), or ``net`` itself when no part is scaled and not ``always``. ``centre`` is
+    False for an encoder without biases. An encoder that reads a padding value (``reads_padding``, the
+    ``no_spike_value`` DeepSets masks by) reads spike times, so each part it scales is scaled as spike times
+    and keeps that value."""
+    if not any(modes) and not always:
+        return net
+    empty = processor_setting('spike', embedding_params.get(f'processor_params_{side}') or {}, 'no_spike_value')
+    if reads_padding is not None:
+        modes, empty = tuple('times' if mode else None for mode in modes), reads_padding
+    return InputScaling(net, embedding_params[f'n_channels_{side}'], modes, centre=centre, empty=empty)
+
+
 def encoders_scale(input_scaling, custom_critic=None) -> bool:
     """Whether the encoders scale their own input: ``Model(input_scaling=...)`` is set and reaches them. Every
     encoder the library builds takes it, and a ``custom_critic`` only when its recipe names it."""
-    if input_scaling is None:
+    if input_scaling in (None, 'none'):
         return False
     if custom_critic is None:
         return True
@@ -640,8 +667,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
 
     These parameters have no effect for ``critic_type`` values other than
     ``'hybrid'``.
+
+    A critic that the library builds then starts with every score at exactly
+    zero (``Model(zero_start=True)``, :meth:`BaseCritic.start_at_zero`). A
+    custom critic is the caller's recipe and starts as it builds itself.
     """
-    
     # Only the architecture keys reach the build, so a network saved with them
     # rebuilds as it was trained. A setting absent from them takes its schema
     # default.
@@ -649,6 +679,16 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     if embedding_params.get('custom_critic') is not None:
         # The caller's recipe builds the whole critic, in each task anew.
         return _custom_critic(embedding_params['custom_critic'], embedding_params)
+    critic = _library_critic(critic_type, embedding_params, custom_embedding_cls)
+    if setting(embedding_params, 'zero_start'):
+        critic.start_at_zero()
+    return critic
+
+
+def _library_critic(critic_type: str, embedding_params: Dict[str, Any],
+                    custom_embedding_cls: Optional[type] = None) -> BaseCritic:
+    """The critic of ``critic_type`` that the library builds from ``embedding_params``, the architecture keys
+    only (:func:`build_critic`)."""
     use_variational = setting(embedding_params, 'use_variational')
     max_n_batches = setting(embedding_params, 'max_n_batches')
     # The class also travels in embedding_params, so a caller that only has the
@@ -664,7 +704,7 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
     # Every MLP the critic builds around its encoders (the hybrid critic's
     # head, the concat critic's network, the head of a difference term's
     # branched encoder) reads the call's MLP settings.
-    head_settings = {name: values[name] for name in MLP.settings}
+    head_settings = {**{name: values[name] for name in MLP.head_settings}, 'linear_path': False}
     critic_kwargs = {
         'embedding_dim': setting(embedding_params, 'embedding_dim'),
         'max_n_batches': max_n_batches,
@@ -685,10 +725,11 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
             # regularises the scores. There is no per-variable embedding here
             # for it to compress.
             concat_net = VariationalWrapper(concat_net, 1, bias=values['bias'])
-        # Each side's channels scaled before the pair is formed, part by part for a pair X.
-        scaling = ((InputScaling(nn.Identity(), embedding_params['n_channels_x']),
-                    InputScaling(nn.Identity(), embedding_params['n_channels_y']))
-                   if setting(embedding_params, 'input_scaling') == 'standard' else None)
+        # Each side scaled before the pair is formed, part by part for a pair X (_scaled_input).
+        modes_x, mode_y = _scaling_modes(embedding_params, len(_flat_x) if isinstance(_flat_x, tuple) else 1)
+        scaling = ((_scaled_input(nn.Identity(), embedding_params, 'x', modes_x, values['bias'], always=True),
+                    _scaled_input(nn.Identity(), embedding_params, 'y', (mode_y,), values['bias'], always=True))
+                   if any(modes_x) or mode_y else None)
         return ConcatCritic(embedding_net=concat_net, scaling=scaling, **critic_kwargs)
 
     # X sets the architecture and Y follows it unless given its own, the same
@@ -835,10 +876,12 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                                      else flat // n_ch)
 
     # DeepSets masks padded slots, so it needs the sentinel the processor used.
-    # Taken per side, since X and Y can be processed differently.
+    # Only an encoder that names it gets it: one that takes **kwargs ignores
+    # it, and its input is scaled as its stream asks (_scaled_input). Taken per
+    # side, since X and Y can be processed differently.
     for Model_, kwargs, key in ((Model_x, model_kwargs, 'processor_params_x'),
                                 (Model_y, model_kwargs_y, 'processor_params_y')):
-        if _accepts_kwarg(Model_, 'no_spike_value'):
+        if _names(Model_, 'no_spike_value'):
             params = embedding_params.get(key) or {}
             kwargs['no_spike_value'] = processor_setting('spike', params, 'no_spike_value')
 
@@ -846,45 +889,47 @@ def build_critic(critic_type: str, embedding_params: Dict[str, Any],
                   if difference_term else Model_x(input_dim_x, **model_kwargs))
     net_y_base = net_x_base if shared_encoder else Model_y(input_dim_y, **model_kwargs_y)
 
-    # Model(input_scaling='standard'): every encoder reads its input centred and
-    # scaled channel by channel, by statistics the trainer sets from the
-    # training rows (models.critics.fit_input_scaling). They are buffers of the
-    # network, saved and applied with it.
-    input_scaling = setting(embedding_params, 'input_scaling')
-    if input_scaling == 'standard':
-        for Model_ in (Model_x, Model_y):
-            if Model_ is DeepSets:
-                raise ValueError(
-                    "Model(input_scaling='standard') cannot serve embedding_model='deepsets'. DeepSets tells a "
-                    "spike from padding by the padding value, which scaling moves. Use another encoder, or "
-                    "leave input_scaling unset."
-                )
-        net_x_base = InputScaling(net_x_base, embedding_params['n_channels_x'])
-        net_y_base = net_x_base if shared_encoder else InputScaling(net_y_base, embedding_params['n_channels_y'])
+    # Model(input_scaling='auto'): each input reaches its encoder with its units
+    # and offset removed, as the stream behind it asks (defaults.SCALING_OF_KIND),
+    # by statistics the trainer sets from the training rows
+    # (models.critics.fit_input_scaling). They are buffers of the network, saved
+    # and applied with it. The encoder's own needs come on top (_scaled_input):
+    # one without biases is not centred, and one that reads a padding value
+    # keeps it. Each side of a shared encoder has scalers of its own around the
+    # one encoder, so the two sides never share statistics.
+    _dim_x = embedding_params['input_dim_x']
+    modes_x, mode_y = _scaling_modes(embedding_params, len(_dim_x) if isinstance(_dim_x, tuple) else 1)
+    scaled_x = _scaled_input(net_x_base, embedding_params, 'x', modes_x, bias_x,
+                             reads_padding=model_kwargs.get('no_spike_value'))
+    scaled_y = _scaled_input(net_y_base, embedding_params, 'y', (mode_y,), bias_y,
+                             reads_padding=model_kwargs_y.get('no_spike_value'))
 
-    # Optionally wrap with VariationalWrapper, works for every encoder type
+    # Optionally wrap with VariationalWrapper, works for every encoder type. A
+    # shared encoder shares its variational heads as well.
     if use_variational:
-        net_x = VariationalWrapper(net_x_base, spec_x['embedding_dim'], bias=bias_x)
-        net_y = net_x if shared_encoder else VariationalWrapper(
-            net_y_base, spec_y['embedding_dim'], bias=bias_y)
+        net_x = VariationalWrapper(scaled_x, spec_x['embedding_dim'], bias=bias_x)
+        net_y = (net_x if shared_encoder and scaled_y is scaled_x
+                 else VariationalWrapper.sharing(net_x, scaled_y) if shared_encoder
+                 else VariationalWrapper(scaled_y, spec_y['embedding_dim'], bias=bias_y))
     else:
-        net_x, net_y = net_x_base, net_y_base
+        net_x, net_y = scaled_x, scaled_y
 
     # Warn when the first embedding layer is severely overparameterized.
     # Large first layers (input_dim * hidden_dim) are the most common cause of
     # overfitting in neuroscience datasets where windows are high-dimensional but
-    # sample counts are modest. 500k is a practical threshold, not a hard limit.
+    # sample counts are modest. Model(large_first_layer=...) sets the size noted.
     _first_hidden = hidden_dim[0] if isinstance(hidden_dim, list) else hidden_dim
     _last_hidden  = hidden_dim[-1] if isinstance(hidden_dim, list) else hidden_dim
     # A pair of inputs counts with both branches' sizes.
     _input_dim_x_total = sum(input_dim_x) if isinstance(input_dim_x, tuple) else input_dim_x
     first_layer_params = _input_dim_x_total * _first_hidden
-    if first_layer_params > 500_000:
+    large_first_layer = setting(embedding_params, 'large_first_layer')
+    if first_layer_params > large_first_layer:
         logger.info(
             f"Large first embedding layer detected: input_dim_x={input_dim_x} x "
-            f"hidden_dim={hidden_dim} = {first_layer_params:,} parameters. "
-            f"It may overfit small datasets. A smaller window_size or hidden_dim or "
-            f"another embedding model avoids that."
+            f"hidden_dim={hidden_dim} = {first_layer_params:,} parameters, more than "
+            f"Model(large_first_layer={large_first_layer}). It may overfit small datasets. A smaller "
+            f"window_size or hidden_dim or another embedding model avoids that."
         )
 
     # --- Critic Assembly ---
@@ -1169,18 +1214,18 @@ def warn_if_random_split_leaks(rows) -> None:
     """Warn that a random split of rows that share samples leaves each held-out row among training rows
     that nearly copy it (``rows`` is a :class:`neural_mi.data.rows.RowGeometry`).
 
-    Whether the copies give the held-out rows away depends on the encoder. On the windows of tutorial 04
-    a recurrent encoder and a CNN that averages over positions read a random split far above the exact
-    value, and the default MLP read it like a blocked one."""
+    Whether the copies give the held-out rows away depends on the encoder. On the windows of tutorial 04,
+    a recurrent encoder and a CNN that averages over positions gave estimates far above the exact value
+    under a random split. The default MLP gave about the same estimate as under a blocked split."""
     warnings.warn(
         f"Random split of rows that share samples: consecutive rows start {rows.step:.3g} apart and "
         f"each covers {rows.span:.3g}, so a held-out row shares samples with up to "
         f"{2 * (rows.rows_per_span - 1)} rows around it, most of them in training. An encoder that "
-        f"reads a pattern wherever it sits in a row, such as a recurrent one or a CNN that averages "
-        f"over positions, takes those rows for copies of the held-out one. Its held-out curve then "
-        f"follows the training rows and keeps rising as the network overfits, so the epoch it "
-        f"chooses comes late and the value read there is high. An encoder that reads each position "
-        f"on its own, such as the default MLP, is less exposed. Split(mode='blocked') holds out "
+        f"responds to a pattern wherever it occurs in a row, such as a recurrent one or a CNN that "
+        f"averages over positions, treats those rows as copies of the held-out one. Its held-out curve "
+        f"then follows the training rows and keeps rising as the network overfits, so the library "
+        f"chooses a late epoch with a value that is too high. An encoder that weights each position "
+        f"separately, such as the default MLP, is less exposed. Split(mode='blocked') holds out "
         f"contiguous blocks with a gap around each.",
         UserWarning, stacklevel=user_stacklevel()
     )
