@@ -360,10 +360,9 @@ wrappers. Several of those refusals exist only because a call is expensive, and 
    refuses a grid today (modes.py:806-808). It then runs once for each configuration.
 4. Keep one table beside `MODES` that says, for each analysis, whether it accepts a quantity
    with several terms, a grid, the rigorous correction, the permutation test and returned
-   embeddings. An entry is `True`, or a pair of a kind and a reason. The kind is `'undefined'`
-   when the combination has no meaning and `'not written'` when the code does not exist yet.
-   One function reads the table and raises with the reason. It replaces the seven fields of
-   `Mode` and the scattered checks.
+   embeddings. An entry is `True`, or it is marked as refused with a reason. One function reads
+   the table and raises with the reason. It replaces the seven fields of `Mode` and the
+   scattered checks.
 5. Fill the table by principle 2. The table below is the starting point. Establish each entry
    marked "check" before you write it.
 
@@ -372,8 +371,8 @@ wrappers. Several of those refusals exist only because a call is expensive, and 
    | `estimate` | yes | yes | yes | yes |
    | `lag` | yes, X moves against Y and W (check) | yes | yes, one ladder per lag | yes |
    | `pairwise` | yes, W stays whole (check) | yes | yes, one ladder per pair | yes |
-   | `dimensionality` | undefined, it reads the embeddings of one critic | yes | not written | undefined |
-   | `precision` | not written | yes | not written | undefined |
+   | `dimensionality` | refused: it reads the embeddings of one critic | yes | refused: no ladder is defined for its curve | refused: its curve has no null |
+   | `precision` | refused: it evaluates one frozen critic | yes | refused: no ladder is defined for its curve | refused: its curve has no null |
 
 6. Lift the refusals that only protect the user from a cost: two lists of windows in `mi_rate`
    (quantities.py:854-860), the permutation test together with the correction (modes.py:788),
@@ -391,7 +390,7 @@ wrappers. Several of those refusals exist only because a call is expensive, and 
 **Tests.** Add one snapshot case for each cell of the table that says yes and has none today:
 `lag` and `pairwise` with the correction (`gamma_range=range(1, 4)`), `lag` and `pairwise` with
 a conditioning stream, and `precision` with a grid. Add one test per refused cell that checks
-the kind and the reason. Update the table check in `tests/test_mode_registry.py`.
+the reason. Update the table check in `tests/test_mode_registry.py`.
 
 **Pages.** The table of `reference/USING.md` that lists what each mode accepts is generated from
 the new table. Add the new warning to `reference/MESSAGES.md`.
@@ -400,6 +399,9 @@ the new table. Add the new warning to `reference/MESSAGES.md`.
 `grep -n "one_network\|needs_grid" neural_mi/analysis/modes.py` shows nothing.
 
 ### E-09 `run()` takes the quantity, and the named functions call `run()`
+
+**Status.** The engine part of this step stands. The owner rejected the public argument
+`quantity=`, so item 1 is rewritten once the public form is settled.
 
 **Why.** A quantity at chosen times reaches the engine through a side door.
 `quantities._by_offsets` builds the rows itself and then calls `run()` on rows that are built

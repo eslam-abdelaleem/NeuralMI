@@ -13,8 +13,8 @@ API together with every test, tutorial cell and reference page that uses the old
 counts come from a search of the repository at commit `39f42d1`. Each step also updates
 `tests/public_surface.txt` (S-04). The tutorials are edited here and run again once, in P-13.
 
-Steps A-02, A-03 and A-10 follow from points that the owner has not confirmed yet (see
-"Decisions" in `plan/README.md`).
+Steps A-02 and A-03 describe a public form that the owner rejected. They are rewritten once the
+form is settled (see "The public API at the end" in `plan/README.md`).
 
 ### A-01 `rigorous` is an argument that every analysis takes
 
@@ -41,6 +41,8 @@ shows nothing outside `plan/` and `CHANGELOG.md`.
 
 ### A-02 `quantity` and `w_data` are arguments of `run()`, and three modes and three configs go
 
+**Status.** The owner rejected this form. Do not execute this step until it is rewritten.
+
 **Why.** `mode='conditional'`, `mode='interaction'` and `mode='transfer'` name what is measured,
 while the other modes name what is done with the estimator. The third signal is passed inside a
 config (`Conditional(w_data=w)`), although it is data like X and Y. After A-01 that config has
@@ -66,6 +68,8 @@ no other field.
 and `MODES` has five keys.
 
 ### A-03 The named functions are wrappers of `run()`
+
+**Status.** This step follows A-02 and is rewritten with it.
 
 **Why.** After E-09 each named function builds a `Quantity` and calls `run()`. This step fixes
 their public form.
@@ -227,36 +231,52 @@ an oracle. Four default to torch tensors and four to numpy arrays. The size argu
 
 **Why.** Every estimate that the library makes today trains a network or searches for nearest
 neighbours. A user has no cheap answer to compare it with, and `plot_cross_correlation` (deleted
-in X-08) was the only trace of one. The cheap counterpart of `I(A; B | C)` on the same rows is
-the information between Gaussian variables that have the covariance of those rows. It has a
-closed form in the determinants of three or four covariance matrices and takes milliseconds.
-For one channel on each side it is `-0.5 * log(1 - r**2)`, where `r` is the correlation
-coefficient. The estimators that train nothing already have a place in the registry (R-03), so
-this estimator needs no path of its own.
+in X-08) was the only trace of one. The cheap counterpart of `I(A; B | C)` is the information
+between Gaussian variables that have the covariance of the rows. It has a closed form in the
+determinants of three or four covariance matrices and takes milliseconds. The estimators that
+train nothing already have a place in the registry (R-03), so this estimator needs no path of
+its own.
+
+The estimator reads the same rows as the trained estimators, and this settles what it means for
+each kind of data. A row is treated as one vector. For a row that is a window, the vector is the
+flattened window, so the covariance contains the cross-covariance at every lag inside the
+window. The estimator is never computed on the samples before windowing, because the rows define
+the quantity. On one channel and one sample per side it is `-0.5 * log(1 - r**2)`, where `r` is
+the correlation coefficient. On several channels it is the same sum over the canonical
+correlations. With a conditioning group it uses the partial correlations given that group.
+Check the statement for transfer entropy before it is written in the pages: for Gaussian
+variables the value is half the Granger causality statistic.
 
 **Change.**
 1. Add `estimators/gaussian.py` with `gaussian_mi(x, y)` and `gaussian_cmi(x, y, z)`, computed
    from the log-determinants of the covariance of the flattened rows.
-2. Register it as `estimator='gaussian'`, with `trains_network=False` and `gaussian_cmi` as its
+2. Add a small ridge to each covariance before its determinant, as a setting of the estimator,
+   so that the logarithm stays finite when channels are nearly collinear.
+3. Register it as `estimator='gaussian'`, with `trains_network=False` and `gaussian_cmi` as its
    conditional form. It then runs wherever `ksg` runs: with every quantity, with `mode='lag'`
    (the cross-correlation function, in bits), with `mode='pairwise'` (the correlation map, in
    bits), with a grid and with the rigorous correction.
-3. Refuse a call whose rows are not more numerous than the dimensions of a row, because the
-   covariance is then singular. Warn when the rows are fewer than a multiple of the dimensions
-   that is a setting, because the value is then biased upward.
-4. Warn when a stream is given as spike times, because the covariance of padded spike times
+4. Refuse a call whose rows are not more numerous than the dimensions of a row, because the
+   covariance is then singular and the ridge alone would decide the value. Warn when the rows
+   are fewer than a multiple of the dimensions that is a setting, because the value is then
+   biased upward. A window of many samples reaches this limit quickly, since the dimension of a
+   row is the number of channels times the number of samples in the window.
+5. Warn when a stream is given as spike times, because the covariance of padded spike times
    has no meaning.
-5. Establish first whether a grid over `estimator_name` runs today with a trained and an
-   untrained estimator side by side. If it does, a grid over the two names gives the cheap
-   answer next to the trained one in one table.
-6. Consider an option that first maps each channel through its ranks to a normal variable, as
+6. Give a call a way to compute the Gaussian value beside a trained estimate on the same rows.
+   A grid over the name of the estimator is the first candidate, because it needs no new
+   option. Establish first that such a grid runs with a trained and an untrained estimator. If
+   it does not, add the Gaussian value as one more column that every task writes when an output
+   setting asks for it.
+7. Consider an option that first maps each channel through its ranks to a normal variable, as
    `ksg` does with `gaussianize` (estimators/ksg.py:175).
 
 **Tests.** Compare the estimator with the exact value of `LatentGaussian` on Gaussian data, for
 plain MI, for a conditional quantity and for transfer entropy. Add one snapshot case.
 
 **Pages.** Add the estimator to `reference/PARAMETERS.md`. Add a short section to
-`reference/USING.md` that advises running it first.
+`reference/USING.md` that advises running it first and says what it equals for each kind of
+rows.
 
 **Done when.** `nmi.run(x, y, estimator='gaussian')` returns the exact value on Gaussian data
 within sampling error, and the same call with `mode='lag'` returns a curve.
@@ -377,9 +397,8 @@ notebook.
 1. Convert both files to `.npz` and load them with `allow_pickle=False`.
 2. Add `tutorials/data/README.md` with the source, the citation that CRCNS asks for, and how
    the subset was made (the sessions, the time span and the processing).
-3. Read the terms of use on the page of hc-11 before the release. If they do not allow a subset
-   to be redistributed in a public repository, replace the files by a script that downloads
-   and prepares them.
+3. Keep the files in the repository. The owner confirmed that a subset of a CRCNS data set may
+   be redistributed with its citation.
 4. Update the loading cell of tutorial 04 and the two lines of `.gitignore`.
 
 **Done when.** `git ls-files tutorials/data` shows no `.pkl` file, and the README of the folder

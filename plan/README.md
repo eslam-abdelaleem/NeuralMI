@@ -54,10 +54,10 @@ These rules apply to every step.
 Four principles decide the small choices that the steps leave open.
 
 1. **One home.** Each concept is defined in one place, and every other place reads it from there.
-2. **Refuse only what cannot be done.** The library refuses a call when the call has no defined
-   meaning or when the code for it does not exist yet, and the message says which of the two it
-   is. It never refuses a call because the call is expensive or unwise. It announces the cost,
-   warns, and runs.
+2. **Refuse only what cannot be done.** The library refuses a call only when it cannot give it
+   a meaningful answer, and the message gives the reason. One table marks every combination
+   that is refused. The library never refuses a call because the call is expensive or unwise.
+   It announces the cost, warns, and runs.
 3. **A setting that is accepted is read.** A setting that the chosen path does not read produces
    a warning that names it.
 4. **A message informs and a warning asks for attention.** What the library is doing goes to the
@@ -181,6 +181,11 @@ neural_mi/
 
 ## The public API at the end
 
+**Under discussion.** The owner rejected the form below on 18 November 2026. A third positional
+argument hides that the conditioning signal has a role of its own, and the argument `quantity=`
+treats conditional MI in one way and every other quantity in another. The engine of phase E does
+not depend on the public form. Do not start A-02 or A-03 until this section is rewritten.
+
 ```python
 nmi.run(x_data, y_data=None, w_data=None, *, quantity=None, mode='estimate',
         sweep_grid=None, rigorous=None, permutation=None,
@@ -195,8 +200,8 @@ nmi.run(x_data, y_data=None, w_data=None, *, quantity=None, mode='estimate',
   a quantity at chosen times, such as `nmi.Quantity('transfer_entropy', history_window=5)`.
 - `mode` says what is done with it: `'estimate'`, `'lag'`, `'pairwise'`, `'dimensionality'` or
   `'precision'`.
-- `sweep_grid`, `rigorous` and `permutation` work with every analysis for which they have a
-  meaning. A key of `sweep_grid` can be a setting of the network, a setting of a processor, or a
+- `sweep_grid`, `rigorous` and `permutation` work with every analysis that the table of E-08
+  does not mark as refused. A key of `sweep_grid` can be a setting of the network, a setting of a processor, or a
   parameter of the quantity, such as `history_window`.
 
 Each named function is a wrapper of a few lines.
@@ -237,27 +242,25 @@ The owner has settled these points.
 - The verbosity has one right way, and the other ways go (X-09).
 - These go: `analyze_mi_heatmap`, the loader of the old network format, `sample_rate` for a
   spike stream, and any test or path that exists only for something that is gone.
-- The TUBA and NWJ bounds stay.
-- The tutorial data come from the CRCNS data set hc-11 (P-08).
+- The TUBA and NWJ bounds stay and are registered, so that they can be selected (R-03).
+- The tutorial data come from the CRCNS data set hc-11, and a subset may stay in the repository
+  (P-08).
 - The plan lives in `plan/` on `dev`. Nothing is published, so no step keeps an old name alive.
 
 The plan assumes these points, and the owner has not confirmed them yet. Each one names the steps
 that change if the answer differs.
 
-1. The library has one base function. `run()` takes the quantity as an argument, and the named
-   functions are wrappers. `mode` names analyses only, so `'conditional'`, `'interaction'`,
-   `'transfer'`, `'sweep'` and `'rigorous'` stop being modes (E-02, E-09, A-01, A-02, A-03, A-06).
-2. Passing `w_data` asks for `I(X; Y | W)`, and `quantity='interaction'` asks for the three-term
-   form (A-02).
-3. A Gaussian estimator gives the cheap linear answer for every quantity and every analysis. It
-   replaces `plot_cross_correlation` (A-10).
-4. The TUBA and NWJ bounds are registered, so that `estimator='tuba'` and `estimator='nwj'` can
-   be selected (R-03).
-5. `Results.best()` keeps ranking by held-out MI, and gains a column for the gap between the
+1. The library has one base inside the engine, and every public function is a wrapper of it
+   (E-02, E-09). The public form of the calls is still open. The owner rejected a third
+   positional argument for the conditioning signal and the argument `quantity=` (A-02, A-03).
+2. A Gaussian estimator gives the cheap linear answer for every quantity and every analysis, on
+   the same rows as the trained estimators. It can be selected like any estimator, and it can
+   run beside a trained one in the same call. It replaces `plot_cross_correlation` (A-10).
+3. `Results.best()` keeps ranking by held-out MI, and gains a column for the gap between the
    training and the held-out value. It applies no rule of its own to configurations that the
    held-out rows cannot tell apart (A-07).
-6. Each quantity keeps the column names that it has today (E-02).
-7. The modules `run.py` and `logger.py` are renamed `api.py` and `messages.py`, so that the
+4. Each quantity keeps the column names that it has today (E-02).
+5. The modules `run.py` and `logger.py` are renamed `api.py` and `messages.py`, so that the
    package attributes `run` and `logger` no longer hide them (L-10, E-14).
 
 ## Index of steps
