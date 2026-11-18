@@ -300,7 +300,9 @@ activations are already derived from `ACTIVATIONS`.
 `NONPARAMETRIC_CONDITIONAL`), an identity check in the trainer
 (`self.estimator_fn is infonce_lower_bound`, training/trainer.py:944 and 1109) and nine branches
 on `'ksg'` or on `NONPARAMETRIC` (run.py:309, 428, 827 and 1588, analysis/task.py:291,
-analysis/rigorous.py:665, analysis/sweep.py:317, device.py:54, validation.py:49).
+analysis/rigorous.py:665, analysis/sweep.py:317, device.py:54, validation.py:49). The bounds
+`tuba_lower_bound` and `nwj_lower_bound` (estimators/bounds.py:31-76) take the same matrix of
+scores as InfoNCE, but no table names them, so they cannot be selected.
 
 **Change.**
 1. Declare one record for each estimator in `estimators/__init__.py`.
@@ -316,9 +318,14 @@ analysis/rigorous.py:665, analysis/sweep.py:317, device.py:54, validation.py:49)
    ```
 2. Replace each branch by the property that it asks about. The trainer's identity check reads
    `log_n_ceiling`. The branches on KSG read `trains_network` or `conditional_fn`.
+3. Register the TUBA and NWJ bounds as `'tuba'` and `'nwj'`. Establish first that each trains
+   on the data of a snapshot case.
 
 **Tests.** Update `tests/test_estimators.py` and `tests/test_ksg.py` where they read the three
-tables.
+tables. Add a test that every registered name runs through `run()`.
+
+**Pages.** Add the two names to the row of the estimator in `reference/PARAMETERS.md`, and say
+there which estimators the oracle tests cover.
 
 **Done when.** `grep -rn "NONPARAMETRIC\|is infonce_lower_bound" neural_mi/` shows nothing.
 

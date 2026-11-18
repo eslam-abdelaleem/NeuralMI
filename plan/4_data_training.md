@@ -15,8 +15,9 @@ that disagreement.
 ### W-01 One rule converts a duration to samples
 
 **Why.** Nine expressions turn a duration into a number of samples or bins. They follow three
-different rules. The table gives what each returns for a duration of 12.5, 2.5 and 13.5 samples, and
-for 0.3 divided by 0.1. A script produced it by calling each function.
+different rules. The table gives what each returns for a duration of 12.5, 2.5 and 13.5 samples,
+and for 0.3 divided by 0.1. A script produced it by calling each function, and its output is in
+`plan/evidence/conversions.txt`.
 
 | Expression | Where | 12.5 | 2.5 | 13.5 | 0.3 / 0.1 |
 |---|---|---|---|---|---|
@@ -31,8 +32,12 @@ for 0.3 divided by 0.1. A script produced it by calling each function.
 | `RowGeometry.rows_per_span` | data/rows.py:49 | 13 | 3 | 14 | 3 |
 
 The first two round to the nearest even number, the third rounds down, and the others round up.
-For 25 Hz data and a window of 0.5 s, `run()` therefore trains on windows of 12 samples with a
-step of 0.48 s, and `create_dataset` returns windows of 13 samples with a step of 0.5 s.
+For 25 Hz data and a window of 0.5 s, `run()` therefore trains on windows of 12 samples, and
+`create_dataset` returns windows of 13 samples.
+
+The owner's rule is that a window contains every sample whose time stamp falls inside it. A
+window of 0.5 s that starts on a sample of 25 Hz data contains the samples at 0 s, 0.04 s and so
+on up to 0.48 s, so it has 13 samples. Six of the nine expressions already follow this rule.
 
 **Change.**
 1. Establish first that the table is still correct by calling the nine expressions again.
@@ -40,28 +45,30 @@ step of 0.48 s, and `create_dataset` returns windows of 13 samples with a step o
 
    ```python
    def samples_in(duration: float, period: float) -> int:
-       """The whole samples that fit in `duration`. A partial sample at the end is dropped."""
-       return max(1, int(math.floor(duration / period + 1e-9)))
+       """The samples stamped inside a window of `duration` that starts on a sample."""
+       return max(1, int(math.ceil(duration / period - 1e-9)))
    ```
-3. Make all nine expressions call it. On the unfold route the step also becomes a whole number
-   of samples by this rule. On the grid route the step stays a duration.
-4. Warn once per call when a window or a step is not a whole number of samples, and give the
-   width that is used. For the example above the text says that `window_size=0.5` is 12.5
-   samples and that each window contains 12 samples, or 0.48 s.
+3. Make all nine expressions call it. On the unfold route the step is converted by the same
+   function, and a step that is left unset is one window, so the windows tile the samples. On
+   the grid route the step stays a duration.
+4. Say once per call, in a log message, when a window or a step is not a whole number of
+   samples, and give the number of samples that is used.
+5. Keep dropping the incomplete window at the end of a recording. A window needs a fixed width,
+   so keeping it would need a rule for padding. With `shift_windows` on, each epoch moves the
+   rows by up to one step, so samples beyond the last unmoved window are read in training.
 
 **Tests.** Add a parametrised test of `samples_in` with the four columns of the table. Add a
 test that `run()` and `create_dataset` give the same width for 25 Hz data and a window of 0.5 s.
 
-**Pages.** Add the warning to `reference/MESSAGES.md`. State the rule where
-`reference/USING.md` introduces `window_size`.
+**Pages.** State the rule where `reference/USING.md` introduces `window_size`.
 
-**Numbers.** They change wherever a window or a step is not a whole number of samples. On the
-unfold route a width that rounded up now rounds down (13.5 samples gave 14 and now gives 13). On
-the grid route every fractional width loses one sample (12.5 gave 13 and now gives 12). Data
-whose windows are whole numbers of samples are unaffected.
+**Numbers.** They change on the unfold route wherever a window or a step is not a whole number
+of samples: 12.5 samples gave 12 and now give 13, and 2.5 gave 2 and now give 3. `run()` takes
+this route for regular streams that start together. The grid route and `create_dataset` already
+round up. Data whose windows are whole numbers of samples are unaffected.
 
-**Done when.** `grep -rn "np.ceil\|int(round" neural_mi/data/` shows no conversion of a
-duration, and the new tests pass.
+**Done when.** `grep -rn "int(round" neural_mi/data/` shows no conversion of a duration, and the
+new tests pass.
 
 ### W-02 `create_dataset` reads the row plan
 

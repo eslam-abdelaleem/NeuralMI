@@ -1,0 +1,361 @@
+analysis/conditional.py:24	sig	run_conditional_mi	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/dimensionality.py:428	sig	run_dimensionality_analysis	n_restarts=4	same	MODES[dimensionality]=4
+analysis/dimensionality.py:429	sig	run_dimensionality_analysis	saturation_ratio=0.95	same	MODES[dimensionality]=0.95
+analysis/dimensionality.py:431	sig	run_dimensionality_analysis	split_method='random'	same	MODES[dimensionality]='random'
+analysis/dimensionality.py:433	sig	run_dimensionality_analysis	ceiling_mi_fraction=0.85	same	MODES[dimensionality]=0.85
+analysis/dimensionality.py:434	sig	run_dimensionality_analysis	grid_reach=2.0	same	MODES[dimensionality]=2.0
+analysis/dimensionality.py:435	sig	run_dimensionality_analysis	refit_reach=4.0	same	MODES[dimensionality]=4.0
+analysis/dimensionality.py:436	sig	run_dimensionality_analysis	reference_fill=0.75	same	MODES[dimensionality]=0.75
+analysis/dimensionality.py:437	sig	run_dimensionality_analysis	grid_small=10	same	MODES[dimensionality]=10
+analysis/dimensionality.py:438	sig	run_dimensionality_analysis	grid_medium=20	same	MODES[dimensionality]=20
+analysis/dimensionality.py:439	sig	run_dimensionality_analysis	grid_points=10	same	MODES[dimensionality]=10
+analysis/dimensionality.py:440	sig	run_dimensionality_analysis	confirm_steps=3	same	MODES[dimensionality]=3
+analysis/dimensionality.py:441	sig	run_dimensionality_analysis	restart_spread=0.1	same	MODES[dimensionality]=0.1
+analysis/dimensionality.py:442	sig	run_dimensionality_analysis	held_out_gap=0.1	same	MODES[dimensionality]=0.1
+analysis/dimensionality.py:443	sig	run_dimensionality_analysis	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/dimensionality.py:174	get	kwargs	lag=1	same	BASE=<no default>; MODES[dimensionality]=1
+analysis/dimensionality.py:407	get	out	critic_type=params.get('critic_type')	expr	BASE='separable'
+analysis/interaction.py:51	sig	run_interaction_information	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/lag.py:22	sig	run_lag_analysis	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/lag.py:23	sig	run_lag_analysis	equalize_n=False	same	MODES[lag]=False
+analysis/modes.py:87	sig	produce_single_network	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:94	sig	produce_lag	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:94	sig	produce_lag	equalize_n=False	same	MODES[lag]=False
+analysis/modes.py:140	sig	produce_rigorous	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:199	sig	_difference_rows	bidirectional=default_of('bidirectional')	expr	BASE=False
+analysis/modes.py:245	sig	_difference_scalars	bidirectional=default_of('bidirectional')	expr	BASE=False
+analysis/modes.py:266	sig	produce_difference	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:290	sig	produce_difference_rigorous	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:324	sig	produce_pairwise	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:364	sig	produce_dimensionality	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:414	sig	produce_precision	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:899	sig	produce	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/modes.py:483	get	analysis_kwargs	curvature_t_threshold=curvature_t_threshold	expr	MODES[rigorous]=2.0; MODES[conditional]=2.0; MODES[interaction]=2.0; MODES[transfer]=2.0
+analysis/modes.py:484	get	analysis_kwargs	min_gamma_points=min_gamma_points	expr	MODES[rigorous]=5; MODES[conditional]=5; MODES[interaction]=5; MODES[transfer]=5
+analysis/modes.py:485	get	analysis_kwargs	confidence_level=confidence_level	expr	MODES[rigorous]=0.68; MODES[conditional]=0.68; MODES[interaction]=0.68; MODES[transfer]=0.68
+analysis/modes.py:486	get	analysis_kwargs	residual_threshold=_FIT['residual_threshold']['default']	expr	MODES[rigorous]=2.5; MODES[conditional]=2.5; MODES[interaction]=2.5; MODES[transfer]=2.5
+analysis/modes.py:487	get	analysis_kwargs	leverage_threshold=_FIT['leverage_threshold']['default']	expr	MODES[rigorous]=0.2; MODES[conditional]=0.2; MODES[interaction]=0.2; MODES[transfer]=0.2
+analysis/modes.py:488	get	analysis_kwargs	left_out_share=_FIT['left_out_share']['default']	expr	MODES[rigorous]=0.5; MODES[conditional]=0.5; MODES[interaction]=0.5; MODES[transfer]=0.5
+analysis/modes.py:502	get	call.analysis_kwargs	equalize_n=False	same	MODES[lag]=False
+analysis/modes.py:639	get	ctx	prediction_horizon=1	no-schema-default	NONE=<no default>
+analysis/modes.py:640	get	ctx	stride=1	no-schema-default	NONE=<no default>
+analysis/modes.py:740	get	ctx	equalize_n=False	same	MODES[lag]=False
+analysis/offsets.py:22	sig	spec_geometry	stride=1	no-schema-default	NONE=<no default>
+analysis/offsets.py:30	sig	build_rows	stride=1	no-schema-default	NONE=<no default>
+analysis/pairwise.py:140	sig	run_pairwise_mi	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/permutation.py:252	sig	permutation_nulls	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/permutation.py:253	sig	permutation_nulls	permutation_shuffle='circular'	no-schema-default	NONE=<no default>
+analysis/permutation.py:254	sig	permutation_nulls	permutation_min_shift=0.1	no-schema-default	NONE=<no default>
+analysis/precision.py:45	sig	run_precision_analysis	corrupt_target='x'	same	MODES[precision]='x'
+analysis/precision.py:46	sig	run_precision_analysis	corruption_method='rounding'	same	MODES[precision]='rounding'
+analysis/precision.py:46	sig	run_precision_analysis	n_noise_samples=50	same	MODES[precision]=50
+analysis/precision.py:47	sig	run_precision_analysis	threshold_ratio=0.9	same	MODES[precision]=0.9
+analysis/precision.py:48	sig	run_precision_analysis	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/precision.py:40	get	params	no_spike_value=0.0	same	PROC[spike]=0.0
+analysis/rigorous.py:238	sig	_drop_rungs	left_out_share=0.5	same	MODES[rigorous]=0.5; MODES[conditional]=0.5; MODES[interaction]=0.5; MODES[transfer]=0.5
+analysis/rigorous.py:239	sig	_drop_rungs	min_gamma_points=5	same	MODES[rigorous]=5; MODES[conditional]=5; MODES[interaction]=5; MODES[transfer]=5
+analysis/rigorous.py:295	sig	_compute_fit_diagnostics	residual_threshold=2.5	same	MODES[rigorous]=2.5; MODES[conditional]=2.5; MODES[interaction]=2.5; MODES[transfer]=2.5
+analysis/rigorous.py:296	sig	_compute_fit_diagnostics	leverage_threshold=0.2	same	MODES[rigorous]=0.2; MODES[conditional]=0.2; MODES[interaction]=0.2; MODES[transfer]=0.2
+analysis/rigorous.py:461	sig	_post_process_and_correct	residual_threshold=2.5	same	MODES[rigorous]=2.5; MODES[conditional]=2.5; MODES[interaction]=2.5; MODES[transfer]=2.5
+analysis/rigorous.py:462	sig	_post_process_and_correct	leverage_threshold=0.2	same	MODES[rigorous]=0.2; MODES[conditional]=0.2; MODES[interaction]=0.2; MODES[transfer]=0.2
+analysis/rigorous.py:465	sig	_post_process_and_correct	left_out_share=0.5	same	MODES[rigorous]=0.5; MODES[conditional]=0.5; MODES[interaction]=0.5; MODES[transfer]=0.5
+analysis/rigorous.py:879	sig	run_rigorous_analysis	gamma_range=range(1, 11)	DRIFT	MODES[conditional]=None; MODES[interaction]=None; MODES[transfer]=None; NONE=<no default>
+analysis/rigorous.py:962	sig	run_rigorous_scalar_analysis	gamma_range=range(1, 11)	DRIFT	MODES[conditional]=None; MODES[interaction]=None; MODES[transfer]=None; NONE=<no default>
+analysis/rigorous.py:964	sig	run_rigorous_scalar_analysis	curvature_t_threshold=2.0	same	MODES[rigorous]=2.0; MODES[conditional]=2.0; MODES[interaction]=2.0; MODES[transfer]=2.0
+analysis/rigorous.py:965	sig	run_rigorous_scalar_analysis	min_gamma_points=5	same	MODES[rigorous]=5; MODES[conditional]=5; MODES[interaction]=5; MODES[transfer]=5
+analysis/rigorous.py:966	sig	run_rigorous_scalar_analysis	confidence_level=0.68	same	MODES[rigorous]=0.68; MODES[conditional]=0.68; MODES[interaction]=0.68; MODES[transfer]=0.68
+analysis/rigorous.py:967	sig	run_rigorous_scalar_analysis	residual_threshold=2.5	same	MODES[rigorous]=2.5; MODES[conditional]=2.5; MODES[interaction]=2.5; MODES[transfer]=2.5
+analysis/rigorous.py:968	sig	run_rigorous_scalar_analysis	leverage_threshold=0.2	same	MODES[rigorous]=0.2; MODES[conditional]=0.2; MODES[interaction]=0.2; MODES[transfer]=0.2
+analysis/rigorous.py:970	sig	run_rigorous_scalar_analysis	left_out_share=0.5	same	MODES[rigorous]=0.5; MODES[conditional]=0.5; MODES[interaction]=0.5; MODES[transfer]=0.5
+analysis/rigorous.py:723	sig	run	gamma_range=range(1, 11)	DRIFT	MODES[conditional]=None; MODES[interaction]=None; MODES[transfer]=None; NONE=<no default>
+analysis/rigorous.py:806	pop	kwargs	curvature_t_threshold=2.0	same	MODES[rigorous]=2.0; MODES[conditional]=2.0; MODES[interaction]=2.0; MODES[transfer]=2.0
+analysis/rigorous.py:807	pop	kwargs	min_gamma_points=5	same	MODES[rigorous]=5; MODES[conditional]=5; MODES[interaction]=5; MODES[transfer]=5
+analysis/rigorous.py:808	pop	kwargs	confidence_level=0.68	same	MODES[rigorous]=0.68; MODES[conditional]=0.68; MODES[interaction]=0.68; MODES[transfer]=0.68
+analysis/rigorous.py:809	pop	kwargs	residual_threshold=2.5	same	MODES[rigorous]=2.5; MODES[conditional]=2.5; MODES[interaction]=2.5; MODES[transfer]=2.5
+analysis/rigorous.py:810	pop	kwargs	leverage_threshold=0.2	same	MODES[rigorous]=0.2; MODES[conditional]=0.2; MODES[interaction]=0.2; MODES[transfer]=0.2
+analysis/rigorous.py:811	pop	kwargs	left_out_share=0.5	same	MODES[rigorous]=0.5; MODES[conditional]=0.5; MODES[interaction]=0.5; MODES[transfer]=0.5
+analysis/sweep.py:198	get	params	embedding_model=setting(self.base_params, 'embedding_model')	expr	BASE='mlp'
+analysis/sweep.py:199	get	params	processor_type_x=self.base_params.get('processor_type_x', None)	expr	BASE=<no default>
+analysis/sweep.py:194	get	self.base_params	processor_params_x={}	no-schema-default	BASE=<no default>
+analysis/sweep.py:195	get	self.base_params	processor_params_x={}	no-schema-default	BASE=<no default>
+analysis/transfer.py:27	sig	te_spec	prediction_horizon=1	no-schema-default	NONE=<no default>
+analysis/transfer.py:49	sig	run_transfer_entropy	prediction_horizon=1	no-schema-default	NONE=<no default>
+analysis/transfer.py:51	sig	run_transfer_entropy	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+analysis/transfer.py:52	sig	run_transfer_entropy	bidirectional=default_of('bidirectional')	expr	BASE=False
+analysis/transfer.py:54	sig	run_transfer_entropy	stride=1	no-schema-default	NONE=<no default>
+analysis/transfer.py:230	sig	_te_rigorous_scalar	prediction_horizon=1	no-schema-default	NONE=<no default>
+analysis/transfer.py:230	sig	_te_rigorous_scalar	bidirectional=default_of('bidirectional')	expr	BASE=False
+analysis/transfer.py:231	sig	_te_rigorous_scalar	stride=1	no-schema-default	NONE=<no default>
+data/rows.py:62	sig	offset_rows	stride=1	no-schema-default	NONE=<no default>
+data/shift_windowing.py:324	get	proc_params	encoding='majority_vote'	same	PROC[categorical]='majority_vote'
+data/temporal.py:281	sig	__init__	min_coverage_fraction=0.2	same	PROC[continuous]=0.2; PROC[categorical]=0.2
+data/temporal.py:282	sig	__init__	period_tolerance=_CONTINUOUS['period_tolerance']	expr	PROC[continuous]=0.05
+data/temporal.py:282	sig	__init__	padded_share=_CONTINUOUS['padded_share']	expr	PROC[continuous]=0.1
+data/temporal.py:283	sig	__init__	gap_multiple=_CONTINUOUS['gap_multiple']	expr	PROC[continuous]=3.0
+data/temporal.py:283	sig	__init__	bridged_share=_CONTINUOUS['bridged_share']	expr	PROC[continuous]=0.3
+data/temporal.py:600	sig	__init__	no_spike_value=0.0	same	PROC[spike]=0.0
+data/temporal.py:601	sig	__init__	exclude_bursty_neurons=False	same	PROC[spike]=False
+data/temporal.py:602	sig	__init__	burst_threshold_multiplier=5.0	same	PROC[spike]=5.0
+data/temporal.py:606	sig	__init__	drop_empty_windows=True	same	PROC[spike]=True
+data/temporal.py:867	sig	__init__	drop_empty_windows=True	same	PROC[spike]=True
+data/temporal.py:985	sig	__init__	min_coverage_fraction=0.2	same	PROC[continuous]=0.2; PROC[categorical]=0.2
+data/temporal.py:985	sig	__init__	encoding='majority_vote'	same	PROC[categorical]='majority_vote'
+data/temporal.py:986	sig	__init__	max_encoding_width=_CATEGORICAL['max_encoding_width']	expr	PROC[categorical]=500
+estimators/ksg.py:176	sig	ksg_mi	seed=0	no-schema-default	NONE=<no default>
+estimators/ksg.py:193	sig	ksg_cmi	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:448	sig	generate_shared_latent_gaussian	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:513	sig	generate_correlated_gaussians	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:557	sig	generate_windowed_oscillatory	window_size=256	DRIFT	PROC[continuous]=None; PROC[spike]=None; PROC[categorical]=None
+generators/oracle.py:559	sig	generate_windowed_oscillatory	sample_rate=512.0	DRIFT	PROC[continuous]=None; PROC[spike]=None; PROC[categorical]=None
+generators/oracle.py:562	sig	generate_windowed_oscillatory	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:631	sig	generate_windowed_multichannel	window_size=200	DRIFT	PROC[continuous]=None; PROC[spike]=None; PROC[categorical]=None
+generators/oracle.py:634	sig	generate_windowed_multichannel	sample_rate=500.0	DRIFT	PROC[continuous]=None; PROC[spike]=None; PROC[categorical]=None
+generators/oracle.py:637	sig	generate_windowed_multichannel	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:706	sig	generate_nonlinear_from_latent	hidden_dim=64	same	BASE=64
+generators/oracle.py:707	sig	generate_nonlinear_from_latent	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:804	sig	generate_spike_pair	window_size=1.0	DRIFT	PROC[continuous]=None; PROC[spike]=None; PROC[categorical]=None
+generators/oracle.py:811	sig	generate_spike_pair	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:962	sig	generate_xor_pair	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:1028	sig	generate_categorical_pair	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:1089	sig	generate_lagged_pair	lag=30	DRIFT	BASE=<no default>; MODES[dimensionality]=1
+generators/oracle.py:1091	sig	generate_lagged_pair	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:158	sig	shared	seed=0	no-schema-default	NONE=<no default>
+generators/oracle.py:404	sig	sample	seed=0	no-schema-default	NONE=<no default>
+models/critics.py:314	sig	__init__	max_n_batches=default_of('max_n_batches')	expr	BASE=512
+models/critics.py:315	sig	__init__	use_variational=default_of('use_variational')	expr	BASE=False
+models/critics.py:364	sig	__init__	max_n_batches=default_of('max_n_batches')	expr	BASE=512
+models/critics.py:365	sig	__init__	use_variational=default_of('use_variational')	expr	BASE=False
+models/critics.py:438	sig	__init__	max_n_batches=default_of('max_n_batches')	expr	BASE=512
+models/critics.py:439	sig	__init__	use_variational=default_of('use_variational')	expr	BASE=False
+models/decoders.py:113	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/decoders.py:115	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/decoders.py:150	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/decoders.py:151	sig	__init__	kernel_size=default_of('kernel_size')	expr	BASE=3
+models/decoders.py:153	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/decoders.py:206	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/decoders.py:241	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/decoders.py:281	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/decoders.py:283	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/decoders.py:320	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/decoders.py:321	sig	__init__	kernel_size=default_of('kernel_size')	expr	BASE=3
+models/decoders.py:323	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/decoders.py:395	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/decoders.py:396	sig	__init__	nhead=default_of('nhead')	expr	BASE=4
+models/decoders.py:398	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/decoders.py:399	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/decoders.py:454	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/decoders.py:455	sig	__init__	kernel_size=default_of('kernel_size')	expr	BASE=3
+models/decoders.py:457	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/embeddings.py:195	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/embeddings.py:196	sig	__init__	use_spectral_norm=default_of('use_spectral_norm')	expr	BASE=True
+models/embeddings.py:197	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/embeddings.py:198	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:199	sig	__init__	linear_path=default_of('linear_path')	expr	BASE=True
+models/embeddings.py:311	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/embeddings.py:311	sig	__init__	kernel_size=default_of('kernel_size')	expr	BASE=3
+models/embeddings.py:312	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:313	sig	__init__	cnn_pooling=default_of('cnn_pooling')	expr	BASE='flatten'
+models/embeddings.py:411	sig	__init__	bidirectional=default_of('bidirectional')	expr	BASE=False
+models/embeddings.py:411	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/embeddings.py:411	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:463	sig	__init__	bidirectional=default_of('bidirectional')	expr	BASE=False
+models/embeddings.py:463	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/embeddings.py:463	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:561	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:590	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/embeddings.py:591	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/embeddings.py:591	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:675	sig	__init__	kernel_size=default_of('kernel_size')	expr	BASE=3
+models/embeddings.py:675	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/embeddings.py:676	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:676	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/embeddings.py:750	sig	__init__	nhead=default_of('nhead')	expr	BASE=4
+models/embeddings.py:750	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/embeddings.py:750	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:751	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/embeddings.py:866	sig	__init__	n_layers=default_of('n_layers')	expr	BASE=2
+models/embeddings.py:866	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:867	sig	__init__	no_spike_value=0.0	same	PROC[spike]=0.0
+models/embeddings.py:867	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/embeddings.py:918	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/embeddings.py:918	sig	__init__	kernel_size=default_of('kernel_size')	expr	BASE=3
+models/embeddings.py:919	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:1051	sig	__init__	pretrained=default_of('pretrained')	expr	BASE=False
+models/embeddings.py:1051	sig	__init__	use_spectral_norm=default_of('use_spectral_norm')	expr	BASE=True
+models/embeddings.py:1051	sig	__init__	dropout=default_of('dropout')	expr	BASE=0.0
+models/embeddings.py:1052	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:1053	sig	__init__	activation=default_of('activation')	expr	BASE='leaky_relu'
+models/embeddings.py:1343	sig	__init__	bias=default_of('bias')	expr	BASE=True
+models/embeddings.py:649	sig	__init__	bias=default_of('bias')	expr	BASE=True
+parallel.py:52	sig	dispatch_tasks	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+parallel.py:53	sig	dispatch_tasks	show_progress=default_of('show_progress')	expr	BASE=True
+quantities.py:400	sig	_spec_active_information_storage	future_k=1	no-schema-default	NONE=<no default>
+quantities.py:448	sig	active_information_storage	future_k=1	no-schema-default	NONE=<no default>
+quantities.py:448	sig	active_information_storage	stride=1	no-schema-default	NONE=<no default>
+quantities.py:448	sig	active_information_storage	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:449	sig	active_information_storage	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:449	sig	active_information_storage	show_progress=True	same	BASE=True
+quantities.py:503	sig	predictive_information	stride=1	no-schema-default	NONE=<no default>
+quantities.py:503	sig	predictive_information	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:504	sig	predictive_information	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:504	sig	predictive_information	show_progress=True	same	BASE=True
+quantities.py:538	sig	instantaneous_mi	stride=1	no-schema-default	NONE=<no default>
+quantities.py:538	sig	instantaneous_mi	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:538	sig	instantaneous_mi	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:539	sig	instantaneous_mi	show_progress=True	same	BASE=True
+quantities.py:566	sig	cross_predictive_information	stride=1	no-schema-default	NONE=<no default>
+quantities.py:566	sig	cross_predictive_information	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:567	sig	cross_predictive_information	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:567	sig	cross_predictive_information	show_progress=True	same	BASE=True
+quantities.py:626	sig	block_mi	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:627	sig	block_mi	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:627	sig	block_mi	show_progress=True	same	BASE=True
+quantities.py:678	sig	transfer_entropy	stride=1	no-schema-default	NONE=<no default>
+quantities.py:679	sig	transfer_entropy	bidirectional=False	same	BASE=False
+quantities.py:679	sig	transfer_entropy	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:680	sig	transfer_entropy	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:680	sig	transfer_entropy	show_progress=True	same	BASE=True
+quantities.py:735	sig	conditional_transfer_entropy	stride=1	no-schema-default	NONE=<no default>
+quantities.py:736	sig	conditional_transfer_entropy	bidirectional=False	same	BASE=False
+quantities.py:736	sig	conditional_transfer_entropy	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:737	sig	conditional_transfer_entropy	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:737	sig	conditional_transfer_entropy	show_progress=True	same	BASE=True
+quantities.py:777	sig	interaction_information	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:777	sig	interaction_information	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:778	sig	interaction_information	show_progress=True	same	BASE=True
+quantities.py:810	sig	mi_rate	stride=1	no-schema-default	NONE=<no default>
+quantities.py:811	sig	mi_rate	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:811	sig	mi_rate	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:811	sig	mi_rate	show_progress=True	same	BASE=True
+quantities.py:882	sig	instantaneous_exchange	stride=1	no-schema-default	NONE=<no default>
+quantities.py:882	sig	instantaneous_exchange	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:883	sig	instantaneous_exchange	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:883	sig	instantaneous_exchange	show_progress=True	same	BASE=True
+quantities.py:920	sig	directed_information_rate	stride=1	no-schema-default	NONE=<no default>
+quantities.py:920	sig	directed_information_rate	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:921	sig	directed_information_rate	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:921	sig	directed_information_rate	show_progress=True	same	BASE=True
+quantities.py:963	sig	offset_quantity	stride=1	no-schema-default	NONE=<no default>
+quantities.py:963	sig	offset_quantity	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+quantities.py:964	sig	offset_quantity	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+quantities.py:964	sig	offset_quantity	show_progress=True	same	BASE=True
+results.py:318	get	entry	saturation_ratio=0.95	same	MODES[dimensionality]=0.95
+run.py:499	sig	_announce_call	min_permutations=100	no-schema-default	NONE=<no default>
+run.py:659	sig	run	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+run.py:662	sig	run	show_progress=True	same	BASE=True
+run.py:664	sig	run	permutation_test=False	no-schema-default	NONE=<no default>
+run.py:665	sig	run	n_permutations=10	no-schema-default	NONE=<no default>
+run.py:666	sig	run	permutation_shuffle='circular'	no-schema-default	NONE=<no default>
+run.py:667	sig	run	permutation_min_shift=0.1	no-schema-default	NONE=<no default>
+run.py:668	sig	run	min_permutations=100	no-schema-default	NONE=<no default>
+run.py:964	sig	_run_flat	output_units='bits'	same	BASE='bits'
+run.py:965	sig	_run_flat	estimator='infonce'	no-schema-default	NONE=<no default>
+run.py:972	sig	_run_flat	show_progress=True	same	BASE=True
+run.py:974	sig	_run_flat	split_mode='blocked'	same	BASE='blocked'
+run.py:975	sig	_run_flat	train_fraction=0.9	same	BASE=0.9
+run.py:976	sig	_run_flat	n_test_blocks=5	same	BASE=5
+run.py:977	sig	_run_flat	split_gap_fraction=0.5	same	BASE=0.5
+run.py:980	sig	_run_flat	curvature_t_threshold=2.0	same	MODES[rigorous]=2.0; MODES[conditional]=2.0; MODES[interaction]=2.0; MODES[transfer]=2.0
+run.py:981	sig	_run_flat	min_gamma_points=5	same	MODES[rigorous]=5; MODES[conditional]=5; MODES[interaction]=5; MODES[transfer]=5
+run.py:982	sig	_run_flat	confidence_level=0.68	same	MODES[rigorous]=0.68; MODES[conditional]=0.68; MODES[interaction]=0.68; MODES[transfer]=0.68
+run.py:983	sig	_run_flat	max_eval_samples=5000	same	BASE=5000
+run.py:986	sig	_run_flat	track_spectral_history=False	same	BASE=False
+run.py:988	sig	_run_flat	corrupt_target='x'	same	MODES[precision]='x'
+run.py:989	sig	_run_flat	corruption_method='rounding'	same	MODES[precision]='rounding'
+run.py:990	sig	_run_flat	n_noise_samples=50	same	MODES[precision]=50
+run.py:991	sig	_run_flat	threshold_ratio=0.9	same	MODES[precision]=0.9
+run.py:992	sig	_run_flat	permutation_test=False	no-schema-default	NONE=<no default>
+run.py:993	sig	_run_flat	n_permutations=10	no-schema-default	NONE=<no default>
+run.py:994	sig	_run_flat	permutation_shuffle='circular'	no-schema-default	NONE=<no default>
+run.py:995	sig	_run_flat	permutation_min_shift=0.1	no-schema-default	NONE=<no default>
+run.py:996	sig	_run_flat	min_permutations=100	no-schema-default	NONE=<no default>
+run.py:998	sig	_run_flat	prediction_horizon=1	no-schema-default	NONE=<no default>
+run.py:999	sig	_run_flat	stride=1	no-schema-default	NONE=<no default>
+run.py:1000	sig	_run_flat	bidirectional_te=False	no-schema-default	NONE=<no default>
+run.py:1008	sig	_run_flat	return_embeddings=False	same	BASE=False
+run.py:1010	sig	_run_flat	use_spectral_norm=True	same	BASE=True
+run.py:1012	sig	_run_flat	optimizer='adam'	same	BASE='adam'
+run.py:1016	sig	_run_flat	eval_train=False	same	BASE=False
+run.py:1017	sig	_run_flat	peak_fraction=1.0	same	BASE=1.0
+run.py:1018	sig	_run_flat	epoch_rule='plateau_start'	same	BASE='plateau_start'
+run.py:1021	sig	_run_flat	use_amp='auto'	same	BASE='auto'
+run.py:1454	get	analysis_kwargs	n_workers=1	same	MODES[estimate]=1; MODES[sweep]=1; MODES[rigorous]=1; MODES[lag]=1; MODES[precision]=1; MODES[conditional]=1; MODES[interaction]=1; MODES[transfer]=1; MODES[pairwise]=1; MODES[dimensionality]=1
+run.py:1480	get	analysis_kwargs	rigorous=False	same	MODES[conditional]=False; MODES[interaction]=False; MODES[transfer]=False
+training/epochs.py:68	sig	stands_above_zero	clear_se=default_of('clear_se')	expr	BASE=3.0
+training/epochs.py:81	sig	choose_epoch	level_noise=default_of('level_noise')	expr	BASE=2.0
+training/epochs.py:82	sig	choose_epoch	start_noise=default_of('start_noise')	expr	BASE=0.5
+training/epochs.py:83	sig	choose_epoch	resolved_noise=default_of('resolved_noise')	expr	BASE=8.0
+training/epochs.py:84	sig	choose_epoch	fast_epochs=default_of('fast_epochs')	expr	BASE=8
+training/epochs.py:85	sig	choose_epoch	fall_noise=default_of('fall_noise')	expr	BASE=3.0
+training/epochs.py:86	sig	choose_epoch	clear_se=default_of('clear_se')	expr	BASE=3.0
+training/epochs.py:87	sig	choose_epoch	rising_epochs=default_of('rising_epochs')	expr	BASE=20
+training/epochs.py:88	sig	choose_epoch	rising_noise=default_of('rising_noise')	expr	BASE=3.0
+training/epochs.py:129	sig	band_floor	top_se=default_of('top_se')	expr	BASE=1.0
+training/epochs.py:135	sig	top_band	top_se=default_of('top_se')	expr	BASE=1.0
+training/epochs.py:179	sig	warn_about_curve	resolved_noise=default_of('resolved_noise')	expr	BASE=8.0
+training/epochs.py:179	sig	warn_about_curve	clear_se=default_of('clear_se')	expr	BASE=3.0
+training/epochs.py:180	sig	warn_about_curve	rising_noise=default_of('rising_noise')	expr	BASE=3.0
+training/epochs.py:180	sig	warn_about_curve	rising_epochs=default_of('rising_epochs')	expr	BASE=20
+training/epochs.py:181	sig	warn_about_curve	fall_noise=default_of('fall_noise')	expr	BASE=3.0
+training/epochs.py:181	sig	warn_about_curve	fast_epochs=default_of('fast_epochs')	expr	BASE=8
+training/epochs.py:182	sig	warn_about_curve	top_se=default_of('top_se')	expr	BASE=1.0
+training/epochs.py:182	sig	warn_about_curve	band_share=default_of('band_share')	expr	BASE=0.3
+training/epochs.py:233	sig	falls_short	gap_share=default_of('gap_share')	expr	BASE=0.5
+training/epochs.py:233	sig	falls_short	clear_se=default_of('clear_se')	expr	BASE=3.0
+training/epochs.py:245	sig	warn_about_gap	gap_share=default_of('gap_share')	expr	BASE=0.5
+training/epochs.py:246	sig	warn_about_gap	clear_se=default_of('clear_se')	expr	BASE=3.0
+training/epochs.py:264	sig	warn_about_ceiling	ceiling_fraction=default_of('ceiling_fraction')	expr	BASE=0.85
+training/trainer.py:143	sig	__init__	use_variational=default_of('use_variational')	expr	BASE=False
+training/trainer.py:143	sig	__init__	beta=default_of('beta')	expr	BASE=1024.0
+training/trainer.py:146	sig	__init__	whitening=default_of('whitening')	expr	BASE='std'
+training/trainer.py:147	sig	__init__	gradient_clip_val=default_of('gradient_clip_val')	expr	BASE=None
+training/trainer.py:150	sig	__init__	decoder_lambda_x=default_of('decoder_lambda')	expr	BASE=None
+training/trainer.py:151	sig	__init__	decoder_lambda_y=default_of('decoder_lambda')	expr	BASE=None
+training/trainer.py:152	sig	__init__	decoder_output_activation_x=default_of('decoder_output_activation_x')	expr	BASE='linear'
+training/trainer.py:153	sig	__init__	decoder_output_activation_y=default_of('decoder_output_activation_y')	expr	BASE='linear'
+training/trainer.py:154	sig	__init__	use_amp=default_of('use_amp')	expr	BASE='auto'
+training/trainer.py:243	sig	train	train_fraction=default_of('train_fraction')	expr	BASE=0.9
+training/trainer.py:243	sig	train	n_test_blocks=default_of('n_test_blocks')	expr	BASE=5
+training/trainer.py:244	sig	train	shift_windows=default_of('shift_windows')	expr	BASE=True
+training/trainer.py:247	sig	train	patience=default_of('patience')	expr	BASE=30
+training/trainer.py:247	sig	train	smoothing_sigma=default_of('smoothing_sigma')	expr	BASE=1.0
+training/trainer.py:247	sig	train	median_window=default_of('median_window')	expr	BASE=5
+training/trainer.py:248	sig	train	min_improvement=default_of('min_improvement')	expr	BASE=0.001
+training/trainer.py:249	sig	train	save_best_model_path=default_of('save_best_model_path')	expr	BASE=None
+training/trainer.py:250	sig	train	output_units=default_of('output_units')	expr	BASE='bits'
+training/trainer.py:250	sig	train	verbose=default_of('verbose')	expr	BASE=False
+training/trainer.py:250	sig	train	show_progress=default_of('show_progress')	expr	BASE=True
+training/trainer.py:251	sig	train	split_mode=default_of('split_mode')	expr	BASE='blocked'
+training/trainer.py:254	sig	train	max_eval_samples=default_of('max_eval_samples')	expr	BASE=5000
+training/trainer.py:255	sig	train	train_subset_size=default_of('train_subset_size')	expr	BASE=None
+training/trainer.py:256	sig	train	test_subset_size=default_of('test_subset_size')	expr	BASE=None
+training/trainer.py:257	sig	train	split_gap_fraction=default_of('split_gap_fraction')	expr	BASE=0.5
+training/trainer.py:258	sig	train	track_spectral_history=default_of('track_spectral_history')	expr	BASE=False
+training/trainer.py:259	sig	train	eval_train=default_of('eval_train')	expr	BASE=False
+training/trainer.py:260	sig	train	peak_fraction=default_of('peak_fraction')	expr	BASE=1.0
+training/trainer.py:261	sig	train	epoch_rule=default_of('epoch_rule')	expr	BASE='plateau_start'
+training/trainer.py:262	sig	train	level_noise=default_of('level_noise')	expr	BASE=2.0
+training/trainer.py:263	sig	train	start_noise=default_of('start_noise')	expr	BASE=0.5
+training/trainer.py:264	sig	train	resolved_noise=default_of('resolved_noise')	expr	BASE=8.0
+training/trainer.py:265	sig	train	fast_epochs=default_of('fast_epochs')	expr	BASE=8
+training/trainer.py:266	sig	train	fall_noise=default_of('fall_noise')	expr	BASE=3.0
+training/trainer.py:267	sig	train	top_se=default_of('top_se')	expr	BASE=1.0
+training/trainer.py:268	sig	train	band_share=default_of('band_share')	expr	BASE=0.3
+training/trainer.py:269	sig	train	clear_se=default_of('clear_se')	expr	BASE=3.0
+training/trainer.py:270	sig	train	rising_epochs=default_of('rising_epochs')	expr	BASE=20
+training/trainer.py:271	sig	train	rising_noise=default_of('rising_noise')	expr	BASE=3.0
+training/trainer.py:272	sig	train	ceiling_fraction=default_of('ceiling_fraction')	expr	BASE=0.85
+training/trainer.py:273	sig	train	saturation_fraction=default_of('saturation_fraction')	expr	BASE=0.9
+training/trainer.py:274	sig	train	saturated_epoch_fraction=default_of('saturated_epoch_fraction')	expr	BASE=0.5
+training/trainer.py:275	sig	train	gap_share=default_of('gap_share')	expr	BASE=0.5
+training/trainer.py:276	sig	train	nan_streak=default_of('nan_streak')	expr	BASE=3
+training/trainer.py:278	sig	train	track_embeddings=default_of('track_embeddings')	expr	BASE=False
+training/trainer.py:279	sig	train	return_rotated_embeddings=default_of('return_rotated_embeddings')	expr	BASE=False
+training/trainer.py:280	sig	train	rotated_embeddings_per_epoch=default_of('rotated_embeddings_per_epoch')	expr	BASE=False
+training/trainer.py:281	sig	train	return_rotation_matrices=default_of('return_rotation_matrices')	expr	BASE=False
+utils.py:173	sig	build_offset_arrays	stride=1	no-schema-default	NONE=<no default>
+utils.py:1074	sig	cross_covariance_svd	whitening=default_of('whitening')	expr	BASE='std'
+utils.py:1120	sig	compute_cross_covariance_spectrum	whitening=default_of('whitening')	expr	BASE='std'
+utils.py:1128	sig	compute_cross_covariance_rotation	whitening=default_of('whitening')	expr	BASE='std'
+validation.py:399	get	bp	verbose=BASE_PARAMS_SCHEMA['verbose']['default']	expr	BASE=False
+visualize/plot.py:291	get	details	saturation_ratio=0.95	same	MODES[dimensionality]=0.95

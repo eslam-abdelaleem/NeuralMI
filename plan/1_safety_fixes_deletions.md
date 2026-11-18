@@ -292,7 +292,7 @@ and call it from both places. E-04 later removes the first call.
 
 **Done when.** `grep -n "te_sum" neural_mi/` shows nothing.
 
-### B-12 Stop training the reverse direction inside a ladder
+### B-12 Record with a test that a ladder trains the reverse direction for nothing
 
 **Why.** With `rigorous=True` and `bidirectional=True`, `_te_rigorous_scalar` forwards
 `bidirectional` to `run_transfer_entropy` at every rung (analysis/transfer.py:229-255), but
@@ -300,16 +300,11 @@ and call it from both places. E-04 later removes the first call.
 (analysis/modes.py:290-317) reports only the forward ladder. The audit read this in the code and
 did not run it.
 
-**Change.**
-1. Establish first, with a test that counts the calls of `run_training_task`, that the reverse
-   networks are trained and discarded.
-2. Refuse `rigorous=True` together with `bidirectional=True`, with a message that says each
-   direction needs its own call. E-08 later gives each direction its own ladder and lifts the
-   refusal.
+**Change.** Add a test that counts the calls of `run_training_task` in such a call and checks
+that the result reports both directions. Mark it as an expected failure. E-08 gives each
+direction its own ladder and removes the mark.
 
-**Tests.** The counting test, and a test of the refusal.
-
-**Done when.** Both tests pass.
+**Done when.** The test exists and fails for the reason that it documents.
 
 ### B-13 Say in the pages how `run(x, y)` differs from `instantaneous_mi(x, y)`
 
@@ -419,13 +414,13 @@ imports every model class, so the data layer depends on the models.
 2. `Estimator.to_base_params` (config.py:213) and its test at `tests/test_config.py:61`.
    `run.py:859-863` builds the same two keys by hand.
 3. `ESTIMATOR_DEFAULTS` (estimators/__init__.py:30).
-4. The bounds `tuba`, `nwj` and `js_fgan` in `estimators/bounds.py`. They cannot be selected,
-   because they are not in `ESTIMATORS`, and no test names them.
-5. `utils._names` (utils.py:644), in favour of `utils._accepts_kwarg` (utils.py:468).
-6. The loop over a per-side bias at `utils.py:839-850`, where both values are always equal.
+4. `utils._names` (utils.py:644), in favour of `utils._accepts_kwarg` (utils.py:468).
+5. The loop over a per-side bias at `utils.py:839-850`, where both values are always equal.
 
-**Done when.** `grep -rn "ESTIMATOR_DEFAULTS\|def expand\|def tuba\|def nwj" neural_mi/` shows
-nothing.
+The TUBA and NWJ bounds of `estimators/bounds.py` stay, by the owner's decision. They cannot be
+selected today, and R-03 registers them.
+
+**Done when.** `grep -rn "ESTIMATOR_DEFAULTS\|def expand" neural_mi/` shows nothing.
 
 ### X-06 Delete the second way to save a network and the loader of its format
 
@@ -457,7 +452,10 @@ bundled format through `save_network`. The loader keeps a branch for the bare fo
 
 **Why.** `plot_cross_correlation` and `analyze_mi_heatmap` (visualize/plot.py) are called by
 nothing in the library, the tutorials or the README. `reference/USING.md:1695-1696` lists them,
-and `reference/MESSAGES.md:867` documents one of their messages.
+and `reference/MESSAGES.md:867` documents one of their messages. `analyze_mi_heatmap` chooses a
+configuration by a rule that the owner no longer supports, and `Results.best` is the tool that
+ranks configurations (A-07). The cross-correlation returns in A-10, as the Gaussian estimator
+with `mode='lag'`.
 
 **Change.** Delete both functions, their exports in `visualize/__init__.py` and their tests in
 `tests/test_visualize.py`.
@@ -467,17 +465,32 @@ and `reference/MESSAGES.md:867` documents one of their messages.
 **Done when.** `grep -rn "plot_cross_correlation\|analyze_mi_heatmap" neural_mi/ reference/`
 shows nothing.
 
-### X-09 Delete `set_verbose`
+### X-09 One switch for messages, and a warning for what needs attention
 
-**Why.** `set_verbose` (logger.py:150-160) is one line that calls `set_verbosity`. No code, test
-or tutorial calls it, but three pages document it.
+**Why.** The library reports through two channels, and the rule that separates them is written
+nowhere. The logger shows what the library is doing, and `set_verbosity` sets its level for the
+session (logger.py:109-136). `set_verbose` is a second function for the same switch
+(logger.py:150-160). It calls `set_verbosity` with one of two levels, no code or tutorial calls
+it, and three pages document it. `run(verbose=...)` sets the level for one call. Python warnings
+are the second channel. Some messages are on the wrong channel today. The fallback to an MLP
+decoder is a log line that the default level hides (B-09), and a ladder that cannot be fitted is
+a log line at error level followed by a silent drop (analysis/rigorous.py:577-578).
 
-**Change.** Delete the function and its export in `neural_mi/__init__.py`.
+**Change.**
+1. Write the rule in the docstring of the messages module, as principle 4 of `plan/README.md`
+   states it. What the library is doing is a log message. Anything that may change how a result
+   should be read is a Python warning. A call that cannot proceed raises.
+2. Keep `set_verbosity(level)` for the session and `verbose=` for one call. Delete `set_verbose`
+   and its export in `neural_mi/__init__.py`.
+3. List every call of `logger.warning` and `logger.error` in the package, and turn each one into
+   a Python warning or an exception by the rule.
+4. Correct the docstring of `run`. It says that `verbose=False` shows only errors, while the
+   code sets the level to warnings (run.py:1074).
 
-**Pages.** Remove it from `reference/MESSAGES.md:875`, `reference/USING.md:1734` and
-`docs/source/api_reference.rst:107`.
+**Pages.** Remove `set_verbose` from `reference/MESSAGES.md:875`, `reference/USING.md:1734` and
+`docs/source/api_reference.rst:107`, and state the rule once in `reference/USING.md`.
 
-**Done when.** `grep -rn "set_verbose\b" neural_mi/ reference/ docs/` shows nothing.
+**Done when.** `grep -rn "set_verbose\b\|logger.warning\|logger.error" neural_mi/` shows nothing.
 
 ### X-10 Correct the comments that name things that are gone
 

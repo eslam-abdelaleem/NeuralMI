@@ -1,20 +1,22 @@
 # Phases A and P: the public API, the pages and the release
 
 Phase A changes what a user types. It comes after phase E, because each change is then a small
-edit of one front door instead of a change in several engines. Phase P covers the pages that the
+edit of `run()` instead of a change in several engines. Phase P covers the pages that the
 earlier phases make stale, and everything outside the package that the first release needs.
 
 ## Phase A: the public API
 
-Each step changes one part of the API, together with every test, tutorial cell and reference
-page that uses the old form. The counts come from a search of the repository at commit
-`39f42d1`. Each step also updates `tests/public_surface.txt` (S-04). The tutorials are edited
-here and run again once, in P-13.
+At the end of phase E, `run()` already takes a quantity, every analysis already accepts the
+modifiers, and the old spellings survive as names that set them. This phase removes the old
+spellings, so that each choice of a call has one argument. Each step changes one part of the
+API together with every test, tutorial cell and reference page that uses the old form. The
+counts come from a search of the repository at commit `39f42d1`. Each step also updates
+`tests/public_surface.txt` (S-04). The tutorials are edited here and run again once, in P-13.
 
-Steps A-03 and A-06 and the name in A-05 depend on answers that the owner has not given yet
-(see "Decisions" in `plan/README.md`).
+Steps A-02, A-03 and A-10 follow from points that the owner has not confirmed yet (see
+"Decisions" in `plan/README.md`).
 
-### A-01 `rigorous` is an argument of `run()` and of every named function
+### A-01 `rigorous` is an argument that every analysis takes
 
 **Why.** The correction is requested in four ways today: `mode='rigorous'` with a `Rigorous`
 config, a field `rigorous=True` on `Transfer`, `Conditional` and `Interaction` with seven fit
@@ -23,60 +25,66 @@ named function, and a table that translates between them (quantities.py:62-94). 
 engine has one modifier.
 
 **Change.**
-1. `run(..., rigorous=None)` takes `True`, a `Rigorous` or a dict, with any mode that
-   `Mode.rigorous_refused` allows. A refused mode raises with the reason.
+1. `run(..., rigorous=None)` takes `True`, a `Rigorous` or a dict, with every analysis that the
+   table of E-08 allows.
 2. Remove `mode='rigorous'` from `MODES`.
 3. Remove the field `rigorous` and the seven fit fields from `Transfer`, `Conditional` and
    `Interaction`.
-4. Accept `Rigorous(temporal_chunking=...)` for every quantity. The named functions refuse it
-   for a difference quantity today (quantities.py:87-92), and `_Chunker` already refuses the one
-   case that cannot be honoured (rigorous.py:628-633).
 
 **Tests.** `mode='rigorous'` appears 17 times in 11 test files. Rewrite those calls.
 
 **Pages.** One tutorial cell, 15 lines in five reference pages, and one line each in `README.md`
-and `paper.md`. The table of modes in `reference/USING.md` loses its row for `rigorous` and
-gains a column that says which modes accept the argument.
+and `paper.md`.
 
 **Done when.** `grep -rn "mode='rigorous'" --include=*.py --include=*.md --include=*.ipynb .`
 shows nothing outside `plan/` and `CHANGELOG.md`.
 
-### A-02 `run()` takes `w_data`, and the configs `Conditional` and `Interaction` go
+### A-02 `quantity` and `w_data` are arguments of `run()`, and three modes and three configs go
 
-**Why.** After A-01 the only field left on `Conditional` and `Interaction` is `w_data`. The
-third signal is data, like X and Y. Its processor is already set in `Processing`.
-`interaction_information()` is the same call as `mode='interaction'` (quantities.py:777-799).
+**Why.** `mode='conditional'`, `mode='interaction'` and `mode='transfer'` name what is measured,
+while the other modes name what is done with the estimator. The third signal is passed inside a
+config (`Conditional(w_data=w)`), although it is data like X and Y. After A-01 that config has
+no other field.
 
 **Change.**
-1. Change the signature to `run(x_data, y_data=None, w_data=None, *, ...)`.
-2. Delete the classes `Conditional` and `Interaction` and the arguments `conditional=` and
-   `interaction=`.
-3. Delete `interaction_information()`.
-4. Keep the warning for a `w_data` that the mode does not read (run.py:1196-1201).
+1. Change the signature to `run(x_data, y_data=None, w_data=None, *, quantity=None, ...)`.
+2. A call with `w_data` and no `quantity` measures `I(X; Y | W)`. `quantity='interaction'`
+   measures the three-term form. A `quantity` that needs a third stream raises when `w_data` is
+   missing, and a `w_data` that the quantity does not read warns (run.py:1196-1201).
+3. Remove `'conditional'`, `'interaction'` and `'transfer'` from `MODES`. The modes that remain
+   are `estimate`, `lag`, `pairwise`, `dimensionality` and `precision`.
+4. Delete the classes `Conditional`, `Interaction` and `Transfer` and the arguments
+   `conditional=`, `interaction=` and `transfer=`.
+5. Export `Quantity` from the package.
 
-**Tests.** `Conditional(` appears 75 times in 20 test files, `Interaction(` 42 times in 10, and
-`interaction_information(` 6 times in 2. Rewrite those calls.
+**Tests.** `Conditional(` appears 75 times in 20 test files, `Interaction(` 42 times in 10 and
+`Transfer(` 31 times in 8. The three modes appear 162 times. Rewrite those calls.
 
-**Pages.** Two tutorial cells and five lines of the reference pages.
+**Pages.** Three tutorial cells and about 17 lines of the reference pages.
 
-**Done when.** `nmi.run(x, y, w, mode='conditional')` runs, and `nmi.Conditional` does not
-exist.
+**Done when.** `nmi.run(x, y, w)` returns a conditional MI, `nmi.Conditional` does not exist,
+and `MODES` has five keys.
 
-### A-03 Transfer entropy is a named function only
+### A-03 The named functions are wrappers of `run()`
 
-**Why.** Transfer entropy belongs to the family of chosen times. After E-09 `mode='transfer'`
-is a thin call of `transfer_entropy()`, so the library has two doors to one quantity.
+**Why.** After E-09 each named function builds a `Quantity` and calls `run()`. This step fixes
+their public form.
 
-**Change.** Remove `mode='transfer'` from `MODES`, delete the class `Transfer` and the argument
-`transfer=`. The functions `transfer_entropy` and `conditional_transfer_entropy` take the
-windows, `stride` and `bidirectional` themselves.
+**Change.**
+1. Each wrapper takes its data, its windows, `stride` and, for transfer entropy,
+   `bidirectional`. It forwards every other argument to `run()`, so `mode`, `sweep_grid`,
+   `rigorous` and `permutation` work with every named function.
+2. Keep all twelve functions. `interaction_information(x, y, w)` is
+   `run(x, y, w, quantity='interaction')`, and `offset_quantity(data, spec)` is
+   `run(data, quantity=Quantity('offsets', ...))`.
+3. State in each docstring the call of `run()` that the wrapper makes.
 
-**Tests.** `mode='transfer'` appears 49 times in 9 test files and `Transfer(` 31 times in 8.
-Rewrite those calls to the functions.
+**Tests.** Add a test that a named function with `mode='lag'` runs, since the wrapper forwards
+the analysis.
 
-**Pages.** Five lines of the reference pages. No tutorial uses the mode.
+**Pages.** `reference/USING.md` presents the named functions as shorthands of `run()`.
 
-**Done when.** `nmi.Transfer` does not exist and `MODES` has no key `'transfer'`.
+**Done when.** Every function of `quantities.py` has a body of at most about ten lines.
 
 ### A-04 `permutation` is one argument
 
@@ -122,9 +130,9 @@ forces the future to the length of the past.
 1. A `future_window` of `None` takes the value of `history_window`.
 2. Rename the argument `prediction_horizon` of `te_spec` to `future_window`, and the arguments
    of the `_spec_*` functions (quantities.py:400-440).
-3. At most one window of a call may be a list. `mi_rate` has this rule today
-   (quantities.py:854-860). The list is the key that changes the rows in E-10. The name of the
-   argument is the column of the result.
+3. A window may be a list, and the list is a key of the grid (E-10). Several lists give every
+   combination of their values. `mi_rate` refuses two lists today (quantities.py:854-860), and
+   E-08 lifts that refusal. The name of the argument is the column of the result.
 
 **Tests.** The five functions that take `k` are called 63 times in 9 test files, and `mi_rate`
 20 times in 5. `prediction_horizon` appears 9 times in 2 test files and `future_k` twice.
@@ -135,39 +143,52 @@ can keep `k` as a symbol in its formulas if it says which argument sets it.
 **Done when.** `grep -rn "future_k\|prediction_horizon" neural_mi/` shows nothing, and no named
 function has a parameter called `k` or `h`.
 
-### A-06 `mode='estimate'` takes a grid
+### A-06 `sweep_grid` works with every analysis, and `mode='sweep'` goes
 
 **Why.** `estimate` refuses a `sweep_grid` and `sweep` requires one (analysis/modes.py:775-781).
 Every other mode takes a grid without changing its name, and the named functions already choose
 between the two by whether a grid is present (quantities.py:118 and 664). As a result
 `active_information_storage(x, k=5)` reports the mode `'estimate'` and `k=[5]` reports `'sweep'`
-for the same number.
+for the same number. After E-08 and E-10 a grid is a modifier of every analysis.
 
 **Change.**
 1. `MODES['estimate']` accepts a grid, and `'sweep'` is removed.
 2. A result with one configuration and one repeat is shown as a training curve. A result with
-   more is shown as the table of a sweep, and `Results.best` ranks its configurations.
+   more is shown as the table of a sweep.
 
 **Tests.** `mode='sweep'` appears 44 times in 19 test files.
 
-**Pages.** Eight cells in three notebooks and seven lines of the reference pages.
+**Pages.** Eight cells in three notebooks and seven lines of the reference pages. State in
+`reference/USING.md` the three kinds of key that a grid accepts: a setting of the network or of
+the training, a setting that changes the rows, and a parameter of the quantity.
 
 **Done when.** `nmi.run(x, y, sweep_grid={'run_id': range(3)})` runs with the default mode.
 
-### A-07 A result names its quantity and lists its keys
+### A-07 A result names its quantity, lists its keys and shows what separates its best configurations
 
 **Why.** `Results.get(key)` searches four tables (results.py:515-569), and nothing lists the
 keys that exist. The representation of a result shows its mode and not its quantity.
+`Results.best()` already ranks the configurations of a sweep by their held-out MI and returns
+the ones that the held-out rows cannot tell apart from the best (results.py:570-603). The
+held-out value is the one that the bound guarantees, so this ranking has a basis in theory. No
+theory chooses among the configurations that the ranking cannot tell apart, and the table gives
+the user nothing to choose by.
 
 **Change.**
 1. Add `Results.keys()`. It returns the keys that `get` can read, grouped by the table that
    contains them.
 2. Show the quantity's name and symbol from `view` (E-11) in `__repr__` and in `summary()`.
-3. Say in the docstring of `to_json` that it exports a result, and that `save` and `load` are
+3. Add to the table of `best()` the gap between the training value and the held-out value of
+   each configuration, and its number of parameters where the runs record it. Keep the order by
+   held-out MI, and apply no rule to the configurations that cannot be told apart. Say in the
+   docstring that the smallest gap and the smallest network are two reasonable ways to choose
+   among them, and that neither has a basis in theory.
+4. Let `best()` work on any result with more than one configuration, whatever its analysis.
+5. Say in the docstring of `to_json` that it exports a result, and that `save` and `load` are
    the pair that restores one.
 
 **Done when.** `set(result.keys())` equals the set of keys for which `result.get` succeeds, in
-a test over every case of the snapshot.
+a test over every case of the snapshot, and the table of `best()` has a column for the gap.
 
 ### A-08 The public names of the package
 
@@ -201,6 +222,44 @@ an oracle. Four default to torch tensors and four to numpy arrays. The size argu
 **Pages.** Every tutorial builds its data with a generator, so each needs an edit.
 
 **Done when.** A test calls every generator and checks the form of what it returns.
+
+### A-10 A Gaussian estimator gives the cheap linear answer
+
+**Why.** Every estimate that the library makes today trains a network or searches for nearest
+neighbours. A user has no cheap answer to compare it with, and `plot_cross_correlation` (deleted
+in X-08) was the only trace of one. The cheap counterpart of `I(A; B | C)` on the same rows is
+the information between Gaussian variables that have the covariance of those rows. It has a
+closed form in the determinants of three or four covariance matrices and takes milliseconds.
+For one channel on each side it is `-0.5 * log(1 - r**2)`, where `r` is the correlation
+coefficient. The estimators that train nothing already have a place in the registry (R-03), so
+this estimator needs no path of its own.
+
+**Change.**
+1. Add `estimators/gaussian.py` with `gaussian_mi(x, y)` and `gaussian_cmi(x, y, z)`, computed
+   from the log-determinants of the covariance of the flattened rows.
+2. Register it as `estimator='gaussian'`, with `trains_network=False` and `gaussian_cmi` as its
+   conditional form. It then runs wherever `ksg` runs: with every quantity, with `mode='lag'`
+   (the cross-correlation function, in bits), with `mode='pairwise'` (the correlation map, in
+   bits), with a grid and with the rigorous correction.
+3. Refuse a call whose rows are not more numerous than the dimensions of a row, because the
+   covariance is then singular. Warn when the rows are fewer than a multiple of the dimensions
+   that is a setting, because the value is then biased upward.
+4. Warn when a stream is given as spike times, because the covariance of padded spike times
+   has no meaning.
+5. Establish first whether a grid over `estimator_name` runs today with a trained and an
+   untrained estimator side by side. If it does, a grid over the two names gives the cheap
+   answer next to the trained one in one table.
+6. Consider an option that first maps each channel through its ranks to a normal variable, as
+   `ksg` does with `gaussianize` (estimators/ksg.py:175).
+
+**Tests.** Compare the estimator with the exact value of `LatentGaussian` on Gaussian data, for
+plain MI, for a conditional quantity and for transfer entropy. Add one snapshot case.
+
+**Pages.** Add the estimator to `reference/PARAMETERS.md`. Add a short section to
+`reference/USING.md` that advises running it first.
+
+**Done when.** `nmi.run(x, y, estimator='gaussian')` returns the exact value on Gaussian data
+within sampling error, and the same call with `mode='lag'` returns a curve.
 
 ## Phase P: pages, packaging and release
 
@@ -306,19 +365,25 @@ remove it from the check. Remove the branch of the test in either case.
 
 ### P-08 Store the tutorial data as arrays, with their source
 
-**When.** At any time. The owner supplies the facts.
+**When.** At any time.
 
 **Why.** Tutorial 04 loads two pickles of 7.9 MB with `pickle.load`. A pickle can run code when
-it is loaded. These two also refer to `numpy.core`, a path that numpy 2 deprecates. The notebook
-cites Grosmark and Buzsáki (2016), but nothing states the licence of the data or how the subset
-was made.
+it is loaded. These two also refer to `numpy.core`, a path that numpy 2 deprecates. The data are
+a subset of the CRCNS data set hc-11 (https://crcns.org/data-sets/hc/hc-11), recorded by
+Grosmark and Buzsáki (2016). Nothing in the repository says so beside the citation in the
+notebook.
 
 **Change.**
 1. Convert both files to `.npz` and load them with `allow_pickle=False`.
-2. Add `tutorials/data/README.md` with the source, the licence and the derivation.
-3. Update the loading cell of tutorial 04 and the two lines of `.gitignore`.
+2. Add `tutorials/data/README.md` with the source, the citation that CRCNS asks for, and how
+   the subset was made (the sessions, the time span and the processing).
+3. Read the terms of use on the page of hc-11 before the release. If they do not allow a subset
+   to be redistributed in a public repository, replace the files by a script that downloads
+   and prepares them.
+4. Update the loading cell of tutorial 04 and the two lines of `.gitignore`.
 
-**Done when.** `git ls-files tutorials/data` shows no `.pkl` file.
+**Done when.** `git ls-files tutorials/data` shows no `.pkl` file, and the README of the folder
+names the data set.
 
 ### P-09 Build the documentation site without warnings
 
@@ -373,17 +438,17 @@ adds several.
 
 **Done when.** `tests/test_docs_drift.py` passes and `INTERNALS.md` names no deleted module.
 
-### P-13 Rewrite USING.md around the two front doors, and run the tutorials again
+### P-13 Rewrite USING.md around the three choices of a call, and run the tutorials again
 
 **When.** After phase A.
 
 **Why.** `reference/USING.md` presents the modes and the named functions as two lists that
-overlap. After phase A they are the two families of the library. The five tutorials and the
+overlap. After phase A a call makes three choices: the quantity, the analysis and the modifiers. The five tutorials and the
 notebook of the README figures store their outputs, and the API and some numbers have changed.
 
 **Change.**
-1. Organise `USING.md` as chosen signals with `run()`, chosen times with the named functions,
-   then the analyses and the two modifiers.
+1. Organise `USING.md` as the quantity (chosen signals, then chosen times with the named
+   functions), the analysis and the modifiers.
 2. Check its table of what each mode accepts against `MODES`.
 3. Run the five tutorials and `docs/figures/readme_figures.ipynb` again. Compare every number
    that a reference page quotes with the new outputs.

@@ -53,12 +53,16 @@ may now train on it, as the other modes do.
 
 ### E-02 A quantity is declared once
 
-**Why.** The terms of each quantity are written in several places. For conditional MI they are
-in `MODES['conditional']` (analysis/modes.py:814-820, the fields `terms`, `components`, `symbol`,
+**Why.** What a quantity is, is written in several places. For conditional MI the terms are in
+`MODES['conditional']` (analysis/modes.py:814-820, the fields `terms`, `components`, `symbol`,
 `title` and `label`), in `run_conditional_mi` (analysis/conditional.py:65-70) and in
 `_cmi_rigorous_scalar` (conditional.py:94). Interaction information and transfer entropy repeat
 the pattern, and the reverse direction of transfer entropy is a separate constant
-(`_TRANSFER_REVERSE`, modes.py:51-52).
+(`_TRANSFER_REVERSE`, modes.py:51-52). A quantity at chosen times is spread further. Its offsets
+are in a `_spec_*` function (quantities.py:400-440) or in `te_spec`. The bounds of its windows
+and its warning for an empty conditioning group are in its wrapper. Whether it is a rate is in
+`preprocessing.RATE_QUANTITIES` (preprocessing.py:41-42), and the name of its result is a
+`sweep_mode` argument.
 
 **Change.**
 1. Add `analysis/quantity.py` with two records.
@@ -73,28 +77,38 @@ the pattern, and the reverse direction of transfer entropy is a separate constan
        label: str = ''           # its name in messages, such as 'X,W;Y'
 
    @dataclass(frozen=True)
-   class Quantity:
+   class QuantityKind:
        name: str
        symbol: str
        terms: Tuple[Term, ...]
-       signed: bool = False      # the value may be negative
+       signed: bool = False              # the value may be negative
        title: str = ''
-       joint: Optional[str] = None   # the key of the term that contains every variable
+       joint: Optional[str] = None       # the key of the term that contains every variable
+       parameters: Mapping[str, dict] = field(default_factory=dict)   # name -> type, bounds, default
+       offsets: Optional[Callable[..., dict]] = None   # parameters -> the spec of A, B and C
+       rate: bool = False                # a time transform leaves it unchanged
+       reverse: Optional[str] = None     # the kind that measures the other direction
    ```
-2. Declare `MI` with one term, `CONDITIONAL` with two, `INTERACTION` with three, and `TRANSFER`
-   with its reverse. Keep every key, sign and label as it is today. Keep the order of the streams
-   of each joint term: conditional MI reads `('x', 'w')` (conditional.py:66) and interaction
-   information reads `('w', 'x')` (interaction.py:94). The second stream of the pair is the
-   conditioning set of its difference, and KSG reads the pair in that order (task.py:140-142).
-3. Move to the same module the functions that combine terms: `amplification_factor`,
+2. Keep one registry `QUANTITIES` from name to `QuantityKind`. It declares `mi`, `conditional`
+   and `interaction` for chosen signals, and one kind for each named quantity at chosen times,
+   with the offsets that its `_spec_*` function gives today.
+3. Add the public request `Quantity(name, **parameters)`. It names a kind and gives values for
+   its parameters, and one function resolves it against the registry.
+4. Keep every key, sign and label as it is today, so that no column of a result changes. Keep
+   the order of the streams of each joint term: conditional MI reads `('x', 'w')`
+   (conditional.py:66) and interaction information reads `('w', 'x')` (interaction.py:94). The
+   second stream of the pair is the conditioning set of its difference, and KSG reads the pair
+   in that order (task.py:140-142).
+5. Move to the same module the functions that combine terms: `amplification_factor`,
    `warn_combination`, `rung`, `combined_spread`, `term_values`, `combine_terms` and
    `_refuse_different_rows` (analysis/sweep.py:240-572), and `directionality_index` of B-11.
-4. Give `Mode` one field `quantity` in place of `terms`, `signed`, `label`, `symbol`,
+6. Give `Mode` one field for the kind in place of `terms`, `signed`, `label`, `symbol`,
    `components` and `title`. Derive `_DIFFERENCES`, `_SIGNED` and `_QUANTITY_NAMES`
-   (modes.py:894-896) from it.
+   (modes.py:894-896) and `RATE_QUANTITIES` from the registry.
 
 **Tests.** Update `tests/test_mode_registry.py`, `tests/test_combining_terms.py`,
-`tests/test_amplification_factor.py` and `tests/test_paired_terms.py`.
+`tests/test_amplification_factor.py` and `tests/test_paired_terms.py`. Add a test that the
+offsets of each kind equal what its `_spec_*` function returns today.
 
 **Done when.** Inside `neural_mi/analysis/`, the strings `'mi_xw_y'` and `'i_xypast_yfuture'`
 appear only in `quantity.py`.
@@ -162,7 +176,7 @@ other time quantities build the same groups and pass them through a row plan
 2. Add `plan_by_offsets(series, spec, stride, shift, kinds)` to `data/offsets.py`. It calls
    `build_rows` and returns the plan of the three groups under the names `x` (group A), `y`
    (group B) and `w` (group C).
-3. Make `run_transfer_entropy` build that plan and call `estimate_terms(plan, TRANSFER, ...)`.
+3. Make `run_transfer_entropy` build that plan and call `estimate_terms` with the kind `transfer_entropy`.
    For `bidirectional=True` it builds a second plan from `te_spec(source='y', target='x')` and
    trains the reverse quantity on it.
 4. Delete `joint_streams`, `marginal_streams`, `_term_streams` and the tuple branch of
@@ -192,7 +206,7 @@ when the rows do not shift, and every task receives `TermRows(plan, PAIR)`. Each
 one commit.
 
 a. **Estimate and sweep.** `produce_single_network` (modes.py:87-91) calls
-   `estimate_terms(plan, MI, ...)`. Check with the snapshot each of the three forms that it
+   `estimate_terms` with the kind `mi`. Check with the snapshot each of the three forms that it
    replaces: rows given already (run.py:1398-1416), rows cut once in `run()` (1417-1448) and rows
    cut in each task (1379-1397).
 
@@ -324,70 +338,114 @@ keeps the rows at its edges.
 
 **Done when.** `grep -rn "AnalysisWorkflow\|run_rigorous_" neural_mi/` shows nothing.
 
-### E-08 The rigorous correction becomes a modifier inside the engine
+### E-08 The modifiers apply wherever they have a meaning
 
-**Why.** The correction is a mode for plain MI and a field of three configs for the difference
-quantities. `modes._difference` branches on it (modes.py:748-752), and three functions prepare
-its settings in two ways (`_prepare_rigorous`, `_rigorous_terms` and `_scalar_rigorous_kwargs`,
-modes.py:478-545).
+**Why.** The rigorous correction is a mode for plain MI and a field of three configs for the
+difference quantities. `modes._difference` branches on it (modes.py:748-752), and three
+functions prepare its settings in two ways (`_prepare_rigorous`, `_rigorous_terms` and
+`_scalar_rigorous_kwargs`, modes.py:478-545). What may be combined with what is spread over
+seven fields of `Mode` (`table`, `needs_grid`, `one_network`, `permutation`, `embeddings`,
+`rows_differ` and `needs_y`), over `_check_requests` in `run.py` and over refusals inside the
+wrappers. Several of those refusals exist only because a call is expensive, and principle 2 of
+`plan/README.md` says that cost is announced and never refused.
 
 **Change.**
-1. The engine resolves the settings of the correction once, for every mode, into
+1. The engine resolves the settings of the correction once, for every analysis, into
    `ctx['rigorous']`. The value is `None` or the resolved `RIGOROUS_SETTINGS`.
-2. Give `Mode` one field `rigorous_refused` with the reason, like the field `permutation`.
-   `precision` and `dimensionality` refuse, because each reads a curve from trained networks and
-   has no single value to extrapolate.
-3. Add one function `estimates(plan, quantity, params, grid, ctx)` that returns the rows of a
-   plain estimate or of a ladder. The producers of `estimate`, `sweep`, `conditional`,
-   `interaction` and `transfer` call it, and so do `lag` and `pairwise`. For those two, each lag
-   or pair gets its own ladder, and the call announces the number of networks.
-4. Keep `mode='rigorous'` as a name that sets the modifier on a sweep, until A-01 removes it.
-5. Lift the refusal of B-12, so that each direction of transfer entropy gets its own ladder.
-6. `Results._is_rigorous` (results.py:503) reads the recorded modifier. The figures of the lag
+2. Add one function `estimates(plan, kind, params, grid, ctx)` that returns the rows of a plain
+   estimate or of a ladder. Every procedure that makes estimates calls it: the plain estimate,
+   `lag` for each lag and `pairwise` for each pair. The correction and the grid then reach these
+   analyses through one function, and none of them needs a branch of its own.
+3. Make every analysis loop over the configurations of a grid in the same way. `precision`
+   refuses a grid today (modes.py:806-808). It then runs once for each configuration.
+4. Keep one table beside `MODES` that says, for each analysis, whether it accepts a quantity
+   with several terms, a grid, the rigorous correction, the permutation test and returned
+   embeddings. An entry is `True`, or a pair of a kind and a reason. The kind is `'undefined'`
+   when the combination has no meaning and `'not written'` when the code does not exist yet.
+   One function reads the table and raises with the reason. It replaces the seven fields of
+   `Mode` and the scattered checks.
+5. Fill the table by principle 2. The table below is the starting point. Establish each entry
+   marked "check" before you write it.
+
+   | Analysis | Several terms | Grid | Rigorous | Permutation |
+   |---|---|---|---|---|
+   | `estimate` | yes | yes | yes | yes |
+   | `lag` | yes, X moves against Y and W (check) | yes | yes, one ladder per lag | yes |
+   | `pairwise` | yes, W stays whole (check) | yes | yes, one ladder per pair | yes |
+   | `dimensionality` | undefined, it reads the embeddings of one critic | yes | not written | undefined |
+   | `precision` | not written | yes | not written | undefined |
+
+6. Lift the refusals that only protect the user from a cost: two lists of windows in `mi_rate`
+   (quantities.py:854-860), the permutation test together with the correction (modes.py:788),
+   and `Rigorous(temporal_chunking=...)` for a difference quantity (quantities.py:87-92). Keep
+   the refusals of what cannot be done, such as custom split indices for rows that the library
+   builds (quantities.py:160-169) and a stream of built rows beside a windowed one
+   (data/plan.py:46-57).
+7. Extend `_announce_call` (run.py:497-528) so that it states the number of networks that the
+   call will train, for every combination. Turn the message into a warning above a number that
+   is a setting.
+8. Give each direction of transfer entropy its own ladder, and remove the mark of B-12.
+9. `Results._is_rigorous` (results.py:503) reads the recorded modifier. The figures of the lag
    curve and of the pairwise map draw the error of the fit when the modifier is on.
 
-**Tests.** Add one case each for `lag` and `pairwise` with `gamma_range=range(1, 4)`. Update the
-table check in `tests/test_mode_registry.py`.
+**Tests.** Add one snapshot case for each cell of the table that says yes and has none today:
+`lag` and `pairwise` with the correction (`gamma_range=range(1, 4)`), `lag` and `pairwise` with
+a conditioning stream, and `precision` with a grid. Add one test per refused cell that checks
+the kind and the reason. Update the table check in `tests/test_mode_registry.py`.
 
-**Pages.** The table of `reference/USING.md` that lists what each mode accepts is checked
-against `MODES`.
+**Pages.** The table of `reference/USING.md` that lists what each mode accepts is generated from
+the new table. Add the new warning to `reference/MESSAGES.md`.
 
-**Done when.** `ctx['rigorous']` is written in one place and no producer has a rigorous twin.
+**Done when.** `ctx['rigorous']` is written in one place, no producer has a rigorous twin, and
+`grep -n "one_network\|needs_grid" neural_mi/analysis/modes.py` shows nothing.
 
-### E-09 The named functions call the engine directly
+### E-09 `run()` takes the quantity, and the named functions call `run()`
 
-**Why.** `quantities._by_offsets` builds rows and then calls `run()` on rows that are built
+**Why.** A quantity at chosen times reaches the engine through a side door.
+`quantities._by_offsets` builds the rows itself and then calls `run()` on rows that are built
 already. It passes their geometry, stride phases and stream kinds through three private
 arguments of the public function (run.py:669-671). It also repeats decisions that `run()` makes:
 the input scaling (quantities.py:352-371), the split of the grid (332-345) and the paths of
 saved networks (138-150). `transfer_entropy` calls `run(mode='transfer')` instead, and the hook
-of that mode (modes.py:548-623) prepares the streams in a second way.
+of that mode (modes.py:548-623) prepares the streams in a second way. The two families of
+quantities differ only in how a row is built, so one function can serve both.
 
 **Change.**
-1. Split `_run_flat` where the rows exist. The part after that point becomes
-   `execute(call, plan, quantity)`: it runs the producer, builds the result and attaches the
-   nulls of a permutation test.
-2. `_by_offsets` prepares its series, builds the plan with `plan_by_offsets` and calls
-   `execute`. The quantity is `MI` or `CONDITIONAL` under the function's own name, symbol and
-   labels.
-3. `transfer_entropy` and `conditional_transfer_entropy` use `_by_offsets` with `te_spec`, like
-   the other time quantities. `preprocessing.RATE_QUANTITIES` (preprocessing.py:41-42) already lists both
-   functions, so `_prepared_series` (quantities.py:294-295) passes the same `rate=True` that the
-   hook passes today (modes.py:593-595).
-4. Delete `quantities._call`, `_task`, `_rigorous_settings`, `_difference_fit` and `_FIT_FIELDS`,
-   `modes._prepare_transfer`, `_transfer_terms` and `_to_2d`, `run_transfer_entropy`,
-   `Mode.builds_own_rows`, and the arguments `_rows`, `_row_phases` and `_stream_kinds` of
-   `run()` and `_run_flat` with the code that reads them (run.py:915-923, 1215-1217, 1300).
-5. Keep `mode='transfer'` as a call of `quantities.transfer_entropy` until A-03 removes it.
-6. `block_mi` keeps building its rows through the processors, so it keeps calling `run()`.
+1. Give `run()` the argument `quantity`. It takes a name or a `Quantity` (E-02). Left unset, it
+   is `mi`, or `conditional` when a third stream is given.
+2. Move the building of rows by offset into the engine, as the second case of one function
+   that builds the plan of a call. When the kind has offsets, the function puts the streams on
+   series one step wide (`_series`, quantities.py:232-260), prepares and checks them
+   (`_prepared_series`, 285-295), and calls `plan_by_offsets` (E-04) with the kind's `stride`.
+   Otherwise it builds the plan from the signals, as E-05 left it. `RATE_QUANTITIES` already
+   lists both transfer functions (preprocessing.py:41-42), so the `rate` flag of the transfer
+   hook (modes.py:593-595) is kept.
+3. Let the first argument of `run()` be a mapping from stream names to arrays, for a kind whose
+   offsets name its own streams. `offset_quantity` passes one today.
+4. Reduce each named function to a wrapper that builds a `Quantity` and calls `run()`. The
+   validation of its windows and its warning for an empty conditioning group
+   (`_warn_if_unconditioned`, quantities.py:311-318) move to the kind's declaration.
+5. `transfer_entropy` and `conditional_transfer_entropy` use the kind `transfer_entropy`. Its
+   offsets are `te_spec`, and `bidirectional` trains the reverse kind on the same series.
+6. Delete `quantities._by_offsets`, `_named`, `_named_run`, `_call`, `_task`,
+   `_rigorous_settings`, `_difference_fit` and `_FIT_FIELDS`, `modes._prepare_transfer`,
+   `_transfer_terms` and `_to_2d`, `run_transfer_entropy`, `Mode.builds_own_rows`, and the
+   arguments `_rows`, `_row_phases` and `_stream_kinds` of `run()` and `_run_flat` with the code
+   that reads them (run.py:915-923, 1215-1217, 1300).
+7. Keep `mode='transfer'`, `mode='conditional'` and `mode='interaction'` as names that set the
+   quantity, until A-02 removes them.
+8. `block_mi` keeps building its rows through the processors, so it stays a call of `run()`
+   with a windowed `Processing`.
 
 **Tests.** Update `tests/test_quantities.py`, `test_quantities_sweep.py`, `test_transfer.py`,
-`test_known_answers.py` and `test_oracle.py`.
+`test_known_answers.py` and `test_oracle.py`. Add a test that each named function and the
+matching call of `run()` with a `Quantity` return the same result.
 
 **Numbers.** They are unchanged for the eight functions that are on the offset path today. For
 transfer entropy they follow from E-04.
 
-**Done when.** `grep -n "_row_phases\|_stream_kinds" neural_mi/run.py` shows nothing.
+**Done when.** `grep -n "_row_phases\|_stream_kinds" neural_mi/run.py` shows nothing, and no
+function of `quantities.py` is longer than about 15 lines.
 
 ### E-10 One preparation loop
 
@@ -395,23 +453,27 @@ transfer entropy they follow from E-04.
 three times. `run._preparation_grid` and `_run_preparation_grid` (run.py:468-491 and 530-569)
 handle the settings of a processor. `quantities._named_run` (quantities.py:194-225) handles a
 function's own window, with `parallel.dispatch_tasks` and `merge_results`. A recursion in
-`_by_offsets` (quantities.py:332-345) handles the first kind inside the second.
+`_by_offsets` (quantities.py:332-345) handles the first kind inside the second. A user also
+cannot put a window of a quantity in `sweep_grid`. The wrapper refuses it and asks for a list
+in its own argument (quantities.py:199-204).
 
 **Change.**
-1. Add `run_preparations(call, build)` to the engine. It splits the grid with
-   `split_preparation` into the keys that change the rows and the others. For each combination
-   of the first, it calls `build(values)` for the plan and the quantity, then `execute`. It
-   merges the parts with `assemble.merge_results`.
-2. `run()` passes a `build` that makes the plan from the processors. A named function passes one
-   that makes it by offset, and declares its own window as a key that changes the rows.
+1. Add `run_preparations(call)` to the engine. It sorts the keys of the grid into three groups:
+   a parameter of the call's quantity, a setting that changes the rows
+   (`defaults.PREPARATION_SETTINGS`), and every other setting. For each combination of the first
+   two groups it builds the plan and runs the analysis on the remaining grid. It merges the
+   parts with `assemble.merge_results`.
+2. Accept a parameter of the quantity as a key of `sweep_grid`. A wrapper that receives a list
+   for one of its windows passes it on as such a key, so the two spellings are one mechanism.
 3. Use the rule of E-01 for the workers. Establish first what `_run_preparation_grid` does
-   today, and keep one behaviour for both front doors.
+   today, and keep one behaviour.
 4. Label the saved networks in one place (today `_with_save_path` at quantities.py:138-150 and
    `with_model_labels`).
 5. Delete the three copies and `parallel.dispatch_tasks`.
 
 **Tests.** Update `tests/test_grid_contract.py`, `tests/test_quantities_sweep.py` and
-`tests/test_run.py`.
+`tests/test_run.py`. Add a test that `sweep_grid={'history_window': [1, 2]}` and
+`history_window=[1, 2]` give the same result.
 
 **Done when.** `merge_results` is called from one place.
 
@@ -467,6 +529,7 @@ are defined four times: in its config class, in `MODES[mode].settings`, in the s
    @dataclass
    class Call:
        mode: str
+       quantity: Any                        # the resolved kind with its parameters
        settings: Dict[str, Any]             # every base setting, resolved
        set_by_caller: FrozenSet[str]        # the keys given in a config or in the grid
        mode_settings: Dict[str, Any]        # the mode's own settings, resolved
@@ -482,7 +545,7 @@ are defined four times: in its config class, in `MODES[mode].settings`, in the s
        show_progress: bool
        device: Optional[str]
    ```
-2. One function `resolve_call(...)` builds the record for both front doors. It reads each config
+2. One function `resolve_call(...)` builds the record from the arguments of `run()`. It reads each config
    through one method `settings()`. The method returns the fields that are set, under their
    schema names, and replaces `to_base_params`, `to_kwargs`, `to_analysis_kwargs`,
    `to_w_kwargs` and `to_labels` (config.py).
@@ -533,7 +596,7 @@ at once a registry, a set of producers and a set of hooks.
 
 **Change.**
 1. Move the public `run()` to `neural_mi/api.py`. Move `Call`, `resolve_call`,
-   `run_preparations` and `execute` to `neural_mi/engine.py`. Delete `run.py`.
+   `run_preparations` and the code that turns a plan into a result to `neural_mi/engine.py`. Delete `run.py`.
 2. Keep `Mode` and `MODES` in `analysis/modes.py`. Move each producer and each hook to the module
    of its procedure (`lag.py`, `pairwise.py`, `dimensionality.py`, `precision.py`), and the
    producers of plain estimates and ladders to `analysis/estimate.py`.

@@ -1,0 +1,94 @@
+ratio as a float
+  12.5  (0.5 s at 25 Hz)   d/p = 12.5
+  2.5   (0.25 at 0.1)      d/p = 2.5
+  13.5  (13.5 at 1)        d/p = 13.5
+  0.3/0.1                  d/p = 2.9999999999999996
+  1.0/0.1                  d/p = 10.0
+
+WINDOW: what each rule returns
+rule                                                          12.5       2.5      13.5   0.3/0.1   1.0/0.1
+seconds_to_samples            shift_windowing.py:48             12         2        14         3        10
+slots_in_window               temporal.py:69-86                 13         3        14         3        10
+np.ceil (full_trajectory msg) temporal.py:1073                  13         3        14         3        10
+Continuous max_samples        temporal.py:396                   13         3        14         3        10
+Categorical max_samples       temporal.py:1057                  13         3        14         3        10
+BinnedSpike n_bins            temporal.py:881                   13         3        14         3        10
+permutation._window_rows      permutation.py:162                12         2        14         3        10
+BundleShifter n_keep floor    shift_windowing.py:285            12         2        13         3        10
+RowGeometry.rows_per_span     rows.py:49                        13         3        14         3        10
+floor, no tolerance           (for comparison)                  12         2        13         2        10
+floor(d/p + 1e-9*max(1,d/p))  (proposed)                        12         2        13         3        10
+
+STEP: the same ratios read as a step. step_size is first resolved (resolve_step_size), then:
+  unfold: seconds_to_samples(step, period); grid: the step stays a float in time (np.arange)
+  12.5  (0.5 s at 25 Hz)   asked step    0.5 period 0.04: resolve_step_size -> 0.5                    unfold samples  12 (= 0.48 in time), grid step 0.5 (= 12.5 samples)
+  2.5   (0.25 at 0.1)      asked step   0.25 period 0.1: resolve_step_size -> 0.25                   unfold samples   2 (= 0.2 in time), grid step 0.25 (= 2.5 samples)
+  13.5  (13.5 at 1)        asked step   13.5 period 1: resolve_step_size -> 13.5                   unfold samples  14 (= 14 in time), grid step 13.5 (= 13.5 samples)
+  0.3/0.1                  asked step    0.3 period 0.1: resolve_step_size -> 0.3                    unfold samples   3 (= 0.3 in time), grid step 0.3 (= 3 samples)
+  1.0/0.1                  asked step    1.0 period 0.1: resolve_step_size -> 1.0                    unfold samples  10 (= 1 in time), grid step 1 (= 10 samples)
+
+resolve_step_size convention
+  window    10 step_size  None -> 10.0
+  window    10 step_size   0.5 -> 5.0
+  window    10 step_size     5 -> 5.0
+  window    10 step_size     1 -> 1.0
+  window   0.5 step_size   0.5 -> 0.25
+  window   0.5 step_size  0.25 -> 0.125
+  window   0.5 step_size   1.0 -> 1.0
+  window  12.5 step_size  None -> 12.5
+  window   0.3 step_size  None -> 0.3
+
+stream_period
+  sample_rate=25         -> 0.04
+  no rate, no time       -> 1.0
+  time at 30 Hz          -> 0.03333333333333144  1/30 = 0.03333333333333333
+  time with a gap        -> None
+  time with 1e-5 jitter  -> None (None sends the plan to the grid route)
+  one sample             -> 1.0
+
+the processors' own period (ContinuousWindowDataset.__init__, temporal.py:351-368)
+  median of the 30 Hz time vector: 0.03333333333333144
+  with sample_rate=30            : 0.03333333333333333
+  jittered clock (median)        : 0.033333287418741975
+
+plan._clock
+  no time, rate 25 -> [0.   0.04 0.08 0.12 0.16]
+  no time, no rate -> [0. 1. 2. 3. 4.]
+
+safe_n_windows(n, window, step, max_shift)  = max(0, (n - max_shift - window) // step + 1)
+  n=500   window=12  step=12  max_shift=0   -> 41
+  n=500   window=12  step=12  max_shift=11  -> 40
+  n=500   window=13  step=13  max_shift=0   -> 38
+  n=500   window=13  step=13  max_shift=12  -> 37
+  n=1200  window=7   step=3   max_shift=0   -> 398
+  n=1200  window=7   step=3   max_shift=2   -> 398
+  n=12    window=12  step=12  max_shift=0   -> 1
+  n=11    window=12  step=12  max_shift=0   -> 0
+
+WindowManager.create_windows: np.arange(t_start, t_end, step)
+  [0.0, 20.0) window 0.5 -> 40 starts, last 19.5
+  [0.0, 19.52) window 0.5 -> 40 starts, last 19.5
+  [0.0, 1.0) window 0.3 -> 4 starts, last 0.9
+  [0.0, 0.9) window 0.3 -> 3 starts, last 0.6
+
+_SampledStream.window_starts_end = extent_end - window + 0.5 * period (temporal.py:241-244)
+  n=500 rate=25.0 window=0.5: extent [0.0, 20), starts before 19.52, 40 starts at step = window, last 19.5
+  n=500 rate=25.0 window=0.48: extent [0.0, 20), starts before 19.54, 41 starts at step = window, last 19.2
+  n=500 rate=25.0 window=0.52: extent [0.0, 20), starts before 19.5, 38 starts at step = window, last 19.24
+  n=2500 rate=10.0 window=0.25: extent [0.0, 250), starts before 249.8, 1000 starts at step = window, last 249.75
+  n=2500 rate=10.0 window=0.3: extent [0.0, 250), starts before 249.75, 833 starts at step = window, last 249.6
+
+BinnedSpikeDataset: n_bins = slots_in_window(window, bin_size); actual bin width = window / n_bins
+  window 10.0 bin_size 3.0: 4 bins of 2.5 (asked 3.0); floor would give 3 bins covering 9
+  window 0.5 bin_size 0.2: 3 bins of 0.166667 (asked 0.2); floor would give 2 bins covering 0.4
+  window 0.5 bin_size 0.1: 5 bins of 0.1 (asked 0.1); floor would give 5 bins covering 0.5
+  window 1.0 bin_size 0.3: 4 bins of 0.25 (asked 0.3); floor would give 3 bins covering 0.9
+  window 0.3 bin_size 0.1: 3 bins of 0.1 (asked 0.1); floor would give 3 bins covering 0.3
+  window 1.0 bin_size 0.1: 10 bins of 0.1 (asked 0.1); floor would give 10 bins covering 1
+
+max_events_in_window uses a closed interval (times[right] - times[left] > window slides the left)
+  spikes at 0 and exactly 1.0 apart, window 1.0 -> 2 (the half-open window [0, 1) holds 1)
+
+coverage count: max(1, ceil(min_coverage_fraction * max_samples_per_window)) (temporal.py:535, 1226)
+  width 12, fraction 0.2 -> 3
+  width 13, fraction 0.2 -> 3
